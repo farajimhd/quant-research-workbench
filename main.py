@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from AlgorithmImports import *
 from collections import defaultdict
 import json
@@ -931,7 +933,7 @@ class OpeningRangeBreakoutCore:
 # Main QuantConnect Algorithm
 # =============================================================================
 
-class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
+class Main(QCAlgorithm):
 
     def Initialize(self):
         self.SetStartDate(2024, 5, 1)
