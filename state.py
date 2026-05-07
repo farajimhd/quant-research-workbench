@@ -22,15 +22,10 @@ class SymbolState:
 
         self.orb_entry_order_id = None
         self.orb_stop_order_id = None
-        self.orb_profit_order_id = None
         self.orb_entry_price = None
         self.orb_stop_price = None
-        self.orb_profit_price = None
         self.orb_quantity = 0
         self.orb_exit_submitted = False
-        self.orb_rank = None
-        self.orb_reentry_level = None
-        self.orb_reentry_count = 0
 
     def reset_orb_day(self, current_date):
         self.orb_date = current_date
@@ -45,12 +40,7 @@ class SymbolState:
 
         self.orb_entry_order_id = None
         self.orb_stop_order_id = None
-        self.orb_profit_order_id = None
         self.orb_entry_price = None
         self.orb_stop_price = None
-        self.orb_profit_price = None
         self.orb_quantity = 0
         self.orb_exit_submitted = False
-        self.orb_rank = None
-        self.orb_reentry_level = None
-        self.orb_reentry_count = 0

@@ -18,16 +18,13 @@ class OpeningRangeBreakoutCore:
         self.risk_per_trade_pct = 0.0025
         self.max_capital_per_trade_pct = 0.10
         self.entry_buffer_pct = 0.0005
-        self.min_gap_up_pct = 0.01
+        self.min_gap_up_pct = 0.005
         self.min_close_location = 0.75
-        self.min_body_to_range = 0.50
+        self.min_body_to_range = 0.35
         self.min_orb_range_atr_fraction = 0.05
-        self.max_orb_range_atr_fraction = 0.35
+        self.max_orb_range_atr_fraction = 0.50
         self.min_position_value = 500.0
         self.min_planned_risk_dollars = 12.0
-        self.profit_step_pct = 0.03
-        self.reentry_buffer_pct = 0.001
-        self.max_reentries_per_symbol = 5
         self.exit_minutes_before_close = 5
         self.cancel_unfilled_minutes_before_close = 10
         self.current_rank_date = None
@@ -141,27 +138,35 @@ class OpeningRangeBreakoutCore:
 
     def is_valid_candidate(self, symbol, state):
         if state.orb_open is None or state.orb_high is None or state.orb_low is None:
+            self.count_orb_reject("base")
             return False
 
         if state.orb_close is None or state.orb_close <= 0:
+            self.count_orb_reject("base")
             return False
 
         if state.orb_close < self.min_price:
+            self.count_orb_reject("base")
             return False
 
         if state.avg_daily_volume_14 is None or state.avg_daily_volume_14 < self.min_avg_daily_volume:
+            self.count_orb_reject("liq")
             return False
 
         if state.atr_14 is None or state.atr_14 < self.min_atr:
+            self.count_orb_reject("atr")
             return False
 
         if state.orb_relative_volume < self.min_opening_relative_volume:
+            self.count_orb_reject("rv")
             return False
 
         if state.orb_high <= state.orb_low:
+            self.count_orb_reject("base")
             return False
 
         if not self.has_required_gap(state):
+            self.count_orb_reject("gap")
             return False
 
         if not self.has_quality_opening_range(state):
@@ -169,6 +174,9 @@ class OpeningRangeBreakoutCore:
 
         state.orb_direction = "LONG"
         return True
+
+    def count_orb_reject(self, reason):
+        self.debugger.count(f"or_{reason}")
 
     def has_required_gap(self, state):
         if state.previous_close is None or state.previous_close <= 0:
@@ -178,29 +186,38 @@ class OpeningRangeBreakoutCore:
 
     def has_quality_opening_range(self, state):
         if state.orb_close <= state.orb_open:
+            self.count_orb_reject("shape")
             return False
 
         opening_range = state.orb_high - state.orb_low
 
         if opening_range <= 0:
+            self.count_orb_reject("range")
             return False
 
         range_atr_fraction = opening_range / state.atr_14
 
         if range_atr_fraction < self.min_orb_range_atr_fraction:
+            self.count_orb_reject("range")
             return False
 
         if range_atr_fraction > self.max_orb_range_atr_fraction:
+            self.count_orb_reject("range")
             return False
 
         close_location = (state.orb_close - state.orb_low) / opening_range
 
         if close_location < self.min_close_location:
+            self.count_orb_reject("shape")
             return False
 
         body_to_range = abs(state.orb_close - state.orb_open) / opening_range
 
-        return body_to_range >= self.min_body_to_range
+        if body_to_range < self.min_body_to_range:
+            self.count_orb_reject("shape")
+            return False
+
+        return True
 
     def submit_entry(self, symbol, state, rank):
         if state.orb_entry_order_id is not None:
@@ -212,10 +229,7 @@ class OpeningRangeBreakoutCore:
         if self.has_active_trade():
             return False
 
-        is_reentry = state.orb_reentry_level is not None
-        entry_level = state.orb_reentry_level if is_reentry else state.orb_high
-        buffer_pct = self.reentry_buffer_pct if is_reentry else self.entry_buffer_pct
-        entry = entry_level * (1.0 + buffer_pct)
+        entry = state.orb_high * (1.0 + self.entry_buffer_pct)
         stop = entry - (state.atr_14 * self.atr_stop_fraction)
         quantity = self.calculate_quantity(entry, stop)
 
@@ -225,6 +239,7 @@ class OpeningRangeBreakoutCore:
 
         if not self.has_minimum_trade_economics(quantity, entry, stop):
             self.debugger.count_reject("economics")
+            self.count_orb_reject("econ")
             return False
 
         ticket = self.algorithm.StopMarketOrder(
@@ -245,7 +260,6 @@ class OpeningRangeBreakoutCore:
         state.orb_entry_price = entry
         state.orb_stop_price = stop
         state.orb_quantity = quantity
-        state.orb_rank = rank
         self.active_symbol = symbol
         self.debugger.count("entry_submit", symbol)
         self.debugger.c_log(
@@ -253,8 +267,7 @@ class OpeningRangeBreakoutCore:
             symbol,
             (
                 f"ORB|d={state.orb_direction}|p={entry:.2f}|sl={stop:.2f}"
-                f"|n={quantity}|rk={rank}|rv={state.orb_relative_volume:.1f}"
-                f"|atr={state.atr_14:.2f}|re={state.orb_reentry_count}"
+                f"|n={quantity}|rk={rank}|rv={state.orb_relative_volume:.1f}|atr={state.atr_14:.2f}"
             ),
         )
         return True
@@ -289,11 +302,7 @@ class OpeningRangeBreakoutCore:
         return planned_risk >= self.min_planned_risk_dollars
 
     def manage_open_orders(self, symbol, state):
-        if (
-            state.orb_entry_order_id is None
-            or state.orb_stop_order_id is not None
-            or state.orb_profit_order_id is not None
-        ):
+        if state.orb_entry_order_id is None or state.orb_stop_order_id is not None:
             return
 
         if int(self.algorithm.Portfolio[symbol].Quantity) != 0:
@@ -317,9 +326,6 @@ class OpeningRangeBreakoutCore:
             return
 
         self.cancel_order(state.orb_stop_order_id, "orb_eod_exit")
-        self.cancel_order(state.orb_profit_order_id, "orb_eod_exit")
-        state.orb_stop_order_id = None
-        state.orb_profit_order_id = None
         self.algorithm.MarketOrder(symbol, -quantity, tag="orb_eod_exit")
         state.orb_exit_submitted = True
         self.debugger.count("exit_signal", symbol)
@@ -332,15 +338,9 @@ class OpeningRangeBreakoutCore:
 
         if order_event.OrderId == state.orb_stop_order_id:
             state.orb_stop_order_id = None
-            self.cancel_order(state.orb_profit_order_id, "orb_stop_loss")
-            state.orb_profit_order_id = None
             self.debugger.count("exit_signal", symbol)
             self.debugger.count("exit_STOP_LOSS", symbol)
             self.clear_active_symbol_if_done(symbol, state)
-            return
-
-        if order_event.OrderId == state.orb_profit_order_id:
-            self.handle_profit_fill(symbol, state, order_event)
             return
 
         if (
@@ -348,7 +348,6 @@ class OpeningRangeBreakoutCore:
             and int(self.algorithm.Portfolio[symbol].Quantity) == 0
         ):
             state.orb_stop_order_id = None
-            state.orb_profit_order_id = None
             self.clear_active_symbol_if_done(symbol, state)
 
     def handle_entry_fill(self, symbol, state, order_event):
@@ -358,8 +357,6 @@ class OpeningRangeBreakoutCore:
             return
 
         state.orb_entry_order_id = None
-        fill_price = float(order_event.FillPrice)
-        state.orb_entry_price = fill_price
 
         if state.orb_stop_price is None:
             return
@@ -375,35 +372,6 @@ class OpeningRangeBreakoutCore:
         if ticket is not None:
             state.orb_stop_order_id = ticket.OrderId
 
-        profit_price = fill_price * (1.0 + self.profit_step_pct)
-        profit_ticket = self.algorithm.LimitOrder(
-            symbol,
-            stop_quantity,
-            profit_price,
-            tag=f"orb_profit|step={self.profit_step_pct:.2f}|re={state.orb_reentry_count}",
-        )
-
-        if profit_ticket is not None:
-            state.orb_profit_order_id = profit_ticket.OrderId
-            state.orb_profit_price = profit_price
-
-    def handle_profit_fill(self, symbol, state, order_event):
-        state.orb_profit_order_id = None
-        state.orb_profit_price = None
-        self.cancel_order(state.orb_stop_order_id, "orb_profit_hit")
-        state.orb_stop_order_id = None
-        state.orb_reentry_level = float(order_event.FillPrice)
-        state.orb_reentry_count += 1
-        self.debugger.count("exit_signal", symbol)
-        self.debugger.count("exit_PROFIT_PULLBACK", symbol)
-        self.active_symbol = None
-
-        if self.can_reenter_symbol(state):
-            rank = state.orb_rank if state.orb_rank is not None else 1
-            self.pending_candidates.insert(0, (rank, symbol, state))
-
-        self.try_submit_next_candidate()
-
     def has_active_trade(self):
         if self.active_symbol is None:
             return False
@@ -414,11 +382,7 @@ class OpeningRangeBreakoutCore:
             self.active_symbol = None
             return False
 
-        if (
-            state.orb_entry_order_id is not None
-            or state.orb_stop_order_id is not None
-            or state.orb_profit_order_id is not None
-        ):
+        if state.orb_entry_order_id is not None or state.orb_stop_order_id is not None:
             return True
 
         return int(self.algorithm.Portfolio[self.active_symbol].Quantity) != 0
@@ -430,11 +394,7 @@ class OpeningRangeBreakoutCore:
         if self.active_symbol != symbol:
             return
 
-        if (
-            state.orb_entry_order_id is not None
-            or state.orb_stop_order_id is not None
-            or state.orb_profit_order_id is not None
-        ):
+        if state.orb_entry_order_id is not None or state.orb_stop_order_id is not None:
             return
 
         if int(self.algorithm.Portfolio[symbol].Quantity) != 0:
@@ -444,12 +404,6 @@ class OpeningRangeBreakoutCore:
 
         if self.should_process_next_after_exit():
             self.try_submit_next_candidate()
-
-    def can_reenter_symbol(self, state):
-        if state.orb_reentry_count > self.max_reentries_per_symbol:
-            return False
-
-        return self.should_process_next_after_exit()
 
     def cancel_order(self, order_id, tag):
         if order_id is None:

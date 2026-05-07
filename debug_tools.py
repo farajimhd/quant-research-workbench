@@ -156,6 +156,16 @@ class DebugManager:
                 f"{self.counters['pb_vol']}/"
                 f"{self.counters['pb_same']}"
             ),
+            (
+                f"or={self.counters['or_base']}/"
+                f"{self.counters['or_liq']}/"
+                f"{self.counters['or_atr']}/"
+                f"{self.counters['or_rv']}/"
+                f"{self.counters['or_gap']}/"
+                f"{self.counters['or_shape']}/"
+                f"{self.counters['or_range']}/"
+                f"{self.counters['or_econ']}"
+            ),
             f"d={self.counters['dead']}",
             f"s={self.counters['stale']}",
             f"lt={len(self.leader_tickers)}",
