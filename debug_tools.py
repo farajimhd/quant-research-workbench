@@ -27,13 +27,13 @@ class DebugManager:
         self.exit_tickers = set()
         self.last_summary_date = None
         self.max_console_events_per_day = {
-            "A": 8,
-            "B": 10,
-            "E": 12,
-            "X": 16,
-            "RJ": 12,
-            "D": 8,
-            "W": 8,
+            "A": 0,
+            "B": 0,
+            "E": 4,
+            "X": 4,
+            "RJ": 3,
+            "D": 0,
+            "W": 0,
         }
         self.daily_code_counts = defaultdict(int)
 

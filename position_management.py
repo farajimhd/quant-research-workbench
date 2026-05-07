@@ -137,6 +137,9 @@ class PositionManagementMixin:
             state.entry_failure_last_time = None
             return False
 
+        if not self.has_fast_quote_cadence(state):
+            return True
+
         now = self.algorithm.Time
         last_time = state.entry_failure_last_time
 
@@ -153,6 +156,14 @@ class PositionManagementMixin:
         state.entry_failure_last_time = now
 
         return state.entry_failure_quote_count >= self.entry_failure_confirmations_required
+
+    def has_fast_quote_cadence(self, state):
+        if state.last_quote_time is None or state.previous_quote_time is None:
+            return False
+
+        elapsed = (state.last_quote_time - state.previous_quote_time).total_seconds()
+
+        return 0 < elapsed <= self.entry_failure_fast_quote_max_seconds
 
     def should_exit_for_quote_profit_pullback(self, state, bid, mfe_r, mfe_pct):
         if not getattr(self, "enable_acceleration_pullback_exit", True):

@@ -80,6 +80,7 @@ class SymbolState:
         self.last_ask = None
         self.last_spread_pct = None
         self.last_quote_time = None
+        self.previous_quote_time = None
         self.highest_bid_since_entry = None
         self.lowest_bid_since_entry = None
         self.entry_failure_quote_count = 0
@@ -96,6 +97,7 @@ class SymbolState:
 
         self.last_bid = float(bid)
         self.last_ask = float(ask)
+        self.previous_quote_time = self.last_quote_time
         self.last_quote_time = time
 
         midpoint = (self.last_bid + self.last_ask) / 2.0

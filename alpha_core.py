@@ -76,8 +76,8 @@ class MomentumAlphaCore(
         # =============================================================================
         self.min_minutes_between_same_symbol_entries = 8
         self.reentry_requires_new_leader_high = True
-        self.reentry_extra_margin_pct = 0.004
-        self.max_failed_reentry_r = -0.50
+        self.reentry_extra_margin_pct = 0.010
+        self.max_failed_reentry_r = 0.0
         self.max_failed_trades_before_symbol_cooldown = 2
         self.failed_symbol_cooldown_minutes = 60
 
@@ -103,6 +103,7 @@ class MomentumAlphaCore(
         self.enable_entry_failure_exit = True
         self.entry_failure_buffer_pct = 0.0030
         self.entry_failure_confirmations_required = 2
+        self.entry_failure_fast_quote_max_seconds = 10
         self.entry_failure_confirm_window_seconds = 90
 
         # =============================================================================
@@ -127,7 +128,7 @@ class MomentumAlphaCore(
         # =============================================================================
         # Re-entry Configuration
         # =============================================================================
-        self.max_reentries = 2
+        self.max_reentries = 1
         self.cooldown_minutes = 20
 
         # =============================================================================
