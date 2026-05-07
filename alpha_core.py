@@ -34,6 +34,9 @@ class MomentumAlphaCore(
         self.pullback_support_buffer_pct = 0.006
         self.pullback_reclaim_buffer_pct = 0.001
         self.pullback_max_bars = 30
+        self.reclaim_vs_pullback_volume_multiplier = 1.35
+        self.reclaim_min_runner_volume_fraction = 0.35
+        self.same_failed_pullback_low_tolerance_pct = 0.003
 
         # =============================================================================
         # Price / Volume Filters
@@ -311,6 +314,9 @@ class MomentumAlphaCore(
 
         r = state.pending_exit_r
         reason = state.pending_exit_reason
+        entry_type = state.entry_type
+        failed_pullback_low = state.pullback_low
+        failed_pullback_high = state.leader_high
 
         state.last_exit_time = self.algorithm.Time
         state.last_exit_r = r
@@ -329,10 +335,17 @@ class MomentumAlphaCore(
         state.reset_pending_exit()
         state.reset_trade_fields()
         state.reentry_attempts += 1
+
+        if self.should_block_failed_reclaim(entry_type, reason):
+            state.failed_pullback_low = failed_pullback_low
+            state.failed_pullback_high = failed_pullback_high
+            state.failed_pullback_time = self.algorithm.Time
+
         state.pullback_low = None
         state.pullback_high = state.last_breakout_high
         state.pullback_start_time = None
         state.pullback_ready_time = None
+        state.pullback_avg_volume = None
 
         if state.reentry_attempts > self.max_reentries:
             state.state = MomentumState.COOLDOWN
@@ -343,6 +356,12 @@ class MomentumAlphaCore(
 
     def is_reentry_allowed_after_exit(self, reason, r):
         return True
+
+    def should_block_failed_reclaim(self, entry_type, reason):
+        if entry_type != "PULLBACK_RECLAIM":
+            return False
+
+        return reason in ("ENTRY_FAIL", "EARLY_FAIL", "NO_PROGRESS", "STRUCT_FAIL")
 
     def record_entry_fail(self, state):
         today = self.algorithm.Time.date()

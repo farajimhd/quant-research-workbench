@@ -52,6 +52,13 @@ class LeaderLogicMixin:
         state.pullback_high = float(bar.High)
         state.pullback_start_time = None
         state.pullback_ready_time = None
+        state.pullback_avg_volume = None
+        state.failed_pullback_low = None
+        state.failed_pullback_high = None
+        state.failed_pullback_time = None
+        state.runner_peak_relative_volume = rv
+        state.runner_peak_volume = float(bar.Volume)
+        state.runner_impulse_volume = self.current_impulse_volume(state)
 
         self.debugger.log_abnormal_expansion(
             symbol=symbol,
@@ -123,6 +130,7 @@ class LeaderLogicMixin:
 
             state.pullback_low = low if state.pullback_low is None else min(state.pullback_low, low)
             state.last_pullback_low = state.pullback_low
+            state.pullback_avg_volume = self.current_pullback_avg_volume(state)
 
         if state.pullback_high is None:
             state.pullback_high = high
@@ -183,8 +191,31 @@ class LeaderLogicMixin:
         recent = list(state.volumes)
         pullback_volume = sum(recent[-3:]) / 3.0
         impulse_volume = sum(recent[-8:-3]) / 5.0
+        state.pullback_avg_volume = pullback_volume
 
         return impulse_volume > 0 and pullback_volume <= impulse_volume
+
+    def current_pullback_avg_volume(self, state):
+        if len(state.volumes) == 0:
+            return None
+
+        recent = list(state.volumes)[-3:]
+
+        if len(recent) == 0:
+            return None
+
+        return sum(recent) / float(len(recent))
+
+    def current_impulse_volume(self, state):
+        if len(state.volumes) == 0:
+            return 0.0
+
+        recent = list(state.volumes)[-5:]
+
+        if len(recent) == 0:
+            return 0.0
+
+        return sum(recent) / float(len(recent))
 
     def handle_leader_watch(self, symbol, state, bar):
         price = float(bar.Close)
@@ -230,8 +261,10 @@ class LeaderLogicMixin:
         if state.leader_high is None or high > state.leader_high:
             state.leader_high = high
             self.debugger.log_leader_high(symbol, float(bar.Close), high)
+            self.clear_failed_pullback_if_new_impulse(state)
 
         state.leader_low = low if state.leader_low is None else min(state.leader_low, low)
+        self.update_runner_volume_stats(state, bar)
 
         if self.is_material_new_high(state, high):
             state.last_material_high = high
@@ -261,6 +294,25 @@ class LeaderLogicMixin:
             self.stop_lookback_bars,
             exclude_current=False,
         )
+
+    def update_runner_volume_stats(self, state, bar):
+        rv = self.estimate_relative_volume(state)
+        volume = float(bar.Volume)
+
+        state.runner_peak_relative_volume = max(state.runner_peak_relative_volume or 0.0, rv)
+        state.runner_peak_volume = max(state.runner_peak_volume or 0.0, volume)
+
+        impulse_volume = self.current_impulse_volume(state)
+        state.runner_impulse_volume = max(state.runner_impulse_volume or 0.0, impulse_volume)
+
+    def clear_failed_pullback_if_new_impulse(self, state):
+        if state.failed_pullback_high is None or state.leader_high is None:
+            return
+
+        if state.leader_high >= state.failed_pullback_high * (1.0 + self.material_new_high_pct):
+            state.failed_pullback_low = None
+            state.failed_pullback_high = None
+            state.failed_pullback_time = None
 
     def is_material_new_high(self, state, high):
         if state.last_material_high is None:

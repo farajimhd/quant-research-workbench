@@ -592,6 +592,13 @@ class PositionManagementMixin:
         state.pullback_high = None
         state.pullback_start_time = None
         state.pullback_ready_time = None
+        state.pullback_avg_volume = None
+        state.failed_pullback_low = None
+        state.failed_pullback_high = None
+        state.failed_pullback_time = None
+        state.runner_peak_relative_volume = 0.0
+        state.runner_peak_volume = 0.0
+        state.runner_impulse_volume = 0.0
 
         state.reentry_attempts = 0
         state.reset_pending_entry()

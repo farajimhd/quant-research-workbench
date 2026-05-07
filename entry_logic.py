@@ -133,6 +133,9 @@ class EntryLogicMixin:
         if state.pullback_low is None:
             return False
 
+        if self.is_same_failed_pullback(state):
+            return False
+
         if self.estimate_relative_volume(state) <= self.min_pullback_reclaim_relative_volume:
             return False
 
@@ -162,10 +165,53 @@ class EntryLogicMixin:
         if len(state.volumes) < 6:
             return False
 
-        current = max(float(state.volumes[-1]), float(state.intrabar_volume or 0.0))
+        current = self.current_reclaim_volume(state)
+
+        if current <= 0:
+            return False
+
+        pullback_volume = state.pullback_avg_volume
+
+        if pullback_volume is None or pullback_volume <= 0:
+            pullback_volume = sum(list(state.volumes)[-4:-1]) / 3.0
+
+        if current < pullback_volume * self.reclaim_vs_pullback_volume_multiplier:
+            return False
+
+        runner_reference = max(
+            float(state.runner_peak_volume or 0.0),
+            float(state.runner_impulse_volume or 0.0),
+        )
+
+        if runner_reference > 0:
+            return current >= runner_reference * self.reclaim_min_runner_volume_fraction
+
         baseline = sum(list(state.volumes)[-6:-1]) / 5.0
 
         return baseline > 0 and current >= baseline * self.breakout_volume_multiplier
+
+    def current_reclaim_volume(self, state):
+        if len(state.volumes) == 0:
+            return float(state.intrabar_volume or 0.0)
+
+        return max(float(state.volumes[-1]), float(state.intrabar_volume or 0.0))
+
+    def is_same_failed_pullback(self, state):
+        if state.failed_pullback_low is None or state.pullback_low is None:
+            return False
+
+        if state.pullback_low <= 0:
+            return False
+
+        low_distance = abs(state.pullback_low - state.failed_pullback_low) / state.pullback_low
+
+        if low_distance > self.same_failed_pullback_low_tolerance_pct:
+            return False
+
+        if state.failed_pullback_high is None or state.leader_high is None:
+            return True
+
+        return state.leader_high < state.failed_pullback_high * (1.0 + self.material_new_high_pct)
 
     def indicator_quote_signal(self, state, entry):
         vwap_signal = self.is_vwap_reclaim_quote(state, entry)

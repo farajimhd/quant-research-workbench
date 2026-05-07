@@ -50,6 +50,13 @@ class SymbolState:
         self.pullback_high = None
         self.pullback_start_time = None
         self.pullback_ready_time = None
+        self.pullback_avg_volume = None
+        self.failed_pullback_low = None
+        self.failed_pullback_high = None
+        self.failed_pullback_time = None
+        self.runner_peak_relative_volume = 0.0
+        self.runner_peak_volume = 0.0
+        self.runner_impulse_volume = 0.0
 
         self.entry_price = None
         self.initial_stop_price = None
