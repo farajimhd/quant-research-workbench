@@ -21,8 +21,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         # Universe configuration.
         # ---------------------------------------------------------------------
         self.min_price = 0.75
-        self.max_price = 50.0
-        self.max_float_or_shares = 500_000_000
+        self.max_price = 500.0
         self.min_daily_dollar_volume = 2_000_000
 
         self.UniverseSettings.Resolution = Resolution.Minute
@@ -37,7 +36,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-orb-single-relaxed: one full-cash long ORB, relaxed gap/body/range gates, ORB reject counters",
+            run_label="v-orb-relaxed-profit-cycle: relaxed universe to $500, 3pct profit pocket, rebreak reentry",
         )
 
         self.risk = RiskManager(
@@ -67,21 +66,10 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         selected = []
 
         for f in fundamentals:
-            if not self.IsTradableCommonStock(f):
-                continue
-
             if f.Price is None or f.Price < self.min_price or f.Price > self.max_price:
                 continue
 
             if f.DollarVolume is None or f.DollarVolume < self.min_daily_dollar_volume:
-                continue
-
-            shares = self.GetSharesOutstandingProxy(f)
-
-            if shares is None or shares <= 0:
-                continue
-
-            if shares > self.max_float_or_shares:
                 continue
 
             selected.append(f)
@@ -89,104 +77,6 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         selected = sorted(selected, key=lambda x: x.DollarVolume, reverse=True)
 
         return [f.Symbol for f in selected[:500]]
-
-    def IsTradableCommonStock(self, f) -> bool:
-        """
-        Keep only real operating-company common stocks as much as possible.
-
-        This version avoids direct access to fields that may not exist in the
-        QuantConnect Morningstar SecurityReference object.
-        """
-
-        symbol_text = f.Symbol.Value.upper()
-
-        # -------------------------------------------------------------------------
-        # Hard symbol denylist for ETF / leveraged ETF / fund-like instruments that
-        # repeatedly appeared in our logs.
-        # -------------------------------------------------------------------------
-        blocked_symbols = {
-            "KWEB", "YINN", "CWEB", "NUGT", "JNUG", "GDXU", "AGQ", "SCO",
-            "TNA", "URTY", "DRN", "CONL", "ARKG", "MSOS", "URA",
-        }
-
-        if symbol_text in blocked_symbols:
-            return False
-
-        # -------------------------------------------------------------------------
-        # Suffix-based exclusions for warrants, units, preferreds, and rights.
-        # -------------------------------------------------------------------------
-        blocked_suffixes = [
-            ".U", ".WS", ".WT", ".W", ".P", ".PR", ".R",
-            "-U", "-WS", "-WT", "-W", "-P", "-PR", "-R",
-        ]
-
-        if any(symbol_text.endswith(suffix) for suffix in blocked_suffixes):
-            return False
-
-        # -------------------------------------------------------------------------
-        # Use attributes only if they actually exist.
-        # -------------------------------------------------------------------------
-        security_reference = getattr(f, "SecurityReference", None)
-
-        if security_reference is not None:
-            security_type = getattr(security_reference, "SecurityType", None)
-
-            if security_type is not None:
-                security_type_text = str(security_type).upper()
-
-                # -----------------------------------------------------------------
-                # Common stock is commonly represented as ST00000001.
-                # If the field exists and says something else, reject it.
-                # -----------------------------------------------------------------
-                if security_type_text and security_type_text != "ST00000001":
-                    return False
-
-            is_depositary_receipt = getattr(
-                security_reference,
-                "IsDepositaryReceipt",
-                False,
-            )
-
-            if bool(is_depositary_receipt):
-                return False
-
-            is_preferred_stock = getattr(
-                security_reference,
-                "IsPreferredStock",
-                False,
-            )
-
-            if bool(is_preferred_stock):
-                return False
-
-        return True
-    
-
-    def GetSharesOutstandingProxy(self, f):
-        """
-        QuantConnect may not expose public float directly for every symbol.
-
-        This uses recent basic average shares as a practical proxy. If you later
-        add a custom float dataset, replace this method only.
-        """
-
-        try:
-            shares = f.EarningReports.BasicAverageShares.ThreeMonths
-
-            if shares is not None and shares > 0:
-                return float(shares)
-        except Exception:
-            pass
-
-        try:
-            shares = f.EarningReports.BasicAverageShares.TwelveMonths
-
-            if shares is not None and shares > 0:
-                return float(shares)
-        except Exception:
-            pass
-
-        return None
 
     # =========================================================================
     # Security Lifecycle
