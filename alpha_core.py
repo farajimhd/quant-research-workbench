@@ -98,8 +98,18 @@ class MomentumAlphaCore(
         self.min_progress_pct = 0.0
 
         # =============================================================================
+        # Fast Breakout Failure Exit
+        # =============================================================================
+        self.enable_entry_failure_exit = True
+        self.entry_failure_buffer_pct = 0.0015
+
+        # =============================================================================
         # Profit Protection
         # =============================================================================
+        self.enable_acceleration_pullback_exit = True
+        self.acceleration_min_mfe_pct = 0.02
+        self.acceleration_min_mfe_r = 1.0
+        self.acceleration_pullback_giveback_pct = 0.05
         self.move_stop_to_be_at_r = 1.0
         self.protect_after_mfe_r = 1.0
         self.protect_after_mfe_pct = 0.02

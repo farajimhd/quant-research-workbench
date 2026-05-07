@@ -11,9 +11,11 @@ class PositionManagementMixin:
             return
 
         price = float(bar.Close)
+        high = float(bar.High)
+        low = float(bar.Low)
 
-        state.highest_since_entry = max(state.highest_since_entry, price)
-        state.lowest_since_entry = min(state.lowest_since_entry, price)
+        state.highest_since_entry = max(state.highest_since_entry, high)
+        state.lowest_since_entry = min(state.lowest_since_entry, low)
 
         risk = state.entry_price - state.initial_stop_price
 
@@ -23,6 +25,21 @@ class PositionManagementMixin:
         r = (price - state.entry_price) / risk
         mfe_r = (state.highest_since_entry - state.entry_price) / risk
         mfe_pct = (state.highest_since_entry - state.entry_price) / state.entry_price
+
+        if self.should_exit_for_acceleration_pullback(state, price, mfe_r, mfe_pct):
+            self.exit_to_pullback_watch(
+                symbol,
+                state,
+                price,
+                r,
+                "PROFIT_PULLBACK",
+                force_limit=True,
+            )
+            return
+
+        if self.should_exit_for_entry_failure(state, low, mfe_r, mfe_pct):
+            self.exit_to_pullback_watch(symbol, state, price, r, "ENTRY_FAIL", force_limit=True)
+            return
 
         self.update_profit_protection_stop(state, r, mfe_r, mfe_pct)
 
@@ -82,6 +99,41 @@ class PositionManagementMixin:
 
         return r < self.min_progress_r and pnl_pct < self.min_progress_pct
 
+    def should_exit_for_entry_failure(self, state, low, mfe_r, mfe_pct):
+        if not getattr(self, "enable_entry_failure_exit", True):
+            return False
+
+        if state.entry_price is None:
+            return False
+
+        if mfe_pct >= self.acceleration_min_mfe_pct or mfe_r >= self.acceleration_min_mfe_r:
+            return False
+
+        failure_level = state.entry_price * (1.0 - self.entry_failure_buffer_pct)
+
+        return low <= failure_level
+
+    def should_exit_for_acceleration_pullback(self, state, price, mfe_r, mfe_pct):
+        if not getattr(self, "enable_acceleration_pullback_exit", True):
+            return False
+
+        if state.entry_price is None or state.highest_since_entry is None:
+            return False
+
+        if mfe_pct < self.acceleration_min_mfe_pct and mfe_r < self.acceleration_min_mfe_r:
+            return False
+
+        move = state.highest_since_entry - state.entry_price
+
+        if move <= 0:
+            return False
+
+        pullback_level = state.highest_since_entry - (
+            move * self.acceleration_pullback_giveback_pct
+        )
+
+        return price <= pullback_level
+
     def is_true_structure_failure(self, state, bar):
         if state.last_pullback_low is None:
             return False
@@ -110,7 +162,7 @@ class PositionManagementMixin:
 
         return stop
 
-    def close_position_now(self, symbol, reason):
+    def close_position_now(self, symbol, reason, force_limit=False):
         quantity = int(self.algorithm.Portfolio[symbol].Quantity)
 
         if quantity == 0:
@@ -124,7 +176,7 @@ class PositionManagementMixin:
             self.debugger.c_log("RX", symbol, f"skip_exit_no_quote|reason={reason}")
             return None
 
-        if MarketTools.is_regular_market_order_safe(
+        if not force_limit and MarketTools.is_regular_market_order_safe(
             self.algorithm,
             symbol,
             self.regular_market_order_close_buffer_minutes,
@@ -150,7 +202,7 @@ class PositionManagementMixin:
             tag=f"{reason}|ext_limit",
         )
 
-    def exit_to_pullback_watch(self, symbol, state, price, r, reason):
+    def exit_to_pullback_watch(self, symbol, state, price, r, reason, force_limit=False):
         state.last_breakout_high = state.highest_since_entry
 
         state.last_pullback_low = MarketTools.lowest_low(
@@ -167,7 +219,7 @@ class PositionManagementMixin:
             extra=f"rebreak={state.last_breakout_high:.2f}",
         )
 
-        ticket = self.close_position_now(symbol, reason)
+        ticket = self.close_position_now(symbol, reason, force_limit=force_limit)
 
         if ticket is None:
             return
