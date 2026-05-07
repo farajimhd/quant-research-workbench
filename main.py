@@ -4,7 +4,6 @@ from alpha_core import MomentumAlphaCore
 from debug_tools import DebugManager
 from risk_tools import RiskManager
 from state import SymbolState
-from datetime import timedelta
 
 
 # =============================================================================
@@ -26,7 +25,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         self.max_float_or_shares = 500_000_000
         self.min_daily_dollar_volume = 2_000_000
 
-        self.UniverseSettings.Resolution = Resolution.Second
+        self.UniverseSettings.Resolution = Resolution.Minute
         self.UniverseSettings.ExtendedMarketHours = True
         self.AddUniverse(self.UniverseSelection)
 
@@ -58,8 +57,6 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         )
 
         self.symbol_states = {}
-        self.minute_consolidators = {}
-
         self.SetBenchmark("SPY")
 
     # =========================================================================
@@ -201,7 +198,6 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
 
             if symbol not in self.symbol_states:
                 self.symbol_states[symbol] = SymbolState(symbol)
-                self.add_minute_consolidator(symbol)
 
         for security in changes.RemovedSecurities:
             symbol = security.Symbol
@@ -209,7 +205,6 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             if self.Portfolio[symbol].Invested:
                 self.Liquidate(symbol, "Removed from universe")
 
-            self.remove_minute_consolidator(symbol)
             self.symbol_states.pop(symbol, None)
 
     # =========================================================================
@@ -219,56 +214,19 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
     def OnData(self, data):
         self.debugger.emit_daily_summary_if_needed()
 
-        active_symbols = set()
-
-        for symbol in data.Bars.Keys:
-            active_symbols.add(symbol)
-
-        for symbol in data.QuoteBars.Keys:
-            active_symbols.add(symbol)
-
-        for symbol in active_symbols:
-            state = self.symbol_states.get(symbol)
-
-            if state is None:
-                continue
-
-            if data.Bars.ContainsKey(symbol):
-                state.update_intrabar(data.Bars[symbol])
-
+        for symbol, state in list(self.symbol_states.items()):
             self.UpdateQuoteSnapshot(symbol, state, data)
 
             self.core.process_quote(symbol, state)
 
-    def add_minute_consolidator(self, symbol):
-        if symbol in self.minute_consolidators:
-            return
+            if not data.Bars.ContainsKey(symbol):
+                continue
 
-        consolidator = TradeBarConsolidator(timedelta(minutes=1))
+            bar = data.Bars[symbol]
+            state.update_intrabar(bar)
+            state.update_bar(bar)
 
-        def on_minute_bar(sender, bar, symbol=symbol):
-            self.OnMinuteBar(symbol, bar)
-
-        consolidator.DataConsolidated += on_minute_bar
-        self.SubscriptionManager.AddConsolidator(symbol, consolidator)
-        self.minute_consolidators[symbol] = consolidator
-
-    def remove_minute_consolidator(self, symbol):
-        consolidator = self.minute_consolidators.pop(symbol, None)
-
-        if consolidator is None:
-            return
-
-        self.SubscriptionManager.RemoveConsolidator(symbol, consolidator)
-
-    def OnMinuteBar(self, symbol, bar):
-        state = self.symbol_states.get(symbol)
-
-        if state is None:
-            return
-
-        state.update_bar(bar)
-        self.core.process_symbol(symbol, state, bar)
+            self.core.process_symbol(symbol, state, bar)
 
     def UpdateQuoteSnapshot(self, symbol, state, data):
         bid = None
