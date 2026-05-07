@@ -160,7 +160,7 @@ class EntryLogicMixin:
 
         quality = self.score_entry_setup(symbol, state, bar, entry, stop, spread, breakout_high)
 
-        if not self.should_trade_quality(state, quality):
+        if not self.should_trade_quality(symbol, state, quality):
             self.debugger.count_reject("quality")
             state.state = self.entry_watch_state(state)
             return
@@ -310,9 +310,11 @@ class EntryLogicMixin:
             "starter_fraction": self.quality_starter_fraction(bucket, entry_fails),
             "add_fraction": self.quality_add_fraction(bucket, entry_fails),
             "entry_fails": entry_fails,
+            "spread_to_risk": spread_to_risk,
+            "stop_pct": risk_pct,
         }
 
-    def should_trade_quality(self, state, quality):
+    def should_trade_quality(self, symbol, state, quality):
         entry_fails = quality["entry_fails"]
 
         if entry_fails >= self.max_entry_fails_per_symbol_day:
@@ -321,7 +323,27 @@ class EntryLogicMixin:
         if quality["bucket"] == "C" and entry_fails == 0:
             return False
 
+        if self.is_opening_quality_guard_active(symbol):
+            if quality["score"] < self.open_quality_min_score:
+                return False
+
+            if quality["spread_to_risk"] > self.open_quality_max_spread_to_risk:
+                return False
+
+            if quality["stop_pct"] > self.open_quality_max_stop_pct:
+                return False
+
         return True
+
+    def is_opening_quality_guard_active(self, symbol):
+        if not MarketTools.is_regular_market_open(self.algorithm, symbol):
+            return False
+
+        now = self.algorithm.Time
+        minutes = now.hour * 60 + now.minute
+        regular_open_minutes = 9 * 60 + 30
+
+        return regular_open_minutes <= minutes < regular_open_minutes + self.open_quality_guard_minutes
 
     def entry_fail_count_today(self, state):
         if state.entry_fail_date != self.algorithm.Time.date():
