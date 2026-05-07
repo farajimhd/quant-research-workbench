@@ -23,7 +23,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         # ---------------------------------------------------------------------
         self.min_price = 0.75
         self.max_price = 50.0
-        self.max_float_or_shares = 50_000_000
+        self.max_float_or_shares = 500_000_000
         self.min_daily_dollar_volume = 2_000_000
 
         self.UniverseSettings.Resolution = Resolution.Second
