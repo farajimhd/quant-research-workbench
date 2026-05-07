@@ -76,10 +76,41 @@ class SymbolState:
         self.pending_exit_r = None
         self.pending_exit_time = None
 
+        self.last_bid = None
+        self.last_ask = None
+        self.last_spread_pct = None
+        self.last_quote_time = None
+        self.highest_bid_since_entry = None
+        self.lowest_bid_since_entry = None
+
     def update_bar(self, bar: TradeBar):
         self.bars.append(bar)
         self.prices.append(float(bar.Close))
         self.volumes.append(float(bar.Volume))
+
+    def update_quote(self, bid: float, ask: float, time):
+        if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+            return
+
+        self.last_bid = float(bid)
+        self.last_ask = float(ask)
+        self.last_quote_time = time
+
+        midpoint = (self.last_bid + self.last_ask) / 2.0
+
+        if midpoint > 0:
+            self.last_spread_pct = (self.last_ask - self.last_bid) / midpoint
+
+        if self.entry_price is not None:
+            if self.highest_bid_since_entry is None:
+                self.highest_bid_since_entry = self.last_bid
+            else:
+                self.highest_bid_since_entry = max(self.highest_bid_since_entry, self.last_bid)
+
+            if self.lowest_bid_since_entry is None:
+                self.lowest_bid_since_entry = self.last_bid
+            else:
+                self.lowest_bid_since_entry = min(self.lowest_bid_since_entry, self.last_bid)
 
     def has_window(self, bars: int) -> bool:
         return len(self.prices) >= bars
@@ -110,6 +141,8 @@ class SymbolState:
 
         self.highest_since_entry = None
         self.lowest_since_entry = None
+        self.highest_bid_since_entry = None
+        self.lowest_bid_since_entry = None
 
         self.scout_reduced = False
         self.slow_reduced = False

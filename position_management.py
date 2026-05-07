@@ -6,6 +6,42 @@ from state import MomentumState
 
 class PositionManagementMixin:
 
+    def manage_position_quote(self, symbol, state):
+        if state.pending_exit_order_id is not None:
+            return
+
+        if state.entry_price is None or state.initial_stop_price is None:
+            return
+
+        bid = state.last_bid
+
+        if bid is None or bid <= 0:
+            return
+
+        risk = state.entry_price - state.initial_stop_price
+
+        if risk <= 0:
+            return
+
+        high_bid = state.highest_bid_since_entry or bid
+        mfe_r = (high_bid - state.entry_price) / risk
+        mfe_pct = (high_bid - state.entry_price) / state.entry_price
+        r = (bid - state.entry_price) / risk
+
+        if self.should_exit_for_quote_profit_pullback(state, bid, mfe_r, mfe_pct):
+            self.exit_to_pullback_watch(
+                symbol,
+                state,
+                bid,
+                r,
+                "PROFIT_PULLBACK",
+                force_limit=True,
+            )
+            return
+
+        if self.should_exit_for_quote_entry_failure(state, bid, mfe_r, mfe_pct):
+            self.exit_to_pullback_watch(symbol, state, bid, r, "ENTRY_FAIL", force_limit=True)
+
     def manage_position(self, symbol, state, bar):
         if state.pending_exit_order_id is not None:
             return
@@ -25,21 +61,6 @@ class PositionManagementMixin:
         r = (price - state.entry_price) / risk
         mfe_r = (state.highest_since_entry - state.entry_price) / risk
         mfe_pct = (state.highest_since_entry - state.entry_price) / state.entry_price
-
-        if self.should_exit_for_acceleration_pullback(state, price, mfe_r, mfe_pct):
-            self.exit_to_pullback_watch(
-                symbol,
-                state,
-                price,
-                r,
-                "PROFIT_PULLBACK",
-                force_limit=True,
-            )
-            return
-
-        if self.should_exit_for_entry_failure(state, low, mfe_r, mfe_pct):
-            self.exit_to_pullback_watch(symbol, state, price, r, "ENTRY_FAIL", force_limit=True)
-            return
 
         self.update_profit_protection_stop(state, r, mfe_r, mfe_pct)
 
@@ -99,7 +120,7 @@ class PositionManagementMixin:
 
         return r < self.min_progress_r and pnl_pct < self.min_progress_pct
 
-    def should_exit_for_entry_failure(self, state, low, mfe_r, mfe_pct):
+    def should_exit_for_quote_entry_failure(self, state, bid, mfe_r, mfe_pct):
         if not getattr(self, "enable_entry_failure_exit", True):
             return False
 
@@ -111,28 +132,28 @@ class PositionManagementMixin:
 
         failure_level = state.entry_price * (1.0 - self.entry_failure_buffer_pct)
 
-        return low <= failure_level
+        return bid <= failure_level
 
-    def should_exit_for_acceleration_pullback(self, state, price, mfe_r, mfe_pct):
+    def should_exit_for_quote_profit_pullback(self, state, bid, mfe_r, mfe_pct):
         if not getattr(self, "enable_acceleration_pullback_exit", True):
             return False
 
-        if state.entry_price is None or state.highest_since_entry is None:
+        if state.entry_price is None or state.highest_bid_since_entry is None:
             return False
 
-        if mfe_pct < self.acceleration_min_mfe_pct and mfe_r < self.acceleration_min_mfe_r:
+        if mfe_pct < self.acceleration_min_mfe_pct or mfe_r < self.acceleration_min_mfe_r:
             return False
 
-        move = state.highest_since_entry - state.entry_price
+        move = state.highest_bid_since_entry - state.entry_price
 
         if move <= 0:
             return False
 
-        pullback_level = state.highest_since_entry - (
+        pullback_level = state.highest_bid_since_entry - (
             move * self.acceleration_pullback_giveback_pct
         )
 
-        return price <= pullback_level
+        return bid <= pullback_level
 
     def is_true_structure_failure(self, state, bar):
         if state.last_pullback_low is None:

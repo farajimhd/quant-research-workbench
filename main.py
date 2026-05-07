@@ -212,15 +212,42 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
     # =========================================================================
 
     def OnData(self, data):
+        self.debugger.emit_daily_summary_if_needed()
+
         for symbol, state in list(self.symbol_states.items()):
+            self.UpdateQuoteSnapshot(symbol, state, data)
+
+            self.core.process_quote(symbol, state)
+
             if not data.Bars.ContainsKey(symbol):
                 continue
+
             # Allow regular + extended hours.
             # Liquidity/spread filters decide whether the symbol is tradable.
             bar = data.Bars[symbol]
             state.update_bar(bar)
 
             self.core.process_symbol(symbol, state, bar)
+
+    def UpdateQuoteSnapshot(self, symbol, state, data):
+        bid = None
+        ask = None
+
+        if data.QuoteBars.ContainsKey(symbol):
+            quote = data.QuoteBars[symbol]
+
+            if quote.Bid is not None:
+                bid = float(quote.Bid.Close)
+
+            if quote.Ask is not None:
+                ask = float(quote.Ask.Close)
+
+        if bid is None or ask is None:
+            security = self.Securities[symbol]
+            bid = float(security.BidPrice)
+            ask = float(security.AskPrice)
+
+        state.update_quote(bid, ask, self.Time)
 
     # =========================================================================
     # Order Event Handler

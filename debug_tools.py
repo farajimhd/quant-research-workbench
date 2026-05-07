@@ -1,4 +1,5 @@
 from AlgorithmImports import *
+from collections import defaultdict
 import json
 
 
@@ -20,12 +21,29 @@ class DebugManager:
         self.enable_object_store = enable_object_store
         self.object_store_key = object_store_key
         self.events = []
+        self.counters = defaultdict(int)
+        self.leader_tickers = set()
+        self.entry_tickers = set()
+        self.exit_tickers = set()
+        self.last_summary_date = None
+        self.max_console_events_per_day = {
+            "A": 18,
+            "B": 18,
+            "E": 30,
+            "X": 40,
+            "RJ": 20,
+        }
+        self.daily_code_counts = defaultdict(int)
 
     def c_log(self, code: str, symbol: Symbol, message: str):
         ticker = symbol.Value if symbol is not None else "-"
-        text = f"{code}|{self.algorithm.Time.strftime('%m-%d %H:%M')}|{ticker}|{message}"
+        text = f"{code}|{ticker}|{message}"
 
-        if self.enable_console:
+        self.daily_code_counts[code] += 1
+        limit = self.max_console_events_per_day.get(code)
+        emit_console = limit is None or self.daily_code_counts[code] <= limit
+
+        if self.enable_console and emit_console:
             self.algorithm.Debug(text[:190])
 
         if self.enable_object_store:
@@ -38,25 +56,85 @@ class DebugManager:
                 }
             )
 
+    def count(self, key: str, symbol=None):
+        self.counters[key] += 1
+
+        if symbol is None:
+            return
+
+        ticker = symbol.Value if hasattr(symbol, "Value") else str(symbol)
+
+        if key.startswith("lead"):
+            self.leader_tickers.add(ticker)
+        elif key.startswith("entry"):
+            self.entry_tickers.add(ticker)
+        elif key.startswith("exit"):
+            self.exit_tickers.add(ticker)
+
+    def count_reject(self, reason: str):
+        self.counters[f"rj_{reason}"] += 1
+
+    def emit_daily_summary_if_needed(self):
+        current_date = self.algorithm.Time.date()
+
+        if self.last_summary_date is None:
+            self.last_summary_date = current_date
+            return
+
+        if current_date == self.last_summary_date:
+            return
+
+        self.log_daily_summary()
+        self.reset_daily()
+
+    def reset_daily(self):
+        self.counters.clear()
+        self.leader_tickers.clear()
+        self.entry_tickers.clear()
+        self.exit_tickers.clear()
+        self.daily_code_counts.clear()
+        self.last_summary_date = self.algorithm.Time.date()
+
+    def log_daily_summary(self):
+        parts = [
+            f"lead={self.counters['lead']}",
+            f"brk={self.counters['breakout']}",
+            f"ent={self.counters['entry_submit']}",
+            f"x={self.counters['exit_signal']}",
+            f"xEF={self.counters['exit_ENTRY_FAIL']}",
+            f"xPB={self.counters['exit_PROFIT_PULLBACK']}",
+            f"xST={self.counters['exit_STOP']}",
+            f"rSp={self.counters['rj_spread']}",
+            f"rExp={self.counters['rj_not_explosive']}",
+            f"rQ={self.counters['rj_no_quote']}",
+            f"lt={len(self.leader_tickers)}",
+            f"et={len(self.entry_tickers)}",
+        ]
+
+        self.c_log("S", None, "|".join(parts))
+
     def log_abnormal_expansion(self, symbol, price, move, rel_volume, spread, volume, high):
         self.c_log(
             "A",
             symbol,
-            f"p={price:.2f}|mv={move*100:.1f}|rv={rel_volume:.1f}|sp={spread*100:.2f}|v={int(volume)}|hi={high:.2f}",
+            f"p={price:.2f}|mv={move*100:.1f}|rv={rel_volume:.1f}|sp={spread*100:.2f}",
         )
+        self.count("lead", symbol)
 
     def log_leader_high(self, symbol, price, high):
-        self.c_log("H", symbol, f"p={price:.2f}|hi={high:.2f}")
+        return
 
     def log_breakout_ready(self, symbol, price, level):
         self.c_log("B", symbol, f"p={price:.2f}|lvl={level:.2f}")
+        self.count("breakout", symbol)
 
     def log_entry(self, symbol, entry, stop, risk, quantity, cash, breakout_high):
         self.c_log(
             "E",
             symbol,
-            f"p={entry:.2f}|sl={stop:.2f}|r={risk:.2f}|q={quantity}|bh={breakout_high:.2f}|cash={cash:.0f}",
+            f"p={entry:.2f}|sl={stop:.2f}|q={quantity}|bh={breakout_high:.2f}",
         )
+        self.count("entry_submit", symbol)
 
     def log_add(self, symbol, price, quantity, add_count):
         self.c_log("G", symbol, f"add={add_count}|p={price:.2f}|q={quantity}")
@@ -64,6 +142,8 @@ class DebugManager:
     def log_exit(self, symbol, reason, price, r_multiple, extra=""):
         suffix = f"|{extra}" if extra else ""
         self.c_log("X", symbol, f"{reason}|p={price:.2f}|R={r_multiple:.2f}{suffix}")
+        self.count("exit_signal", symbol)
+        self.count(f"exit_{reason}", symbol)
 
     def log_reentry_watch(self, symbol, level):
         self.c_log("W", symbol, f"watch_rebreak|lvl={level:.2f}")
@@ -72,16 +152,13 @@ class DebugManager:
         self.c_log("D", symbol, f"{reason}|p={price:.2f}")
 
     def log_fill(self, order_event: OrderEvent):
-        direction = "B" if order_event.Direction == OrderDirection.Buy else "S"
-        self.c_log(
-            "F",
-            order_event.Symbol,
-            f"{direction}|q={order_event.FillQuantity}|px={order_event.FillPrice:.2f}",
-        )
+        return
 
     def flush(self):
         if not self.enable_object_store:
             return
+
+        self.log_daily_summary()
 
         payload = json.dumps(self.events)
         self.algorithm.ObjectStore.Save(self.object_store_key, payload)

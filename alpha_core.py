@@ -101,15 +101,15 @@ class MomentumAlphaCore(
         # Fast Breakout Failure Exit
         # =============================================================================
         self.enable_entry_failure_exit = True
-        self.entry_failure_buffer_pct = 0.0015
+        self.entry_failure_buffer_pct = 0.0030
 
         # =============================================================================
         # Profit Protection
         # =============================================================================
         self.enable_acceleration_pullback_exit = True
-        self.acceleration_min_mfe_pct = 0.02
+        self.acceleration_min_mfe_pct = 0.03
         self.acceleration_min_mfe_r = 1.0
-        self.acceleration_pullback_giveback_pct = 0.05
+        self.acceleration_pullback_giveback_pct = 0.25
         self.move_stop_to_be_at_r = 1.0
         self.protect_after_mfe_r = 1.0
         self.protect_after_mfe_pct = 0.02
@@ -163,6 +163,10 @@ class MomentumAlphaCore(
         elif state.state == MomentumState.STALE:
             self.handle_stale_leader(symbol, state, bar)
 
+    def process_quote(self, symbol, state):
+        if state.state == MomentumState.IN_POSITION:
+            self.manage_position_quote(symbol, state)
+
     def handle_order_event(self, symbol, state, order_event):
         if order_event.OrderId == state.pending_entry_order_id:
             self.handle_entry_fill(symbol, state, order_event)
@@ -209,6 +213,8 @@ class MomentumAlphaCore(
 
         state.highest_since_entry = fill_price
         state.lowest_since_entry = fill_price
+        state.highest_bid_since_entry = state.last_bid or fill_price
+        state.lowest_bid_since_entry = state.last_bid or fill_price
 
         state.scout_reduced = False
         state.slow_reduced = False
@@ -225,7 +231,7 @@ class MomentumAlphaCore(
         self.debugger.c_log(
             "OK",
             symbol,
-            f"filled_entry|p={fill_price:.2f}|sl={stop:.2f}|risk={risk_pct * 100:.2f}%|q={quantity}",
+            f"ef|p={fill_price:.2f}|sl={stop:.2f}|r={risk_pct * 100:.1f}|q={quantity}",
         )
 
     def handle_exit_fill(self, symbol, state, order_event):

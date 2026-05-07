@@ -8,22 +8,22 @@ class EntryLogicMixin:
 
     def try_enter(self, symbol, state, bar):
         if not self.can_enter_symbol(state):
-            self.debugger.c_log("RJ", symbol, "entry_throttle")
+            self.debugger.count_reject("cool")
             state.state = MomentumState.LEADER_WATCH
             return
 
         if not self.is_entry_allowed_now(symbol):
-            self.debugger.c_log("RJ", symbol, "entry_market_closed")
+            self.debugger.count_reject("market")
             state.state = MomentumState.LEADER_WATCH
             return
 
         if not self.has_marketable_quote(symbol):
-            self.debugger.c_log("RJ", symbol, "entry_not_marketable")
+            self.debugger.count_reject("no_quote")
             state.state = MomentumState.LEADER_WATCH
             return
 
         if not self.is_explosive_breakout_candidate(state, bar):
-            self.debugger.c_log("RJ", symbol, "not_explosive_now")
+            self.debugger.count_reject("not_explosive")
             state.state = MomentumState.LEADER_WATCH
             return
 
@@ -38,6 +38,7 @@ class EntryLogicMixin:
                 symbol,
                 f"spread|sp={spread * 100:.2f}|max={max_spread * 100:.2f}|rv={rv:.1f}|p={entry:.2f}",
             )
+            self.debugger.count_reject("spread")
             state.state = MomentumState.LEADER_WATCH
             return
 
@@ -61,6 +62,7 @@ class EntryLogicMixin:
                 symbol,
                 f"stop_none|p={entry:.2f}|low={recent_low:.2f}|sd={stop_distance_pct * 100:.2f}|max={self.hard_max_stop_pct * 100:.2f}",
             )
+            self.debugger.count_reject("stop")
             state.state = MomentumState.LEADER_WATCH
             return
 
@@ -73,6 +75,7 @@ class EntryLogicMixin:
                 symbol,
                 f"bad_risk|p={entry:.2f}|sl={stop:.2f}|risk={risk:.4f}",
             )
+            self.debugger.count_reject("risk")
             state.state = MomentumState.LEADER_WATCH
             return
 
@@ -84,6 +87,7 @@ class EntryLogicMixin:
                 symbol,
                 f"qty_zero|p={entry:.2f}|sl={stop:.2f}|risk={risk:.2f}|cash={self.algorithm.Portfolio.Cash:.0f}",
             )
+            self.debugger.count_reject("qty")
             state.state = MomentumState.LEADER_WATCH
             return
 
@@ -106,7 +110,7 @@ class EntryLogicMixin:
         ticket = self.submit_entry_order(symbol, quantity)
 
         if ticket is None:
-            self.debugger.c_log("RJ", symbol, "entry_order_rejected")
+            self.debugger.count_reject("order")
             state.state = MomentumState.LEADER_WATCH
             return
 
@@ -123,7 +127,7 @@ class EntryLogicMixin:
         self.debugger.c_log(
             "OK",
             symbol,
-            f"entry_submitted|p={entry:.2f}|sl={stop:.2f}|risk={risk_pct * 100:.2f}%|q={quantity}|oid={ticket.OrderId}",
+            f"es|p={entry:.2f}|sl={stop:.2f}|q={quantity}",
         )
 
     def calculate_dynamic_chart_stop(self, state, entry):
