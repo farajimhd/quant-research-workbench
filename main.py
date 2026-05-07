@@ -232,6 +232,13 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
 
         self.debugger.log_fill(order_event)
 
+        state = self.symbol_states.get(order_event.Symbol)
+
+        if state is None:
+            return
+
+        self.core.handle_order_event(order_event.Symbol, state, order_event)
+
     # =========================================================================
     # End of Algorithm
     # =========================================================================

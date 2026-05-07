@@ -103,34 +103,27 @@ class EntryLogicMixin:
             breakout_high=breakout_high,
         )
 
-        order_submitted = self.submit_entry_order(symbol, quantity)
+        ticket = self.submit_entry_order(symbol, quantity)
 
-        if not order_submitted:
+        if ticket is None:
             self.debugger.c_log("RJ", symbol, "entry_order_rejected")
             state.state = MomentumState.LEADER_WATCH
             return
 
-        state.entry_price = entry
-        state.initial_stop_price = stop
-        state.stop_price = stop
-        state.quantity = quantity
+        state.pending_entry_order_id = ticket.OrderId
+        state.pending_entry_signal_price = entry
+        state.pending_entry_stop_price = stop
+        state.pending_entry_quantity = quantity
+        state.pending_entry_time = self.algorithm.Time
+        state.state = MomentumState.PENDING_ENTRY
 
-        state.highest_since_entry = entry
-        state.lowest_since_entry = entry
-
-        state.scout_reduced = False
-        state.slow_reduced = False
-        state.soft_failure_reduced = False
-        state.stop_moved_to_breakeven = False
-
-        state.entry_time = self.algorithm.Time
-        state.last_entry_time = self.algorithm.Time
-        state.state = MomentumState.IN_POSITION
+        if ticket.Status == OrderStatus.Filled:
+            self.handle_entry_ticket_fill(symbol, state, ticket)
 
         self.debugger.c_log(
             "OK",
             symbol,
-            f"entered|p={entry:.2f}|sl={stop:.2f}|risk={risk_pct * 100:.2f}%|q={quantity}",
+            f"entry_submitted|p={entry:.2f}|sl={stop:.2f}|risk={risk_pct * 100:.2f}%|q={quantity}|oid={ticket.OrderId}",
         )
 
     def calculate_dynamic_chart_stop(self, state, entry):
@@ -219,22 +212,23 @@ class EntryLogicMixin:
     def submit_entry_order(self, symbol, quantity):
         tag = "leader explosive breakout entry"
 
-        if MarketTools.is_regular_market_open(self.algorithm, symbol):
-            self.algorithm.MarketOrder(symbol, quantity, tag=tag)
-            return True
+        if MarketTools.is_regular_market_order_safe(
+            self.algorithm,
+            symbol,
+            self.regular_market_order_close_buffer_minutes,
+        ):
+            return self.algorithm.MarketOrder(symbol, quantity, tag=tag)
 
         bid, ask = MarketTools.bid_ask(self.algorithm, symbol)
 
         if bid is None or ask is None:
-            return False
+            return None
 
         limit_price = ask * (1.0 + self.extended_hours_limit_buffer_pct)
 
-        self.algorithm.LimitOrder(
+        return self.algorithm.LimitOrder(
             symbol,
             quantity,
             limit_price,
             tag=f"{tag}|ext_limit",
         )
-
-        return True

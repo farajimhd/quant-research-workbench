@@ -11,6 +11,8 @@ class MomentumState(Enum):
     PULLBACK_WATCH = 5
     STALE = 6
     COOLDOWN = 7
+    PENDING_ENTRY = 8
+    PENDING_EXIT = 9
 
 
 class SymbolState:
@@ -63,6 +65,17 @@ class SymbolState:
         self.failed_trade_count = 0
         self.last_failed_trade_time = None
 
+        self.pending_entry_order_id = None
+        self.pending_entry_signal_price = None
+        self.pending_entry_stop_price = None
+        self.pending_entry_quantity = 0
+        self.pending_entry_time = None
+
+        self.pending_exit_order_id = None
+        self.pending_exit_reason = None
+        self.pending_exit_r = None
+        self.pending_exit_time = None
+
     def update_bar(self, bar: TradeBar):
         self.bars.append(bar)
         self.prices.append(float(bar.Close))
@@ -105,3 +118,16 @@ class SymbolState:
 
         self.add_count = 0
         self.entry_time = None
+
+    def reset_pending_entry(self):
+        self.pending_entry_order_id = None
+        self.pending_entry_signal_price = None
+        self.pending_entry_stop_price = None
+        self.pending_entry_quantity = 0
+        self.pending_entry_time = None
+
+    def reset_pending_exit(self):
+        self.pending_exit_order_id = None
+        self.pending_exit_reason = None
+        self.pending_exit_r = None
+        self.pending_exit_time = None

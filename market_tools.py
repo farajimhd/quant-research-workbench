@@ -63,6 +63,21 @@ class MarketTools:
         )
 
     @staticmethod
+    def is_regular_market_order_safe(
+        algorithm: QCAlgorithm,
+        symbol: Symbol,
+        close_buffer_minutes: int,
+    ) -> bool:
+        if not MarketTools.is_regular_market_open(algorithm, symbol):
+            return False
+
+        now = algorithm.Time
+        minutes = now.hour * 60 + now.minute
+        market_close_minutes = 16 * 60
+
+        return minutes < market_close_minutes - close_buffer_minutes
+
+    @staticmethod
     def highest_high(state, bars: int, exclude_current: bool = True) -> float:
         if len(state.bars) < 2:
             return 0.0

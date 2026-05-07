@@ -7,6 +7,9 @@ from state import MomentumState
 class PositionManagementMixin:
 
     def manage_position(self, symbol, state, bar):
+        if state.pending_exit_order_id is not None:
+            return
+
         price = float(bar.Close)
 
         state.highest_since_entry = max(state.highest_since_entry, price)
@@ -111,40 +114,41 @@ class PositionManagementMixin:
         quantity = int(self.algorithm.Portfolio[symbol].Quantity)
 
         if quantity == 0:
-            return False
+            return None
 
         if not self.is_exit_allowed_now(symbol):
             self.debugger.c_log("RX", symbol, f"skip_exit_market_closed|reason={reason}")
-            return False
+            return None
 
         if not self.has_marketable_quote(symbol):
             self.debugger.c_log("RX", symbol, f"skip_exit_no_quote|reason={reason}")
-            return False
+            return None
 
-        if MarketTools.is_regular_market_open(self.algorithm, symbol):
-            self.algorithm.MarketOrder(
+        if MarketTools.is_regular_market_order_safe(
+            self.algorithm,
+            symbol,
+            self.regular_market_order_close_buffer_minutes,
+        ):
+            return self.algorithm.MarketOrder(
                 symbol,
                 -quantity,
                 tag=reason,
             )
-            return True
 
         bid, ask = MarketTools.bid_ask(self.algorithm, symbol)
 
         if bid is None or ask is None:
             self.debugger.c_log("RX", symbol, f"skip_exit_no_quote|reason={reason}")
-            return False
+            return None
 
         limit_price = bid * (1.0 - self.extended_hours_limit_buffer_pct)
 
-        self.algorithm.LimitOrder(
+        return self.algorithm.LimitOrder(
             symbol,
             -quantity,
             limit_price,
             tag=f"{reason}|ext_limit",
         )
-
-        return True
 
     def exit_to_pullback_watch(self, symbol, state, price, r, reason):
         state.last_breakout_high = state.highest_since_entry
@@ -163,30 +167,19 @@ class PositionManagementMixin:
             extra=f"rebreak={state.last_breakout_high:.2f}",
         )
 
-        order_submitted = self.close_position_now(symbol, reason)
+        ticket = self.close_position_now(symbol, reason)
 
-        if not order_submitted:
+        if ticket is None:
             return
 
-        state.last_exit_time = self.algorithm.Time
-        state.last_exit_r = r
+        state.pending_exit_order_id = ticket.OrderId
+        state.pending_exit_reason = reason
+        state.pending_exit_r = r
+        state.pending_exit_time = self.algorithm.Time
+        state.state = MomentumState.PENDING_EXIT
 
-        if r < 0:
-            state.failed_trade_count += 1
-            state.last_failed_trade_time = self.algorithm.Time
-        else:
-            state.failed_trade_count = 0
-            state.last_failed_trade_time = None
-
-        state.reset_trade_fields()
-        state.reentry_attempts += 1
-
-        if state.reentry_attempts > self.max_reentries:
-            state.state = MomentumState.COOLDOWN
-            return
-
-        state.state = MomentumState.PULLBACK_WATCH
-        self.debugger.log_reentry_watch(symbol, state.last_breakout_high)
+        if ticket.Status == OrderStatus.Filled:
+            self.handle_exit_ticket_fill(symbol, state, ticket)
 
     def handle_pullback_watch(self, symbol, state, bar):
         price = float(bar.Close)
@@ -248,6 +241,8 @@ class PositionManagementMixin:
         state.last_consolidation_low = None
 
         state.reentry_attempts = 0
+        state.reset_pending_entry()
+        state.reset_pending_exit()
         state.reset_trade_fields()
 
     def is_in_cooldown(self, state):

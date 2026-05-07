@@ -100,11 +100,11 @@ class MomentumAlphaCore(
         # =============================================================================
         # Profit Protection
         # =============================================================================
-        self.move_stop_to_be_at_r = 0.75
-        self.protect_after_mfe_r = 0.65
+        self.move_stop_to_be_at_r = 1.0
+        self.protect_after_mfe_r = 1.0
         self.protect_after_mfe_pct = 0.02
-        self.protected_giveback_pct = 0.30
-        self.min_locked_profit_r = 0.35
+        self.protected_giveback_pct = 0.45
+        self.min_locked_profit_r = 0.25
 
         # =============================================================================
         # Simplification For Testing Core Edge
@@ -122,6 +122,7 @@ class MomentumAlphaCore(
         # Execution Controls
         # =============================================================================
         self.extended_hours_limit_buffer_pct = 0.002
+        self.regular_market_order_close_buffer_minutes = 5
 
     # =============================================================================
     # Main Per-Symbol Processor
@@ -129,6 +130,9 @@ class MomentumAlphaCore(
 
     def process_symbol(self, symbol, state, bar):
         if self.is_in_cooldown(state):
+            return
+
+        if state.state in (MomentumState.PENDING_ENTRY, MomentumState.PENDING_EXIT):
             return
 
         if state.state == MomentumState.QUIET:
@@ -148,3 +152,101 @@ class MomentumAlphaCore(
 
         elif state.state == MomentumState.STALE:
             self.handle_stale_leader(symbol, state, bar)
+
+    def handle_order_event(self, symbol, state, order_event):
+        if order_event.OrderId == state.pending_entry_order_id:
+            self.handle_entry_fill(symbol, state, order_event)
+            return
+
+        if order_event.OrderId == state.pending_exit_order_id:
+            self.handle_exit_fill(symbol, state, order_event)
+
+    def handle_entry_fill(self, symbol, state, order_event):
+        self.complete_entry_fill(
+            symbol,
+            state,
+            float(order_event.FillPrice),
+            abs(int(order_event.FillQuantity)),
+        )
+
+    def handle_entry_ticket_fill(self, symbol, state, ticket):
+        fill_price = float(getattr(ticket, "AverageFillPrice", 0.0))
+        quantity = abs(int(getattr(ticket, "QuantityFilled", 0)))
+
+        self.complete_entry_fill(symbol, state, fill_price, quantity)
+
+    def complete_entry_fill(self, symbol, state, fill_price, quantity):
+        if state.pending_entry_order_id is None:
+            return
+
+        if quantity <= 0 or fill_price <= 0:
+            state.reset_pending_entry()
+            state.state = MomentumState.LEADER_WATCH
+            return
+
+        stop = state.pending_entry_stop_price
+
+        if stop is None or stop >= fill_price:
+            state.reset_pending_entry()
+            state.state = MomentumState.LEADER_WATCH
+            self.debugger.c_log("RJ", symbol, f"bad_fill_stop|px={fill_price:.2f}|sl={stop}")
+            return
+
+        state.entry_price = fill_price
+        state.initial_stop_price = stop
+        state.stop_price = stop
+        state.quantity = quantity
+
+        state.highest_since_entry = fill_price
+        state.lowest_since_entry = fill_price
+
+        state.scout_reduced = False
+        state.slow_reduced = False
+        state.soft_failure_reduced = False
+        state.stop_moved_to_breakeven = False
+
+        state.entry_time = self.algorithm.Time
+        state.last_entry_time = self.algorithm.Time
+        state.reset_pending_entry()
+        state.state = MomentumState.IN_POSITION
+
+        risk_pct = (fill_price - stop) / fill_price
+
+        self.debugger.c_log(
+            "OK",
+            symbol,
+            f"filled_entry|p={fill_price:.2f}|sl={stop:.2f}|risk={risk_pct * 100:.2f}%|q={quantity}",
+        )
+
+    def handle_exit_fill(self, symbol, state, order_event):
+        self.complete_exit_fill(symbol, state)
+
+    def handle_exit_ticket_fill(self, symbol, state, ticket):
+        self.complete_exit_fill(symbol, state)
+
+    def complete_exit_fill(self, symbol, state):
+        if state.pending_exit_order_id is None:
+            return
+
+        r = state.pending_exit_r
+
+        state.last_exit_time = self.algorithm.Time
+        state.last_exit_r = r
+
+        if r is not None and r < 0:
+            state.failed_trade_count += 1
+            state.last_failed_trade_time = self.algorithm.Time
+        else:
+            state.failed_trade_count = 0
+            state.last_failed_trade_time = None
+
+        state.reset_pending_exit()
+        state.reset_trade_fields()
+        state.reentry_attempts += 1
+
+        if state.reentry_attempts > self.max_reentries:
+            state.state = MomentumState.COOLDOWN
+            return
+
+        state.state = MomentumState.PULLBACK_WATCH
+        self.debugger.log_reentry_watch(symbol, state.last_breakout_high)
