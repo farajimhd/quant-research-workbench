@@ -18,11 +18,11 @@ class OpeningRangeBreakoutCore:
         self.risk_per_trade_pct = 0.0025
         self.max_capital_per_trade_pct = 0.10
         self.entry_buffer_pct = 0.0005
-        self.min_gap_up_pct = 0.01
+        self.min_gap_up_pct = 0.005
         self.min_close_location = 0.75
-        self.min_body_to_range = 0.50
+        self.min_body_to_range = 0.35
         self.min_orb_range_atr_fraction = 0.05
-        self.max_orb_range_atr_fraction = 0.35
+        self.max_orb_range_atr_fraction = 0.50
         self.min_position_value = 500.0
         self.min_planned_risk_dollars = 12.0
         self.exit_minutes_before_close = 5
@@ -138,27 +138,35 @@ class OpeningRangeBreakoutCore:
 
     def is_valid_candidate(self, symbol, state):
         if state.orb_open is None or state.orb_high is None or state.orb_low is None:
+            self.count_orb_reject("base")
             return False
 
         if state.orb_close is None or state.orb_close <= 0:
+            self.count_orb_reject("base")
             return False
 
         if state.orb_close < self.min_price:
+            self.count_orb_reject("base")
             return False
 
         if state.avg_daily_volume_14 is None or state.avg_daily_volume_14 < self.min_avg_daily_volume:
+            self.count_orb_reject("liq")
             return False
 
         if state.atr_14 is None or state.atr_14 < self.min_atr:
+            self.count_orb_reject("atr")
             return False
 
         if state.orb_relative_volume < self.min_opening_relative_volume:
+            self.count_orb_reject("rv")
             return False
 
         if state.orb_high <= state.orb_low:
+            self.count_orb_reject("base")
             return False
 
         if not self.has_required_gap(state):
+            self.count_orb_reject("gap")
             return False
 
         if not self.has_quality_opening_range(state):
@@ -166,6 +174,9 @@ class OpeningRangeBreakoutCore:
 
         state.orb_direction = "LONG"
         return True
+
+    def count_orb_reject(self, reason):
+        self.debugger.count(f"or_{reason}")
 
     def has_required_gap(self, state):
         if state.previous_close is None or state.previous_close <= 0:
@@ -175,29 +186,38 @@ class OpeningRangeBreakoutCore:
 
     def has_quality_opening_range(self, state):
         if state.orb_close <= state.orb_open:
+            self.count_orb_reject("shape")
             return False
 
         opening_range = state.orb_high - state.orb_low
 
         if opening_range <= 0:
+            self.count_orb_reject("range")
             return False
 
         range_atr_fraction = opening_range / state.atr_14
 
         if range_atr_fraction < self.min_orb_range_atr_fraction:
+            self.count_orb_reject("range")
             return False
 
         if range_atr_fraction > self.max_orb_range_atr_fraction:
+            self.count_orb_reject("range")
             return False
 
         close_location = (state.orb_close - state.orb_low) / opening_range
 
         if close_location < self.min_close_location:
+            self.count_orb_reject("shape")
             return False
 
         body_to_range = abs(state.orb_close - state.orb_open) / opening_range
 
-        return body_to_range >= self.min_body_to_range
+        if body_to_range < self.min_body_to_range:
+            self.count_orb_reject("shape")
+            return False
+
+        return True
 
     def submit_entry(self, symbol, state, rank):
         if state.orb_entry_order_id is not None:
@@ -219,6 +239,7 @@ class OpeningRangeBreakoutCore:
 
         if not self.has_minimum_trade_economics(quantity, entry, stop):
             self.debugger.count_reject("economics")
+            self.count_orb_reject("econ")
             return False
 
         ticket = self.algorithm.StopMarketOrder(
