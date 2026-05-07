@@ -26,6 +26,7 @@ class OpeningRangeBreakoutCore:
         self.min_position_value = 500.0
         self.min_planned_risk_dollars = 12.0
         self.max_full_cash_risk_pct = 0.02
+        self.entry_order_timeout_minutes = 30
         self.exit_minutes_before_close = 5
         self.cancel_unfilled_minutes_before_close = 10
         self.current_rank_date = None
@@ -266,6 +267,7 @@ class OpeningRangeBreakoutCore:
             return False
 
         state.orb_entry_order_id = ticket.OrderId
+        state.orb_entry_order_time = self.algorithm.Time
         state.orb_entry_price = entry
         state.orb_stop_price = stop
         state.orb_quantity = quantity
@@ -327,10 +329,27 @@ class OpeningRangeBreakoutCore:
         if int(self.algorithm.Portfolio[symbol].Quantity) != 0:
             return
 
+        if self.is_entry_order_stale(state):
+            self.cancel_order(state.orb_entry_order_id, "orb_entry_timeout")
+            state.orb_entry_order_id = None
+            state.orb_entry_order_time = None
+            self.debugger.count_reject("timeout")
+            self.clear_active_symbol_if_done(symbol, state)
+            return
+
         if self.minutes_since_midnight() >= 16 * 60 - self.cancel_unfilled_minutes_before_close:
             self.cancel_order(state.orb_entry_order_id, "orb_cancel_eod")
             state.orb_entry_order_id = None
+            state.orb_entry_order_time = None
             self.clear_active_symbol_if_done(symbol, state)
+
+    def is_entry_order_stale(self, state):
+        if state.orb_entry_order_time is None:
+            return False
+
+        elapsed = self.algorithm.Time - state.orb_entry_order_time
+
+        return elapsed.total_seconds() >= self.entry_order_timeout_minutes * 60
 
     def manage_end_of_day(self, symbol, state):
         if state.orb_exit_submitted:
@@ -376,6 +395,7 @@ class OpeningRangeBreakoutCore:
             return
 
         state.orb_entry_order_id = None
+        state.orb_entry_order_time = None
 
         if state.orb_stop_price is None:
             return

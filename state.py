@@ -21,6 +21,7 @@ class SymbolState:
         self.orb_ranked = False
 
         self.orb_entry_order_id = None
+        self.orb_entry_order_time = None
         self.orb_stop_order_id = None
         self.orb_entry_price = None
         self.orb_stop_price = None
@@ -39,6 +40,7 @@ class SymbolState:
         self.orb_ranked = False
 
         self.orb_entry_order_id = None
+        self.orb_entry_order_time = None
         self.orb_stop_order_id = None
         self.orb_entry_price = None
         self.orb_stop_price = None

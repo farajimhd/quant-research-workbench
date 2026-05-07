@@ -37,7 +37,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-orb-single-risk: one full-cash long ORB, rv>=2, range>=0.25 ATR, 2pct risk cap, no late queue",
+            run_label="v-orb-timeout: one full-cash long ORB, rv>=2, range>=0.25 ATR, 2pct risk cap, 30m entry timeout",
         )
 
         self.risk = RiskManager(
