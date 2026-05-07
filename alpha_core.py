@@ -23,7 +23,7 @@ class MomentumAlphaCore(
         # =============================================================================
         self.expansion_windows = [3, 5, 10]
         self.min_expansion_move = 0.04
-        self.required_relative_volume = 3.0
+        self.required_relative_volume = 4.0
 
         # =============================================================================
         # Price / Volume Filters
@@ -68,7 +68,7 @@ class MomentumAlphaCore(
         self.min_breakout_body_pct = 0.004
         self.min_close_location = 0.72
         self.breakout_volume_multiplier = 1.20
-        self.min_leader_watch_minutes = 0
+        self.min_leader_watch_minutes = 1
         self.max_breakout_extension_pct = 0.035
 
         # =============================================================================
@@ -84,15 +84,16 @@ class MomentumAlphaCore(
         # =============================================================================
         # Quality-Weighted Risk
         # =============================================================================
-        self.risk_pct_a_plus = 0.0075
-        self.risk_pct_a = 0.0055
-        self.risk_pct_b = 0.0035
-        self.risk_pct_c = 0.0020
-        self.same_day_entry_fail_risk_cap = 0.0025
-        self.capital_pct_a_plus = 0.20
-        self.capital_pct_a = 0.17
-        self.capital_pct_b = 0.13
-        self.capital_pct_c = 0.09
+        self.risk_pct_a_plus = 0.0055
+        self.risk_pct_a = 0.0040
+        self.risk_pct_b = 0.0025
+        self.risk_pct_c = 0.0010
+        self.same_day_entry_fail_risk_cap = 0.0015
+        self.max_entry_fails_per_symbol_day = 2
+        self.capital_pct_a_plus = 0.16
+        self.capital_pct_a = 0.14
+        self.capital_pct_b = 0.10
+        self.capital_pct_c = 0.05
 
         # =============================================================================
         # Stop Configuration
@@ -136,7 +137,7 @@ class MomentumAlphaCore(
         # =============================================================================
         # Simplification For Testing Core Edge
         # =============================================================================
-        self.enable_pyramiding = True
+        self.enable_pyramiding = False
         self.enable_partial_exits = False
         self.initial_position_fraction = 0.80
         self.confirmation_add_fraction = 0.20
@@ -147,7 +148,7 @@ class MomentumAlphaCore(
         # =============================================================================
         # Re-entry Configuration
         # =============================================================================
-        self.max_reentries = 4
+        self.max_reentries = 3
         self.cooldown_minutes = 20
 
         # =============================================================================

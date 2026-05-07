@@ -29,9 +29,9 @@ class DebugManager:
         self.max_console_events_per_day = {
             "A": 0,
             "B": 0,
-            "E": 4,
-            "X": 4,
-            "RJ": 3,
+            "E": 2,
+            "X": 2,
+            "RJ": 1,
             "D": 0,
             "W": 0,
         }
@@ -119,6 +119,7 @@ class DebugManager:
             f"rBrk={self.counters['rj_no_break']}",
             f"rExt={self.counters['rj_extended']}",
             f"rQ={self.counters['rj_no_quote']}",
+            f"rQl={self.counters['rj_quality']}",
             f"dead={self.counters['dead']}",
             f"stale={self.counters['stale']}",
             f"lt={len(self.leader_tickers)}",

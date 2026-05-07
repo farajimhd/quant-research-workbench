@@ -159,6 +159,12 @@ class EntryLogicMixin:
             return
 
         quality = self.score_entry_setup(symbol, state, bar, entry, stop, spread, breakout_high)
+
+        if not self.should_trade_quality(state, quality):
+            self.debugger.count_reject("quality")
+            state.state = self.entry_watch_state(state)
+            return
+
         quantity = self.risk.calculate_quantity(
             entry,
             stop,
@@ -303,7 +309,19 @@ class EntryLogicMixin:
             "capital_pct": self.quality_capital_pct(bucket),
             "starter_fraction": self.quality_starter_fraction(bucket, entry_fails),
             "add_fraction": self.quality_add_fraction(bucket, entry_fails),
+            "entry_fails": entry_fails,
         }
+
+    def should_trade_quality(self, state, quality):
+        entry_fails = quality["entry_fails"]
+
+        if entry_fails >= self.max_entry_fails_per_symbol_day:
+            return False
+
+        if quality["bucket"] == "C" and entry_fails == 0:
+            return False
+
+        return True
 
     def entry_fail_count_today(self, state):
         if state.entry_fail_date != self.algorithm.Time.date():
@@ -349,7 +367,7 @@ class EntryLogicMixin:
 
     def quality_starter_fraction(self, bucket, entry_fails):
         if entry_fails > 0:
-            return 0.50
+            return 0.40
 
         if bucket == "AP":
             return 1.00
@@ -363,18 +381,6 @@ class EntryLogicMixin:
         return 0.50
 
     def quality_add_fraction(self, bucket, entry_fails):
-        if entry_fails > 0:
-            return 0.0
-
-        if bucket == "AP":
-            return 0.50
-
-        if bucket == "A":
-            return 0.35
-
-        if bucket == "B":
-            return 0.20
-
         return 0.0
 
     def apply_initial_position_fraction(self, quantity, quality=None):
