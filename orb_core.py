@@ -28,6 +28,8 @@ class OpeningRangeBreakoutCore:
         self.exit_minutes_before_close = 5
         self.cancel_unfilled_minutes_before_close = 10
         self.current_rank_date = None
+        self.pending_candidates = []
+        self.active_symbol = None
 
     def on_data_start(self):
         current_date = self.algorithm.Time.date()
@@ -47,6 +49,7 @@ class OpeningRangeBreakoutCore:
 
         self.manage_open_orders(symbol, state)
         self.manage_end_of_day(symbol, state)
+        self.try_submit_next_candidate()
 
     def after_on_data(self, symbol_states):
         if not self.should_rank_now():
@@ -58,10 +61,18 @@ class OpeningRangeBreakoutCore:
         if any(state.orb_ranked for state in symbol_states.values()):
             return
 
-        candidates = self.rank_opening_range_candidates(symbol_states)
+        self.pending_candidates = self.rank_opening_range_candidates(symbol_states)
+        self.try_submit_next_candidate()
 
-        for rank, (symbol, state) in enumerate(candidates, start=1):
-            self.submit_entry(symbol, state, rank)
+    def try_submit_next_candidate(self):
+        if self.has_active_trade():
+            return
+
+        while len(self.pending_candidates) > 0:
+            rank, symbol, state = self.pending_candidates.pop(0)
+
+            if self.submit_entry(symbol, state, rank):
+                return
 
     def ensure_orb_day(self, state):
         current_date = self.algorithm.Time.date()
@@ -120,7 +131,10 @@ class OpeningRangeBreakoutCore:
             f"orb|cand={len(candidates)}|sel={len(selected)}",
         )
 
-        return selected
+        return [
+            (rank, symbol, state)
+            for rank, (symbol, state) in enumerate(selected, start=1)
+        ]
 
     def is_valid_candidate(self, symbol, state):
         if state.orb_open is None or state.orb_high is None or state.orb_low is None:
@@ -187,10 +201,13 @@ class OpeningRangeBreakoutCore:
 
     def submit_entry(self, symbol, state, rank):
         if state.orb_entry_order_id is not None:
-            return
+            return False
 
         if state.orb_direction != "LONG":
-            return
+            return False
+
+        if self.has_active_trade():
+            return False
 
         entry = state.orb_high * (1.0 + self.entry_buffer_pct)
         stop = entry - (state.atr_14 * self.atr_stop_fraction)
@@ -198,11 +215,11 @@ class OpeningRangeBreakoutCore:
 
         if quantity == 0:
             self.debugger.count_reject("qty")
-            return
+            return False
 
         if not self.has_minimum_trade_economics(quantity, entry, stop):
             self.debugger.count_reject("economics")
-            return
+            return False
 
         ticket = self.algorithm.StopMarketOrder(
             symbol,
@@ -216,12 +233,13 @@ class OpeningRangeBreakoutCore:
 
         if ticket is None:
             self.debugger.count_reject("order")
-            return
+            return False
 
         state.orb_entry_order_id = ticket.OrderId
         state.orb_entry_price = entry
         state.orb_stop_price = stop
         state.orb_quantity = quantity
+        self.active_symbol = symbol
         self.debugger.count("entry_submit", symbol)
         self.debugger.c_log(
             "E",
@@ -231,6 +249,7 @@ class OpeningRangeBreakoutCore:
                 f"|n={quantity}|rk={rank}|rv={state.orb_relative_volume:.1f}|atr={state.atr_14:.2f}"
             ),
         )
+        return True
 
     def calculate_quantity(self, entry, stop):
         risk_per_share = abs(entry - stop)
@@ -241,13 +260,11 @@ class OpeningRangeBreakoutCore:
         total_equity = float(self.algorithm.Portfolio.TotalPortfolioValue)
         cash = float(self.algorithm.Portfolio.Cash)
         deployable_cash = max(0.0, cash - (total_equity * self.risk.cash_reserve_pct))
-        risk_budget = total_equity * self.risk_per_trade_pct
-        capital_budget = total_equity * self.max_capital_per_trade_pct
+        capital_budget = deployable_cash
 
         return max(
             0,
             min(
-                int(risk_budget / risk_per_share),
                 int(capital_budget / entry),
                 int(deployable_cash / entry),
             ),
@@ -273,6 +290,7 @@ class OpeningRangeBreakoutCore:
         if self.minutes_since_midnight() >= 16 * 60 - self.cancel_unfilled_minutes_before_close:
             self.cancel_order(state.orb_entry_order_id, "orb_cancel_eod")
             state.orb_entry_order_id = None
+            self.clear_active_symbol_if_done(symbol, state)
 
     def manage_end_of_day(self, symbol, state):
         if state.orb_exit_submitted:
@@ -301,6 +319,15 @@ class OpeningRangeBreakoutCore:
             state.orb_stop_order_id = None
             self.debugger.count("exit_signal", symbol)
             self.debugger.count("exit_STOP_LOSS", symbol)
+            self.clear_active_symbol_if_done(symbol, state)
+            return
+
+        if (
+            state.orb_exit_submitted
+            and int(self.algorithm.Portfolio[symbol].Quantity) == 0
+        ):
+            state.orb_stop_order_id = None
+            self.clear_active_symbol_if_done(symbol, state)
 
     def handle_entry_fill(self, symbol, state, order_event):
         fill_quantity = int(order_event.FillQuantity)
@@ -323,6 +350,39 @@ class OpeningRangeBreakoutCore:
 
         if ticket is not None:
             state.orb_stop_order_id = ticket.OrderId
+
+    def has_active_trade(self):
+        if self.active_symbol is None:
+            return False
+
+        state = self.algorithm.symbol_states.get(self.active_symbol)
+
+        if state is None:
+            self.active_symbol = None
+            return False
+
+        if state.orb_entry_order_id is not None or state.orb_stop_order_id is not None:
+            return True
+
+        return int(self.algorithm.Portfolio[self.active_symbol].Quantity) != 0
+
+    def should_process_next_after_exit(self):
+        return self.minutes_since_midnight() < 16 * 60 - self.cancel_unfilled_minutes_before_close
+
+    def clear_active_symbol_if_done(self, symbol, state):
+        if self.active_symbol != symbol:
+            return
+
+        if state.orb_entry_order_id is not None or state.orb_stop_order_id is not None:
+            return
+
+        if int(self.algorithm.Portfolio[symbol].Quantity) != 0:
+            return
+
+        self.active_symbol = None
+
+        if self.should_process_next_after_exit():
+            self.try_submit_next_candidate()
 
     def cancel_order(self, order_id, tag):
         if order_id is None:
