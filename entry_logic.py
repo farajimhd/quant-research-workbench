@@ -133,6 +133,9 @@ class EntryLogicMixin:
         if state.pullback_low is None:
             return False
 
+        if self.estimate_relative_volume(state) <= self.min_pullback_reclaim_relative_volume:
+            return False
+
         if not self.is_macd_turning_up(state):
             return False
 

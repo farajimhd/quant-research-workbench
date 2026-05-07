@@ -28,6 +28,7 @@ class MomentumAlphaCore(
         self.vwap_reclaim_buffer_pct = 0.001
         self.micro_high_lookback_bars = 5
         self.min_indicator_volume_multiplier = 1.6
+        self.min_pullback_reclaim_relative_volume = 5.0
         self.min_pullback_depth_pct = 0.008
         self.max_pullback_depth_pct = 0.12
         self.pullback_support_buffer_pct = 0.006
