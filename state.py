@@ -20,6 +20,7 @@ class SymbolState:
         self.orb_direction = None
         self.orb_ranked = False
         self.orb_score = 0.0
+        self.breakout_armed = True
 
         self.orb_entry_order_id = None
         self.orb_stop_order_id = None
@@ -30,6 +31,7 @@ class SymbolState:
         self.orb_rank = None
 
         self.last_price = None
+        self.previous_price = None
         self.last_high = None
         self.last_low = None
 
@@ -47,6 +49,18 @@ class SymbolState:
         self.macd_signal_count = 0
         self.macd_ready = False
 
+        self.tema9 = None
+        self.tema9_ema1 = None
+        self.tema9_ema2 = None
+        self.tema9_ema3 = None
+        self.tema9_count = 0
+        self.tema20 = None
+        self.tema20_ema1 = None
+        self.tema20_ema2 = None
+        self.tema20_ema3 = None
+        self.tema20_count = 0
+        self.tema_ready = False
+
     def reset_orb_day(self, current_date):
         self.orb_date = current_date
         self.orb_open = None
@@ -58,6 +72,7 @@ class SymbolState:
         self.orb_direction = None
         self.orb_ranked = False
         self.orb_score = 0.0
+        self.breakout_armed = True
 
         self.orb_entry_order_id = None
         self.orb_stop_order_id = None
@@ -68,6 +83,7 @@ class SymbolState:
         self.orb_rank = None
 
         self.last_price = None
+        self.previous_price = None
         self.last_high = None
         self.last_low = None
         self.macd_bucket = None

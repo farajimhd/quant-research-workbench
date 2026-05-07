@@ -13,7 +13,8 @@ class OpeningRangeBreakoutCore:
         self.min_atr = 0.50
         self.relative_volume_daily_share = 0.02
         self.min_opening_relative_volume = 1.0
-        self.max_candidates = 20
+        self.max_candidates = 10
+        self.min_candidate_score = 55.0
         self.max_active_positions = 3
         self.entry_buffer_pct = 0.0005
         self.min_gap_up_pct = 0.005
@@ -35,6 +36,10 @@ class OpeningRangeBreakoutCore:
         self.macd_fast_alpha = 2.0 / (self.macd_fast_period + 1.0)
         self.macd_slow_alpha = 2.0 / (self.macd_slow_period + 1.0)
         self.macd_signal_alpha = 2.0 / (self.macd_signal_period + 1.0)
+        self.tema9_period = 9
+        self.tema20_period = 20
+        self.tema9_alpha = 2.0 / (self.tema9_period + 1.0)
+        self.tema20_alpha = 2.0 / (self.tema20_period + 1.0)
 
     def on_data_start(self):
         current_date = self.algorithm.Time.date()
@@ -53,6 +58,7 @@ class OpeningRangeBreakoutCore:
             self.update_opening_range(state, bar)
 
         self.manage_position(symbol, state)
+        self.manage_open_entry(symbol, state)
         self.manage_end_of_day(symbol, state)
 
     def after_on_data(self, symbol_states):
@@ -65,6 +71,8 @@ class OpeningRangeBreakoutCore:
         if self.minutes_since_midnight() <= 9 * 60 + 35:
             return
 
+        self.cancel_late_entry_orders(symbol_states)
+        self.hard_end_of_day_liquidation(symbol_states)
         self.try_submit_top_candidates(symbol_states)
 
     def ensure_orb_day(self, state):
@@ -81,9 +89,13 @@ class OpeningRangeBreakoutCore:
         return self.minutes_since_midnight() == 9 * 60 + 35
 
     def update_last_price(self, state, bar):
+        state.previous_price = state.last_price
         state.last_price = float(bar.Close)
         state.last_high = float(bar.High)
         state.last_low = float(bar.Low)
+
+        if state.orb_high is not None and state.last_price <= self.entry_trigger(state):
+            state.breakout_armed = True
 
     def update_opening_range(self, state, bar):
         open_price = float(bar.Open)
@@ -128,6 +140,7 @@ class OpeningRangeBreakoutCore:
             return
 
         self.update_macd_from_close(state, state.macd_bucket_close)
+        self.update_tema_from_close(state, state.macd_bucket_close)
         state.macd_bucket = bucket
         state.macd_bucket_close = close
 
@@ -171,6 +184,45 @@ class OpeningRangeBreakoutCore:
         state.macd_hist = state.macd_line - state.macd_signal
         state.macd_ready = state.macd_signal_count >= self.macd_signal_period
 
+    def update_tema_from_close(self, state, close):
+        state.tema9_ema1, state.tema9_ema2, state.tema9_ema3, state.tema9 = (
+            self.update_tema_values(
+                close,
+                self.tema9_alpha,
+                state.tema9_ema1,
+                state.tema9_ema2,
+                state.tema9_ema3,
+            )
+        )
+        state.tema20_ema1, state.tema20_ema2, state.tema20_ema3, state.tema20 = (
+            self.update_tema_values(
+                close,
+                self.tema20_alpha,
+                state.tema20_ema1,
+                state.tema20_ema2,
+                state.tema20_ema3,
+            )
+        )
+        state.tema9_count += 1
+        state.tema20_count += 1
+        state.tema_ready = (
+            state.tema9_count >= self.tema9_period
+            and state.tema20_count >= self.tema20_period
+        )
+
+    def update_tema_values(self, close, alpha, ema1, ema2, ema3):
+        if ema1 is None:
+            ema1 = close
+            ema2 = close
+            ema3 = close
+        else:
+            ema1 = alpha * close + (1.0 - alpha) * ema1
+            ema2 = alpha * ema1 + (1.0 - alpha) * ema2
+            ema3 = alpha * ema2 + (1.0 - alpha) * ema3
+
+        tema = (3.0 * ema1) - (3.0 * ema2) + ema3
+        return ema1, ema2, ema3, tema
+
     def rank_opening_range_candidates(self, symbol_states):
         candidates = []
 
@@ -182,6 +234,9 @@ class OpeningRangeBreakoutCore:
 
             state.orb_direction = "LONG"
             state.orb_score = self.score_candidate(state)
+            if state.orb_score < self.min_candidate_score:
+                self.count_orb_reject("quality")
+                continue
             candidates.append((symbol, state))
 
         candidates.sort(key=lambda item: item[1].orb_score, reverse=True)
@@ -323,7 +378,7 @@ class OpeningRangeBreakoutCore:
             if self.is_symbol_busy(symbol, state):
                 continue
 
-            if not self.is_entry_ready(state):
+            if not self.is_entry_ready(symbol, state):
                 continue
 
             live_score = state.orb_score + self.macd_score(state)
@@ -346,20 +401,25 @@ class OpeningRangeBreakoutCore:
 
         return int(self.algorithm.Portfolio[symbol].Quantity) != 0
 
-    def is_entry_ready(self, state):
+    def is_entry_ready(self, symbol, state):
         if state.orb_direction != "LONG":
             return False
 
         if state.last_price is None:
             return False
 
+        if not state.breakout_armed:
+            return False
+
         if state.last_price < self.box_mid(state):
             return False
 
-        if state.last_price < self.entry_trigger(state):
+        trigger = self.entry_trigger(state)
+
+        if state.last_price > trigger:
             return False
 
-        return self.is_macd_open(state)
+        return self.is_macd_open(state) and self.is_tema_open(state)
 
     def is_macd_open(self, state):
         return (
@@ -371,12 +431,20 @@ class OpeningRangeBreakoutCore:
             and state.macd_hist > 0
         )
 
-    def is_macd_closed(self, state):
+    def is_tema_open(self, state):
         return (
-            state.macd_ready
-            and state.macd_line is not None
-            and state.macd_signal is not None
-            and state.macd_line <= state.macd_signal
+            state.tema_ready
+            and state.tema9 is not None
+            and state.tema20 is not None
+            and state.tema9 > state.tema20
+        )
+
+    def is_tema_closed(self, state):
+        return (
+            state.tema_ready
+            and state.tema9 is not None
+            and state.tema20 is not None
+            and state.tema20 > state.tema9
         )
 
     def macd_score(self, state):
@@ -386,7 +454,7 @@ class OpeningRangeBreakoutCore:
         return min(abs(state.macd_hist) / state.last_price * 1000.0, 20.0)
 
     def submit_entry(self, symbol, state, rank):
-        entry = state.last_price
+        entry = self.entry_trigger(state)
         stop = self.box_mid(state)
         quantity = self.calculate_quantity(entry, stop)
 
@@ -399,12 +467,14 @@ class OpeningRangeBreakoutCore:
             self.count_orb_reject("econ")
             return False
 
-        ticket = self.algorithm.MarketOrder(
+        ticket = self.algorithm.StopMarketOrder(
             symbol,
             quantity,
+            entry,
             tag=(
                 f"orb_macd_entry|rk={rank}|rv={state.orb_relative_volume:.1f}"
                 f"|sc={state.orb_score:.1f}|mid={stop:.2f}|macd={state.macd_hist:.4f}"
+                f"|t9={state.tema9:.2f}|t20={state.tema20:.2f}"
             ),
         )
 
@@ -417,6 +487,7 @@ class OpeningRangeBreakoutCore:
         state.orb_stop_price = stop
         state.orb_quantity = quantity
         state.orb_rank = rank
+        state.breakout_armed = False
         self.active_symbols.add(symbol)
         self.debugger.count("entry_submit", symbol)
         self.debugger.c_log(
@@ -425,9 +496,28 @@ class OpeningRangeBreakoutCore:
             (
                 f"MACD_ORB|p={entry:.2f}|mid={stop:.2f}|n={quantity}"
                 f"|rk={rank}|rv={state.orb_relative_volume:.1f}|sc={state.orb_score:.1f}"
+                f"|t9={state.tema9:.2f}|t20={state.tema20:.2f}"
             ),
         )
         return True
+
+    def manage_open_entry(self, symbol, state):
+        if state.orb_entry_order_id is None:
+            return
+
+        if int(self.algorithm.Portfolio[symbol].Quantity) != 0:
+            return
+
+        if self.minutes_since_midnight() >= self.entry_cutoff_minutes:
+            self.cancel_entry_order(symbol, state, "orb_entry_cutoff")
+            return
+
+        if state.last_price is not None and state.last_price < self.box_mid(state):
+            self.cancel_entry_order(symbol, state, "orb_entry_box_mid")
+            return
+
+        if not self.is_macd_open(state) or not self.is_tema_open(state):
+            self.cancel_entry_order(symbol, state, "orb_entry_signal_closed")
 
     def calculate_quantity(self, entry, stop):
         risk_per_share = abs(entry - stop)
@@ -466,8 +556,8 @@ class OpeningRangeBreakoutCore:
             self.exit_position(symbol, state, "BOX_MID")
             return
 
-        if self.is_macd_closed(state):
-            self.exit_position(symbol, state, "MOMENTUM_CLOSE")
+        if self.is_tema_closed(state):
+            self.exit_position(symbol, state, "TEMA_CLOSE")
 
     def manage_end_of_day(self, symbol, state):
         if state.orb_exit_submitted:
@@ -476,12 +566,34 @@ class OpeningRangeBreakoutCore:
         if self.minutes_since_midnight() < 16 * 60 - self.exit_minutes_before_close:
             return
 
+        if state.orb_entry_order_id is not None:
+            self.cancel_entry_order(symbol, state, "orb_eod_entry_cancel")
+
         quantity = int(self.algorithm.Portfolio[symbol].Quantity)
 
         if quantity == 0:
             return
 
         self.exit_position(symbol, state, "EOD")
+
+    def hard_end_of_day_liquidation(self, symbol_states):
+        if self.minutes_since_midnight() < 16 * 60 - self.exit_minutes_before_close:
+            return
+
+        for symbol, state in symbol_states.items():
+            if state.orb_entry_order_id is not None:
+                self.cancel_entry_order(symbol, state, "orb_eod_entry_cancel")
+
+            if int(self.algorithm.Portfolio[symbol].Quantity) != 0:
+                self.exit_position(symbol, state, "EOD")
+
+    def cancel_late_entry_orders(self, symbol_states):
+        if self.minutes_since_midnight() < self.entry_cutoff_minutes:
+            return
+
+        for symbol, state in symbol_states.items():
+            if state.orb_entry_order_id is not None:
+                self.cancel_entry_order(symbol, state, "orb_entry_cutoff")
 
     def exit_position(self, symbol, state, reason):
         quantity = int(self.algorithm.Portfolio[symbol].Quantity)
@@ -539,6 +651,11 @@ class OpeningRangeBreakoutCore:
         state.orb_entry_order_id = None
         state.orb_stop_order_id = None
         state.orb_exit_submitted = False
+        self.active_symbols.discard(symbol)
+
+    def cancel_entry_order(self, symbol, state, tag):
+        self.cancel_order(state.orb_entry_order_id, tag)
+        state.orb_entry_order_id = None
         self.active_symbols.discard(symbol)
 
     def box_range(self, state):

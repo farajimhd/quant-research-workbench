@@ -36,7 +36,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-orb-box-macd-multi: box-mid stop, 5m MACD open/close, top-scored concurrent candidates",
+            run_label="v-orb-box-macd-tema: box break with 5m MACD open and TEMA9>TEMA20, exits on TEMA close or box mid",
         )
 
         self.risk = RiskManager(
