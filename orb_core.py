@@ -12,7 +12,7 @@ class OpeningRangeBreakoutCore:
         self.min_avg_daily_volume = 1_000_000
         self.min_atr = 0.50
         self.relative_volume_daily_share = 0.02
-        self.min_opening_relative_volume = 1.0
+        self.min_opening_relative_volume = 2.0
         self.max_candidates = 5
         self.atr_stop_fraction = 0.20
         self.risk_per_trade_pct = 0.0025
@@ -21,10 +21,11 @@ class OpeningRangeBreakoutCore:
         self.min_gap_up_pct = 0.005
         self.min_close_location = 0.75
         self.min_body_to_range = 0.35
-        self.min_orb_range_atr_fraction = 0.05
+        self.min_orb_range_atr_fraction = 0.25
         self.max_orb_range_atr_fraction = 0.50
         self.min_position_value = 500.0
         self.min_planned_risk_dollars = 12.0
+        self.max_full_cash_risk_pct = 0.02
         self.exit_minutes_before_close = 5
         self.cancel_unfilled_minutes_before_close = 10
         self.current_rank_date = None
@@ -65,6 +66,9 @@ class OpeningRangeBreakoutCore:
         self.try_submit_next_candidate()
 
     def try_submit_next_candidate(self):
+        if not self.can_submit_new_entry_now():
+            return
+
         if self.has_active_trade():
             return
 
@@ -242,6 +246,11 @@ class OpeningRangeBreakoutCore:
             self.count_orb_reject("econ")
             return False
 
+        if self.exceeds_full_cash_risk_cap(quantity, entry, stop):
+            self.debugger.count_reject("risk")
+            self.count_orb_reject("econ")
+            return False
+
         ticket = self.algorithm.StopMarketOrder(
             symbol,
             quantity,
@@ -300,6 +309,16 @@ class OpeningRangeBreakoutCore:
             return False
 
         return planned_risk >= self.min_planned_risk_dollars
+
+    def exceeds_full_cash_risk_cap(self, quantity, entry, stop):
+        risk_per_share = abs(entry - stop)
+        planned_risk = quantity * risk_per_share
+        total_equity = float(self.algorithm.Portfolio.TotalPortfolioValue)
+
+        if total_equity <= 0:
+            return True
+
+        return planned_risk > total_equity * self.max_full_cash_risk_pct
 
     def manage_open_orders(self, symbol, state):
         if state.orb_entry_order_id is None or state.orb_stop_order_id is not None:
@@ -389,6 +408,9 @@ class OpeningRangeBreakoutCore:
 
     def should_process_next_after_exit(self):
         return self.minutes_since_midnight() < 16 * 60 - self.cancel_unfilled_minutes_before_close
+
+    def can_submit_new_entry_now(self):
+        return self.should_process_next_after_exit()
 
     def clear_active_symbol_if_done(self, symbol, state):
         if self.active_symbol != symbol:
