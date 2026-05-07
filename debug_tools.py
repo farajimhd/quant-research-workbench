@@ -153,6 +153,7 @@ class DebugManager:
             f"rQl={self.counters['rj_quality']}",
             f"rEc={self.counters['rj_economics']}",
             f"rIn={self.counters['rj_indicator']}",
+            f"rPb={self.counters['rj_pullback']}",
             f"dead={self.counters['dead']}",
             f"stale={self.counters['stale']}",
             f"lt={len(self.leader_tickers)}",

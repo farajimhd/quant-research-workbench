@@ -13,6 +13,8 @@ class MomentumState(Enum):
     COOLDOWN = 7
     PENDING_ENTRY = 8
     PENDING_EXIT = 9
+    PULLBACK_FORMING = 10
+    PULLBACK_READY = 11
 
 
 class SymbolState:
@@ -44,6 +46,10 @@ class SymbolState:
         self.last_consolidation_low = None
         self.armed_entry_type = None
         self.armed_level = None
+        self.pullback_low = None
+        self.pullback_high = None
+        self.pullback_start_time = None
+        self.pullback_ready_time = None
 
         self.entry_price = None
         self.initial_stop_price = None

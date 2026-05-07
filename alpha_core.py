@@ -28,6 +28,11 @@ class MomentumAlphaCore(
         self.vwap_reclaim_buffer_pct = 0.001
         self.micro_high_lookback_bars = 5
         self.min_indicator_volume_multiplier = 1.6
+        self.min_pullback_depth_pct = 0.008
+        self.max_pullback_depth_pct = 0.12
+        self.pullback_support_buffer_pct = 0.006
+        self.pullback_reclaim_buffer_pct = 0.001
+        self.pullback_max_bars = 30
 
         # =============================================================================
         # Price / Volume Filters
@@ -193,6 +198,12 @@ class MomentumAlphaCore(
         elif state.state == MomentumState.LEADER_WATCH:
             self.handle_leader_watch(symbol, state, bar)
 
+        elif state.state == MomentumState.PULLBACK_FORMING:
+            self.handle_pullback_forming(symbol, state, bar)
+
+        elif state.state == MomentumState.PULLBACK_READY:
+            self.handle_pullback_ready(symbol, state, bar)
+
         elif state.state == MomentumState.BREAKOUT_READY:
             self.try_enter(symbol, state, bar)
 
@@ -209,14 +220,11 @@ class MomentumAlphaCore(
         if state.state in (MomentumState.PENDING_ENTRY, MomentumState.PENDING_EXIT):
             return
 
-        if state.state == MomentumState.QUIET:
-            self.try_enter_on_indicator_quote(symbol, state)
+        if state.state == MomentumState.PULLBACK_READY:
+            self.try_enter_on_pullback_quote(symbol, state)
             return
 
-        if state.state in (MomentumState.LEADER_WATCH, MomentumState.PULLBACK_WATCH):
-            if self.try_enter_on_indicator_quote(symbol, state):
-                return
-
+        if state.state == MomentumState.PULLBACK_WATCH:
             self.try_enter_on_quote(symbol, state)
             return
 
@@ -320,12 +328,16 @@ class MomentumAlphaCore(
         state.reset_pending_exit()
         state.reset_trade_fields()
         state.reentry_attempts += 1
+        state.pullback_low = None
+        state.pullback_high = state.last_breakout_high
+        state.pullback_start_time = None
+        state.pullback_ready_time = None
 
         if state.reentry_attempts > self.max_reentries:
             state.state = MomentumState.COOLDOWN
             return
 
-        state.state = MomentumState.PULLBACK_WATCH
+        state.state = MomentumState.PULLBACK_FORMING
         self.debugger.log_reentry_watch(symbol, state.last_breakout_high)
 
     def is_reentry_allowed_after_exit(self, reason, r):

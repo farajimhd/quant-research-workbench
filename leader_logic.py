@@ -32,7 +32,7 @@ class LeaderLogicMixin:
         return best if best >= self.min_expansion_move else None
 
     def mark_leader(self, symbol, state, bar, move, rv, spread):
-        state.state = MomentumState.LEADER_WATCH
+        state.state = MomentumState.PULLBACK_FORMING
 
         state.expansion_time = self.algorithm.Time
         state.expansion_high = float(bar.High)
@@ -48,6 +48,10 @@ class LeaderLogicMixin:
 
         state.last_breakout_high = float(bar.High)
         state.last_pullback_low = float(bar.Low)
+        state.pullback_low = None
+        state.pullback_high = float(bar.High)
+        state.pullback_start_time = None
+        state.pullback_ready_time = None
 
         self.debugger.log_abnormal_expansion(
             symbol=symbol,
@@ -58,6 +62,129 @@ class LeaderLogicMixin:
             volume=float(bar.Volume),
             high=float(bar.High),
         )
+
+    def handle_pullback_forming(self, symbol, state, bar):
+        price = float(bar.Close)
+
+        if self.is_leader_dead(state, bar):
+            self.debugger.log_dead_leader(symbol, "dead_before_pullback", price)
+            self.reset_to_quiet(state)
+            return
+
+        self.update_leader_structure(symbol, state, bar)
+
+        if self.is_leader_stale(state):
+            state.state = MomentumState.STALE
+            return
+
+        self.update_pullback_tracking(state, bar)
+
+        if self.is_valid_pullback_setup(state, bar):
+            state.state = MomentumState.PULLBACK_READY
+            state.pullback_ready_time = self.algorithm.Time
+
+    def handle_pullback_ready(self, symbol, state, bar):
+        price = float(bar.Close)
+
+        if self.is_leader_dead(state, bar):
+            self.debugger.log_dead_leader(symbol, "dead_pullback_ready", price)
+            self.reset_to_quiet(state)
+            return
+
+        self.update_leader_structure(symbol, state, bar)
+        self.update_pullback_tracking(state, bar)
+
+        if self.is_pullback_too_deep(state):
+            self.debugger.log_dead_leader(symbol, "pullback_deep", price)
+            self.reset_to_quiet(state)
+            return
+
+        if state.pullback_ready_time is None:
+            state.pullback_ready_time = self.algorithm.Time
+            return
+
+        elapsed = self.algorithm.Time - state.pullback_ready_time
+
+        if elapsed.total_seconds() > self.pullback_max_bars * 60:
+            self.debugger.log_dead_leader(symbol, "pullback_stale", price)
+            self.reset_to_quiet(state)
+
+    def update_pullback_tracking(self, state, bar):
+        high = float(bar.High)
+        low = float(bar.Low)
+
+        if state.leader_high is None:
+            return
+
+        if low < state.leader_high:
+            if state.pullback_start_time is None:
+                state.pullback_start_time = self.algorithm.Time
+                state.pullback_high = state.leader_high
+
+            state.pullback_low = low if state.pullback_low is None else min(state.pullback_low, low)
+            state.last_pullback_low = state.pullback_low
+
+        if state.pullback_high is None:
+            state.pullback_high = high
+
+    def is_valid_pullback_setup(self, state, bar):
+        if state.leader_high is None or state.pullback_low is None:
+            return False
+
+        if self.is_pullback_too_deep(state):
+            return False
+
+        pullback_depth = (state.leader_high - state.pullback_low) / state.leader_high
+
+        if pullback_depth < self.min_pullback_depth_pct:
+            return False
+
+        if not self.is_pullback_holding_support(state, bar):
+            return False
+
+        return self.has_pullback_volume_contraction(state)
+
+    def is_pullback_too_deep(self, state):
+        if state.leader_high is None or state.pullback_low is None:
+            return False
+
+        return (state.leader_high - state.pullback_low) / state.leader_high > self.max_pullback_depth_pct
+
+    def is_pullback_holding_support(self, state, bar):
+        close = float(bar.Close)
+        support = self.pullback_support_level(state)
+
+        if support is None:
+            return close >= state.expansion_base
+
+        return close >= support * (1.0 - self.pullback_support_buffer_pct)
+
+    def pullback_support_level(self, state):
+        candidates = []
+
+        if state.vwap is not None and state.vwap > 0:
+            candidates.append(state.vwap)
+
+        if state.tema20 is not None and state.tema20 > 0:
+            candidates.append(state.tema20)
+
+        if state.expansion_base is not None and state.expansion_base > 0:
+            candidates.append(state.expansion_base)
+
+        if len(candidates) == 0:
+            return None
+
+        return max(candidates)
+
+    def has_pullback_volume_contraction(self, state):
+        if len(state.volumes) < 8:
+            return False
+
+        recent = list(state.volumes)
+        pullback_volume = sum(recent[-3:]) / 3.0
+        impulse_volume = sum(recent[-8:-3]) / 5.0
+
+        return impulse_volume > 0 and pullback_volume <= impulse_volume
 
     def handle_leader_watch(self, symbol, state, bar):
         price = float(bar.Close)

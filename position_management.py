@@ -588,6 +588,10 @@ class PositionManagementMixin:
         state.last_pullback_low = None
         state.last_consolidation_high = None
         state.last_consolidation_low = None
+        state.pullback_low = None
+        state.pullback_high = None
+        state.pullback_start_time = None
+        state.pullback_ready_time = None
 
         state.reentry_attempts = 0
         state.reset_pending_entry()

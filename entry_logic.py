@@ -83,6 +83,87 @@ class EntryLogicMixin:
         self.try_enter_at_price(symbol, state, bar, entry, trigger_level, signal_type)
         return True
 
+    def try_enter_on_pullback_quote(self, symbol, state):
+        if state.last_ask is None or state.last_ask <= 0:
+            return False
+
+        if len(state.bars) < 8:
+            return False
+
+        entry = float(state.last_ask)
+        reclaim_level = self.pullback_reclaim_level(state)
+
+        if reclaim_level is None or reclaim_level <= 0:
+            return False
+
+        if entry <= reclaim_level * (1.0 + self.pullback_reclaim_buffer_pct):
+            return False
+
+        if not self.is_pullback_completion_confirmed(state):
+            self.debugger.count_reject("pullback")
+            return False
+
+        bar = list(state.bars)[-1]
+        self.debugger.log_breakout_ready(symbol, entry, reclaim_level)
+        self.try_enter_at_price(
+            symbol,
+            state,
+            bar,
+            entry,
+            state.leader_high or reclaim_level,
+            "PULLBACK_RECLAIM",
+        )
+        return True
+
+    def pullback_reclaim_level(self, state):
+        levels = []
+
+        if state.vwap is not None and state.vwap > 0:
+            levels.append(state.vwap)
+
+        if state.tema9 is not None and state.tema9 > 0:
+            levels.append(state.tema9)
+
+        if len(levels) == 0:
+            return None
+
+        return max(levels)
+
+    def is_pullback_completion_confirmed(self, state):
+        if state.pullback_low is None:
+            return False
+
+        if not self.is_macd_turning_up(state):
+            return False
+
+        if not self.is_tema_reclaiming(state):
+            return False
+
+        return self.has_reclaim_volume_expansion(state)
+
+    def is_macd_turning_up(self, state):
+        if state.macd_hist is None or state.previous_macd_hist is None:
+            return False
+
+        return state.macd_hist > state.previous_macd_hist
+
+    def is_tema_reclaiming(self, state):
+        if state.tema9 is None or state.tema20 is None:
+            return False
+
+        reclaiming_tema9 = state.intrabar_close is not None and state.intrabar_close >= state.tema9
+
+        return state.tema9 >= state.tema20 or reclaiming_tema9
+
+    def has_reclaim_volume_expansion(self, state):
+        if len(state.volumes) < 6:
+            return False
+
+        current = max(float(state.volumes[-1]), float(state.intrabar_volume or 0.0))
+        baseline = sum(list(state.volumes)[-6:-1]) / 5.0
+
+        return baseline > 0 and current >= baseline * self.breakout_volume_multiplier
+
     def indicator_quote_signal(self, state, entry):
         vwap_signal = self.is_vwap_reclaim_quote(state, entry)
         high_signal = self.is_micro_high_break_quote(state, entry)
@@ -225,7 +306,7 @@ class EntryLogicMixin:
             state.state = self.entry_watch_state(state)
             return
 
-        stop = self.calculate_dynamic_chart_stop(state, entry)
+        stop = self.calculate_entry_stop(state, entry, entry_type)
 
         if stop is None:
             recent_low = MarketTools.lowest_low(
@@ -366,6 +447,9 @@ class EntryLogicMixin:
     def entry_watch_state(self, state):
         if state.state == MomentumState.PULLBACK_WATCH:
             return MomentumState.PULLBACK_WATCH
+
+        if state.state in (MomentumState.PULLBACK_FORMING, MomentumState.PULLBACK_READY):
+            return state.state
 
         return MomentumState.LEADER_WATCH
 
@@ -600,6 +684,20 @@ class EntryLogicMixin:
             return None
 
         return stop
+
+    def calculate_entry_stop(self, state, entry, entry_type):
+        if entry_type == "PULLBACK_RECLAIM" and state.pullback_low is not None:
+            stop = state.pullback_low * (1.0 - self.stop_buffer_pct)
+            stop_distance_pct = (entry - stop) / entry
+
+            if stop_distance_pct < self.min_stop_pct:
+                stop = entry * (1.0 - self.min_stop_pct)
+                stop_distance_pct = self.min_stop_pct
+
+            if stop_distance_pct <= self.hard_max_stop_pct:
+                return stop
+
+        return self.calculate_dynamic_chart_stop(state, entry)
 
     def can_enter_symbol(self, state):
         if state.failed_trade_count >= self.max_failed_trades_before_symbol_cooldown:

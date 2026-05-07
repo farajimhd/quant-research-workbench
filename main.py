@@ -37,7 +37,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-next-tick-vwap: early quote VWAP/high-break arm, TEMA/MACD context, momentum exits, entry failure only pre-progress",
+            run_label="v-next-pullback: runner -> pullback forming -> reclaim entry, pullback-low stop, MACD/TEMA decay exit",
         )
 
         self.risk = RiskManager(
