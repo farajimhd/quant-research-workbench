@@ -24,6 +24,7 @@ class SymbolState:
         self.bars = deque(maxlen=max_window)
         self.prices = deque(maxlen=max_window)
         self.volumes = deque(maxlen=max_window)
+        self.typical_prices = deque(maxlen=max_window)
 
         self.expansion_time = None
         self.expansion_high = None
@@ -41,6 +42,8 @@ class SymbolState:
         self.last_pullback_low = None
         self.last_consolidation_high = None
         self.last_consolidation_low = None
+        self.armed_entry_type = None
+        self.armed_level = None
 
         self.entry_price = None
         self.initial_stop_price = None
@@ -78,6 +81,7 @@ class SymbolState:
         self.pending_entry_quality_bucket = None
         self.pending_entry_risk_pct = None
         self.pending_entry_add_fraction = 0.0
+        self.pending_entry_type = None
 
         self.pending_exit_order_id = None
         self.pending_exit_reason = None
@@ -100,11 +104,132 @@ class SymbolState:
         self.entry_risk_pct = None
         self.entry_add_fraction = 0.0
         self.entry_breakout_high = None
+        self.entry_type = None
+
+        self.vwap_date = None
+        self.vwap_volume = 0.0
+        self.vwap_value = 0.0
+        self.vwap = None
+
+        self.tema9 = None
+        self.tema20 = None
+        self.tema9_ema1 = None
+        self.tema9_ema2 = None
+        self.tema9_ema3 = None
+        self.tema20_ema1 = None
+        self.tema20_ema2 = None
+        self.tema20_ema3 = None
+
+        self.macd_fast = None
+        self.macd_slow = None
+        self.macd = None
+        self.macd_signal = None
+        self.macd_hist = None
+        self.previous_macd_hist = None
+
+        self.intrabar_minute = None
+        self.intrabar_volume = 0.0
+        self.intrabar_high = None
+        self.intrabar_low = None
+        self.intrabar_close = None
+
+    def update_intrabar(self, bar):
+        minute = bar.EndTime.replace(second=0, microsecond=0)
+        high = float(bar.High)
+        low = float(bar.Low)
+        close = float(bar.Close)
+        volume = float(bar.Volume)
+
+        if self.intrabar_minute != minute:
+            self.intrabar_minute = minute
+            self.intrabar_volume = 0.0
+            self.intrabar_high = high
+            self.intrabar_low = low
+
+        self.intrabar_volume += volume
+        self.intrabar_high = high if self.intrabar_high is None else max(self.intrabar_high, high)
+        self.intrabar_low = low if self.intrabar_low is None else min(self.intrabar_low, low)
+        self.intrabar_close = close
 
     def update_bar(self, bar: TradeBar):
+        close = float(bar.Close)
+        high = float(bar.High)
+        low = float(bar.Low)
+        volume = float(bar.Volume)
+        typical = (high + low + close) / 3.0
+
         self.bars.append(bar)
-        self.prices.append(float(bar.Close))
-        self.volumes.append(float(bar.Volume))
+        self.prices.append(close)
+        self.volumes.append(volume)
+        self.typical_prices.append(typical)
+
+        self.update_vwap(bar, typical, volume)
+        self.update_indicators(close)
+
+    def update_vwap(self, bar, typical, volume):
+        current_date = bar.EndTime.date()
+
+        if self.vwap_date != current_date:
+            self.vwap_date = current_date
+            self.vwap_volume = 0.0
+            self.vwap_value = 0.0
+
+        self.vwap_volume += volume
+        self.vwap_value += typical * volume
+
+        if self.vwap_volume > 0:
+            self.vwap = self.vwap_value / self.vwap_volume
+
+    def update_indicators(self, close):
+        self.tema9_ema1, self.tema9_ema2, self.tema9_ema3, self.tema9 = self.update_tema(
+            close,
+            9,
+            self.tema9_ema1,
+            self.tema9_ema2,
+            self.tema9_ema3,
+        )
+        self.tema20_ema1, self.tema20_ema2, self.tema20_ema3, self.tema20 = self.update_tema(
+            close,
+            20,
+            self.tema20_ema1,
+            self.tema20_ema2,
+            self.tema20_ema3,
+        )
+
+        self.macd_fast = self.update_ema(close, 12, self.macd_fast)
+        self.macd_slow = self.update_ema(close, 26, self.macd_slow)
+
+        if self.macd_fast is None or self.macd_slow is None:
+            return
+
+        self.macd = self.macd_fast - self.macd_slow
+        self.macd_signal = self.update_ema(self.macd, 9, self.macd_signal)
+
+        if self.macd_signal is None:
+            return
+
+        self.previous_macd_hist = self.macd_hist
+        self.macd_hist = self.macd - self.macd_signal
+
+    def update_tema(self, value, period, ema1, ema2, ema3):
+        ema1 = self.update_ema(value, period, ema1)
+        ema2 = self.update_ema(ema1, period, ema2)
+        ema3 = self.update_ema(ema2, period, ema3)
+
+        if ema1 is None or ema2 is None or ema3 is None:
+            return ema1, ema2, ema3, None
+
+        return ema1, ema2, ema3, (3.0 * ema1) - (3.0 * ema2) + ema3
+
+    def update_ema(self, value, period, current):
+        if value is None:
+            return current
+
+        if current is None:
+            return value
+
+        alpha = 2.0 / (period + 1.0)
+        return (value * alpha) + (current * (1.0 - alpha))
 
     def update_quote(self, bid: float, ask: float, time):
         if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
@@ -152,6 +277,22 @@ class SymbolState:
 
         return float(sum(list(self.volumes)[-bars:]))
 
+    def recent_high(self, bars: int, exclude_current: bool = True) -> float:
+        if len(self.bars) == 0:
+            return 0.0
+
+        items = list(self.bars)
+
+        if exclude_current:
+            items = items[:-1]
+
+        items = items[-bars:]
+
+        if len(items) == 0:
+            return 0.0
+
+        return max(float(bar.High) for bar in items)
+
     def reset_trade_fields(self):
         self.entry_price = None
         self.initial_stop_price = None
@@ -171,6 +312,7 @@ class SymbolState:
         self.entry_risk_pct = None
         self.entry_add_fraction = 0.0
         self.entry_breakout_high = None
+        self.entry_type = None
 
         self.scout_reduced = False
         self.slow_reduced = False
@@ -191,6 +333,7 @@ class SymbolState:
         self.pending_entry_quality_bucket = None
         self.pending_entry_risk_pct = None
         self.pending_entry_add_fraction = 0.0
+        self.pending_entry_type = None
 
     def reset_pending_exit(self):
         self.pending_exit_order_id = None

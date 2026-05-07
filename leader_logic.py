@@ -272,8 +272,13 @@ class LeaderLogicMixin:
         if len(state.volumes) < 20:
             return 0.0
 
-        recent_5 = sum(list(state.volumes)[-5:])
-        baseline = sum(list(state.volumes)[-20:-5]) / 3.0
+        recent = list(state.volumes)
+        current_forming_volume = float(state.intrabar_volume or 0.0)
+        if current_forming_volume > 0:
+            recent_5 = sum(recent[-4:]) + current_forming_volume
+        else:
+            recent_5 = sum(recent[-5:])
+        baseline = sum(recent[-20:-5]) / 3.0
 
         if baseline <= 0:
             return 0.0

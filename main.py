@@ -4,6 +4,7 @@ from alpha_core import MomentumAlphaCore
 from debug_tools import DebugManager
 from risk_tools import RiskManager
 from state import SymbolState
+from datetime import timedelta
 
 
 # =============================================================================
@@ -25,7 +26,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         self.max_float_or_shares = 50_000_000
         self.min_daily_dollar_volume = 2_000_000
 
-        self.UniverseSettings.Resolution = Resolution.Minute
+        self.UniverseSettings.Resolution = Resolution.Second
         self.UniverseSettings.ExtendedMarketHours = True
         self.AddUniverse(self.UniverseSelection)
 
@@ -37,7 +38,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-next-confirm-debug: confirmed early fail, entry rv/sr/st/ex/re tags, exit R/mfe/age/q/re tags, split stops",
+            run_label="v-next-tick-vwap: early quote VWAP/high-break arm, TEMA/MACD context, momentum exits, entry failure only pre-progress",
         )
 
         self.risk = RiskManager(
@@ -57,6 +58,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         )
 
         self.symbol_states = {}
+        self.minute_consolidators = {}
 
         self.SetBenchmark("SPY")
 
@@ -199,6 +201,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
 
             if symbol not in self.symbol_states:
                 self.symbol_states[symbol] = SymbolState(symbol)
+                self.add_minute_consolidator(symbol)
 
         for security in changes.RemovedSecurities:
             symbol = security.Symbol
@@ -206,6 +209,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             if self.Portfolio[symbol].Invested:
                 self.Liquidate(symbol, "Removed from universe")
 
+            self.remove_minute_consolidator(symbol)
             self.symbol_states.pop(symbol, None)
 
     # =========================================================================
@@ -216,19 +220,42 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         self.debugger.emit_daily_summary_if_needed()
 
         for symbol, state in list(self.symbol_states.items()):
+            if data.Bars.ContainsKey(symbol):
+                state.update_intrabar(data.Bars[symbol])
+
             self.UpdateQuoteSnapshot(symbol, state, data)
 
             self.core.process_quote(symbol, state)
 
-            if not data.Bars.ContainsKey(symbol):
-                continue
+    def add_minute_consolidator(self, symbol):
+        if symbol in self.minute_consolidators:
+            return
 
-            # Allow regular + extended hours.
-            # Liquidity/spread filters decide whether the symbol is tradable.
-            bar = data.Bars[symbol]
-            state.update_bar(bar)
+        consolidator = TradeBarConsolidator(timedelta(minutes=1))
 
-            self.core.process_symbol(symbol, state, bar)
+        def on_minute_bar(sender, bar, symbol=symbol):
+            self.OnMinuteBar(symbol, bar)
+
+        consolidator.DataConsolidated += on_minute_bar
+        self.SubscriptionManager.AddConsolidator(symbol, consolidator)
+        self.minute_consolidators[symbol] = consolidator
+
+    def remove_minute_consolidator(self, symbol):
+        consolidator = self.minute_consolidators.pop(symbol, None)
+
+        if consolidator is None:
+            return
+
+        self.SubscriptionManager.RemoveConsolidator(symbol, consolidator)
+
+    def OnMinuteBar(self, symbol, bar):
+        state = self.symbol_states.get(symbol)
+
+        if state is None:
+            return
+
+        state.update_bar(bar)
+        self.core.process_symbol(symbol, state, bar)
 
     def UpdateQuoteSnapshot(self, symbol, state, data):
         bid = None

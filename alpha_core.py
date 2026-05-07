@@ -24,6 +24,10 @@ class MomentumAlphaCore(
         self.expansion_windows = [3, 5, 10]
         self.min_expansion_move = 0.04
         self.required_relative_volume = 5.0
+        self.early_required_relative_volume = 1.5
+        self.vwap_reclaim_buffer_pct = 0.001
+        self.micro_high_lookback_bars = 5
+        self.min_indicator_volume_multiplier = 1.6
 
         # =============================================================================
         # Price / Volume Filters
@@ -70,6 +74,7 @@ class MomentumAlphaCore(
         self.breakout_volume_multiplier = 1.20
         self.min_leader_watch_minutes = 2
         self.max_breakout_extension_pct = 0.035
+        self.require_indicator_confirmation = True
 
         # =============================================================================
         # Re-entry Throttle
@@ -145,6 +150,8 @@ class MomentumAlphaCore(
         self.protect_after_mfe_pct = 0.02
         self.protected_giveback_pct = 0.45
         self.min_locked_profit_r = 0.25
+        self.entry_failure_min_mfe_r = 0.20
+        self.momentum_exit_min_mfe_r = 0.80
 
         # =============================================================================
         # Simplification For Testing Core Edge
@@ -202,7 +209,14 @@ class MomentumAlphaCore(
         if state.state in (MomentumState.PENDING_ENTRY, MomentumState.PENDING_EXIT):
             return
 
+        if state.state == MomentumState.QUIET:
+            self.try_enter_on_indicator_quote(symbol, state)
+            return
+
         if state.state in (MomentumState.LEADER_WATCH, MomentumState.PULLBACK_WATCH):
+            if self.try_enter_on_indicator_quote(symbol, state):
+                return
+
             self.try_enter_on_quote(symbol, state)
             return
 
@@ -262,6 +276,7 @@ class MomentumAlphaCore(
         state.entry_risk_pct = state.pending_entry_risk_pct
         state.entry_add_fraction = state.pending_entry_add_fraction
         state.entry_breakout_high = state.pending_entry_breakout_high
+        state.entry_type = state.pending_entry_type
 
         state.scout_reduced = False
         state.slow_reduced = False

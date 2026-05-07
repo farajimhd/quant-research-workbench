@@ -21,7 +21,7 @@ class EntryLogicMixin:
             exclude_current=True,
         )
 
-        self.try_enter_at_price(symbol, state, bar, entry, breakout_high)
+        self.try_enter_at_price(symbol, state, bar, entry, breakout_high, "BAR_HIGH_BREAK")
 
     def try_enter_on_quote(self, symbol, state):
         if state.last_ask is None or state.last_ask <= 0:
@@ -55,7 +55,121 @@ class EntryLogicMixin:
             return
 
         self.debugger.log_breakout_ready(symbol, entry, breakout_high)
-        self.try_enter_at_price(symbol, state, bar, entry, breakout_high)
+        self.try_enter_at_price(symbol, state, bar, entry, breakout_high, "QUOTE_HIGH_BREAK")
+        return True
+
+    def try_enter_on_indicator_quote(self, symbol, state):
+        if state.last_ask is None or state.last_ask <= 0:
+            return False
+
+        if len(state.bars) < 6:
+            return False
+
+        bar = list(state.bars)[-1]
+        entry = float(state.last_ask)
+        signal_type, trigger_level = self.indicator_quote_signal(state, entry)
+
+        if signal_type is None:
+            return False
+
+        if not self.indicator_context_confirms(state):
+            self.debugger.count_reject("indicator")
+            return False
+
+        if state.state == MomentumState.QUIET:
+            self.mark_leader_from_indicator_quote(symbol, state, bar, entry, signal_type)
+
+        self.debugger.log_breakout_ready(symbol, entry, trigger_level)
+        self.try_enter_at_price(symbol, state, bar, entry, trigger_level, signal_type)
+        return True
+
+    def indicator_quote_signal(self, state, entry):
+        vwap_signal = self.is_vwap_reclaim_quote(state, entry)
+        high_signal = self.is_micro_high_break_quote(state, entry)
+
+        if vwap_signal and high_signal:
+            return "VWAP_HIGH_BREAK", max(state.vwap or 0.0, state.recent_high(self.micro_high_lookback_bars))
+
+        if high_signal:
+            return "HIGH_BREAK", state.recent_high(self.micro_high_lookback_bars)
+
+        if vwap_signal:
+            return "VWAP_RECLAIM", state.vwap
+
+        return None, None
+
+    def is_vwap_reclaim_quote(self, state, entry):
+        if state.vwap is None or state.vwap <= 0:
+            return False
+
+        if entry <= state.vwap * (1.0 + self.vwap_reclaim_buffer_pct):
+            return False
+
+        if len(state.bars) == 0:
+            return False
+
+        last_bar = list(state.bars)[-1]
+
+        return float(last_bar.Low) <= state.vwap * (1.0 + self.vwap_reclaim_buffer_pct)
+
+    def is_micro_high_break_quote(self, state, entry):
+        recent_high = state.recent_high(self.micro_high_lookback_bars)
+
+        if recent_high <= 0:
+            return False
+
+        return entry > recent_high * (1.0 + self.min_breakout_margin_pct)
+
+    def indicator_context_confirms(self, state):
+        if not self.has_indicator_volume_expansion(state):
+            return False
+
+        if not self.require_indicator_confirmation:
+            return True
+
+        return self.is_macd_opening(state) or self.is_tema_bullish(state)
+
+    def has_indicator_volume_expansion(self, state):
+        if len(state.volumes) < 8:
+            return False
+
+        current = max(float(state.volumes[-1]), float(state.intrabar_volume or 0.0))
+        baseline = sum(list(state.volumes)[-6:-1]) / 5.0
+
+        if baseline <= 0:
+            return False
+
+        if current < baseline * self.min_indicator_volume_multiplier:
+            return False
+
+        return self.estimate_relative_volume(state) >= self.early_required_relative_volume
+
+    def is_macd_opening(self, state):
+        if state.macd is None or state.macd_signal is None or state.macd_hist is None:
+            return False
+
+        if state.macd <= state.macd_signal:
+            return False
+
+        if state.previous_macd_hist is None:
+            return state.macd_hist > 0
+
+        return state.macd_hist > 0 and state.macd_hist >= state.previous_macd_hist
+
+    def is_tema_bullish(self, state):
+        if state.tema9 is None or state.tema20 is None:
+            return False
+
+        return state.tema9 >= state.tema20
+
+    def mark_leader_from_indicator_quote(self, symbol, state, bar, entry, signal_type):
+        move = max(self.detect_abnormal_expansion(state) or 0.0, 0.0)
+        rv = self.estimate_relative_volume(state)
+        spread = MarketTools.spread_pct(self.algorithm, symbol, entry)
+
+        self.mark_leader(symbol, state, bar, move, rv, spread)
+        state.armed_entry_type = signal_type
+        state.armed_level = entry
 
     def quote_breakout_level(self, state):
         chart_high = MarketTools.highest_high(
@@ -81,7 +195,7 @@ class EntryLogicMixin:
 
         return margin
 
-    def try_enter_at_price(self, symbol, state, bar, entry, breakout_high):
+    def try_enter_at_price(self, symbol, state, bar, entry, breakout_high, entry_type="HIGH_BREAK"):
         if not self.can_enter_symbol(state):
             self.debugger.count_reject("cool")
             state.state = self.entry_watch_state(state)
@@ -215,9 +329,10 @@ class EntryLogicMixin:
             stop_pct=quality["stop_pct"],
             extension_pct=quality["extension_pct"],
             reentry_attempts=state.reentry_attempts,
+            entry_type=entry_type,
         )
 
-        ticket = self.submit_entry_order(symbol, quantity, quality, state.reentry_attempts)
+        ticket = self.submit_entry_order(symbol, quantity, quality, state.reentry_attempts, entry_type)
 
         if ticket is None:
             self.debugger.count_reject("order")
@@ -234,6 +349,7 @@ class EntryLogicMixin:
         state.pending_entry_quality_bucket = quality["bucket"]
         state.pending_entry_risk_pct = quality["risk_pct"]
         state.pending_entry_add_fraction = quality["add_fraction"]
+        state.pending_entry_type = entry_type
         state.state = MomentumState.PENDING_ENTRY
 
         if ticket.Status == OrderStatus.Filled:
@@ -543,12 +659,20 @@ class EntryLogicMixin:
 
         return bid is not None and ask is not None
 
-    def submit_entry_order(self, symbol, quantity, quality=None, reentry_attempts=0):
+    def submit_entry_order(
+        self,
+        symbol,
+        quantity,
+        quality=None,
+        reentry_attempts=0,
+        entry_type="HIGH_BREAK",
+    ):
         tag = "entry"
 
         if quality is not None:
             tag = (
-                f"{tag}|q={quality['bucket']}{quality['score']}"
+                f"{tag}|t={entry_type}"
+                f"|q={quality['bucket']}{quality['score']}"
                 f"|rp={quality['risk_pct'] * 100:.2f}"
                 f"|rv={quality['relative_volume']:.1f}"
                 f"|sr={quality['spread_to_risk']:.2f}"

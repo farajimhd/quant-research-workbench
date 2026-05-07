@@ -31,8 +31,8 @@ class DebugManager:
         self.max_console_events_per_day = {
             "A": 0,
             "B": 0,
-            "E": 2,
-            "X": 2,
+            "E": 1,
+            "X": 1,
             "RJ": 1,
             "D": 0,
             "W": 0,
@@ -142,6 +142,7 @@ class DebugManager:
             f"xTR={self.counters['exit_TRAIL_STOP']}",
             f"xBE={self.counters['exit_BE_STOP']}",
             f"xNP={self.counters['exit_NO_PROGRESS']}",
+            f"xMC={self.counters['exit_MOMENTUM_CLOSE']}",
             f"rSp={self.counters['rj_spread']}",
             f"rSR={self.counters['rj_spread_risk']}",
             f"rExp={self.counters['rj_not_explosive']}",
@@ -151,6 +152,7 @@ class DebugManager:
             f"rQ={self.counters['rj_no_quote']}",
             f"rQl={self.counters['rj_quality']}",
             f"rEc={self.counters['rj_economics']}",
+            f"rIn={self.counters['rj_indicator']}",
             f"dead={self.counters['dead']}",
             f"stale={self.counters['stale']}",
             f"lt={len(self.leader_tickers)}",
@@ -191,6 +193,7 @@ class DebugManager:
         stop_pct=None,
         extension_pct=None,
         reentry_attempts=0,
+        entry_type="",
     ):
         quality = ""
 
@@ -206,7 +209,7 @@ class DebugManager:
             and extension_pct is not None
         ):
             metrics = (
-                f"|rv={relative_volume:.1f}|sr={spread_to_risk:.2f}"
+                f"|t={entry_type}|rv={relative_volume:.1f}|sr={spread_to_risk:.2f}"
                 f"|st={stop_pct * 100:.1f}|ex={extension_pct * 100:.1f}|re={reentry_attempts}"
             )
 

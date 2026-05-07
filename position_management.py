@@ -39,6 +39,22 @@ class PositionManagementMixin:
             )
             return
 
+        if self.should_exit_for_momentum_close(state, mfe_r):
+            self.exit_to_pullback_watch(
+                symbol,
+                state,
+                bid,
+                r,
+                "MOMENTUM_CLOSE",
+                force_limit=True,
+            )
+            return
+
+        if mfe_r >= self.entry_failure_min_mfe_r:
+            state.early_failure_quote_count = 0
+            state.entry_failure_quote_count = 0
+            return
+
         early_failure = self.should_exit_for_early_quote_failure(state, bid)
 
         if early_failure:
@@ -318,6 +334,23 @@ class PositionManagementMixin:
 
         return bid <= pullback_level
 
+    def should_exit_for_momentum_close(self, state, mfe_r):
+        if mfe_r < self.momentum_exit_min_mfe_r:
+            return False
+
+        macd_closed = (
+            state.macd is not None
+            and state.macd_signal is not None
+            and state.macd <= state.macd_signal
+        )
+        tema_compressed = (
+            state.tema9 is not None
+            and state.tema20 is not None
+            and state.tema9 <= state.tema20
+        )
+
+        return macd_closed or tema_compressed
+
     def quality_pullback_giveback_pct(self, state):
         bucket = state.entry_quality_bucket
 
@@ -450,13 +483,13 @@ class PositionManagementMixin:
             self.handle_exit_ticket_fill(symbol, state, ticket)
 
     def exit_debug_metrics(self, state, r):
-        return f"{self.exit_telemetry(state, r)}|rebreak={state.last_breakout_high:.2f}"
+        return f"{self.exit_telemetry(state, r, include_r=False)}|rebreak={state.last_breakout_high:.2f}"
 
     def exit_order_tag(self, state, reason, r):
         telemetry = self.exit_telemetry(state, r)
         return f"{reason}|{telemetry}"
 
-    def exit_telemetry(self, state, r=None):
+    def exit_telemetry(self, state, r=None, include_r=True):
         risk = 0.0
 
         if state.entry_price is not None and state.initial_stop_price is not None:
@@ -481,7 +514,21 @@ class PositionManagementMixin:
         if state.entry_quality_bucket is not None and state.entry_quality_score is not None:
             quality = f"{state.entry_quality_bucket}{state.entry_quality_score}"
 
-        return f"R={r:.2f}|m={mfe_r:.2f}|a={age_minutes}|q={quality}|re={state.reentry_attempts}"
+        fields = []
+
+        if include_r:
+            fields.append(f"R={r:.2f}")
+
+        fields.extend(
+            [
+                f"m={mfe_r:.2f}",
+                f"a={age_minutes}",
+                f"q={quality}",
+                f"re={state.reentry_attempts}",
+            ]
+        )
+
+        return "|".join(fields)
 
     def handle_pullback_watch(self, symbol, state, bar):
         price = float(bar.Close)
