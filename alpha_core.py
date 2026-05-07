@@ -87,7 +87,8 @@ class MomentumAlphaCore(
         self.stop_lookback_bars = 5
         self.stop_buffer_pct = 0.0025
         self.min_stop_pct = 0.004
-        self.hard_max_stop_pct = 0.10
+        self.hard_max_stop_pct = 0.08
+        self.max_spread_to_risk = 0.35
 
         # =============================================================================
         # Clean No-Progress Exit
@@ -122,8 +123,13 @@ class MomentumAlphaCore(
         # =============================================================================
         # Simplification For Testing Core Edge
         # =============================================================================
-        self.enable_pyramiding = False
+        self.enable_pyramiding = True
         self.enable_partial_exits = False
+        self.initial_position_fraction = 0.70
+        self.confirmation_add_fraction = 0.30
+        self.add_after_mfe_r = 0.75
+        self.add_after_mfe_pct = 0.015
+        self.min_minutes_before_add = 1
 
         # =============================================================================
         # Re-entry Configuration
@@ -249,9 +255,11 @@ class MomentumAlphaCore(
             return
 
         r = state.pending_exit_r
+        reason = state.pending_exit_reason
 
         state.last_exit_time = self.algorithm.Time
         state.last_exit_r = r
+        state.last_exit_reason = reason
 
         if r is not None and r < 0:
             state.failed_trade_count += 1
@@ -264,9 +272,22 @@ class MomentumAlphaCore(
         state.reset_trade_fields()
         state.reentry_attempts += 1
 
+        if not self.is_reentry_allowed_after_exit(reason, r):
+            state.state = MomentumState.COOLDOWN
+            return
+
         if state.reentry_attempts > self.max_reentries:
             state.state = MomentumState.COOLDOWN
             return
 
         state.state = MomentumState.PULLBACK_WATCH
         self.debugger.log_reentry_watch(symbol, state.last_breakout_high)
+
+    def is_reentry_allowed_after_exit(self, reason, r):
+        if reason == "ENTRY_FAIL":
+            return False
+
+        if reason == "PROFIT_PULLBACK":
+            return True
+
+        return r is not None and r > 0

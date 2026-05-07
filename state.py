@@ -62,6 +62,7 @@ class SymbolState:
         self.last_exit_time = None
         self.last_entry_time = None
         self.last_exit_r = None
+        self.last_exit_reason = None
         self.failed_trade_count = 0
         self.last_failed_trade_time = None
 

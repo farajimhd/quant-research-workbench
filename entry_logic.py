@@ -146,7 +146,20 @@ class EntryLogicMixin:
             state.state = self.entry_watch_state(state)
             return
 
+        spread_dollars = spread * entry
+
+        if spread_dollars / risk > self.max_spread_to_risk:
+            self.debugger.c_log(
+                "RJ",
+                symbol,
+                f"spread_risk|sp={spread_dollars:.2f}|risk={risk:.2f}|p={entry:.2f}",
+            )
+            self.debugger.count_reject("spread_risk")
+            state.state = self.entry_watch_state(state)
+            return
+
         quantity = self.risk.calculate_quantity(entry, stop)
+        quantity = self.apply_initial_position_fraction(quantity)
 
         if quantity <= 0:
             self.debugger.c_log(
@@ -198,6 +211,14 @@ class EntryLogicMixin:
             return MomentumState.PULLBACK_WATCH
 
         return MomentumState.LEADER_WATCH
+
+    def apply_initial_position_fraction(self, quantity):
+        fraction = getattr(self, "initial_position_fraction", 1.0)
+
+        if fraction >= 1.0:
+            return quantity
+
+        return max(1, int(quantity * fraction))
 
     def calculate_dynamic_chart_stop(self, state, entry):
         if len(state.bars) < self.stop_lookback_bars:

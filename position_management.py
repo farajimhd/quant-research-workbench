@@ -76,6 +76,8 @@ class PositionManagementMixin:
             self.exit_to_pullback_watch(symbol, state, price, r, "STRUCT_FAIL")
             return
 
+        self.try_add_confirmed_position(symbol, state, price, mfe_r, mfe_pct)
+
         trailing_stop = self.calculate_structure_trailing_stop(state, r)
 
         if trailing_stop is not None:
@@ -164,6 +166,79 @@ class PositionManagementMixin:
         elapsed = (state.last_quote_time - state.previous_quote_time).total_seconds()
 
         return 0 < elapsed <= self.entry_failure_fast_quote_max_seconds
+
+    def try_add_confirmed_position(self, symbol, state, price, mfe_r, mfe_pct):
+        if not getattr(self, "enable_pyramiding", False):
+            return
+
+        if state.add_count > 0:
+            return
+
+        if state.entry_price is None or state.initial_stop_price is None:
+            return
+
+        if state.entry_time is None:
+            return
+
+        elapsed = self.algorithm.Time - state.entry_time
+
+        if elapsed.total_seconds() < self.min_minutes_before_add * 60:
+            return
+
+        if mfe_r < self.add_after_mfe_r and mfe_pct < self.add_after_mfe_pct:
+            return
+
+        if not self.is_entry_allowed_now(symbol):
+            return
+
+        if not self.has_marketable_quote(symbol):
+            return
+
+        total_quantity = self.risk.calculate_quantity(
+            state.entry_price,
+            state.initial_stop_price,
+        )
+
+        target_add = int(total_quantity * self.confirmation_add_fraction)
+        current_quantity = abs(int(self.algorithm.Portfolio[symbol].Quantity))
+        remaining = max(0, total_quantity - current_quantity)
+        quantity = min(target_add, remaining)
+
+        if quantity <= 0:
+            state.add_count = 1
+            return
+
+        ticket = self.submit_add_order(symbol, quantity)
+
+        if ticket is None:
+            return
+
+        state.add_count += 1
+        self.debugger.count("add_submit", symbol)
+
+    def submit_add_order(self, symbol, quantity):
+        tag = "confirmed momentum add"
+
+        if MarketTools.is_regular_market_order_safe(
+            self.algorithm,
+            symbol,
+            self.regular_market_order_close_buffer_minutes,
+        ):
+            return self.algorithm.MarketOrder(symbol, quantity, tag=tag)
+
+        bid, ask = MarketTools.bid_ask(self.algorithm, symbol)
+
+        if bid is None or ask is None:
+            return None
+
+        limit_price = ask * (1.0 + self.extended_hours_limit_buffer_pct)
+
+        return self.algorithm.LimitOrder(
+            symbol,
+            quantity,
+            limit_price,
+            tag=f"{tag}|ext_limit",
+        )
 
     def should_exit_for_quote_profit_pullback(self, state, bid, mfe_r, mfe_pct):
         if not getattr(self, "enable_acceleration_pullback_exit", True):
