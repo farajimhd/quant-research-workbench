@@ -27,11 +27,11 @@ class OpeningRangeBreakoutCore:
         self.min_planned_risk_dollars = 12.0
         self.max_full_cash_risk_pct = 0.02
         self.entry_order_timeout_minutes = 30
-        self.breakeven_after_r = 0.75
-        self.trail_after_r = 1.50
-        self.trail_mfe_keep_fraction = 0.50
-        self.min_stop_update_pct = 0.001
-        self.stop_update_close_buffer_pct = 0.001
+        self.breakeven_after_r = 1.50
+        self.trail_after_r = 3.00
+        self.trail_mfe_keep_fraction = 0.30
+        self.min_stop_update_pct = 0.005
+        self.stop_update_close_buffer_pct = 0.002
         self.exit_minutes_before_close = 5
         self.cancel_unfilled_minutes_before_close = 10
         self.current_rank_date = None
