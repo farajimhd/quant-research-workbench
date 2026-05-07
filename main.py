@@ -36,7 +36,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-orb-relaxed-profit-cycle: relaxed universe to $500, 3pct profit pocket, rebreak reentry",
+            run_label="v-orb-box-macd-multi: box-mid stop, 5m MACD open/close, top-scored concurrent candidates",
         )
 
         self.risk = RiskManager(

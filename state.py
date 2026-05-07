@@ -19,18 +19,33 @@ class SymbolState:
         self.orb_relative_volume = 0.0
         self.orb_direction = None
         self.orb_ranked = False
+        self.orb_score = 0.0
 
         self.orb_entry_order_id = None
         self.orb_stop_order_id = None
-        self.orb_profit_order_id = None
         self.orb_entry_price = None
         self.orb_stop_price = None
-        self.orb_profit_price = None
         self.orb_quantity = 0
         self.orb_exit_submitted = False
         self.orb_rank = None
-        self.orb_reentry_level = None
-        self.orb_reentry_count = 0
+
+        self.last_price = None
+        self.last_high = None
+        self.last_low = None
+
+        self.macd_bucket = None
+        self.macd_bucket_close = None
+        self.macd_fast_ema = None
+        self.macd_slow_ema = None
+        self.macd_signal = None
+        self.macd_line = None
+        self.macd_hist = None
+        self.prev_macd_line = None
+        self.prev_macd_signal = None
+        self.macd_fast_count = 0
+        self.macd_slow_count = 0
+        self.macd_signal_count = 0
+        self.macd_ready = False
 
     def reset_orb_day(self, current_date):
         self.orb_date = current_date
@@ -42,15 +57,18 @@ class SymbolState:
         self.orb_relative_volume = 0.0
         self.orb_direction = None
         self.orb_ranked = False
+        self.orb_score = 0.0
 
         self.orb_entry_order_id = None
         self.orb_stop_order_id = None
-        self.orb_profit_order_id = None
         self.orb_entry_price = None
         self.orb_stop_price = None
-        self.orb_profit_price = None
         self.orb_quantity = 0
         self.orb_exit_submitted = False
         self.orb_rank = None
-        self.orb_reentry_level = None
-        self.orb_reentry_count = 0
+
+        self.last_price = None
+        self.last_high = None
+        self.last_low = None
+        self.macd_bucket = None
+        self.macd_bucket_close = None
