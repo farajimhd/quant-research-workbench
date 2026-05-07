@@ -156,29 +156,46 @@ class LeaderLogicMixin:
         return False
 
     def is_explosive_breakout_candidate(self, state, bar):
+        return self.breakout_reject_reason(state, bar, float(bar.Close), True) is None
+
+    def is_quote_breakout_setup(self, state, bar, trigger_price):
+        return self.breakout_reject_reason(state, bar, trigger_price, False) is None
+
+    def breakout_reject_reason(
+        self,
+        state,
+        bar,
+        trigger_price,
+        require_bar_break,
+        extension_level=None,
+    ):
         if not self.has_acceptable_price_volume(state, bar):
-            return False
+            return "setup"
 
         if not self.has_minimum_leader_watch_time(state):
-            return False
+            return "setup"
 
         if not MarketTools.is_pullback_holding_structure(state, bar):
-            return False
+            return "setup"
 
         if not self.has_breakout_volume_expansion(state):
-            return False
+            return "setup"
 
-        if self.is_breakout_too_extended(state, bar):
-            return False
+        if self.is_breakout_too_extended(state, bar, trigger_price, extension_level):
+            return "extended"
 
-        return MarketTools.is_explosive_high_break(
-            state=state,
-            bar=bar,
-            lookback_bars=self.leader_breakout_lookback_bars,
-            min_breakout_margin_pct=self.min_breakout_margin_pct,
-            min_body_pct=self.min_breakout_body_pct,
-            min_close_location=self.min_close_location,
-        )
+        if require_bar_break:
+            if not MarketTools.is_explosive_high_break(
+                state=state,
+                bar=bar,
+                lookback_bars=self.leader_breakout_lookback_bars,
+                min_breakout_margin_pct=self.min_breakout_margin_pct,
+                min_body_pct=self.min_breakout_body_pct,
+                min_close_location=self.min_close_location,
+            ):
+                return "no_break"
+
+        return None
 
     def has_minimum_leader_watch_time(self, state):
         if state.expansion_time is None:
@@ -188,17 +205,20 @@ class LeaderLogicMixin:
 
         return elapsed.total_seconds() >= self.min_leader_watch_minutes * 60
 
-    def is_breakout_too_extended(self, state, bar):
-        previous_high = MarketTools.highest_high(
-            state,
-            self.leader_breakout_lookback_bars,
-            exclude_current=True,
-        )
+    def is_breakout_too_extended(self, state, bar, trigger_price=None, extension_level=None):
+        previous_high = extension_level
+
+        if previous_high is None:
+            previous_high = MarketTools.highest_high(
+                state,
+                self.leader_breakout_lookback_bars,
+                exclude_current=True,
+            )
 
         if previous_high <= 0:
             return False
 
-        close = float(bar.Close)
+        close = float(bar.Close) if trigger_price is None else float(trigger_price)
 
         return close > previous_high * (1.0 + self.max_breakout_extension_pct)
 

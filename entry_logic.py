@@ -7,27 +7,96 @@ from state import MomentumState
 class EntryLogicMixin:
 
     def try_enter(self, symbol, state, bar):
+        entry = float(bar.Close)
+        reject_reason = self.breakout_reject_reason(state, bar, entry, True)
+
+        if reject_reason is not None:
+            self.count_entry_reject(reject_reason)
+            state.state = self.entry_watch_state(state)
+            return
+
+        breakout_high = MarketTools.highest_high(
+            state,
+            self.leader_breakout_lookback_bars,
+            exclude_current=True,
+        )
+
+        self.try_enter_at_price(symbol, state, bar, entry, breakout_high)
+
+    def try_enter_on_quote(self, symbol, state):
+        if state.last_ask is None or state.last_ask <= 0:
+            return
+
+        if len(state.bars) == 0:
+            return
+
+        bar = list(state.bars)[-1]
+        entry = float(state.last_ask)
+        breakout_high = self.quote_breakout_level(state)
+
+        if breakout_high <= 0:
+            return
+
+        required_margin = self.quote_breakout_margin(state)
+
+        if entry <= breakout_high * (1.0 + required_margin):
+            return
+
+        reject_reason = self.breakout_reject_reason(
+            state,
+            bar,
+            entry,
+            False,
+            extension_level=breakout_high,
+        )
+
+        if reject_reason is not None:
+            self.count_entry_reject(reject_reason)
+            return
+
+        self.debugger.log_breakout_ready(symbol, entry, breakout_high)
+        self.try_enter_at_price(symbol, state, bar, entry, breakout_high)
+
+    def quote_breakout_level(self, state):
+        chart_high = MarketTools.highest_high(
+            state,
+            self.leader_breakout_lookback_bars,
+            exclude_current=False,
+        )
+
+        if state.state == MomentumState.PULLBACK_WATCH and state.last_breakout_high is not None:
+            return max(chart_high, state.last_breakout_high)
+
+        return chart_high
+
+    def quote_breakout_margin(self, state):
+        margin = self.min_breakout_margin_pct
+
+        if (
+            state.state == MomentumState.PULLBACK_WATCH
+            and state.last_exit_r is not None
+            and state.last_exit_r <= self.max_failed_reentry_r
+        ):
+            margin += self.reentry_extra_margin_pct
+
+        return margin
+
+    def try_enter_at_price(self, symbol, state, bar, entry, breakout_high):
         if not self.can_enter_symbol(state):
             self.debugger.count_reject("cool")
-            state.state = MomentumState.LEADER_WATCH
+            state.state = self.entry_watch_state(state)
             return
 
         if not self.is_entry_allowed_now(symbol):
             self.debugger.count_reject("market")
-            state.state = MomentumState.LEADER_WATCH
+            state.state = self.entry_watch_state(state)
             return
 
         if not self.has_marketable_quote(symbol):
             self.debugger.count_reject("no_quote")
-            state.state = MomentumState.LEADER_WATCH
+            state.state = self.entry_watch_state(state)
             return
 
-        if not self.is_explosive_breakout_candidate(state, bar):
-            self.debugger.count_reject("not_explosive")
-            state.state = MomentumState.LEADER_WATCH
-            return
-
-        entry = float(bar.Close)
         rv = self.estimate_relative_volume(state)
         spread = MarketTools.spread_pct(self.algorithm, symbol, entry)
         max_spread = self.allowed_spread_pct(entry, rv)
@@ -39,7 +108,7 @@ class EntryLogicMixin:
                 f"spread|sp={spread * 100:.2f}|max={max_spread * 100:.2f}|rv={rv:.1f}|p={entry:.2f}",
             )
             self.debugger.count_reject("spread")
-            state.state = MomentumState.LEADER_WATCH
+            state.state = self.entry_watch_state(state)
             return
 
         stop = self.calculate_dynamic_chart_stop(state, entry)
@@ -63,12 +132,10 @@ class EntryLogicMixin:
                 f"stop_none|p={entry:.2f}|low={recent_low:.2f}|sd={stop_distance_pct * 100:.2f}|max={self.hard_max_stop_pct * 100:.2f}",
             )
             self.debugger.count_reject("stop")
-            state.state = MomentumState.LEADER_WATCH
+            state.state = self.entry_watch_state(state)
             return
 
         risk = entry - stop
-        risk_pct = risk / entry if entry > 0 else 0.0
-
         if risk <= 0:
             self.debugger.c_log(
                 "RJ",
@@ -76,7 +143,7 @@ class EntryLogicMixin:
                 f"bad_risk|p={entry:.2f}|sl={stop:.2f}|risk={risk:.4f}",
             )
             self.debugger.count_reject("risk")
-            state.state = MomentumState.LEADER_WATCH
+            state.state = self.entry_watch_state(state)
             return
 
         quantity = self.risk.calculate_quantity(entry, stop)
@@ -88,14 +155,8 @@ class EntryLogicMixin:
                 f"qty_zero|p={entry:.2f}|sl={stop:.2f}|risk={risk:.2f}|cash={self.algorithm.Portfolio.Cash:.0f}",
             )
             self.debugger.count_reject("qty")
-            state.state = MomentumState.LEADER_WATCH
+            state.state = self.entry_watch_state(state)
             return
-
-        breakout_high = MarketTools.highest_high(
-            state,
-            self.leader_breakout_lookback_bars,
-            exclude_current=True,
-        )
 
         self.debugger.log_entry(
             symbol=symbol,
@@ -111,7 +172,7 @@ class EntryLogicMixin:
 
         if ticket is None:
             self.debugger.count_reject("order")
-            state.state = MomentumState.LEADER_WATCH
+            state.state = self.entry_watch_state(state)
             return
 
         state.pending_entry_order_id = ticket.OrderId
@@ -124,11 +185,19 @@ class EntryLogicMixin:
         if ticket.Status == OrderStatus.Filled:
             self.handle_entry_ticket_fill(symbol, state, ticket)
 
-        self.debugger.c_log(
-            "OK",
-            symbol,
-            f"es|p={entry:.2f}|sl={stop:.2f}|q={quantity}",
-        )
+    def count_entry_reject(self, reason):
+        if reason == "no_break":
+            self.debugger.count_reject("no_break")
+        elif reason == "extended":
+            self.debugger.count_reject("extended")
+        else:
+            self.debugger.count_reject("setup")
+
+    def entry_watch_state(self, state):
+        if state.state == MomentumState.PULLBACK_WATCH:
+            return MomentumState.PULLBACK_WATCH
+
+        return MomentumState.LEADER_WATCH
 
     def calculate_dynamic_chart_stop(self, state, entry):
         if len(state.bars) < self.stop_lookback_bars:

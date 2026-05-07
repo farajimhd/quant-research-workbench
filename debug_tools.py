@@ -27,11 +27,13 @@ class DebugManager:
         self.exit_tickers = set()
         self.last_summary_date = None
         self.max_console_events_per_day = {
-            "A": 18,
-            "B": 18,
-            "E": 30,
-            "X": 40,
-            "RJ": 20,
+            "A": 8,
+            "B": 10,
+            "E": 12,
+            "X": 16,
+            "RJ": 12,
+            "D": 8,
+            "W": 8,
         }
         self.daily_code_counts = defaultdict(int)
 
@@ -104,9 +106,15 @@ class DebugManager:
             f"xEF={self.counters['exit_ENTRY_FAIL']}",
             f"xPB={self.counters['exit_PROFIT_PULLBACK']}",
             f"xST={self.counters['exit_STOP']}",
+            f"xNP={self.counters['exit_NO_PROGRESS']}",
             f"rSp={self.counters['rj_spread']}",
             f"rExp={self.counters['rj_not_explosive']}",
+            f"rSet={self.counters['rj_setup']}",
+            f"rBrk={self.counters['rj_no_break']}",
+            f"rExt={self.counters['rj_extended']}",
             f"rQ={self.counters['rj_no_quote']}",
+            f"dead={self.counters['dead']}",
+            f"stale={self.counters['stale']}",
             f"lt={len(self.leader_tickers)}",
             f"et={len(self.entry_tickers)}",
         ]
@@ -146,10 +154,14 @@ class DebugManager:
         self.count(f"exit_{reason}", symbol)
 
     def log_reentry_watch(self, symbol, level):
-        self.c_log("W", symbol, f"watch_rebreak|lvl={level:.2f}")
+        self.c_log("W", symbol, f"rebreak|lvl={level:.2f}")
 
     def log_dead_leader(self, symbol, reason, price):
         self.c_log("D", symbol, f"{reason}|p={price:.2f}")
+        if "stale" in reason:
+            self.count("stale")
+        else:
+            self.count("dead")
 
     def log_fill(self, order_event: OrderEvent):
         return

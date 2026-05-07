@@ -102,6 +102,8 @@ class MomentumAlphaCore(
         # =============================================================================
         self.enable_entry_failure_exit = True
         self.entry_failure_buffer_pct = 0.0030
+        self.entry_failure_confirmations_required = 2
+        self.entry_failure_confirm_window_seconds = 90
 
         # =============================================================================
         # Profit Protection
@@ -164,6 +166,13 @@ class MomentumAlphaCore(
             self.handle_stale_leader(symbol, state, bar)
 
     def process_quote(self, symbol, state):
+        if state.state in (MomentumState.PENDING_ENTRY, MomentumState.PENDING_EXIT):
+            return
+
+        if state.state in (MomentumState.LEADER_WATCH, MomentumState.PULLBACK_WATCH):
+            self.try_enter_on_quote(symbol, state)
+            return
+
         if state.state == MomentumState.IN_POSITION:
             self.manage_position_quote(symbol, state)
 
@@ -226,13 +235,7 @@ class MomentumAlphaCore(
         state.reset_pending_entry()
         state.state = MomentumState.IN_POSITION
 
-        risk_pct = (fill_price - stop) / fill_price
-
-        self.debugger.c_log(
-            "OK",
-            symbol,
-            f"ef|p={fill_price:.2f}|sl={stop:.2f}|r={risk_pct * 100:.1f}|q={quantity}",
-        )
+        return
 
     def handle_exit_fill(self, symbol, state, order_event):
         self.complete_exit_fill(symbol, state)

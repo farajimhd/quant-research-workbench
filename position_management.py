@@ -132,7 +132,27 @@ class PositionManagementMixin:
 
         failure_level = state.entry_price * (1.0 - self.entry_failure_buffer_pct)
 
-        return bid <= failure_level
+        if bid > failure_level:
+            state.entry_failure_quote_count = 0
+            state.entry_failure_last_time = None
+            return False
+
+        now = self.algorithm.Time
+        last_time = state.entry_failure_last_time
+
+        if last_time is None:
+            state.entry_failure_quote_count = 1
+        else:
+            elapsed = (now - last_time).total_seconds()
+
+            if elapsed <= self.entry_failure_confirm_window_seconds:
+                state.entry_failure_quote_count += 1
+            else:
+                state.entry_failure_quote_count = 1
+
+        state.entry_failure_last_time = now
+
+        return state.entry_failure_quote_count >= self.entry_failure_confirmations_required
 
     def should_exit_for_quote_profit_pullback(self, state, bid, mfe_r, mfe_pct):
         if not getattr(self, "enable_acceleration_pullback_exit", True):
@@ -224,7 +244,11 @@ class PositionManagementMixin:
         )
 
     def exit_to_pullback_watch(self, symbol, state, price, r, reason, force_limit=False):
-        state.last_breakout_high = state.highest_since_entry
+        state.last_breakout_high = max(
+            state.highest_since_entry or 0.0,
+            state.highest_bid_since_entry or 0.0,
+            state.last_breakout_high or 0.0,
+        )
 
         state.last_pullback_low = MarketTools.lowest_low(
             state,

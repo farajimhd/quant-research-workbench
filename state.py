@@ -82,6 +82,8 @@ class SymbolState:
         self.last_quote_time = None
         self.highest_bid_since_entry = None
         self.lowest_bid_since_entry = None
+        self.entry_failure_quote_count = 0
+        self.entry_failure_last_time = None
 
     def update_bar(self, bar: TradeBar):
         self.bars.append(bar)
@@ -143,6 +145,8 @@ class SymbolState:
         self.lowest_since_entry = None
         self.highest_bid_since_entry = None
         self.lowest_bid_since_entry = None
+        self.entry_failure_quote_count = 0
+        self.entry_failure_last_time = None
 
         self.scout_reduced = False
         self.slow_reduced = False
