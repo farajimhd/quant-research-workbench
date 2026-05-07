@@ -36,7 +36,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-orb-box-macd-tema: box break with 5m MACD open and TEMA9>TEMA20, exits on TEMA close or box mid",
+            run_label="v-orb-live-rotation: 15m box break, 5m MACD/TEMA gate, top-3 live-score rotation",
         )
 
         self.risk = RiskManager(
@@ -89,6 +89,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             if symbol not in self.symbol_states:
                 self.symbol_states[symbol] = SymbolState(symbol)
                 self.UpdateDailyStats(symbol, self.symbol_states[symbol])
+                self.core.warm_up_indicators(symbol, self.symbol_states[symbol])
 
         for security in changes.RemovedSecurities:
             symbol = security.Symbol

@@ -20,11 +20,13 @@ class SymbolState:
         self.orb_direction = None
         self.orb_ranked = False
         self.orb_score = 0.0
+        self.orb_live_score = 0.0
         self.breakout_armed = True
 
         self.orb_entry_order_id = None
         self.orb_stop_order_id = None
         self.orb_entry_price = None
+        self.orb_entry_time = None
         self.orb_stop_price = None
         self.orb_quantity = 0
         self.orb_exit_submitted = False
@@ -72,11 +74,13 @@ class SymbolState:
         self.orb_direction = None
         self.orb_ranked = False
         self.orb_score = 0.0
+        self.orb_live_score = 0.0
         self.breakout_armed = True
 
         self.orb_entry_order_id = None
         self.orb_stop_order_id = None
         self.orb_entry_price = None
+        self.orb_entry_time = None
         self.orb_stop_price = None
         self.orb_quantity = 0
         self.orb_exit_submitted = False

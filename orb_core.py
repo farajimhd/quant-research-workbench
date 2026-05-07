@@ -11,23 +11,26 @@ class OpeningRangeBreakoutCore:
         self.min_price = 5.0
         self.min_avg_daily_volume = 1_000_000
         self.min_atr = 0.50
-        self.relative_volume_daily_share = 0.02
-        self.min_opening_relative_volume = 1.0
-        self.max_candidates = 10
-        self.min_candidate_score = 55.0
+        self.relative_volume_daily_share = 0.06
+        self.min_opening_relative_volume = 0.75
+        self.min_setup_score = 45.0
+        self.min_live_score = 55.0
         self.max_active_positions = 3
+        self.replacement_score_buffer = 10.0
+        self.minimum_hold_minutes = 10
         self.entry_buffer_pct = 0.0005
         self.min_gap_up_pct = 0.005
-        self.min_close_location = 0.75
-        self.min_body_to_range = 0.35
+        self.min_close_location = 0.60
+        self.min_body_to_range = 0.20
         self.min_orb_range_atr_fraction = 0.05
-        self.max_orb_range_atr_fraction = 0.50
+        self.max_orb_range_atr_fraction = 0.80
+        self.tema_exit_atr_buffer = 0.02
         self.min_position_value = 500.0
         self.min_planned_risk_dollars = 12.0
         self.entry_cutoff_minutes = 15 * 60 + 30
         self.exit_minutes_before_close = 5
         self.current_rank_date = None
-        self.ranked_symbols = []
+        self.watchlist_symbols = []
         self.active_symbols = set()
 
         self.macd_fast_period = 12
@@ -46,34 +49,31 @@ class OpeningRangeBreakoutCore:
 
         if self.current_rank_date != current_date:
             self.current_rank_date = current_date
-            self.ranked_symbols = []
+            self.watchlist_symbols = []
             self.active_symbols.clear()
 
     def process_symbol(self, symbol, state, bar):
         self.ensure_orb_day(state)
         self.update_last_price(state, bar)
-        self.update_five_minute_macd(state, bar)
+        self.update_five_minute_indicators(state, bar)
 
         if self.is_opening_range_bar():
             self.update_opening_range(state, bar)
 
         self.manage_position(symbol, state)
-        self.manage_open_entry(symbol, state)
-        self.manage_end_of_day(symbol, state)
 
     def after_on_data(self, symbol_states):
         for state in symbol_states.values():
             self.ensure_orb_day(state)
 
         if self.should_rank_now() and not any(state.orb_ranked for state in symbol_states.values()):
-            self.ranked_symbols = self.rank_opening_range_candidates(symbol_states)
+            self.watchlist_symbols = self.build_watchlist(symbol_states)
 
-        if self.minutes_since_midnight() <= 9 * 60 + 35:
+        if self.minutes_since_midnight() <= self.rank_minute():
             return
 
-        self.cancel_late_entry_orders(symbol_states)
         self.hard_end_of_day_liquidation(symbol_states)
-        self.try_submit_top_candidates(symbol_states)
+        self.rotate_portfolio(symbol_states)
 
     def ensure_orb_day(self, state):
         current_date = self.algorithm.Time.date()
@@ -83,10 +83,13 @@ class OpeningRangeBreakoutCore:
 
     def is_opening_range_bar(self):
         minutes = self.minutes_since_midnight()
-        return 9 * 60 + 31 <= minutes <= 9 * 60 + 35
+        return 9 * 60 + 31 <= minutes <= self.rank_minute()
+
+    def rank_minute(self):
+        return 9 * 60 + 45
 
     def should_rank_now(self):
-        return self.minutes_since_midnight() == 9 * 60 + 35
+        return self.minutes_since_midnight() == self.rank_minute()
 
     def update_last_price(self, state, bar):
         state.previous_price = state.last_price
@@ -121,14 +124,16 @@ class OpeningRangeBreakoutCore:
             )
             state.orb_relative_volume = state.orb_volume / expected_opening_volume
 
-    def update_five_minute_macd(self, state, bar):
+    def update_five_minute_indicators(self, state, bar):
         minutes = self.minutes_since_midnight()
 
         if minutes < 9 * 60 + 30 or minutes >= 16 * 60:
             return
 
+        self.update_five_minute_indicators_at(state, float(bar.Close), minutes)
+
+    def update_five_minute_indicators_at(self, state, close, minutes):
         bucket = minutes // 5
-        close = float(bar.Close)
 
         if state.macd_bucket is None:
             state.macd_bucket = bucket
@@ -143,6 +148,44 @@ class OpeningRangeBreakoutCore:
         self.update_tema_from_close(state, state.macd_bucket_close)
         state.macd_bucket = bucket
         state.macd_bucket_close = close
+
+    def warm_up_indicators(self, symbol, state):
+        if state.macd_ready and state.tema_ready:
+            return
+
+        history = self.algorithm.History(symbol, 220, Resolution.Minute)
+
+        if history is None or history.empty:
+            return
+
+        history = history.reset_index()
+        columns = {str(column).lower(): column for column in history.columns}
+
+        if "close" not in columns:
+            return
+
+        time_column = None
+
+        for candidate in ["time", "endtime"]:
+            if candidate in columns:
+                time_column = columns[candidate]
+                break
+
+        if time_column is None:
+            return
+
+        for _, row in history.iterrows():
+            try:
+                bar_time = row[time_column]
+                minutes = bar_time.hour * 60 + bar_time.minute
+                close = float(row[columns["close"]])
+            except Exception:
+                continue
+
+            if minutes < 9 * 60 + 30 or minutes >= 16 * 60:
+                continue
+
+            self.update_five_minute_indicators_at(state, close, minutes)
 
     def update_macd_from_close(self, state, close):
         if state.macd_fast_ema is None:
@@ -223,32 +266,33 @@ class OpeningRangeBreakoutCore:
         tema = (3.0 * ema1) - (3.0 * ema2) + ema3
         return ema1, ema2, ema3, tema
 
-    def rank_opening_range_candidates(self, symbol_states):
+    def build_watchlist(self, symbol_states):
         candidates = []
 
         for symbol, state in symbol_states.items():
             state.orb_ranked = True
 
-            if not self.is_valid_candidate(symbol, state):
+            if not self.is_valid_setup(state):
                 continue
 
             state.orb_direction = "LONG"
-            state.orb_score = self.score_candidate(state)
-            if state.orb_score < self.min_candidate_score:
+            state.orb_score = self.setup_score(state)
+
+            if state.orb_score < self.min_setup_score:
                 self.count_orb_reject("quality")
                 continue
+
             candidates.append((symbol, state))
 
         candidates.sort(key=lambda item: item[1].orb_score, reverse=True)
-        selected = candidates[: self.max_candidates]
 
         self.debugger.c_log(
             "S",
             None,
-            f"orb|cand={len(candidates)}|sel={len(selected)}",
+            f"orb|cand={len(candidates)}|sel={len(candidates)}",
         )
 
-        for rank, (symbol, state) in enumerate(selected[:5], start=1):
+        for rank, (symbol, state) in enumerate(candidates[:5], start=1):
             self.debugger.c_log(
                 "S",
                 None,
@@ -257,10 +301,10 @@ class OpeningRangeBreakoutCore:
 
         return [
             (rank, symbol, state)
-            for rank, (symbol, state) in enumerate(selected, start=1)
+            for rank, (symbol, state) in enumerate(candidates, start=1)
         ]
 
-    def is_valid_candidate(self, symbol, state):
+    def is_valid_setup(self, state):
         if state.orb_open is None or state.orb_high is None or state.orb_low is None:
             self.count_orb_reject("base")
             return False
@@ -342,55 +386,127 @@ class OpeningRangeBreakoutCore:
 
         return True
 
-    def score_candidate(self, state):
+    def setup_score(self, state):
         opening_range = self.box_range(state)
         close_location = (state.orb_close - state.orb_low) / opening_range
         gap_pct = (state.orb_open / state.previous_close) - 1.0
         range_atr_fraction = opening_range / state.atr_14
-        ideal_range_score = max(0.0, 1.0 - abs(range_atr_fraction - 0.25) / 0.25)
+        ideal_range_score = max(0.0, 1.0 - abs(range_atr_fraction - 0.30) / 0.30)
         rv_score = min(state.orb_relative_volume, 10.0) / 10.0
         gap_score = min(max(gap_pct, 0.0), 0.10) / 0.10
         liquidity_score = min(state.avg_daily_volume_14 / 10_000_000.0, 1.0)
 
         return (
-            40.0 * rv_score
+            35.0 * rv_score
             + 20.0 * close_location
             + 15.0 * gap_score
             + 15.0 * ideal_range_score
-            + 10.0 * liquidity_score
+            + 15.0 * liquidity_score
         )
 
-    def try_submit_top_candidates(self, symbol_states):
+    def rotate_portfolio(self, symbol_states):
         if self.minutes_since_midnight() >= self.entry_cutoff_minutes:
+            return
+
+        live_candidates = self.get_live_candidates(symbol_states)
+
+        if len(live_candidates) == 0:
             return
 
         open_slots = self.max_active_positions - len(self.active_symbols)
 
-        if open_slots <= 0:
+        if open_slots > 0:
+            for score, rank, symbol, state in live_candidates:
+                if len(self.active_symbols) >= self.max_active_positions:
+                    return
+
+                if self.is_symbol_busy(symbol, state):
+                    continue
+
+                self.enter_position(symbol, state, rank, score, "LIVE_SIGNAL")
+
+        while len(self.active_symbols) >= self.max_active_positions:
+            replacement = self.find_replacement(live_candidates)
+
+            if replacement is None:
+                return
+
+            new_score, _, new_symbol, _, old_symbol, old_state = replacement
+            self.exit_position(old_symbol, old_state, "ROTATE_OUT", new_symbol, new_score)
             return
 
-        live_candidates = []
+    def get_live_candidates(self, symbol_states):
+        candidates = []
 
-        for rank, symbol, state in self.ranked_symbols:
+        for rank, symbol, state in self.watchlist_symbols:
             if symbol not in symbol_states:
                 continue
 
             if self.is_symbol_busy(symbol, state):
                 continue
 
-            if not self.is_entry_ready(symbol, state):
+            if not self.is_live_signal(state):
                 continue
 
-            live_score = state.orb_score + self.macd_score(state)
-            live_candidates.append((live_score, rank, symbol, state))
+            live_score = self.live_score(state)
 
-        live_candidates.sort(key=lambda item: item[0], reverse=True)
+            if live_score < self.min_live_score:
+                continue
 
-        for _, rank, symbol, state in live_candidates[:open_slots]:
-            self.submit_entry(symbol, state, rank)
+            candidates.append((live_score, rank, symbol, state))
 
-            if len(self.active_symbols) >= self.max_active_positions:
-                return
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates
+
+    def find_replacement(self, live_candidates):
+        weakest = self.find_weakest_replaceable_position()
+
+        if weakest is None:
+            return None
+
+        old_score, old_symbol, old_state = weakest
+
+        for new_score, rank, new_symbol, new_state in live_candidates:
+            if self.is_symbol_busy(new_symbol, new_state):
+                continue
+
+            if new_score <= old_score + self.replacement_score_buffer:
+                continue
+
+            return new_score, rank, new_symbol, new_state, old_symbol, old_state
+
+        return None
+
+    def find_weakest_replaceable_position(self):
+        weakest = None
+
+        for symbol in list(self.active_symbols):
+            state = self.algorithm.symbol_states.get(symbol)
+
+            if state is None:
+                self.active_symbols.discard(symbol)
+                continue
+
+            if int(self.algorithm.Portfolio[symbol].Quantity) == 0:
+                self.active_symbols.discard(symbol)
+                continue
+
+            if not self.can_replace_position(state):
+                continue
+
+            score = self.live_score(state) if self.is_live_signal(state) else state.orb_score
+
+            if weakest is None or score < weakest[0]:
+                weakest = (score, symbol, state)
+
+        return weakest
+
+    def can_replace_position(self, state):
+        if state.orb_entry_time is None:
+            return False
+
+        held_minutes = (self.algorithm.Time - state.orb_entry_time).total_seconds() / 60.0
+        return held_minutes >= self.minimum_hold_minutes
 
     def is_symbol_busy(self, symbol, state):
         if symbol in self.active_symbols:
@@ -401,7 +517,7 @@ class OpeningRangeBreakoutCore:
 
         return int(self.algorithm.Portfolio[symbol].Quantity) != 0
 
-    def is_entry_ready(self, symbol, state):
+    def is_live_signal(self, state):
         if state.orb_direction != "LONG":
             return False
 
@@ -414,9 +530,7 @@ class OpeningRangeBreakoutCore:
         if state.last_price < self.box_mid(state):
             return False
 
-        trigger = self.entry_trigger(state)
-
-        if state.last_price > trigger:
+        if state.last_price <= self.entry_trigger(state):
             return False
 
         return self.is_macd_open(state) and self.is_tema_open(state)
@@ -427,6 +541,7 @@ class OpeningRangeBreakoutCore:
             and state.macd_line is not None
             and state.macd_signal is not None
             and state.macd_line > state.macd_signal
+            and state.macd_line > 0
             and state.macd_hist is not None
             and state.macd_hist > 0
         )
@@ -444,17 +559,30 @@ class OpeningRangeBreakoutCore:
             state.tema_ready
             and state.tema9 is not None
             and state.tema20 is not None
-            and state.tema20 > state.tema9
+            and state.atr_14 is not None
+            and state.tema20 > state.tema9 + self.tema_exit_buffer(state)
         )
 
-    def macd_score(self, state):
-        if not self.is_macd_open(state) or state.last_price is None or state.last_price <= 0:
+    def tema_exit_buffer(self, state):
+        if state.atr_14 is None:
             return 0.0
 
-        return min(abs(state.macd_hist) / state.last_price * 1000.0, 20.0)
+        return state.atr_14 * self.tema_exit_atr_buffer
 
-    def submit_entry(self, symbol, state, rank):
-        entry = self.entry_trigger(state)
+    def live_score(self, state):
+        if state.last_price is None or state.last_price <= 0:
+            return state.orb_score
+
+        macd_strength = min(state.macd_hist / state.last_price * 1000.0, 20.0)
+        tema_spread = max(0.0, state.tema9 - state.tema20)
+        tema_strength = min(tema_spread / state.last_price * 1000.0, 20.0)
+        extension = max(0.0, (state.last_price / self.entry_trigger(state)) - 1.0)
+        extension_score = min(extension / 0.05, 1.0) * 10.0
+
+        return state.orb_score + macd_strength + tema_strength + extension_score
+
+    def enter_position(self, symbol, state, rank, score, reason):
+        entry = state.last_price
         stop = self.box_mid(state)
         quantity = self.calculate_quantity(entry, stop)
 
@@ -467,18 +595,10 @@ class OpeningRangeBreakoutCore:
             self.count_orb_reject("econ")
             return False
 
-        ticket = self.algorithm.StopMarketOrder(
+        ticket = self.algorithm.MarketOrder(
             symbol,
             quantity,
-            entry,
-            tag=(
-                f"ENTRY_STOP|rule=BOX_BREAK_MACD_TEMA|rank={rank}"
-                f"|qty={quantity}|trigger={entry:.2f}|box_high={state.orb_high:.2f}"
-                f"|box_mid={stop:.2f}|box_low={state.orb_low:.2f}"
-                f"|score={state.orb_score:.1f}|rv={state.orb_relative_volume:.1f}"
-                f"|macd={state.macd_line:.4f}|sig={state.macd_signal:.4f}|hist={state.macd_hist:.4f}"
-                f"|tema9={state.tema9:.2f}|tema20={state.tema20:.2f}"
-            ),
+            tag=self.entry_tag(reason, rank, quantity, entry, stop, score, state),
         )
 
         if ticket is None:
@@ -490,6 +610,7 @@ class OpeningRangeBreakoutCore:
         state.orb_stop_price = stop
         state.orb_quantity = quantity
         state.orb_rank = rank
+        state.orb_live_score = score
         state.breakout_armed = False
         self.active_symbols.add(symbol)
         self.debugger.count("entry_submit", symbol)
@@ -497,30 +618,12 @@ class OpeningRangeBreakoutCore:
             "E",
             symbol,
             (
-                f"MACD_ORB|p={entry:.2f}|mid={stop:.2f}|n={quantity}"
-                f"|rk={rank}|rv={state.orb_relative_volume:.1f}|sc={state.orb_score:.1f}"
+                f"ROT|p={entry:.2f}|mid={stop:.2f}|n={quantity}"
+                f"|rk={rank}|sc={score:.1f}|rv={state.orb_relative_volume:.1f}"
                 f"|t9={state.tema9:.2f}|t20={state.tema20:.2f}"
             ),
         )
         return True
-
-    def manage_open_entry(self, symbol, state):
-        if state.orb_entry_order_id is None:
-            return
-
-        if int(self.algorithm.Portfolio[symbol].Quantity) != 0:
-            return
-
-        if self.minutes_since_midnight() >= self.entry_cutoff_minutes:
-            self.cancel_entry_order(symbol, state, "orb_entry_cutoff")
-            return
-
-        if state.last_price is not None and state.last_price < self.box_mid(state):
-            self.cancel_entry_order(symbol, state, "orb_entry_box_mid")
-            return
-
-        if not self.is_macd_open(state) or not self.is_tema_open(state):
-            self.cancel_entry_order(symbol, state, "orb_entry_signal_closed")
 
     def calculate_quantity(self, entry, stop):
         risk_per_share = abs(entry - stop)
@@ -562,43 +665,15 @@ class OpeningRangeBreakoutCore:
         if self.is_tema_closed(state):
             self.exit_position(symbol, state, "TEMA_CLOSE")
 
-    def manage_end_of_day(self, symbol, state):
-        if state.orb_exit_submitted:
-            return
-
-        if self.minutes_since_midnight() < 16 * 60 - self.exit_minutes_before_close:
-            return
-
-        if state.orb_entry_order_id is not None:
-            self.cancel_entry_order(symbol, state, "orb_eod_entry_cancel")
-
-        quantity = int(self.algorithm.Portfolio[symbol].Quantity)
-
-        if quantity == 0:
-            return
-
-        self.exit_position(symbol, state, "EOD")
-
     def hard_end_of_day_liquidation(self, symbol_states):
         if self.minutes_since_midnight() < 16 * 60 - self.exit_minutes_before_close:
             return
 
         for symbol, state in symbol_states.items():
-            if state.orb_entry_order_id is not None:
-                self.cancel_entry_order(symbol, state, "orb_eod_entry_cancel")
-
             if int(self.algorithm.Portfolio[symbol].Quantity) != 0:
                 self.exit_position(symbol, state, "EOD")
 
-    def cancel_late_entry_orders(self, symbol_states):
-        if self.minutes_since_midnight() < self.entry_cutoff_minutes:
-            return
-
-        for symbol, state in symbol_states.items():
-            if state.orb_entry_order_id is not None:
-                self.cancel_entry_order(symbol, state, "orb_entry_cutoff")
-
-    def exit_position(self, symbol, state, reason):
+    def exit_position(self, symbol, state, reason, replacement_symbol=None, replacement_score=None):
         quantity = int(self.algorithm.Portfolio[symbol].Quantity)
 
         if quantity == 0:
@@ -609,7 +684,7 @@ class OpeningRangeBreakoutCore:
         self.algorithm.MarketOrder(
             symbol,
             -quantity,
-            tag=self.exit_tag(reason, state),
+            tag=self.exit_tag(reason, state, replacement_symbol, replacement_score),
         )
         state.orb_exit_submitted = True
         self.debugger.count("exit_signal", symbol)
@@ -638,6 +713,7 @@ class OpeningRangeBreakoutCore:
 
         state.orb_entry_order_id = None
         state.orb_entry_price = float(order_event.FillPrice)
+        state.orb_entry_time = self.algorithm.Time
         state.orb_stop_price = self.box_mid(state)
 
         stop_quantity = -fill_quantity
@@ -662,23 +738,33 @@ class OpeningRangeBreakoutCore:
         state.orb_entry_order_id = None
         state.orb_stop_order_id = None
         state.orb_exit_submitted = False
+        state.orb_entry_time = None
         self.active_symbols.discard(symbol)
 
-    def cancel_entry_order(self, symbol, state, tag):
-        self.cancel_order(
-            state.orb_entry_order_id,
-            f"CANCEL_ENTRY|reason={tag}|trigger={self.entry_trigger(state):.2f}",
+    def entry_tag(self, reason, rank, quantity, entry, stop, score, state):
+        return (
+            f"ENTRY|reason={reason}|rule=LIVE_BOX_MACD_TEMA|rank={rank}"
+            f"|qty={quantity}|price={entry:.2f}|box_high={state.orb_high:.2f}"
+            f"|box_mid={stop:.2f}|box_low={state.orb_low:.2f}"
+            f"|setup={state.orb_score:.1f}|live={score:.1f}|rv={state.orb_relative_volume:.1f}"
+            f"|macd={state.macd_line:.4f}|sig={state.macd_signal:.4f}|hist={state.macd_hist:.4f}"
+            f"|tema9={state.tema9:.2f}|tema20={state.tema20:.2f}"
         )
-        state.orb_entry_order_id = None
-        self.active_symbols.discard(symbol)
 
-    def exit_tag(self, reason, state):
+    def exit_tag(self, reason, state, replacement_symbol=None, replacement_score=None):
+        rotation = ""
+
+        if replacement_symbol is not None:
+            rotation = f"|rotate_to={replacement_symbol.Value}|new_score={replacement_score:.1f}"
+
         return (
             f"EXIT|reason={reason}|price={self.value_tag(state.last_price)}"
             f"|box_mid={self.box_mid(state):.2f}|box_high={state.orb_high:.2f}"
+            f"|live={self.value_tag(state.orb_live_score)}"
             f"|macd={self.value_tag(state.macd_line)}|sig={self.value_tag(state.macd_signal)}"
             f"|hist={self.value_tag(state.macd_hist)}"
             f"|tema9={self.value_tag(state.tema9)}|tema20={self.value_tag(state.tema20)}"
+            f"|buf={self.tema_exit_buffer(state):.4f}{rotation}"
         )
 
     def value_tag(self, value):
