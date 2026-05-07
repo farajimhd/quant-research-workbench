@@ -39,8 +39,11 @@ class PositionManagementMixin:
             )
             return
 
-        if self.should_exit_for_quote_entry_failure(state, bid, mfe_r, mfe_pct):
-            self.exit_to_pullback_watch(symbol, state, bid, r, "ENTRY_FAIL", force_limit=True)
+        early_failure = self.should_exit_for_early_quote_failure(state, bid)
+
+        if early_failure or self.should_exit_for_quote_entry_failure(state, bid, mfe_r, mfe_pct):
+            reason = "EARLY_FAIL" if early_failure else "ENTRY_FAIL"
+            self.exit_to_pullback_watch(symbol, state, bid, r, reason, force_limit=True)
 
     def manage_position(self, symbol, state, bar):
         if state.pending_exit_order_id is not None:
@@ -158,6 +161,25 @@ class PositionManagementMixin:
         state.entry_failure_last_time = now
 
         return state.entry_failure_quote_count >= self.entry_failure_confirmations_required
+
+    def should_exit_for_early_quote_failure(self, state, bid):
+        if not getattr(self, "enable_entry_failure_exit", True):
+            return False
+
+        if state.entry_time is None or state.entry_price is None:
+            return False
+
+        elapsed = (self.algorithm.Time - state.entry_time).total_seconds()
+
+        if elapsed > self.early_failure_seconds:
+            return False
+
+        break_level = state.entry_breakout_high or state.entry_price
+        failure_level = max(state.entry_price, break_level) * (
+            1.0 - self.early_failure_break_level_buffer_pct
+        )
+
+        return bid <= failure_level
 
     def has_fast_quote_cadence(self, state):
         if state.last_quote_time is None or state.previous_quote_time is None:

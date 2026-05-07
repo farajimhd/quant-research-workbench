@@ -86,10 +86,13 @@ class MomentumAlphaCore(
         # =============================================================================
         self.risk_pct_a_plus = 0.0045
         self.risk_pct_a = 0.0040
-        self.risk_pct_b = 0.0025
+        self.risk_pct_b = 0.0018
         self.risk_pct_c = 0.0010
         self.same_day_entry_fail_risk_cap = 0.0015
         self.max_entry_fails_per_symbol_day = 2
+        self.min_fresh_b_quality_score = 62
+        self.daily_entry_fail_guard_count = 5
+        self.daily_entry_fail_stop_count = 8
         self.open_quality_guard_minutes = 5
         self.open_quality_min_score = 88
         self.open_quality_max_spread_to_risk = 0.12
@@ -126,6 +129,8 @@ class MomentumAlphaCore(
         self.entry_failure_confirmations_required = 2
         self.entry_failure_fast_quote_max_seconds = 10
         self.entry_failure_confirm_window_seconds = 90
+        self.early_failure_seconds = 90
+        self.early_failure_break_level_buffer_pct = 0.0005
 
         # =============================================================================
         # Profit Protection
@@ -255,6 +260,7 @@ class MomentumAlphaCore(
         state.entry_quality_bucket = state.pending_entry_quality_bucket
         state.entry_risk_pct = state.pending_entry_risk_pct
         state.entry_add_fraction = state.pending_entry_add_fraction
+        state.entry_breakout_high = state.pending_entry_breakout_high
 
         state.scout_reduced = False
         state.slow_reduced = False
@@ -285,7 +291,7 @@ class MomentumAlphaCore(
         state.last_exit_r = r
         state.last_exit_reason = reason
 
-        if reason == "ENTRY_FAIL":
+        if reason in ("ENTRY_FAIL", "EARLY_FAIL"):
             self.record_entry_fail(state)
 
         if r is not None and r < 0:

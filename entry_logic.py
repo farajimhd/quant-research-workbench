@@ -223,6 +223,7 @@ class EntryLogicMixin:
         state.pending_entry_signal_price = entry
         state.pending_entry_stop_price = stop
         state.pending_entry_quantity = quantity
+        state.pending_entry_breakout_high = breakout_high
         state.pending_entry_time = self.algorithm.Time
         state.pending_entry_quality_score = quality["score"]
         state.pending_entry_quality_bucket = quality["bucket"]
@@ -332,11 +333,31 @@ class EntryLogicMixin:
 
     def should_trade_quality(self, symbol, state, quality):
         entry_fails = quality["entry_fails"]
+        daily_entry_fails = (
+            self.debugger.counters["exit_ENTRY_FAIL"]
+            + self.debugger.counters["exit_EARLY_FAIL"]
+        )
+
+        if daily_entry_fails >= self.daily_entry_fail_stop_count:
+            return False
+
+        if (
+            daily_entry_fails >= self.daily_entry_fail_guard_count
+            and quality["bucket"] not in ("AP", "A")
+        ):
+            return False
 
         if entry_fails >= self.max_entry_fails_per_symbol_day:
             return False
 
         if quality["bucket"] == "C" and entry_fails == 0:
+            return False
+
+        if (
+            quality["bucket"] == "B"
+            and entry_fails == 0
+            and quality["score"] < self.min_fresh_b_quality_score
+        ):
             return False
 
         if self.is_opening_quality_guard_active(symbol):

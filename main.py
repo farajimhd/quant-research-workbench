@@ -37,7 +37,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v07-34-econ-filter: liq100k/250k, retry8m, max2 reentries, min250 value/min8 risk, order q tags",
+            run_label="v-next-quality-guard: B risk18bp, fresh B>=62, day EF guard 5/8, early fail 90s, econ/order tags",
         )
 
         self.risk = RiskManager(

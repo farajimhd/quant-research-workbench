@@ -72,6 +72,7 @@ class SymbolState:
         self.pending_entry_signal_price = None
         self.pending_entry_stop_price = None
         self.pending_entry_quantity = 0
+        self.pending_entry_breakout_high = None
         self.pending_entry_time = None
         self.pending_entry_quality_score = None
         self.pending_entry_quality_bucket = None
@@ -96,6 +97,7 @@ class SymbolState:
         self.entry_quality_bucket = None
         self.entry_risk_pct = None
         self.entry_add_fraction = 0.0
+        self.entry_breakout_high = None
 
     def update_bar(self, bar: TradeBar):
         self.bars.append(bar)
@@ -164,6 +166,7 @@ class SymbolState:
         self.entry_quality_bucket = None
         self.entry_risk_pct = None
         self.entry_add_fraction = 0.0
+        self.entry_breakout_high = None
 
         self.scout_reduced = False
         self.slow_reduced = False
@@ -178,6 +181,7 @@ class SymbolState:
         self.pending_entry_signal_price = None
         self.pending_entry_stop_price = None
         self.pending_entry_quantity = 0
+        self.pending_entry_breakout_high = None
         self.pending_entry_time = None
         self.pending_entry_quality_score = None
         self.pending_entry_quality_bucket = None

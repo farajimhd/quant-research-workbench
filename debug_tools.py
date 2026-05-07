@@ -131,6 +131,7 @@ class DebugManager:
             f"qC={self.counters['q_C']}",
             f"x={self.counters['exit_signal']}",
             f"xEF={self.counters['exit_ENTRY_FAIL']}",
+            f"xER={self.counters['exit_EARLY_FAIL']}",
             f"xPB={self.counters['exit_PROFIT_PULLBACK']}",
             f"xST={self.counters['exit_STOP']}",
             f"xNP={self.counters['exit_NO_PROGRESS']}",
