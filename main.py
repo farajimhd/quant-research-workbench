@@ -219,7 +219,20 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
     def OnData(self, data):
         self.debugger.emit_daily_summary_if_needed()
 
-        for symbol, state in list(self.symbol_states.items()):
+        active_symbols = set()
+
+        for symbol in data.Bars.Keys:
+            active_symbols.add(symbol)
+
+        for symbol in data.QuoteBars.Keys:
+            active_symbols.add(symbol)
+
+        for symbol in active_symbols:
+            state = self.symbol_states.get(symbol)
+
+            if state is None:
+                continue
+
             if data.Bars.ContainsKey(symbol):
                 state.update_intrabar(data.Bars[symbol])
 
