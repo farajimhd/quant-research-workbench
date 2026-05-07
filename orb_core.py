@@ -472,9 +472,12 @@ class OpeningRangeBreakoutCore:
             quantity,
             entry,
             tag=(
-                f"orb_macd_entry|rk={rank}|rv={state.orb_relative_volume:.1f}"
-                f"|sc={state.orb_score:.1f}|mid={stop:.2f}|macd={state.macd_hist:.4f}"
-                f"|t9={state.tema9:.2f}|t20={state.tema20:.2f}"
+                f"ENTRY_STOP|rule=BOX_BREAK_MACD_TEMA|rank={rank}"
+                f"|qty={quantity}|trigger={entry:.2f}|box_high={state.orb_high:.2f}"
+                f"|box_mid={stop:.2f}|box_low={state.orb_low:.2f}"
+                f"|score={state.orb_score:.1f}|rv={state.orb_relative_volume:.1f}"
+                f"|macd={state.macd_line:.4f}|sig={state.macd_signal:.4f}|hist={state.macd_hist:.4f}"
+                f"|tema9={state.tema9:.2f}|tema20={state.tema20:.2f}"
             ),
         )
 
@@ -601,9 +604,13 @@ class OpeningRangeBreakoutCore:
         if quantity == 0:
             return
 
-        self.cancel_order(state.orb_stop_order_id, f"orb_{reason.lower()}")
+        self.cancel_order(state.orb_stop_order_id, f"CANCEL_STOP|reason={reason}")
         state.orb_stop_order_id = None
-        self.algorithm.MarketOrder(symbol, -quantity, tag=f"orb_exit_{reason}")
+        self.algorithm.MarketOrder(
+            symbol,
+            -quantity,
+            tag=self.exit_tag(reason, state),
+        )
         state.orb_exit_submitted = True
         self.debugger.count("exit_signal", symbol)
         self.debugger.count(f"exit_{reason}", symbol)
@@ -638,7 +645,11 @@ class OpeningRangeBreakoutCore:
             symbol,
             stop_quantity,
             state.orb_stop_price,
-            tag="orb_box_mid_stop",
+            tag=(
+                f"STOP_LOSS|rule=BOX_MID_INVALIDATION|stop={state.orb_stop_price:.2f}"
+                f"|entry={state.orb_entry_price:.2f}|box_high={state.orb_high:.2f}"
+                f"|box_low={state.orb_low:.2f}"
+            ),
         )
 
         if ticket is not None:
@@ -654,9 +665,27 @@ class OpeningRangeBreakoutCore:
         self.active_symbols.discard(symbol)
 
     def cancel_entry_order(self, symbol, state, tag):
-        self.cancel_order(state.orb_entry_order_id, tag)
+        self.cancel_order(
+            state.orb_entry_order_id,
+            f"CANCEL_ENTRY|reason={tag}|trigger={self.entry_trigger(state):.2f}",
+        )
         state.orb_entry_order_id = None
         self.active_symbols.discard(symbol)
+
+    def exit_tag(self, reason, state):
+        return (
+            f"EXIT|reason={reason}|price={self.value_tag(state.last_price)}"
+            f"|box_mid={self.box_mid(state):.2f}|box_high={state.orb_high:.2f}"
+            f"|macd={self.value_tag(state.macd_line)}|sig={self.value_tag(state.macd_signal)}"
+            f"|hist={self.value_tag(state.macd_hist)}"
+            f"|tema9={self.value_tag(state.tema9)}|tema20={self.value_tag(state.tema20)}"
+        )
+
+    def value_tag(self, value):
+        if value is None:
+            return "na"
+
+        return f"{value:.4f}"
 
     def box_range(self, state):
         if state.orb_high is None or state.orb_low is None:
