@@ -103,7 +103,7 @@ class PositionManagementMixin:
 
         self.try_add_confirmed_position(symbol, state, price, mfe_r, mfe_pct)
 
-        trailing_stop = self.calculate_structure_trailing_stop(state, r)
+        trailing_stop = self.calculate_structure_trailing_stop(state, r, mfe_r, mfe_pct)
 
         if trailing_stop is not None:
             state.stop_price = max(state.stop_price, trailing_stop)
@@ -382,8 +382,11 @@ class PositionManagementMixin:
 
         return True
 
-    def calculate_structure_trailing_stop(self, state, r):
+    def calculate_structure_trailing_stop(self, state, r, mfe_r=0.0, mfe_pct=0.0):
         if state.last_pullback_low is None:
+            return None
+
+        if mfe_r < self.structure_trail_min_mfe_r and mfe_pct < self.structure_trail_min_mfe_pct:
             return None
 
         stop = state.last_pullback_low * (1.0 - self.stop_buffer_pct)

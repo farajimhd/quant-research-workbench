@@ -126,35 +126,37 @@ class DebugManager:
 
     def log_daily_summary(self):
         parts = [
-            f"lead={self.counters['lead']}",
-            f"brk={self.counters['breakout']}",
-            f"ent={self.counters['entry_submit']}",
-            f"add={self.counters['add_submit']}",
-            f"qAP={self.counters['q_AP']}",
-            f"qA={self.counters['q_A']}",
-            f"qB={self.counters['q_B']}",
-            f"qC={self.counters['q_C']}",
-            f"x={self.counters['exit_signal']}",
-            f"xEF={self.counters['exit_ENTRY_FAIL']}",
-            f"xER={self.counters['exit_EARLY_FAIL']}",
-            f"xPB={self.counters['exit_PROFIT_PULLBACK']}",
-            f"xSL={self.counters['exit_STOP_LOSS']}",
-            f"xTR={self.counters['exit_TRAIL_STOP']}",
-            f"xBE={self.counters['exit_BE_STOP']}",
-            f"xNP={self.counters['exit_NO_PROGRESS']}",
-            f"xMC={self.counters['exit_MOMENTUM_CLOSE']}",
-            f"rSp={self.counters['rj_spread']}",
-            f"rSR={self.counters['rj_spread_risk']}",
-            f"rExp={self.counters['rj_not_explosive']}",
-            f"rSet={self.counters['rj_setup']}",
-            f"rBrk={self.counters['rj_no_break']}",
-            f"rExt={self.counters['rj_extended']}",
-            f"rQ={self.counters['rj_no_quote']}",
-            f"rQl={self.counters['rj_quality']}",
-            f"rEc={self.counters['rj_economics']}",
-            f"rPb={self.counters['rj_pullback']}",
-            f"dead={self.counters['dead']}",
-            f"stale={self.counters['stale']}",
+            f"l={self.counters['lead']}",
+            f"b={self.counters['breakout']}",
+            f"e={self.counters['entry_submit']}",
+            f"q={self.counters['q_AP']}/{self.counters['q_A']}/{self.counters['q_B']}/{self.counters['q_C']}",
+            (
+                f"x={self.counters['exit_signal']}/"
+                f"{self.counters['exit_ENTRY_FAIL']}/"
+                f"{self.counters['exit_EARLY_FAIL']}/"
+                f"{self.counters['exit_PROFIT_PULLBACK']}/"
+                f"{self.counters['exit_STOP_LOSS']}/"
+                f"{self.counters['exit_TRAIL_STOP']}/"
+                f"{self.counters['exit_NO_PROGRESS']}/"
+                f"{self.counters['exit_MOMENTUM_CLOSE']}"
+            ),
+            (
+                f"r={self.counters['rj_spread']}/"
+                f"{self.counters['rj_spread_risk']}/"
+                f"{self.counters['rj_setup']}/"
+                f"{self.counters['rj_quality']}/"
+                f"{self.counters['rj_economics']}/"
+                f"{self.counters['rj_pullback']}"
+            ),
+            (
+                f"pb={self.counters['pb_rv']}/"
+                f"{self.counters['pb_macd']}/"
+                f"{self.counters['pb_tema']}/"
+                f"{self.counters['pb_vol']}/"
+                f"{self.counters['pb_same']}"
+            ),
+            f"d={self.counters['dead']}",
+            f"s={self.counters['stale']}",
             f"lt={len(self.leader_tickers)}",
             f"et={len(self.entry_tickers)}",
         ]

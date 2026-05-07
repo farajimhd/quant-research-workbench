@@ -37,7 +37,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-next-reclaim-quality: rv>5, reclaim volume > pullback and tied to runner volume, block same failed reclaim",
+            run_label="v-next-reclaim-debug: delay structure trail until MFE, compact pullback reject reasons",
         )
 
         self.risk = RiskManager(

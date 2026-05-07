@@ -161,6 +161,8 @@ class MomentumAlphaCore(
         self.min_locked_profit_r = 0.25
         self.entry_failure_min_mfe_r = 0.20
         self.momentum_exit_min_mfe_r = 0.80
+        self.structure_trail_min_mfe_r = 0.50
+        self.structure_trail_min_mfe_pct = 0.01
 
         # =============================================================================
         # Simplification For Testing Core Edge

@@ -100,7 +100,6 @@ class EntryLogicMixin:
             return False
 
         if not self.is_pullback_completion_confirmed(state):
-            self.debugger.count_reject("pullback")
             return False
 
         bar = list(state.bars)[-1]
@@ -131,21 +130,34 @@ class EntryLogicMixin:
 
     def is_pullback_completion_confirmed(self, state):
         if state.pullback_low is None:
+            self.count_pullback_reject("low")
             return False
 
         if self.is_same_failed_pullback(state):
+            self.count_pullback_reject("same")
             return False
 
         if self.estimate_relative_volume(state) <= self.min_pullback_reclaim_relative_volume:
+            self.count_pullback_reject("rv")
             return False
 
         if not self.is_macd_turning_up(state):
+            self.count_pullback_reject("macd")
             return False
 
         if not self.is_tema_reclaiming(state):
+            self.count_pullback_reject("tema")
             return False
 
-        return self.has_reclaim_volume_expansion(state)
+        if not self.has_reclaim_volume_expansion(state):
+            self.count_pullback_reject("vol")
+            return False
+
+        return True
+
+    def count_pullback_reject(self, reason):
+        self.debugger.count_reject("pullback")
+        self.debugger.count(f"pb_{reason}")
 
     def is_macd_turning_up(self, state):
         if state.macd_hist is None or state.previous_macd_hist is None:
