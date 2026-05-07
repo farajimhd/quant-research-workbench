@@ -1,7 +1,7 @@
 from AlgorithmImports import *
 
-from alpha_core import MomentumAlphaCore
 from debug_tools import DebugManager
+from orb_core import OpeningRangeBreakoutCore
 from risk_tools import RiskManager
 from state import SymbolState
 
@@ -26,7 +26,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         self.min_daily_dollar_volume = 2_000_000
 
         self.UniverseSettings.Resolution = Resolution.Minute
-        self.UniverseSettings.ExtendedMarketHours = True
+        self.UniverseSettings.ExtendedMarketHours = False
         self.AddUniverse(self.UniverseSelection)
 
         # ---------------------------------------------------------------------
@@ -37,7 +37,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-next-reclaim-debug: delay structure trail until MFE, compact pullback reject reasons",
+            run_label="v-orb-baseline: 5m opening range, top relative opening volume, ATR stop, EOD exit",
         )
 
         self.risk = RiskManager(
@@ -50,7 +50,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         # ---------------------------------------------------------------------
         # Core strategy module.
         # ---------------------------------------------------------------------
-        self.core = MomentumAlphaCore(
+        self.core = OpeningRangeBreakoutCore(
             algorithm=self,
             debugger=self.debugger,
             risk_manager=self.risk,
@@ -198,6 +198,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
 
             if symbol not in self.symbol_states:
                 self.symbol_states[symbol] = SymbolState(symbol)
+                self.UpdateDailyStats(symbol, self.symbol_states[symbol])
 
         for security in changes.RemovedSecurities:
             symbol = security.Symbol
@@ -213,40 +214,56 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
 
     def OnData(self, data):
         self.debugger.emit_daily_summary_if_needed()
+        self.core.on_data_start()
 
         for symbol, state in list(self.symbol_states.items()):
-            self.UpdateQuoteSnapshot(symbol, state, data)
-
-            self.core.process_quote(symbol, state)
-
             if not data.Bars.ContainsKey(symbol):
                 continue
 
             bar = data.Bars[symbol]
-            state.update_intrabar(bar)
-            state.update_bar(bar)
-
             self.core.process_symbol(symbol, state, bar)
 
-    def UpdateQuoteSnapshot(self, symbol, state, data):
-        bid = None
-        ask = None
+        self.core.after_on_data(self.symbol_states)
 
-        if data.QuoteBars.ContainsKey(symbol):
-            quote = data.QuoteBars[symbol]
+    def UpdateDailyStats(self, symbol, state):
+        history = self.History(symbol, 20, Resolution.Daily)
 
-            if quote.Bid is not None:
-                bid = float(quote.Bid.Close)
+        if history is None or history.empty:
+            return
 
-            if quote.Ask is not None:
-                ask = float(quote.Ask.Close)
+        highs = []
+        lows = []
+        closes = []
+        volumes = []
 
-        if bid is None or ask is None:
-            security = self.Securities[symbol]
-            bid = float(security.BidPrice)
-            ask = float(security.AskPrice)
+        for _, row in history.iterrows():
+            try:
+                highs.append(float(row["high"]))
+                lows.append(float(row["low"]))
+                closes.append(float(row["close"]))
+                volumes.append(float(row["volume"]))
+            except Exception:
+                continue
 
-        state.update_quote(bid, ask, self.Time)
+        if len(volumes) >= 14:
+            state.avg_daily_volume_14 = sum(volumes[-14:]) / 14.0
+
+        if len(closes) < 15:
+            return
+
+        true_ranges = []
+
+        for i in range(1, len(closes)):
+            true_ranges.append(
+                max(
+                    highs[i] - lows[i],
+                    abs(highs[i] - closes[i - 1]),
+                    abs(lows[i] - closes[i - 1]),
+                )
+            )
+
+        if len(true_ranges) >= 14:
+            state.atr_14 = sum(true_ranges[-14:]) / 14.0
 
     # =========================================================================
     # Order Event Handler
