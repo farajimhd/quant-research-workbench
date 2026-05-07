@@ -197,9 +197,16 @@ class PositionManagementMixin:
         total_quantity = self.risk.calculate_quantity(
             state.entry_price,
             state.initial_stop_price,
+            risk_per_trade_pct=state.entry_risk_pct,
         )
 
-        target_add = int(total_quantity * self.confirmation_add_fraction)
+        add_fraction = state.entry_add_fraction
+
+        if add_fraction <= 0:
+            state.add_count = 1
+            return
+
+        target_add = int(total_quantity * add_fraction)
         current_quantity = abs(int(self.algorithm.Portfolio[symbol].Quantity))
         remaining = max(0, total_quantity - current_quantity)
         quantity = min(target_add, remaining)
@@ -256,10 +263,24 @@ class PositionManagementMixin:
             return False
 
         pullback_level = state.highest_bid_since_entry - (
-            move * self.acceleration_pullback_giveback_pct
+            move * self.quality_pullback_giveback_pct(state)
         )
 
         return bid <= pullback_level
+
+    def quality_pullback_giveback_pct(self, state):
+        bucket = state.entry_quality_bucket
+
+        if bucket == "AP":
+            return self.acceleration_pullback_giveback_pct
+
+        if bucket == "A":
+            return min(self.acceleration_pullback_giveback_pct, 0.22)
+
+        if bucket == "B":
+            return min(self.acceleration_pullback_giveback_pct, 0.18)
+
+        return min(self.acceleration_pullback_giveback_pct, 0.15)
 
     def is_true_structure_failure(self, state, bar):
         if state.last_pullback_low is None:

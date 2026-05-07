@@ -103,6 +103,10 @@ class DebugManager:
             f"brk={self.counters['breakout']}",
             f"ent={self.counters['entry_submit']}",
             f"add={self.counters['add_submit']}",
+            f"qAP={self.counters['q_AP']}",
+            f"qA={self.counters['q_A']}",
+            f"qB={self.counters['q_B']}",
+            f"qC={self.counters['q_C']}",
             f"x={self.counters['exit_signal']}",
             f"xEF={self.counters['exit_ENTRY_FAIL']}",
             f"xPB={self.counters['exit_PROFIT_PULLBACK']}",
@@ -138,13 +142,33 @@ class DebugManager:
         self.c_log("B", symbol, f"p={price:.2f}|lvl={level:.2f}")
         self.count("breakout", symbol)
 
-    def log_entry(self, symbol, entry, stop, risk, quantity, cash, breakout_high):
+    def log_entry(
+        self,
+        symbol,
+        entry,
+        stop,
+        risk,
+        quantity,
+        cash,
+        breakout_high,
+        quality_score=None,
+        quality_bucket=None,
+        risk_pct=None,
+    ):
+        quality = ""
+
+        if quality_score is not None and quality_bucket is not None and risk_pct is not None:
+            quality = f"|q={quality_bucket}{quality_score}|rp={risk_pct * 100:.2f}"
+
         self.c_log(
             "E",
             symbol,
-            f"p={entry:.2f}|sl={stop:.2f}|q={quantity}|bh={breakout_high:.2f}",
+            f"p={entry:.2f}|sl={stop:.2f}|n={quantity}|bh={breakout_high:.2f}{quality}",
         )
         self.count("entry_submit", symbol)
+
+        if quality_bucket is not None:
+            self.count(f"q_{quality_bucket}")
 
     def log_add(self, symbol, price, quantity, add_count):
         self.c_log("G", symbol, f"add={add_count}|p={price:.2f}|q={quantity}")

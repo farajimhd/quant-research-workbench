@@ -158,8 +158,14 @@ class EntryLogicMixin:
             state.state = self.entry_watch_state(state)
             return
 
-        quantity = self.risk.calculate_quantity(entry, stop)
-        quantity = self.apply_initial_position_fraction(quantity)
+        quality = self.score_entry_setup(symbol, state, bar, entry, stop, spread, breakout_high)
+        quantity = self.risk.calculate_quantity(
+            entry,
+            stop,
+            risk_per_trade_pct=quality["risk_pct"],
+            max_capital_per_trade_pct=quality["capital_pct"],
+        )
+        quantity = self.apply_initial_position_fraction(quantity, quality)
 
         if quantity <= 0:
             self.debugger.c_log(
@@ -179,6 +185,9 @@ class EntryLogicMixin:
             quantity=quantity,
             cash=float(self.algorithm.Portfolio.Cash),
             breakout_high=breakout_high,
+            quality_score=quality["score"],
+            quality_bucket=quality["bucket"],
+            risk_pct=quality["risk_pct"],
         )
 
         ticket = self.submit_entry_order(symbol, quantity)
@@ -193,6 +202,10 @@ class EntryLogicMixin:
         state.pending_entry_stop_price = stop
         state.pending_entry_quantity = quantity
         state.pending_entry_time = self.algorithm.Time
+        state.pending_entry_quality_score = quality["score"]
+        state.pending_entry_quality_bucket = quality["bucket"]
+        state.pending_entry_risk_pct = quality["risk_pct"]
+        state.pending_entry_add_fraction = quality["add_fraction"]
         state.state = MomentumState.PENDING_ENTRY
 
         if ticket.Status == OrderStatus.Filled:
@@ -212,8 +225,163 @@ class EntryLogicMixin:
 
         return MomentumState.LEADER_WATCH
 
-    def apply_initial_position_fraction(self, quantity):
-        fraction = getattr(self, "initial_position_fraction", 1.0)
+    def score_entry_setup(self, symbol, state, bar, entry, stop, spread, breakout_high):
+        risk_pct = (entry - stop) / entry if entry > 0 else 0.0
+        extension_pct = 0.0
+
+        if breakout_high > 0:
+            extension_pct = max(0.0, (entry - breakout_high) / breakout_high)
+
+        rv = self.estimate_relative_volume(state)
+        spread_to_risk = 0.0
+        risk = entry - stop
+
+        if risk > 0:
+            spread_to_risk = (spread * entry) / risk
+
+        score = 50
+
+        if rv >= 12:
+            score += 18
+        elif rv >= 7:
+            score += 12
+        elif rv >= 4:
+            score += 6
+        elif rv < self.required_relative_volume:
+            score -= 10
+
+        if spread_to_risk <= 0.12:
+            score += 12
+        elif spread_to_risk <= 0.22:
+            score += 6
+        elif spread_to_risk > 0.32:
+            score -= 10
+
+        if risk_pct <= 0.035:
+            score += 10
+        elif risk_pct <= 0.055:
+            score += 4
+        elif risk_pct > 0.075:
+            score -= 12
+
+        if extension_pct <= 0.006:
+            score += 8
+        elif extension_pct <= 0.018:
+            score += 3
+        elif extension_pct > 0.030:
+            score -= 10
+
+        if MarketTools.is_tight_consolidation(
+            state,
+            self.consolidation_lookback_bars,
+            self.max_consolidation_range_pct,
+        ):
+            score += 6
+
+        if state.reentry_attempts > 0:
+            score -= min(18, state.reentry_attempts * 7)
+
+        entry_fails = self.entry_fail_count_today(state)
+
+        if entry_fails > 0:
+            score -= min(25, entry_fails * 10)
+
+        if not MarketTools.is_regular_market_open(self.algorithm, symbol):
+            score -= 6
+
+        score = max(0, min(100, score))
+        bucket = self.quality_bucket(score)
+        risk_trade_pct = self.quality_risk_pct(bucket)
+
+        if entry_fails > 0:
+            risk_trade_pct = min(risk_trade_pct, self.same_day_entry_fail_risk_cap)
+
+        return {
+            "score": score,
+            "bucket": bucket,
+            "risk_pct": risk_trade_pct,
+            "capital_pct": self.quality_capital_pct(bucket),
+            "starter_fraction": self.quality_starter_fraction(bucket, entry_fails),
+            "add_fraction": self.quality_add_fraction(bucket, entry_fails),
+        }
+
+    def entry_fail_count_today(self, state):
+        if state.entry_fail_date != self.algorithm.Time.date():
+            return 0
+
+        return state.entry_fail_count_today
+
+    def quality_bucket(self, score):
+        if score >= 85:
+            return "AP"
+
+        if score >= 70:
+            return "A"
+
+        if score >= 55:
+            return "B"
+
+        return "C"
+
+    def quality_risk_pct(self, bucket):
+        if bucket == "AP":
+            return self.risk_pct_a_plus
+
+        if bucket == "A":
+            return self.risk_pct_a
+
+        if bucket == "B":
+            return self.risk_pct_b
+
+        return self.risk_pct_c
+
+    def quality_capital_pct(self, bucket):
+        if bucket == "AP":
+            return self.capital_pct_a_plus
+
+        if bucket == "A":
+            return self.capital_pct_a
+
+        if bucket == "B":
+            return self.capital_pct_b
+
+        return self.capital_pct_c
+
+    def quality_starter_fraction(self, bucket, entry_fails):
+        if entry_fails > 0:
+            return 0.50
+
+        if bucket == "AP":
+            return 1.00
+
+        if bucket == "A":
+            return 0.90
+
+        if bucket == "B":
+            return 0.75
+
+        return 0.50
+
+    def quality_add_fraction(self, bucket, entry_fails):
+        if entry_fails > 0:
+            return 0.0
+
+        if bucket == "AP":
+            return 0.50
+
+        if bucket == "A":
+            return 0.35
+
+        if bucket == "B":
+            return 0.20
+
+        return 0.0
+
+    def apply_initial_position_fraction(self, quantity, quality=None):
+        if quality is not None:
+            fraction = quality["starter_fraction"]
+        else:
+            fraction = getattr(self, "initial_position_fraction", 1.0)
 
         if fraction >= 1.0:
             return quantity

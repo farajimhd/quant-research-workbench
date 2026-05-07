@@ -65,12 +65,18 @@ class SymbolState:
         self.last_exit_reason = None
         self.failed_trade_count = 0
         self.last_failed_trade_time = None
+        self.entry_fail_date = None
+        self.entry_fail_count_today = 0
 
         self.pending_entry_order_id = None
         self.pending_entry_signal_price = None
         self.pending_entry_stop_price = None
         self.pending_entry_quantity = 0
         self.pending_entry_time = None
+        self.pending_entry_quality_score = None
+        self.pending_entry_quality_bucket = None
+        self.pending_entry_risk_pct = None
+        self.pending_entry_add_fraction = 0.0
 
         self.pending_exit_order_id = None
         self.pending_exit_reason = None
@@ -86,6 +92,10 @@ class SymbolState:
         self.lowest_bid_since_entry = None
         self.entry_failure_quote_count = 0
         self.entry_failure_last_time = None
+        self.entry_quality_score = None
+        self.entry_quality_bucket = None
+        self.entry_risk_pct = None
+        self.entry_add_fraction = 0.0
 
     def update_bar(self, bar: TradeBar):
         self.bars.append(bar)
@@ -150,6 +160,10 @@ class SymbolState:
         self.lowest_bid_since_entry = None
         self.entry_failure_quote_count = 0
         self.entry_failure_last_time = None
+        self.entry_quality_score = None
+        self.entry_quality_bucket = None
+        self.entry_risk_pct = None
+        self.entry_add_fraction = 0.0
 
         self.scout_reduced = False
         self.slow_reduced = False
@@ -165,6 +179,10 @@ class SymbolState:
         self.pending_entry_stop_price = None
         self.pending_entry_quantity = 0
         self.pending_entry_time = None
+        self.pending_entry_quality_score = None
+        self.pending_entry_quality_bucket = None
+        self.pending_entry_risk_pct = None
+        self.pending_entry_add_fraction = 0.0
 
     def reset_pending_exit(self):
         self.pending_exit_order_id = None

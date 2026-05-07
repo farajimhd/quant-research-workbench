@@ -23,7 +23,13 @@ class RiskManager:
     # Position Sizing
     # =========================================================================
 
-    def calculate_quantity(self, entry_price: float, stop_price: float) -> int:
+    def calculate_quantity(
+        self,
+        entry_price: float,
+        stop_price: float,
+        risk_per_trade_pct=None,
+        max_capital_per_trade_pct=None,
+    ) -> int:
         risk_per_share = entry_price - stop_price
 
         if risk_per_share <= 0:
@@ -35,8 +41,15 @@ class RiskManager:
         reserved_cash = total_equity * self.cash_reserve_pct
         deployable_cash = max(0.0, available_cash - reserved_cash)
 
-        risk_budget = total_equity * self.risk_per_trade_pct
-        capital_budget = total_equity * self.max_capital_per_trade_pct
+        risk_pct = self.risk_per_trade_pct if risk_per_trade_pct is None else risk_per_trade_pct
+        capital_pct = (
+            self.max_capital_per_trade_pct
+            if max_capital_per_trade_pct is None
+            else max_capital_per_trade_pct
+        )
+
+        risk_budget = total_equity * risk_pct
+        capital_budget = total_equity * capital_pct
 
         risk_based_quantity = int(risk_budget / risk_per_share)
         capital_based_quantity = int(capital_budget / entry_price)

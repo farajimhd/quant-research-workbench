@@ -22,8 +22,8 @@ class MomentumAlphaCore(
         # Abnormal Expansion Detection
         # =============================================================================
         self.expansion_windows = [3, 5, 10]
-        self.min_expansion_move = 0.05
-        self.required_relative_volume = 5.0
+        self.min_expansion_move = 0.04
+        self.required_relative_volume = 3.0
 
         # =============================================================================
         # Price / Volume Filters
@@ -31,8 +31,8 @@ class MomentumAlphaCore(
         self.min_price = 0.75
         self.max_price = 50.0
         self.min_bar_volume = 25_000
-        self.min_recent_5min_volume = 100_000
-        self.min_recent_5min_dollar_volume = 250_000
+        self.min_recent_5min_volume = 50_000
+        self.min_recent_5min_dollar_volume = 100_000
 
         # =============================================================================
         # Dynamic Spread Filters
@@ -68,18 +68,31 @@ class MomentumAlphaCore(
         self.min_breakout_body_pct = 0.004
         self.min_close_location = 0.72
         self.breakout_volume_multiplier = 1.20
-        self.min_leader_watch_minutes = 2
+        self.min_leader_watch_minutes = 0
         self.max_breakout_extension_pct = 0.035
 
         # =============================================================================
         # Re-entry Throttle
         # =============================================================================
-        self.min_minutes_between_same_symbol_entries = 8
+        self.min_minutes_between_same_symbol_entries = 3
         self.reentry_requires_new_leader_high = True
         self.reentry_extra_margin_pct = 0.010
         self.max_failed_reentry_r = 0.0
-        self.max_failed_trades_before_symbol_cooldown = 2
+        self.max_failed_trades_before_symbol_cooldown = 99
         self.failed_symbol_cooldown_minutes = 60
+
+        # =============================================================================
+        # Quality-Weighted Risk
+        # =============================================================================
+        self.risk_pct_a_plus = 0.0075
+        self.risk_pct_a = 0.0055
+        self.risk_pct_b = 0.0035
+        self.risk_pct_c = 0.0020
+        self.same_day_entry_fail_risk_cap = 0.0025
+        self.capital_pct_a_plus = 0.20
+        self.capital_pct_a = 0.17
+        self.capital_pct_b = 0.13
+        self.capital_pct_c = 0.09
 
         # =============================================================================
         # Stop Configuration
@@ -125,16 +138,16 @@ class MomentumAlphaCore(
         # =============================================================================
         self.enable_pyramiding = True
         self.enable_partial_exits = False
-        self.initial_position_fraction = 0.70
-        self.confirmation_add_fraction = 0.30
-        self.add_after_mfe_r = 0.75
-        self.add_after_mfe_pct = 0.015
+        self.initial_position_fraction = 0.80
+        self.confirmation_add_fraction = 0.20
+        self.add_after_mfe_r = 1.25
+        self.add_after_mfe_pct = 0.025
         self.min_minutes_before_add = 1
 
         # =============================================================================
         # Re-entry Configuration
         # =============================================================================
-        self.max_reentries = 1
+        self.max_reentries = 4
         self.cooldown_minutes = 20
 
         # =============================================================================
@@ -231,6 +244,10 @@ class MomentumAlphaCore(
         state.lowest_since_entry = fill_price
         state.highest_bid_since_entry = state.last_bid or fill_price
         state.lowest_bid_since_entry = state.last_bid or fill_price
+        state.entry_quality_score = state.pending_entry_quality_score
+        state.entry_quality_bucket = state.pending_entry_quality_bucket
+        state.entry_risk_pct = state.pending_entry_risk_pct
+        state.entry_add_fraction = state.pending_entry_add_fraction
 
         state.scout_reduced = False
         state.slow_reduced = False
@@ -261,6 +278,9 @@ class MomentumAlphaCore(
         state.last_exit_r = r
         state.last_exit_reason = reason
 
+        if reason == "ENTRY_FAIL":
+            self.record_entry_fail(state)
+
         if r is not None and r < 0:
             state.failed_trade_count += 1
             state.last_failed_trade_time = self.algorithm.Time
@@ -272,10 +292,6 @@ class MomentumAlphaCore(
         state.reset_trade_fields()
         state.reentry_attempts += 1
 
-        if not self.is_reentry_allowed_after_exit(reason, r):
-            state.state = MomentumState.COOLDOWN
-            return
-
         if state.reentry_attempts > self.max_reentries:
             state.state = MomentumState.COOLDOWN
             return
@@ -284,10 +300,13 @@ class MomentumAlphaCore(
         self.debugger.log_reentry_watch(symbol, state.last_breakout_high)
 
     def is_reentry_allowed_after_exit(self, reason, r):
-        if reason == "ENTRY_FAIL":
-            return False
+        return True
 
-        if reason == "PROFIT_PULLBACK":
-            return True
+    def record_entry_fail(self, state):
+        today = self.algorithm.Time.date()
 
-        return r is not None and r > 0
+        if state.entry_fail_date != today:
+            state.entry_fail_date = today
+            state.entry_fail_count_today = 0
+
+        state.entry_fail_count_today += 1
