@@ -138,7 +138,8 @@ class DebugManager:
                 f"{self.counters['exit_STOP_LOSS']}/"
                 f"{self.counters['exit_TRAIL_STOP']}/"
                 f"{self.counters['exit_NO_PROGRESS']}/"
-                f"{self.counters['exit_MOMENTUM_CLOSE']}"
+                f"{self.counters['exit_MOMENTUM_CLOSE']}/"
+                f"{self.counters['exit_EOD']}"
             ),
             (
                 f"r={self.counters['rj_spread']}/"

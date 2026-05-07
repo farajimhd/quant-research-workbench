@@ -13,7 +13,7 @@ class OpeningRangeBreakoutCore:
         self.min_atr = 0.50
         self.relative_volume_daily_share = 0.02
         self.min_opening_relative_volume = 1.0
-        self.max_candidates = 20
+        self.max_candidates = 10
         self.atr_stop_fraction = 0.10
         self.risk_per_trade_pct = 0.0025
         self.max_capital_per_trade_pct = 0.10
@@ -54,8 +54,8 @@ class OpeningRangeBreakoutCore:
 
         candidates = self.rank_opening_range_candidates(symbol_states)
 
-        for symbol, state in candidates:
-            self.submit_entry(symbol, state)
+        for rank, (symbol, state) in enumerate(candidates, start=1):
+            self.submit_entry(symbol, state, rank)
 
     def ensure_orb_day(self, state):
         current_date = self.algorithm.Time.date()
@@ -148,7 +148,7 @@ class OpeningRangeBreakoutCore:
 
         return False
 
-    def submit_entry(self, symbol, state):
+    def submit_entry(self, symbol, state, rank):
         if state.orb_entry_order_id is not None:
             return
 
@@ -172,7 +172,7 @@ class OpeningRangeBreakoutCore:
             quantity,
             entry,
             tag=(
-                f"orb_entry|d={state.orb_direction}|rv={state.orb_relative_volume:.1f}"
+                f"orb_entry|rk={rank}|d={state.orb_direction}|rv={state.orb_relative_volume:.1f}"
                 f"|atr={state.atr_14:.2f}|or={state.orb_low:.2f}-{state.orb_high:.2f}"
             ),
         )
@@ -191,7 +191,7 @@ class OpeningRangeBreakoutCore:
             symbol,
             (
                 f"ORB|d={state.orb_direction}|p={entry:.2f}|sl={stop:.2f}"
-                f"|n={quantity}|rv={state.orb_relative_volume:.1f}|atr={state.atr_14:.2f}"
+                f"|n={quantity}|rk={rank}|rv={state.orb_relative_volume:.1f}|atr={state.atr_14:.2f}"
             ),
         )
 
@@ -220,6 +220,9 @@ class OpeningRangeBreakoutCore:
         if state.orb_entry_order_id is None or state.orb_stop_order_id is not None:
             return
 
+        if int(self.algorithm.Portfolio[symbol].Quantity) != 0:
+            return
+
         if self.minutes_since_midnight() >= 16 * 60 - self.cancel_unfilled_minutes_before_close:
             self.cancel_order(state.orb_entry_order_id, "orb_cancel_eod")
             state.orb_entry_order_id = None
@@ -239,6 +242,8 @@ class OpeningRangeBreakoutCore:
         self.cancel_order(state.orb_stop_order_id, "orb_eod_exit")
         self.algorithm.MarketOrder(symbol, -quantity, tag="orb_eod_exit")
         state.orb_exit_submitted = True
+        self.debugger.count("exit_signal", symbol)
+        self.debugger.count("exit_EOD", symbol)
 
     def handle_order_event(self, symbol, state, order_event):
         if order_event.OrderId == state.orb_entry_order_id:
@@ -247,6 +252,7 @@ class OpeningRangeBreakoutCore:
 
         if order_event.OrderId == state.orb_stop_order_id:
             state.orb_stop_order_id = None
+            self.debugger.count("exit_signal", symbol)
             self.debugger.count("exit_STOP_LOSS", symbol)
 
     def handle_entry_fill(self, symbol, state, order_event):
@@ -254,6 +260,8 @@ class OpeningRangeBreakoutCore:
 
         if fill_quantity == 0:
             return
+
+        state.orb_entry_order_id = None
 
         if state.orb_stop_price is None:
             return
