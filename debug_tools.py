@@ -120,6 +120,7 @@ class DebugManager:
             f"rExt={self.counters['rj_extended']}",
             f"rQ={self.counters['rj_no_quote']}",
             f"rQl={self.counters['rj_quality']}",
+            f"rEc={self.counters['rj_economics']}",
             f"dead={self.counters['dead']}",
             f"stale={self.counters['stale']}",
             f"lt={len(self.leader_tickers)}",

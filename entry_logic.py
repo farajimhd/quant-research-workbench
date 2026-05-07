@@ -183,6 +183,22 @@ class EntryLogicMixin:
             state.state = self.entry_watch_state(state)
             return
 
+        position_value = quantity * entry
+        planned_risk_dollars = quantity * risk
+
+        if (
+            position_value < self.min_position_value
+            or planned_risk_dollars < self.min_planned_risk_dollars
+        ):
+            self.debugger.c_log(
+                "RJ",
+                symbol,
+                f"econ|n={quantity}|val={position_value:.0f}|pr={planned_risk_dollars:.2f}|q={quality['bucket']}{quality['score']}",
+            )
+            self.debugger.count_reject("economics")
+            state.state = self.entry_watch_state(state)
+            return
+
         self.debugger.log_entry(
             symbol=symbol,
             entry=entry,
@@ -196,7 +212,7 @@ class EntryLogicMixin:
             risk_pct=quality["risk_pct"],
         )
 
-        ticket = self.submit_entry_order(symbol, quantity)
+        ticket = self.submit_entry_order(symbol, quantity, quality)
 
         if ticket is None:
             self.debugger.count_reject("order")
@@ -499,8 +515,11 @@ class EntryLogicMixin:
 
         return bid is not None and ask is not None
 
-    def submit_entry_order(self, symbol, quantity):
-        tag = "leader explosive breakout entry"
+    def submit_entry_order(self, symbol, quantity, quality=None):
+        tag = "entry"
+
+        if quality is not None:
+            tag = f"{tag}|q={quality['bucket']}{quality['score']}|rp={quality['risk_pct'] * 100:.2f}"
 
         if MarketTools.is_regular_market_order_safe(
             self.algorithm,

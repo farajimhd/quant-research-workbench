@@ -31,8 +31,8 @@ class MomentumAlphaCore(
         self.min_price = 0.75
         self.max_price = 50.0
         self.min_bar_volume = 25_000
-        self.min_recent_5min_volume = 50_000
-        self.min_recent_5min_dollar_volume = 100_000
+        self.min_recent_5min_volume = 100_000
+        self.min_recent_5min_dollar_volume = 250_000
 
         # =============================================================================
         # Dynamic Spread Filters
@@ -74,7 +74,7 @@ class MomentumAlphaCore(
         # =============================================================================
         # Re-entry Throttle
         # =============================================================================
-        self.min_minutes_between_same_symbol_entries = 3
+        self.min_minutes_between_same_symbol_entries = 8
         self.reentry_requires_new_leader_high = True
         self.reentry_extra_margin_pct = 0.010
         self.max_failed_reentry_r = 0.0
@@ -98,6 +98,8 @@ class MomentumAlphaCore(
         self.capital_pct_a = 0.14
         self.capital_pct_b = 0.10
         self.capital_pct_c = 0.05
+        self.min_position_value = 250.0
+        self.min_planned_risk_dollars = 8.0
 
         # =============================================================================
         # Stop Configuration
@@ -152,7 +154,7 @@ class MomentumAlphaCore(
         # =============================================================================
         # Re-entry Configuration
         # =============================================================================
-        self.max_reentries = 3
+        self.max_reentries = 2
         self.cooldown_minutes = 20
 
         # =============================================================================
