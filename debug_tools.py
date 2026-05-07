@@ -15,11 +15,13 @@ class DebugManager:
         enable_console: bool = True,
         enable_object_store: bool = True,
         object_store_key: str = "momentum_event_logs.json",
+        run_label: str = "",
     ):
         self.algorithm = algorithm
         self.enable_console = enable_console
         self.enable_object_store = enable_object_store
         self.object_store_key = object_store_key
+        self.run_label = run_label
         self.events = []
         self.counters = defaultdict(int)
         self.leader_tickers = set()
@@ -36,6 +38,26 @@ class DebugManager:
             "W": 0,
         }
         self.daily_code_counts = defaultdict(int)
+        self.log_run_header()
+
+    def log_run_header(self):
+        if not self.run_label:
+            return
+
+        message = f"RUN|{self.run_label}"
+
+        if self.enable_console:
+            self.algorithm.Debug(message[:190])
+
+        if self.enable_object_store:
+            self.events.append(
+                {
+                    "time": str(self.algorithm.Time),
+                    "code": "RUN",
+                    "ticker": "-",
+                    "message": self.run_label,
+                }
+            )
 
     def c_log(self, code: str, symbol: Symbol, message: str):
         ticker = symbol.Value if symbol is not None else "-"
