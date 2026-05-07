@@ -13,11 +13,18 @@ class OpeningRangeBreakoutCore:
         self.min_atr = 0.50
         self.relative_volume_daily_share = 0.02
         self.min_opening_relative_volume = 1.0
-        self.max_candidates = 10
-        self.atr_stop_fraction = 0.10
+        self.max_candidates = 5
+        self.atr_stop_fraction = 0.20
         self.risk_per_trade_pct = 0.0025
         self.max_capital_per_trade_pct = 0.10
         self.entry_buffer_pct = 0.0005
+        self.min_gap_up_pct = 0.01
+        self.min_close_location = 0.75
+        self.min_body_to_range = 0.50
+        self.min_orb_range_atr_fraction = 0.05
+        self.max_orb_range_atr_fraction = 0.35
+        self.min_position_value = 500.0
+        self.min_planned_risk_dollars = 12.0
         self.exit_minutes_before_close = 5
         self.cancel_unfilled_minutes_before_close = 10
         self.current_rank_date = None
@@ -137,11 +144,46 @@ class OpeningRangeBreakoutCore:
         if state.orb_high <= state.orb_low:
             return False
 
-        if state.orb_close > state.orb_open:
-            state.orb_direction = "LONG"
-            return True
+        if not self.has_required_gap(state):
+            return False
 
-        return False
+        if not self.has_quality_opening_range(state):
+            return False
+
+        state.orb_direction = "LONG"
+        return True
+
+    def has_required_gap(self, state):
+        if state.previous_close is None or state.previous_close <= 0:
+            return False
+
+        return state.orb_open >= state.previous_close * (1.0 + self.min_gap_up_pct)
+
+    def has_quality_opening_range(self, state):
+        if state.orb_close <= state.orb_open:
+            return False
+
+        opening_range = state.orb_high - state.orb_low
+
+        if opening_range <= 0:
+            return False
+
+        range_atr_fraction = opening_range / state.atr_14
+
+        if range_atr_fraction < self.min_orb_range_atr_fraction:
+            return False
+
+        if range_atr_fraction > self.max_orb_range_atr_fraction:
+            return False
+
+        close_location = (state.orb_close - state.orb_low) / opening_range
+
+        if close_location < self.min_close_location:
+            return False
+
+        body_to_range = abs(state.orb_close - state.orb_open) / opening_range
+
+        return body_to_range >= self.min_body_to_range
 
     def submit_entry(self, symbol, state, rank):
         if state.orb_entry_order_id is not None:
@@ -156,6 +198,10 @@ class OpeningRangeBreakoutCore:
 
         if quantity == 0:
             self.debugger.count_reject("qty")
+            return
+
+        if not self.has_minimum_trade_economics(quantity, entry, stop):
+            self.debugger.count_reject("economics")
             return
 
         ticket = self.algorithm.StopMarketOrder(
@@ -206,6 +252,16 @@ class OpeningRangeBreakoutCore:
                 int(deployable_cash / entry),
             ),
         )
+
+    def has_minimum_trade_economics(self, quantity, entry, stop):
+        risk_per_share = abs(entry - stop)
+        position_value = quantity * entry
+        planned_risk = quantity * risk_per_share
+
+        if position_value < self.min_position_value:
+            return False
+
+        return planned_risk >= self.min_planned_risk_dollars
 
     def manage_open_orders(self, symbol, state):
         if state.orb_entry_order_id is None or state.orb_stop_order_id is not None:

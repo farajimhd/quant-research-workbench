@@ -8,6 +8,7 @@ class SymbolState:
 
         self.avg_daily_volume_14 = None
         self.atr_14 = None
+        self.previous_close = None
 
         self.orb_date = None
         self.orb_open = None

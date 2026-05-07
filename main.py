@@ -37,7 +37,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-orb-long-top10: long-only 5m ORB, top 10 relative opening volume, ATR stop/EOD exit",
+            run_label="v-orb-quality-top5: long-only 5m ORB, gap/candle/range filters, 0.20 ATR stop, economics gate",
         )
 
         self.risk = RiskManager(
@@ -256,6 +256,9 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
 
         if len(volumes) >= 14:
             state.avg_daily_volume_14 = sum(volumes[-14:]) / 14.0
+
+        if len(closes) > 0:
+            state.previous_close = closes[-1]
 
         if len(closes) < 15:
             return
