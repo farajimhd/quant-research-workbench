@@ -131,6 +131,7 @@ class MomentumAlphaCore(
         self.entry_failure_confirm_window_seconds = 90
         self.early_failure_seconds = 90
         self.early_failure_break_level_buffer_pct = 0.0005
+        self.early_failure_confirmations_required = 2
 
         # =============================================================================
         # Profit Protection

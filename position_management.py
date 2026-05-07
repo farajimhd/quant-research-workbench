@@ -41,9 +41,15 @@ class PositionManagementMixin:
 
         early_failure = self.should_exit_for_early_quote_failure(state, bid)
 
-        if early_failure or self.should_exit_for_quote_entry_failure(state, bid, mfe_r, mfe_pct):
-            reason = "EARLY_FAIL" if early_failure else "ENTRY_FAIL"
-            self.exit_to_pullback_watch(symbol, state, bid, r, reason, force_limit=True)
+        if early_failure:
+            self.exit_to_pullback_watch(symbol, state, bid, r, "EARLY_FAIL", force_limit=True)
+            return
+
+        if state.early_failure_quote_count > 0:
+            return
+
+        if self.should_exit_for_quote_entry_failure(state, bid, mfe_r, mfe_pct):
+            self.exit_to_pullback_watch(symbol, state, bid, r, "ENTRY_FAIL", force_limit=True)
 
     def manage_position(self, symbol, state, bar):
         if state.pending_exit_order_id is not None:
@@ -68,7 +74,7 @@ class PositionManagementMixin:
         self.update_profit_protection_stop(state, r, mfe_r, mfe_pct)
 
         if price <= state.stop_price:
-            self.exit_to_pullback_watch(symbol, state, price, r, "STOP")
+            self.exit_to_pullback_watch(symbol, state, price, r, self.classify_stop_exit(state))
             return
 
         if self.should_exit_for_no_progress(state, price, r, mfe_r):
@@ -172,6 +178,8 @@ class PositionManagementMixin:
         elapsed = (self.algorithm.Time - state.entry_time).total_seconds()
 
         if elapsed > self.early_failure_seconds:
+            state.early_failure_quote_count = 0
+            state.early_failure_last_time = None
             return False
 
         break_level = state.entry_breakout_high or state.entry_price
@@ -179,7 +187,27 @@ class PositionManagementMixin:
             1.0 - self.early_failure_break_level_buffer_pct
         )
 
-        return bid <= failure_level
+        if bid > failure_level:
+            state.early_failure_quote_count = 0
+            state.early_failure_last_time = None
+            return False
+
+        now = self.algorithm.Time
+        last_time = state.early_failure_last_time
+
+        if last_time is None:
+            state.early_failure_quote_count = 1
+        else:
+            elapsed_since_confirm = (now - last_time).total_seconds()
+
+            if elapsed_since_confirm <= self.entry_failure_confirm_window_seconds:
+                state.early_failure_quote_count += 1
+            else:
+                state.early_failure_quote_count = 1
+
+        state.early_failure_last_time = now
+
+        return state.early_failure_quote_count >= self.early_failure_confirmations_required
 
     def has_fast_quote_cadence(self, state):
         if state.last_quote_time is None or state.previous_quote_time is None:
@@ -332,7 +360,19 @@ class PositionManagementMixin:
 
         return stop
 
-    def close_position_now(self, symbol, reason, force_limit=False):
+    def classify_stop_exit(self, state):
+        if state.initial_stop_price is None or state.stop_price is None:
+            return "STOP_LOSS"
+
+        if state.stop_price <= state.initial_stop_price:
+            return "STOP_LOSS"
+
+        if state.stop_moved_to_breakeven and state.stop_price <= state.entry_price:
+            return "BE_STOP"
+
+        return "TRAIL_STOP"
+
+    def close_position_now(self, symbol, reason, force_limit=False, tag=None):
         quantity = int(self.algorithm.Portfolio[symbol].Quantity)
 
         if quantity == 0:
@@ -354,7 +394,7 @@ class PositionManagementMixin:
             return self.algorithm.MarketOrder(
                 symbol,
                 -quantity,
-                tag=reason,
+                tag=tag or reason,
             )
 
         bid, ask = MarketTools.bid_ask(self.algorithm, symbol)
@@ -369,7 +409,7 @@ class PositionManagementMixin:
             symbol,
             -quantity,
             limit_price,
-            tag=f"{reason}|ext_limit",
+            tag=f"{tag or reason}|ext_limit",
         )
 
     def exit_to_pullback_watch(self, symbol, state, price, r, reason, force_limit=False):
@@ -385,15 +425,17 @@ class PositionManagementMixin:
             exclude_current=False,
         )
 
+        exit_tag = self.exit_order_tag(state, reason, r)
+
         self.debugger.log_exit(
             symbol=symbol,
             reason=reason,
             price=price,
             r_multiple=r,
-            extra=f"rebreak={state.last_breakout_high:.2f}",
+            extra=self.exit_debug_metrics(state, r),
         )
 
-        ticket = self.close_position_now(symbol, reason, force_limit=force_limit)
+        ticket = self.close_position_now(symbol, reason, force_limit=force_limit, tag=exit_tag)
 
         if ticket is None:
             return
@@ -406,6 +448,40 @@ class PositionManagementMixin:
 
         if ticket.Status == OrderStatus.Filled:
             self.handle_exit_ticket_fill(symbol, state, ticket)
+
+    def exit_debug_metrics(self, state, r):
+        return f"{self.exit_telemetry(state, r)}|rebreak={state.last_breakout_high:.2f}"
+
+    def exit_order_tag(self, state, reason, r):
+        telemetry = self.exit_telemetry(state, r)
+        return f"{reason}|{telemetry}"
+
+    def exit_telemetry(self, state, r=None):
+        risk = 0.0
+
+        if state.entry_price is not None and state.initial_stop_price is not None:
+            risk = state.entry_price - state.initial_stop_price
+
+        high_bid = state.highest_bid_since_entry or state.highest_since_entry or state.entry_price
+        mfe_r = 0.0
+
+        if risk > 0 and high_bid is not None and state.entry_price is not None:
+            mfe_r = (high_bid - state.entry_price) / risk
+
+        if r is None:
+            r = 0.0
+
+        age_minutes = 0
+
+        if state.entry_time is not None:
+            age_minutes = int((self.algorithm.Time - state.entry_time).total_seconds() / 60)
+
+        quality = "-"
+
+        if state.entry_quality_bucket is not None and state.entry_quality_score is not None:
+            quality = f"{state.entry_quality_bucket}{state.entry_quality_score}"
+
+        return f"R={r:.2f}|m={mfe_r:.2f}|a={age_minutes}|q={quality}|re={state.reentry_attempts}"
 
     def handle_pullback_watch(self, symbol, state, bar):
         price = float(bar.Close)

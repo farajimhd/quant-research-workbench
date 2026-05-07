@@ -210,9 +210,14 @@ class EntryLogicMixin:
             quality_score=quality["score"],
             quality_bucket=quality["bucket"],
             risk_pct=quality["risk_pct"],
+            relative_volume=quality["relative_volume"],
+            spread_to_risk=quality["spread_to_risk"],
+            stop_pct=quality["stop_pct"],
+            extension_pct=quality["extension_pct"],
+            reentry_attempts=state.reentry_attempts,
         )
 
-        ticket = self.submit_entry_order(symbol, quantity, quality)
+        ticket = self.submit_entry_order(symbol, quantity, quality, state.reentry_attempts)
 
         if ticket is None:
             self.debugger.count_reject("order")
@@ -329,6 +334,8 @@ class EntryLogicMixin:
             "entry_fails": entry_fails,
             "spread_to_risk": spread_to_risk,
             "stop_pct": risk_pct,
+            "relative_volume": rv,
+            "extension_pct": extension_pct,
         }
 
     def should_trade_quality(self, symbol, state, quality):
@@ -536,11 +543,19 @@ class EntryLogicMixin:
 
         return bid is not None and ask is not None
 
-    def submit_entry_order(self, symbol, quantity, quality=None):
+    def submit_entry_order(self, symbol, quantity, quality=None, reentry_attempts=0):
         tag = "entry"
 
         if quality is not None:
-            tag = f"{tag}|q={quality['bucket']}{quality['score']}|rp={quality['risk_pct'] * 100:.2f}"
+            tag = (
+                f"{tag}|q={quality['bucket']}{quality['score']}"
+                f"|rp={quality['risk_pct'] * 100:.2f}"
+                f"|rv={quality['relative_volume']:.1f}"
+                f"|sr={quality['spread_to_risk']:.2f}"
+                f"|st={quality['stop_pct'] * 100:.1f}"
+                f"|ex={quality['extension_pct'] * 100:.1f}"
+                f"|re={reentry_attempts}"
+            )
 
         if MarketTools.is_regular_market_order_safe(
             self.algorithm,

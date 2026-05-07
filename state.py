@@ -93,6 +93,8 @@ class SymbolState:
         self.lowest_bid_since_entry = None
         self.entry_failure_quote_count = 0
         self.entry_failure_last_time = None
+        self.early_failure_quote_count = 0
+        self.early_failure_last_time = None
         self.entry_quality_score = None
         self.entry_quality_bucket = None
         self.entry_risk_pct = None
@@ -162,6 +164,8 @@ class SymbolState:
         self.lowest_bid_since_entry = None
         self.entry_failure_quote_count = 0
         self.entry_failure_last_time = None
+        self.early_failure_quote_count = 0
+        self.early_failure_last_time = None
         self.entry_quality_score = None
         self.entry_quality_bucket = None
         self.entry_risk_pct = None

@@ -37,7 +37,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-next-quality-guard: B risk18bp, fresh B>=62, day EF guard 5/8, early fail 90s, econ/order tags",
+            run_label="v-next-confirm-debug: confirmed early fail, entry rv/sr/st/ex/re tags, exit R/mfe/age/q/re tags, split stops",
         )
 
         self.risk = RiskManager(

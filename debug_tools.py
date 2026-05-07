@@ -62,10 +62,15 @@ class DebugManager:
     def c_log(self, code: str, symbol: Symbol, message: str):
         ticker = symbol.Value if symbol is not None else "-"
         text = f"{code}|{ticker}|{message}"
+        counter_key = code
 
-        self.daily_code_counts[code] += 1
+        if code == "RJ":
+            reject_type = message.split("|", 1)[0]
+            counter_key = f"{code}:{reject_type}"
+
+        self.daily_code_counts[counter_key] += 1
         limit = self.max_console_events_per_day.get(code)
-        emit_console = limit is None or self.daily_code_counts[code] <= limit
+        emit_console = limit is None or self.daily_code_counts[counter_key] <= limit
 
         if self.enable_console and emit_console:
             self.algorithm.Debug(text[:190])
@@ -133,7 +138,9 @@ class DebugManager:
             f"xEF={self.counters['exit_ENTRY_FAIL']}",
             f"xER={self.counters['exit_EARLY_FAIL']}",
             f"xPB={self.counters['exit_PROFIT_PULLBACK']}",
-            f"xST={self.counters['exit_STOP']}",
+            f"xSL={self.counters['exit_STOP_LOSS']}",
+            f"xTR={self.counters['exit_TRAIL_STOP']}",
+            f"xBE={self.counters['exit_BE_STOP']}",
             f"xNP={self.counters['exit_NO_PROGRESS']}",
             f"rSp={self.counters['rj_spread']}",
             f"rSR={self.counters['rj_spread_risk']}",
@@ -179,16 +186,34 @@ class DebugManager:
         quality_score=None,
         quality_bucket=None,
         risk_pct=None,
+        relative_volume=None,
+        spread_to_risk=None,
+        stop_pct=None,
+        extension_pct=None,
+        reentry_attempts=0,
     ):
         quality = ""
 
         if quality_score is not None and quality_bucket is not None and risk_pct is not None:
             quality = f"|q={quality_bucket}{quality_score}|rp={risk_pct * 100:.2f}"
 
+        metrics = ""
+
+        if (
+            relative_volume is not None
+            and spread_to_risk is not None
+            and stop_pct is not None
+            and extension_pct is not None
+        ):
+            metrics = (
+                f"|rv={relative_volume:.1f}|sr={spread_to_risk:.2f}"
+                f"|st={stop_pct * 100:.1f}|ex={extension_pct * 100:.1f}|re={reentry_attempts}"
+            )
+
         self.c_log(
             "E",
             symbol,
-            f"p={entry:.2f}|sl={stop:.2f}|n={quantity}|bh={breakout_high:.2f}{quality}",
+            f"p={entry:.2f}|sl={stop:.2f}|n={quantity}|bh={breakout_high:.2f}{quality}{metrics}",
         )
         self.count("entry_submit", symbol)
 
