@@ -13,8 +13,8 @@ from state import SymbolState
 class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
 
     def Initialize(self):
-        self.SetStartDate(2026, 1, 1)
-        self.SetEndDate(2026, 3, 1)
+        self.SetStartDate(2024, 5, 1)
+        self.SetEndDate(2024, 6, 1)
         self.SetCash(10000)
 
         # ---------------------------------------------------------------------
