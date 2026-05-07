@@ -231,6 +231,15 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         if history is None or history.empty:
             return
 
+        history = history.reset_index()
+        columns = {str(column).lower(): column for column in history.columns}
+
+        required_columns = ["high", "low", "close", "volume"]
+
+        if any(column not in columns for column in required_columns):
+            self.debugger.c_log("RJ", symbol, "hist_cols")
+            return
+
         highs = []
         lows = []
         closes = []
@@ -238,10 +247,10 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
 
         for _, row in history.iterrows():
             try:
-                highs.append(float(row["high"]))
-                lows.append(float(row["low"]))
-                closes.append(float(row["close"]))
-                volumes.append(float(row["volume"]))
+                highs.append(float(row[columns["high"]]))
+                lows.append(float(row[columns["low"]]))
+                closes.append(float(row[columns["close"]]))
+                volumes.append(float(row[columns["volume"]]))
             except Exception:
                 continue
 
