@@ -20,7 +20,6 @@ class OpeningRangeBreakoutCore:
         self.entry_buffer_pct = 0.0005
         self.exit_minutes_before_close = 5
         self.cancel_unfilled_minutes_before_close = 10
-        self.enable_shorts = True
         self.current_rank_date = None
 
     def on_data_start(self):
@@ -142,26 +141,18 @@ class OpeningRangeBreakoutCore:
             state.orb_direction = "LONG"
             return True
 
-        if self.enable_shorts and state.orb_close < state.orb_open:
-            state.orb_direction = "SHORT"
-            return True
-
         return False
 
     def submit_entry(self, symbol, state, rank):
         if state.orb_entry_order_id is not None:
             return
 
-        if state.orb_direction == "LONG":
-            entry = state.orb_high * (1.0 + self.entry_buffer_pct)
-            stop = entry - (state.atr_14 * self.atr_stop_fraction)
-            quantity = self.calculate_quantity(entry, stop)
-        elif state.orb_direction == "SHORT":
-            entry = state.orb_low * (1.0 - self.entry_buffer_pct)
-            stop = entry + (state.atr_14 * self.atr_stop_fraction)
-            quantity = -self.calculate_quantity(entry, stop)
-        else:
+        if state.orb_direction != "LONG":
             return
+
+        entry = state.orb_high * (1.0 + self.entry_buffer_pct)
+        stop = entry - (state.atr_14 * self.atr_stop_fraction)
+        quantity = self.calculate_quantity(entry, stop)
 
         if quantity == 0:
             self.debugger.count_reject("qty")

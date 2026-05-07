@@ -37,7 +37,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-orb-top10: 5m ORB, top 10 relative opening volume, preserve entry rank tags, ATR stop/EOD exit",
+            run_label="v-orb-long-top10: long-only 5m ORB, top 10 relative opening volume, ATR stop/EOD exit",
         )
 
         self.risk = RiskManager(
