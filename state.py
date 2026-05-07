@@ -24,7 +24,10 @@ class SymbolState:
         self.orb_entry_order_time = None
         self.orb_stop_order_id = None
         self.orb_entry_price = None
+        self.orb_initial_stop_price = None
         self.orb_stop_price = None
+        self.orb_highest_since_entry = None
+        self.orb_breakeven_applied = False
         self.orb_quantity = 0
         self.orb_exit_submitted = False
 
@@ -43,6 +46,9 @@ class SymbolState:
         self.orb_entry_order_time = None
         self.orb_stop_order_id = None
         self.orb_entry_price = None
+        self.orb_initial_stop_price = None
         self.orb_stop_price = None
+        self.orb_highest_since_entry = None
+        self.orb_breakeven_applied = False
         self.orb_quantity = 0
         self.orb_exit_submitted = False

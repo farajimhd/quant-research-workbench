@@ -27,6 +27,11 @@ class OpeningRangeBreakoutCore:
         self.min_planned_risk_dollars = 12.0
         self.max_full_cash_risk_pct = 0.02
         self.entry_order_timeout_minutes = 30
+        self.breakeven_after_r = 0.75
+        self.trail_after_r = 1.50
+        self.trail_mfe_keep_fraction = 0.50
+        self.min_stop_update_pct = 0.001
+        self.stop_update_close_buffer_pct = 0.001
         self.exit_minutes_before_close = 5
         self.cancel_unfilled_minutes_before_close = 10
         self.current_rank_date = None
@@ -50,6 +55,7 @@ class OpeningRangeBreakoutCore:
             return
 
         self.manage_open_orders(symbol, state)
+        self.manage_position(symbol, state, bar)
         self.manage_end_of_day(symbol, state)
         self.try_submit_next_candidate()
 
@@ -269,7 +275,10 @@ class OpeningRangeBreakoutCore:
         state.orb_entry_order_id = ticket.OrderId
         state.orb_entry_order_time = self.algorithm.Time
         state.orb_entry_price = entry
+        state.orb_initial_stop_price = stop
         state.orb_stop_price = stop
+        state.orb_highest_since_entry = None
+        state.orb_breakeven_applied = False
         state.orb_quantity = quantity
         self.active_symbol = symbol
         self.debugger.count("entry_submit", symbol)
@@ -343,6 +352,80 @@ class OpeningRangeBreakoutCore:
             state.orb_entry_order_time = None
             self.clear_active_symbol_if_done(symbol, state)
 
+    def manage_position(self, symbol, state, bar):
+        quantity = int(self.algorithm.Portfolio[symbol].Quantity)
+
+        if quantity <= 0:
+            return
+
+        if state.orb_entry_price is None or state.orb_initial_stop_price is None:
+            return
+
+        high = float(bar.High)
+
+        if state.orb_highest_since_entry is None:
+            state.orb_highest_since_entry = high
+        else:
+            state.orb_highest_since_entry = max(state.orb_highest_since_entry, high)
+
+        new_stop = self.protective_stop_price(state)
+
+        if new_stop is None:
+            return
+
+        close = float(bar.Close)
+        max_stop = close * (1.0 - self.stop_update_close_buffer_pct)
+        new_stop = min(new_stop, max_stop)
+
+        if state.orb_stop_price is not None and new_stop <= state.orb_stop_price:
+            return
+
+        if state.orb_stop_price is not None:
+            min_step = state.orb_stop_price * self.min_stop_update_pct
+
+            if new_stop - state.orb_stop_price < min_step:
+                return
+
+        self.replace_stop_order(symbol, state, quantity, new_stop)
+
+    def protective_stop_price(self, state):
+        risk = state.orb_entry_price - state.orb_initial_stop_price
+
+        if risk <= 0 or state.orb_highest_since_entry is None:
+            return None
+
+        mfe = state.orb_highest_since_entry - state.orb_entry_price
+        mfe_r = mfe / risk
+
+        if mfe_r < self.breakeven_after_r:
+            return None
+
+        stop = state.orb_entry_price
+
+        if mfe_r >= self.trail_after_r:
+            stop = state.orb_entry_price + (mfe * self.trail_mfe_keep_fraction)
+
+        return stop
+
+    def replace_stop_order(self, symbol, state, quantity, stop_price):
+        self.cancel_order(state.orb_stop_order_id, "orb_stop_update")
+
+        ticket = self.algorithm.StopMarketOrder(
+            symbol,
+            -quantity,
+            stop_price,
+            tag="orb_stop_protect",
+        )
+
+        if ticket is None:
+            return
+
+        state.orb_stop_order_id = ticket.OrderId
+        state.orb_stop_price = stop_price
+
+        if stop_price >= state.orb_entry_price:
+            state.orb_breakeven_applied = True
+
     def is_entry_order_stale(self, state):
         if state.orb_entry_order_time is None:
             return False
@@ -410,6 +493,8 @@ class OpeningRangeBreakoutCore:
 
         if ticket is not None:
             state.orb_stop_order_id = ticket.OrderId
+            state.orb_quantity = fill_quantity
+            state.orb_highest_since_entry = float(order_event.FillPrice)
 
     def has_active_trade(self):
         if self.active_symbol is None:
