@@ -530,8 +530,8 @@ def selected_summary(data: dict, period: str) -> dict:
 def render_metrics(summary: dict) -> None:
     specs = summary_metric_specs(summary)
     for row in SUMMARY_METRIC_LAYOUT["rows"]:
-        cols = st.columns(7)
-        for col, label in zip(cols, row):
+        cols = st.columns([1, 2, 2, 2, 2, 2, 2, 2, 1])
+        for col, label in zip(cols[1:-1], row):
             with col:
                 render_summary_metric(label, specs[label])
 
@@ -641,6 +641,7 @@ def render_equity_cash_chart(portfolio: pl.DataFrame) -> None:
 def render_overview(data: dict, period: str) -> None:
     summary = selected_summary(data, period)
     render_metrics(summary)
+    st.divider()
     daily = filter_df(data["daily"], period)
     portfolio = filter_df(data["portfolio"], period)
     left, right = st.columns(2)
