@@ -246,6 +246,11 @@ def install_css() -> None:
             font-size: 0.7rem;
             line-height: 1;
         }
+        .qq-overview-divider {
+            border: 0;
+            border-top: 1px solid #e5e7eb;
+            margin: 0.25rem 0 0.35rem 0;
+        }
         .qq-page-description {
             color: #6b7280;
             font-size: 0.84rem;
@@ -719,7 +724,7 @@ def render_equity_cash_chart(portfolio: pl.DataFrame) -> None:
 def render_overview(data: dict, period: str) -> None:
     summary = selected_summary(data, period)
     render_metrics(summary)
-    st.divider()
+    st.markdown('<hr class="qq-overview-divider" />', unsafe_allow_html=True)
     daily = filter_df(data["daily"], period)
     portfolio = filter_df(data["portfolio"], period)
     left, right = st.columns(2)
