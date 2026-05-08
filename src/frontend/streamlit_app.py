@@ -182,6 +182,18 @@ def install_css() -> None:
         [data-testid="stSidebar"] > div:first-child {
             padding: 1rem 1rem;
         }
+        .qq-page-title {
+            font-size: 1.35rem;
+            font-weight: 700;
+            line-height: 1.2;
+            margin: 0 0 0.15rem 0;
+        }
+        .qq-page-description {
+            color: #6b7280;
+            font-size: 0.84rem;
+            line-height: 1.25;
+            margin: 0 0 0.45rem 0;
+        }
         .qq-card {
             border: 1px solid #d8dee4;
             border-radius: 8px;
@@ -1080,9 +1092,10 @@ def delete_run_folder(run_dir: Path, output_root: Path) -> bool:
 
 
 def strategy_workspace(strategy_name: str) -> None:
-    st.title(strategy_name)
-    st.caption(STRATEGY_DESCRIPTIONS.get(strategy_name, "No description available."))
-    output_root = Path(st.text_input("Runs root", value=str(DEFAULT_OUTPUT_ROOT)))
+    st.markdown(f'<div class="qq-page-title">{strategy_name}</div>', unsafe_allow_html=True)
+    description = STRATEGY_DESCRIPTIONS.get(strategy_name, "No description available.")
+    st.markdown(f'<div class="qq-page-description">{description}</div>', unsafe_allow_html=True)
+    output_root = DEFAULT_OUTPUT_ROOT
     active_run = st.session_state.get("active_run_dir")
     if active_run:
         cols = st.columns([1, 5])
