@@ -51,9 +51,10 @@ METRIC_HELP = {
 }
 
 SUMMARY_METRIC_LAYOUT = {
-    "top": ["Final Equity", "Net Profit", "Return", "Max Drawdown", "Trades", "Win Rate"],
-    "left": ["Cash", "Realized P/L", "Unrealized P/L", "Profit Factor"],
-    "right": ["Sharpe", "Sortino", "Turnover", "Volume"],
+    "rows": [
+        ["Final Equity", "Cash", "Net Profit", "Return", "Realized P/L", "Unrealized P/L", "Max Drawdown"],
+        ["Trades", "Win Rate", "Profit Factor", "Sharpe", "Sortino", "Turnover", "Volume"],
+    ],
 }
 
 TRADE_STAT_GROUPS = {
@@ -528,16 +529,11 @@ def selected_summary(data: dict, period: str) -> dict:
 
 def render_metrics(summary: dict) -> None:
     specs = summary_metric_specs(summary)
-    cols = st.columns(6)
-    for col, label in zip(cols, SUMMARY_METRIC_LAYOUT["top"]):
-        with col:
-            render_summary_metric(label, specs[label])
-
-
-def render_metric_stack(summary: dict, labels: list[str]) -> None:
-    specs = summary_metric_specs(summary)
-    for label in labels:
-        render_summary_metric(label, specs[label], compact=True)
+    for row in SUMMARY_METRIC_LAYOUT["rows"]:
+        cols = st.columns(7)
+        for col, label in zip(cols, row):
+            with col:
+                render_summary_metric(label, specs[label])
 
 
 def format_stat_value(key: str, value) -> str:
@@ -647,14 +643,11 @@ def render_overview(data: dict, period: str) -> None:
     render_metrics(summary)
     daily = filter_df(data["daily"], period)
     portfolio = filter_df(data["portfolio"], period)
-    left, middle, right = st.columns([1, 8, 1])
+    left, right = st.columns(2)
     with left:
-        render_metric_stack(summary, SUMMARY_METRIC_LAYOUT["left"])
-    with middle:
         render_profit_loss_chart(daily)
-        render_equity_cash_chart(portfolio)
     with right:
-        render_metric_stack(summary, SUMMARY_METRIC_LAYOUT["right"])
+        render_equity_cash_chart(portfolio)
     render_grouped_stats("Trade Statistics", summary.get("tradeStatistics", {}), TRADE_STAT_GROUPS)
     render_grouped_stats("Portfolio Statistics", summary.get("portfolioStatistics", {}), PORTFOLIO_STAT_GROUPS)
 
