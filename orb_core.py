@@ -413,6 +413,7 @@ class OpeningRangeBreakoutCore:
         if len(live_candidates) == 0:
             return
 
+        scanner_top = self.scanner_top_tag(live_candidates)
         open_slots = self.max_active_positions - len(self.active_symbols)
 
         if open_slots > 0:
@@ -423,7 +424,15 @@ class OpeningRangeBreakoutCore:
                 if self.is_symbol_busy(symbol, state):
                     continue
 
-                self.enter_position(symbol, state, rank, score, "LIVE_SIGNAL")
+                self.enter_position(
+                    symbol,
+                    state,
+                    rank,
+                    score,
+                    "LIVE_SIGNAL",
+                    scanner_top,
+                    len(live_candidates),
+                )
 
         while len(self.active_symbols) >= self.max_active_positions:
             replacement = self.find_replacement(live_candidates)
@@ -457,6 +466,14 @@ class OpeningRangeBreakoutCore:
 
         candidates.sort(key=lambda item: item[0], reverse=True)
         return candidates
+
+    def scanner_top_tag(self, live_candidates):
+        parts = []
+
+        for score, rank, symbol, _ in live_candidates[:5]:
+            parts.append(f"{rank}:{symbol.Value}:{score:.1f}")
+
+        return ",".join(parts)
 
     def find_replacement(self, live_candidates):
         weakest = self.find_weakest_replaceable_position()
@@ -581,7 +598,7 @@ class OpeningRangeBreakoutCore:
 
         return state.orb_score + macd_strength + tema_strength + extension_score
 
-    def enter_position(self, symbol, state, rank, score, reason):
+    def enter_position(self, symbol, state, rank, score, reason, scanner_top="", scanner_count=0):
         entry = state.last_price
         stop = self.box_mid(state)
         quantity = self.calculate_quantity(entry, stop)
@@ -598,7 +615,17 @@ class OpeningRangeBreakoutCore:
         ticket = self.algorithm.MarketOrder(
             symbol,
             quantity,
-            tag=self.entry_tag(reason, rank, quantity, entry, stop, score, state),
+            tag=self.entry_tag(
+                reason,
+                rank,
+                quantity,
+                entry,
+                stop,
+                score,
+                state,
+                scanner_top,
+                scanner_count,
+            ),
         )
 
         if ticket is None:
@@ -741,14 +768,26 @@ class OpeningRangeBreakoutCore:
         state.orb_entry_time = None
         self.active_symbols.discard(symbol)
 
-    def entry_tag(self, reason, rank, quantity, entry, stop, score, state):
+    def entry_tag(
+        self,
+        reason,
+        rank,
+        quantity,
+        entry,
+        stop,
+        score,
+        state,
+        scanner_top,
+        scanner_count,
+    ):
         return (
             f"ENTRY|reason={reason}|rule=LIVE_BOX_MACD_TEMA|rank={rank}"
             f"|qty={quantity}|price={entry:.2f}|box_high={state.orb_high:.2f}"
             f"|box_mid={stop:.2f}|box_low={state.orb_low:.2f}"
             f"|setup={state.orb_score:.1f}|live={score:.1f}|rv={state.orb_relative_volume:.1f}"
             f"|macd={state.macd_line:.4f}|sig={state.macd_signal:.4f}|hist={state.macd_hist:.4f}"
-            f"|tema9={state.tema9:.2f}|tema20={state.tema20:.2f}"
+            f"|tema9={state.tema9:.4f}|tema20={state.tema20:.4f}"
+            f"|scan={scanner_count}|top5={scanner_top}"
         )
 
     def exit_tag(self, reason, state, replacement_symbol=None, replacement_score=None):
