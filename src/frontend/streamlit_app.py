@@ -187,6 +187,19 @@ def install_css() -> None:
             line-height: 1.2 !important;
             margin-bottom: 0.2rem !important;
         }
+        .st-key-run_header h1 {
+            margin: 0 !important;
+        }
+        .st-key-run_header pre {
+            margin: 0;
+            padding: 0;
+            line-height: 1.25;
+            white-space: pre-wrap;
+        }
+        .st-key-run_header [data-testid="stButton"] {
+            display: flex;
+            align-items: center;
+        }
         .qq-run-summary {
             color: #4b5563;
             font-size: 0.86rem;
@@ -1028,27 +1041,28 @@ def render_selected_run_header(run_dir: Path) -> None:
     status = metadata.get("status", "unknown")
     date_range = f"{config.get('start_date', '')} to {config.get('end_date', '')}"
 
-    info_cols = st.columns([3, 5.1, 1.25, 3.15])
-    with info_cols[0]:
-        st.title(run_name)
-    with info_cols[1]:
-        summary_items = [
-            str(metadata.get("strategy_name", config.get("strategy_name", ""))),
-            str(status),
-            date_range,
-            f"return {pct(summary.get('return_pct', 0.0))}",
-            f"P/L {money(summary.get('total_pnl', 0.0))}",
-            f"trades {summary.get('trade_count', 0)}",
-        ]
-        summary_text = " | ".join(summary_items)
-        st.text(summary_text)
-    with info_cols[2]:
-        if run_details_dialog is not None:
-            if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary", width="content"):
-                run_details_dialog(str(run_dir))
-        else:
-            with st.expander("See more details"):
-                render_run_details_content(run_dir)
+    with st.container(key="run_header"):
+        info_cols = st.columns([3, 5.1, 1.25, 3.15], vertical_alignment="center")
+        with info_cols[0]:
+            st.title(run_name)
+        with info_cols[1]:
+            summary_items = [
+                str(metadata.get("strategy_name", config.get("strategy_name", ""))),
+                str(status),
+                date_range,
+                f"return {pct(summary.get('return_pct', 0.0))}",
+                f"P/L {money(summary.get('total_pnl', 0.0))}",
+                f"trades {summary.get('trade_count', 0)}",
+            ]
+            summary_text = " | ".join(summary_items)
+            st.text(summary_text)
+        with info_cols[2]:
+            if run_details_dialog is not None:
+                if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary", width="content"):
+                    run_details_dialog(str(run_dir))
+            else:
+                with st.expander("See more details"):
+                    render_run_details_content(run_dir)
 
 
 def render_new_run_update_form(config_key: str) -> None:
