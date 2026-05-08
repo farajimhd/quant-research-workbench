@@ -239,11 +239,11 @@ def install_css() -> None:
             margin-bottom: 0;
         }
         .st-key-overview_metrics [data-testid="stMetricValue"] {
-            font-size: 1.12rem;
+            font-size: 1.28rem;
             line-height: 1;
         }
         .st-key-overview_metrics [data-testid="stMetricDelta"] {
-            font-size: 0.76rem;
+            font-size: 0.9rem;
             line-height: 1;
         }
         .qq-overview-divider {
