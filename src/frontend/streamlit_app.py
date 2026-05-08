@@ -197,7 +197,7 @@ def install_css() -> None:
             min-width: 2rem;
             height: 2rem;
             min-height: 2rem;
-            margin-top: 0.65rem;
+            margin-top: 0;
             padding: 0;
             border-radius: 999px;
             color: #6b7280;
@@ -1003,16 +1003,13 @@ def render_selected_run_header(run_dir: Path) -> None:
     status = metadata.get("status", "unknown")
     date_range = f"{config.get('start_date', '')} to {config.get('end_date', '')}"
 
-    title_cols = st.columns([0.35, 7])
-    with title_cols[0]:
+    st.title(run_name)
+    info_cols = st.columns([0.35, 5.2, 1.25, 5.2])
+    with info_cols[0]:
         if st.button("<", key="back_to_runs", help="Back to runs", type="tertiary"):
             st.session_state.pop("active_run_dir", None)
             st.rerun()
-    with title_cols[1]:
-        st.title(run_name)
-
-    info_cols = st.columns([8, 1.6])
-    with info_cols[0]:
+    with info_cols[1]:
         st.markdown(
             (
                 f'<div class="qq-run-summary">{metadata.get("strategy_name", config.get("strategy_name", ""))}'
@@ -1022,7 +1019,7 @@ def render_selected_run_header(run_dir: Path) -> None:
             ),
             unsafe_allow_html=True,
         )
-    with info_cols[1]:
+    with info_cols[2]:
         if run_details_dialog is not None:
             if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary", width="stretch"):
                 run_details_dialog(str(run_dir))
