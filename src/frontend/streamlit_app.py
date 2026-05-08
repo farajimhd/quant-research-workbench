@@ -1004,24 +1004,23 @@ def render_selected_run_header(run_dir: Path) -> None:
     date_range = f"{config.get('start_date', '')} to {config.get('end_date', '')}"
 
     st.title(run_name)
-    info_cols = st.columns([0.35, 5.2, 1.25, 5.2])
+    # info_cols = st.columns([0.35, 5.2, 1.25, 5.2])
+    info_cols = st.columns([0.05, 0.25, 0.1, 0.6])
     with info_cols[0]:
         if st.button("<", key="back_to_runs", help="Back to runs", type="tertiary"):
             st.session_state.pop("active_run_dir", None)
             st.rerun()
     with info_cols[1]:
-        st.markdown(
-            (
-                f'<div class="qq-run-summary">{metadata.get("strategy_name", config.get("strategy_name", ""))}'
-                f' | {status} | {date_range} | return {pct(summary.get("return_pct", 0.0))}'
-                f' | P/L {money(summary.get("total_pnl", 0.0))}'
-                f' | trades {summary.get("trade_count", 0)}</div>'
-            ),
-            unsafe_allow_html=True,
+        summary_text = (
+            f'{metadata.get("strategy_name", config.get("strategy_name", ""))}'
+            f" | {status} | {date_range} | return {pct(summary.get('return_pct', 0.0))}"
+            f" | P/L {money(summary.get('total_pnl', 0.0))}"
+            f" | trades {summary.get('trade_count', 0)}"
         )
+        st.text(summary_text)
     with info_cols[2]:
         if run_details_dialog is not None:
-            if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary", width="stretch"):
+            if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary", width="content"):
                 run_details_dialog(str(run_dir))
         else:
             with st.expander("See more details"):
