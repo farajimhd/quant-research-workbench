@@ -58,6 +58,19 @@ SUMMARY_METRIC_LAYOUT = {
     ],
 }
 
+CHART_INDICATORS = ["vwap", "tema9_5m", "tema20_5m", "macd_line_5m", "macd_signal_5m", "macd_hist_5m"]
+
+DEFAULT_CHART_INDICATORS = ["vwap", "tema9_5m", "tema20_5m", "macd_line_5m", "macd_signal_5m"]
+
+DEFAULT_INDICATOR_COLORS = {
+    "vwap": "#0891b2",
+    "tema9_5m": "#2563eb",
+    "tema20_5m": "#db2777",
+    "macd_line_5m": "#16a34a",
+    "macd_signal_5m": "#f59e0b",
+    "macd_hist_5m": "#7c3aed",
+}
+
 TRADE_STAT_GROUPS = {
     "Trade Count": [
         ("totalNumberOfTrades", "Total Trades"),
@@ -779,20 +792,56 @@ def numeric_value(value) -> float | None:
         return None
 
 
-def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicators: list[str]) -> dict:
+def hex_to_rgba(hex_color: str, opacity: float) -> str:
+    color = hex_color.lstrip("#")
+    if len(color) != 6:
+        return f"rgba(37, 99, 235, {opacity:.2f})"
+    red = int(color[0:2], 16)
+    green = int(color[2:4], 16)
+    blue = int(color[4:6], 16)
+    return f"rgba({red}, {green}, {blue}, {opacity:.2f})"
+
+
+def indicator_controls(available_indicators: list[str], default_indicators: list[str], key_prefix: str) -> dict:
+    settings = {}
+    with st.expander("Indicator Settings", expanded=False):
+        header = st.columns([1.2, 1.2, 1.2])
+        header[0].caption("Visible")
+        header[1].caption("Color")
+        header[2].caption("Opacity")
+        for indicator in available_indicators:
+            cols = st.columns([1.2, 1.2, 1.2])
+            visible = cols[0].checkbox(
+                indicator,
+                value=indicator in default_indicators,
+                key=f"{key_prefix}_{indicator}_visible",
+            )
+            color = cols[1].color_picker(
+                indicator,
+                value=DEFAULT_INDICATOR_COLORS.get(indicator, "#2563eb"),
+                key=f"{key_prefix}_{indicator}_color",
+                label_visibility="collapsed",
+            )
+            opacity = cols[2].slider(
+                indicator,
+                min_value=0.1,
+                max_value=1.0,
+                value=0.72,
+                step=0.05,
+                key=f"{key_prefix}_{indicator}_opacity",
+                label_visibility="collapsed",
+            )
+            if visible:
+                settings[indicator] = {"color": color, "opacity": opacity}
+    return settings
+
+
+def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict]) -> dict:
     bars = normalize_bar_columns(bars).sort("bar_time_market")
     rows = bars.to_dicts()
     candles = []
     volumes = []
     indicator_series = []
-    indicator_colors = [
-        "#2563eb",
-        "#db2777",
-        "#16a34a",
-        "#f59e0b",
-        "#7c3aed",
-        "#0891b2",
-    ]
 
     for row in rows:
         timestamp = chart_timestamp(row.get("bar_time_market"))
@@ -823,7 +872,9 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
                 }
             )
 
-    for idx, column in enumerate([col for col in indicators if col in bars.columns]):
+    for column, options in indicators.items():
+        if column not in bars.columns:
+            continue
         points = []
         for row in rows:
             timestamp = chart_timestamp(row.get("bar_time_market"))
@@ -831,10 +882,14 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
             if timestamp and value is not None:
                 points.append({"time": timestamp, "value": value})
         if points:
+            color = options.get("color", DEFAULT_INDICATOR_COLORS.get(column, "#2563eb"))
+            opacity = float(options.get("opacity", 0.72))
             indicator_series.append(
                 {
                     "name": column,
-                    "color": indicator_colors[idx % len(indicator_colors)],
+                    "color": hex_to_rgba(color, opacity),
+                    "legendColor": color,
+                    "opacity": opacity,
                     "data": points,
                 }
             )
@@ -875,6 +930,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 680) -> None:
     const payload = {payload_json};
     const container = document.getElementById("{chart_id}");
     const chart = LightweightCharts.createChart(container, {{
+        width: container.clientWidth,
         height: {height},
         layout: {{
             background: {{ type: "solid", color: "#ffffff" }},
@@ -896,8 +952,9 @@ def render_lightweight_candle_chart(payload: dict, height: int = 680) -> None:
             borderColor: "#d1d5db",
             timeVisible: true,
             secondsVisible: false,
-            rightOffset: 8,
-            barSpacing: 9
+            rightOffset: 2,
+            barSpacing: 12,
+            minBarSpacing: 4
         }},
         handleScroll: {{
             mouseWheel: true,
@@ -918,7 +975,9 @@ def render_lightweight_candle_chart(payload: dict, height: int = 680) -> None:
         borderUpColor: "#0f8a3b",
         borderDownColor: "#c0362c",
         wickUpColor: "#0f8a3b",
-        wickDownColor: "#c0362c"
+        wickDownColor: "#c0362c",
+        borderVisible: true,
+        wickVisible: true
     }});
     candleSeries.setData(payload.candles || []);
     if (payload.markers && payload.markers.length) {{
@@ -960,8 +1019,18 @@ def render_lightweight_candle_chart(payload: dict, height: int = 680) -> None:
         }});
         line.setData(indicator.data || []);
         const item = document.createElement("span");
-        item.textContent = indicator.name;
-        item.style.color = indicator.color;
+        item.style.display = "inline-flex";
+        item.style.alignItems = "center";
+        item.style.gap = "4px";
+        item.style.color = indicator.legendColor || indicator.color;
+        item.style.fontWeight = "600";
+        const swatch = document.createElement("span");
+        swatch.style.width = "10px";
+        swatch.style.height = "3px";
+        swatch.style.borderRadius = "999px";
+        swatch.style.background = indicator.color;
+        item.appendChild(swatch);
+        item.appendChild(document.createTextNode(indicator.name));
         legend.appendChild(item);
     }});
 
@@ -969,6 +1038,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 680) -> None:
     const resizeObserver = new ResizeObserver(entries => {{
         if (!entries.length) return;
         chart.applyOptions({{ width: entries[0].contentRect.width }});
+        chart.timeScale().fitContent();
     }});
     resizeObserver.observe(container);
     </script>
@@ -976,7 +1046,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 680) -> None:
     components.html(html, height=height + 12, scrolling=False)
 
 
-def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: list[str]) -> None:
+def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict]) -> None:
     if bars.is_empty():
         st.info("No chart data available.")
         return
@@ -1023,13 +1093,7 @@ def render_trades(data: dict, period: str) -> None:
     with right:
         st.subheader(f"{trade.get('symbol')} trade chart")
         timeframe = st.segmented_control("Timeframe", ["1m", "5m"], default="1m", key=f"trade_tf_{period}")
-        default_indicators = ["vwap", "tema9_5m", "tema20_5m", "macd_line_5m", "macd_signal_5m"]
-        indicators = st.multiselect(
-            "Indicators",
-            ["vwap", "tema9_5m", "tema20_5m", "macd_line_5m", "macd_signal_5m", "macd_hist_5m"],
-            default=default_indicators,
-            key=f"trade_ind_{period}",
-        )
+        indicators = indicator_controls(CHART_INDICATORS, DEFAULT_CHART_INDICATORS, f"trade_ind_{period}")
         trade_day = str(trade.get("entry_time", ""))[:10] if period == "Whole Run" else period
         bars = bars_for(data, trade_day, trade["symbol"], timeframe)
         orders = filter_df(data["orders"], trade_day)
@@ -1104,12 +1168,7 @@ def render_chart_inspector(data: dict, period: str) -> None:
     tickers = bars_1m.select("ticker").unique().sort("ticker")["ticker"].to_list()
     ticker = st.selectbox("Ticker", tickers)
     timeframe = st.segmented_control("Timeframe", ["1m", "5m"], default="1m", key=f"inspect_tf_{period}")
-    indicators = st.multiselect(
-        "Indicators",
-        ["vwap", "tema9_5m", "tema20_5m", "macd_line_5m", "macd_signal_5m", "macd_hist_5m"],
-        default=["vwap", "tema9_5m", "tema20_5m", "macd_line_5m", "macd_signal_5m"],
-        key=f"inspect_ind_{period}",
-    )
+    indicators = indicator_controls(CHART_INDICATORS, DEFAULT_CHART_INDICATORS, f"inspect_ind_{period}")
     bars = bars_for(data, period, ticker, timeframe)
     orders = filter_df(data["orders"], period)
     if "symbol" in orders.columns:
