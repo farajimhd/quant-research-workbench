@@ -752,13 +752,9 @@ def render_delete_run_confirmation(run_dir: Path, output_root: Path) -> None:
     run_name = metadata.get("run_name", run_dir.name)
     st.warning(f"Delete run and all saved artifacts: {run_name}")
     st.caption(str(run_dir))
-    confirmation = st.text_input("Type the run name to confirm deletion", key=f"delete_confirm_{run_dir.name}")
     buttons = st.columns([1, 1, 4])
     with buttons[0]:
         if st.button("Confirm Delete", type="primary"):
-            if confirmation != run_name:
-                st.error("Confirmation text does not match the run name.")
-                return
             if delete_run_folder(run_dir, output_root):
                 st.success(f"Deleted {run_name}")
                 st.session_state.pop("delete_run_dir", None)
