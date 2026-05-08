@@ -35,6 +35,9 @@ class SymbolState:
         self.orb_entry_score_quality = 0.0
         self.orb_entry_risk_pct = 0.0
         self.orb_rank = None
+        self.max_price_since_entry = None
+        self.max_unrealized_profit = 0.0
+        self.max_r_multiple = 0.0
 
         self.last_price = None
         self.previous_price = None
@@ -93,6 +96,9 @@ class SymbolState:
         self.orb_entry_score_quality = 0.0
         self.orb_entry_risk_pct = 0.0
         self.orb_rank = None
+        self.max_price_since_entry = None
+        self.max_unrealized_profit = 0.0
+        self.max_r_multiple = 0.0
 
         self.last_price = None
         self.previous_price = None

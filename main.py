@@ -21,9 +21,12 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         # Universe configuration.
         # ---------------------------------------------------------------------
         self.min_price = 0.75
-        self.max_price = 200.0
+        self.max_price = 100.0
         self.min_daily_dollar_volume = 2_000_000
 
+        self.SetSecurityInitializer(
+            lambda security: security.SetDataNormalizationMode(DataNormalizationMode.Raw)
+        )
         self.UniverseSettings.Resolution = Resolution.Minute
         self.UniverseSettings.ExtendedMarketHours = False
         self.AddUniverse(self.UniverseSelection)
@@ -36,7 +39,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-orb-5m-stop-rank100: 5m box, top-100 watchlist, live rerank, buy-stop entries, breakout-defense stop",
+            run_label="v-orb-raw-1s-manage: raw prices, 5m box, top-100 live rerank, second-level trade management",
         )
 
         self.risk = RiskManager(

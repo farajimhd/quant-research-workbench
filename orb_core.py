@@ -23,7 +23,7 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
         self.minimum_hold_minutes = 10
         self.entry_buffer_pct = 0.0005
         self.entry_stage_proximity_pct = 0.01
-        self.stop_box_pullback_fraction = 0.10
+        self.stop_box_pullback_fraction = 0.50
         self.min_risk_pct = 0.0025
         self.max_risk_pct = 0.0075
         self.min_gap_up_pct = 0.005
@@ -32,7 +32,7 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
         self.min_orb_range_atr_fraction = 0.05
         self.max_orb_range_atr_fraction = 0.80
         self.tema_entry_atr_buffer = 0.005
-        self.tema_exit_atr_buffer = 0.02
+        self.tema_exit_atr_buffer = 0.005
         self.entry_cutoff_minutes = 15 * 60 + 30
         self.exit_minutes_before_close = 5
         self.current_rank_date = None
@@ -41,6 +41,7 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
         self.active_symbols = set()
         self.active_tickers = set()
         self.pending_entry_tickers = set()
+        self.second_resolution_tickers = set()
 
         self.configure_indicators()
 
@@ -53,10 +54,12 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
             self.active_symbols.clear()
             self.active_tickers.clear()
             self.pending_entry_tickers.clear()
+            self.second_resolution_tickers.clear()
 
     def process_symbol(self, symbol, state, bar):
         self.ensure_orb_day(state)
         self.update_last_price(state, bar)
+        self.update_position_peak(symbol, state)
         self.update_five_minute_indicators(state, bar)
 
         if self.is_opening_range_bar():
@@ -67,6 +70,9 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
     def after_on_data(self, symbol_states):
         for state in symbol_states.values():
             self.ensure_orb_day(state)
+
+        if self.algorithm.Time.second != 0:
+            return
 
         if self.should_rank_now() and not any(state.orb_ranked for state in symbol_states.values()):
             self.watchlist_symbols = self.build_watchlist(symbol_states)
@@ -340,6 +346,7 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
                     live_rank,
                     score,
                     self.score_quality(score, top_score),
+                    len(live_candidates),
                     "LIVE_SIGNAL",
                     scanner_top,
                     len(live_candidates),
@@ -472,7 +479,7 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
         if state.last_price < self.protective_stop_price(state):
             return False
 
-        if state.last_price > self.entry_trigger(state) * (1.0 + self.entry_stage_proximity_pct):
+        if state.last_price > self.entry_trigger(state):
             return False
 
         return self.is_macd_open(state) and self.is_tema_open(state)
@@ -538,6 +545,7 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
         live_rank,
         score,
         score_quality,
+        live_candidate_count,
         reason,
         scanner_top="",
         scanner_count=0,
@@ -545,7 +553,13 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
         entry = self.entry_trigger(state)
         stop = self.protective_stop_price(state)
         risk_pct = self.risk_pct_for_score(score_quality)
-        quantity = self.calculate_quantity(entry, stop, score_quality, risk_pct)
+        quantity = self.calculate_quantity(
+            entry,
+            stop,
+            score_quality,
+            risk_pct,
+            live_candidate_count,
+        )
 
         if quantity == 0:
             self.debugger.count_reject("qty")
@@ -580,6 +594,7 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
             self.debugger.count_reject("order")
             return False
 
+        self.ensure_second_resolution(symbol)
         state.orb_entry_order_id = ticket.OrderId
         state.orb_entry_price = entry
         state.orb_stop_price = stop
@@ -609,7 +624,7 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
             (self.max_risk_pct - self.min_risk_pct) * score_quality
         )
 
-    def calculate_quantity(self, entry, stop, score_quality, risk_pct):
+    def calculate_quantity(self, entry, stop, score_quality, risk_pct, live_candidate_count):
         risk_per_share = abs(entry - stop)
 
         if risk_per_share <= 0 or entry <= 0:
@@ -619,7 +634,8 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
         cash = float(self.algorithm.Portfolio.Cash)
         deployable_cash = max(0.0, cash - (total_equity * self.risk.cash_reserve_pct))
         open_slots = max(1, self.max_active_positions - self.occupied_slot_count())
-        base_capital_budget = deployable_cash / open_slots
+        allocation_slots = max(1, min(open_slots, live_candidate_count))
+        base_capital_budget = deployable_cash / allocation_slots
         capital_multiplier = 0.75 + (0.50 * score_quality)
         capital_budget = min(deployable_cash, base_capital_budget * capital_multiplier)
         risk_budget = total_equity * risk_pct
@@ -630,6 +646,37 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
 
     def has_minimum_trade_economics(self, quantity, entry, stop):
         return True
+
+    def ensure_second_resolution(self, symbol):
+        ticker = symbol.Value
+
+        if ticker in self.second_resolution_tickers:
+            return
+
+        security = self.algorithm.AddEquity(ticker, Resolution.Second)
+        security.SetDataNormalizationMode(DataNormalizationMode.Raw)
+        self.second_resolution_tickers.add(ticker)
+
+    def update_position_peak(self, symbol, state):
+        if state.last_price is None or state.orb_entry_price is None:
+            return
+
+        quantity = int(self.algorithm.Portfolio[symbol].Quantity)
+
+        if quantity == 0:
+            return
+
+        if state.max_price_since_entry is None:
+            state.max_price_since_entry = state.orb_entry_price
+
+        state.max_price_since_entry = max(state.max_price_since_entry, state.last_price)
+        max_profit_per_share = max(0.0, state.max_price_since_entry - state.orb_entry_price)
+        state.max_unrealized_profit = max_profit_per_share * abs(quantity)
+
+        risk_per_share = abs(state.orb_entry_price - self.protective_stop_price(state))
+
+        if risk_per_share > 0:
+            state.max_r_multiple = max_profit_per_share / risk_per_share
 
     def manage_position(self, symbol, state):
         if state.orb_exit_submitted:
@@ -744,6 +791,9 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
         state.orb_entry_price = float(order_event.FillPrice)
         state.orb_entry_time = self.algorithm.Time
         state.orb_stop_price = self.protective_stop_price(state)
+        state.max_price_since_entry = state.orb_entry_price
+        state.max_unrealized_profit = 0.0
+        state.max_r_multiple = 0.0
 
         stop_quantity = -fill_quantity
         ticket = self.algorithm.StopMarketOrder(
@@ -769,6 +819,9 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
         state.orb_exit_submitted = False
         state.orb_entry_time = None
         state.orb_entry_submitted_time = None
+        state.max_price_since_entry = None
+        state.max_unrealized_profit = 0.0
+        state.max_r_multiple = 0.0
         self.pending_entry_tickers.discard(symbol.Value)
         self.active_symbols.discard(symbol)
         self.active_tickers.discard(symbol.Value)
