@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import traceback
 from datetime import date, datetime
@@ -731,9 +732,69 @@ def render_runs(strategy_name: str, output_root: Path) -> None:
         return
     st.dataframe(pl.DataFrame(run_table_rows(runs)), width="stretch")
     selected = st.selectbox("Open run", runs, format_func=run_label)
-    if st.button("Open Selected Run", type="primary"):
-        st.session_state["active_run_dir"] = str(selected)
-        st.rerun()
+    actions = st.columns([1, 1, 4])
+    with actions[0]:
+        if st.button("Open Selected Run", type="primary"):
+            st.session_state["active_run_dir"] = str(selected)
+            st.rerun()
+    with actions[1]:
+        if st.button("Delete Run"):
+            st.session_state["delete_run_dir"] = str(selected)
+            st.rerun()
+
+    pending_delete = st.session_state.get("delete_run_dir")
+    if pending_delete:
+        render_delete_run_confirmation(Path(pending_delete), output_root)
+
+
+def render_delete_run_confirmation(run_dir: Path, output_root: Path) -> None:
+    metadata = read_run_metadata(run_dir) or {}
+    run_name = metadata.get("run_name", run_dir.name)
+    st.warning(f"Delete run and all saved artifacts: {run_name}")
+    st.caption(str(run_dir))
+    confirmation = st.text_input("Type the run name to confirm deletion", key=f"delete_confirm_{run_dir.name}")
+    buttons = st.columns([1, 1, 4])
+    with buttons[0]:
+        if st.button("Confirm Delete", type="primary"):
+            if confirmation != run_name:
+                st.error("Confirmation text does not match the run name.")
+                return
+            if delete_run_folder(run_dir, output_root):
+                st.success(f"Deleted {run_name}")
+                st.session_state.pop("delete_run_dir", None)
+                st.rerun()
+    with buttons[1]:
+        if st.button("Cancel Delete"):
+            st.session_state.pop("delete_run_dir", None)
+            st.rerun()
+
+
+def delete_run_folder(run_dir: Path, output_root: Path) -> bool:
+    try:
+        resolved_root = output_root.resolve()
+        resolved_run = run_dir.resolve()
+    except OSError as exc:
+        st.error(f"Could not resolve run path: {exc}")
+        return False
+
+    if not resolved_run.exists():
+        st.error("Run folder no longer exists.")
+        return False
+    if resolved_root != resolved_run and resolved_root not in resolved_run.parents:
+        st.error("Refusing to delete a folder outside the configured runs root.")
+        return False
+
+    metadata = read_run_metadata(resolved_run)
+    if not metadata or not metadata.get("created_by_app"):
+        st.error("Refusing to delete a run that was not created by the app.")
+        return False
+
+    try:
+        shutil.rmtree(resolved_run)
+        return True
+    except OSError as exc:
+        st.error(f"Could not delete run folder: {exc}")
+        return False
 
 
 def strategy_workspace(strategy_name: str) -> None:
