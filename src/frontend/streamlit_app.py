@@ -1028,16 +1028,19 @@ def render_selected_run_header(run_dir: Path) -> None:
     status = metadata.get("status", "unknown")
     date_range = f"{config.get('start_date', '')} to {config.get('end_date', '')}"
 
-    info_cols = st.columns([2.5, 5.1, 1.25, 3.15])
+    info_cols = st.columns([3, 5.1, 1.25, 3.15])
     with info_cols[0]:
         st.title(run_name)
     with info_cols[1]:
-        summary_text = (
-            f'{metadata.get("strategy_name", config.get("strategy_name", ""))}'
-            f" | {status} | {date_range} | return {pct(summary.get('return_pct', 0.0))}"
-            f" | P/L {money(summary.get('total_pnl', 0.0))}"
-            f" | trades {summary.get('trade_count', 0)}"
-        )
+        summary_items = [
+            str(metadata.get("strategy_name", config.get("strategy_name", ""))),
+            str(status),
+            date_range,
+            f"return {pct(summary.get('return_pct', 0.0))}",
+            f"P/L {money(summary.get('total_pnl', 0.0))}",
+            f"trades {summary.get('trade_count', 0)}",
+        ]
+        summary_text = " | ".join(summary_items)
         st.text(summary_text)
     with info_cols[2]:
         if run_details_dialog is not None:
