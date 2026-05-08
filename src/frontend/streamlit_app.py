@@ -271,7 +271,7 @@ def run_backtest_with_live_view(config: dict) -> None:
         completed = len(live_rows)
         status.write(f"Completed {session_date}: {money(daily_summary.get('pnl'))}")
         progress_bar.progress(min(1.0, completed / expected_sessions))
-        daily_placeholder.dataframe(pl.DataFrame(live_rows), use_container_width=True)
+        daily_placeholder.dataframe(pl.DataFrame(live_rows), width="stretch")
 
     try:
         result = run_backtest(config, progress_callback=on_progress)
@@ -355,7 +355,7 @@ def candlestick_chart(symbol_bars: pl.DataFrame, orders: pl.DataFrame) -> None:
         )
         chart = chart + markers
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
 
 def show_chart_inspector(run_dir: Path) -> None:
@@ -388,16 +388,16 @@ def show_chart_inspector(run_dir: Path) -> None:
     with right:
         st.markdown("**Scanner State**")
         if scanner.height:
-            st.dataframe(scanner.filter((pl.col("session_date") == session) & (pl.col("ticker") == ticker)), use_container_width=True)
+            st.dataframe(scanner.filter((pl.col("session_date") == session) & (pl.col("ticker") == ticker)), width="stretch")
         st.markdown("**Open Position Snapshots**")
         if positions.height and "symbol" in positions.columns:
-            st.dataframe(positions.filter(pl.col("symbol") == ticker).tail(20), use_container_width=True)
+            st.dataframe(positions.filter(pl.col("symbol") == ticker).tail(20), width="stretch")
 
     st.markdown("**Orders**")
-    st.dataframe(symbol_orders, use_container_width=True)
+    st.dataframe(symbol_orders, width="stretch")
     if rejections.height and "ticker" in rejections.columns:
         st.markdown("**Rejected Signals**")
-        st.dataframe(rejections.filter(pl.col("ticker") == ticker).tail(100), use_container_width=True)
+        st.dataframe(rejections.filter(pl.col("ticker") == ticker).tail(100), width="stretch")
 
 
 def show_config_dialog(run_dir: Path) -> None:
@@ -447,17 +447,17 @@ def show_run_detail(run_dir: Path) -> None:
     with tabs[0]:
         show_overview(run_dir, summary)
     with tabs[1]:
-        st.dataframe(read_parquet(run_dir / "daily_summary.parquet"), use_container_width=True)
+        st.dataframe(read_parquet(run_dir / "daily_summary.parquet"), width="stretch")
     with tabs[2]:
-        st.dataframe(read_parquet(run_dir / "trades.parquet"), use_container_width=True)
+        st.dataframe(read_parquet(run_dir / "trades.parquet"), width="stretch")
     with tabs[3]:
-        st.dataframe(read_parquet(run_dir / "orders.parquet"), use_container_width=True)
+        st.dataframe(read_parquet(run_dir / "orders.parquet"), width="stretch")
     with tabs[4]:
-        st.dataframe(read_parquet(run_dir / "candidate_rankings.parquet"), use_container_width=True)
+        st.dataframe(read_parquet(run_dir / "candidate_rankings.parquet"), width="stretch")
     with tabs[5]:
-        st.dataframe(read_parquet(run_dir / "rejection_events.parquet"), use_container_width=True)
+        st.dataframe(read_parquet(run_dir / "rejection_events.parquet"), width="stretch")
     with tabs[6]:
-        st.dataframe(read_parquet(run_dir / "positions.parquet"), use_container_width=True)
+        st.dataframe(read_parquet(run_dir / "positions.parquet"), width="stretch")
     with tabs[7]:
         show_chart_inspector(run_dir)
     with tabs[8]:
@@ -482,7 +482,7 @@ def strategy_workspace(strategy_name: str) -> None:
         if not runs:
             st.info("No app-created runs exist for this strategy yet.")
         else:
-            st.dataframe(pl.DataFrame(run_table_rows(runs)), use_container_width=True)
+            st.dataframe(pl.DataFrame(run_table_rows(runs)), width="stretch")
             selected = st.selectbox("Open run", runs, format_func=run_label)
             if st.button("Open Selected Run", type="primary"):
                 st.session_state["active_run_dir"] = str(selected)
