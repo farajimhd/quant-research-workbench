@@ -215,6 +215,24 @@ def install_css() -> None:
             line-height: 2.35rem;
             margin: 0;
         }
+        .st-key-overview_metrics [data-testid="stMetric"] {
+            min-height: 0;
+            padding-top: 0;
+            padding-bottom: 0;
+        }
+        .st-key-overview_metrics [data-testid="stMetricLabel"] p {
+            font-size: 0.72rem;
+            line-height: 1;
+            margin-bottom: 0;
+        }
+        .st-key-overview_metrics [data-testid="stMetricValue"] {
+            font-size: 0.95rem;
+            line-height: 1.05;
+        }
+        .st-key-overview_metrics [data-testid="stMetricDelta"] {
+            font-size: 0.7rem;
+            line-height: 1;
+        }
         .qq-page-description {
             color: #6b7280;
             font-size: 0.84rem;
@@ -575,11 +593,12 @@ def selected_summary(data: dict, period: str) -> dict:
 
 def render_metrics(summary: dict) -> None:
     specs = summary_metric_specs(summary)
-    for row in SUMMARY_METRIC_LAYOUT["rows"]:
-        cols = st.columns([1, 2, 2, 2, 2, 2, 2, 2, 1])
-        for col, label in zip(cols[1:-1], row):
-            with col:
-                render_summary_metric(label, specs[label])
+    with st.container(key="overview_metrics"):
+        for row in SUMMARY_METRIC_LAYOUT["rows"]:
+            cols = st.columns([1, 2, 2, 2, 2, 2, 2, 2, 1])
+            for col, label in zip(cols[1:-1], row):
+                with col:
+                    render_summary_metric(label, specs[label])
 
 
 def format_stat_value(key: str, value) -> str:
@@ -906,17 +925,23 @@ def render_chart_inspector(data: dict, period: str) -> None:
     candle_chart(bars, orders, indicators)
 
 
-def render_run_dashboard(run_dir: Path, show_header: bool = True) -> None:
+def render_run_dashboard(run_dir: Path, show_header: bool = True, show_back_button: bool = False) -> None:
     data = load_run_artifacts(str(run_dir), artifact_mtime(run_dir))
     metadata = data["metadata"]
     config = metadata.get("config", {})
     if show_header:
         render_run_header(config, metadata.get("status", "unknown"), metadata.get("summary") or data["summary"])
     periods = period_options(data)
-    period_cols = st.columns([0.7, 2.2, 9])
-    with period_cols[0]:
+    period_cols = st.columns([0.35, 0.7, 2.2, 8.75]) if show_back_button else st.columns([0.7, 2.2, 9])
+    offset = 1 if show_back_button else 0
+    if show_back_button:
+        with period_cols[0]:
+            if st.button("<", key="back_to_runs", help="Back to runs", type="tertiary"):
+                st.session_state.pop("active_run_dir", None)
+                st.rerun()
+    with period_cols[offset]:
         st.markdown('<div class="qq-period-label">Result Period</div>', unsafe_allow_html=True)
-    with period_cols[1]:
+    with period_cols[offset + 1]:
         period = st.selectbox("Result Period", periods, key=f"period_{run_dir.name}", label_visibility="collapsed")
     tabs = st.tabs(["Overview", "Trades", "Orders", "Scanner", "Rejected", "Positions", "Chart Inspector", "Logs"])
     with tabs[0]:
@@ -1003,13 +1028,9 @@ def render_selected_run_header(run_dir: Path) -> None:
     status = metadata.get("status", "unknown")
     date_range = f"{config.get('start_date', '')} to {config.get('end_date', '')}"
 
-    st.title(run_name)
-    # info_cols = st.columns([0.35, 5.2, 1.25, 5.2])
-    info_cols = st.columns([0.05, 0.25, 0.1, 0.6])
+    info_cols = st.columns([2.5, 5.1, 1.25, 3.15])
     with info_cols[0]:
-        if st.button("<", key="back_to_runs", help="Back to runs", type="tertiary"):
-            st.session_state.pop("active_run_dir", None)
-            st.rerun()
+        st.title(run_name)
     with info_cols[1]:
         summary_text = (
             f'{metadata.get("strategy_name", config.get("strategy_name", ""))}'
@@ -1231,7 +1252,7 @@ def strategy_workspace(strategy_name: str) -> None:
     if active_run:
         active_run_path = Path(active_run)
         render_selected_run_header(active_run_path)
-        render_run_dashboard(active_run_path, show_header=False)
+        render_run_dashboard(active_run_path, show_header=False, show_back_button=True)
         return
     st.title(strategy_name)
     description = STRATEGY_DESCRIPTIONS.get(strategy_name, "No description available.")
