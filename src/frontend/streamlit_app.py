@@ -1213,9 +1213,6 @@ def delete_run_folder(run_dir: Path, output_root: Path) -> bool:
 
 
 def strategy_workspace(strategy_name: str) -> None:
-    st.title(strategy_name)
-    description = STRATEGY_DESCRIPTIONS.get(strategy_name, "No description available.")
-    st.markdown(f'<div class="qq-page-description">{description}</div>', unsafe_allow_html=True)
     output_root = DEFAULT_OUTPUT_ROOT
     active_run = st.session_state.get("active_run_dir")
     if active_run:
@@ -1223,6 +1220,9 @@ def strategy_workspace(strategy_name: str) -> None:
         render_selected_run_header(active_run_path)
         render_run_dashboard(active_run_path, show_header=False)
         return
+    st.title(strategy_name)
+    description = STRATEGY_DESCRIPTIONS.get(strategy_name, "No description available.")
+    st.markdown(f'<div class="qq-page-description">{description}</div>', unsafe_allow_html=True)
     tabs = st.tabs(["Runs", "New Run", "Strategy README"])
     with tabs[0]:
         render_runs(strategy_name, output_root)
