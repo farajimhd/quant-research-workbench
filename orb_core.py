@@ -33,7 +33,6 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
         self.max_orb_range_atr_fraction = 0.80
         self.tema_entry_atr_buffer = 0.005
         self.tema_exit_atr_buffer = 0.02
-        self.min_position_value = 500.0
         self.entry_cutoff_minutes = 15 * 60 + 30
         self.exit_minutes_before_close = 5
         self.current_rank_date = None
@@ -630,9 +629,7 @@ class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
         return max(0, min(quantity_by_risk, quantity_by_cash, int(deployable_cash / entry)))
 
     def has_minimum_trade_economics(self, quantity, entry, stop):
-        position_value = quantity * entry
-
-        return position_value >= self.min_position_value
+        return True
 
     def manage_position(self, symbol, state):
         if state.orb_exit_submitted:
