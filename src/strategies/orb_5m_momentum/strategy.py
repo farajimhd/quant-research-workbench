@@ -21,6 +21,7 @@ class OrbFiveMinuteMomentumStrategy:
         self.breakout_armed: dict[str, bool] = {}
         self.scanner_snapshots: list[dict] = []
         self.candidate_rankings: list[dict] = []
+        self.live_rankings: list[dict] = []
         self.signal_events: list[dict] = []
         self.rejection_events: list[dict] = []
 
@@ -70,6 +71,9 @@ class OrbFiveMinuteMomentumStrategy:
 
         requests.extend(self._cancel_invalid_entries(context, pending_orders))
         requests.extend(self._position_exit_requests(context, portfolio))
+
+        if minute < self.config.opening_box_end_minute:
+            return requests
 
         if minute >= self.config.entry_cutoff_minute:
             return requests
@@ -163,6 +167,7 @@ class OrbFiveMinuteMomentumStrategy:
         return {
             "scanner_snapshots": self.scanner_snapshots,
             "candidate_rankings": self.candidate_rankings,
+            "live_rankings": self.live_rankings,
             "signal_events": self.signal_events,
             "rejection_events": self.rejection_events,
         }
@@ -280,35 +285,77 @@ class OrbFiveMinuteMomentumStrategy:
     ) -> list[dict]:
         pending_symbols = {order.symbol for order in pending_orders if order.status == "OPEN"}
         candidates = []
+        live_rows = []
         for ticker, setup in self.watchlist.items():
             bar = context.bars_by_symbol.get(ticker)
-            if bar is None or ticker in portfolio.positions or ticker in pending_symbols:
-                continue
-            if not self.breakout_armed.get(ticker, True):
+            if bar is None:
                 continue
 
             trigger = self.entry_trigger(setup)
             stop = self.protective_stop_price(setup)
             last_price = float(bar["close"])
-            if last_price <= trigger:
-                self.breakout_armed[ticker] = True
-            if last_price < stop:
-                self._reject(context.timestamp, ticker, "lost_breakout_zone", setup, bar)
-                continue
-            if last_price > trigger:
-                self._reject(context.timestamp, ticker, "missed_breakout", setup, bar)
-                continue
-            if not self._macd_open(bar):
-                self._reject(context.timestamp, ticker, "macd_closed", setup, bar)
-                continue
-            if not self._tema_open(bar, setup):
-                self._reject(context.timestamp, ticker, "tema_closed", setup, bar)
+            live_score = self.live_score(setup, bar)
+            status = "eligible"
+            reason = ""
+
+            if ticker in portfolio.positions:
+                status = "held"
+                reason = "already_held"
+            elif ticker in pending_symbols:
+                status = "pending"
+                reason = "entry_pending"
+            elif not self.breakout_armed.get(ticker, True):
+                status = "inactive"
+                reason = "not_armed"
+            elif last_price < stop:
+                status = "invalid"
+                reason = "lost_breakout_zone"
+            elif last_price > trigger:
+                status = "invalid"
+                reason = "missed_breakout"
+            elif not self._macd_open(bar):
+                status = "invalid"
+                reason = "macd_closed"
+            elif not self._tema_open(bar, setup):
+                status = "invalid"
+                reason = "tema_closed"
+            elif live_score < self.config.min_live_score:
+                status = "invalid"
+                reason = "live_score"
+
+            live_rows.append(
+                {
+                    "session_date": self.session_date.isoformat() if self.session_date else "",
+                    "timestamp": context.timestamp,
+                    "ticker": ticker,
+                    "setup_rank": setup.get("rank"),
+                    "setup_score": setup.get("setup_score"),
+                    "live_score": live_score,
+                    "status": status,
+                    "reason": reason,
+                    "price": last_price,
+                    "trigger": trigger,
+                    "stop": stop,
+                    "box_high": setup.get("box_high"),
+                    "box_mid": setup.get("box_mid"),
+                    "box_low": setup.get("box_low"),
+                    "orb_relative_volume": setup.get("orb_relative_volume"),
+                    "macd_line_5m": bar.get("macd_line_5m"),
+                    "macd_signal_5m": bar.get("macd_signal_5m"),
+                    "macd_hist_5m": bar.get("macd_hist_5m"),
+                    "tema9_5m": bar.get("tema9_5m"),
+                    "tema20_5m": bar.get("tema20_5m"),
+                }
+            )
+
+            if status != "eligible":
+                if status == "invalid":
+                    self._reject(context.timestamp, ticker, reason, setup, bar, live_score if reason == "live_score" else None)
                 continue
 
-            live_score = self.live_score(setup, bar)
-            if live_score < self.config.min_live_score:
-                self._reject(context.timestamp, ticker, "live_score", setup, bar, live_score)
-                continue
+            if last_price <= trigger:
+                self.breakout_armed[ticker] = True
+
             candidate = {
                 **setup,
                 "timestamp": context.timestamp,
@@ -318,6 +365,11 @@ class OrbFiveMinuteMomentumStrategy:
                 "stop": stop,
             }
             candidates.append(candidate)
+
+        live_rows.sort(key=lambda item: float(item.get("live_score") or 0.0), reverse=True)
+        for live_rank, row in enumerate(live_rows, start=1):
+            row["live_rank"] = live_rank
+            self.live_rankings.append(row)
 
         candidates.sort(key=lambda item: item["live_score"], reverse=True)
         for live_rank, candidate in enumerate(candidates[:10], start=1):

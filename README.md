@@ -262,6 +262,8 @@ The frontend now treats the sidebar as strategy navigation only. Each strategy o
 - live daily progress while a run is executing
 - run detail pages with overview, daily results, trades, orders, scanner candidates, rejected signals, positions, chart inspector, config, and logs
 - a parameters dialog for viewing the saved config and launching a copied run with edits
+- cached Polars artifact loading so selected-day/range filtering and chart pulls avoid repeated disk reads
+- scanner debugging for both ranking systems: the opening setup ranking and the minute-by-minute live ranking snapshots
 
 Runs without app metadata are not listed by the frontend. Local runs created by the app or engine include:
 
@@ -276,6 +278,7 @@ positions.parquet
 portfolio.parquet
 scanner_snapshots.parquet
 candidate_rankings.parquet
+live_rankings.parquet
 signal_events.parquet
 rejection_events.parquet
 logs.txt

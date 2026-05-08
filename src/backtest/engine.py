@@ -49,6 +49,7 @@ class BacktestEngine:
         self.daily_rows: list[dict] = []
         self.logs: list[str] = []
         self.symbol_bar_rows: list[dict] = []
+        self.symbol_bar_5m_rows: list[dict] = []
         self.fill_model = BarFillModel()
 
     def run(self, progress_callback=None) -> dict:
@@ -82,6 +83,7 @@ class BacktestEngine:
 
                 if self.config.save_symbol_bars:
                     self.symbol_bar_rows.extend(self._symbol_bar_rows(frames.minute_bars, session_date))
+                    self.symbol_bar_5m_rows.extend(self._symbol_bar_rows(frames.five_minute_bars, session_date))
 
                 rows_by_time = self._rows_by_time(frames.minute_bars)
                 last_timestamp = None
@@ -276,6 +278,11 @@ class BacktestEngine:
             "close",
             "volume",
             "vwap",
+            "macd_line",
+            "macd_signal",
+            "macd_hist",
+            "tema9",
+            "tema20",
             "macd_line_5m",
             "macd_signal_5m",
             "macd_hist_5m",
@@ -320,8 +327,11 @@ class BacktestEngine:
         write_table(run_dir / "portfolio.parquet", self.portfolio_rows)
         write_table(run_dir / "scanner_snapshots.parquet", artifacts.get("scanner_snapshots", []))
         write_table(run_dir / "candidate_rankings.parquet", artifacts.get("candidate_rankings", []))
+        write_table(run_dir / "live_rankings.parquet", artifacts.get("live_rankings", []))
         write_table(run_dir / "signal_events.parquet", artifacts.get("signal_events", []))
         write_table(run_dir / "rejection_events.parquet", artifacts.get("rejection_events", []))
         if self.symbol_bar_rows:
             write_table(run_dir / "symbol_bars.parquet", self.symbol_bar_rows)
+        if self.symbol_bar_5m_rows:
+            write_table(run_dir / "symbol_bars_5m.parquet", self.symbol_bar_5m_rows)
         (run_dir / "logs.txt").write_text("\n".join(self.logs), encoding="utf-8")
