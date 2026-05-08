@@ -111,6 +111,7 @@ def consolidate_five_minute(minute_bars: pl.DataFrame, config: BacktestConfig) -
 
 
 def attach_five_minute_context(minute_bars: pl.DataFrame, five_minute_bars: pl.DataFrame) -> pl.DataFrame:
+    minute_bars = minute_bars.sort(["ticker", "bar_time_market"])
     context = five_minute_bars.select(
         "ticker",
         "indicator_available_time",
@@ -125,12 +126,15 @@ def attach_five_minute_context(minute_bars: pl.DataFrame, five_minute_bars: pl.D
         pl.col("tema_ready").alias("tema_ready_5m"),
     ).sort(["ticker", "indicator_available_time"])
 
+    # Polars cannot verify sortedness for grouped as-of joins even after explicit sorting.
+    # The inputs are sorted above, so disable the warning-only sortedness check.
     return minute_bars.join_asof(
         context,
         left_on="bar_time_market",
         right_on="indicator_available_time",
         by="ticker",
         strategy="backward",
+        check_sortedness=False,
     )
 
 
