@@ -611,7 +611,7 @@ def render_profit_loss_chart(daily: pl.DataFrame) -> None:
             color=alt.Color("direction:N", scale=alt.Scale(domain=["profit", "loss"], range=["#0f8a3b", "#c0362c"])),
             tooltip=list(chart_df.columns),
         )
-        .properties(height=360, title="Daily Profit / Loss")
+        .properties(height=720, title="Daily Profit / Loss")
     )
     st.altair_chart(chart, width="stretch")
 
@@ -632,7 +632,7 @@ def render_equity_cash_chart(portfolio: pl.DataFrame) -> None:
             color=alt.Color("series:N", scale=alt.Scale(range=["#2563eb", "#f59e0b"])),
             tooltip=["timestamp:T", "series:N", "value:Q"],
         )
-        .properties(height=360, title="Equity and Cash")
+        .properties(height=720, title="Equity and Cash")
         .interactive()
     )
     st.altair_chart(chart, width="stretch")
