@@ -182,11 +182,10 @@ def install_css() -> None:
         [data-testid="stSidebar"] > div:first-child {
             padding: 1rem 1rem;
         }
-        .qq-page-title {
-            font-size: 1.35rem;
-            font-weight: 700;
-            line-height: 1.2;
-            margin: 0 0 0.15rem 0;
+        h1 {
+            font-size: 1.45rem !important;
+            line-height: 1.2 !important;
+            margin-bottom: 0.2rem !important;
         }
         .qq-page-description {
             color: #6b7280;
@@ -1028,17 +1027,31 @@ def render_runs(strategy_name: str, output_root: Path) -> None:
     if not runs:
         st.info("No app-created runs exist for this strategy yet.")
         return
-    st.dataframe(pl.DataFrame(run_table_rows(runs)), width="stretch")
-    selected = st.selectbox("Open run", runs, format_func=run_label)
-    actions = st.columns([1, 1, 4])
-    with actions[0]:
-        if st.button("Open Selected Run", type="primary"):
-            st.session_state["active_run_dir"] = str(selected)
-            st.rerun()
-    with actions[1]:
-        if st.button("Delete Run"):
-            st.session_state["delete_run_dir"] = str(selected)
-            st.rerun()
+    rows = run_table_rows(runs)
+    actions_slot = st.empty()
+    table_state = st.dataframe(
+        pl.DataFrame(rows),
+        width="stretch",
+        hide_index=True,
+        key=f"runs_table_{strategy_name}",
+        on_select="rerun",
+        selection_mode="single-row",
+    )
+    selection = getattr(table_state, "selection", {})
+    selected_rows = getattr(selection, "rows", []) if selection is not None else []
+    selected = runs[selected_rows[0]] if selected_rows else None
+    with actions_slot.container():
+        actions = st.columns([1, 1, 4])
+        with actions[0]:
+            if st.button("Open Selected Run", type="primary", disabled=selected is None):
+                st.session_state["active_run_dir"] = str(selected)
+                st.rerun()
+        with actions[1]:
+            if st.button("Delete Run", disabled=selected is None):
+                st.session_state["delete_run_dir"] = str(selected)
+                st.rerun()
+        with actions[2]:
+            st.caption("Select a run row in the table.")
 
     pending_delete = st.session_state.get("delete_run_dir")
     if pending_delete:
@@ -1092,7 +1105,7 @@ def delete_run_folder(run_dir: Path, output_root: Path) -> bool:
 
 
 def strategy_workspace(strategy_name: str) -> None:
-    st.markdown(f'<div class="qq-page-title">{strategy_name}</div>', unsafe_allow_html=True)
+    st.title(strategy_name)
     description = STRATEGY_DESCRIPTIONS.get(strategy_name, "No description available.")
     st.markdown(f'<div class="qq-page-description">{description}</div>', unsafe_allow_html=True)
     output_root = DEFAULT_OUTPUT_ROOT
