@@ -21,7 +21,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
         # Universe configuration.
         # ---------------------------------------------------------------------
         self.min_price = 0.75
-        self.max_price = 500.0
+        self.max_price = 200.0
         self.min_daily_dollar_volume = 2_000_000
 
         self.UniverseSettings.Resolution = Resolution.Minute
@@ -36,7 +36,7 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
             enable_console=True,
             enable_object_store=True,
             object_store_key="momentum_event_logs.json",
-            run_label="v-orb-live-rotation: 15m box break, 5m MACD/TEMA gate, top-3 live-score rotation",
+            run_label="v-orb-5m-stop-rank100: 5m box, top-100 watchlist, live rerank, buy-stop entries, breakout-defense stop",
         )
 
         self.risk = RiskManager(
@@ -173,15 +173,13 @@ class SmallFloatMomentumBreakoutAlgorithm(QCAlgorithm):
     # =========================================================================
 
     def OnOrderEvent(self, order_event):
-        if order_event.Status != OrderStatus.Filled:
-            return
-
-        self.debugger.log_fill(order_event)
-
         state = self.symbol_states.get(order_event.Symbol)
 
         if state is None:
             return
+
+        if order_event.Status == OrderStatus.Filled:
+            self.debugger.log_fill(order_event)
 
         self.core.handle_order_event(order_event.Symbol, state, order_event)
 

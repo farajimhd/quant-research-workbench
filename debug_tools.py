@@ -142,6 +142,7 @@ class DebugManager:
                 f"{self.counters['exit_MOMENTUM_CLOSE']}/"
                 f"{self.counters['exit_TEMA_CLOSE']}/"
                 f"{self.counters['exit_BOX_MID']}/"
+                f"{self.counters['exit_BREAKOUT_FAIL']}/"
                 f"{self.counters['exit_ROTATE_OUT']}/"
                 f"{self.counters['exit_EOD']}"
             ),

@@ -30,6 +30,10 @@ class SymbolState:
         self.orb_stop_price = None
         self.orb_quantity = 0
         self.orb_exit_submitted = False
+        self.orb_entry_submitted_time = None
+        self.orb_entry_live_rank = None
+        self.orb_entry_score_quality = 0.0
+        self.orb_entry_risk_pct = 0.0
         self.orb_rank = None
 
         self.last_price = None
@@ -84,6 +88,10 @@ class SymbolState:
         self.orb_stop_price = None
         self.orb_quantity = 0
         self.orb_exit_submitted = False
+        self.orb_entry_submitted_time = None
+        self.orb_entry_live_rank = None
+        self.orb_entry_score_quality = 0.0
+        self.orb_entry_risk_pct = 0.0
         self.orb_rank = None
 
         self.last_price = None
