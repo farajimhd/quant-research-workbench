@@ -196,11 +196,17 @@ def install_css() -> None:
         .st-key-back_to_runs button {
             min-width: 2rem;
             height: 2rem;
+            min-height: 2rem;
+            margin-top: 0.2rem;
             padding: 0;
             border-radius: 999px;
             color: #6b7280;
             background: #f3f4f6;
             border: 1px solid #e5e7eb;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1;
         }
         .qq-page-description {
             color: #6b7280;
@@ -971,7 +977,7 @@ def render_run_details_content(run_dir: Path) -> None:
 
 
 if hasattr(st, "dialog"):
-    @st.dialog("Run Details")
+    @st.dialog("Run Details", width="large")
     def run_details_dialog(run_dir_value: str) -> None:
         render_run_details_content(Path(run_dir_value))
 else:
