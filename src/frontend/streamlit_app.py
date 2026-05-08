@@ -177,75 +177,32 @@ def install_css() -> None:
         <style>
         .block-container {
             max-width: 100%;
-            padding: 0.75rem 1.25rem 1.5rem;
+            padding: 1.25rem 2rem 2rem;
         }
         [data-testid="stSidebar"] > div:first-child {
-            padding: 0.75rem 0.75rem;
-        }
-        [data-testid="stVerticalBlock"] {
-            gap: 0.45rem;
-        }
-        [data-testid="stHorizontalBlock"] {
-            gap: 0.55rem;
-        }
-        [data-testid="column"] {
-            padding-left: 0.15rem;
-            padding-right: 0.15rem;
-        }
-        [data-testid="stMetric"] {
-            border: 1px solid #e5e7eb;
-            border-radius: 7px;
-            padding: 0.45rem 0.55rem;
-            background: #ffffff;
-        }
-        [data-testid="stMetricLabel"] p {
-            font-size: 0.72rem;
-            line-height: 1.15;
-        }
-        [data-testid="stMetricValue"] {
-            font-size: 1.0rem;
-            line-height: 1.2;
-        }
-        [data-testid="stMetricDelta"] {
-            font-size: 0.72rem;
-            line-height: 1.1;
-        }
-        [data-testid="stTabs"] button {
-            padding: 0.35rem 0.6rem;
-        }
-        [data-testid="stDataFrame"] {
-            margin-top: 0.2rem;
-        }
-        h1, h2, h3 {
-            margin-bottom: 0.45rem;
-        }
-        h4 {
-            margin-bottom: 0.35rem;
-        }
-        hr {
-            margin: 0.55rem 0;
+            padding: 1rem 1rem;
         }
         .qq-card {
             border: 1px solid #d8dee4;
             border-radius: 8px;
-            padding: 10px 12px;
+            padding: 14px 16px;
             background: #ffffff;
-            margin-bottom: 6px;
+            margin-bottom: 10px;
         }
-        .qq-card h4 { margin: 0 0 5px 0; font-size: 0.95rem; }
-        .qq-muted { color: #6b7280; font-size: 0.8rem; }
+        .qq-card h4 { margin: 0 0 8px 0; font-size: 1.0rem; }
+        .qq-muted { color: #6b7280; font-size: 0.86rem; }
         .qq-good { color: #0f8a3b; font-weight: 650; }
         .qq-bad { color: #c0362c; font-weight: 650; }
         .qq-neutral { color: #374151; font-weight: 650; }
-        .qq-metric-label { color: #6b7280; font-size: 0.72rem; margin-bottom: 2px; }
-        .qq-metric-value { font-size: 1.0rem; font-weight: 700; }
+        .qq-metric-label { color: #6b7280; font-size: 0.78rem; margin-bottom: 3px; }
+        .qq-metric-value { font-size: 1.15rem; font-weight: 700; }
         .qq-pill {
             display: inline-block;
             border-radius: 999px;
-            padding: 1px 6px;
+            padding: 2px 8px;
             border: 1px solid #d8dee4;
-            margin-right: 3px;
-            font-size: 0.72rem;
+            margin-right: 4px;
+            font-size: 0.78rem;
         }
         </style>
         """,
