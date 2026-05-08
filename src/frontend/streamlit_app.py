@@ -177,7 +177,7 @@ def install_css() -> None:
         <style>
         .block-container {
             max-width: 100%;
-            padding: 1.25rem 2rem 2rem;
+            padding: 2.25rem 2rem 2rem;
         }
         [data-testid="stSidebar"] > div:first-child {
             padding: 1rem 1rem;
