@@ -389,15 +389,15 @@ def render_overview(data: dict, period: str) -> None:
 
 def normalize_bar_columns(df: pl.DataFrame) -> pl.DataFrame:
     rename = {}
-    if "macd_line" in df.columns:
+    if "macd_line" in df.columns and "macd_line_5m" not in df.columns:
         rename["macd_line"] = "macd_line_5m"
-    if "macd_signal" in df.columns:
+    if "macd_signal" in df.columns and "macd_signal_5m" not in df.columns:
         rename["macd_signal"] = "macd_signal_5m"
-    if "macd_hist" in df.columns:
+    if "macd_hist" in df.columns and "macd_hist_5m" not in df.columns:
         rename["macd_hist"] = "macd_hist_5m"
-    if "tema9" in df.columns:
+    if "tema9" in df.columns and "tema9_5m" not in df.columns:
         rename["tema9"] = "tema9_5m"
-    if "tema20" in df.columns:
+    if "tema20" in df.columns and "tema20_5m" not in df.columns:
         rename["tema20"] = "tema20_5m"
     return df.rename(rename) if rename else df
 
