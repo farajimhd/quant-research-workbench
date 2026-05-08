@@ -154,6 +154,18 @@ Typical parameters include:
 
 The frontend can be a Streamlit app.
 
+Run it from the repository root with:
+
+```powershell
+streamlit run src/frontend/streamlit_app.py
+```
+
+Install the local Phase 1 dependencies first if needed:
+
+```powershell
+pip install -r requirements.txt
+```
+
 Sidebar:
 
 - strategy selector
@@ -209,3 +221,33 @@ The same strategy logic should be reusable across:
 - quote/trade backtesting
 - IBKR live execution
 - QuantConnect translation
+
+## Current Phase 1 Implementation
+
+The first complete local strategy is `orb_5m_momentum`.
+
+It lives under:
+
+```text
+src/strategies/orb_5m_momentum/
+```
+
+The reusable backtest modules live under:
+
+```text
+src/backtest/
+```
+
+Current capabilities:
+
+- loads Massive/Polygon 1-minute bars from local gzipped CSV files
+- filters to regular market hours
+- consolidates completed 5-minute bars
+- precomputes VWAP, MACD, TEMA 9, and TEMA 20 with Polars
+- builds a 09:30-09:35 opening box
+- ranks the top opening candidates
+- reranks live candidates every minute
+- simulates stop, limit, and market fills from OHLC bars
+- tracks cash, equity, positions, orders, trades, scanner snapshots, candidate rankings, signals, and rejections
+- saves every run under `D:/TradingData/qq-momentum-trading/runs/`
+- exposes completed runs through the Streamlit frontend
