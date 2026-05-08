@@ -1,7 +1,9 @@
 from AlgorithmImports import *
+from indicator_tools import FiveMinuteIndicatorMixin
+from order_tags import OrderTagMixin
 
 
-class OpeningRangeBreakoutCore:
+class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
 
     def __init__(self, algorithm, debugger, risk_manager):
         self.algorithm = algorithm
@@ -42,16 +44,7 @@ class OpeningRangeBreakoutCore:
         self.active_tickers = set()
         self.pending_entry_tickers = set()
 
-        self.macd_fast_period = 12
-        self.macd_slow_period = 26
-        self.macd_signal_period = 9
-        self.macd_fast_alpha = 2.0 / (self.macd_fast_period + 1.0)
-        self.macd_slow_alpha = 2.0 / (self.macd_slow_period + 1.0)
-        self.macd_signal_alpha = 2.0 / (self.macd_signal_period + 1.0)
-        self.tema9_period = 9
-        self.tema20_period = 20
-        self.tema9_alpha = 2.0 / (self.tema9_period + 1.0)
-        self.tema20_alpha = 2.0 / (self.tema20_period + 1.0)
+        self.configure_indicators()
 
     def on_data_start(self):
         current_date = self.algorithm.Time.date()
@@ -136,148 +129,6 @@ class OpeningRangeBreakoutCore:
                 state.avg_daily_volume_14 * self.relative_volume_daily_share
             )
             state.orb_relative_volume = state.orb_volume / expected_opening_volume
-
-    def update_five_minute_indicators(self, state, bar):
-        minutes = self.minutes_since_midnight()
-
-        if minutes < 9 * 60 + 30 or minutes >= 16 * 60:
-            return
-
-        self.update_five_minute_indicators_at(state, float(bar.Close), minutes)
-
-    def update_five_minute_indicators_at(self, state, close, minutes):
-        bucket = minutes // 5
-
-        if state.macd_bucket is None:
-            state.macd_bucket = bucket
-            state.macd_bucket_close = close
-            return
-
-        if bucket == state.macd_bucket:
-            state.macd_bucket_close = close
-            return
-
-        self.update_macd_from_close(state, state.macd_bucket_close)
-        self.update_tema_from_close(state, state.macd_bucket_close)
-        state.macd_bucket = bucket
-        state.macd_bucket_close = close
-
-    def warm_up_indicators(self, symbol, state):
-        if state.macd_ready and state.tema_ready:
-            return
-
-        history = self.algorithm.History(symbol, 220, Resolution.Minute)
-
-        if history is None or history.empty:
-            return
-
-        history = history.reset_index()
-        columns = {str(column).lower(): column for column in history.columns}
-
-        if "close" not in columns:
-            return
-
-        time_column = None
-
-        for candidate in ["time", "endtime"]:
-            if candidate in columns:
-                time_column = columns[candidate]
-                break
-
-        if time_column is None:
-            return
-
-        for _, row in history.iterrows():
-            try:
-                bar_time = row[time_column]
-                minutes = bar_time.hour * 60 + bar_time.minute
-                close = float(row[columns["close"]])
-            except Exception:
-                continue
-
-            if minutes < 9 * 60 + 30 or minutes >= 16 * 60:
-                continue
-
-            self.update_five_minute_indicators_at(state, close, minutes)
-
-    def update_macd_from_close(self, state, close):
-        if state.macd_fast_ema is None:
-            state.macd_fast_ema = close
-            state.macd_slow_ema = close
-            state.macd_fast_count = 1
-            state.macd_slow_count = 1
-            return
-
-        state.macd_fast_ema = (
-            self.macd_fast_alpha * close
-            + (1.0 - self.macd_fast_alpha) * state.macd_fast_ema
-        )
-        state.macd_slow_ema = (
-            self.macd_slow_alpha * close
-            + (1.0 - self.macd_slow_alpha) * state.macd_slow_ema
-        )
-        state.macd_fast_count += 1
-        state.macd_slow_count += 1
-
-        if state.macd_slow_count < self.macd_slow_period:
-            return
-
-        macd_line = state.macd_fast_ema - state.macd_slow_ema
-        state.prev_macd_line = state.macd_line
-        state.prev_macd_signal = state.macd_signal
-        state.macd_line = macd_line
-
-        if state.macd_signal is None:
-            state.macd_signal = macd_line
-            state.macd_signal_count = 1
-        else:
-            state.macd_signal = (
-                self.macd_signal_alpha * macd_line
-                + (1.0 - self.macd_signal_alpha) * state.macd_signal
-            )
-            state.macd_signal_count += 1
-
-        state.macd_hist = state.macd_line - state.macd_signal
-        state.macd_ready = state.macd_signal_count >= self.macd_signal_period
-
-    def update_tema_from_close(self, state, close):
-        state.tema9_ema1, state.tema9_ema2, state.tema9_ema3, state.tema9 = (
-            self.update_tema_values(
-                close,
-                self.tema9_alpha,
-                state.tema9_ema1,
-                state.tema9_ema2,
-                state.tema9_ema3,
-            )
-        )
-        state.tema20_ema1, state.tema20_ema2, state.tema20_ema3, state.tema20 = (
-            self.update_tema_values(
-                close,
-                self.tema20_alpha,
-                state.tema20_ema1,
-                state.tema20_ema2,
-                state.tema20_ema3,
-            )
-        )
-        state.tema9_count += 1
-        state.tema20_count += 1
-        state.tema_ready = (
-            state.tema9_count >= self.tema9_period
-            and state.tema20_count >= self.tema20_period
-        )
-
-    def update_tema_values(self, close, alpha, ema1, ema2, ema3):
-        if ema1 is None:
-            ema1 = close
-            ema2 = close
-            ema3 = close
-        else:
-            ema1 = alpha * close + (1.0 - alpha) * ema1
-            ema2 = alpha * ema1 + (1.0 - alpha) * ema2
-            ema3 = alpha * ema2 + (1.0 - alpha) * ema3
-
-        tema = (3.0 * ema1) - (3.0 * ema2) + ema3
-        return ema1, ema2, ema3, tema
 
     def build_watchlist(self, symbol_states):
         candidates = []
@@ -939,60 +790,6 @@ class OpeningRangeBreakoutCore:
         state.orb_entry_order_id = None
         state.orb_entry_submitted_time = None
         self.pending_entry_tickers.discard(symbol.Value)
-
-    def entry_tag(
-        self,
-        reason,
-        rank,
-        live_rank,
-        quantity,
-        entry,
-        stop,
-        score,
-        score_quality,
-        risk_pct,
-        state,
-        scanner_top,
-        scanner_count,
-    ):
-        range_atr = self.range_atr(state)
-        close_location = self.close_location(state)
-        body_to_range = self.body_to_range(state)
-
-        return (
-            f"ENTRY|type=STOP|reason={reason}|rule=5M_BOX_LIVE_MACD_TEMA|rank={rank}|lrank={live_rank}"
-            f"|qty={quantity}|trigger={entry:.2f}|stop={stop:.2f}|box_high={state.orb_high:.2f}"
-            f"|box_mid={self.box_mid(state):.2f}|box_low={state.orb_low:.2f}"
-            f"|setup={state.orb_score:.1f}|live={score:.1f}|rv={state.orb_relative_volume:.1f}"
-            f"|sq={score_quality:.2f}|rp={risk_pct * 100:.2f}"
-            f"|ra={range_atr:.2f}|cl={close_location:.2f}|br={body_to_range:.2f}"
-            f"|macd={state.macd_line:.4f}|sig={state.macd_signal:.4f}|hist={state.macd_hist:.4f}"
-            f"|tema9={state.tema9:.4f}|tema20={state.tema20:.4f}"
-            f"|tbuf={self.tema_entry_buffer(state):.4f}"
-            f"|scan={scanner_count}|top5={scanner_top}"
-        )
-
-    def exit_tag(self, reason, state, replacement_symbol=None, replacement_score=None):
-        rotation = ""
-
-        if replacement_symbol is not None:
-            rotation = f"|rotate_to={replacement_symbol.Value}|new_score={replacement_score:.1f}"
-
-        return (
-            f"EXIT|reason={reason}|price={self.value_tag(state.last_price)}"
-            f"|stop={self.protective_stop_price(state):.2f}|box_mid={self.box_mid(state):.2f}|box_high={state.orb_high:.2f}"
-            f"|live={self.value_tag(state.orb_live_score)}"
-            f"|macd={self.value_tag(state.macd_line)}|sig={self.value_tag(state.macd_signal)}"
-            f"|hist={self.value_tag(state.macd_hist)}"
-            f"|tema9={self.value_tag(state.tema9)}|tema20={self.value_tag(state.tema20)}"
-            f"|buf={self.tema_exit_buffer(state):.4f}{rotation}"
-        )
-
-    def value_tag(self, value):
-        if value is None:
-            return "na"
-
-        return f"{value:.4f}"
 
     def box_range(self, state):
         if state.orb_high is None or state.orb_low is None:
