@@ -31,6 +31,7 @@ class OpeningRangeBreakoutCore:
         self.entry_cutoff_minutes = 15 * 60 + 30
         self.exit_minutes_before_close = 5
         self.current_rank_date = None
+        self.watchlist_log_date = None
         self.watchlist_symbols = []
         self.active_symbols = set()
 
@@ -74,6 +75,7 @@ class OpeningRangeBreakoutCore:
             return
 
         self.hard_end_of_day_liquidation(symbol_states)
+        self.log_watchlist_at_end_of_day()
         self.rotate_portfolio(symbol_states)
 
     def ensure_orb_day(self, state):
@@ -304,6 +306,45 @@ class OpeningRangeBreakoutCore:
             (rank, symbol, state)
             for rank, (symbol, state) in enumerate(candidates, start=1)
         ]
+
+    def log_watchlist_at_end_of_day(self):
+        if self.minutes_since_midnight() < 16 * 60 - self.exit_minutes_before_close:
+            return
+
+        current_date = self.algorithm.Time.date()
+
+        if self.watchlist_log_date == current_date:
+            return
+
+        self.watchlist_log_date = current_date
+        chunk_size = 20
+        total = len(self.watchlist_symbols)
+
+        if total == 0:
+            self.debugger.c_log("WL", None, "watch|n=0")
+            return
+
+        for index in range(0, total, chunk_size):
+            chunk = self.watchlist_symbols[index:index + chunk_size]
+            items = []
+
+            for rank, symbol, state in chunk:
+                items.append(
+                    (
+                        f"{rank}:{symbol.Value}:sc{state.orb_score:.1f}:rv"
+                        f"{state.orb_relative_volume:.1f}:h{state.orb_high:.2f}:m"
+                        f"{self.box_mid(state):.2f}"
+                    )
+                )
+
+            self.debugger.c_log(
+                "WL",
+                None,
+                (
+                    f"watch|part={index // chunk_size + 1}|n={total}|"
+                    + ";".join(items)
+                ),
+            )
 
     def is_valid_setup(self, state):
         if state.orb_open is None or state.orb_high is None or state.orb_low is None:

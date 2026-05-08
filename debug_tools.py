@@ -36,6 +36,7 @@ class DebugManager:
             "RJ": 1,
             "D": 0,
             "W": 0,
+            "WL": 0,
         }
         self.daily_code_counts = defaultdict(int)
         self.log_run_header()
