@@ -50,6 +50,125 @@ METRIC_HELP = {
     "Volume": "Total filled notional order volume.",
 }
 
+SUMMARY_METRIC_LAYOUT = {
+    "top": ["Final Equity", "Net Profit", "Return", "Max Drawdown", "Trades", "Win Rate"],
+    "left": ["Cash", "Realized P/L", "Unrealized P/L", "Profit Factor"],
+    "right": ["Sharpe", "Sortino", "Turnover", "Volume"],
+}
+
+TRADE_STAT_GROUPS = {
+    "Trade Count": [
+        ("totalNumberOfTrades", "Total Trades"),
+        ("numberOfWinningTrades", "Winning Trades"),
+        ("numberOfLosingTrades", "Losing Trades"),
+        ("winRate", "Win Rate"),
+        ("lossRate", "Loss Rate"),
+    ],
+    "Profit And Loss": [
+        ("totalProfitLoss", "Total P/L"),
+        ("totalProfit", "Gross Profit"),
+        ("totalLoss", "Gross Loss"),
+        ("averageProfitLoss", "Avg P/L"),
+        ("largestProfit", "Largest Profit"),
+        ("largestLoss", "Largest Loss"),
+    ],
+    "Trade Quality": [
+        ("profitFactor", "Profit Factor"),
+        ("profitLossRatio", "Profit/Loss Ratio"),
+        ("winLossRatio", "Win/Loss Ratio"),
+        ("sharpeRatio", "Trade Sharpe"),
+        ("sortinoRatio", "Trade Sortino"),
+    ],
+    "Timing": [
+        ("averageTradeDuration", "Avg Duration"),
+        ("medianTradeDuration", "Median Duration"),
+        ("averageWinningTradeDuration", "Avg Win Duration"),
+        ("averageLosingTradeDuration", "Avg Loss Duration"),
+    ],
+    "Streaks And Excursion": [
+        ("maxConsecutiveWinningTrades", "Max Win Streak"),
+        ("maxConsecutiveLosingTrades", "Max Loss Streak"),
+        ("averageMAE", "Avg MAE"),
+        ("averageMFE", "Avg MFE"),
+        ("largestMAE", "Largest MAE"),
+        ("largestMFE", "Largest MFE"),
+    ],
+    "Drawdown And Costs": [
+        ("maximumClosedTradeDrawdown", "Closed DD"),
+        ("maximumIntraTradeDrawdown", "Intra Trade DD"),
+        ("profitToMaxDrawdownRatio", "Profit/DD"),
+        ("totalFees", "Fees"),
+    ],
+}
+
+PORTFOLIO_STAT_GROUPS = {
+    "Equity": [
+        ("startEquity", "Start Equity"),
+        ("endEquity", "End Equity"),
+        ("totalNetProfit", "Net Return"),
+        ("compoundingAnnualReturn", "Annual Return"),
+    ],
+    "Risk": [
+        ("drawdown", "Drawdown"),
+        ("valueAtRisk95", "VaR 95"),
+        ("valueAtRisk99", "VaR 99"),
+        ("drawdownRecovery", "DD Recovery Bars"),
+    ],
+    "Risk Adjusted": [
+        ("sharpeRatio", "Sharpe"),
+        ("sortinoRatio", "Sortino"),
+        ("annualStandardDeviation", "Annual Std Dev"),
+        ("annualVariance", "Annual Variance"),
+    ],
+    "Trade Edge": [
+        ("winRate", "Win Rate"),
+        ("lossRate", "Loss Rate"),
+        ("averageWinRate", "Avg Win Rate"),
+        ("averageLossRate", "Avg Loss Rate"),
+        ("profitLossRatio", "Profit/Loss Ratio"),
+        ("expectancy", "Expectancy"),
+    ],
+    "Activity": [
+        ("portfolioTurnover", "Turnover"),
+    ],
+}
+
+PERCENT_KEYS = {
+    "winRate",
+    "lossRate",
+    "averageWinRate",
+    "averageLossRate",
+    "totalNetProfit",
+    "compoundingAnnualReturn",
+    "drawdown",
+    "annualStandardDeviation",
+    "annualVariance",
+    "valueAtRisk99",
+    "valueAtRisk95",
+}
+
+MONEY_KEYS = {
+    "totalProfitLoss",
+    "totalProfit",
+    "totalLoss",
+    "largestProfit",
+    "largestLoss",
+    "averageProfitLoss",
+    "averageProfit",
+    "averageLoss",
+    "averageMAE",
+    "averageMFE",
+    "largestMAE",
+    "largestMFE",
+    "maximumClosedTradeDrawdown",
+    "maximumIntraTradeDrawdown",
+    "maximumEndTradeDrawdown",
+    "averageEndTradeDrawdown",
+    "totalFees",
+    "startEquity",
+    "endEquity",
+}
+
 
 def install_css() -> None:
     st.markdown(
@@ -148,17 +267,84 @@ def value_class(value: float, inverse: bool = False) -> str:
     return "qq-good" if good else "qq-bad"
 
 
-def metric_card(label: str, value: str, raw_value: float = 0.0, inverse: bool = False) -> None:
-    help_text = METRIC_HELP.get(label, "")
-    st.markdown(
-        f"""
-        <div class="qq-card">
-            <div class="qq-metric-label">{label}</div>
-            <div class="qq-metric-value {value_class(raw_value, inverse)}">{value}</div>
-            <div class="qq-muted" title="{help_text}">?</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+def metric_delta(label: str, raw_value: float) -> float | None:
+    if label in {"Cash", "Trades", "Turnover", "Volume"}:
+        return None
+    return raw_value
+
+
+def summary_metric_specs(summary: dict) -> dict[str, dict]:
+    runtime = summary.get("runtimeStatistics", {})
+    return {
+        "Final Equity": {
+            "value": money(summary.get("final_equity")),
+            "raw": float(summary.get("total_pnl") or 0.0),
+        },
+        "Cash": {
+            "value": money(runtime.get("Equity", summary.get("final_equity"))),
+            "raw": 0.0,
+        },
+        "Net Profit": {
+            "value": money(summary.get("total_pnl")),
+            "raw": float(summary.get("total_pnl") or 0.0),
+        },
+        "Return": {
+            "value": pct(summary.get("return_pct")),
+            "raw": float(summary.get("return_pct") or 0.0),
+        },
+        "Realized P/L": {
+            "value": money(summary.get("total_pnl")),
+            "raw": float(summary.get("total_pnl") or 0.0),
+        },
+        "Unrealized P/L": {
+            "value": money(runtime.get("Unrealized", 0.0)),
+            "raw": float(runtime.get("Unrealized", 0.0) or 0.0),
+        },
+        "Max Drawdown": {
+            "value": pct(summary.get("max_drawdown_pct")),
+            "raw": float(summary.get("max_drawdown_pct") or 0.0),
+            "inverse": True,
+        },
+        "Trades": {
+            "value": str(summary.get("trade_count", 0)),
+            "raw": 0.0,
+        },
+        "Win Rate": {
+            "value": pct(summary.get("win_rate")),
+            "raw": float(summary.get("win_rate") or 0.0),
+        },
+        "Profit Factor": {
+            "value": num(summary.get("profit_factor")),
+            "raw": float(summary.get("profit_factor") or 0.0),
+        },
+        "Sharpe": {
+            "value": num(summary.get("sharpe_ratio")),
+            "raw": float(summary.get("sharpe_ratio") or 0.0),
+        },
+        "Sortino": {
+            "value": num(summary.get("sortino_ratio")),
+            "raw": float(summary.get("sortino_ratio") or 0.0),
+        },
+        "Turnover": {
+            "value": pct(summary.get("portfolio_turnover")),
+            "raw": 0.0,
+        },
+        "Volume": {
+            "value": money(runtime.get("Volume", 0.0)),
+            "raw": 0.0,
+        },
+    }
+
+
+def render_summary_metric(label: str, spec: dict, compact: bool = False) -> None:
+    raw = float(spec.get("raw") or 0.0)
+    delta = None if compact else metric_delta(label, raw)
+    st.metric(
+        label,
+        spec.get("value", "-"),
+        delta=delta,
+        delta_color="inverse" if spec.get("inverse") else "normal",
+        help=METRIC_HELP.get(label),
     )
 
 
@@ -341,52 +527,119 @@ def selected_summary(data: dict, period: str) -> dict:
 
 
 def render_metrics(summary: dict) -> None:
-    runtime = summary.get("runtimeStatistics", {})
-    metrics = [
-        ("Final Equity", money(summary.get("final_equity")), float(summary.get("total_pnl") or 0.0), False),
-        ("Cash", money(runtime.get("Equity", summary.get("final_equity"))), 0.0, False),
-        ("Net Profit", money(summary.get("total_pnl")), float(summary.get("total_pnl") or 0.0), False),
-        ("Return", pct(summary.get("return_pct")), float(summary.get("return_pct") or 0.0), False),
-        ("Realized P/L", money(summary.get("total_pnl")), float(summary.get("total_pnl") or 0.0), False),
-        ("Unrealized P/L", money(runtime.get("Unrealized", 0.0)), float(runtime.get("Unrealized", 0.0) or 0.0), False),
-        ("Max Drawdown", pct(summary.get("max_drawdown_pct")), -float(summary.get("max_drawdown_pct") or 0.0), True),
-        ("Trades", str(summary.get("trade_count", 0)), 0.0, False),
-        ("Win Rate", pct(summary.get("win_rate")), float(summary.get("win_rate") or 0.0), False),
-        ("Profit Factor", num(summary.get("profit_factor")), float(summary.get("profit_factor") or 0.0), False),
-        ("Sharpe", num(summary.get("sharpe_ratio")), float(summary.get("sharpe_ratio") or 0.0), False),
-        ("Sortino", num(summary.get("sortino_ratio")), float(summary.get("sortino_ratio") or 0.0), False),
-        ("Turnover", pct(summary.get("portfolio_turnover")), 0.0, False),
-        ("Volume", money(runtime.get("Volume", 0.0)), 0.0, False),
-    ]
-    cols = st.columns(4)
-    for idx, (label, value, delta_raw, inverse) in enumerate(metrics):
-        with cols[idx % 4]:
-            delta = None if label in {"Cash", "Trades", "Turnover", "Volume"} else delta_raw
-            delta_color = "inverse" if inverse else "normal"
-            st.metric(label, value, delta=delta, delta_color=delta_color, help=METRIC_HELP.get(label))
+    specs = summary_metric_specs(summary)
+    cols = st.columns(6)
+    for col, label in zip(cols, SUMMARY_METRIC_LAYOUT["top"]):
+        with col:
+            render_summary_metric(label, specs[label])
 
 
-def render_stats_cards(title: str, stats: dict) -> None:
+def render_metric_stack(summary: dict, labels: list[str]) -> None:
+    specs = summary_metric_specs(summary)
+    for label in labels:
+        render_summary_metric(label, specs[label], compact=True)
+
+
+def format_stat_value(key: str, value) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    if key in MONEY_KEYS:
+        return money(value)
+    if key in PERCENT_KEYS:
+        return pct(value)
+    if isinstance(value, int):
+        return f"{value:,}"
+    if isinstance(value, float):
+        return num(value)
+    return str(value)
+
+
+def stat_help(title: str, key: str, label: str) -> str:
+    return f"{label} from {title.lower()}, calculated from the selected run artifacts."
+
+
+def render_stat_group_card(title: str, group_name: str, entries: list[tuple[str, str]], stats: dict) -> None:
+    with st.container(border=True):
+        st.markdown(f"**{group_name}**")
+        cols = st.columns(3)
+        metric_index = 0
+        for key, label in entries:
+            if key not in stats:
+                continue
+            with cols[metric_index % 3]:
+                st.metric(
+                    label,
+                    format_stat_value(key, stats.get(key)),
+                    help=stat_help(title, key, label),
+                )
+            metric_index += 1
+        if metric_index == 0:
+            st.caption("No values available for this group.")
+
+
+def render_grouped_stats(title: str, stats: dict, groups: dict[str, list[tuple[str, str]]]) -> None:
     st.subheader(title)
     if not stats:
         st.info("No statistics available.")
         return
-    keys = list(stats.keys())
-    for chunk_start in range(0, len(keys), 4):
-        cols = st.columns(4)
-        for idx, key in enumerate(keys[chunk_start : chunk_start + 4]):
-            value = stats.get(key)
-            with cols[idx]:
-                st.markdown(
-                    f"""
-                    <div class="qq-card">
-                      <div class="qq-metric-label">{key}</div>
-                      <div class="qq-metric-value qq-neutral">{value}</div>
-                      <div class="qq-muted" title="Calculated from local backtest artifacts.">?</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+    grouped_keys = {key for entries in groups.values() for key, _ in entries}
+    cards = list(groups.items())
+    remaining = [(key, key) for key in stats.keys() if key not in grouped_keys]
+    if remaining:
+        cards.append(("Other", remaining))
+    for idx in range(0, len(cards), 2):
+        cols = st.columns(2)
+        for col_idx, (group_name, entries) in enumerate(cards[idx : idx + 2]):
+            with cols[col_idx]:
+                render_stat_group_card(title, group_name, entries, stats)
+
+
+def render_profit_loss_chart(daily: pl.DataFrame) -> None:
+    st.subheader("Profit / Loss")
+    if daily.is_empty():
+        st.info("No daily P/L data available.")
+        return
+    chart_df = daily.with_columns(
+        pl.when(pl.col("pnl") >= 0).then(pl.lit("profit")).otherwise(pl.lit("loss")).alias("direction")
+    ).to_pandas()
+    chart = (
+        alt.Chart(chart_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("session_date:N", title="Session", axis=alt.Axis(labelAngle=-35)),
+            y=alt.Y("pnl:Q", title="P/L ($)"),
+            color=alt.Color("direction:N", scale=alt.Scale(domain=["profit", "loss"], range=["#0f8a3b", "#c0362c"])),
+            tooltip=list(chart_df.columns),
+        )
+        .properties(height=360, title="Daily Profit / Loss")
+    )
+    st.altair_chart(chart, width="stretch")
+
+
+def render_equity_cash_chart(portfolio: pl.DataFrame) -> None:
+    st.subheader("Equity / Cash")
+    if portfolio.is_empty():
+        st.info("No portfolio equity data available.")
+        return
+    chart_df = portfolio.select("timestamp", "equity", "cash").to_pandas()
+    chart = (
+        alt.Chart(chart_df)
+        .transform_fold(["equity", "cash"], as_=["series", "value"])
+        .mark_line()
+        .encode(
+            x=alt.X("timestamp:T", title="Time", axis=alt.Axis(labelOverlap=True, labelAngle=-25)),
+            y=alt.Y("value:Q", title="$"),
+            color=alt.Color("series:N", scale=alt.Scale(range=["#2563eb", "#f59e0b"])),
+            tooltip=["timestamp:T", "series:N", "value:Q"],
+        )
+        .properties(height=360, title="Equity and Cash")
+        .interactive()
+    )
+    st.altair_chart(chart, width="stretch")
 
 
 def render_overview(data: dict, period: str) -> None:
@@ -394,45 +647,16 @@ def render_overview(data: dict, period: str) -> None:
     render_metrics(summary)
     daily = filter_df(data["daily"], period)
     portfolio = filter_df(data["portfolio"], period)
-    left, right = st.columns(2)
+    left, middle, right = st.columns([1, 8, 1])
     with left:
-        st.subheader("Profit / Loss")
-        if not daily.is_empty():
-            chart_df = daily.with_columns(
-                pl.when(pl.col("pnl") >= 0).then(pl.lit("profit")).otherwise(pl.lit("loss")).alias("direction")
-            ).to_pandas()
-            chart = (
-                alt.Chart(chart_df)
-                .mark_bar()
-                .encode(
-                    x=alt.X("session_date:N", title="Session", axis=alt.Axis(labelAngle=-35)),
-                    y=alt.Y("pnl:Q", title="P/L ($)"),
-                    color=alt.Color("direction:N", scale=alt.Scale(domain=["profit", "loss"], range=["#0f8a3b", "#c0362c"])),
-                    tooltip=list(chart_df.columns),
-                )
-                .properties(height=300, title="Daily Profit / Loss")
-            )
-            st.altair_chart(chart, width="stretch")
+        render_metric_stack(summary, SUMMARY_METRIC_LAYOUT["left"])
+    with middle:
+        render_profit_loss_chart(daily)
+        render_equity_cash_chart(portfolio)
     with right:
-        st.subheader("Equity / Cash")
-        if not portfolio.is_empty():
-            chart_df = portfolio.select("timestamp", "equity", "cash").to_pandas()
-            chart = (
-                alt.Chart(chart_df)
-                .transform_fold(["equity", "cash"], as_=["series", "value"])
-                .mark_line()
-                .encode(
-                    x=alt.X("timestamp:T", title="Time", axis=alt.Axis(labelOverlap=True, labelAngle=-25)),
-                    y=alt.Y("value:Q", title="$"),
-                    color=alt.Color("series:N", scale=alt.Scale(range=["#2563eb", "#f59e0b"])),
-                    tooltip=["timestamp:T", "series:N", "value:Q"],
-                )
-                .properties(height=300, title="Equity and Cash")
-                .interactive()
-            )
-            st.altair_chart(chart, width="stretch")
-    render_stats_cards("Trade Statistics", summary.get("tradeStatistics", {}))
-    render_stats_cards("Portfolio Statistics", summary.get("portfolioStatistics", {}))
+        render_metric_stack(summary, SUMMARY_METRIC_LAYOUT["right"])
+    render_grouped_stats("Trade Statistics", summary.get("tradeStatistics", {}), TRADE_STAT_GROUPS)
+    render_grouped_stats("Portfolio Statistics", summary.get("portfolioStatistics", {}), PORTFOLIO_STAT_GROUPS)
 
 
 def normalize_bar_columns(df: pl.DataFrame) -> pl.DataFrame:
