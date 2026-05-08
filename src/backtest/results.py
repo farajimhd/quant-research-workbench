@@ -5,6 +5,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import polars as pl
 
@@ -22,7 +23,7 @@ def json_default(value: Any):
 def create_run_dir(config: BacktestConfig) -> Path:
     config.output_root.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    slug = config.strategy_name.replace(" ", "_").lower()
+    slug = config.run_slug
     run_dir = config.output_root / f"{timestamp}_{slug}"
     suffix = 1
     while run_dir.exists():
@@ -30,6 +31,36 @@ def create_run_dir(config: BacktestConfig) -> Path:
         suffix += 1
     run_dir.mkdir(parents=True)
     return run_dir
+
+
+def base_metadata(config: BacktestConfig, run_dir: Path, status: str = "running") -> dict:
+    return {
+        "run_id": run_dir.name,
+        "run_name": config.run_name,
+        "strategy_name": config.strategy_name,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "created_by_app": True,
+        "status": status,
+        "run_dir": str(run_dir),
+        "config": config.to_dict(),
+        "app_version": "phase1-local",
+        "metadata_version": 1,
+        "uuid": str(uuid4()),
+    }
+
+
+def read_run_metadata(run_dir: Path) -> dict | None:
+    metadata_path = run_dir / "metadata.json"
+    if not metadata_path.exists():
+        return None
+    try:
+        return json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def write_run_metadata(run_dir: Path, metadata: dict) -> None:
+    write_json(run_dir / "metadata.json", metadata)
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -58,8 +89,14 @@ def normalize_value(value):
 def list_runs(output_root: Path, strategy_name: str | None = None) -> list[Path]:
     if not output_root.exists():
         return []
-    runs = [path for path in output_root.iterdir() if path.is_dir()]
+    runs = []
+    for path in output_root.iterdir():
+        if not path.is_dir():
+            continue
+        metadata = read_run_metadata(path)
+        if not metadata or not metadata.get("created_by_app"):
+            continue
+        runs.append(path)
     if strategy_name:
-        slug = strategy_name.replace(" ", "_").lower()
-        runs = [path for path in runs if path.name.endswith(slug) or f"_{slug}_" in path.name]
+        runs = [path for path in runs if (read_run_metadata(path) or {}).get("strategy_name") == strategy_name]
     return sorted(runs, key=lambda path: path.stat().st_mtime, reverse=True)

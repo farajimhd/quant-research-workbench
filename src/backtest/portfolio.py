@@ -61,6 +61,7 @@ class Portfolio:
             setup_score=setup_score,
             live_score=live_score,
             max_price=order.fill_price,
+            min_price=order.fill_price,
         )
 
     def close_position(self, order: Order) -> Trade | None:
@@ -86,6 +87,9 @@ class Portfolio:
             exit_reason=order.reason,
             max_unrealized_profit=position.max_unrealized_profit,
             max_r_multiple=position.max_r_multiple,
+            mae=position.max_adverse_excursion,
+            mfe=position.max_unrealized_profit,
+            end_trade_drawdown=position.max_unrealized_profit - max(pnl, 0.0),
         )
         self.trades.append(trade)
 
@@ -103,8 +107,11 @@ class Portfolio:
             if bar is None:
                 continue
             position.max_price = max(position.max_price, float(bar["high"]))
+            position.min_price = min(position.min_price, float(bar["low"]))
             max_profit_per_share = max(0.0, position.max_price - position.entry_price)
             position.max_unrealized_profit = max_profit_per_share * position.quantity
+            max_loss_per_share = min(0.0, position.min_price - position.entry_price)
+            position.max_adverse_excursion = max_loss_per_share * position.quantity
             risk_per_share = abs(position.entry_price - position.stop_price)
             if risk_per_share > 0:
                 position.max_r_multiple = max_profit_per_share / risk_per_share

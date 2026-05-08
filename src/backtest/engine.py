@@ -10,9 +10,10 @@ import polars as pl
 from src.backtest.config import BacktestConfig
 from src.backtest.data.minute_bars import DayFrames, available_session_dates, load_day_frames
 from src.backtest.fills import BarFillModel
+from src.backtest.metrics import compute_summary
 from src.backtest.models import MinuteContext, Order, OrderRequest
 from src.backtest.portfolio import Portfolio
-from src.backtest.results import create_run_dir, write_json, write_table
+from src.backtest.results import base_metadata, create_run_dir, write_json, write_run_metadata, write_table
 
 
 class Strategy(Protocol):
@@ -52,65 +53,88 @@ class BacktestEngine:
 
     def run(self, progress_callback=None) -> dict:
         run_dir = create_run_dir(self.config)
+        metadata = base_metadata(self.config, run_dir, "running")
+        write_run_metadata(run_dir, metadata)
         write_json(run_dir / "config.json", self.config.to_dict())
 
-        sessions = available_session_dates(self.config)
-        logging.info("Running %s sessions", len(sessions))
+        try:
+            sessions = available_session_dates(self.config)
+            logging.info("Running %s sessions", len(sessions))
 
-        for session_date in sessions:
-            day_start_equity = self.portfolio.total_equity()
-            frames = load_day_frames(self.config, session_date)
-            self.strategy.prepare_day(frames, self.portfolio)
+            for index, session_date in enumerate(sessions, start=1):
+                day_start_equity = self.portfolio.total_equity()
+                frames = load_day_frames(self.config, session_date)
+                self.strategy.prepare_day(frames, self.portfolio)
 
-            if self.config.save_symbol_bars:
-                self.symbol_bar_rows.extend(self._symbol_bar_rows(frames.minute_bars, session_date))
+                if self.config.save_symbol_bars:
+                    self.symbol_bar_rows.extend(self._symbol_bar_rows(frames.minute_bars, session_date))
 
-            rows_by_time = self._rows_by_time(frames.minute_bars)
-            last_timestamp = None
-            last_bars = {}
+                rows_by_time = self._rows_by_time(frames.minute_bars)
+                last_timestamp = None
+                last_bars = {}
 
-            for timestamp in sorted(rows_by_time):
-                last_timestamp = timestamp
-                bars_by_symbol = rows_by_time[timestamp]
-                last_bars = bars_by_symbol
-                self._fill_pending_orders(timestamp, bars_by_symbol)
-                self.portfolio.update_peaks(bars_by_symbol)
+                for timestamp in sorted(rows_by_time):
+                    last_timestamp = timestamp
+                    bars_by_symbol = rows_by_time[timestamp]
+                    last_bars = bars_by_symbol
+                    self._fill_pending_orders(timestamp, bars_by_symbol)
+                    self.portfolio.update_peaks(bars_by_symbol)
 
-                requests = self.strategy.on_minute(
-                    MinuteContext(timestamp=timestamp, bars_by_symbol=bars_by_symbol),
-                    self.portfolio,
-                    self.pending_orders,
+                    requests = self.strategy.on_minute(
+                        MinuteContext(timestamp=timestamp, bars_by_symbol=bars_by_symbol),
+                        self.portfolio,
+                        self.pending_orders,
+                    )
+                    self._handle_requests(timestamp, requests, bars_by_symbol)
+                    self._record_portfolio(timestamp, bars_by_symbol)
+
+                if last_timestamp is not None:
+                    self._handle_requests(
+                        last_timestamp,
+                        self.strategy.on_day_end(last_timestamp, self.portfolio),
+                        last_bars,
+                    )
+                    self._fill_market_exits(last_timestamp, last_bars)
+                    self._record_portfolio(last_timestamp, last_bars)
+
+                day_end_equity = self.portfolio.total_equity(last_bars)
+                self.daily_rows.append(
+                    {
+                        "session_date": session_date.isoformat(),
+                        "start_equity": day_start_equity,
+                        "end_equity": day_end_equity,
+                        "pnl": day_end_equity - day_start_equity,
+                        "return_pct": (day_end_equity / day_start_equity) - 1.0 if day_start_equity else 0.0,
+                        "trade_count": len([t for t in self.trades if str(t["exit_time"]).startswith(session_date.isoformat())]),
+                        "candidate_count": self._candidate_count_for_day(session_date),
+                        "signal_count": self._signal_count_for_day(session_date),
+                        "rejection_count": self._rejection_count_for_day(session_date),
+                    }
                 )
-                self._handle_requests(timestamp, requests, bars_by_symbol)
-                self._record_portfolio(timestamp, bars_by_symbol)
 
-            if last_timestamp is not None:
-                self._handle_requests(
-                    last_timestamp,
-                    self.strategy.on_day_end(last_timestamp, self.portfolio),
-                    last_bars,
+                metadata.update(
+                    {
+                        "status": "running",
+                        "completed_sessions": index,
+                        "total_sessions": len(sessions),
+                        "latest_session": session_date.isoformat(),
+                        "latest_daily_summary": dict(self.daily_rows[-1]),
+                    }
                 )
-                self._fill_market_exits(last_timestamp, last_bars)
-                self._record_portfolio(last_timestamp, last_bars)
+                write_run_metadata(run_dir, metadata)
 
-            day_end_equity = self.portfolio.total_equity(last_bars)
-            self.daily_rows.append(
-                {
-                    "session_date": session_date.isoformat(),
-                    "start_equity": day_start_equity,
-                    "end_equity": day_end_equity,
-                    "pnl": day_end_equity - day_start_equity,
-                    "return_pct": (day_end_equity / day_start_equity) - 1.0 if day_start_equity else 0.0,
-                    "trade_count": len([t for t in self.trades if str(t["exit_time"]).startswith(session_date.isoformat())]),
-                }
-            )
+                if progress_callback:
+                    progress_callback(session_date, dict(self.daily_rows[-1]), run_dir)
 
-            if progress_callback:
-                progress_callback(session_date, dict(self.daily_rows[-1]), run_dir)
-
-        summary = self._summary(run_dir)
-        self._write_artifacts(run_dir, summary)
-        return {"run_dir": str(run_dir), "summary": summary}
+            summary = self._summary(run_dir)
+            metadata.update({"status": "complete", "completed_at": datetime.now().isoformat(timespec="seconds"), "summary": summary})
+            write_run_metadata(run_dir, metadata)
+            self._write_artifacts(run_dir, summary)
+            return {"run_dir": str(run_dir), "summary": summary}
+        except Exception as exc:
+            metadata.update({"status": "error", "error": str(exc), "failed_at": datetime.now().isoformat(timespec="seconds")})
+            write_run_metadata(run_dir, metadata)
+            raise
 
     def _rows_by_time(self, minute_bars: pl.DataFrame) -> dict[datetime, dict[str, dict]]:
         grouped: dict[datetime, dict[str, dict]] = {}
@@ -249,23 +273,28 @@ class BacktestEngine:
         ).to_dicts()
 
     def _summary(self, run_dir) -> dict:
-        final_equity = self.portfolio_rows[-1]["equity"] if self.portfolio_rows else self.config.initial_cash
-        total_pnl = final_equity - self.config.initial_cash
-        wins = [trade for trade in self.trades if trade["pnl"] > 0]
-        losses = [trade for trade in self.trades if trade["pnl"] <= 0]
-        return {
-            "run_dir": str(run_dir),
-            "strategy_name": self.config.strategy_name,
-            "initial_cash": self.config.initial_cash,
-            "final_equity": final_equity,
-            "total_pnl": total_pnl,
-            "return_pct": (final_equity / self.config.initial_cash) - 1.0 if self.config.initial_cash else 0.0,
-            "trade_count": len(self.trades),
-            "win_count": len(wins),
-            "loss_count": len(losses),
-            "win_rate": len(wins) / len(self.trades) if self.trades else 0.0,
-            "avg_trade_pnl": sum(t["pnl"] for t in self.trades) / len(self.trades) if self.trades else 0.0,
-        }
+        return compute_summary(
+            run_dir=str(run_dir),
+            strategy_name=self.config.strategy_name,
+            run_name=self.config.run_name,
+            initial_cash=self.config.initial_cash,
+            trades=self.trades,
+            orders=self.orders,
+            portfolio_rows=self.portfolio_rows,
+            daily_rows=self.daily_rows,
+        )
+
+    def _candidate_count_for_day(self, session_date) -> int:
+        day = session_date.isoformat()
+        return len([row for row in self.strategy.artifacts().get("candidate_rankings", []) if row.get("session_date") == day])
+
+    def _signal_count_for_day(self, session_date) -> int:
+        day = session_date.isoformat()
+        return len([row for row in self.strategy.artifacts().get("signal_events", []) if str(row.get("timestamp", "")).startswith(day)])
+
+    def _rejection_count_for_day(self, session_date) -> int:
+        day = session_date.isoformat()
+        return len([row for row in self.strategy.artifacts().get("rejection_events", []) if str(row.get("timestamp", "")).startswith(day)])
 
     def _write_artifacts(self, run_dir, summary: dict) -> None:
         artifacts = self.strategy.artifacts()

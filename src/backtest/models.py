@@ -47,8 +47,10 @@ class Position:
     setup_score: float
     live_score: float
     max_price: float
+    min_price: float
     max_unrealized_profit: float = 0.0
     max_r_multiple: float = 0.0
+    max_adverse_excursion: float = 0.0
 
 
 @dataclass(slots=True)
@@ -64,6 +66,9 @@ class Trade:
     exit_reason: str
     max_unrealized_profit: float
     max_r_multiple: float
+    mae: float
+    mfe: float
+    end_trade_drawdown: float
 
 
 @dataclass(slots=True)

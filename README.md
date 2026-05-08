@@ -251,3 +251,38 @@ Current capabilities:
 - tracks cash, equity, positions, orders, trades, scanner snapshots, candidate rankings, signals, and rejections
 - saves every run under `D:/TradingData/qq-momentum-trading/runs/`
 - exposes completed runs through the Streamlit frontend
+
+The frontend now treats the sidebar as strategy navigation only. Each strategy opens a main-page workspace with:
+
+- app-created run history sorted by recency
+- required run names
+- named run folders with `metadata.json`
+- new-run form grouped by dataset, portfolio, fill model, scanner, entry, exit, and risk parameters
+- live daily progress while a run is executing
+- run detail pages with overview, daily results, trades, orders, scanner candidates, rejected signals, positions, chart inspector, config, and logs
+- a parameters dialog for viewing the saved config and launching a copied run with edits
+
+Runs without app metadata are not listed by the frontend. Local runs created by the app or engine include:
+
+```text
+metadata.json
+config.json
+summary.json
+daily_summary.parquet
+orders.parquet
+trades.parquet
+positions.parquet
+portfolio.parquet
+scanner_snapshots.parquet
+candidate_rankings.parquet
+signal_events.parquet
+rejection_events.parquet
+logs.txt
+```
+
+The summary file follows the QuantConnect-style structure where supported:
+
+- `tradeStatistics`
+- `portfolioStatistics`
+- `runtimeStatistics`
+- flat dashboard fields such as return, PnL, win rate, profit factor, drawdown, Sharpe, Sortino, and turnover

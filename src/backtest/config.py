@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
+import re
 
 
 DEFAULT_DATA_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1")
@@ -21,6 +22,7 @@ class BacktestConfig:
     strategy_name: str
     start_date: date
     end_date: date
+    run_name: str = "Untitled run"
     data_root: Path = DEFAULT_DATA_ROOT
     output_root: Path = DEFAULT_OUTPUT_ROOT
     initial_cash: float = 10_000.0
@@ -39,11 +41,13 @@ class BacktestConfig:
         data["data_root"] = Path(data.get("data_root", DEFAULT_DATA_ROOT))
         data["output_root"] = Path(data.get("output_root", DEFAULT_OUTPUT_ROOT))
         data["strategy_params"] = dict(data.get("strategy_params", {}))
+        data["run_name"] = str(data.get("run_name") or "Untitled run").strip()
         return cls(**data)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "strategy_name": self.strategy_name,
+            "run_name": self.run_name,
             "start_date": self.start_date.isoformat(),
             "end_date": self.end_date.isoformat(),
             "data_root": str(self.data_root),
@@ -56,3 +60,9 @@ class BacktestConfig:
             "save_symbol_bars": self.save_symbol_bars,
             "strategy_params": self.strategy_params,
         }
+
+    @property
+    def run_slug(self) -> str:
+        raw = f"{self.strategy_name}_{self.run_name}".lower()
+        slug = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
+        return slug or self.strategy_name
