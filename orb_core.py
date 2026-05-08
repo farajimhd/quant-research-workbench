@@ -24,6 +24,7 @@ class OpeningRangeBreakoutCore:
         self.min_body_to_range = 0.20
         self.min_orb_range_atr_fraction = 0.05
         self.max_orb_range_atr_fraction = 0.80
+        self.tema_entry_atr_buffer = 0.005
         self.tema_exit_atr_buffer = 0.02
         self.min_position_value = 500.0
         self.min_planned_risk_dollars = 12.0
@@ -568,7 +569,8 @@ class OpeningRangeBreakoutCore:
             state.tema_ready
             and state.tema9 is not None
             and state.tema20 is not None
-            and state.tema9 > state.tema20
+            and state.atr_14 is not None
+            and state.tema9 > state.tema20 + self.tema_entry_buffer(state)
         )
 
     def is_tema_closed(self, state):
@@ -585,6 +587,12 @@ class OpeningRangeBreakoutCore:
             return 0.0
 
         return state.atr_14 * self.tema_exit_atr_buffer
+
+    def tema_entry_buffer(self, state):
+        if state.atr_14 is None:
+            return 0.0
+
+        return state.atr_14 * self.tema_entry_atr_buffer
 
     def live_score(self, state):
         if state.last_price is None or state.last_price <= 0:
@@ -787,6 +795,7 @@ class OpeningRangeBreakoutCore:
             f"|setup={state.orb_score:.1f}|live={score:.1f}|rv={state.orb_relative_volume:.1f}"
             f"|macd={state.macd_line:.4f}|sig={state.macd_signal:.4f}|hist={state.macd_hist:.4f}"
             f"|tema9={state.tema9:.4f}|tema20={state.tema20:.4f}"
+            f"|tbuf={self.tema_entry_buffer(state):.4f}"
             f"|scan={scanner_count}|top5={scanner_top}"
         )
 
