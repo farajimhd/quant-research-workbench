@@ -11,6 +11,7 @@ from typing import Any
 import altair as alt
 import polars as pl
 import streamlit as st
+import streamlit.components.v1 as components
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -751,6 +752,230 @@ def normalize_bar_columns(df: pl.DataFrame) -> pl.DataFrame:
     return df.rename(rename) if rename else df
 
 
+def chart_timestamp(value) -> int:
+    if isinstance(value, datetime):
+        return int(value.timestamp())
+    parsed = parse_datetime_value(value)
+    return int(parsed.timestamp()) if parsed else 0
+
+
+def parse_datetime_value(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def numeric_value(value) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicators: list[str]) -> dict:
+    bars = normalize_bar_columns(bars).sort("bar_time_market")
+    rows = bars.to_dicts()
+    candles = []
+    volumes = []
+    indicator_series = []
+    indicator_colors = [
+        "#2563eb",
+        "#db2777",
+        "#16a34a",
+        "#f59e0b",
+        "#7c3aed",
+        "#0891b2",
+    ]
+
+    for row in rows:
+        timestamp = chart_timestamp(row.get("bar_time_market"))
+        if not timestamp:
+            continue
+        open_price = numeric_value(row.get("open"))
+        high_price = numeric_value(row.get("high"))
+        low_price = numeric_value(row.get("low"))
+        close_price = numeric_value(row.get("close"))
+        if None in {open_price, high_price, low_price, close_price}:
+            continue
+        candles.append(
+            {
+                "time": timestamp,
+                "open": open_price,
+                "high": high_price,
+                "low": low_price,
+                "close": close_price,
+            }
+        )
+        volume = numeric_value(row.get("volume"))
+        if volume is not None:
+            volumes.append(
+                {
+                    "time": timestamp,
+                    "value": volume,
+                    "color": "rgba(15, 138, 59, 0.28)" if close_price >= open_price else "rgba(192, 54, 44, 0.28)",
+                }
+            )
+
+    for idx, column in enumerate([col for col in indicators if col in bars.columns]):
+        points = []
+        for row in rows:
+            timestamp = chart_timestamp(row.get("bar_time_market"))
+            value = numeric_value(row.get(column))
+            if timestamp and value is not None:
+                points.append({"time": timestamp, "value": value})
+        if points:
+            indicator_series.append(
+                {
+                    "name": column,
+                    "color": indicator_colors[idx % len(indicator_colors)],
+                    "data": points,
+                }
+            )
+
+    markers = []
+    if not orders.is_empty() and "filled_at" in orders.columns:
+        for row in orders.filter(pl.col("status") == "FILLED").sort("filled_at").to_dicts():
+            timestamp = chart_timestamp(row.get("filled_at"))
+            if not timestamp:
+                continue
+            side = str(row.get("side", "")).upper()
+            is_buy = side == "BUY"
+            markers.append(
+                {
+                    "time": timestamp,
+                    "position": "belowBar" if is_buy else "aboveBar",
+                    "color": "#0f8a3b" if is_buy else "#c0362c",
+                    "shape": "arrowUp" if is_buy else "arrowDown",
+                    "text": f"{side} {row.get('quantity', '')} @ {money(row.get('fill_price'))}",
+                }
+            )
+
+    return {
+        "candles": candles,
+        "volumes": volumes,
+        "indicators": indicator_series,
+        "markers": markers,
+    }
+
+
+def render_lightweight_candle_chart(payload: dict, height: int = 680) -> None:
+    chart_id = f"tv-chart-{abs(hash(json.dumps(payload, sort_keys=True))) % 10_000_000}"
+    payload_json = json.dumps(payload)
+    html = f"""
+    <div id="{chart_id}" style="height:{height}px;width:100%;"></div>
+    <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+    const payload = {payload_json};
+    const container = document.getElementById("{chart_id}");
+    const chart = LightweightCharts.createChart(container, {{
+        height: {height},
+        layout: {{
+            background: {{ type: "solid", color: "#ffffff" }},
+            textColor: "#111827",
+            fontSize: 12
+        }},
+        grid: {{
+            vertLines: {{ color: "#f3f4f6" }},
+            horzLines: {{ color: "#f3f4f6" }}
+        }},
+        crosshair: {{
+            mode: LightweightCharts.CrosshairMode.Normal
+        }},
+        rightPriceScale: {{
+            borderColor: "#d1d5db",
+            scaleMargins: {{ top: 0.08, bottom: 0.22 }}
+        }},
+        timeScale: {{
+            borderColor: "#d1d5db",
+            timeVisible: true,
+            secondsVisible: false,
+            rightOffset: 8,
+            barSpacing: 9
+        }},
+        handleScroll: {{
+            mouseWheel: true,
+            pressedMouseMove: true,
+            horzTouchDrag: true,
+            vertTouchDrag: false
+        }},
+        handleScale: {{
+            axisPressedMouseMove: true,
+            mouseWheel: true,
+            pinch: true
+        }}
+    }});
+
+    const candleSeries = chart.addCandlestickSeries({{
+        upColor: "#0f8a3b",
+        downColor: "#c0362c",
+        borderUpColor: "#0f8a3b",
+        borderDownColor: "#c0362c",
+        wickUpColor: "#0f8a3b",
+        wickDownColor: "#c0362c"
+    }});
+    candleSeries.setData(payload.candles || []);
+    if (payload.markers && payload.markers.length) {{
+        candleSeries.setMarkers(payload.markers);
+    }}
+
+    if (payload.volumes && payload.volumes.length) {{
+        const volumeSeries = chart.addHistogramSeries({{
+            priceFormat: {{ type: "volume" }},
+            priceScaleId: ""
+        }});
+        volumeSeries.priceScale().applyOptions({{
+            scaleMargins: {{ top: 0.8, bottom: 0 }}
+        }});
+        volumeSeries.setData(payload.volumes);
+    }}
+
+    const legend = document.createElement("div");
+    legend.style.position = "absolute";
+    legend.style.left = "12px";
+    legend.style.top = "8px";
+    legend.style.zIndex = 2;
+    legend.style.display = "flex";
+    legend.style.gap = "10px";
+    legend.style.flexWrap = "wrap";
+    legend.style.font = "12px system-ui";
+    legend.style.background = "rgba(255,255,255,0.82)";
+    legend.style.padding = "4px 6px";
+    legend.style.borderRadius = "4px";
+    container.style.position = "relative";
+    container.appendChild(legend);
+
+    (payload.indicators || []).forEach((indicator) => {{
+        const line = chart.addLineSeries({{
+            color: indicator.color,
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: false
+        }});
+        line.setData(indicator.data || []);
+        const item = document.createElement("span");
+        item.textContent = indicator.name;
+        item.style.color = indicator.color;
+        legend.appendChild(item);
+    }});
+
+    chart.timeScale().fitContent();
+    const resizeObserver = new ResizeObserver(entries => {{
+        if (!entries.length) return;
+        chart.applyOptions({{ width: entries[0].contentRect.width }});
+    }});
+    resizeObserver.observe(container);
+    </script>
+    """
+    components.html(html, height=height + 12, scrolling=False)
+
+
 def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: list[str]) -> None:
     if bars.is_empty():
         st.info("No chart data available.")
@@ -760,59 +985,8 @@ def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: list[str]
     if any(col not in bars.columns for col in required):
         st.info("Selected chart data is missing OHLC columns.")
         return
-    base = bars.to_pandas()
-    rule = (
-        alt.Chart(base)
-        .mark_rule()
-        .encode(
-            x=alt.X("bar_time_market:T", title="Time", axis=alt.Axis(labelOverlap=True, labelAngle=-25)),
-            y=alt.Y("low:Q", title="Price"),
-            y2="high:Q",
-            color=alt.condition("datum.close >= datum.open", alt.value("#0f8a3b"), alt.value("#c0362c")),
-        )
-    )
-    body = (
-        alt.Chart(base)
-        .mark_bar(size=5)
-        .encode(
-            x="bar_time_market:T",
-            y="open:Q",
-            y2="close:Q",
-            color=alt.condition("datum.close >= datum.open", alt.value("#0f8a3b"), alt.value("#c0362c")),
-            tooltip=list(base.columns),
-        )
-    )
-    chart = rule + body
-    overlay_cols = [col for col in indicators if col in bars.columns]
-    if overlay_cols:
-        lines = (
-            alt.Chart(base)
-            .transform_fold(overlay_cols, as_=["indicator", "value"])
-            .mark_line()
-            .encode(x="bar_time_market:T", y="value:Q", color="indicator:N")
-        )
-        chart = chart + lines
-    if not orders.is_empty() and "filled_at" in orders.columns:
-        marker_df = orders.filter(pl.col("status") == "FILLED").select(
-            pl.col("filled_at").alias("bar_time_market"),
-            pl.col("fill_price").alias("price"),
-            "side",
-            "reason",
-            "quantity",
-        ).to_pandas()
-        markers = (
-            alt.Chart(marker_df)
-            .mark_point(size=120, filled=True)
-            .encode(
-                x="bar_time_market:T",
-                y="price:Q",
-                shape="side:N",
-                color="reason:N",
-                tooltip=list(marker_df.columns),
-            )
-        )
-        chart = chart + markers
-    st.altair_chart(chart.properties(height=560).interactive(), width="stretch")
+    payload = tradingview_chart_payload(bars, orders, indicators)
+    render_lightweight_candle_chart(payload)
 
 
 def bars_for(data: dict, period: str, ticker: str, timeframe: str) -> pl.DataFrame:
