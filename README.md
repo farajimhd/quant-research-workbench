@@ -1,0 +1,211 @@
+# QQ Momentum Trading
+
+This project is moving to a local-first research workflow. The goal is to develop, inspect, and improve momentum strategies on local historical data before translating anything to QuantConnect or live execution.
+
+## Development Workflow
+
+The strategy development process has four phases.
+
+1. **Phase 1: local minute-bar research**
+   - Develop strategies in plain Python.
+   - Backtest against local 1-minute historical bars using Polars.
+   - Iterate scanner logic, entries, exits, sizing, and risk rules until results are acceptable.
+   - Use rich saved outputs and a frontend to understand every trade and missed trade.
+
+2. **Phase 2: realistic quote/trade backtesting**
+   - Reuse the same strategy modules where possible.
+   - Replace or extend the fill model with quote and trade data.
+   - Simulate order matching more realistically using bid/ask, trades, spread, liquidity, and partial fills.
+   - Use this phase before live deployment when execution quality matters.
+
+3. **Phase 3: direct live trading through IBKR**
+   - Run approved strategies directly using an IBKR client library as the brokerage layer.
+   - Use Massive for live market data where needed.
+   - Reuse the same scanner, signal, sizing, risk, and portfolio modules from backtesting.
+   - Keep brokerage, data feed, and execution adapters modular so live trading is not tied to QuantConnect.
+
+4. **Phase 4: optional QuantConnect translation**
+   - Translate only approved local strategies into QuantConnect.
+   - Use QuantConnect backtests to validate platform-specific execution behavior.
+   - Iterate only on execution mismatches, data differences, and platform constraints.
+
+## Data Sources
+
+Minute-bar historical data is expected at:
+
+```text
+D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1/[yyyy]/[mm]/[yyyy-mm-dd].csv.gz
+```
+
+The current available dataset includes May 2024. More months can be added later without changing the strategy code.
+
+Phase 2 will also use quote and trade data when available. The code should treat minute bars, quotes, and trades as different data adapters feeding the same strategy engine.
+
+## Output Storage
+
+Backtest and research outputs should be saved under:
+
+```text
+D:/TradingData/qq-momentum-trading/runs/
+```
+
+Each run should have its own timestamped folder:
+
+```text
+D:/TradingData/qq-momentum-trading/runs/
+  2026-05-08_001_opening_range_momentum/
+    config.json
+    summary.json
+    daily_summary.parquet
+    orders.parquet
+    trades.parquet
+    positions.parquet
+    portfolio.parquet
+    scanner_snapshots.parquet
+    candidate_rankings.parquet
+    signal_events.parquet
+    rejection_events.parquet
+    logs.txt
+```
+
+Every run must be reproducible from its saved `config.json`.
+
+## Code Organization
+
+The intended source layout is:
+
+```text
+src/
+  backtest/
+    data/
+      minute_bars.py
+      quote_trade.py
+      adapters.py
+    indicators.py
+    engine.py
+    fills.py
+    portfolio.py
+    results.py
+    plotting.py
+  strategies/
+    opening_range_momentum/
+      config.py
+      scanner.py
+      signals.py
+      sizing.py
+      exits.py
+      strategy.py
+  live/
+    ibkr_adapter.py
+    massive_adapter.py
+    execution.py
+  frontend/
+    streamlit_app.py
+```
+
+Large strategy deviations can live in separate folders under `src/strategies`.
+
+## Backtest Design
+
+The backtest engine should be parameterized and strategy-agnostic.
+
+At day-load time:
+
+- load the 1-minute Polars dataframe for the day
+- build a second 5-minute dataframe by consolidating every five 1-minute bars
+- calculate indicators on both 1-minute and 5-minute data using Polars expressions
+- avoid recalculating indicators inside the event loop
+
+The engine should simulate the trading day over time and record:
+
+- scanner state
+- candidate rankings
+- signals
+- rejected signals and reasons
+- orders
+- fills
+- positions
+- cash, equity, realized PnL, unrealized PnL
+- daily and run-level summaries
+
+The Phase 1 fill model can approximate fills from bars. Phase 2 should swap in a quote/trade fill model without changing strategy rules.
+
+## Strategy Configuration
+
+Every strategy must be easy to hyperparameterize. Parameters should be supplied through a config object or dictionary, not hidden globals.
+
+Typical parameters include:
+
+- date range
+- initial cash
+- max active positions
+- scanner thresholds
+- opening box window
+- indicator periods
+- entry rules
+- exit rules
+- position sizing rules
+- risk rules
+- slippage and spread assumptions
+- data paths
+- output paths
+
+## Frontend
+
+The frontend can be a Streamlit app.
+
+Sidebar:
+
+- strategy selector
+- backtest run selector, newest first
+- run/new-run controls
+
+Run panel:
+
+- editable strategy parameters
+- editable backtest parameters
+- run button
+- live progress while the run is executing
+
+Results view:
+
+- summary metrics
+- equity curve
+- daily PnL
+- orders
+- trades
+- positions
+- scanner snapshots
+- candidate rankings
+- rejected signals
+
+Per-day inspection:
+
+- one tab or container per trading day
+- timestamp navigation
+- scanner status at selected time
+- active positions at selected time
+- ranked candidates at selected time
+- selected ticker candlestick chart
+
+Chart requirements:
+
+- 1-minute candlesticks
+- optional 5-minute indicators
+- opening box high, mid, and low
+- VWAP and strategy indicators
+- entry markers
+- profit exits
+- stop exits
+- other relevant signal markers
+
+## Core Principle
+
+The local system should be a research and debugging environment, not only a PnL calculator. Every trade, missed trade, rejected candidate, and exit should be explainable from saved structured data.
+
+The same strategy logic should be reusable across:
+
+- minute-bar backtesting
+- quote/trade backtesting
+- IBKR live execution
+- QuantConnect translation
