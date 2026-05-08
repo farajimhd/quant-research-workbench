@@ -187,6 +187,21 @@ def install_css() -> None:
             line-height: 1.2 !important;
             margin-bottom: 0.2rem !important;
         }
+        .qq-run-summary {
+            color: #4b5563;
+            font-size: 0.86rem;
+            line-height: 1.3;
+            margin: 0.05rem 0 0.45rem 0;
+        }
+        .st-key-back_to_runs button {
+            min-width: 2rem;
+            height: 2rem;
+            padding: 0;
+            border-radius: 999px;
+            color: #6b7280;
+            background: #f3f4f6;
+            border: 1px solid #e5e7eb;
+        }
         .qq-page-description {
             color: #6b7280;
             font-size: 0.84rem;
@@ -906,6 +921,99 @@ def render_run_dashboard(run_dir: Path, show_header: bool = True) -> None:
         st.text(log_path.read_text(encoding="utf-8") if log_path.exists() else "No logs.")
 
 
+def humanize_key(key: str) -> str:
+    return key.replace("_", " ").replace("-", " ").title()
+
+
+def render_detail_table(items: list[tuple[str, object]]) -> None:
+    rows = [{"Field": label, "Value": "-" if value is None else str(value)} for label, value in items]
+    st.dataframe(pl.DataFrame(rows), width="stretch", hide_index=True)
+
+
+def render_run_details_content(run_dir: Path) -> None:
+    metadata = read_run_metadata(run_dir) or {}
+    summary = metadata.get("summary") or load_json(run_dir / "summary.json")
+    config = metadata.get("config", {})
+    params = config.get("strategy_params", {})
+
+    top = st.columns(4)
+    top[0].metric("Status", metadata.get("status", "unknown"))
+    top[1].metric("Return", pct(summary.get("return_pct", 0.0)))
+    top[2].metric("Net P/L", money(summary.get("total_pnl", 0.0)))
+    top[3].metric("Trades", summary.get("trade_count", 0))
+
+    st.subheader("Run")
+    render_detail_table(
+        [
+            ("Run name", metadata.get("run_name", run_dir.name)),
+            ("Strategy", metadata.get("strategy_name", config.get("strategy_name", ""))),
+            ("Created", metadata.get("created_at", "")),
+            ("Date range", f"{config.get('start_date', '')} to {config.get('end_date', '')}"),
+            ("Initial cash", money(config.get("initial_cash", 0.0))),
+            ("Run folder", str(run_dir)),
+        ]
+    )
+
+    st.subheader("Execution")
+    render_detail_table(
+        [
+            ("Data root", config.get("data_root", "")),
+            ("Output root", config.get("output_root", "")),
+            ("Market UTC offset", config.get("market_utc_offset_hours", "")),
+            ("Slippage bps", config.get("slippage_bps", "")),
+            ("Save chart bars", config.get("save_symbol_bars", "")),
+        ]
+    )
+
+    st.subheader("Strategy Parameters")
+    param_rows = [{"Parameter": humanize_key(key), "Value": str(value)} for key, value in sorted(params.items())]
+    st.dataframe(pl.DataFrame(param_rows), width="stretch", hide_index=True)
+
+
+if hasattr(st, "dialog"):
+    @st.dialog("Run Details")
+    def run_details_dialog(run_dir_value: str) -> None:
+        render_run_details_content(Path(run_dir_value))
+else:
+    run_details_dialog = None
+
+
+def render_selected_run_header(run_dir: Path) -> None:
+    metadata = read_run_metadata(run_dir) or {}
+    summary = metadata.get("summary") or load_json(run_dir / "summary.json")
+    config = metadata.get("config", {})
+    run_name = metadata.get("run_name", run_dir.name)
+    status = metadata.get("status", "unknown")
+    date_range = f"{config.get('start_date', '')} to {config.get('end_date', '')}"
+
+    title_cols = st.columns([0.25, 7])
+    with title_cols[0]:
+        if st.button("<", key="back_to_runs", help="Back to runs", type="tertiary"):
+            st.session_state.pop("active_run_dir", None)
+            st.rerun()
+    with title_cols[1]:
+        st.title(run_name)
+
+    info_cols = st.columns([7, 1.4])
+    with info_cols[0]:
+        st.markdown(
+            (
+                f'<div class="qq-run-summary">{metadata.get("strategy_name", config.get("strategy_name", ""))}'
+                f' | {status} | {date_range} | return {pct(summary.get("return_pct", 0.0))}'
+                f' | P/L {money(summary.get("total_pnl", 0.0))}'
+                f' | trades {summary.get("trade_count", 0)}</div>'
+            ),
+            unsafe_allow_html=True,
+        )
+    with info_cols[1]:
+        if run_details_dialog is not None:
+            if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary"):
+                run_details_dialog(str(run_dir))
+        else:
+            with st.expander("See more details"):
+                render_run_details_content(run_dir)
+
+
 def render_new_run_update_form(config_key: str) -> None:
     config = dict(st.session_state[config_key])
     params = dict(config.get("strategy_params", {}))
@@ -1111,12 +1219,9 @@ def strategy_workspace(strategy_name: str) -> None:
     output_root = DEFAULT_OUTPUT_ROOT
     active_run = st.session_state.get("active_run_dir")
     if active_run:
-        cols = st.columns([1, 5])
-        with cols[0]:
-            if st.button("Back to Runs"):
-                st.session_state.pop("active_run_dir", None)
-                st.rerun()
-        render_run_dashboard(Path(active_run))
+        active_run_path = Path(active_run)
+        render_selected_run_header(active_run_path)
+        render_run_dashboard(active_run_path, show_header=False)
         return
     tabs = st.tabs(["Runs", "New Run", "Strategy README"])
     with tabs[0]:
