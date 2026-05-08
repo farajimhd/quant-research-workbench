@@ -234,16 +234,16 @@ def install_css() -> None:
             padding-bottom: 0;
         }
         .st-key-overview_metrics [data-testid="stMetricLabel"] p {
-            font-size: 0.72rem;
+            font-size: 0.78rem;
             line-height: 1;
             margin-bottom: 0;
         }
         .st-key-overview_metrics [data-testid="stMetricValue"] {
-            font-size: 0.95rem;
-            line-height: 1.05;
+            font-size: 1.12rem;
+            line-height: 1;
         }
         .st-key-overview_metrics [data-testid="stMetricDelta"] {
-            font-size: 0.7rem;
+            font-size: 0.76rem;
             line-height: 1;
         }
         .qq-overview-divider {
