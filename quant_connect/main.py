@@ -1,9 +1,9 @@
 from AlgorithmImports import *
 
-from debug_tools import DebugManager
-from orb_core import OpeningRangeBreakoutCore
-from risk_tools import RiskManager
-from state import SymbolState
+from quant_connect.debug_tools import DebugManager
+from quant_connect.orb_core import OpeningRangeBreakoutCore
+from quant_connect.risk_tools import RiskManager
+from quant_connect.state import SymbolState
 
 
 # =============================================================================

@@ -1,6 +1,6 @@
 from AlgorithmImports import *
-from indicator_tools import FiveMinuteIndicatorMixin
-from order_tags import OrderTagMixin
+from quant_connect.indicator_tools import FiveMinuteIndicatorMixin
+from quant_connect.order_tags import OrderTagMixin
 
 
 class OpeningRangeBreakoutCore(FiveMinuteIndicatorMixin, OrderTagMixin):
