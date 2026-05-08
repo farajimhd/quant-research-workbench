@@ -31,6 +31,7 @@ class BacktestConfig:
     session_end_minute: int = 16 * 60
     slippage_bps: float = 2.0
     save_symbol_bars: bool = True
+    created_by_app: bool = False
     strategy_params: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -42,6 +43,7 @@ class BacktestConfig:
         data["output_root"] = Path(data.get("output_root", DEFAULT_OUTPUT_ROOT))
         data["strategy_params"] = dict(data.get("strategy_params", {}))
         data["run_name"] = str(data.get("run_name") or "Untitled run").strip()
+        data["created_by_app"] = bool(data.get("created_by_app", False))
         return cls(**data)
 
     def to_dict(self) -> dict[str, Any]:
@@ -58,6 +60,7 @@ class BacktestConfig:
             "session_end_minute": self.session_end_minute,
             "slippage_bps": self.slippage_bps,
             "save_symbol_bars": self.save_symbol_bars,
+            "created_by_app": self.created_by_app,
             "strategy_params": self.strategy_params,
         }
 

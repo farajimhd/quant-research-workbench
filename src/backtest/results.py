@@ -39,7 +39,7 @@ def base_metadata(config: BacktestConfig, run_dir: Path, status: str = "running"
         "run_name": config.run_name,
         "strategy_name": config.strategy_name,
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "created_by_app": True,
+        "created_by_app": config.created_by_app,
         "status": status,
         "run_dir": str(run_dir),
         "config": config.to_dict(),

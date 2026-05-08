@@ -106,73 +106,103 @@ def default_strategy_params() -> dict:
     return OrbMomentumConfig().to_dict()
 
 
+def minute_file_path(data_root: Path, session: date) -> Path:
+    return data_root / f"{session.year:04d}" / f"{session.month:02d}" / f"{session.isoformat()}.csv.gz"
+
+
+def available_sessions_for_form(data_root: Path, start: date, end: date) -> list[date]:
+    sessions = []
+    cursor = start
+    while cursor <= end:
+        if minute_file_path(data_root, cursor).exists():
+            sessions.append(cursor)
+        cursor = date.fromordinal(cursor.toordinal() + 1)
+    return sessions
+
+
 def build_run_config(strategy_name: str, output_root: Path) -> dict | None:
     defaults = default_strategy_params()
 
     with st.form("new_run_form"):
-        run_name = st.text_input("Run name", placeholder="May 2024 baseline ORB")
+        run_name = st.text_input("Run name", placeholder="May 2024 baseline ORB", key=f"{strategy_name}_run_name")
 
         dataset, portfolio, execution = st.columns(3)
         with dataset:
             st.markdown("**Dataset**")
-            start_date = st.date_input("Start date", value=date(2024, 5, 1))
-            end_date = st.date_input("End date", value=date(2024, 5, 31))
-            data_root = Path(st.text_input("Data root", value=str(DEFAULT_DATA_ROOT)))
-            market_utc_offset = st.number_input("Market UTC offset", value=-4.0, step=1.0)
+            start_date = st.date_input("Start date", value=date(2024, 5, 1), key=f"{strategy_name}_start_date")
+            end_date = st.date_input("End date", value=date(2024, 5, 31), key=f"{strategy_name}_end_date")
+            data_root = Path(st.text_input("Data root", value=str(DEFAULT_DATA_ROOT), key=f"{strategy_name}_data_root"))
+            market_utc_offset = st.number_input("Market UTC offset", value=-4.0, step=1.0, key=f"{strategy_name}_market_offset")
         with portfolio:
             st.markdown("**Portfolio**")
-            initial_cash = st.number_input("Initial cash", min_value=1000.0, value=10_000.0, step=1000.0)
-            max_active = st.number_input("Max active positions", value=int(defaults["max_active_positions"]), step=1)
-            cash_reserve = st.number_input("Cash reserve %", value=float(defaults["cash_reserve_pct"]) * 100, step=1.0)
-            save_symbol_bars = st.checkbox("Save symbol bars for chart inspector", value=True)
+            initial_cash = st.number_input(
+                "Initial cash", min_value=1000.0, value=10_000.0, step=1000.0, key=f"{strategy_name}_initial_cash"
+            )
+            max_active = st.number_input(
+                "Max active positions", value=int(defaults["max_active_positions"]), step=1, key=f"{strategy_name}_max_active"
+            )
+            cash_reserve = st.number_input(
+                "Cash reserve %", value=float(defaults["cash_reserve_pct"]) * 100, step=1.0, key=f"{strategy_name}_cash_reserve"
+            )
+            save_symbol_bars = st.checkbox("Save symbol bars for chart inspector", value=True, key=f"{strategy_name}_save_bars")
         with execution:
             st.markdown("**Fill Model**")
-            slippage_bps = st.number_input("Slippage bps", min_value=0.0, value=2.0, step=0.5)
-            output_root_value = Path(st.text_input("Output root", value=str(output_root)))
+            slippage_bps = st.number_input("Slippage bps", min_value=0.0, value=2.0, step=0.5, key=f"{strategy_name}_slippage")
+            output_root_value = Path(st.text_input("Output root", value=str(output_root), key=f"{strategy_name}_output_root"))
+
+        requested_days = max(0, (end_date - start_date).days + 1)
+        available_sessions = available_sessions_for_form(data_root, start_date, end_date) if end_date >= start_date else []
+        if available_sessions:
+            st.info(
+                f"Resolved sessions: {len(available_sessions)} file(s) inside {requested_days} requested calendar day(s). "
+                f"First: {available_sessions[0].isoformat()}, last: {available_sessions[-1].isoformat()}."
+            )
+        else:
+            st.warning("No available minute-bar files were found for the selected date range.")
 
         with st.expander("Scanner Parameters", expanded=True):
             scanner_cols = st.columns(4)
             with scanner_cols[0]:
-                min_price = st.number_input("Min price", value=float(defaults["min_price"]))
-                max_price = st.number_input("Max price", value=float(defaults["max_price"]))
+                min_price = st.number_input("Min price", value=float(defaults["min_price"]), key=f"{strategy_name}_min_price")
+                max_price = st.number_input("Max price", value=float(defaults["max_price"]), key=f"{strategy_name}_max_price")
             with scanner_cols[1]:
                 min_avg_daily_volume = st.number_input(
-                    "Min avg daily volume", value=float(defaults["min_avg_daily_volume"]), step=100_000.0
+                    "Min avg daily volume", value=float(defaults["min_avg_daily_volume"]), step=100_000.0, key=f"{strategy_name}_min_adv"
                 )
-                min_atr = st.number_input("Min ATR", value=float(defaults["min_atr"]), step=0.05)
+                min_atr = st.number_input("Min ATR", value=float(defaults["min_atr"]), step=0.05, key=f"{strategy_name}_min_atr")
             with scanner_cols[2]:
-                watchlist_size = st.number_input("Watchlist size", value=int(defaults["watchlist_size"]), step=10)
-                min_setup_score = st.number_input("Min setup score", value=float(defaults["min_setup_score"]))
+                watchlist_size = st.number_input("Watchlist size", value=int(defaults["watchlist_size"]), step=10, key=f"{strategy_name}_watchlist")
+                min_setup_score = st.number_input("Min setup score", value=float(defaults["min_setup_score"]), key=f"{strategy_name}_min_setup")
             with scanner_cols[3]:
-                min_gap_up_pct = st.number_input("Min gap", value=float(defaults["min_gap_up_pct"]), step=0.001)
+                min_gap_up_pct = st.number_input("Min gap", value=float(defaults["min_gap_up_pct"]), step=0.001, key=f"{strategy_name}_min_gap")
                 min_opening_relative_volume = st.number_input(
-                    "Min opening RV", value=float(defaults["min_opening_relative_volume"]), step=0.05
+                    "Min opening RV", value=float(defaults["min_opening_relative_volume"]), step=0.05, key=f"{strategy_name}_min_orv"
                 )
 
         with st.expander("Entry, Exit, and Risk Parameters"):
             cols = st.columns(4)
             with cols[0]:
-                min_live_score = st.number_input("Min live score", value=float(defaults["min_live_score"]))
+                min_live_score = st.number_input("Min live score", value=float(defaults["min_live_score"]), key=f"{strategy_name}_min_live")
                 entry_buffer_pct = st.number_input(
-                    "Entry buffer %", value=float(defaults["entry_buffer_pct"]) * 100, step=0.01
+                    "Entry buffer %", value=float(defaults["entry_buffer_pct"]) * 100, step=0.01, key=f"{strategy_name}_entry_buffer"
                 )
             with cols[1]:
                 stop_box_pullback_fraction = st.number_input(
-                    "Stop box pullback fraction", value=float(defaults["stop_box_pullback_fraction"]), step=0.05
+                    "Stop box pullback fraction", value=float(defaults["stop_box_pullback_fraction"]), step=0.05, key=f"{strategy_name}_stop_frac"
                 )
                 minimum_hold_minutes = st.number_input(
-                    "Minimum hold minutes", value=int(defaults["minimum_hold_minutes"]), step=1
+                    "Minimum hold minutes", value=int(defaults["minimum_hold_minutes"]), step=1, key=f"{strategy_name}_min_hold"
                 )
             with cols[2]:
                 tema_entry_atr_buffer = st.number_input(
-                    "TEMA entry ATR buffer", value=float(defaults["tema_entry_atr_buffer"]), step=0.001, format="%.4f"
+                    "TEMA entry ATR buffer", value=float(defaults["tema_entry_atr_buffer"]), step=0.001, format="%.4f", key=f"{strategy_name}_tema_entry"
                 )
                 tema_exit_atr_buffer = st.number_input(
-                    "TEMA exit ATR buffer", value=float(defaults["tema_exit_atr_buffer"]), step=0.001, format="%.4f"
+                    "TEMA exit ATR buffer", value=float(defaults["tema_exit_atr_buffer"]), step=0.001, format="%.4f", key=f"{strategy_name}_tema_exit"
                 )
             with cols[3]:
-                min_risk_pct = st.number_input("Min risk %", value=float(defaults["min_risk_pct"]) * 100, step=0.05)
-                max_risk_pct = st.number_input("Max risk %", value=float(defaults["max_risk_pct"]) * 100, step=0.05)
+                min_risk_pct = st.number_input("Min risk %", value=float(defaults["min_risk_pct"]) * 100, step=0.05, key=f"{strategy_name}_min_risk")
+                max_risk_pct = st.number_input("Max risk %", value=float(defaults["max_risk_pct"]) * 100, step=0.05, key=f"{strategy_name}_max_risk")
 
         submitted = st.form_submit_button("Start Run", type="primary")
         if not submitted:
@@ -187,6 +217,9 @@ def build_run_config(strategy_name: str, output_root: Path) -> dict | None:
     if not data_root.exists():
         st.error(f"Data root does not exist: {data_root}")
         return None
+    if not available_sessions:
+        st.error("No available session files found for that date range. The run was not started.")
+        return None
 
     return {
         "run_name": run_name.strip(),
@@ -199,6 +232,7 @@ def build_run_config(strategy_name: str, output_root: Path) -> dict | None:
         "market_utc_offset_hours": market_utc_offset,
         "slippage_bps": slippage_bps,
         "save_symbol_bars": save_symbol_bars,
+        "created_by_app": True,
         "strategy_params": {
             "min_price": min_price,
             "max_price": max_price,

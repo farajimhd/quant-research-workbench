@@ -59,6 +59,20 @@ class BacktestEngine:
 
         try:
             sessions = available_session_dates(self.config)
+            if not sessions:
+                raise ValueError(
+                    f"No minute-bar files found for requested range "
+                    f"{self.config.start_date.isoformat()}..{self.config.end_date.isoformat()}"
+                )
+            metadata.update(
+                {
+                    "requested_start_date": self.config.start_date.isoformat(),
+                    "requested_end_date": self.config.end_date.isoformat(),
+                    "scheduled_sessions": [session.isoformat() for session in sessions],
+                    "total_sessions": len(sessions),
+                }
+            )
+            write_run_metadata(run_dir, metadata)
             logging.info("Running %s sessions", len(sessions))
 
             for index, session_date in enumerate(sessions, start=1):
