@@ -191,13 +191,13 @@ def install_css() -> None:
             color: #4b5563;
             font-size: 0.86rem;
             line-height: 1.3;
-            margin: 0.05rem 0 0.45rem 0;
+            margin: 0.05rem 0 0.1rem 0;
         }
         .st-key-back_to_runs button {
             min-width: 2rem;
             height: 2rem;
             min-height: 2rem;
-            margin-top: 0.2rem;
+            margin-top: 0.65rem;
             padding: 0;
             border-radius: 999px;
             color: #6b7280;
@@ -207,6 +207,13 @@ def install_css() -> None:
             align-items: center;
             justify-content: center;
             line-height: 1;
+        }
+        .qq-period-label {
+            color: #4b5563;
+            font-size: 0.86rem;
+            font-weight: 600;
+            line-height: 2.35rem;
+            margin: 0;
         }
         .qq-page-description {
             color: #6b7280;
@@ -906,7 +913,11 @@ def render_run_dashboard(run_dir: Path, show_header: bool = True) -> None:
     if show_header:
         render_run_header(config, metadata.get("status", "unknown"), metadata.get("summary") or data["summary"])
     periods = period_options(data)
-    period = st.selectbox("Result Period", periods, key=f"period_{run_dir.name}")
+    period_cols = st.columns([0.7, 2.2, 9])
+    with period_cols[0]:
+        st.markdown('<div class="qq-period-label">Result Period</div>', unsafe_allow_html=True)
+    with period_cols[1]:
+        period = st.selectbox("Result Period", periods, key=f"period_{run_dir.name}", label_visibility="collapsed")
     tabs = st.tabs(["Overview", "Trades", "Orders", "Scanner", "Rejected", "Positions", "Chart Inspector", "Logs"])
     with tabs[0]:
         render_overview(data, period)
@@ -992,7 +1003,7 @@ def render_selected_run_header(run_dir: Path) -> None:
     status = metadata.get("status", "unknown")
     date_range = f"{config.get('start_date', '')} to {config.get('end_date', '')}"
 
-    title_cols = st.columns([0.25, 7])
+    title_cols = st.columns([0.35, 7])
     with title_cols[0]:
         if st.button("<", key="back_to_runs", help="Back to runs", type="tertiary"):
             st.session_state.pop("active_run_dir", None)
@@ -1000,7 +1011,7 @@ def render_selected_run_header(run_dir: Path) -> None:
     with title_cols[1]:
         st.title(run_name)
 
-    info_cols = st.columns([7, 1.4])
+    info_cols = st.columns([8, 1.6])
     with info_cols[0]:
         st.markdown(
             (
@@ -1013,7 +1024,7 @@ def render_selected_run_header(run_dir: Path) -> None:
         )
     with info_cols[1]:
         if run_details_dialog is not None:
-            if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary"):
+            if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary", width="stretch"):
                 run_details_dialog(str(run_dir))
         else:
             with st.expander("See more details"):
