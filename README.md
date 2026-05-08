@@ -260,6 +260,7 @@ The frontend now treats the sidebar as strategy navigation only. Each strategy o
 - new-run form grouped by dataset, portfolio, fill model, scanner, entry, exit, and risk parameters
 - a resolved session preview before launch so the selected start/end dates show exactly which local files will run
 - live daily progress while a run is executing
+- the same run-detail dashboard while a run is executing, refreshed from partial artifacts after each completed session
 - run detail pages with overview, daily results, trades, orders, scanner candidates, rejected signals, positions, chart inspector, config, and logs
 - a parameters dialog for viewing the saved config and launching a copied run with edits
 - cached Polars artifact loading so selected-day/range filtering and chart pulls avoid repeated disk reads

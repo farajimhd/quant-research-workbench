@@ -225,6 +225,54 @@ def render_run_header(config: dict, status: str = "Draft", summary: dict | None 
     )
 
 
+def planned_session_rows(config: dict, completed_rows: list[dict] | None = None) -> list[dict]:
+    completed_rows = completed_rows or []
+    completed_by_day = {row.get("session_date"): row for row in completed_rows}
+    sessions = available_sessions(
+        Path(config["data_root"]),
+        date.fromisoformat(config["start_date"]),
+        date.fromisoformat(config["end_date"]),
+    )
+    rows = []
+    for session in sessions:
+        session_key = session.isoformat()
+        completed = completed_by_day.get(session_key)
+        rows.append(
+            {
+                "session_date": session_key,
+                "status": "complete" if completed else "pending",
+                "pnl": completed.get("pnl") if completed else None,
+                "trades": completed.get("trade_count") if completed else None,
+                "candidates": completed.get("candidate_count") if completed else None,
+                "signals": completed.get("signal_count") if completed else None,
+            }
+        )
+    return rows
+
+
+def render_live_run_header(config: dict, completed_rows: list[dict], run_dir: str | None, status: str) -> None:
+    sessions = planned_session_rows(config, completed_rows)
+    completed = len(completed_rows)
+    total = max(1, len(sessions))
+    latest = completed_rows[-1] if completed_rows else {}
+    summary = {}
+    if run_dir:
+        metadata = read_run_metadata(Path(run_dir)) or {}
+        summary = metadata.get("summary", {})
+
+    st.markdown(f"### {config['run_name']}")
+    top = st.columns(5)
+    top[0].metric("Status", status)
+    top[1].metric("Sessions", f"{completed}/{total}")
+    top[2].metric("Latest Day", latest.get("session_date", "-"))
+    top[3].metric("Latest P/L", money(latest.get("pnl", 0.0)))
+    top[4].metric("Run Return", pct(summary.get("return_pct", 0.0)))
+    st.progress(min(1.0, completed / total))
+    st.dataframe(pl.DataFrame(sessions), width="stretch", hide_index=True)
+    if run_dir:
+        st.caption(f"Writing artifacts to {run_dir}")
+
+
 def run_label(run_dir: Path) -> str:
     metadata = read_run_metadata(run_dir) or {}
     summary = metadata.get("summary") or load_json(run_dir / "summary.json")
@@ -295,27 +343,27 @@ def selected_summary(data: dict, period: str) -> dict:
 def render_metrics(summary: dict) -> None:
     runtime = summary.get("runtimeStatistics", {})
     metrics = [
-        ("Final Equity", money(summary.get("final_equity")), float(summary.get("final_equity") or 0.0)),
-        ("Cash", money(runtime.get("Equity", summary.get("final_equity"))), float(runtime.get("Equity", summary.get("final_equity")) or 0.0)),
-        ("Net Profit", money(summary.get("total_pnl")), float(summary.get("total_pnl") or 0.0)),
-        ("Return", pct(summary.get("return_pct")), float(summary.get("return_pct") or 0.0)),
-        ("Realized P/L", money(summary.get("total_pnl")), float(summary.get("total_pnl") or 0.0)),
-        ("Unrealized P/L", money(runtime.get("Unrealized", 0.0)), float(runtime.get("Unrealized", 0.0) or 0.0)),
-        ("Max Drawdown", pct(summary.get("max_drawdown_pct")), float(summary.get("max_drawdown_pct") or 0.0), True),
-        ("Trades", str(summary.get("trade_count", 0)), float(summary.get("trade_count", 0) or 0.0)),
-        ("Win Rate", pct(summary.get("win_rate")), float(summary.get("win_rate") or 0.0)),
-        ("Profit Factor", num(summary.get("profit_factor")), float(summary.get("profit_factor") or 0.0)),
-        ("Sharpe", num(summary.get("sharpe_ratio")), float(summary.get("sharpe_ratio") or 0.0)),
-        ("Sortino", num(summary.get("sortino_ratio")), float(summary.get("sortino_ratio") or 0.0)),
-        ("Turnover", pct(summary.get("portfolio_turnover")), float(summary.get("portfolio_turnover") or 0.0)),
-        ("Volume", money(runtime.get("Volume", 0.0)), float(runtime.get("Volume", 0.0) or 0.0)),
+        ("Final Equity", money(summary.get("final_equity")), float(summary.get("total_pnl") or 0.0), False),
+        ("Cash", money(runtime.get("Equity", summary.get("final_equity"))), 0.0, False),
+        ("Net Profit", money(summary.get("total_pnl")), float(summary.get("total_pnl") or 0.0), False),
+        ("Return", pct(summary.get("return_pct")), float(summary.get("return_pct") or 0.0), False),
+        ("Realized P/L", money(summary.get("total_pnl")), float(summary.get("total_pnl") or 0.0), False),
+        ("Unrealized P/L", money(runtime.get("Unrealized", 0.0)), float(runtime.get("Unrealized", 0.0) or 0.0), False),
+        ("Max Drawdown", pct(summary.get("max_drawdown_pct")), -float(summary.get("max_drawdown_pct") or 0.0), True),
+        ("Trades", str(summary.get("trade_count", 0)), 0.0, False),
+        ("Win Rate", pct(summary.get("win_rate")), float(summary.get("win_rate") or 0.0), False),
+        ("Profit Factor", num(summary.get("profit_factor")), float(summary.get("profit_factor") or 0.0), False),
+        ("Sharpe", num(summary.get("sharpe_ratio")), float(summary.get("sharpe_ratio") or 0.0), False),
+        ("Sortino", num(summary.get("sortino_ratio")), float(summary.get("sortino_ratio") or 0.0), False),
+        ("Turnover", pct(summary.get("portfolio_turnover")), 0.0, False),
+        ("Volume", money(runtime.get("Volume", 0.0)), 0.0, False),
     ]
     cols = st.columns(4)
-    for idx, item in enumerate(metrics):
-        label, value, raw = item[:3]
-        inverse = bool(item[3]) if len(item) > 3 else False
+    for idx, (label, value, delta_raw, inverse) in enumerate(metrics):
         with cols[idx % 4]:
-            metric_card(label, value, raw, inverse)
+            delta = None if label in {"Cash", "Trades", "Turnover", "Volume"} else delta_raw
+            delta_color = "inverse" if inverse else "normal"
+            st.metric(label, value, delta=delta, delta_color=delta_color, help=METRIC_HELP.get(label))
 
 
 def render_stats_cards(title: str, stats: dict) -> None:
@@ -594,11 +642,12 @@ def render_chart_inspector(data: dict, period: str) -> None:
     candle_chart(bars, orders, indicators)
 
 
-def render_run_dashboard(run_dir: Path) -> None:
+def render_run_dashboard(run_dir: Path, show_header: bool = True) -> None:
     data = load_run_artifacts(str(run_dir), artifact_mtime(run_dir))
     metadata = data["metadata"]
     config = metadata.get("config", {})
-    render_run_header(config, metadata.get("status", "unknown"), metadata.get("summary") or data["summary"])
+    if show_header:
+        render_run_header(config, metadata.get("status", "unknown"), metadata.get("summary") or data["summary"])
     periods = period_options(data)
     period = st.selectbox("Result Period", periods, key=f"period_{run_dir.name}")
     tabs = st.tabs(["Overview", "Trades", "Orders", "Scanner", "Rejected", "Positions", "Chart Inspector", "Logs"])
@@ -673,27 +722,39 @@ else:
 
 
 def run_backtest_live(config: dict) -> str | None:
-    status = st.status(f"Running {config['run_name']}", expanded=True)
-    progress = st.progress(0)
     live_rows: list[dict] = []
-    expected = max(1, len(available_sessions(Path(config["data_root"]), date.fromisoformat(config["start_date"]), date.fromisoformat(config["end_date"]))))
-    placeholder = st.empty()
+    header_placeholder = st.empty()
+    dashboard_placeholder = st.empty()
+    error_placeholder = st.empty()
+
+    with header_placeholder.container():
+        render_live_run_header(config, live_rows, None, "Starting")
+    with dashboard_placeholder.container():
+        empty_tabs = st.tabs(["Overview", "Trades", "Orders", "Scanner", "Rejected", "Positions", "Chart Inspector", "Logs"])
+        with empty_tabs[0]:
+            st.info("The dashboard will populate after the first session completes.")
 
     def on_progress(session_date, daily_summary, run_dir):
         live_rows.append(daily_summary)
-        status.write(f"{session_date}: {money(daily_summary.get('pnl'))}")
-        progress.progress(min(1.0, len(live_rows) / expected))
-        placeholder.dataframe(pl.DataFrame(live_rows), width="stretch")
+        with header_placeholder.container():
+            render_live_run_header(config, live_rows, str(run_dir), "Running")
+        with dashboard_placeholder.container():
+            render_run_dashboard(Path(run_dir), show_header=False)
 
     try:
         result = run_backtest(config, progress_callback=on_progress)
-        status.update(label=f"Completed {config['run_name']}", state="complete", expanded=False)
+        with header_placeholder.container():
+            render_live_run_header(config, live_rows, result["run_dir"], "Complete")
+        with dashboard_placeholder.container():
+            render_run_dashboard(Path(result["run_dir"]), show_header=False)
         return result["run_dir"]
     except Exception as exc:
-        status.update(label=f"Run failed: {config['run_name']}", state="error", expanded=True)
-        st.error(str(exc))
-        with st.expander("Error details"):
-            st.code(traceback.format_exc())
+        with header_placeholder.container():
+            render_live_run_header(config, live_rows, None, "Error")
+        with error_placeholder.container():
+            st.error(str(exc))
+            with st.expander("Error details"):
+                st.code(traceback.format_exc())
         return None
 
 

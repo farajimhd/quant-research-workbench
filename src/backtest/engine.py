@@ -137,7 +137,9 @@ class BacktestEngine:
                         "latest_daily_summary": dict(self.daily_rows[-1]),
                     }
                 )
+                metadata["summary"] = self._summary(run_dir)
                 write_run_metadata(run_dir, metadata)
+                self._write_artifacts(run_dir, metadata["summary"])
 
                 if progress_callback:
                     progress_callback(session_date, dict(self.daily_rows[-1]), run_dir)
