@@ -1445,13 +1445,15 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     price_height = int((height - pane_gap) / (1 + oscillator_ratio)) if payload.get("oscillators") else height
     oscillator_height = int(price_height * oscillator_ratio) if payload.get("oscillators") else 0
     total_height = price_height + oscillator_height + pane_gap
+    bottom_padding = 10
+    outer_height = total_height + bottom_padding
     html = f"""
     <style>
     #{chart_id} {{
         background: #ffffff;
     }}
     </style>
-    <div id="{chart_id}" style="height:{total_height}px;width:100%;display:flex;flex-direction:column;gap:0;position:relative;">
+    <div id="{chart_id}" style="height:{outer_height}px;width:100%;display:flex;flex-direction:column;gap:0;position:relative;">
         <div id="{chart_id}-price" style="height:{price_height}px;width:100%;position:relative;"></div>
         <div id="{chart_id}-splitter" style="height:{pane_gap}px;width:100%;display:{'flex' if oscillator_height else 'none'};align-items:center;justify-content:center;cursor:row-resize;user-select:none;touch-action:none;">
             <div style="width:100%;height:0;border-top:1px dotted #9ca3af;"></div>
@@ -1479,6 +1481,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     const normalPriceHeight = {price_height};
     const normalOscillatorHeight = {oscillator_height};
     const paneGap = {pane_gap};
+    const chartBottomPadding = {bottom_padding};
     let paneRatio = {oscillator_ratio};
     const chartWidth = () => Math.max(260, container.clientWidth - indicatorLabelWidth);
     const exchangeTimeZone = "{CHART_EXCHANGE_TIME_ZONE}";
@@ -2231,7 +2234,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
 
     function resizeCharts() {{
         const heights = chartHeights();
-        container.style.height = `${{heights.total}}px`;
+        container.style.height = `${{heights.total + chartBottomPadding}}px`;
         priceContainer.style.height = `${{heights.price}}px`;
         if (oscillatorContainer) oscillatorContainer.style.height = `${{heights.oscillator}}px`;
         const width = chartWidth();
@@ -2279,7 +2282,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     resizeObserver.observe(container);
     </script>
     """
-    components.html(html, height=total_height + 4, scrolling=False)
+    components.html(html, height=outer_height + 4, scrolling=False)
 
 
 def candle_chart(
