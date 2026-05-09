@@ -48,12 +48,21 @@ CHART_REGULAR_START_MINUTE = 9 * 60 + 30
 CHART_REGULAR_END_MINUTE = 16 * 60
 CHART_EXTENDED_END_MINUTE = 20 * 60
 CHART_EXCHANGE_TIME_ZONE = "America/New_York"
+APP_TITLE = "Quant Research Workbench"
 
 STRATEGY_DESCRIPTIONS = {
     "orb_5m_momentum": (
         "Opening-range momentum strategy using a 09:30-09:35 setup ranking, "
         "minute-by-minute live ranking, and completed 5-minute MACD/TEMA confirmation."
     )
+}
+
+DISPLAY_TOKEN_OVERRIDES = {
+    "ibkr": "IBKR",
+    "macd": "MACD",
+    "orb": "ORB",
+    "qq": "QQ",
+    "vwap": "VWAP",
 }
 
 METRIC_HELP = {
@@ -421,6 +430,55 @@ def install_css() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def display_name(value: str) -> str:
+    tokens = re.split(r"[_\-\s]+", value.strip())
+    labels = []
+    for token in tokens:
+        if not token:
+            continue
+        lower = token.lower()
+        labels.append(DISPLAY_TOKEN_OVERRIDES.get(lower, token.upper() if re.fullmatch(r"\d+[a-zA-Z]+", token) else token.title()))
+    return " ".join(labels)
+
+
+def select_sidebar_page(page_key: str) -> None:
+    st.session_state["sidebar_page"] = page_key
+    if not page_key.startswith("strategy:"):
+        st.session_state.pop("active_run_dir", None)
+
+
+def render_sidebar() -> str:
+    strategies = available_strategies()
+    default_page = f"strategy:{strategies[0]}" if strategies else "market_data:build_data"
+    selected_page = st.session_state.setdefault("sidebar_page", default_page)
+
+    st.sidebar.title(APP_TITLE)
+    st.sidebar.markdown("**Strategies**")
+    for strategy_name in strategies:
+        page_key = f"strategy:{strategy_name}"
+        if st.sidebar.button(
+            display_name(strategy_name),
+            key=f"sidebar_{page_key}",
+            type="primary" if selected_page == page_key else "secondary",
+            width="stretch",
+        ):
+            select_sidebar_page(page_key)
+            st.rerun()
+
+    st.sidebar.markdown("**Market Data**")
+    build_data_key = "market_data:build_data"
+    if st.sidebar.button(
+        "Build Data",
+        key=f"sidebar_{build_data_key}",
+        type="primary" if selected_page == build_data_key else "secondary",
+        width="stretch",
+    ):
+        select_sidebar_page(build_data_key)
+        st.rerun()
+
+    return st.session_state["sidebar_page"]
 
 
 def load_json(path: Path) -> dict:
@@ -2897,7 +2955,7 @@ def delete_run_folder(run_dir: Path, output_root: Path) -> bool:
 
 
 def render_data_provider_page() -> None:
-    st.title("Data Provider")
+    st.title("Build Data")
     st.markdown(
         '<div class="qq-page-description">Build canonical market data once, then reuse it for backtests, charts, scanner research, and supervision.</div>',
         unsafe_allow_html=True,
@@ -3010,7 +3068,7 @@ def strategy_workspace(strategy_name: str) -> None:
         render_selected_run_header(active_run_path)
         render_run_dashboard(active_run_path, show_header=False, show_back_button=True)
         return
-    st.title(strategy_name)
+    st.title(display_name(strategy_name))
     description = STRATEGY_DESCRIPTIONS.get(strategy_name, "No description available.")
     st.markdown(f'<div class="qq-page-description">{description}</div>', unsafe_allow_html=True)
     tabs = st.tabs(["Runs", "New Run", "Strategy README"])
@@ -3023,16 +3081,16 @@ def strategy_workspace(strategy_name: str) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="QQ Momentum Backtests", layout="wide")
+    st.set_page_config(page_title=APP_TITLE, layout="wide")
     install_css()
-    st.sidebar.title("QQ Research")
-    workspace = st.sidebar.radio("Workspace", ["Strategies", "Data Provider"], label_visibility="collapsed")
-    if workspace == "Data Provider":
+    page_key = render_sidebar()
+    if page_key == "market_data:build_data":
         render_data_provider_page()
         return
-    st.sidebar.markdown("**Strategies**")
-    strategy_name = st.sidebar.radio("Select strategy", available_strategies(), label_visibility="collapsed")
-    strategy_workspace(strategy_name)
+    if page_key.startswith("strategy:"):
+        strategy_workspace(page_key.removeprefix("strategy:"))
+        return
+    st.error("Unknown sidebar page.")
 
 
 if __name__ == "__main__":
