@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 import traceback
@@ -357,6 +358,25 @@ def install_css() -> None:
         }
         div[class*="st-key-chart_toolbar_"] [data-testid="stHorizontalBlock"] {
             gap: 0.4rem;
+        }
+        div[class*="st-key-chart_toolbar_"] [data-testid="stButton"] {
+            display: flex;
+            justify-content: flex-end;
+        }
+        div[class*="st-key-chart_toolbar_"] [data-testid="stButton"] button {
+            min-width: 2rem;
+            height: 2rem;
+            min-height: 2rem;
+            padding: 0;
+            border: 0;
+            border-radius: 4px;
+            background: #ffffff;
+            color: #374151;
+            box-shadow: none;
+        }
+        div[class*="st-key-chart_toolbar_"] [data-testid="stButton"] button:hover {
+            background: #f3f4f6;
+            color: #111827;
         }
         div[class*="st-key-chart_toolbar_"] [data-testid="stSelectbox"],
         div[class*="st-key-chart_toolbar_"] [data-testid="stText"] {
@@ -883,6 +903,38 @@ def default_chart_indicator_settings() -> dict:
     }
 
 
+def chart_key_fragment(value: str) -> str:
+    fragment = re.sub(r"[^a-zA-Z0-9_]+", "_", str(value)).strip("_")
+    return fragment or "chart"
+
+
+def render_chart_fullscreen_css(component_key: str, active: bool) -> None:
+    if not active:
+        return
+    st.markdown(
+        f"""
+        <style>
+        .st-key-{component_key} {{
+            position: fixed !important;
+            inset: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            z-index: 1000000 !important;
+            border-radius: 0 !important;
+            border: 0 !important;
+            overflow: auto !important;
+            background: #ffffff !important;
+            padding: 0 !important;
+        }}
+        .st-key-{component_key} iframe {{
+            height: calc(100vh - 3.15rem) !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def chart_toolbar(
     *,
     tickers: list[str] | None,
@@ -890,10 +942,11 @@ def chart_toolbar(
     timeframe_key: str,
     indicator_key: str,
     timeframe_options: list[str] | None = None,
+    fullscreen_key: str | None = None,
 ) -> tuple[str | None, str, dict]:
     del indicator_key
     options = timeframe_options or ["1m", "5m"]
-    columns = st.columns([0.9, 1.15, 9.3], gap="small", vertical_alignment="center")
+    columns = st.columns([0.9, 1.15, 8.85, 0.45], gap="small", vertical_alignment="center")
     ticker = selected_ticker
     with columns[0]:
         if tickers:
@@ -902,6 +955,13 @@ def chart_toolbar(
             st.text(selected_ticker or "")
     with columns[1]:
         timeframe = st.segmented_control("Timeframe", options, default=options[0], key=timeframe_key, label_visibility="collapsed")
+    with columns[3]:
+        if fullscreen_key:
+            st.session_state.setdefault(fullscreen_key, False)
+            icon = "⛶" if not st.session_state[fullscreen_key] else "×"
+            if st.button(icon, key=f"{fullscreen_key}_button", help="Toggle fullscreen"):
+                st.session_state[fullscreen_key] = not st.session_state[fullscreen_key]
+                st.rerun()
     return ticker, timeframe, default_chart_indicator_settings()
 
 
@@ -1645,7 +1705,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     components.html(html, height=total_height + 12, scrolling=False)
 
 
-def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict]) -> None:
+def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict], height: int = 720) -> None:
     if bars.is_empty():
         st.info("No chart data available.")
         return
@@ -1655,7 +1715,7 @@ def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str,
         st.info("Selected chart data is missing OHLC columns.")
         return
     payload = tradingview_chart_payload(bars, orders, indicators)
-    render_lightweight_candle_chart(payload)
+    render_lightweight_candle_chart(payload, height=height)
 
 
 def bars_for(data: dict, period: str, ticker: str, timeframe: str) -> pl.DataFrame:
@@ -1690,21 +1750,26 @@ def render_trades(data: dict, period: str) -> None:
             st.caption(f"{trade.get('entry_time')} -> {trade.get('exit_time')} | {pct(trade.get('return_pct'))}")
     trade = rows[min(st.session_state[selected_key], len(rows) - 1)]
     with right:
-        chart_key = str(period).replace(" ", "_").replace("-", "_")
-        with st.container(key=f"chart_component_trades_{chart_key}"):
+        chart_key = chart_key_fragment(period)
+        component_key = f"chart_component_trades_{chart_key}"
+        fullscreen_key = f"fullscreen_{component_key}"
+        fullscreen_active = bool(st.session_state.get(fullscreen_key, False))
+        render_chart_fullscreen_css(component_key, fullscreen_active)
+        with st.container(key=component_key):
             with st.container(key=f"chart_toolbar_trades_{chart_key}"):
                 _, timeframe, indicators = chart_toolbar(
                     tickers=None,
                     selected_ticker=str(trade.get("symbol", "")),
                     timeframe_key=f"trade_tf_{period}",
                     indicator_key=f"trade_ind_{period}",
+                    fullscreen_key=fullscreen_key,
                 )
             trade_day = str(trade.get("entry_time", ""))[:10] if period == "Whole Run" else period
             bars = bars_for(data, trade_day, trade["symbol"], timeframe)
             orders = filter_df(data["orders"], trade_day)
             if "symbol" in orders.columns:
                 orders = orders.filter(pl.col("symbol") == trade["symbol"])
-            candle_chart(bars, orders, indicators)
+            candle_chart(bars, orders, indicators, height=920 if fullscreen_active else 720)
 
 
 def render_orders(data: dict, period: str) -> None:
@@ -1771,20 +1836,25 @@ def render_chart_inspector(data: dict, period: str) -> None:
         st.info("This run did not save chart bars.")
         return
     tickers = bars_1m.select("ticker").unique().sort("ticker")["ticker"].to_list()
-    chart_key = str(period).replace(" ", "_").replace("-", "_")
-    with st.container(key=f"chart_component_inspector_{chart_key}"):
+    chart_key = chart_key_fragment(period)
+    component_key = f"chart_component_inspector_{chart_key}"
+    fullscreen_key = f"fullscreen_{component_key}"
+    fullscreen_active = bool(st.session_state.get(fullscreen_key, False))
+    render_chart_fullscreen_css(component_key, fullscreen_active)
+    with st.container(key=component_key):
         with st.container(key=f"chart_toolbar_inspector_{chart_key}"):
             ticker, timeframe, indicators = chart_toolbar(
                 tickers=tickers,
                 selected_ticker=tickers[0] if tickers else None,
                 timeframe_key=f"inspect_tf_{period}",
                 indicator_key=f"inspect_ind_{period}",
+                fullscreen_key=fullscreen_key,
             )
         bars = bars_for(data, period, ticker, timeframe)
         orders = filter_df(data["orders"], period)
         if "symbol" in orders.columns:
             orders = orders.filter(pl.col("symbol") == ticker)
-        candle_chart(bars, orders, indicators)
+        candle_chart(bars, orders, indicators, height=920 if fullscreen_active else 720)
 
 
 def render_run_dashboard(run_dir: Path, show_header: bool = True, show_back_button: bool = False) -> None:
