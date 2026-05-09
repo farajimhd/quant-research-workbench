@@ -288,7 +288,15 @@ def install_css() -> None:
             --qq-success-border: #ABEFC6;
             --qq-danger: #B42318;
             --qq-danger-bg: #FEF3F2;
+            --qq-danger-border: #FECDCA;
+            --qq-warning: #B54708;
+            --qq-warning-bg: #FFFAEB;
+            --qq-warning-border: #FEDF89;
+            --qq-info: #175CD3;
+            --qq-info-bg: #EFF8FF;
+            --qq-info-border: #B2DDFF;
             --qq-neutral-bg: #F9FAFB;
+            --qq-neutral-border: #E5E7EB;
             --qq-radius: 3px;
         }
         html, body, body *, .stApp, button, input, textarea, select {
@@ -1102,13 +1110,65 @@ def install_css() -> None:
             text-align: right;
         }
         .qq-card-status {
-            border: 1px solid var(--qq-border);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.26rem;
+            border: 1px solid var(--qq-neutral-border);
             border-radius: var(--qq-radius);
             padding: 0.1rem 0.45rem;
             font-size: 0.72rem;
             color: var(--qq-muted-strong);
-            background: var(--qq-surface);
+            background: var(--qq-neutral-bg);
             white-space: nowrap;
+            font-weight: 650;
+        }
+        .qq-status-icon {
+            font-size: 0.72rem;
+            line-height: 1;
+        }
+        .qq-status-good {
+            color: var(--qq-success);
+            border-color: var(--qq-success-border);
+            background: var(--qq-success-bg);
+        }
+        .qq-status-bad {
+            color: var(--qq-danger);
+            border-color: var(--qq-danger-border);
+            background: var(--qq-danger-bg);
+        }
+        .qq-status-running {
+            color: var(--qq-info);
+            border-color: var(--qq-info-border);
+            background: var(--qq-info-bg);
+        }
+        .qq-status-warning {
+            color: var(--qq-warning);
+            border-color: var(--qq-warning-border);
+            background: var(--qq-warning-bg);
+        }
+        .qq-status-neutral {
+            color: var(--qq-muted-strong);
+            border-color: var(--qq-neutral-border);
+            background: var(--qq-neutral-bg);
+        }
+        .qq-status-metric {
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            min-height: 4.15rem;
+            padding-top: 0.2rem;
+        }
+        .qq-status-metric-label {
+            color: var(--qq-muted);
+            font-size: 0.86rem;
+            line-height: 1.2;
+            margin-bottom: 0.32rem;
+        }
+        .qq-status-metric .qq-card-status {
+            width: fit-content;
+            font-size: 1.12rem;
+            padding: 0.18rem 0.58rem;
         }
         .qq-file-progress {
             height: 0.42rem;
@@ -3818,15 +3878,54 @@ def render_build_metrics(metrics: dict[str, str]) -> None:
         items = list(metrics.items())
         columns = st.columns(len(items), gap="small", border=False)
         for column, (label, value) in zip(columns, items):
-            column.metric(label, value, border=False)
+            if label == "Status":
+                column.markdown(
+                    f"""
+                    <div class="qq-status-metric">
+                        <div class="qq-status-metric-label">Status</div>
+                        {status_badge_html(value)}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                column.metric(label, value, border=False)
 
 
 def status_class(status: str) -> str:
-    if status in {"complete", "ready"}:
-        return "qq-good"
-    if status in {"missing", "missing_raw", "failed"}:
-        return "qq-bad"
-    return "qq-neutral"
+    normalized = str(status or "").lower()
+    if normalized in {"complete", "ready", "success", "done"}:
+        return "qq-status-good"
+    if normalized in {"missing", "missing_raw", "failed", "error"}:
+        return "qq-status-bad"
+    if normalized in {"running", "building", "processing", "in_progress"}:
+        return "qq-status-running"
+    if normalized in {"skipped", "partial", "warning"}:
+        return "qq-status-warning"
+    return "qq-status-neutral"
+
+
+def status_icon(status: str) -> str:
+    normalized = str(status or "").lower()
+    if normalized in {"complete", "ready", "success", "done"}:
+        return "&#10003;"
+    if normalized in {"missing", "missing_raw", "failed", "error"}:
+        return "!"
+    if normalized in {"running", "building", "processing", "in_progress"}:
+        return "&#8230;"
+    if normalized in {"skipped", "partial", "warning"}:
+        return "!"
+    return "&#8212;"
+
+
+def status_badge_html(status: str) -> str:
+    status_text = str(status or "unknown").replace("_", " ")
+    return (
+        f'<span class="qq-card-status {status_class(status)}">'
+        f'<span class="qq-status-icon">{status_icon(status)}</span>'
+        f"<span>{escape(status_text)}</span>"
+        "</span>"
+    )
 
 
 def session_timeframes_for_build() -> list[str]:
@@ -3859,7 +3958,6 @@ def file_card_html(row: dict) -> str:
     progress_pct = min(100.0, max(0.0, (completed_units / total_units) * 100.0))
     duration = format_duration(row.get("duration_sec", 0))
     progress_meta = f"{completed_units}/{total_units}, {duration}"
-    status_text = status.replace("_", " ")
     phase_summary = build_phase_summary([row], row.get("events", []), include_global=False, css_class="qq-card-phase-summary")
     return (
         '<div class="qq-file-card">'
@@ -3870,7 +3968,7 @@ def file_card_html(row: dict) -> str:
         "</div>"
         "<div>"
         f'<div class="qq-card-progress-value">{progress_pct:.0f}%</div>'
-        f'<span class="qq-card-status {status_class(status)}">{escape(status_text)}</span>'
+        f"{status_badge_html(status)}"
         "</div>"
         "</div>"
         '<div class="qq-file-progress-line">'
