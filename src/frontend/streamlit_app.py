@@ -66,22 +66,42 @@ OSCILLATOR_CHART_INDICATORS = ["macd_line", "macd_signal", "macd_hist"]
 CHART_INDICATORS = PRICE_CHART_INDICATORS + OSCILLATOR_CHART_INDICATORS
 
 DEFAULT_INDICATOR_COLORS = {
-    "vwap": "#0891b2",
-    "tema9": "#2563eb",
-    "tema20": "#db2777",
-    "macd_line": "#16a34a",
-    "macd_signal": "#f59e0b",
+    "vwap": "#451F7F",
+    "tema9": "#2563EB",
+    "tema20": "#E10E0E",
+    "macd_line": "#1C19D7",
+    "macd_signal": "#F5680A",
     "macd_hist": "#33E42A",
 }
 
 DEFAULT_INDICATOR_WIDTHS = {
-    "vwap": 1,
+    "vwap": 3,
     "tema9": 1,
     "tema20": 1,
     "macd_line": 1,
     "macd_signal": 1,
     "macd_hist": 2,
 }
+
+DEFAULT_INDICATOR_OPACITIES = {
+    "vwap": 0.3,
+    "tema9": 0.5,
+    "tema20": 0.5,
+    "macd_line": 1.0,
+    "macd_signal": 1.0,
+    "macd_hist": 1.0,
+}
+
+INDICATOR_DISPLAY_NAMES = {
+    "vwap": "VWAP",
+    "tema9": "TEMA9",
+    "tema20": "TEMA20",
+    "macd_line": "MACD LINE",
+    "macd_signal": "MACD SIGNAL",
+    "macd_hist": "MACD HIST",
+}
+
+LEGEND_INDICATORS = {"vwap", "tema9", "tema20", "macd_line", "macd_signal"}
 
 DEFAULT_CANDLE_CHART_SETTINGS = {
     "upColor": "#33E42A",
@@ -341,6 +361,9 @@ def install_css() -> None:
         div[class*="st-key-chart_toolbar_"] [data-testid="stSelectbox"],
         div[class*="st-key-chart_toolbar_"] [data-testid="stText"] {
             margin-bottom: 0 !important;
+        }
+        div[class*="st-key-chart_toolbar_"] [data-baseweb="select"] > div {
+            background-color: #ffffff !important;
         }
         </style>
         """,
@@ -853,7 +876,7 @@ def default_chart_indicator_settings() -> dict:
     return {
         indicator: {
             "color": DEFAULT_INDICATOR_COLORS.get(indicator, "#2563eb"),
-            "opacity": 0.72,
+            "opacity": DEFAULT_INDICATOR_OPACITIES.get(indicator, 0.72),
             "lineWidth": DEFAULT_INDICATOR_WIDTHS.get(indicator, 1),
         }
         for indicator in CHART_INDICATORS
@@ -866,9 +889,11 @@ def chart_toolbar(
     selected_ticker: str | None,
     timeframe_key: str,
     indicator_key: str,
+    timeframe_options: list[str] | None = None,
 ) -> tuple[str | None, str, dict]:
     del indicator_key
-    columns = st.columns([1.8, 1.15, 8.4], gap="small", vertical_alignment="center")
+    options = timeframe_options or ["1m", "5m"]
+    columns = st.columns([0.9, 1.15, 9.3], gap="small", vertical_alignment="center")
     ticker = selected_ticker
     with columns[0]:
         if tickers:
@@ -876,7 +901,7 @@ def chart_toolbar(
         else:
             st.text(selected_ticker or "")
     with columns[1]:
-        timeframe = st.segmented_control("Timeframe", ["1m", "5m"], default="1m", key=timeframe_key, label_visibility="collapsed")
+        timeframe = st.segmented_control("Timeframe", options, default=options[0], key=timeframe_key, label_visibility="collapsed")
     return ticker, timeframe, default_chart_indicator_settings()
 
 
@@ -942,6 +967,8 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
                     "opacity": opacity,
                     "lineWidth": line_width,
                     "style": "histogram" if column == "macd_hist" else "line",
+                    "showInLegend": column in LEGEND_INDICATORS,
+                    "label": INDICATOR_DISPLAY_NAMES.get(column, column.upper()),
                     "data": points,
                 }
             )
@@ -1231,6 +1258,18 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         return '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7"></path><path d="M4 10V3"></path><path d="M12 21v-9"></path><path d="M12 8V3"></path><path d="M20 21v-5"></path><path d="M20 12V3"></path><path d="M2 14h4"></path><path d="M10 8h4"></path><path d="M18 16h4"></path></svg>';
     }}
 
+    const openLegendPanels = new Set();
+    function closeLegendPanels(exceptPanel = null) {{
+        openLegendPanels.forEach(panel => {{
+            if (panel !== exceptPanel) {{
+                panel.style.display = "none";
+                if (panel._legendActions) panel._legendActions.style.display = "none";
+            }}
+        }});
+    }}
+    document.addEventListener("click", () => closeLegendPanels());
+    window.addEventListener("blur", () => closeLegendPanels());
+
     function addLegendItem(indicator, host, series) {{
         const item = document.createElement("span");
         item.style.display = "inline-flex";
@@ -1249,7 +1288,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         swatch.style.borderRadius = "999px";
         swatch.style.background = indicator.color;
         const label = document.createElement("span");
-        label.textContent = indicator.name;
+        label.textContent = indicator.label || String(indicator.name || "").toUpperCase();
         indicator.currentData = indicator.data || [];
         const actions = document.createElement("span");
         actions.style.display = "none";
@@ -1289,6 +1328,8 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         panel.style.color = "#111827";
         panel.style.font = "11px system-ui";
         panel.style.minWidth = "210px";
+        panel.addEventListener("click", event => event.stopPropagation());
+        panel._legendActions = actions;
         const colorInput = document.createElement("input");
         colorInput.type = "color";
         colorInput.value = indicator.legendColor || "#2563eb";
@@ -1319,7 +1360,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         const widthValue = document.createElement("span");
         widthValue.style.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
         widthValue.textContent = widthInput.value;
-        panel.innerHTML = '<div style="font-weight:700;margin-bottom:4px;">' + indicator.name + '</div>';
+        panel.innerHTML = '<div style="font-weight:700;margin-bottom:4px;">' + (indicator.label || String(indicator.name || "").toUpperCase()) + '</div>';
         [["Color", colorInput], ["Hex", hexInput], ["Opacity", opacityInput, opacityValue], ["Width", widthInput, widthValue]].forEach(([caption, input, value]) => {{
             const row = document.createElement("label");
             row.style.display = "grid";
@@ -1367,10 +1408,14 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         }}
         item.addEventListener("mouseenter", () => {{ actions.style.display = "inline-flex"; }});
         item.addEventListener("mouseleave", () => {{ if (panel.style.display === "none") actions.style.display = "none"; }});
+        item.addEventListener("click", event => event.stopPropagation());
         settings.addEventListener("click", event => {{
             event.stopPropagation();
-            panel.style.display = panel.style.display === "none" ? "block" : "none";
+            const shouldOpen = panel.style.display === "none";
+            closeLegendPanels(shouldOpen ? panel : null);
+            panel.style.display = shouldOpen ? "block" : "none";
             actions.style.display = "inline-flex";
+            if (shouldOpen) openLegendPanels.add(panel);
         }});
         eye.addEventListener("click", event => {{
             event.stopPropagation();
@@ -1489,7 +1534,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             dataByTime: mapByTime(indicator.data)
         }});
         priceLabelSeries.push(seriesLabelColors.get(line));
-        addLegendItem(indicator, priceLegend.items, line);
+        if (indicator.showInLegend !== false) addLegendItem(indicator, priceLegend.items, line);
     }});
 
     let firstOscillatorSeries = null;
@@ -1525,7 +1570,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             (indicator.data || []).forEach(point => {{
                 if (!oscillatorValueByTime.has(point.time)) oscillatorValueByTime.set(point.time, point.value);
             }});
-            if (oscillatorLegend) addLegendItem(indicator, oscillatorLegend.items, series);
+            if (oscillatorLegend && indicator.showInLegend !== false) addLegendItem(indicator, oscillatorLegend.items, series);
         }});
     }}
 
