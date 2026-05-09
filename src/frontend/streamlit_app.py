@@ -447,11 +447,14 @@ def install_css() -> None:
         }
         [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button {
             align-items: center;
-            background: #ffffff !important;
-            border: 1px solid #e5e7eb;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.68) !important;
+            border: 1px solid rgba(229, 231, 235, 0.82);
             border-radius: 999px;
             box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
             display: inline-flex;
+            gap: 0 !important;
             height: 2.1rem;
             justify-content: center !important;
             min-height: 2.1rem;
@@ -459,9 +462,9 @@ def install_css() -> None:
             width: 2.1rem !important;
         }
         [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button:hover {
-            background: #ffffff !important;
+            background: rgba(255, 255, 255, 0.82) !important;
             color: #111827 !important;
-            border: 1px solid #d1d5db;
+            border: 1px solid rgba(209, 213, 219, 0.9);
         }
         [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button p {
             font-size: 0;
@@ -474,6 +477,7 @@ def install_css() -> None:
             width: 1.1rem;
             height: 1.1rem;
             flex-basis: 1.1rem;
+            margin: 0 !important;
             mask-size: 1.1rem 1.1rem;
             -webkit-mask-size: 1.1rem 1.1rem;
         }
