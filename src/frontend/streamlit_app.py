@@ -83,6 +83,21 @@ DEFAULT_INDICATOR_WIDTHS = {
     "macd_hist": 2,
 }
 
+DEFAULT_CANDLE_CHART_SETTINGS = {
+    "upColor": "#059669",
+    "downColor": "#dc2626",
+    "borderUpColor": "#047857",
+    "borderDownColor": "#b91c1c",
+    "wickUpColor": "#065f46",
+    "wickDownColor": "#991b1b",
+    "borderVisible": True,
+    "wickVisible": True,
+    "priceLineVisible": True,
+    "barSpacing": 18,
+    "minBarSpacing": 7,
+    "rightOffset": 2,
+}
+
 TRADE_STAT_GROUPS = {
     "Trade Count": [
         ("totalNumberOfTrades", "Total Trades"),
@@ -823,15 +838,65 @@ def default_chart_indicator_settings() -> dict:
     }
 
 
+def candle_settings_from_state(key_prefix: str) -> dict:
+    st.session_state.setdefault(f"{key_prefix}_up_color", DEFAULT_CANDLE_CHART_SETTINGS["upColor"])
+    st.session_state.setdefault(f"{key_prefix}_down_color", DEFAULT_CANDLE_CHART_SETTINGS["downColor"])
+    st.session_state.setdefault(f"{key_prefix}_border_up_color", DEFAULT_CANDLE_CHART_SETTINGS["borderUpColor"])
+    st.session_state.setdefault(f"{key_prefix}_border_down_color", DEFAULT_CANDLE_CHART_SETTINGS["borderDownColor"])
+    st.session_state.setdefault(f"{key_prefix}_wick_up_color", DEFAULT_CANDLE_CHART_SETTINGS["wickUpColor"])
+    st.session_state.setdefault(f"{key_prefix}_wick_down_color", DEFAULT_CANDLE_CHART_SETTINGS["wickDownColor"])
+    st.session_state.setdefault(f"{key_prefix}_border_visible", DEFAULT_CANDLE_CHART_SETTINGS["borderVisible"])
+    st.session_state.setdefault(f"{key_prefix}_wick_visible", DEFAULT_CANDLE_CHART_SETTINGS["wickVisible"])
+    st.session_state.setdefault(f"{key_prefix}_price_line_visible", DEFAULT_CANDLE_CHART_SETTINGS["priceLineVisible"])
+    st.session_state.setdefault(f"{key_prefix}_bar_spacing", DEFAULT_CANDLE_CHART_SETTINGS["barSpacing"])
+    st.session_state.setdefault(f"{key_prefix}_min_bar_spacing", DEFAULT_CANDLE_CHART_SETTINGS["minBarSpacing"])
+    st.session_state.setdefault(f"{key_prefix}_right_offset", DEFAULT_CANDLE_CHART_SETTINGS["rightOffset"])
+    return {
+        "upColor": st.session_state[f"{key_prefix}_up_color"],
+        "downColor": st.session_state[f"{key_prefix}_down_color"],
+        "borderUpColor": st.session_state[f"{key_prefix}_border_up_color"],
+        "borderDownColor": st.session_state[f"{key_prefix}_border_down_color"],
+        "wickUpColor": st.session_state[f"{key_prefix}_wick_up_color"],
+        "wickDownColor": st.session_state[f"{key_prefix}_wick_down_color"],
+        "borderVisible": bool(st.session_state[f"{key_prefix}_border_visible"]),
+        "wickVisible": bool(st.session_state[f"{key_prefix}_wick_visible"]),
+        "priceLineVisible": bool(st.session_state[f"{key_prefix}_price_line_visible"]),
+        "barSpacing": int(st.session_state[f"{key_prefix}_bar_spacing"]),
+        "minBarSpacing": int(st.session_state[f"{key_prefix}_min_bar_spacing"]),
+        "rightOffset": int(st.session_state[f"{key_prefix}_right_offset"]),
+    }
+
+
+def render_candle_settings(key_prefix: str) -> dict:
+    candle_settings_from_state(key_prefix)
+    colors = st.columns(2, gap="small")
+    with colors[0]:
+        st.color_picker("Up", key=f"{key_prefix}_up_color")
+        st.color_picker("Border up", key=f"{key_prefix}_border_up_color")
+        st.color_picker("Wick up", key=f"{key_prefix}_wick_up_color")
+    with colors[1]:
+        st.color_picker("Down", key=f"{key_prefix}_down_color")
+        st.color_picker("Border down", key=f"{key_prefix}_border_down_color")
+        st.color_picker("Wick down", key=f"{key_prefix}_wick_down_color")
+    toggles = st.columns(3, gap="small")
+    toggles[0].checkbox("Border", key=f"{key_prefix}_border_visible")
+    toggles[1].checkbox("Wick", key=f"{key_prefix}_wick_visible")
+    toggles[2].checkbox("Price line", key=f"{key_prefix}_price_line_visible")
+    spacing = st.columns(3, gap="small")
+    spacing[0].slider("Bar spacing", 5, 40, key=f"{key_prefix}_bar_spacing")
+    spacing[1].slider("Min spacing", 2, 20, key=f"{key_prefix}_min_bar_spacing")
+    spacing[2].slider("Right offset", 0, 20, key=f"{key_prefix}_right_offset")
+    return candle_settings_from_state(key_prefix)
+
+
 def chart_toolbar(
     *,
     tickers: list[str] | None,
     selected_ticker: str | None,
     timeframe_key: str,
     indicator_key: str,
-) -> tuple[str | None, str, dict]:
-    del indicator_key
-    columns = st.columns([1.8, 1.15, 8.4], gap="small", vertical_alignment="center")
+) -> tuple[str | None, str, dict, dict]:
+    columns = st.columns([1.8, 1.15, 1.0, 7.4], gap="small", vertical_alignment="center")
     ticker = selected_ticker
     with columns[0]:
         if tickers:
@@ -840,7 +905,10 @@ def chart_toolbar(
             st.text(selected_ticker or "")
     with columns[1]:
         timeframe = st.segmented_control("Timeframe", ["1m", "5m"], default="1m", key=timeframe_key, label_visibility="collapsed")
-    return ticker, timeframe, default_chart_indicator_settings()
+    with columns[2]:
+        with st.popover("Candles", width="content"):
+            candle_settings = render_candle_settings(f"{indicator_key}_candles")
+    return ticker, timeframe, default_chart_indicator_settings(), candle_settings
 
 
 def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict]) -> dict:
@@ -936,9 +1004,10 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
     }
 
 
-def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
+def render_lightweight_candle_chart(payload: dict, candle_settings: dict | None = None, height: int = 720) -> None:
     chart_id = f"tv-chart-{abs(hash(json.dumps(payload, sort_keys=True))) % 10_000_000}"
     payload_json = json.dumps(payload)
+    candle_settings_json = json.dumps({**DEFAULT_CANDLE_CHART_SETTINGS, **(candle_settings or {})})
     pane_gap = 10 if payload.get("oscillators") else 0
     oscillator_ratio = 0.375
     price_height = int((height - pane_gap) / (1 + oscillator_ratio)) if payload.get("oscillators") else height
@@ -952,6 +1021,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
     <script>
     const payload = {payload_json};
+    const candleSettings = {candle_settings_json};
     const container = document.getElementById("{chart_id}");
     const priceContainer = document.getElementById("{chart_id}-price");
     const oscillatorContainer = document.getElementById("{chart_id}-osc");
@@ -995,9 +1065,9 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             borderColor: "#d1d5db",
             timeVisible: true,
             secondsVisible: true,
-            rightOffset: 2,
-            barSpacing: 18,
-            minBarSpacing: 7
+            rightOffset: candleSettings.rightOffset,
+            barSpacing: candleSettings.barSpacing,
+            minBarSpacing: candleSettings.minBarSpacing
         }},
         handleScroll: {{
             mouseWheel: true,
@@ -1037,15 +1107,15 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     }}) : null;
 
     const candleSeries = chart.addCandlestickSeries({{
-        upColor: "#059669",
-        downColor: "#dc2626",
-        borderUpColor: "#047857",
-        borderDownColor: "#b91c1c",
-        wickUpColor: "#065f46",
-        wickDownColor: "#991b1b",
-        borderVisible: true,
-        wickVisible: true,
-        priceLineVisible: true
+        upColor: candleSettings.upColor,
+        downColor: candleSettings.downColor,
+        borderUpColor: candleSettings.borderUpColor,
+        borderDownColor: candleSettings.borderDownColor,
+        wickUpColor: candleSettings.wickUpColor,
+        wickDownColor: candleSettings.wickDownColor,
+        borderVisible: candleSettings.borderVisible,
+        wickVisible: candleSettings.wickVisible,
+        priceLineVisible: candleSettings.priceLineVisible
     }});
     candleSeries.setData(payload.candles || []);
     if (payload.markers && payload.markers.length) {{
@@ -1361,7 +1431,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     components.html(html, height=total_height + 12, scrolling=False)
 
 
-def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict]) -> None:
+def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict], candle_settings: dict | None = None) -> None:
     if bars.is_empty():
         st.info("No chart data available.")
         return
@@ -1371,7 +1441,7 @@ def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str,
         st.info("Selected chart data is missing OHLC columns.")
         return
     payload = tradingview_chart_payload(bars, orders, indicators)
-    render_lightweight_candle_chart(payload)
+    render_lightweight_candle_chart(payload, candle_settings)
 
 
 def bars_for(data: dict, period: str, ticker: str, timeframe: str) -> pl.DataFrame:
@@ -1406,7 +1476,7 @@ def render_trades(data: dict, period: str) -> None:
             st.caption(f"{trade.get('entry_time')} -> {trade.get('exit_time')} | {pct(trade.get('return_pct'))}")
     trade = rows[min(st.session_state[selected_key], len(rows) - 1)]
     with right:
-        _, timeframe, indicators = chart_toolbar(
+        _, timeframe, indicators, candle_settings = chart_toolbar(
             tickers=None,
             selected_ticker=str(trade.get("symbol", "")),
             timeframe_key=f"trade_tf_{period}",
@@ -1417,7 +1487,7 @@ def render_trades(data: dict, period: str) -> None:
         orders = filter_df(data["orders"], trade_day)
         if "symbol" in orders.columns:
             orders = orders.filter(pl.col("symbol") == trade["symbol"])
-        candle_chart(bars, orders, indicators)
+        candle_chart(bars, orders, indicators, candle_settings)
 
 
 def render_orders(data: dict, period: str) -> None:
@@ -1484,7 +1554,7 @@ def render_chart_inspector(data: dict, period: str) -> None:
         st.info("This run did not save chart bars.")
         return
     tickers = bars_1m.select("ticker").unique().sort("ticker")["ticker"].to_list()
-    ticker, timeframe, indicators = chart_toolbar(
+    ticker, timeframe, indicators, candle_settings = chart_toolbar(
         tickers=tickers,
         selected_ticker=tickers[0] if tickers else None,
         timeframe_key=f"inspect_tf_{period}",
@@ -1494,7 +1564,7 @@ def render_chart_inspector(data: dict, period: str) -> None:
     orders = filter_df(data["orders"], period)
     if "symbol" in orders.columns:
         orders = orders.filter(pl.col("symbol") == ticker)
-    candle_chart(bars, orders, indicators)
+    candle_chart(bars, orders, indicators, candle_settings)
 
 
 def render_run_dashboard(run_dir: Path, show_header: bool = True, show_back_button: bool = False) -> None:
