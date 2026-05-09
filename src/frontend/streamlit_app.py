@@ -359,25 +359,6 @@ def install_css() -> None:
         div[class*="st-key-chart_toolbar_"] [data-testid="stHorizontalBlock"] {
             gap: 0.4rem;
         }
-        div[class*="st-key-chart_toolbar_"] [data-testid="stButton"] {
-            display: flex;
-            justify-content: flex-end;
-        }
-        div[class*="st-key-chart_toolbar_"] [data-testid="stButton"] button {
-            min-width: 2rem;
-            height: 2rem;
-            min-height: 2rem;
-            padding: 0;
-            border: 0;
-            border-radius: 4px;
-            background: #ffffff;
-            color: #374151;
-            box-shadow: none;
-        }
-        div[class*="st-key-chart_toolbar_"] [data-testid="stButton"] button:hover {
-            background: #f3f4f6;
-            color: #111827;
-        }
         div[class*="st-key-chart_toolbar_"] [data-testid="stSelectbox"],
         div[class*="st-key-chart_toolbar_"] [data-testid="stText"] {
             margin-bottom: 0 !important;
@@ -908,33 +889,6 @@ def chart_key_fragment(value: str) -> str:
     return fragment or "chart"
 
 
-def render_chart_fullscreen_css(component_key: str, active: bool) -> None:
-    if not active:
-        return
-    st.markdown(
-        f"""
-        <style>
-        .st-key-{component_key} {{
-            position: fixed !important;
-            inset: 0 !important;
-            width: 100vw !important;
-            height: 100vh !important;
-            z-index: 1000000 !important;
-            border-radius: 0 !important;
-            border: 0 !important;
-            overflow: auto !important;
-            background: #ffffff !important;
-            padding: 0 !important;
-        }}
-        .st-key-{component_key} iframe {{
-            height: calc(100vh - 3.15rem) !important;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def chart_toolbar(
     *,
     tickers: list[str] | None,
@@ -942,11 +896,10 @@ def chart_toolbar(
     timeframe_key: str,
     indicator_key: str,
     timeframe_options: list[str] | None = None,
-    fullscreen_key: str | None = None,
 ) -> tuple[str | None, str, dict]:
     del indicator_key
     options = timeframe_options or ["1m", "5m"]
-    columns = st.columns([0.9, 1.15, 8.85, 0.45], gap="small", vertical_alignment="center")
+    columns = st.columns([0.9, 1.15, 9.3], gap="small", vertical_alignment="center")
     ticker = selected_ticker
     with columns[0]:
         if tickers:
@@ -955,13 +908,6 @@ def chart_toolbar(
             st.text(selected_ticker or "")
     with columns[1]:
         timeframe = st.segmented_control("Timeframe", options, default=options[0], key=timeframe_key, label_visibility="collapsed")
-    with columns[3]:
-        if fullscreen_key:
-            st.session_state.setdefault(fullscreen_key, False)
-            icon = "⛶" if not st.session_state[fullscreen_key] else "×"
-            if st.button(icon, key=f"{fullscreen_key}_button", help="Toggle fullscreen"):
-                st.session_state[fullscreen_key] = not st.session_state[fullscreen_key]
-                st.rerun()
     return ticker, timeframe, default_chart_indicator_settings()
 
 
@@ -1060,17 +1006,62 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
     }
 
 
-def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
+def render_lightweight_candle_chart(payload: dict, height: int = 720, component_key: str | None = None) -> None:
     chart_id = f"tv-chart-{abs(hash(json.dumps(payload, sort_keys=True))) % 10_000_000}"
     payload_json = json.dumps(payload)
     candle_settings_json = json.dumps(DEFAULT_CANDLE_CHART_SETTINGS)
+    component_selector_json = json.dumps(f".st-key-{component_key}" if component_key else "")
     pane_gap = 10 if payload.get("oscillators") else 0
     oscillator_ratio = 0.375
     price_height = int((height - pane_gap) / (1 + oscillator_ratio)) if payload.get("oscillators") else height
     oscillator_height = int(price_height * oscillator_ratio) if payload.get("oscillators") else 0
     total_height = price_height + oscillator_height + pane_gap
     html = f"""
+    <style>
+    #{chart_id} {{
+        background: #ffffff;
+    }}
+    #{chart_id}.qq-chart-local-fullscreen {{
+        width: 100vw !important;
+        height: 100vh !important;
+        padding: 0 !important;
+    }}
+    #{chart_id}-fullscreen {{
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        z-index: 40;
+        width: 36px;
+        height: 36px;
+        border: 0;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.9);
+        color: #111827;
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.18);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 23px;
+        line-height: 1;
+    }}
+    #{chart_id}-fullscreen:hover {{
+        background: #f3f4f6;
+    }}
+    #{chart_id}-fullscreen.qq-active {{
+        top: 10px;
+        right: 10px;
+        width: 40px;
+        height: 40px;
+        font-size: 27px;
+    }}
+    </style>
     <div id="{chart_id}" style="height:{total_height}px;width:100%;display:flex;flex-direction:column;gap:{pane_gap}px;position:relative;">
+        <button id="{chart_id}-fullscreen" title="Fullscreen" aria-label="Toggle fullscreen">
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                <path d="M8 3H3v5h2V5h3V3zm8 0v2h3v3h2V3h-5zM5 16H3v5h5v-2H5v-3zm14 3h-3v2h5v-5h-2v3z" fill="currentColor"></path>
+            </svg>
+        </button>
         <div id="{chart_id}-price" style="height:{price_height}px;width:100%;"></div>
         <div id="{chart_id}-osc" style="height:{oscillator_height}px;width:100%;display:{'block' if oscillator_height else 'none'};"></div>
     </div>
@@ -1078,12 +1069,30 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     <script>
     const payload = {payload_json};
     const candleSettings = {candle_settings_json};
+    const streamlitComponentSelector = {component_selector_json};
     const container = document.getElementById("{chart_id}");
+    const fullscreenButton = document.getElementById("{chart_id}-fullscreen");
     const priceContainer = document.getElementById("{chart_id}-price");
     const oscillatorContainer = document.getElementById("{chart_id}-osc");
     const hasOscillators = !!(payload.oscillators && payload.oscillators.length);
     const rightScaleWidth = 62;
     const indicatorLabelWidth = 62;
+    const normalPriceHeight = {price_height};
+    const normalOscillatorHeight = {oscillator_height};
+    const paneGap = {pane_gap};
+    const fullscreenIcon = `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M8 3H3v5h2V5h3V3zm8 0v2h3v3h2V3h-5zM5 16H3v5h5v-2H5v-3zm14 3h-3v2h5v-5h-2v3z" fill="currentColor"></path></svg>`;
+    const exitFullscreenIcon = `<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M9 3H7v4H3v2h6V3zm8 0h-2v6h6V7h-4V3zM3 17h4v4h2v-6H3v2zm12 4h2v-4h4v-2h-6v6z" fill="currentColor"></path></svg>`;
+    let parentDocument = null;
+    let parentComponent = null;
+    let injectedParentStyle = null;
+    let parentExpanded = false;
+    try {{
+        parentDocument = window.parent && window.parent.document;
+        parentComponent = parentDocument && streamlitComponentSelector ? parentDocument.querySelector(streamlitComponentSelector) : null;
+    }} catch (error) {{
+        parentDocument = null;
+        parentComponent = null;
+    }}
     const chartWidth = () => Math.max(260, container.clientWidth - indicatorLabelWidth);
     function formatDateTime(time) {{
         const date = new Date(Number(time) * 1000);
@@ -1692,12 +1701,100 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             renderCrosshairAxisLabels(param.time);
         }});
     }}
+    function ensureParentFullscreenStyle() {{
+        if (!parentDocument || injectedParentStyle) return;
+        injectedParentStyle = parentDocument.createElement("style");
+        injectedParentStyle.textContent = `
+            .qq-streamlit-chart-fullscreen {{
+                position: fixed !important;
+                inset: 0 !important;
+                width: 100vw !important;
+                height: 100vh !important;
+                max-width: 100vw !important;
+                z-index: 2147483647 !important;
+                border-radius: 0 !important;
+                border: 0 !important;
+                background: #ffffff !important;
+                overflow: hidden !important;
+                padding: 0 !important;
+            }}
+            .qq-streamlit-chart-fullscreen iframe {{
+                width: 100vw !important;
+                height: calc(100vh - 2.85rem) !important;
+            }}
+            .qq-streamlit-chart-body-lock {{
+                overflow: hidden !important;
+            }}
+        `;
+        parentDocument.head.appendChild(injectedParentStyle);
+    }}
+
+    function isChartExpanded() {{
+        return parentExpanded || document.fullscreenElement === container;
+    }}
+
+    function chartHeights() {{
+        if (!isChartExpanded()) {{
+            return {{ price: normalPriceHeight, oscillator: normalOscillatorHeight, total: {total_height} }};
+        }}
+        const available = Math.max(360, window.innerHeight - 4);
+        if (!hasOscillators) {{
+            return {{ price: available, oscillator: 0, total: available }};
+        }}
+        const price = Math.floor((available - paneGap) / (1 + {oscillator_ratio}));
+        const oscillator = Math.max(120, Math.floor(price * {oscillator_ratio}));
+        return {{ price, oscillator, total: price + oscillator + paneGap }};
+    }}
+
+    function resizeCharts() {{
+        const heights = chartHeights();
+        container.style.height = `${{heights.total}}px`;
+        priceContainer.style.height = `${{heights.price}}px`;
+        if (oscillatorContainer) oscillatorContainer.style.height = `${{heights.oscillator}}px`;
+        const width = chartWidth();
+        chart.applyOptions({{ width, height: heights.price }});
+        if (oscillatorChart) oscillatorChart.applyOptions({{ width, height: heights.oscillator }});
+        alignTimeScales();
+    }}
+
+    function setFullscreenVisualState(active) {{
+        container.classList.toggle("qq-chart-local-fullscreen", active && !parentExpanded);
+        fullscreenButton.classList.toggle("qq-active", active);
+        fullscreenButton.innerHTML = active ? exitFullscreenIcon : fullscreenIcon;
+        fullscreenButton.title = active ? "Exit fullscreen" : "Fullscreen";
+        fullscreenButton.setAttribute("aria-label", fullscreenButton.title);
+        requestAnimationFrame(resizeCharts);
+    }}
+
+    async function toggleChartFullscreen() {{
+        if (parentComponent && parentDocument) {{
+            ensureParentFullscreenStyle();
+            parentExpanded = !parentExpanded;
+            parentComponent.classList.toggle("qq-streamlit-chart-fullscreen", parentExpanded);
+            parentDocument.documentElement.classList.toggle("qq-streamlit-chart-body-lock", parentExpanded);
+            parentDocument.body.classList.toggle("qq-streamlit-chart-body-lock", parentExpanded);
+            setFullscreenVisualState(parentExpanded);
+            return;
+        }}
+        try {{
+            if (document.fullscreenElement === container) {{
+                await document.exitFullscreen();
+            }} else if (container.requestFullscreen) {{
+                await container.requestFullscreen();
+            }}
+        }} catch (error) {{
+            console.warn("Could not toggle fullscreen", error);
+        }}
+    }}
+
+    fullscreenButton.addEventListener("click", toggleChartFullscreen);
+    document.addEventListener("fullscreenchange", () => {{
+        setFullscreenVisualState(document.fullscreenElement === container);
+    }});
+    window.addEventListener("resize", resizeCharts);
     const resizeObserver = new ResizeObserver(entries => {{
         if (!entries.length) return;
-        const width = Math.max(260, entries[0].contentRect.width - indicatorLabelWidth);
-        chart.applyOptions({{ width }});
-        if (oscillatorChart) oscillatorChart.applyOptions({{ width }});
-        alignTimeScales();
+        resizeCharts();
     }});
     resizeObserver.observe(container);
     </script>
@@ -1705,7 +1802,13 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     components.html(html, height=total_height + 12, scrolling=False)
 
 
-def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict], height: int = 720) -> None:
+def candle_chart(
+    bars: pl.DataFrame,
+    orders: pl.DataFrame,
+    indicators: dict[str, dict],
+    height: int = 720,
+    component_key: str | None = None,
+) -> None:
     if bars.is_empty():
         st.info("No chart data available.")
         return
@@ -1715,7 +1818,7 @@ def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str,
         st.info("Selected chart data is missing OHLC columns.")
         return
     payload = tradingview_chart_payload(bars, orders, indicators)
-    render_lightweight_candle_chart(payload, height=height)
+    render_lightweight_candle_chart(payload, height=height, component_key=component_key)
 
 
 def bars_for(data: dict, period: str, ticker: str, timeframe: str) -> pl.DataFrame:
@@ -1752,9 +1855,6 @@ def render_trades(data: dict, period: str) -> None:
     with right:
         chart_key = chart_key_fragment(period)
         component_key = f"chart_component_trades_{chart_key}"
-        fullscreen_key = f"fullscreen_{component_key}"
-        fullscreen_active = bool(st.session_state.get(fullscreen_key, False))
-        render_chart_fullscreen_css(component_key, fullscreen_active)
         with st.container(key=component_key):
             with st.container(key=f"chart_toolbar_trades_{chart_key}"):
                 _, timeframe, indicators = chart_toolbar(
@@ -1762,14 +1862,13 @@ def render_trades(data: dict, period: str) -> None:
                     selected_ticker=str(trade.get("symbol", "")),
                     timeframe_key=f"trade_tf_{period}",
                     indicator_key=f"trade_ind_{period}",
-                    fullscreen_key=fullscreen_key,
                 )
             trade_day = str(trade.get("entry_time", ""))[:10] if period == "Whole Run" else period
             bars = bars_for(data, trade_day, trade["symbol"], timeframe)
             orders = filter_df(data["orders"], trade_day)
             if "symbol" in orders.columns:
                 orders = orders.filter(pl.col("symbol") == trade["symbol"])
-            candle_chart(bars, orders, indicators, height=920 if fullscreen_active else 720)
+            candle_chart(bars, orders, indicators, component_key=component_key)
 
 
 def render_orders(data: dict, period: str) -> None:
@@ -1838,9 +1937,6 @@ def render_chart_inspector(data: dict, period: str) -> None:
     tickers = bars_1m.select("ticker").unique().sort("ticker")["ticker"].to_list()
     chart_key = chart_key_fragment(period)
     component_key = f"chart_component_inspector_{chart_key}"
-    fullscreen_key = f"fullscreen_{component_key}"
-    fullscreen_active = bool(st.session_state.get(fullscreen_key, False))
-    render_chart_fullscreen_css(component_key, fullscreen_active)
     with st.container(key=component_key):
         with st.container(key=f"chart_toolbar_inspector_{chart_key}"):
             ticker, timeframe, indicators = chart_toolbar(
@@ -1848,13 +1944,12 @@ def render_chart_inspector(data: dict, period: str) -> None:
                 selected_ticker=tickers[0] if tickers else None,
                 timeframe_key=f"inspect_tf_{period}",
                 indicator_key=f"inspect_ind_{period}",
-                fullscreen_key=fullscreen_key,
             )
         bars = bars_for(data, period, ticker, timeframe)
         orders = filter_df(data["orders"], period)
         if "symbol" in orders.columns:
             orders = orders.filter(pl.col("symbol") == ticker)
-        candle_chart(bars, orders, indicators, height=920 if fullscreen_active else 720)
+        candle_chart(bars, orders, indicators, component_key=component_key)
 
 
 def render_run_dashboard(run_dir: Path, show_header: bool = True, show_back_button: bool = False) -> None:
