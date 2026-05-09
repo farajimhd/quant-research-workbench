@@ -1,4 +1,5 @@
 polars
 streamlit
 pandas
+pandas-market-calendars
 pyarrow

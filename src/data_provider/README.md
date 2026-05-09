@@ -2,14 +2,14 @@
 
 The data provider is the canonical market-data layer for local research, backtests, and chart inspection. It separates data preparation from strategy execution:
 
-- Offline build mode reads raw Massive minute files, normalizes timestamps, builds all requested timeframes, calculates feature columns, writes Parquet artifacts, and records a manifest.
+- Offline build mode reads raw Massive minute files, normalizes timestamps, rebuilds all supported timeframes, calculates feature columns and supervision labels, writes Parquet artifacts, and records a manifest.
 - Online/read mode loads those prepared artifacts without recalculating indicators.
 - Consumers decide their own trading/session filters. The provider stores all bars present in the raw source, including premarket and after-hours data.
 
 Default paths:
 
 - Raw source: `D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1`
-- Processed output: `D:/TradingData/qq-momentum-trading/market_data`
+- Processed output: `D:/TradingData/quant-research-workbench/market_data`
 
 ## Files
 
@@ -44,6 +44,8 @@ The manifest key is `{group}|{timeframe}|{session_date}` and records rows, colum
 - `SCHEMA_VERSION`: changes when base bar schema or artifact layout changes.
 - `FEATURE_VERSION`: changes when feature definitions change.
 - `SUPERVISION_VERSION`: changes when future-looking label definitions change.
+
+Builds intentionally use a single `force_rebuild` mode. Every selected session artifact is regenerated from the raw source and overwritten so the processed store reflects the current schema, feature definitions, supervision definitions, and raw inputs. The Build Data page uses the XNYS market calendar to separate expected trading sessions from weekends and exchange holidays, and reports missing raw files only for expected sessions.
 
 ## Time Handling
 

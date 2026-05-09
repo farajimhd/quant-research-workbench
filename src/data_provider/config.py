@@ -7,7 +7,7 @@ from typing import Any
 
 
 DEFAULT_RAW_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1")
-DEFAULT_PROCESSED_ROOT = Path("D:/TradingData/qq-momentum-trading/market_data")
+DEFAULT_PROCESSED_ROOT = Path("D:/TradingData/quant-research-workbench/market_data")
 EXCHANGE_TIME_ZONE = "America/New_York"
 SCHEMA_VERSION = 1
 FEATURE_VERSION = 2
@@ -44,7 +44,7 @@ SUPERVISION_GROUPS = [
     "scanner",
 ]
 
-REBUILD_MODES = ["skip_existing", "build_missing", "force_rebuild"]
+REBUILD_MODES = ["force_rebuild"]
 
 
 def parse_date(value: str | date) -> date:
@@ -91,8 +91,8 @@ class BuildRequest:
     exchange_timezone: str = EXCHANGE_TIME_ZONE
     timeframes: list[str] = field(default_factory=lambda: ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1mo"])
     feature_groups: list[str] = field(default_factory=lambda: list(FEATURE_GROUPS))
-    supervision_groups: list[str] = field(default_factory=list)
-    rebuild_mode: str = "build_missing"
+    supervision_groups: list[str] = field(default_factory=lambda: list(SUPERVISION_GROUPS))
+    rebuild_mode: str = "force_rebuild"
     tickers: list[str] | None = None
 
     @classmethod
@@ -105,8 +105,8 @@ class BuildRequest:
             exchange_timezone=str(raw.get("exchange_timezone") or EXCHANGE_TIME_ZONE),
             timeframes=list(raw.get("timeframes") or TIMEFRAMES.keys()),
             feature_groups=list(raw.get("feature_groups") or FEATURE_GROUPS),
-            supervision_groups=list(raw.get("supervision_groups") or []),
-            rebuild_mode=str(raw.get("rebuild_mode") or "build_missing"),
+            supervision_groups=list(raw.get("supervision_groups") or SUPERVISION_GROUPS),
+            rebuild_mode="force_rebuild",
             tickers=list(raw["tickers"]) if raw.get("tickers") else None,
         )
 

@@ -5,6 +5,7 @@ import re
 import shutil
 import sys
 import traceback
+from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
@@ -33,15 +34,15 @@ from src.data_provider.config import (
     BuildRequest,
     DataProviderConfig,
 )
+from src.data_provider.calendar import discover_raw_bounds, scan_market_source
 from src.data_provider.manifest import read_manifest
 from src.data_provider.provider import MarketDataProvider
-from src.data_provider.raw_loader import scan_source
 from src.strategies.orb_5m_momentum.config import OrbMomentumConfig
 from src.strategies.registry import available_strategies
 
 
 DEFAULT_DATA_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1")
-DEFAULT_OUTPUT_ROOT = Path("D:/TradingData/qq-momentum-trading/runs")
+DEFAULT_OUTPUT_ROOT = Path("D:/TradingData/quant-research-workbench/runs")
 DEFAULT_MARKET_DATA_ROOT = DEFAULT_PROCESSED_ROOT
 CHART_EXTENDED_START_MINUTE = 4 * 60
 CHART_REGULAR_START_MINUTE = 9 * 60 + 30
@@ -881,6 +882,189 @@ def install_css() -> None:
             border: 1px solid var(--qq-border);
             margin-right: 4px;
             font-size: 0.78rem;
+        }
+        .qq-build-shell {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr);
+            gap: 0.65rem;
+        }
+        .qq-build-header {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(280px, 410px);
+            gap: 0.85rem;
+            align-items: start;
+        }
+        .qq-scope-card {
+            border: 1px solid var(--qq-border);
+            border-radius: var(--qq-radius);
+            background: var(--qq-surface);
+            padding: 0.75rem 0.85rem;
+        }
+        .qq-scope-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.45rem;
+        }
+        .qq-scope-title strong {
+            font-size: 0.92rem;
+            color: var(--qq-text);
+        }
+        .qq-scope-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem 0.75rem;
+        }
+        .qq-scope-item {
+            min-width: 0;
+        }
+        .qq-scope-item span {
+            display: block;
+            color: var(--qq-muted);
+            font-size: 0.72rem;
+            line-height: 1.1;
+            margin-bottom: 0.15rem;
+        }
+        .qq-scope-item b {
+            display: block;
+            color: var(--qq-text);
+            font-size: 0.82rem;
+            line-height: 1.2;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .qq-build-metrics {
+            display: grid;
+            grid-template-columns: repeat(12, minmax(0, 1fr));
+            gap: 0.35rem;
+            margin: 0.55rem 0 0.65rem 0;
+        }
+        .qq-build-metric {
+            border: 1px solid var(--qq-border-soft);
+            border-radius: var(--qq-radius);
+            background: var(--qq-surface);
+            padding: 0.45rem 0.45rem;
+            min-width: 0;
+        }
+        .qq-build-metric span {
+            display: block;
+            color: var(--qq-muted);
+            font-size: 0.64rem;
+            line-height: 1;
+            margin-bottom: 0.25rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .qq-build-metric b {
+            display: block;
+            color: var(--qq-text);
+            font-size: 0.88rem;
+            line-height: 1.1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .qq-progress-card {
+            border: 1px solid var(--qq-border);
+            border-radius: var(--qq-radius);
+            background: var(--qq-surface);
+            padding: 0.8rem 0.9rem;
+            margin-bottom: 0.65rem;
+        }
+        .qq-progress-top {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.75rem;
+            align-items: center;
+            margin-bottom: 0.55rem;
+        }
+        .qq-progress-track {
+            height: 0.55rem;
+            border-radius: var(--qq-radius);
+            background: var(--qq-neutral-bg);
+            overflow: hidden;
+            border: 1px solid var(--qq-border-soft);
+        }
+        .qq-progress-fill {
+            height: 100%;
+            background: var(--qq-primary);
+            width: 0%;
+        }
+        .qq-build-board {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.85rem;
+            align-items: start;
+        }
+        .qq-build-list {
+            border: 1px solid var(--qq-border);
+            border-radius: var(--qq-radius);
+            background: var(--qq-surface);
+            padding: 0.65rem;
+        }
+        .qq-build-list h4 {
+            margin: 0 0 0.55rem 0;
+            font-size: 0.95rem;
+        }
+        .qq-build-scroll {
+            max-height: 590px;
+            overflow-y: auto;
+            padding-right: 0.15rem;
+        }
+        .qq-file-card {
+            border: 1px solid var(--qq-border-soft);
+            border-radius: var(--qq-radius);
+            background: var(--qq-surface-soft);
+            padding: 0.62rem 0.68rem;
+            margin-bottom: 0.5rem;
+        }
+        .qq-file-card-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.65rem;
+            align-items: center;
+            margin-bottom: 0.42rem;
+        }
+        .qq-file-card-header strong {
+            font-size: 0.9rem;
+        }
+        .qq-card-status {
+            border: 1px solid var(--qq-border);
+            border-radius: var(--qq-radius);
+            padding: 0.1rem 0.45rem;
+            font-size: 0.72rem;
+            color: var(--qq-muted-strong);
+            background: var(--qq-surface);
+            white-space: nowrap;
+        }
+        .qq-file-facts {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.4rem;
+        }
+        .qq-file-facts span {
+            color: var(--qq-muted);
+            font-size: 0.7rem;
+            display: block;
+        }
+        .qq-file-facts b {
+            font-size: 0.8rem;
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        @media (max-width: 1100px) {
+            .qq-build-header,
+            .qq-build-board {
+                grid-template-columns: 1fr;
+            }
+            .qq-build-metrics {
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+            }
         }
         div[class*="st-key-chart_component_"] {
             border: 1px solid var(--qq-border);
@@ -3453,106 +3637,336 @@ def delete_run_folder(run_dir: Path, output_root: Path) -> bool:
         return False
 
 
-def render_data_provider_page() -> None:
-    st.title("Build Data")
+def format_bytes(value: int | float | None) -> str:
+    size = float(value or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:,.0f} {unit}" if unit == "B" else f"{size:,.1f} {unit}"
+        size /= 1024
+    return f"{size:,.1f} TB"
+
+
+def format_duration(value: int | float | None) -> str:
+    seconds = float(value or 0)
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    minutes, remainder = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{int(minutes)}m {int(remainder)}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{int(hours)}h {int(minutes)}m"
+
+
+def build_scope_defaults() -> dict[str, Any]:
+    raw_root = Path(st.session_state.get("build_raw_root", DEFAULT_DATA_ROOT))
+    processed_root = Path(st.session_state.get("build_processed_root", DEFAULT_MARKET_DATA_ROOT))
+    first_raw, last_raw, raw_count = discover_raw_bounds(raw_root)
+    start_value = st.session_state.get("build_start_date", first_raw or date(2024, 5, 1))
+    end_value = st.session_state.get("build_end_date", last_raw or date(2024, 5, 31))
+    st.session_state.setdefault("build_raw_root", str(raw_root))
+    st.session_state.setdefault("build_processed_root", str(processed_root))
+    st.session_state.setdefault("build_start_date", start_value)
+    st.session_state.setdefault("build_end_date", end_value)
+    return {
+        "raw_root": raw_root,
+        "processed_root": processed_root,
+        "start_date": start_value,
+        "end_date": end_value,
+        "raw_count": raw_count,
+    }
+
+
+def render_scope_card(scope: dict[str, Any], expected_sessions: int) -> None:
     st.markdown(
-        '<div class="qq-page-description">Build canonical market data once, then reuse it for backtests, charts, scanner research, and supervision.</div>',
+        f"""
+        <div class="qq-scope-card">
+            <div class="qq-scope-title"><strong>Data Scope</strong><span class="qq-card-status">force rebuild</span></div>
+            <div class="qq-scope-grid">
+                <div class="qq-scope-item"><span>Raw root</span><b title="{escape(str(scope["raw_root"]))}">{escape(str(scope["raw_root"]))}</b></div>
+                <div class="qq-scope-item"><span>Processed root</span><b title="{escape(str(scope["processed_root"]))}">{escape(str(scope["processed_root"]))}</b></div>
+                <div class="qq-scope-item"><span>Start</span><b>{scope["start_date"]}</b></div>
+                <div class="qq-scope-item"><span>End</span><b>{scope["end_date"]}</b></div>
+                <div class="qq-scope-item"><span>Raw files</span><b>{int(scope["raw_count"]):,}</b></div>
+                <div class="qq-scope-item"><span>Market sessions</span><b>{expected_sessions:,}</b></div>
+            </div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
-    defaults = {
-        "raw_root": str(DEFAULT_DATA_ROOT),
-        "processed_root": str(DEFAULT_MARKET_DATA_ROOT),
-        "start_date": date(2024, 5, 1),
-        "end_date": date(2024, 5, 31),
+
+
+def render_scope_dialog() -> None:
+    if not hasattr(st, "dialog"):
+        with st.expander("Update Data Scope", expanded=True):
+            raw_root = st.text_input("Raw data root", value=str(st.session_state.get("build_raw_root", DEFAULT_DATA_ROOT)))
+            processed_root = st.text_input("Processed data root", value=str(st.session_state.get("build_processed_root", DEFAULT_MARKET_DATA_ROOT)))
+            start_date = st.date_input("Start", value=st.session_state.get("build_start_date", date(2024, 5, 1)))
+            end_date = st.date_input("End", value=st.session_state.get("build_end_date", date(2024, 5, 31)))
+            if st.button("Apply", type="primary", width="stretch"):
+                st.session_state["build_raw_root"] = raw_root
+                st.session_state["build_processed_root"] = processed_root
+                st.session_state["build_start_date"] = start_date
+                st.session_state["build_end_date"] = end_date
+                st.rerun()
+        return
+
+    @st.dialog("Update Data Scope")
+    def update_scope_dialog() -> None:
+        raw_root = st.text_input("Raw data root", value=str(st.session_state.get("build_raw_root", DEFAULT_DATA_ROOT)))
+        processed_root = st.text_input("Processed data root", value=str(st.session_state.get("build_processed_root", DEFAULT_MARKET_DATA_ROOT)))
+        start_date = st.date_input("Start", value=st.session_state.get("build_start_date", date(2024, 5, 1)))
+        end_date = st.date_input("End", value=st.session_state.get("build_end_date", date(2024, 5, 31)))
+        if st.button("Apply", type="primary", width="stretch"):
+            st.session_state["build_raw_root"] = raw_root
+            st.session_state["build_processed_root"] = processed_root
+            st.session_state["build_start_date"] = start_date
+            st.session_state["build_end_date"] = end_date
+            st.rerun()
+
+    update_scope_dialog()
+
+
+def build_metric_card(label: str, value: str) -> str:
+    return f'<div class="qq-build-metric"><span>{escape(label)}</span><b>{escape(value)}</b></div>'
+
+
+def render_build_metrics(metrics: dict[str, str]) -> None:
+    st.markdown(
+        '<div class="qq-build-metrics">' + "".join(build_metric_card(label, value) for label, value in metrics.items()) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def status_class(status: str) -> str:
+    if status in {"complete", "ready"}:
+        return "qq-good"
+    if status in {"missing", "missing_raw", "failed"}:
+        return "qq-bad"
+    return "qq-neutral"
+
+
+def file_card_html(row: dict) -> str:
+    status = str(row.get("status") or "queued")
+    session_date = str(row.get("session_date") or "-")
+    phase = str(row.get("phase") or status).replace("_", " ")
+    rows = int(row.get("rows_out", row.get("rows", 0)) or 0)
+    artifacts = int(row.get("artifacts", 0) or 0)
+    duration = format_duration(row.get("duration_sec", row.get("elapsed_sec", 0)))
+    size = format_bytes(row.get("size_bytes", row.get("source_size_bytes", 0)))
+    raw_path = str(row.get("path", ""))
+    path_name = Path(raw_path).name if raw_path else "-"
+    return (
+        '<div class="qq-file-card">'
+        '<div class="qq-file-card-header">'
+        f"<strong>{escape(session_date)}</strong>"
+        f'<span class="qq-card-status {status_class(status)}">{escape(status.replace("_", " "))}</span>'
+        "</div>"
+        '<div class="qq-file-facts">'
+        f"<div><span>Phase</span><b>{escape(phase)}</b></div>"
+        f"<div><span>Rows</span><b>{rows:,}</b></div>"
+        f"<div><span>Artifacts</span><b>{artifacts:,}</b></div>"
+        f"<div><span>Duration</span><b>{escape(duration)}</b></div>"
+        f"<div><span>Size</span><b>{escape(size)}</b></div>"
+        f'<div><span>File</span><b title="{escape(raw_path)}">{escape(path_name)}</b></div>'
+        "</div>"
+        "</div>"
+    )
+
+
+def render_file_container(title: str, rows: list[dict]) -> str:
+    cards = "".join(file_card_html(row) for row in rows) or '<div class="qq-muted">No files yet.</div>'
+    return f'<div class="qq-build-list"><h4>{escape(title)}</h4><div class="qq-build-scroll">{cards}</div></div>'
+
+
+def build_monitor_metrics(plan_rows: list[dict], events: list[dict], manifest: dict, started_at: datetime | None) -> dict[str, str]:
+    expected = [row for row in plan_rows if row.get("expected_market_session")]
+    buildable = [row for row in expected if row.get("exists")]
+    missing = [row for row in expected if not row.get("exists")]
+    artifact_events = [event for event in events if event.get("event") == "artifact_complete"]
+    work_total = max((int(event.get("work_total") or 0) for event in events), default=0)
+    work_completed = max((int(event.get("work_completed") or 0) for event in events), default=0)
+    elapsed = (datetime.now() - started_at).total_seconds() if started_at else 0
+    slowest = max((event for event in events if event.get("duration_sec") is not None), key=lambda item: float(item.get("duration_sec") or 0), default={})
+    return {
+        "Raw Files": f"{len(buildable):,}",
+        "Expected": f"{len(expected):,}",
+        "Missing": f"{len(missing):,}",
+        "Closed Days": f"{len(plan_rows) - len(expected):,}",
+        "Artifacts": f"{len(artifact_events):,}",
+        "Manifest": f"{len(manifest.get('artifacts', {})):,}",
+        "Rows": f"{sum(int(event.get('rows_out') or 0) for event in artifact_events):,}",
+        "Written": format_bytes(sum(int(event.get("size_bytes") or 0) for event in artifact_events)),
+        "Progress": f"{work_completed:,}/{work_total:,}" if work_total else "-",
+        "Elapsed": format_duration(elapsed),
+        "Slowest": str(slowest.get("phase") or "-").replace("_", " "),
+        "Status": str(events[-1].get("status") if events else "ready"),
     }
-    source_cols = st.columns([2.7, 2.7, 1.0, 1.0], gap="small", vertical_alignment="bottom")
-    with source_cols[0]:
-        raw_root = Path(st.text_input("Raw data root", value=defaults["raw_root"]))
-    with source_cols[1]:
-        processed_root = Path(st.text_input("Processed data root", value=defaults["processed_root"]))
-    with source_cols[2]:
-        start_date = st.date_input("Start", value=defaults["start_date"])
-    with source_cols[3]:
-        end_date = st.date_input("End", value=defaults["end_date"])
 
-    option_cols = st.columns([2.0, 3.0, 1.5, 1.5], gap="small", vertical_alignment="bottom")
-    with option_cols[0]:
-        timeframes = st.multiselect("Timeframes", list(TIMEFRAMES), default=["1m", "5m", "15m", "30m", "1h", "1d"])
-    with option_cols[1]:
-        feature_groups = st.multiselect("Feature groups", FEATURE_GROUPS, default=FEATURE_GROUPS)
-    with option_cols[2]:
-        supervision_groups = st.multiselect("Supervision", SUPERVISION_GROUPS, default=[])
-    with option_cols[3]:
-        rebuild_mode = st.selectbox("Rebuild mode", ["build_missing", "skip_existing", "force_rebuild"], index=0)
 
-    ticker_text = st.text_input("Ticker filter", value="", help="Optional comma-separated tickers. Leave empty for all tickers.")
-    tickers = [ticker.strip().upper() for ticker in ticker_text.split(",") if ticker.strip()] or None
+def build_session_cards(plan_rows: list[dict], events: list[dict]) -> tuple[list[dict], list[dict]]:
+    session_rows: dict[str, dict] = {}
+    for row in plan_rows:
+        session_rows[row["session_date"]] = {
+            "session_date": row["session_date"],
+            "status": "queued" if row.get("exists") and row.get("expected_market_session") else row.get("status", "closed"),
+            "phase": row.get("status", "queued"),
+            "path": row.get("path"),
+            "source_size_bytes": row.get("size_bytes", 0),
+            "artifacts": 0,
+        }
+    completed_dates: set[str] = set()
+    for event in events:
+        session_date = event.get("session_date")
+        if not session_date or session_date not in session_rows:
+            continue
+        row = session_rows[session_date]
+        row["phase"] = event.get("phase", row.get("phase"))
+        if event.get("event") == "session_started":
+            row["status"] = "running"
+        elif event.get("event") not in {"session_complete", "session_skipped"}:
+            row["status"] = "running"
+        row["rows_out"] = event.get("rows_out", row.get("rows_out", 0))
+        row["duration_sec"] = float(row.get("duration_sec") or 0) + float(event.get("duration_sec") or 0)
+        row["size_bytes"] = int(row.get("size_bytes") or 0) + int(event.get("size_bytes") or 0)
+        row["path"] = event.get("path", row.get("path"))
+        if event.get("event") == "artifact_complete":
+            row["artifacts"] = int(row.get("artifacts") or 0) + 1
+        if event.get("event") in {"session_complete", "session_skipped"}:
+            row["status"] = event.get("status", "complete")
+            completed_dates.add(session_date)
+    completed = [session_rows[session_date] for session_date in sorted(completed_dates, reverse=True)]
+    active = [
+        row
+        for row in session_rows.values()
+        if row["session_date"] not in completed_dates and row.get("status") in {"queued", "running", "complete"}
+    ]
+    return active[:5], completed
 
-    provider = MarketDataProvider(DataProviderConfig(raw_root=raw_root, processed_root=processed_root))
-    source_rows = scan_source(raw_root, start_date, end_date)
-    ready_rows = provider.status_rows(start_date, end_date, timeframes or ["1m"])
-    status_cols = st.columns([1, 1, 1, 1], gap="small")
-    existing_raw = sum(1 for row in source_rows if row.exists)
-    missing_raw = len(source_rows) - existing_raw
+
+def render_data_provider_page() -> None:
+    scope = build_scope_defaults()
+    raw_root = Path(scope["raw_root"])
+    processed_root = Path(scope["processed_root"])
+    start_date = scope["start_date"]
+    end_date = scope["end_date"]
+    if start_date > end_date:
+        st.error("Start date must be on or before end date.")
+        return
+    source_rows = [asdict(row) for row in scan_market_source(raw_root, start_date, end_date)]
+    expected_sessions = sum(1 for row in source_rows if row["expected_market_session"])
     manifest = read_manifest(processed_root)
-    status_cols[0].metric("Raw Files", f"{existing_raw}/{len(source_rows)}")
-    status_cols[1].metric("Missing Raw", missing_raw)
-    status_cols[2].metric("Artifacts", len(manifest.get("artifacts", {})))
-    status_cols[3].metric("Feature Version", manifest.get("feature_version", "-"))
 
-    plan_tabs = st.tabs(["Build Plan", "Processed Store", "Manifest"])
-    with plan_tabs[0]:
-        plan = []
-        for src, processed in zip(source_rows, ready_rows):
-            row = {"session_date": src.session_date, "raw": "found" if src.exists else "missing"}
-            for timeframe in timeframes or ["1m"]:
-                row[timeframe] = processed.get(f"{timeframe}_status", "missing")
-            plan.append(row)
-        app_dataframe(pl.DataFrame(plan), width="stretch", hide_index=True)
-    with plan_tabs[1]:
-        app_dataframe(pl.DataFrame(ready_rows), width="stretch", hide_index=True)
-    with plan_tabs[2]:
-        st.json(
-            {
-                "processed_root": str(processed_root),
-                "schema_version": manifest.get("schema_version"),
-                "feature_version": manifest.get("feature_version"),
-                "supervision_version": manifest.get("supervision_version"),
-                "updated_at": manifest.get("updated_at"),
-                "artifact_count": len(manifest.get("artifacts", {})),
-            },
-            expanded=False,
+    header_cols = st.columns([1.55, 1.0], gap="medium", vertical_alignment="top")
+    with header_cols[0]:
+        st.title("Build Data")
+        st.markdown(
+            '<div class="qq-page-description">Rebuild the canonical market-data store with every supported timeframe, feature group, and supervision label.</div>',
+            unsafe_allow_html=True,
+        )
+        action_cols = st.columns([0.42, 0.24, 0.34], gap="small", vertical_alignment="center")
+        start_clicked = action_cols[0].button("Rebuild selected range", type="primary", width="stretch")
+        if action_cols[1].button("Edit scope", width="stretch"):
+            render_scope_dialog()
+    with header_cols[1]:
+        render_scope_card(scope, expected_sessions)
+
+    events: list[dict] = st.session_state.setdefault("build_progress_events", [])
+    started_at = st.session_state.get("build_started_at")
+    render_build_metrics(build_monitor_metrics(source_rows, events, manifest, started_at))
+    missing_sessions = [row["session_date"] for row in source_rows if row.get("expected_market_session") and not row.get("exists")]
+    if missing_sessions:
+        st.warning(
+            "Missing raw files for expected market sessions: "
+            + ", ".join(missing_sessions[:10])
+            + ("..." if len(missing_sessions) > 10 else "")
         )
 
     progress_slot = st.empty()
-    log_slot = st.empty()
-    if st.button("Start Build", type="primary", disabled=not timeframes):
+    board_slot = st.empty()
+    detail_slot = st.empty()
+
+    def render_progress_board(current_events: list[dict]) -> None:
+        current_manifest = read_manifest(processed_root)
+        metrics = build_monitor_metrics(source_rows, current_events, current_manifest, st.session_state.get("build_started_at"))
+        work_total = max((int(event.get("work_total") or 0) for event in current_events), default=0)
+        work_completed = max((int(event.get("work_completed") or 0) for event in current_events), default=0)
+        ratio = min(1.0, work_completed / work_total) if work_total else 0.0
+        current = current_events[-1] if current_events else {}
+        with progress_slot.container():
+            st.markdown(
+                f"""
+                <div class="qq-progress-card">
+                    <div class="qq-progress-top">
+                        <div><strong>{escape(str(current.get("session_date") or "Ready"))}</strong><div class="qq-muted">{escape(str(current.get("phase") or "Waiting to start").replace("_", " "))}</div></div>
+                        <div class="qq-neutral">{escape(metrics["Progress"])}</div>
+                    </div>
+                    <div class="qq-progress-track"><div class="qq-progress-fill" style="width:{ratio * 100:.1f}%"></div></div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        active_cards, completed_cards = build_session_cards(source_rows, current_events)
+        with board_slot.container():
+            st.markdown(
+                '<div class="qq-build-board">'
+                + render_file_container("Active Queue", active_cards)
+                + render_file_container("Completed Files", completed_cards)
+                + "</div>",
+                unsafe_allow_html=True,
+            )
+        artifact_events = [event for event in current_events if event.get("event") == "artifact_complete"]
+        phase_events = [event for event in current_events if event.get("duration_sec") is not None]
+        ready_rows = MarketDataProvider(DataProviderConfig(raw_root=raw_root, processed_root=processed_root)).status_rows(start_date, end_date, list(TIMEFRAMES))
+        with detail_slot.container():
+            tabs = st.tabs(["Phase Timings", "Artifacts", "Plan", "Processed Store", "Manifest"])
+            with tabs[0]:
+                app_dataframe(pl.DataFrame(phase_events[-500:]), width="stretch", hide_index=True)
+            with tabs[1]:
+                app_dataframe(pl.DataFrame(artifact_events[-500:]), width="stretch", hide_index=True)
+            with tabs[2]:
+                app_dataframe(pl.DataFrame(source_rows), width="stretch", hide_index=True)
+            with tabs[3]:
+                app_dataframe(pl.DataFrame(ready_rows), width="stretch", hide_index=True)
+            with tabs[4]:
+                st.json(
+                    {
+                        "processed_root": str(processed_root),
+                        "schema_version": current_manifest.get("schema_version"),
+                        "feature_version": current_manifest.get("feature_version"),
+                        "supervision_version": current_manifest.get("supervision_version"),
+                        "updated_at": current_manifest.get("updated_at"),
+                        "artifact_count": len(current_manifest.get("artifacts", {})),
+                    },
+                    expanded=False,
+                )
+
+    render_progress_board(events)
+
+    if start_clicked:
+        st.session_state["build_progress_events"] = []
+        st.session_state["build_started_at"] = datetime.now()
         progress_rows: list[dict] = []
 
         def on_progress(event: dict) -> None:
             progress_rows.append(event)
-            completed_index = int(event.get("index") or 0)
-            total = max(1, int(event.get("total") or len(source_rows) or 1))
-            with progress_slot.container():
-                st.progress(min(1.0, completed_index / total), text=f"{event.get('session_date', '')} | {event.get('phase', '')}")
-            with log_slot.container():
-                app_dataframe(pl.DataFrame(progress_rows[-30:]), width="stretch", hide_index=True)
+            st.session_state["build_progress_events"] = progress_rows
+            render_progress_board(progress_rows)
 
         request = BuildRequest(
             raw_root=raw_root,
             processed_root=processed_root,
             start_date=start_date,
             end_date=end_date,
-            timeframes=timeframes,
-            feature_groups=feature_groups,
-            supervision_groups=supervision_groups,
-            rebuild_mode=rebuild_mode,
-            tickers=tickers,
+            timeframes=list(TIMEFRAMES),
+            feature_groups=list(FEATURE_GROUPS),
+            supervision_groups=list(SUPERVISION_GROUPS),
+            rebuild_mode="force_rebuild",
+            tickers=None,
         )
         try:
             result = build_market_data(request, progress_callback=on_progress)
+            st.session_state["build_progress_events"] = progress_rows
             st.success(f"Build complete. Processed root: {result['processed_root']}")
-            app_dataframe(pl.DataFrame(result["completed"]), width="stretch", hide_index=True)
         except Exception as exc:
             st.error(str(exc))
             with st.expander("Build error details"):
