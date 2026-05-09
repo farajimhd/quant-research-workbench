@@ -64,7 +64,7 @@ OSCILLATOR_CHART_INDICATORS = ["macd_line_5m", "macd_signal_5m", "macd_hist_5m"]
 
 CHART_INDICATORS = PRICE_CHART_INDICATORS + OSCILLATOR_CHART_INDICATORS
 
-DEFAULT_CHART_INDICATORS = ["vwap", "tema9_5m", "tema20_5m", "macd_line_5m", "macd_signal_5m"]
+DEFAULT_CHART_INDICATORS = CHART_INDICATORS
 
 DEFAULT_INDICATOR_COLORS = {
     "vwap": "#0891b2",
@@ -861,23 +861,23 @@ def chart_toolbar(
     timeframe_key: str,
     indicator_key: str,
 ) -> tuple[str | None, str, dict]:
-    columns = st.columns([2.2, 1.4, 1.1, 7.3], vertical_alignment="center")
+    columns = st.columns([0.45, 2.1, 0.75, 1.35, 1.15, 6.2], vertical_alignment="center")
     ticker = selected_ticker
     with columns[0]:
+        st.markdown('<div class="qq-period-label">Ticker</div>', unsafe_allow_html=True)
+    with columns[1]:
         if tickers:
-            ticker = st.selectbox("Ticker", tickers, index=tickers.index(selected_ticker) if selected_ticker in tickers else 0)
+            ticker = st.selectbox("Ticker", tickers, index=tickers.index(selected_ticker) if selected_ticker in tickers else 0, label_visibility="collapsed")
         else:
             st.text(selected_ticker or "")
-    with columns[1]:
-        timeframe = st.segmented_control("Timeframe", ["1m", "5m"], default="1m", key=timeframe_key)
     with columns[2]:
+        st.markdown('<div class="qq-period-label">Timeframe</div>', unsafe_allow_html=True)
+    with columns[3]:
+        timeframe = st.segmented_control("Timeframe", ["1m", "5m"], default="1m", key=timeframe_key, label_visibility="collapsed")
+    with columns[4]:
         ensure_indicator_state(CHART_INDICATORS, DEFAULT_CHART_INDICATORS, indicator_key)
-        if indicator_settings_dialog is not None:
-            if st.button("Indicators", key=f"{indicator_key}_settings", type="secondary", width="stretch"):
-                indicator_settings_dialog(CHART_INDICATORS, DEFAULT_CHART_INDICATORS, indicator_key)
-        else:
-            with st.popover("Indicators", width="content"):
-                render_indicator_settings_form(CHART_INDICATORS, DEFAULT_CHART_INDICATORS, indicator_key)
+        with st.popover("Indicators", width="content"):
+            render_indicator_settings_form(CHART_INDICATORS, DEFAULT_CHART_INDICATORS, indicator_key)
     return ticker, timeframe, indicator_settings_from_state(CHART_INDICATORS, DEFAULT_CHART_INDICATORS, indicator_key)
 
 
@@ -922,14 +922,17 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
         if column not in bars.columns:
             continue
         points = []
+        color = options.get("color", DEFAULT_INDICATOR_COLORS.get(column, "#2563eb"))
+        opacity = float(options.get("opacity", 0.72))
         for row in rows:
             timestamp = chart_timestamp(row.get("bar_time_market"))
             value = numeric_value(row.get(column))
             if timestamp and value is not None:
-                points.append({"time": timestamp, "value": value})
+                point = {"time": timestamp, "value": value}
+                if column == "macd_hist_5m":
+                    point["color"] = hex_to_rgba("#0f8a3b" if value >= 0 else "#c0362c", opacity)
+                points.append(point)
         if points:
-            color = options.get("color", DEFAULT_INDICATOR_COLORS.get(column, "#2563eb"))
-            opacity = float(options.get("opacity", 0.72))
             target = oscillator_series if column in OSCILLATOR_CHART_INDICATORS else overlay_series
             target.append(
                 {
@@ -985,6 +988,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     const container = document.getElementById("{chart_id}");
     const priceContainer = document.getElementById("{chart_id}-price");
     const oscillatorContainer = document.getElementById("{chart_id}-osc");
+    const hasOscillators = !!(payload.oscillators && payload.oscillators.length);
     const commonOptions = {{
         layout: {{
             background: {{ type: "solid", color: "#ffffff" }},
@@ -1000,6 +1004,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         }},
         rightPriceScale: {{
             borderColor: "#d1d5db",
+            minimumWidth: 76,
             scaleMargins: {{ top: 0.08, bottom: 0.22 }}
         }},
         timeScale: {{
@@ -1007,8 +1012,8 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             timeVisible: true,
             secondsVisible: false,
             rightOffset: 2,
-            barSpacing: 12,
-            minBarSpacing: 4
+            barSpacing: 14,
+            minBarSpacing: 5
         }},
         handleScroll: {{
             mouseWheel: true,
@@ -1028,7 +1033,12 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         height: {price_height},
         rightPriceScale: {{
             borderColor: "#d1d5db",
+            minimumWidth: 76,
             scaleMargins: {{ top: 0.06, bottom: 0.18 }}
+        }},
+        timeScale: {{
+            ...commonOptions.timeScale,
+            visible: !hasOscillators
         }}
     }});
     const oscillatorChart = oscillatorContainer && payload.oscillators && payload.oscillators.length ? LightweightCharts.createChart(oscillatorContainer, {{
@@ -1037,6 +1047,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         height: {oscillator_height},
         rightPriceScale: {{
             borderColor: "#d1d5db",
+            minimumWidth: 76,
             scaleMargins: {{ top: 0.12, bottom: 0.12 }}
         }}
     }}) : null;
@@ -1103,7 +1114,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     (payload.overlays || []).forEach((indicator) => {{
         const line = chart.addLineSeries({{
             color: indicator.color,
-            lineWidth: 3,
+            lineWidth: 1,
             priceLineVisible: false,
             lastValueVisible: false
         }});
@@ -1139,7 +1150,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
                 }})
                 : oscillatorChart.addLineSeries({{
                     color: indicator.color,
-                    lineWidth: 2,
+                    lineWidth: 1,
                     priceLineVisible: false,
                     lastValueVisible: false
                 }});
