@@ -579,22 +579,25 @@ def install_css() -> None:
             aspect-ratio: 1 / 1;
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
-            background: rgba(255, 255, 255, 0.68) !important;
-            border: 1px solid rgba(216, 224, 234, 0.82);
-            border-radius: var(--qq-radius);
+            background: rgba(255, 255, 255, 0.54) !important;
+            border: 1px solid rgba(216, 224, 234, 0.74);
+            border-radius: 999px !important;
             box-shadow: 0 6px 18px rgba(23, 32, 51, 0.08);
             display: inline-flex;
             gap: 0 !important;
             height: 2.1rem;
             justify-content: center !important;
             line-height: 0 !important;
+            max-height: 2.1rem;
+            max-width: 2.1rem;
             min-height: 2.1rem;
+            min-width: 2.1rem;
             padding: 0;
             position: relative;
             width: 2.1rem !important;
         }
         [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button:hover {
-            background: rgba(255, 255, 255, 0.82) !important;
+            background: rgba(255, 255, 255, 0.72) !important;
             color: var(--qq-primary) !important;
             border: 1px solid rgba(194, 205, 219, 0.9);
         }
@@ -667,9 +670,14 @@ def install_css() -> None:
             width: calc(100% + 0.6rem) !important;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[class*="st-key-sidebar_toggle"] button {
+            background: rgba(255, 255, 255, 0.54) !important;
+            border: 1px solid rgba(216, 224, 234, 0.74) !important;
             border-radius: 999px !important;
             height: 2rem !important;
+            max-height: 2rem !important;
+            max-width: 2rem !important;
             min-height: 2rem !important;
+            min-width: 2rem !important;
             padding: 0 !important;
             width: 2rem !important;
         }
