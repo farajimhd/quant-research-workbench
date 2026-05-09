@@ -5,7 +5,7 @@ import re
 import shutil
 import sys
 import traceback
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.backtest.config import BacktestConfig
+from src.backtest.data.minute_bars import add_market_time_columns, minute_file_path
 from src.backtest.metrics import compute_summary
 from src.backtest.indicators import add_standard_indicators
 from src.backtest.results import list_runs, read_run_metadata
@@ -28,6 +30,10 @@ from src.strategies.registry import available_strategies
 
 DEFAULT_DATA_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1")
 DEFAULT_OUTPUT_ROOT = Path("D:/TradingData/qq-momentum-trading/runs")
+CHART_EXTENDED_START_MINUTE = 4 * 60
+CHART_REGULAR_START_MINUTE = 9 * 60 + 30
+CHART_REGULAR_END_MINUTE = 16 * 60
+CHART_EXTENDED_END_MINUTE = 20 * 60
 
 STRATEGY_DESCRIPTIONS = {
     "orb_5m_momentum": (
@@ -398,6 +404,17 @@ def add_chart_indicators(frame: pl.DataFrame) -> pl.DataFrame:
     return add_standard_indicators(frame.sort(["ticker", "bar_time_market"]))
 
 
+def date_strings_between(start: str, end: str) -> list[str]:
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end)
+    values = []
+    cursor = start_date
+    while cursor <= end_date:
+        values.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    return values
+
+
 def artifact_mtime(run_dir: Path) -> float:
     if not run_dir.exists():
         return 0.0
@@ -423,6 +440,101 @@ def load_run_artifacts(run_dir_value: str, cache_key: float) -> dict[str, Any]:
         "bars_5m": add_chart_indicators(safe_read_parquet(run_dir / "symbol_bars_5m.parquet")),
     }
     return data
+
+
+def chart_session_dates(data: dict[str, Any], period: str) -> list[str]:
+    if period != "Whole Run":
+        return [period]
+    config = data.get("metadata", {}).get("config", {})
+    if config.get("start_date") and config.get("end_date"):
+        return date_strings_between(str(config["start_date"]), str(config["end_date"]))
+    bars = data.get("bars_1m", pl.DataFrame())
+    if not bars.is_empty() and "session_date" in bars.columns:
+        return bars.select("session_date").unique().sort("session_date")["session_date"].cast(pl.Utf8).to_list()
+    return []
+
+
+def chart_source_config(data: dict[str, Any]) -> tuple[str, float]:
+    config = data.get("metadata", {}).get("config", {})
+    data_root = str(config.get("data_root") or DEFAULT_DATA_ROOT)
+    market_offset = float(config.get("market_utc_offset_hours", -4.0))
+    return data_root, market_offset
+
+
+def consolidate_extended_chart_five_minute(minute_bars: pl.DataFrame) -> pl.DataFrame:
+    if minute_bars.is_empty():
+        return minute_bars
+    return (
+        minute_bars.with_columns(((pl.col("minute_of_day") // 5) * 5).alias("five_minute_bucket"))
+        .group_by(["ticker", "session_date", "five_minute_bucket"])
+        .agg(
+            pl.col("open").first().alias("open"),
+            pl.col("high").max().alias("high"),
+            pl.col("low").min().alias("low"),
+            pl.col("close").last().alias("close"),
+            pl.col("volume").sum().alias("volume"),
+            pl.col("transactions").sum().alias("transactions"),
+            pl.col("window_start").min().alias("window_start"),
+            pl.col("bar_time_utc").min().alias("bar_time_utc"),
+            pl.col("bar_time_market").min().alias("bar_time_market"),
+            pl.col("minute_of_day").min().alias("minute_of_day"),
+        )
+        .sort(["ticker", "bar_time_market"])
+        .pipe(add_standard_indicators)
+    )
+
+
+@st.cache_data(show_spinner=False)
+def load_extended_chart_bars(
+    data_root_value: str,
+    market_offset_hours: float,
+    session_dates: tuple[str, ...],
+    ticker: str,
+    timeframe: str,
+) -> pl.DataFrame:
+    minute_frames = []
+    for session_date_value in session_dates:
+        session = date.fromisoformat(session_date_value)
+        config = BacktestConfig(
+            strategy_name="chart_loader",
+            start_date=session,
+            end_date=session,
+            data_root=Path(data_root_value),
+            market_utc_offset_hours=market_offset_hours,
+            session_start_minute=0,
+            session_end_minute=24 * 60,
+        )
+        source = minute_file_path(config.data_root, session)
+        if not source.exists():
+            continue
+        frame = (
+            pl.scan_csv(source)
+            .filter(pl.col("ticker") == ticker)
+            .select("ticker", "volume", "open", "close", "high", "low", "window_start", "transactions")
+            .collect()
+        )
+        if frame.is_empty():
+            continue
+        frame = (
+            add_market_time_columns(frame, config)
+            .filter(
+                (pl.col("minute_of_day") >= CHART_EXTENDED_START_MINUTE)
+                & (pl.col("minute_of_day") < CHART_EXTENDED_END_MINUTE)
+            )
+            .sort(["ticker", "bar_time_market"])
+            .with_columns(pl.lit(session.isoformat()).alias("session_date"))
+            .pipe(add_standard_indicators)
+        )
+        minute_frames.append(frame)
+
+    if not minute_frames:
+        return pl.DataFrame()
+    if timeframe == "5m":
+        return pl.concat(
+            [consolidate_extended_chart_five_minute(frame) for frame in minute_frames],
+            how="diagonal",
+        ).sort(["ticker", "bar_time_market"])
+    return pl.concat(minute_frames, how="diagonal").sort(["ticker", "bar_time_market"])
 
 
 def money(value) -> str:
@@ -863,6 +975,43 @@ def numeric_value(value) -> float | None:
         return None
 
 
+def minute_of_day_from_row(row: dict) -> int | None:
+    value = row.get("minute_of_day")
+    if value is not None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    parsed = parse_datetime_value(row.get("bar_time_market"))
+    if not parsed:
+        return None
+    return parsed.hour * 60 + parsed.minute
+
+
+def extended_session_regions(rows: list[dict], candles: list[dict]) -> list[dict]:
+    del candles
+    regions: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        timestamp = chart_timestamp(row.get("bar_time_market"))
+        minute = minute_of_day_from_row(row)
+        parsed = parse_datetime_value(row.get("bar_time_market"))
+        if not timestamp or minute is None or not parsed:
+            continue
+        if CHART_EXTENDED_START_MINUTE <= minute < CHART_REGULAR_START_MINUTE:
+            phase = "premarket"
+            color = "rgba(251, 146, 60, 0.16)"
+        elif CHART_REGULAR_END_MINUTE <= minute < CHART_EXTENDED_END_MINUTE:
+            phase = "afterhours"
+            color = "rgba(96, 165, 250, 0.15)"
+        else:
+            continue
+        key = (parsed.date().isoformat(), phase)
+        region = regions.setdefault(key, {"start": timestamp, "end": timestamp, "color": color})
+        region["start"] = min(region["start"], timestamp)
+        region["end"] = max(region["end"], timestamp)
+    return sorted(regions.values(), key=lambda item: item["start"])
+
+
 def hex_to_rgba(hex_color: str, opacity: float) -> str:
     color = hex_color.lstrip("#")
     if len(color) != 6:
@@ -1141,6 +1290,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
         "overlays": overlay_series,
         "oscillators": oscillator_series,
         "markers": markers,
+        "sessionRegions": extended_session_regions(rows, candles),
     }
 
 
@@ -1160,8 +1310,8 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     }}
     </style>
     <div id="{chart_id}" style="height:{total_height}px;width:100%;display:flex;flex-direction:column;gap:{pane_gap}px;position:relative;">
-        <div id="{chart_id}-price" style="height:{price_height}px;width:100%;"></div>
-        <div id="{chart_id}-osc" style="height:{oscillator_height}px;width:100%;display:{'block' if oscillator_height else 'none'};"></div>
+        <div id="{chart_id}-price" style="height:{price_height}px;width:100%;position:relative;"></div>
+        <div id="{chart_id}-osc" style="height:{oscillator_height}px;width:100%;position:relative;display:{'block' if oscillator_height else 'none'};"></div>
     </div>
     <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
     <script>
@@ -1255,6 +1405,51 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             scaleMargins: {{ top: 0.12, bottom: 0.12 }}
         }}
     }}) : null;
+
+    function createSessionLayer(parent) {{
+        if (!parent) return null;
+        const layer = document.createElement("div");
+        layer.style.position = "absolute";
+        layer.style.top = "0";
+        layer.style.left = "0";
+        layer.style.right = `${{indicatorLabelWidth}}px`;
+        layer.style.bottom = "0";
+        layer.style.pointerEvents = "none";
+        layer.style.zIndex = "1";
+        parent.appendChild(layer);
+        return layer;
+    }}
+
+    const priceSessionLayer = createSessionLayer(priceContainer);
+    const oscillatorSessionLayer = oscillatorChart ? createSessionLayer(oscillatorContainer) : null;
+
+    function drawSessionLayer(layer, chartInstance) {{
+        if (!layer || !chartInstance) return;
+        layer.replaceChildren();
+        const width = Math.max(0, layer.clientWidth);
+        (payload.sessionRegions || []).forEach(region => {{
+            const start = chartInstance.timeScale().timeToCoordinate(region.start);
+            const end = chartInstance.timeScale().timeToCoordinate(region.end);
+            if (start === null && end === null) return;
+            const left = Math.max(0, Math.min(start ?? 0, end ?? width));
+            const right = Math.min(width, Math.max(start ?? 0, end ?? width));
+            if (right <= left) return;
+            const block = document.createElement("div");
+            block.style.position = "absolute";
+            block.style.top = "0";
+            block.style.bottom = "0";
+            block.style.left = `${{left}}px`;
+            block.style.width = `${{right - left}}px`;
+            block.style.background = region.color;
+            block.style.pointerEvents = "none";
+            layer.appendChild(block);
+        }});
+    }}
+
+    function drawSessionRegions() {{
+        drawSessionLayer(priceSessionLayer, chart);
+        if (oscillatorChart) drawSessionLayer(oscillatorSessionLayer, oscillatorChart);
+    }}
 
     const candleSeries = chart.addCandlestickSeries({{
         upColor: candleSettings.upColor,
@@ -1730,9 +1925,11 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
 
     function alignTimeScales() {{
         chart.timeScale().fitContent();
-        if (!oscillatorChart) return;
-        const range = chart.timeScale().getVisibleLogicalRange();
-        if (range) oscillatorChart.timeScale().setVisibleLogicalRange(range);
+        if (oscillatorChart) {{
+            const range = chart.timeScale().getVisibleLogicalRange();
+            if (range) oscillatorChart.timeScale().setVisibleLogicalRange(range);
+        }}
+        requestAnimationFrame(drawSessionRegions);
     }}
     alignTimeScales();
     let syncing = false;
@@ -1743,6 +1940,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             requestAnimationFrame(() => {{
                 target.timeScale().setVisibleLogicalRange(range);
                 syncing = false;
+                drawSessionRegions();
             }});
         }});
     }}
@@ -1784,6 +1982,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             renderCrosshairAxisLabels(param.time);
         }});
     }}
+    chart.timeScale().subscribeVisibleLogicalRangeChange(() => requestAnimationFrame(drawSessionRegions));
     function isChartExpanded() {{
         return document.fullscreenElement === container || window.innerHeight > {total_height + 80};
     }}
@@ -1810,6 +2009,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         chart.applyOptions({{ width, height: heights.price }});
         if (oscillatorChart) oscillatorChart.applyOptions({{ width, height: heights.oscillator }});
         alignTimeScales();
+        requestAnimationFrame(drawSessionRegions);
     }}
 
     window.addEventListener("resize", resizeCharts);
@@ -1842,6 +2042,12 @@ def candle_chart(
 
 
 def bars_for(data: dict, period: str, ticker: str, timeframe: str) -> pl.DataFrame:
+    data_root, market_offset = chart_source_config(data)
+    session_dates = tuple(chart_session_dates(data, period))
+    if session_dates and ticker:
+        extended_bars = load_extended_chart_bars(data_root, market_offset, session_dates, ticker, timeframe)
+        if not extended_bars.is_empty():
+            return extended_bars
     key = "bars_5m" if timeframe == "5m" else "bars_1m"
     bars = filter_df(data[key], period)
     if not bars.is_empty() and "ticker" in bars.columns:
