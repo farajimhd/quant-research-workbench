@@ -187,6 +187,8 @@ Feature artifacts are split by group so consumers can load only what they need. 
 - `mfi14`: money flow index using 14-bar positive/negative typical money flow.
 - `cmf20`: Chaikin money flow over 20 bars.
 - `volume_z20`: 20-bar z-score of volume.
+- `transactions_sma20`: 20-bar average transaction count.
+- `transactions_z20`: 20-bar z-score of transaction count.
 - `liquidity_band_25bp_volume`: 20-bar rolling volume proxy for near-price liquidity.
 - `liquidity_band_50bp_volume`: 50-bar rolling volume proxy.
 - `liquidity_band_100bp_volume`: 100-bar rolling volume proxy.
@@ -208,6 +210,32 @@ Feature artifacts are split by group so consumers can load only what they need. 
 - `pullback_from_high20_pct`: `close / donchian_high20 - 1`.
 - `reclaim_vwap`: close crosses from below/equal VWAP to above VWAP.
 - `breakdown_vwap`: close crosses from above/equal VWAP to below VWAP.
+
+### Shock
+
+The shock group separates price abnormality from participation abnormality, then records their recent sequence. It is designed for events where price wakes up first and volume may confirm immediately or several minutes later.
+
+- `return_shock`: true when `return_z20 >= 2.5` and the current return is positive.
+- `range_shock`: true when `range_z20 >= 2.5` and the candle body is positive.
+- `structure_break_shock`: true when price breaks an important local structure level: 20-bar high, prior day high so far, premarket high, 5-minute opening-range high, or VWAP reclaim.
+- `price_shock`: true when return/range/displacement/structure shock occurs and close location is at least 0.55.
+- `price_shock_score`: bounded 0-1 score from return z-score, range z-score, close location, structure break, and bullish displacement.
+- `relative_volume_shock`: true when `relative_volume20 >= 3.0`.
+- `dollar_volume_shock`: true when `relative_dollar_volume20 >= 3.0`.
+- `transactions_shock`: true when `transactions_z20 >= 2.5`.
+- `volume_shock`: true when relative volume, relative dollar volume, transaction shock, or `volume_z20 >= 2.5` is true.
+- `volume_shock_score`: bounded 0-1 score from volume z-score, relative volume, relative dollar volume, and transaction z-score.
+- `bars_since_price_shock`: bars since the latest price shock for the ticker.
+- `bars_since_volume_shock`: bars since the latest volume shock for the ticker.
+- `minutes_since_price_shock`: approximate minutes since latest price shock.
+- `minutes_since_volume_shock`: approximate minutes since latest volume shock.
+- `price_shock_recent`: true when a price shock occurred within the last 15 bars.
+- `volume_shock_recent`: true when a volume shock occurred within the last 15 bars.
+- `price_shock_before_volume_shock`: true when the current volume shock confirms a recent earlier price shock.
+- `confirmed_price_volume_shock`: true when a current volume shock occurs while a price shock is recent.
+- `shock_confirmation_delay_minutes`: minutes from recent price shock to confirming volume shock when confirmed.
+- `shock_confirmation_type`: one of `SAME_BAR`, `PRICE_FIRST_IMMEDIATE_VOLUME`, `PRICE_FIRST_DELAYED_VOLUME`, `VOLUME_FIRST_BREAKOUT`, `PRICE_ONLY_UNCONFIRMED`, `VOLUME_ONLY`, or `NONE`.
+- `price_volume_shock_score`: bounded 0-1 combined score from price score, volume score, and confirmation speed.
 
 ### Fair Value Gaps
 
@@ -347,6 +375,7 @@ Volume shock is currently detected when any of these future conditions is true:
 `supervision_method` creates one row for each `(bar_id, trade_method)`. Methods define different horizon windows:
 
 - `SCALP`: 1 to 10 minutes.
+- `PRICE_VOLUME_SHOCK`: 1 to 45 minutes.
 - `MOMENTUM_SCALP`: 5 to 30 minutes.
 - `DAY_TRADE`: 30 minutes to end of available session data.
 - `SWING_TECHNICAL`: 1 to 20 trading days by bar count approximation.
@@ -371,6 +400,20 @@ Columns:
 - `method_exit_signal`: true when `oracle_action` is `IGNORE`.
 - `method_confidence`: bounded score from best return, drawdown before best, and path efficiency.
 - `oracle_action`: `ENTER_NOW`, `WATCH`, or `IGNORE`.
+- `current_price_shock`: copied current-bar price shock flag.
+- `current_volume_shock`: copied current-bar volume shock flag.
+- `current_confirmed_price_volume_shock`: copied current-bar confirmed price-volume shock flag.
+- `shock_confirmation_type`: current or inferred confirmation type for the shock method.
+- `shock_confirmation_delay_minutes`: current or inferred minutes from price shock to volume confirmation.
+- `shock_price_score`: copied current-bar price shock score.
+- `shock_volume_score`: copied current-bar volume shock score.
+- `shock_score`: copied current-bar combined price-volume shock score.
+- `shock_drawdown_before_confirmation`: worst drawdown before the confirming shock bar when confirmation occurs in the future window.
+- `shock_return_after_confirmation`: best high return after confirmation, measured from the confirmation close.
+- `shock_best_exit_after_confirmation_bar_id`: future bar id of the best post-confirmation high.
+- `shock_best_exit_after_confirmation_time_utc`: UTC timestamp of the best post-confirmation high.
+
+`PRICE_VOLUME_SHOCK` uses the same method-supervision row shape but overrides confidence with shock context, confirmation speed, and post-signal price path. The method is intentionally long-only and is meant to capture price-first events where volume arrives on the same bar, within the next 1-2 bars, or later within the 45-minute method window.
 
 ### Scanner Supervision
 
@@ -384,6 +427,7 @@ Columns:
 - `method_best_horizon_minutes`: copied from method supervision.
 - `method_confidence`: copied from method supervision.
 - `oracle_action`: copied from method supervision.
+- Shock columns such as `current_price_shock`, `current_volume_shock`, `current_confirmed_price_volume_shock`, `shock_confirmation_type`, `shock_confirmation_delay_minutes`, `shock_score`, `shock_return_after_confirmation`, and `shock_drawdown_before_confirmation` are copied from method supervision when available.
 - `is_top_1`, `is_top_3`, `is_top_5`, `is_top_10`: rank cutoffs.
 - `is_top_1pct`, `is_top_5pct`: percentile cutoffs.
 

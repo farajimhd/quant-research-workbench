@@ -10,8 +10,8 @@ DEFAULT_RAW_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_a
 DEFAULT_PROCESSED_ROOT = Path("D:/TradingData/qq-momentum-trading/market_data")
 EXCHANGE_TIME_ZONE = "America/New_York"
 SCHEMA_VERSION = 1
-FEATURE_VERSION = 1
-SUPERVISION_VERSION = 1
+FEATURE_VERSION = 2
+SUPERVISION_VERSION = 2
 
 TIMEFRAMES: dict[str, int | str] = {
     "1m": 1,
@@ -32,6 +32,7 @@ FEATURE_GROUPS = [
     "volatility",
     "volume_liquidity",
     "price_action",
+    "shock",
     "fvg",
     "market_structure",
     "order_blocks",

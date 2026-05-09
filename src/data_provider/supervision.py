@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import ceil
+from math import ceil, isfinite
 from typing import Iterable
 
 import polars as pl
@@ -35,6 +35,7 @@ FIXED_HORIZONS_MINUTES = [
     480,
 ]
 METHOD_WINDOWS = {
+    "PRICE_VOLUME_SHOCK": (1, 45),
     "SCALP": (1, 10),
     "MOMENTUM_SCALP": (5, 30),
     "DAY_TRADE": (30, None),
@@ -81,9 +82,14 @@ def _float(row: dict, key: str, default: float = 0.0) -> float:
     if value is None:
         return default
     try:
-        return float(value)
+        numeric = float(value)
     except (TypeError, ValueError):
         return default
+    return numeric if isfinite(numeric) else default
+
+
+def _bool(row: dict, key: str) -> bool:
+    return bool(row.get(key, False))
 
 
 def _volume_shock(row: dict, current_volume: float, current_dollar_volume: float) -> bool:
@@ -100,6 +106,16 @@ def _liquidity_score(max_relative_volume: float, max_volume_z: float, capacity_s
     relative_component = min(max_relative_volume / 5.0, 1.0)
     z_component = min(max(max_volume_z, 0.0) / 4.0, 1.0)
     return max(0.0, min(1.0, (relative_component * 0.40) + (z_component * 0.30) + (capacity_score * 0.30)))
+
+
+def _shock_confirmation_type(delay_bars: int | None) -> str:
+    if delay_bars is None:
+        return "PRICE_ONLY_UNCONFIRMED"
+    if delay_bars <= 0:
+        return "SAME_BAR"
+    if delay_bars <= 2:
+        return "PRICE_FIRST_IMMEDIATE_VOLUME"
+    return "PRICE_FIRST_DELAYED_VOLUME"
 
 
 def build_bar_supervision(frame: pl.DataFrame, horizons_minutes: Iterable[int] = FIXED_HORIZONS_MINUTES) -> pl.DataFrame:
@@ -225,11 +241,39 @@ def build_method_supervision(frame: pl.DataFrame) -> pl.DataFrame:
         for index, row in enumerate(rows):
             entry = float(row["close"])
             for method, (min_minutes, max_minutes) in METHOD_WINDOWS.items():
-                min_bars = max(1, int(min_minutes / step))
-                max_bars = None if max_minutes is None else max(1, int(max_minutes / step))
+                min_bars = max(1, ceil(min_minutes / step))
+                max_bars = None if max_minutes is None else max(1, ceil(max_minutes / step))
                 future = _future_window(rows, index, min_bars, max_bars)
                 highs = [float(item["high"]) for item in future]
                 lows = [float(item["low"]) for item in future]
+                current_price_shock = _bool(row, "price_shock")
+                current_volume_shock = _bool(row, "volume_shock")
+                current_confirmed_shock = _bool(row, "confirmed_price_volume_shock")
+                shock_confirmation_type = row.get("shock_confirmation_type") or "NONE"
+                shock_confirmation_delay = row.get("shock_confirmation_delay_minutes")
+                shock_score = _float(row, "price_volume_shock_score")
+                shock_price_score = _float(row, "price_shock_score")
+                shock_volume_score = _float(row, "volume_shock_score")
+                future_volume_confirm_index = next((offset for offset, item in enumerate(future) if _bool(item, "volume_shock")), None)
+                future_price_confirm_index = next((offset for offset, item in enumerate(future) if _bool(item, "price_shock")), None)
+                if method == "PRICE_VOLUME_SHOCK" and shock_confirmation_type == "NONE":
+                    if current_price_shock and future_volume_confirm_index is not None:
+                        shock_confirmation_type = _shock_confirmation_type(future_volume_confirm_index + min_bars)
+                        shock_confirmation_delay = (future_volume_confirm_index + min_bars) * step
+                    elif current_volume_shock and future_price_confirm_index is not None:
+                        shock_confirmation_type = "VOLUME_FIRST_BREAKOUT"
+                        shock_confirmation_delay = (future_price_confirm_index + min_bars) * step
+                    elif current_price_shock:
+                        shock_confirmation_type = "PRICE_ONLY_UNCONFIRMED"
+                    elif current_volume_shock:
+                        shock_confirmation_type = "VOLUME_ONLY"
+                confirmation_index = None
+                if current_confirmed_shock:
+                    confirmation_index = -1
+                elif current_price_shock and future_volume_confirm_index is not None:
+                    confirmation_index = future_volume_confirm_index
+                elif current_volume_shock and future_price_confirm_index is not None:
+                    confirmation_index = future_price_confirm_index
                 if highs:
                     best_high = max(highs)
                     best_index = highs.index(best_high)
@@ -247,6 +291,53 @@ def build_method_supervision(frame: pl.DataFrame) -> pl.DataFrame:
                     efficiency = 0.0
                     confidence = 0.0
                     action = "IGNORE"
+                shock_drawdown_before_confirmation = None
+                shock_return_after_confirmation = None
+                shock_best_exit_after_confirmation_bar_id = None
+                shock_best_exit_after_confirmation_time_utc = None
+                if method == "PRICE_VOLUME_SHOCK":
+                    confirmation_speed = 0.0
+                    if shock_confirmation_delay is not None:
+                        confirmation_speed = max(0.0, min(1.0, 1.0 - (float(shock_confirmation_delay) / 45.0)))
+                    if confirmation_index == -1:
+                        post_confirmation = future
+                        lows_before_confirmation = []
+                    elif confirmation_index is not None:
+                        post_confirmation = future[confirmation_index:]
+                        lows_before_confirmation = lows[: confirmation_index + 1]
+                    else:
+                        post_confirmation = []
+                        lows_before_confirmation = lows
+                    if lows_before_confirmation and entry:
+                        shock_drawdown_before_confirmation = (min(lows_before_confirmation) / entry) - 1.0
+                    if post_confirmation:
+                        confirm_price = entry if confirmation_index == -1 else _float(post_confirmation[0], "close", entry)
+                        post_highs = [_float(item, "high", confirm_price) for item in post_confirmation]
+                        post_best = max(post_highs)
+                        post_best_index = post_highs.index(post_best)
+                        shock_return_after_confirmation = (post_best / confirm_price) - 1.0 if confirm_price else 0.0
+                        shock_best_exit_after_confirmation_bar_id = post_confirmation[post_best_index].get("bar_id")
+                        shock_best_exit_after_confirmation_time_utc = post_confirmation[post_best_index].get("bar_time_utc")
+                    shock_context_score = max(shock_score, (shock_price_score * 0.55) + (shock_volume_score * 0.45))
+                    confirmation_bonus = 0.15 if shock_confirmation_type in {"SAME_BAR", "PRICE_FIRST_IMMEDIATE_VOLUME"} else 0.08 if shock_confirmation_type == "PRICE_FIRST_DELAYED_VOLUME" else 0.0
+                    confidence = max(
+                        0.0,
+                        min(
+                            1.0,
+                            (shock_context_score * 0.45)
+                            + (_quality(entry, best_return, mae_before_best, efficiency) * 0.35)
+                            + (confirmation_speed * 0.12)
+                            + confirmation_bonus,
+                        ),
+                    )
+                    if shock_context_score < 0.35 or shock_confirmation_type in {"NONE", "VOLUME_ONLY"}:
+                        action = "IGNORE"
+                    elif confidence >= 0.68 and best_return > 0.004:
+                        action = "ENTER_NOW"
+                    elif confidence >= 0.45:
+                        action = "WATCH"
+                    else:
+                        action = "IGNORE"
                 rows_out.append(
                     {
                         "bar_id": row["bar_id"],
@@ -272,6 +363,18 @@ def build_method_supervision(frame: pl.DataFrame) -> pl.DataFrame:
                         "method_exit_signal": action == "IGNORE",
                         "method_confidence": confidence,
                         "oracle_action": action,
+                        "current_price_shock": current_price_shock,
+                        "current_volume_shock": current_volume_shock,
+                        "current_confirmed_price_volume_shock": current_confirmed_shock,
+                        "shock_confirmation_type": shock_confirmation_type,
+                        "shock_confirmation_delay_minutes": shock_confirmation_delay,
+                        "shock_price_score": shock_price_score,
+                        "shock_volume_score": shock_volume_score,
+                        "shock_score": shock_score,
+                        "shock_drawdown_before_confirmation": shock_drawdown_before_confirmation,
+                        "shock_return_after_confirmation": shock_return_after_confirmation,
+                        "shock_best_exit_after_confirmation_bar_id": shock_best_exit_after_confirmation_bar_id,
+                        "shock_best_exit_after_confirmation_time_utc": shock_best_exit_after_confirmation_time_utc,
                     }
                 )
     return pl.DataFrame(rows_out, infer_schema_length=None) if rows_out else pl.DataFrame()
@@ -312,6 +415,14 @@ def build_scanner_supervision(method_supervision: pl.DataFrame) -> pl.DataFrame:
             "method_best_horizon_minutes",
             "method_confidence",
             "oracle_action",
+            "current_price_shock",
+            "current_volume_shock",
+            "current_confirmed_price_volume_shock",
+            "shock_confirmation_type",
+            "shock_confirmation_delay_minutes",
+            "shock_score",
+            "shock_return_after_confirmation",
+            "shock_drawdown_before_confirmation",
             "is_top_1",
             "is_top_3",
             "is_top_5",

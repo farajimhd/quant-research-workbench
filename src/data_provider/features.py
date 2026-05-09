@@ -107,6 +107,8 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "mfi14",
         "cmf20",
         "volume_z20",
+        "transactions_sma20",
+        "transactions_z20",
         "liquidity_band_25bp_volume",
         "liquidity_band_50bp_volume",
         "liquidity_band_100bp_volume",
@@ -128,6 +130,30 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "pullback_from_high20_pct",
         "reclaim_vwap",
         "breakdown_vwap",
+    ],
+    "shock": [
+        "bar_id",
+        "return_shock",
+        "range_shock",
+        "structure_break_shock",
+        "price_shock",
+        "price_shock_score",
+        "relative_volume_shock",
+        "dollar_volume_shock",
+        "transactions_shock",
+        "volume_shock",
+        "volume_shock_score",
+        "bars_since_price_shock",
+        "bars_since_volume_shock",
+        "minutes_since_price_shock",
+        "minutes_since_volume_shock",
+        "price_shock_recent",
+        "volume_shock_recent",
+        "price_shock_before_volume_shock",
+        "confirmed_price_volume_shock",
+        "shock_confirmation_delay_minutes",
+        "shock_confirmation_type",
+        "price_volume_shock_score",
     ],
     "fvg": [
         "bar_id",
@@ -312,9 +338,11 @@ def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
             pl.col("low").rolling_min(20).over("ticker").alias("donchian_low20"),
             pl.col("volume").rolling_mean(20).over("ticker").alias("volume_sma20"),
             pl.col("dollar_volume").rolling_mean(20).over("ticker").alias("dollar_volume_sma20"),
+            pl.col("transactions").rolling_mean(20).over("ticker").alias("transactions_sma20"),
             rolling_z("return_1", 20, "return_z20"),
             rolling_z("bar_range", 20, "range_z20"),
             rolling_z("volume", 20, "volume_z20"),
+            rolling_z("transactions", 20, "transactions_z20"),
         )
         .with_columns(
             (pl.col("bb_mid20") + 2.0 * pl.col("_bb_std20")).alias("bb_upper20"),
@@ -405,6 +433,121 @@ def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
         .with_columns(
             pl.when(pl.col("bullish_order_block_high") > 0).then((pl.col("close") / pl.col("bullish_order_block_high")) - 1.0).otherwise(None).alias("distance_to_demand_pct"),
             pl.when(pl.col("bearish_order_block_low") > 0).then((pl.col("close") / pl.col("bearish_order_block_low")) - 1.0).otherwise(None).alias("distance_to_supply_pct"),
+        )
+    )
+    prior_day_high = pl.col("day_high_so_far").shift(1).over(["ticker", "session_date"])
+    frame = (
+        frame.with_columns(
+            ((pl.col("return_z20") >= 2.5) & (pl.col("return_1") > 0)).alias("return_shock"),
+            ((pl.col("range_z20") >= 2.5) & (pl.col("body") > 0)).alias("range_shock"),
+            (
+                pl.col("breaks_high20")
+                | ((prior_day_high > 0) & (pl.col("close") > prior_day_high))
+                | ((pl.col("premarket_high") > 0) & (pl.col("close") > pl.col("premarket_high")))
+                | ((pl.col("or_5m_high") > 0) & (pl.col("close") > pl.col("or_5m_high")))
+                | pl.col("reclaim_vwap")
+            ).alias("structure_break_shock"),
+            (pl.col("relative_volume20") >= 3.0).alias("relative_volume_shock"),
+            (pl.col("relative_dollar_volume20") >= 3.0).alias("dollar_volume_shock"),
+            (pl.col("transactions_z20") >= 2.5).alias("transactions_shock"),
+        )
+        .with_columns(
+            (
+                (pl.col("return_shock") | pl.col("range_shock") | pl.col("bullish_displacement") | pl.col("structure_break_shock"))
+                & (pl.col("close_location") >= 0.55)
+            ).alias("price_shock"),
+            (
+                pl.col("relative_volume_shock")
+                | pl.col("dollar_volume_shock")
+                | pl.col("transactions_shock")
+                | (pl.col("volume_z20") >= 2.5)
+            ).alias("volume_shock"),
+        )
+        .with_columns(
+            pl.min_horizontal(
+                pl.lit(1.0),
+                (pl.max_horizontal(pl.col("return_z20"), pl.lit(0.0)) / 5.0 * 0.30)
+                + (pl.max_horizontal(pl.col("range_z20"), pl.lit(0.0)) / 5.0 * 0.25)
+                + (pl.col("close_location").clip(0.0, 1.0) * 0.15)
+                + (pl.col("structure_break_shock").cast(pl.Float64) * 0.15)
+                + (pl.col("bullish_displacement").cast(pl.Float64) * 0.15),
+            ).alias("price_shock_score"),
+            pl.min_horizontal(
+                pl.lit(1.0),
+                (pl.max_horizontal(pl.col("volume_z20"), pl.lit(0.0)) / 5.0 * 0.30)
+                + (pl.min_horizontal(pl.col("relative_volume20"), pl.lit(5.0)) / 5.0 * 0.25)
+                + (pl.min_horizontal(pl.col("relative_dollar_volume20"), pl.lit(5.0)) / 5.0 * 0.25)
+                + (pl.max_horizontal(pl.col("transactions_z20"), pl.lit(0.0)) / 5.0 * 0.20),
+            ).alias("volume_shock_score"),
+            pl.cum_count("close").over("ticker").cast(pl.Int32).alias("_bar_seq"),
+            pl.when(pl.col("timeframe").str.ends_with("m"))
+            .then(pl.col("timeframe").str.strip_suffix("m").cast(pl.Int32, strict=False))
+            .when(pl.col("timeframe").str.ends_with("h"))
+            .then(pl.col("timeframe").str.strip_suffix("h").cast(pl.Int32, strict=False) * 60)
+            .when(pl.col("timeframe") == "1d")
+            .then(pl.lit(390))
+            .when(pl.col("timeframe") == "1mo")
+            .then(pl.lit(8190))
+            .otherwise(pl.lit(1))
+            .fill_null(1)
+            .alias("_timeframe_step_minutes"),
+        )
+        .with_columns(
+            pl.when(pl.col("price_shock")).then(pl.col("_bar_seq")).otherwise(None).forward_fill().over("ticker").alias("_last_price_shock_seq"),
+            pl.when(pl.col("volume_shock")).then(pl.col("_bar_seq")).otherwise(None).forward_fill().over("ticker").alias("_last_volume_shock_seq"),
+        )
+        .with_columns(
+            pl.when(pl.col("_last_price_shock_seq").is_not_null())
+            .then(pl.col("_bar_seq") - pl.col("_last_price_shock_seq"))
+            .otherwise(None)
+            .alias("bars_since_price_shock"),
+            pl.when(pl.col("_last_volume_shock_seq").is_not_null())
+            .then(pl.col("_bar_seq") - pl.col("_last_volume_shock_seq"))
+            .otherwise(None)
+            .alias("bars_since_volume_shock"),
+        )
+        .with_columns(
+            (pl.col("bars_since_price_shock") * pl.col("_timeframe_step_minutes")).alias("minutes_since_price_shock"),
+            (pl.col("bars_since_volume_shock") * pl.col("_timeframe_step_minutes")).alias("minutes_since_volume_shock"),
+            (pl.col("bars_since_price_shock").is_between(0, 15)).alias("price_shock_recent"),
+            (pl.col("bars_since_volume_shock").is_between(0, 15)).alias("volume_shock_recent"),
+        )
+        .with_columns(
+            (pl.col("volume_shock") & (pl.col("bars_since_price_shock") > 0) & (pl.col("bars_since_price_shock") <= 15)).alias("price_shock_before_volume_shock"),
+            (pl.col("volume_shock") & pl.col("price_shock_recent")).alias("confirmed_price_volume_shock"),
+        )
+        .with_columns(
+            pl.when(pl.col("confirmed_price_volume_shock"))
+            .then(pl.col("minutes_since_price_shock"))
+            .otherwise(None)
+            .alias("shock_confirmation_delay_minutes"),
+            pl.when(pl.col("price_shock") & pl.col("volume_shock"))
+            .then(pl.lit("SAME_BAR"))
+            .when(pl.col("confirmed_price_volume_shock") & (pl.col("bars_since_price_shock") <= 2))
+            .then(pl.lit("PRICE_FIRST_IMMEDIATE_VOLUME"))
+            .when(pl.col("confirmed_price_volume_shock"))
+            .then(pl.lit("PRICE_FIRST_DELAYED_VOLUME"))
+            .when(pl.col("price_shock") & pl.col("volume_shock_recent"))
+            .then(pl.lit("VOLUME_FIRST_BREAKOUT"))
+            .when(pl.col("price_shock"))
+            .then(pl.lit("PRICE_ONLY_UNCONFIRMED"))
+            .when(pl.col("volume_shock"))
+            .then(pl.lit("VOLUME_ONLY"))
+            .otherwise(pl.lit("NONE"))
+            .alias("shock_confirmation_type"),
+        )
+        .with_columns(
+            pl.min_horizontal(
+                pl.lit(1.0),
+                (pl.col("price_shock_score") * 0.45)
+                + (pl.col("volume_shock_score") * 0.45)
+                + (
+                    pl.when(pl.col("confirmed_price_volume_shock"))
+                    .then(1.0 - pl.min_horizontal(pl.col("bars_since_price_shock") / 15.0, pl.lit(1.0)))
+                    .otherwise(0.0)
+                    * 0.10
+                ),
+            ).alias("price_volume_shock_score")
         )
     )
     return frame.drop([col for col in frame.columns if col.startswith("_")])
