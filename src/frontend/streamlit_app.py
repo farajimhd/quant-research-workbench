@@ -266,6 +266,10 @@ def install_css() -> None:
     st.markdown(
         """
         <style>
+        @import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap");
+        html, body, body *, .stApp, button, input, textarea, select {
+            font-family: "Inter" !important;
+        }
         .block-container {
             max-width: 100%;
             padding: 2.25rem 2rem 2rem;
@@ -275,6 +279,7 @@ def install_css() -> None:
             border-right: 1px solid #e5e7eb;
             flex: 0 0 22rem !important;
             min-width: 22rem !important;
+            top: 0 !important;
             width: 22rem !important;
         }
         [data-testid="stSidebar"] > div,
@@ -282,15 +287,21 @@ def install_css() -> None:
             background: #ffffff;
             width: 22rem !important;
         }
+        [data-testid="stSidebarHeader"] {
+            display: none !important;
+            height: 0 !important;
+            min-height: 0 !important;
+            padding: 0 !important;
+        }
         [data-testid="stSidebar"] > div:first-child {
             background: #ffffff;
-            padding: 0.7rem 1.15rem 1.1rem;
+            padding: 0 1.15rem 1.1rem;
         }
         .qq-sidebar-brand {
             display: flex;
             align-items: center;
             gap: 0.78rem;
-            min-height: 5.25rem;
+            min-height: 4.75rem;
             padding: 0 0.3rem;
             margin: 0 -1.15rem 1.05rem;
             padding-left: 1.45rem;
@@ -325,7 +336,7 @@ def install_css() -> None:
         .qq-sidebar-group {
             color: #7a7f87;
             font-size: 0.78rem;
-            font-weight: 750;
+            font-weight: 600;
             letter-spacing: 0.09em;
             line-height: 1;
             padding: 0.95rem 0.55rem 0.55rem;
@@ -350,7 +361,7 @@ def install_css() -> None:
             color: #5f646d;
             box-shadow: none;
             font-size: 1rem;
-            font-weight: 650;
+            font-weight: 400;
             gap: 0.85rem;
             line-height: 1;
         }
@@ -363,7 +374,7 @@ def install_css() -> None:
             background: #f3f4f6 !important;
             color: #111827 !important;
             cursor: default;
-            font-weight: 760;
+            font-weight: 400;
             opacity: 1;
         }
         [data-testid="stSidebar"] button[kind="secondary"]:hover {
@@ -374,7 +385,7 @@ def install_css() -> None:
         [data-testid="stSidebar"] button[kind="primary"] {
             background: #f3f4f6;
             color: #111827;
-            font-weight: 760;
+            font-weight: 400;
         }
         [data-testid="stSidebar"] button[kind="primary"]:hover {
             background: #eceff2;
@@ -398,6 +409,29 @@ def install_css() -> None:
             text-align: left;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_strategy"] button::before,
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_market_data"] button::before {
+            content: "";
+            display: inline-block;
+            width: 1.42rem;
+            height: 1.42rem;
+            flex: 0 0 1.42rem;
+            background-color: currentColor;
+            mask-repeat: no-repeat;
+            mask-position: center;
+            mask-size: 1.25rem 1.25rem;
+            -webkit-mask-repeat: no-repeat;
+            -webkit-mask-position: center;
+            -webkit-mask-size: 1.25rem 1.25rem;
+        }
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_strategy"] button::before {
+            mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V9'/%3E%3Cpath d='M10 19V5'/%3E%3Cpath d='M16 19v-8'/%3E%3Cpath d='M22 19V3'/%3E%3Cpath d='m3 9 7-4 6 6 6-8'/%3E%3C/svg%3E");
+            -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V9'/%3E%3Cpath d='M10 19V5'/%3E%3Cpath d='M16 19v-8'/%3E%3Cpath d='M22 19V3'/%3E%3Cpath d='m3 9 7-4 6 6 6-8'/%3E%3C/svg%3E");
+        }
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_market_data"] button::before {
+            mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cellipse cx='12' cy='5' rx='8' ry='3'/%3E%3Cpath d='M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5'/%3E%3Cpath d='M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3'/%3E%3C/svg%3E");
+            -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cellipse cx='12' cy='5' rx='8' ry='3'/%3E%3Cpath d='M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5'/%3E%3Cpath d='M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3'/%3E%3C/svg%3E");
         }
         h1 {
             font-size: 1.45rem !important;
@@ -596,7 +630,6 @@ def render_sidebar() -> str:
             display_name(strategy_name),
             key=f"sidebar_{page_key}",
             type="secondary",
-            icon=":material/monitoring:",
             disabled=selected_page == page_key,
             width="stretch",
         ):
@@ -609,7 +642,6 @@ def render_sidebar() -> str:
         "Build Data",
         key=f"sidebar_{build_data_key}",
         type="secondary",
-        icon=":material/database:",
         disabled=selected_page == build_data_key,
         width="stretch",
     ):
