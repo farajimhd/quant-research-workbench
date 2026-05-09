@@ -948,7 +948,6 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     <div id="{chart_id}" style="height:{total_height}px;width:100%;display:flex;flex-direction:column;gap:{pane_gap}px;position:relative;">
         <div id="{chart_id}-price" style="height:{price_height}px;width:100%;"></div>
         <div id="{chart_id}-osc" style="height:{oscillator_height}px;width:100%;display:{'block' if oscillator_height else 'none'};"></div>
-        <div id="{chart_id}-shared-crosshair" style="position:absolute;top:0;bottom:0;width:1px;background:rgba(17,24,39,0.32);display:none;z-index:4;pointer-events:none;"></div>
     </div>
     <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
     <script>
@@ -956,8 +955,8 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     const container = document.getElementById("{chart_id}");
     const priceContainer = document.getElementById("{chart_id}-price");
     const oscillatorContainer = document.getElementById("{chart_id}-osc");
-    const sharedCrosshair = document.getElementById("{chart_id}-shared-crosshair");
     const hasOscillators = !!(payload.oscillators && payload.oscillators.length);
+    const rightScaleWidth = 90;
     function formatDateTime(time) {{
         const date = new Date(Number(time) * 1000);
         const pad = value => String(value).padStart(2, "0");
@@ -981,14 +980,15 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             vertLine: {{
                 visible: true,
                 labelVisible: true,
-                color: "rgba(17,24,39,0)",
+                color: "rgba(17,24,39,0.38)",
+                width: 1,
                 labelBackgroundColor: "#111827"
             }},
             horzLine: {{ color: "rgba(17,24,39,0.28)", width: 1, style: 2 }}
         }},
         rightPriceScale: {{
             borderColor: "#d1d5db",
-            minimumWidth: 76,
+            minimumWidth: rightScaleWidth,
             scaleMargins: {{ top: 0.08, bottom: 0.22 }}
         }},
         timeScale: {{
@@ -1017,7 +1017,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         height: {price_height},
         rightPriceScale: {{
             borderColor: "#d1d5db",
-            minimumWidth: 76,
+            minimumWidth: rightScaleWidth,
             scaleMargins: {{ top: 0.06, bottom: 0.18 }}
         }},
         timeScale: {{
@@ -1031,7 +1031,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         height: {oscillator_height},
         rightPriceScale: {{
             borderColor: "#d1d5db",
-            minimumWidth: 76,
+            minimumWidth: rightScaleWidth,
             scaleMargins: {{ top: 0.12, bottom: 0.12 }}
         }}
     }}) : null;
@@ -1306,15 +1306,22 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         }});
     }}
 
-    chart.timeScale().fitContent();
-    if (oscillatorChart) oscillatorChart.timeScale().fitContent();
+    function alignTimeScales() {{
+        chart.timeScale().fitContent();
+        if (!oscillatorChart) return;
+        const range = chart.timeScale().getVisibleLogicalRange();
+        if (range) oscillatorChart.timeScale().setVisibleLogicalRange(range);
+    }}
+    alignTimeScales();
     let syncing = false;
     function syncRange(source, target) {{
         source.timeScale().subscribeVisibleLogicalRangeChange(range => {{
             if (syncing || !range) return;
             syncing = true;
-            target.timeScale().setVisibleLogicalRange(range);
-            syncing = false;
+            requestAnimationFrame(() => {{
+                target.timeScale().setVisibleLogicalRange(range);
+                syncing = false;
+            }});
         }});
     }}
     if (oscillatorChart) {{
@@ -1341,27 +1348,12 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             }});
         }}
     }}
-    function moveSharedCrosshair(event) {{
-        const rect = container.getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        if (x < 0 || x > rect.width) {{
-            sharedCrosshair.style.display = "none";
-            return;
-        }}
-        sharedCrosshair.style.display = "block";
-        sharedCrosshair.style.transform = `translateX(${{Math.round(x)}}px)`;
-    }}
-    container.addEventListener("mousemove", moveSharedCrosshair);
-    container.addEventListener("mouseleave", () => {{
-        sharedCrosshair.style.display = "none";
-    }});
     const resizeObserver = new ResizeObserver(entries => {{
         if (!entries.length) return;
         const width = entries[0].contentRect.width;
         chart.applyOptions({{ width }});
         if (oscillatorChart) oscillatorChart.applyOptions({{ width }});
-        chart.timeScale().fitContent();
-        if (oscillatorChart) oscillatorChart.timeScale().fitContent();
+        alignTimeScales();
     }});
     resizeObserver.observe(container);
     </script>
