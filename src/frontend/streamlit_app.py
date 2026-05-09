@@ -320,6 +320,28 @@ def install_css() -> None:
             margin-right: 4px;
             font-size: 0.78rem;
         }
+        div[class*="st-key-chart_component_"] {
+            border: 1px solid #d8dee4;
+            border-radius: 6px;
+            background: #ffffff;
+            overflow: hidden;
+            padding: 0 !important;
+        }
+        div[class*="st-key-chart_toolbar_"] {
+            border: 0 !important;
+            border-bottom: 1px solid #d8dee4 !important;
+            border-radius: 0 !important;
+            padding: 0.2rem 0.45rem 0.25rem !important;
+            margin: 0 0 0.35rem 0 !important;
+            background: #ffffff;
+        }
+        div[class*="st-key-chart_toolbar_"] [data-testid="stHorizontalBlock"] {
+            gap: 0.4rem;
+        }
+        div[class*="st-key-chart_toolbar_"] [data-testid="stSelectbox"],
+        div[class*="st-key-chart_toolbar_"] [data-testid="stText"] {
+            margin-bottom: 0 !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1127,66 +1149,80 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     oscillatorAxisLabels.style.pointerEvents = "none";
     if (oscillatorChart) oscillatorContainer.appendChild(oscillatorAxisLabels);
 
-    const legendShell = document.createElement("div");
-    legendShell.style.position = "absolute";
-    legendShell.style.left = "12px";
-    legendShell.style.top = "8px";
-    legendShell.style.zIndex = 6;
-    legendShell.style.font = "11px system-ui";
-    legendShell.style.color = "#111827";
-    legendShell.style.maxWidth = "220px";
-    const legendToggle = document.createElement("button");
-    legendToggle.type = "button";
-    legendToggle.textContent = `v ${{(payload.overlays || []).length + (payload.oscillators || []).length}} indicators`;
-    legendToggle.style.display = "none";
-    legendToggle.style.border = "0";
-    legendToggle.style.background = "rgba(255,255,255,0.78)";
-    legendToggle.style.backdropFilter = "blur(2px)";
-    legendToggle.style.borderRadius = "4px";
-    legendToggle.style.padding = "3px 6px";
-    legendToggle.style.font = "11px system-ui";
-    legendToggle.style.color = "#111827";
-    legendToggle.style.cursor = "pointer";
-    const legend = document.createElement("div");
-    legend.style.display = "flex";
-    legend.style.flexDirection = "column";
-    legend.style.alignItems = "stretch";
-    legend.style.gap = "3px";
-    legend.style.background = "rgba(255,255,255,0.76)";
-    legend.style.backdropFilter = "blur(2px)";
-    legend.style.padding = "4px 5px";
-    legend.style.borderRadius = "4px";
-    const legendItems = document.createElement("div");
-    legendItems.style.display = "flex";
-    legendItems.style.flexDirection = "column";
-    legendItems.style.gap = "3px";
-    const legendCollapse = document.createElement("button");
-    legendCollapse.type = "button";
-    legendCollapse.textContent = "^";
-    legendCollapse.title = "Collapse legend";
-    legendCollapse.style.alignSelf = "center";
-    legendCollapse.style.border = "0";
-    legendCollapse.style.background = "transparent";
-    legendCollapse.style.color = "#374151";
-    legendCollapse.style.cursor = "pointer";
-    legendCollapse.style.font = "14px system-ui";
-    legendCollapse.style.lineHeight = "12px";
-    legendCollapse.style.padding = "1px 10px";
-    legend.appendChild(legendItems);
-    legend.appendChild(legendCollapse);
-    legendShell.appendChild(legendToggle);
-    legendShell.appendChild(legend);
-    priceContainer.appendChild(legendShell);
-    legendCollapse.addEventListener("click", event => {{
-        event.stopPropagation();
-        legend.style.display = "none";
-        legendToggle.style.display = "inline-flex";
-    }});
-    legendToggle.addEventListener("click", event => {{
-        event.stopPropagation();
-        legendToggle.style.display = "none";
-        legend.style.display = "flex";
-    }});
+    function createLegendShell(parent, indicatorCount) {{
+        const shell = document.createElement("div");
+        shell.style.position = "absolute";
+        shell.style.left = "12px";
+        shell.style.top = "8px";
+        shell.style.zIndex = 6;
+        shell.style.font = "11px system-ui";
+        shell.style.color = "#111827";
+        shell.style.maxWidth = "220px";
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.textContent = `v ${{indicatorCount}} indicators`;
+        toggle.style.display = "none";
+        toggle.style.border = "0";
+        toggle.style.background = "rgba(255,255,255,0.78)";
+        toggle.style.backdropFilter = "blur(2px)";
+        toggle.style.borderRadius = "4px";
+        toggle.style.padding = "3px 6px";
+        toggle.style.font = "11px system-ui";
+        toggle.style.color = "#111827";
+        toggle.style.cursor = "pointer";
+        const legendNode = document.createElement("div");
+        legendNode.style.display = "flex";
+        legendNode.style.flexDirection = "column";
+        legendNode.style.alignItems = "stretch";
+        legendNode.style.gap = "3px";
+        legendNode.style.background = "rgba(255,255,255,0.76)";
+        legendNode.style.backdropFilter = "blur(2px)";
+        legendNode.style.padding = "4px 5px";
+        legendNode.style.borderRadius = "4px";
+        const items = document.createElement("div");
+        items.style.display = "flex";
+        items.style.flexDirection = "column";
+        items.style.gap = "3px";
+        const collapse = document.createElement("button");
+        collapse.type = "button";
+        collapse.textContent = "^";
+        collapse.title = "Collapse legend";
+        collapse.style.alignSelf = "center";
+        collapse.style.border = "0";
+        collapse.style.background = "transparent";
+        collapse.style.color = "#374151";
+        collapse.style.cursor = "pointer";
+        collapse.style.font = "14px system-ui";
+        collapse.style.lineHeight = "12px";
+        collapse.style.padding = "1px 10px";
+        legendNode.appendChild(items);
+        legendNode.appendChild(collapse);
+        shell.appendChild(toggle);
+        shell.appendChild(legendNode);
+        parent.appendChild(shell);
+        collapse.addEventListener("click", event => {{
+            event.stopPropagation();
+            legendNode.style.display = "none";
+            toggle.style.display = "inline-flex";
+        }});
+        toggle.addEventListener("click", event => {{
+            event.stopPropagation();
+            toggle.style.display = "none";
+            legendNode.style.display = "flex";
+        }});
+        return {{ items }};
+    }}
+
+    const priceLegend = createLegendShell(priceContainer, (payload.overlays || []).length);
+    const oscillatorLegend = oscillatorChart
+        ? createLegendShell(oscillatorContainer, (payload.oscillators || []).length)
+        : null;
+    if (priceLegend.items.childElementCount === 0 && !(payload.overlays || []).length) {{
+        priceLegend.items.parentElement.parentElement.style.display = "none";
+    }}
+    if (oscillatorLegend && !(payload.oscillators || []).length) {{
+        oscillatorLegend.items.parentElement.parentElement.style.display = "none";
+    }}
 
     function iconSvg(kind) {{
         if (kind === "eye") {{
@@ -1453,7 +1489,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             dataByTime: mapByTime(indicator.data)
         }});
         priceLabelSeries.push(seriesLabelColors.get(line));
-        addLegendItem(indicator, legendItems, line);
+        addLegendItem(indicator, priceLegend.items, line);
     }});
 
     let firstOscillatorSeries = null;
@@ -1489,7 +1525,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             (indicator.data || []).forEach(point => {{
                 if (!oscillatorValueByTime.has(point.time)) oscillatorValueByTime.set(point.time, point.value);
             }});
-            addLegendItem(indicator, legendItems, series);
+            if (oscillatorLegend) addLegendItem(indicator, oscillatorLegend.items, series);
         }});
     }}
 
@@ -1607,8 +1643,9 @@ def render_trades(data: dict, period: str) -> None:
             st.caption(f"{trade.get('entry_time')} -> {trade.get('exit_time')} | {pct(trade.get('return_pct'))}")
     trade = rows[min(st.session_state[selected_key], len(rows) - 1)]
     with right:
-        with st.container(border=True):
-            with st.container(border=True):
+        chart_key = str(period).replace(" ", "_").replace("-", "_")
+        with st.container(key=f"chart_component_trades_{chart_key}"):
+            with st.container(key=f"chart_toolbar_trades_{chart_key}"):
                 _, timeframe, indicators = chart_toolbar(
                     tickers=None,
                     selected_ticker=str(trade.get("symbol", "")),
@@ -1687,8 +1724,9 @@ def render_chart_inspector(data: dict, period: str) -> None:
         st.info("This run did not save chart bars.")
         return
     tickers = bars_1m.select("ticker").unique().sort("ticker")["ticker"].to_list()
-    with st.container(border=True):
-        with st.container(border=True):
+    chart_key = str(period).replace(" ", "_").replace("-", "_")
+    with st.container(key=f"chart_component_inspector_{chart_key}"):
+        with st.container(key=f"chart_toolbar_inspector_{chart_key}"):
             ticker, timeframe, indicators = chart_toolbar(
                 tickers=tickers,
                 selected_ticker=tickers[0] if tickers else None,
