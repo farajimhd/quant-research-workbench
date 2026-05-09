@@ -4081,10 +4081,6 @@ def render_data_provider_page() -> None:
             '<div class="qq-page-description">Rebuild the canonical market-data store with every supported timeframe, feature group, and supervision label.</div>',
             unsafe_allow_html=True,
         )
-        action_cols = st.columns([0.2, 0.2, 0.6], gap="small", vertical_alignment="center")
-        start_clicked = action_cols[0].button("Rebuild selected range", type="primary", width="stretch")
-        if action_cols[1].button("Edit scope", width="stretch"):
-            render_scope_dialog()
     with header_cols[1]:
         render_scope_card(scope)
 
@@ -4096,6 +4092,10 @@ def render_data_provider_page() -> None:
     )
 
     with build_tab:
+        action_cols = st.columns([0.2, 0.2, 0.6], gap="small", vertical_alignment="center")
+        start_clicked = action_cols[0].button("Rebuild selected range", type="primary", width="stretch")
+        if action_cols[1].button("Edit scope", width="stretch"):
+            render_scope_dialog()
         metrics_slot = st.empty()
         missing_slot = st.empty()
         progress_slot = st.empty()
