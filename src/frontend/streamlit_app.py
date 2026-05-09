@@ -1085,11 +1085,8 @@ def install_css() -> None:
         }
         .qq-step-row {
             display: grid;
-            grid-template-columns: auto minmax(0, 1fr);
-            grid-template-areas:
-                "dot label"
-                "dot value";
-            gap: 0.1rem 0.35rem;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 0.16rem 0.4rem;
             align-items: center;
             border: 1px solid var(--qq-border-soft);
             border-radius: var(--qq-radius);
@@ -1098,28 +1095,13 @@ def install_css() -> None:
             font-size: 0.72rem;
             line-height: 1.15;
         }
-        .qq-step-dot {
-            grid-area: dot;
-            width: 0.46rem;
-            height: 0.46rem;
-            border-radius: 999px;
-            background: #CBD5E1;
-        }
-        .qq-step-row.qq-step-done .qq-step-dot {
-            background: var(--qq-success);
-        }
-        .qq-step-row.qq-step-running .qq-step-dot {
-            background: var(--qq-primary);
-        }
         .qq-step-row span {
-            grid-area: label;
             color: var(--qq-muted-strong);
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
         .qq-step-row b {
-            grid-area: value;
             color: var(--qq-muted);
             font-weight: 500;
             white-space: nowrap;
@@ -3848,7 +3830,6 @@ def step_row(label: str, done: int, total: int) -> str:
     value = "done" if total == 1 and done >= 1 else ("-" if done <= 0 else f"{done}/{total}")
     return (
         f'<div class="qq-step-row {step_status_class(status)}">'
-        '<i class="qq-step-dot"></i>'
         f'<span>{escape(label)}</span>'
         f"<b>{escape(value)}</b>"
         "</div>"
