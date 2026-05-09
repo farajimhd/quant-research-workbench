@@ -1007,15 +1007,15 @@ def install_css() -> None:
         }
         .qq-phase-summary {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 0.36rem 1.45rem;
+            grid-template-columns: 1fr;
+            gap: 0.34rem;
             margin-top: 0.7rem;
         }
         .qq-phase-row {
             display: grid;
-            grid-template-columns: max-content max-content max-content;
-            gap: 0.45rem;
-            align-items: baseline;
+            grid-template-columns: 9.5rem minmax(9rem, 1fr) max-content;
+            column-gap: 1.1rem;
+            align-items: center;
             min-width: 0;
             font-size: 0.76rem;
             line-height: 1.2;
@@ -1025,12 +1025,24 @@ def install_css() -> None:
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            max-width: 9.5rem;
         }
         .qq-phase-progress {
-            color: var(--qq-text);
-            font-variant-numeric: tabular-nums;
-            white-space: nowrap;
+            display: block;
+            min-width: 0;
+        }
+        .qq-phase-track {
+            display: block;
+            width: 100%;
+            height: 0.34rem;
+            border-radius: var(--qq-radius);
+            background: #E5E7EB;
+            overflow: hidden;
+        }
+        .qq-phase-fill {
+            display: block;
+            height: 100%;
+            background: var(--qq-primary);
+            width: 0%;
         }
         .qq-phase-time {
             color: var(--qq-muted);
@@ -1112,16 +1124,14 @@ def install_css() -> None:
         }
         .qq-card-phase-summary {
             display: grid;
-            grid-template-columns: repeat(2, max-content);
-            gap: 0.3rem 1.2rem;
+            grid-template-columns: 1fr;
+            gap: 0.3rem;
             margin-top: 0.52rem;
         }
         .qq-card-phase-summary .qq-phase-row {
+            grid-template-columns: 7.7rem minmax(5.5rem, 1fr) max-content;
+            column-gap: 0.75rem;
             font-size: 0.72rem;
-            gap: 0.38rem;
-        }
-        .qq-card-phase-summary .qq-phase-name {
-            max-width: 7.8rem;
         }
         @media (max-width: 1100px) {
             .qq-build-header,
@@ -3971,12 +3981,16 @@ def build_phase_summary(plan_rows: list[dict], events: list[dict], *, include_gl
     for phase, label in phase_labels:
         total = phase_totals[phase]
         done = min(completed[phase], total)
-        progress = f"{done}/{total}" if total else "-"
+        progress = f"{done}/{total}" if total else "0/0"
+        progress_pct = min(100.0, max(0.0, (done / total) * 100.0)) if total else 0.0
+        summary = f"{progress}, {format_duration(elapsed[phase])}"
         rows.append(
             '<div class="qq-phase-row">'
             f'<span class="qq-phase-name">{escape(label)}</span>'
-            f'<span class="qq-phase-progress">{escape(progress)}</span>'
-            f'<span class="qq-phase-time">{escape(format_duration(elapsed[phase]))}</span>'
+            '<span class="qq-phase-progress">'
+            f'<span class="qq-phase-track"><span class="qq-phase-fill" style="width:{progress_pct:.1f}%"></span></span>'
+            "</span>"
+            f'<span class="qq-phase-time">{escape(summary)}</span>'
             "</div>"
         )
     return f'<div class="{escape(css_class)}">' + "".join(rows) + "</div>"
