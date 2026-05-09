@@ -1479,6 +1479,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     const rightScaleWidth = 62;
     const indicatorLabelWidth = 62;
     const timeAxisHeight = 28;
+    const fitScaleMargins = {{ top: 0.1, bottom: 0.1 }};
     const normalPriceHeight = {price_height};
     const normalOscillatorHeight = {oscillator_height};
     const paneGap = {pane_gap};
@@ -2125,7 +2126,15 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         }};
         chart.timeScale().setVisibleLogicalRange(range);
         if (oscillatorChart) oscillatorChart.timeScale().setVisibleLogicalRange(range);
+        fitVisibleYScales();
         requestAnimationFrame(drawSessionRegions);
+    }}
+
+    function fitVisibleYScales() {{
+        chart.priceScale("right").applyOptions({{ autoScale: true, scaleMargins: fitScaleMargins }});
+        if (oscillatorChart) {{
+            oscillatorChart.priceScale("right").applyOptions({{ autoScale: true, scaleMargins: fitScaleMargins }});
+        }}
     }}
 
     function applyRightOffset(offset) {{
