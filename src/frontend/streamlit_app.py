@@ -404,6 +404,23 @@ def install_css() -> None:
         [data-testid="stDataFrame"] canvas {
             background: #FFFFFF !important;
         }
+        [data-testid="stDataFrameResizable"] {
+            border-color: transparent !important;
+            position: relative !important;
+        }
+        [data-testid="stDataFrameResizable"]::after {
+            background-image:
+                linear-gradient(to bottom, transparent 0, transparent 35px, #E5E7EB 35px, #E5E7EB 36px, transparent 36px),
+                repeating-linear-gradient(to bottom, transparent 0, transparent 45px, #E5E7EB 45px, #E5E7EB 46px);
+            background-position: 0 0, 0 35px;
+            background-repeat: no-repeat, repeat;
+            background-size: 100% 100%, 100% 46px;
+            content: "";
+            inset: 0;
+            pointer-events: none;
+            position: absolute;
+            z-index: 2;
+        }
         [data-testid="stDataFrame"] [data-testid="stElementToolbar"] {
             padding: 0.35rem !important;
         }
@@ -440,7 +457,7 @@ def install_css() -> None:
         }
         [data-testid="stMarkdownContainer"] th,
         [data-testid="stMarkdownContainer"] td {
-            border-color: #E5E7EB;
+            border-color: #E5E7EB transparent;
             padding: 0.78rem 1rem;
         }
         [data-baseweb="tab"][aria-selected="true"] {
