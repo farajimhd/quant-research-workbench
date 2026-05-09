@@ -6,6 +6,7 @@ import shutil
 import sys
 import traceback
 from datetime import date, datetime, timedelta, timezone
+from html import escape
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -258,21 +259,80 @@ def install_css() -> None:
         .st-key-run_header h1 {
             margin: 0 !important;
         }
-        .st-key-run_header pre {
-            margin: 0;
-            padding: 0;
-            line-height: 1.25;
-            white-space: pre-wrap;
-        }
         .st-key-run_header [data-testid="stButton"] {
             display: flex;
             align-items: center;
+            justify-content: flex-end;
         }
-        .qq-run-summary {
+        .qq-run-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+            align-items: center;
+            margin: 0.02rem 0 0;
+        }
+        .qq-run-badge {
+            display: inline-flex;
+            align-items: center;
+            max-width: 100%;
+            border: 1px solid #d8dee4;
+            border-radius: 999px;
+            padding: 0.18rem 0.5rem;
+            background: #f8fafc;
+            color: #374151;
+            font-size: 0.78rem;
+            line-height: 1.1;
+            white-space: nowrap;
+        }
+        .qq-run-badge-status {
+            border-color: #bbf7d0;
+            background: #f0fdf4;
+            color: #166534;
+            text-transform: capitalize;
+        }
+        .qq-run-header-metrics {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.45rem;
+            align-items: stretch;
+        }
+        .qq-run-header-metric {
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 0.32rem 0.48rem;
+            background: #ffffff;
+            min-width: 0;
+        }
+        .qq-run-header-metric-label {
             color: #4b5563;
-            font-size: 0.86rem;
-            line-height: 1.3;
-            margin: 0.05rem 0 0.1rem 0;
+            font-size: 0.68rem;
+            line-height: 1;
+            margin-bottom: 0.16rem;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+        .qq-run-header-metric-value {
+            color: #111827;
+            font-size: 0.95rem;
+            font-weight: 700;
+            line-height: 1.05;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .st-key-run_details_action button {
+            border: 1px solid #d1d5db;
+            border-radius: 999px;
+            background: #ffffff;
+            color: #111827;
+            font-weight: 600;
+            min-height: 2rem;
+            height: 2rem;
+            padding: 0 0.8rem;
+        }
+        .st-key-run_details_action button:hover {
+            border-color: #9ca3af;
+            background: #f9fafb;
         }
         .st-key-back_to_runs button {
             min-width: 2rem;
@@ -2566,27 +2626,45 @@ def render_selected_run_header(run_dir: Path) -> None:
     date_range = f"{config.get('start_date', '')} to {config.get('end_date', '')}"
 
     with st.container(key="run_header"):
-        info_cols = st.columns([3, 5.1, 1.25, 3.15], vertical_alignment="center")
+        info_cols = st.columns([3.0, 4.7, 3.1, 1.7], gap="small", vertical_alignment="center")
         with info_cols[0]:
             st.title(run_name)
         with info_cols[1]:
-            summary_items = [
-                str(metadata.get("strategy_name", config.get("strategy_name", ""))),
-                str(status),
-                date_range,
-                f"return {pct(summary.get('return_pct', 0.0))}",
-                f"P/L {money(summary.get('total_pnl', 0.0))}",
-                f"trades {summary.get('trade_count', 0)}",
-            ]
-            summary_text = " | ".join(summary_items)
-            st.text(summary_text)
+            strategy_name = metadata.get("strategy_name", config.get("strategy_name", ""))
+            st.markdown(
+                (
+                    '<div class="qq-run-badges">'
+                    f'<span class="qq-run-badge">{escape(str(strategy_name))}</span>'
+                    f'<span class="qq-run-badge qq-run-badge-status">{escape(str(status))}</span>'
+                    f'<span class="qq-run-badge">{escape(date_range)}</span>'
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
         with info_cols[2]:
-            if run_details_dialog is not None:
-                if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary", width="content"):
-                    run_details_dialog(str(run_dir))
-            else:
-                with st.expander("See more details"):
-                    render_run_details_content(run_dir)
+            metric_items = [
+                ("Return", pct(summary.get("return_pct", 0.0))),
+                ("P/L", money(summary.get("total_pnl", 0.0))),
+                ("Trades", summary.get("trade_count", 0)),
+            ]
+            metric_html = "".join(
+                (
+                    '<div class="qq-run-header-metric">'
+                    f'<div class="qq-run-header-metric-label">{escape(label)}</div>'
+                    f'<div class="qq-run-header-metric-value">{escape(str(value))}</div>'
+                    "</div>"
+                )
+                for label, value in metric_items
+            )
+            st.markdown(f'<div class="qq-run-header-metrics">{metric_html}</div>', unsafe_allow_html=True)
+        with info_cols[3]:
+            with st.container(key="run_details_action"):
+                if run_details_dialog is not None:
+                    if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary", width="stretch"):
+                        run_details_dialog(str(run_dir))
+                else:
+                    with st.expander("See more details"):
+                        render_run_details_content(run_dir)
 
 
 def render_new_run_update_form(config_key: str) -> None:
