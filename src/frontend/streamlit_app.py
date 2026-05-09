@@ -958,11 +958,19 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     const oscillatorContainer = document.getElementById("{chart_id}-osc");
     const sharedCrosshair = document.getElementById("{chart_id}-shared-crosshair");
     const hasOscillators = !!(payload.oscillators && payload.oscillators.length);
+    function formatDateTime(time) {{
+        const date = new Date(Number(time) * 1000);
+        const pad = value => String(value).padStart(2, "0");
+        return `${{date.getFullYear()}}-${{pad(date.getMonth() + 1)}}-${{pad(date.getDate())}} ${{pad(date.getHours())}}:${{pad(date.getMinutes())}}:${{pad(date.getSeconds())}}`;
+    }}
     const commonOptions = {{
         layout: {{
             background: {{ type: "solid", color: "#ffffff" }},
             textColor: "#111827",
             fontSize: 12
+        }},
+        localization: {{
+            timeFormatter: formatDateTime
         }},
         grid: {{
             vertLines: {{ color: "#f3f4f6" }},
@@ -970,7 +978,12 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         }},
         crosshair: {{
             mode: LightweightCharts.CrosshairMode.Normal,
-            vertLine: {{ visible: false, labelVisible: false }},
+            vertLine: {{
+                visible: true,
+                labelVisible: true,
+                color: "rgba(17,24,39,0)",
+                labelBackgroundColor: "#111827"
+            }},
             horzLine: {{ color: "rgba(17,24,39,0.28)", width: 1, style: 2 }}
         }},
         rightPriceScale: {{
@@ -981,10 +994,10 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         timeScale: {{
             borderColor: "#d1d5db",
             timeVisible: true,
-            secondsVisible: false,
+            secondsVisible: true,
             rightOffset: 2,
-            barSpacing: 14,
-            minBarSpacing: 5
+            barSpacing: 18,
+            minBarSpacing: 7
         }},
         handleScroll: {{
             mouseWheel: true,
@@ -1024,12 +1037,12 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     }}) : null;
 
     const candleSeries = chart.addCandlestickSeries({{
-        upColor: "#0f8a3b",
-        downColor: "#c0362c",
-        borderUpColor: "#0f8a3b",
-        borderDownColor: "#c0362c",
-        wickUpColor: "#0f8a3b",
-        wickDownColor: "#c0362c",
+        upColor: "#059669",
+        downColor: "#dc2626",
+        borderUpColor: "#047857",
+        borderDownColor: "#b91c1c",
+        wickUpColor: "#065f46",
+        wickDownColor: "#991b1b",
         borderVisible: true,
         wickVisible: true,
         priceLineVisible: true
@@ -1060,7 +1073,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     legendShell.style.maxWidth = "220px";
     const legendToggle = document.createElement("button");
     legendToggle.type = "button";
-    legendToggle.textContent = `▾ ${{(payload.overlays || []).length + (payload.oscillators || []).length}} indicators`;
+    legendToggle.textContent = `v ${{(payload.overlays || []).length + (payload.oscillators || []).length}} indicators`;
     legendToggle.style.display = "none";
     legendToggle.style.border = "0";
     legendToggle.style.background = "rgba(255,255,255,0.78)";
@@ -1085,7 +1098,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     legendItems.style.gap = "3px";
     const legendCollapse = document.createElement("button");
     legendCollapse.type = "button";
-    legendCollapse.textContent = "⌃";
+    legendCollapse.textContent = "^";
     legendCollapse.title = "Collapse legend";
     legendCollapse.style.alignSelf = "center";
     legendCollapse.style.border = "0";
@@ -1132,7 +1145,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         item.style.position = "relative";
         item.style.minWidth = "125px";
         const swatch = document.createElement("span");
-        swatch.style.width = "12px";
+        swatch.style.width = "24px";
         swatch.style.height = indicator.style === "histogram" ? "6px" : "4px";
         swatch.style.borderRadius = "999px";
         swatch.style.background = indicator.color;
@@ -1267,6 +1280,9 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         addLegendItem(indicator, legendItems, line);
     }});
 
+    let firstOscillatorSeries = null;
+    const oscillatorValueByTime = new Map();
+    const priceByTime = new Map((payload.candles || []).map(bar => [bar.time, bar.close]));
     if (oscillatorChart) {{
         (payload.oscillators || []).forEach((indicator) => {{
             const series = indicator.style === "histogram"
@@ -1282,6 +1298,10 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
                     lastValueVisible: false
             }});
             series.setData(indicator.data || []);
+            if (!firstOscillatorSeries) firstOscillatorSeries = series;
+            (indicator.data || []).forEach(point => {{
+                if (!oscillatorValueByTime.has(point.time)) oscillatorValueByTime.set(point.time, point.value);
+            }});
             addLegendItem(indicator, legendItems, series);
         }});
     }}
@@ -1300,6 +1320,26 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     if (oscillatorChart) {{
         syncRange(chart, oscillatorChart);
         syncRange(oscillatorChart, chart);
+        if (chart.setCrosshairPosition && chart.clearCrosshairPosition && oscillatorChart.setCrosshairPosition && oscillatorChart.clearCrosshairPosition) {{
+            chart.subscribeCrosshairMove(param => {{
+                if (!param || param.time === undefined) {{
+                    oscillatorChart.clearCrosshairPosition();
+                    return;
+                }}
+                const value = oscillatorValueByTime.get(param.time);
+                if (value !== undefined && firstOscillatorSeries) {{
+                    oscillatorChart.setCrosshairPosition(value, param.time, firstOscillatorSeries);
+                }}
+            }});
+            oscillatorChart.subscribeCrosshairMove(param => {{
+                if (!param || param.time === undefined) {{
+                    chart.clearCrosshairPosition();
+                    return;
+                }}
+                const value = priceByTime.get(param.time);
+                if (value !== undefined) chart.setCrosshairPosition(value, param.time, candleSeries);
+            }});
+        }}
     }}
     function moveSharedCrosshair(event) {{
         const rect = container.getBoundingClientRect();
