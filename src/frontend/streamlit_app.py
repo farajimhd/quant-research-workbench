@@ -272,7 +272,29 @@ def install_css() -> None:
         }
         .block-container {
             max-width: 100%;
-            padding: 2.25rem 2rem 2rem;
+            padding: 5.35rem 2rem 2rem;
+        }
+        [data-testid="stHeader"] {
+            align-items: center;
+            background: rgba(255, 255, 255, 0.78);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border-bottom: 1px solid rgba(229, 231, 235, 0.92);
+            box-shadow: none;
+            display: flex;
+            height: 4.5rem;
+            padding-left: 2rem;
+            z-index: 999;
+        }
+        [data-testid="stHeader"]::before {
+            color: #111827;
+            content: "Quant Research Workbench";
+            font-family: "Inter" !important;
+            font-size: 1.05rem;
+            font-weight: 650;
+            letter-spacing: 0;
+            line-height: 1;
+            white-space: nowrap;
         }
         [data-testid="stSidebar"] {
             background: #ffffff;
