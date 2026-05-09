@@ -283,7 +283,12 @@ def install_css() -> None:
             box-shadow: none;
             display: flex;
             height: 4.5rem;
+            left: 0 !important;
             padding-left: 2rem;
+            position: fixed;
+            right: 0 !important;
+            top: 0;
+            width: 100vw !important;
             z-index: 999;
         }
         [data-testid="stHeader"]::before {
@@ -300,8 +305,9 @@ def install_css() -> None:
             background: #ffffff;
             border-right: 1px solid #e5e7eb;
             flex: 0 0 22rem !important;
+            height: calc(100vh - 4.5rem) !important;
             min-width: 22rem !important;
-            top: 0 !important;
+            top: 4.5rem !important;
             width: 22rem !important;
         }
         [data-testid="stSidebar"] > div,
@@ -317,43 +323,7 @@ def install_css() -> None:
         }
         [data-testid="stSidebar"] > div:first-child {
             background: #ffffff;
-            padding: 0 1.15rem 1.1rem;
-        }
-        .qq-sidebar-brand {
-            display: flex;
-            align-items: center;
-            gap: 0.78rem;
-            min-height: 4.75rem;
-            padding: 0 0.3rem;
-            margin: 0 -1.15rem 1.05rem;
-            padding-left: 1.45rem;
-            padding-right: 1.25rem;
-            border-bottom: 1px solid #e5e7eb;
-        }
-        .qq-sidebar-mark {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 2.35rem;
-            height: 2.35rem;
-            border-radius: 999px;
-            background: #111827;
-            color: #ffffff;
-            font-size: 1.02rem;
-            font-weight: 800;
-            letter-spacing: 0;
-            flex: 0 0 auto;
-        }
-        .qq-sidebar-title {
-            color: #111827;
-            font-size: 1rem;
-            font-weight: 800;
-            line-height: 1;
-            letter-spacing: 0;
-            min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            padding: 0.95rem 1.15rem 1.1rem;
         }
         .qq-sidebar-group {
             color: #7a7f87;
@@ -433,7 +403,8 @@ def install_css() -> None:
             white-space: nowrap;
         }
         [data-testid="stSidebar"] div[class*="st-key-sidebar_strategy"] button::before,
-        [data-testid="stSidebar"] div[class*="st-key-sidebar_market_data"] button::before {
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_market_data"] button::before,
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button::before {
             content: "";
             display: inline-block;
             width: 1.42rem;
@@ -454,6 +425,37 @@ def install_css() -> None:
         [data-testid="stSidebar"] div[class*="st-key-sidebar_market_data"] button::before {
             mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cellipse cx='12' cy='5' rx='8' ry='3'/%3E%3Cpath d='M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5'/%3E%3Cpath d='M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3'/%3E%3C/svg%3E");
             -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cellipse cx='12' cy='5' rx='8' ry='3'/%3E%3Cpath d='M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5'/%3E%3Cpath d='M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3'/%3E%3C/svg%3E");
+        }
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button::before {
+            mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6h16'/%3E%3Cpath d='M4 12h16'/%3E%3Cpath d='M4 18h16'/%3E%3C/svg%3E");
+            -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6h16'/%3E%3Cpath d='M4 12h16'/%3E%3Cpath d='M4 18h16'/%3E%3C/svg%3E");
+        }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) {
+            flex: 0 0 5.75rem !important;
+            min-width: 5.75rem !important;
+            width: 5.75rem !important;
+        }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) > div,
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) [data-testid="stSidebarContent"] {
+            width: 5.75rem !important;
+        }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) > div:first-child {
+            padding-left: 0.85rem;
+            padding-right: 0.85rem;
+        }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) .qq-sidebar-group {
+            display: none;
+        }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[data-testid="stButton"] {
+            margin: 0.18rem auto;
+        }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[data-testid="stButton"] button {
+            justify-content: center !important;
+            min-height: 3.35rem;
+            padding: 0;
+        }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[data-testid="stButton"] button p {
+            display: none;
         }
         h1 {
             font-size: 1.45rem !important;
@@ -635,16 +637,19 @@ def render_sidebar() -> str:
     strategies = available_strategies()
     default_page = f"strategy:{strategies[0]}" if strategies else "market_data:build_data"
     selected_page = st.session_state.setdefault("sidebar_page", default_page)
+    collapsed = bool(st.session_state.setdefault("sidebar_collapsed", False))
 
-    st.sidebar.markdown(
-        f"""
-        <div class="qq-sidebar-brand">
-            <div class="qq-sidebar-mark">Q</div>
-            <div class="qq-sidebar-title">{escape(APP_TITLE)}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if collapsed:
+        st.sidebar.markdown('<div class="qq-sidebar-state-collapsed"></div>', unsafe_allow_html=True)
+    if st.sidebar.button(
+        "Expand sidebar" if collapsed else "Collapse sidebar",
+        key="sidebar_toggle",
+        type="secondary",
+        width="stretch",
+    ):
+        st.session_state["sidebar_collapsed"] = not collapsed
+        st.rerun()
+
     st.sidebar.markdown('<div class="qq-sidebar-group">Strategies</div>', unsafe_allow_html=True)
     for strategy_name in strategies:
         page_key = f"strategy:{strategy_name}"
