@@ -895,26 +895,54 @@ def install_css() -> None:
             align-items: start;
         }
         .qq-scope-card {
-            border: 1px solid var(--qq-border);
             border-radius: var(--qq-radius);
-            background: var(--qq-surface);
-            padding: 0.75rem 0.85rem;
+            background: #F8FAFC;
+            padding: 0.8rem 0.9rem;
         }
         .qq-scope-title {
             display: flex;
             justify-content: space-between;
             align-items: center;
             gap: 0.5rem;
-            margin-bottom: 0.45rem;
+            margin-bottom: 0.62rem;
         }
         .qq-scope-title strong {
             font-size: 0.92rem;
             color: var(--qq-text);
         }
+        .qq-rebuild-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.28rem;
+            border-radius: var(--qq-radius);
+            padding: 0.16rem 0.48rem;
+            background: #FEF3F2;
+            color: var(--qq-danger);
+            font-size: 0.72rem;
+            font-weight: 650;
+            white-space: nowrap;
+        }
+        .qq-rebuild-badge span {
+            display: inline-flex;
+            width: 0.86rem;
+            height: 0.86rem;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid var(--qq-danger);
+            border-radius: 999px;
+            font-size: 0.58rem;
+            line-height: 1;
+        }
         .qq-scope-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.5rem 0.75rem;
+            grid-template-columns: minmax(92px, 0.72fr) minmax(0, 1.5fr);
+            gap: 0.65rem 1rem;
+            align-items: start;
+        }
+        .qq-scope-column {
+            display: grid;
+            gap: 0.55rem;
+            min-width: 0;
         }
         .qq-scope-item {
             min-width: 0;
@@ -948,8 +976,8 @@ def install_css() -> None:
             text-overflow: ellipsis;
         }
         .st-key-build_metrics [data-testid="stMetricValue"] {
-            font-size: 1rem;
-            line-height: 1.05;
+            font-size: 2.5rem;
+            line-height: 0.95;
         }
         .qq-progress-card {
             border: 1px solid var(--qq-border);
@@ -999,21 +1027,35 @@ def install_css() -> None:
             padding-right: 0.15rem;
         }
         .qq-file-card {
-            border: 1px solid var(--qq-border);
+            border: 1px solid var(--qq-border-soft);
             border-radius: var(--qq-radius);
             background: var(--qq-surface);
-            padding: 0.52rem 0.62rem;
-            margin-bottom: 0.42rem;
+            padding: 0.68rem 0.72rem;
+            margin-bottom: 0.55rem;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
         }
         .qq-file-card-header {
             display: flex;
             justify-content: space-between;
             gap: 0.65rem;
-            align-items: center;
-            margin-bottom: 0.28rem;
+            align-items: flex-start;
+            margin-bottom: 0.42rem;
         }
         .qq-file-card-header strong {
-            font-size: 0.9rem;
+            font-size: 0.98rem;
+            line-height: 1.05;
+        }
+        .qq-file-card-subtitle {
+            color: var(--qq-muted);
+            font-size: 0.74rem;
+            margin-top: 0.18rem;
+        }
+        .qq-card-progress-value {
+            color: var(--qq-text);
+            font-size: 1.08rem;
+            font-weight: 700;
+            line-height: 1;
+            text-align: right;
         }
         .qq-card-status {
             border: 1px solid var(--qq-border);
@@ -1025,12 +1067,11 @@ def install_css() -> None:
             white-space: nowrap;
         }
         .qq-file-progress {
-            height: 0.32rem;
-            border: 1px solid var(--qq-border-soft);
+            height: 0.42rem;
             border-radius: var(--qq-radius);
             background: var(--qq-neutral-bg);
             overflow: hidden;
-            margin: 0.22rem 0 0.42rem 0;
+            margin: 0.15rem 0 0.62rem 0;
         }
         .qq-file-progress-fill {
             height: 100%;
@@ -1039,27 +1080,55 @@ def install_css() -> None:
         }
         .qq-step-list {
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.24rem 0.75rem;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.35rem;
         }
         .qq-step-row {
             display: grid;
-            grid-template-columns: minmax(70px, 1fr) auto;
-            gap: 0.35rem;
+            grid-template-columns: auto minmax(0, 1fr);
+            grid-template-areas:
+                "dot label"
+                "dot value";
+            gap: 0.1rem 0.35rem;
             align-items: center;
+            border: 1px solid var(--qq-border-soft);
+            border-radius: var(--qq-radius);
+            background: var(--qq-surface-soft);
+            padding: 0.34rem 0.42rem;
             font-size: 0.72rem;
             line-height: 1.15;
         }
+        .qq-step-dot {
+            grid-area: dot;
+            width: 0.46rem;
+            height: 0.46rem;
+            border-radius: 999px;
+            background: #CBD5E1;
+        }
+        .qq-step-row.qq-step-done .qq-step-dot {
+            background: var(--qq-success);
+        }
+        .qq-step-row.qq-step-running .qq-step-dot {
+            background: var(--qq-primary);
+        }
         .qq-step-row span {
+            grid-area: label;
             color: var(--qq-muted-strong);
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
         .qq-step-row b {
+            grid-area: value;
             color: var(--qq-muted);
             font-weight: 500;
             white-space: nowrap;
+        }
+        .qq-step-row.qq-step-done b {
+            color: var(--qq-success);
+        }
+        .qq-step-row.qq-step-running b {
+            color: var(--qq-primary);
         }
         @media (max-width: 1100px) {
             .qq-build-header,
@@ -3677,18 +3746,20 @@ def build_scope_defaults() -> dict[str, Any]:
     }
 
 
-def render_scope_card(scope: dict[str, Any], expected_sessions: int) -> None:
+def render_scope_card(scope: dict[str, Any]) -> None:
     st.markdown(
         f"""
         <div class="qq-scope-card">
-            <div class="qq-scope-title"><strong>Data Scope</strong><span class="qq-card-status">force rebuild</span></div>
+            <div class="qq-scope-title"><strong>Data Scope</strong><span class="qq-rebuild-badge"><span>!</span>Force rebuild</span></div>
             <div class="qq-scope-grid">
-                <div class="qq-scope-item"><span>Raw root</span><b title="{escape(str(scope["raw_root"]))}">{escape(str(scope["raw_root"]))}</b></div>
-                <div class="qq-scope-item"><span>Processed root</span><b title="{escape(str(scope["processed_root"]))}">{escape(str(scope["processed_root"]))}</b></div>
-                <div class="qq-scope-item"><span>Start</span><b>{scope["start_date"]}</b></div>
-                <div class="qq-scope-item"><span>End</span><b>{scope["end_date"]}</b></div>
-                <div class="qq-scope-item"><span>Raw files</span><b>{int(scope["raw_count"]):,}</b></div>
-                <div class="qq-scope-item"><span>Market sessions</span><b>{expected_sessions:,}</b></div>
+                <div class="qq-scope-column">
+                    <div class="qq-scope-item"><span>Start</span><b>{scope["start_date"]}</b></div>
+                    <div class="qq-scope-item"><span>End</span><b>{scope["end_date"]}</b></div>
+                </div>
+                <div class="qq-scope-column">
+                    <div class="qq-scope-item"><span>Raw root</span><b title="{escape(str(scope["raw_root"]))}">{escape(str(scope["raw_root"]))}</b></div>
+                    <div class="qq-scope-item"><span>Processed root</span><b title="{escape(str(scope["processed_root"]))}">{escape(str(scope["processed_root"]))}</b></div>
+                </div>
             </div>
         </div>
         """,
@@ -3729,9 +3800,11 @@ def render_scope_dialog() -> None:
 
 def render_build_metrics(metrics: dict[str, str]) -> None:
     with st.container(key="build_metrics", border=False):
-        columns = st.columns(len(metrics), gap="small", border=False)
-        for column, (label, value) in zip(columns, metrics.items()):
-            column.metric(label, value, border=False)
+        items = list(metrics.items())
+        for start in range(0, len(items), 6):
+            columns = st.columns(6, gap="small", border=False)
+            for column, (label, value) in zip(columns, items[start : start + 6]):
+                column.metric(label, value, border=False)
 
 
 def status_class(status: str) -> str:
@@ -3764,19 +3837,20 @@ def step_status(done: int, total: int) -> str:
 
 def step_status_class(status: str) -> str:
     if status == "done":
-        return "qq-good"
+        return "qq-step-done"
     if status == "running":
-        return "qq-neutral"
-    return "qq-muted"
+        return "qq-step-running"
+    return "qq-step-waiting"
 
 
 def step_row(label: str, done: int, total: int) -> str:
     status = step_status(done, total)
     value = "done" if total == 1 and done >= 1 else ("-" if done <= 0 else f"{done}/{total}")
     return (
-        '<div class="qq-step-row">'
+        f'<div class="qq-step-row {step_status_class(status)}">'
+        '<i class="qq-step-dot"></i>'
         f'<span>{escape(label)}</span>'
-        f'<b class="{step_status_class(status)}">{escape(value)}</b>'
+        f"<b>{escape(value)}</b>"
         "</div>"
     )
 
@@ -3790,6 +3864,7 @@ def file_card_html(row: dict) -> str:
     completed_units = int(row.get("step_done") or 0)
     progress_pct = min(100.0, max(0.0, (completed_units / total_units) * 100.0))
     duration = format_duration(row.get("duration_sec", 0))
+    status_text = status.replace("_", " ")
     step_rows = "".join(
         [
             step_row("Raw load", int(steps.get("raw", 0)), 1),
@@ -3803,10 +3878,15 @@ def file_card_html(row: dict) -> str:
     return (
         '<div class="qq-file-card">'
         '<div class="qq-file-card-header">'
+        "<div>"
         f"<strong>{escape(session_date)}</strong>"
-        f'<span class="qq-card-status {status_class(status)}">{escape(status.replace("_", " "))}</span>'
+        f'<div class="qq-file-card-subtitle">Current: {escape(current_step)} | {escape(duration)}</div>'
         "</div>"
-        f'<div class="qq-muted">Current: {escape(current_step)} | {completed_units}/{total_units} | {escape(duration)}</div>'
+        "<div>"
+        f'<div class="qq-card-progress-value">{progress_pct:.0f}%</div>'
+        f'<span class="qq-card-status {status_class(status)}">{escape(status_text)}</span>'
+        "</div>"
+        "</div>"
         f'<div class="qq-file-progress"><div class="qq-file-progress-fill" style="width:{progress_pct:.1f}%"></div></div>'
         f'<div class="qq-step-list">{step_rows}</div>'
         "</div>"
@@ -3932,7 +4012,6 @@ def render_data_provider_page() -> None:
         st.error("Start date must be on or before end date.")
         return
     source_rows = [asdict(row) for row in scan_market_source(raw_root, start_date, end_date)]
-    expected_sessions = sum(1 for row in source_rows if row["expected_market_session"])
     manifest = read_manifest(processed_root)
 
     header_cols = st.columns([1.55, 1.0], gap="medium", vertical_alignment="top")
@@ -3947,7 +4026,7 @@ def render_data_provider_page() -> None:
         if action_cols[1].button("Edit scope", width="stretch"):
             render_scope_dialog()
     with header_cols[1]:
-        render_scope_card(scope, expected_sessions)
+        render_scope_card(scope)
 
     events: list[dict] = st.session_state.setdefault("build_progress_events", [])
     started_at = st.session_state.get("build_started_at")
