@@ -502,6 +502,38 @@ def consolidate_extended_chart_five_minute(minute_bars: pl.DataFrame) -> pl.Data
 
 
 @st.cache_data(show_spinner=False)
+def load_extended_chart_day_bars(
+    data_root_value: str,
+    exchange_timezone: str,
+    session_date_value: str,
+    ticker: str,
+) -> pl.DataFrame:
+    # Visualization data is intentionally separate from strategy execution windows.
+    # The chart always renders exchange-time extended hours from raw UTC source bars.
+    session = date.fromisoformat(session_date_value)
+    source = chart_minute_file_path(Path(data_root_value), session)
+    if not source.exists():
+        return pl.DataFrame()
+    frame = (
+        pl.scan_csv(source)
+        .filter(pl.col("ticker") == ticker)
+        .select("ticker", "volume", "open", "close", "high", "low", "window_start", "transactions")
+        .collect()
+    )
+    if frame.is_empty():
+        return frame
+    return (
+        add_chart_exchange_time_columns(frame, exchange_timezone)
+        .filter(
+            (pl.col("minute_of_day") >= CHART_EXTENDED_START_MINUTE)
+            & (pl.col("minute_of_day") < CHART_EXTENDED_END_MINUTE)
+        )
+        .sort(["ticker", "bar_time_market"])
+        .with_columns(pl.lit(session.isoformat()).alias("session_date"))
+        .pipe(add_standard_indicators)
+    )
+
+
 def load_extended_chart_bars(
     data_root_value: str,
     exchange_timezone: str,
@@ -509,33 +541,11 @@ def load_extended_chart_bars(
     ticker: str,
     timeframe: str,
 ) -> pl.DataFrame:
-    # Visualization data is intentionally separate from strategy execution windows.
-    # The chart always renders exchange-time extended hours from raw UTC source bars.
-    minute_frames = []
-    for session_date_value in session_dates:
-        session = date.fromisoformat(session_date_value)
-        source = chart_minute_file_path(Path(data_root_value), session)
-        if not source.exists():
-            continue
-        frame = (
-            pl.scan_csv(source)
-            .filter(pl.col("ticker") == ticker)
-            .select("ticker", "volume", "open", "close", "high", "low", "window_start", "transactions")
-            .collect()
-        )
-        if frame.is_empty():
-            continue
-        frame = (
-            add_chart_exchange_time_columns(frame, exchange_timezone)
-            .filter(
-                (pl.col("minute_of_day") >= CHART_EXTENDED_START_MINUTE)
-                & (pl.col("minute_of_day") < CHART_EXTENDED_END_MINUTE)
-            )
-            .sort(["ticker", "bar_time_market"])
-            .with_columns(pl.lit(session.isoformat()).alias("session_date"))
-            .pipe(add_standard_indicators)
-        )
-        minute_frames.append(frame)
+    minute_frames = [
+        frame
+        for session_date_value in session_dates
+        if not (frame := load_extended_chart_day_bars(data_root_value, exchange_timezone, session_date_value, ticker)).is_empty()
+    ]
 
     if not minute_frames:
         return pl.DataFrame()
@@ -994,6 +1004,13 @@ def chart_marker_timestamp(value) -> int:
     return chart_timestamp(value, CHART_EXCHANGE_TIME_ZONE)
 
 
+def exchange_session_timestamp(session_date_value: str, minute_of_day: int) -> int:
+    session = date.fromisoformat(session_date_value)
+    hour, minute = divmod(minute_of_day, 60)
+    exchange_dt = datetime(session.year, session.month, session.day, hour, minute, tzinfo=ZoneInfo(CHART_EXCHANGE_TIME_ZONE))
+    return int(exchange_dt.astimezone(timezone.utc).timestamp())
+
+
 def parse_datetime_value(value) -> datetime | None:
     if isinstance(value, datetime):
         return value
@@ -1031,26 +1048,31 @@ def minute_of_day_from_row(row: dict) -> int | None:
 
 def extended_session_regions(rows: list[dict], candles: list[dict]) -> list[dict]:
     del candles
-    regions: dict[tuple[str, str], dict] = {}
+    session_dates: set[str] = set()
     for row in rows:
-        timestamp = row_chart_timestamp(row)
         minute = minute_of_day_from_row(row)
         parsed = row_exchange_datetime(row)
-        if not timestamp or minute is None or not parsed:
+        if minute is None or not parsed:
             continue
-        if CHART_EXTENDED_START_MINUTE <= minute < CHART_REGULAR_START_MINUTE:
-            phase = "premarket"
-            color = "rgba(251, 146, 60, 0.16)"
-        elif CHART_REGULAR_END_MINUTE <= minute < CHART_EXTENDED_END_MINUTE:
-            phase = "afterhours"
-            color = "rgba(96, 165, 250, 0.15)"
-        else:
-            continue
-        key = (parsed.date().isoformat(), phase)
-        region = regions.setdefault(key, {"start": timestamp, "end": timestamp, "color": color})
-        region["start"] = min(region["start"], timestamp)
-        region["end"] = max(region["end"], timestamp)
-    return sorted(regions.values(), key=lambda item: item["start"])
+        if CHART_EXTENDED_START_MINUTE <= minute < CHART_EXTENDED_END_MINUTE:
+            session_dates.add(parsed.date().isoformat())
+    regions = []
+    for session_date_value in sorted(session_dates):
+        regions.append(
+            {
+                "start": exchange_session_timestamp(session_date_value, CHART_EXTENDED_START_MINUTE),
+                "end": exchange_session_timestamp(session_date_value, CHART_REGULAR_START_MINUTE),
+                "color": "rgba(251, 146, 60, 0.16)",
+            }
+        )
+        regions.append(
+            {
+                "start": exchange_session_timestamp(session_date_value, CHART_REGULAR_END_MINUTE),
+                "end": exchange_session_timestamp(session_date_value, CHART_EXTENDED_END_MINUTE),
+                "color": "rgba(96, 165, 250, 0.15)",
+            }
+        )
+    return regions
 
 
 def hex_to_rgba(hex_color: str, opacity: float) -> str:
