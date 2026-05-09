@@ -935,37 +935,24 @@ def install_css() -> None:
             text-overflow: ellipsis;
             white-space: nowrap;
         }
-        .qq-build-metrics {
-            display: grid;
-            grid-template-columns: repeat(12, minmax(0, 1fr));
-            gap: 0.35rem;
-            margin: 0.55rem 0 0.65rem 0;
-        }
-        .qq-build-metric {
+        .st-key-build_metrics [data-testid="stMetric"] {
             border: 1px solid var(--qq-border-soft);
             border-radius: var(--qq-radius);
             background: var(--qq-surface);
-            padding: 0.45rem 0.45rem;
-            min-width: 0;
+            padding: 0.45rem 0.5rem;
+            min-height: 0;
         }
-        .qq-build-metric span {
-            display: block;
+        .st-key-build_metrics [data-testid="stMetricLabel"] p {
             color: var(--qq-muted);
-            font-size: 0.64rem;
+            font-size: 0.68rem;
             line-height: 1;
-            margin-bottom: 0.25rem;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        .qq-build-metric b {
-            display: block;
-            color: var(--qq-text);
-            font-size: 0.88rem;
-            line-height: 1.1;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+        .st-key-build_metrics [data-testid="stMetricValue"] {
+            font-size: 1rem;
+            line-height: 1.05;
         }
         .qq-progress-card {
             border: 1px solid var(--qq-border);
@@ -1061,9 +1048,6 @@ def install_css() -> None:
             .qq-build-header,
             .qq-build-board {
                 grid-template-columns: 1fr;
-            }
-            .qq-build-metrics {
-                grid-template-columns: repeat(4, minmax(0, 1fr));
             }
         }
         div[class*="st-key-chart_component_"] {
@@ -3726,15 +3710,11 @@ def render_scope_dialog() -> None:
     update_scope_dialog()
 
 
-def build_metric_card(label: str, value: str) -> str:
-    return f'<div class="qq-build-metric"><span>{escape(label)}</span><b>{escape(value)}</b></div>'
-
-
 def render_build_metrics(metrics: dict[str, str]) -> None:
-    st.markdown(
-        '<div class="qq-build-metrics">' + "".join(build_metric_card(label, value) for label, value in metrics.items()) + "</div>",
-        unsafe_allow_html=True,
-    )
+    with st.container(key="build_metrics"):
+        columns = st.columns(len(metrics), gap="small")
+        for column, (label, value) in zip(columns, metrics.items()):
+            column.metric(label, value)
 
 
 def status_class(status: str) -> str:
@@ -3813,15 +3793,15 @@ def build_monitor_metrics(plan_rows: list[dict], events: list[dict], manifest: d
     elapsed = (datetime.now() - started_at).total_seconds() if started_at else 0
     slowest = max((event for event in events if event.get("duration_sec") is not None), key=lambda item: float(item.get("duration_sec") or 0), default={})
     return {
-        "Raw Files": f"{len(buildable):,}",
-        "Expected": f"{len(expected):,}",
-        "Missing": f"{len(missing):,}",
-        "Closed Days": f"{len(plan_rows) - len(expected):,}",
-        "Artifacts": f"{len(artifact_events):,}",
-        "Manifest": f"{len(manifest.get('artifacts', {})):,}",
+        "Raw": f"{len(buildable):,}",
+        "Exp": f"{len(expected):,}",
+        "Miss": f"{len(missing):,}",
+        "Closed": f"{len(plan_rows) - len(expected):,}",
+        "Art": f"{len(artifact_events):,}",
+        "Manif": f"{len(manifest.get('artifacts', {})):,}",
         "Rows": f"{sum(int(event.get('rows_out') or 0) for event in artifact_events):,}",
         "Written": format_bytes(sum(int(event.get("size_bytes") or 0) for event in artifact_events)),
-        "Progress": f"{work_completed:,}/{work_total:,}" if work_total else "-",
+        "Prog": f"{work_completed:,}/{work_total:,}" if work_total else "-",
         "Elapsed": format_duration(elapsed),
         "Slowest": str(slowest.get("phase") or "-").replace("_", " "),
         "Status": str(events[-1].get("status") if events else "ready"),
@@ -3923,7 +3903,7 @@ def render_data_provider_page() -> None:
                 <div class="qq-progress-card">
                     <div class="qq-progress-top">
                         <div><strong>{escape(str(current.get("session_date") or "Ready"))}</strong><div class="qq-muted">{escape(str(current.get("phase") or "Waiting to start").replace("_", " "))}</div></div>
-                        <div class="qq-neutral">{escape(metrics["Progress"])}</div>
+                        <div class="qq-neutral">{escape(metrics["Prog"])}</div>
                     </div>
                     <div class="qq-progress-track"><div class="qq-progress-fill" style="width:{ratio * 100:.1f}%"></div></div>
                 </div>
