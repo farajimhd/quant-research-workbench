@@ -531,8 +531,11 @@ def install_css() -> None:
             margin: 0 !important;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[class*="st-key-sidebar_toggle"] {
-            margin-bottom: 0.6rem !important;
-            transform: translateX(1.05rem);
+            display: flex !important;
+            justify-content: center !important;
+            margin: 0.18rem -0.3rem 0.6rem !important;
+            transform: translateX(0.75rem);
+            width: calc(100% + 0.6rem) !important;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[class*="st-key-sidebar_toggle"] button {
             border-radius: 999px !important;
