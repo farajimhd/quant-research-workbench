@@ -1440,7 +1440,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     payload_json = json.dumps(payload)
     candle_settings_json = json.dumps(DEFAULT_CANDLE_CHART_SETTINGS)
     component_selector_json = json.dumps(f".st-key-{component_key}" if component_key else "")
-    pane_gap = 10 if payload.get("oscillators") else 0
+    pane_gap = 6 if payload.get("oscillators") else 0
     oscillator_ratio = 0.375
     price_height = int((height - pane_gap) / (1 + oscillator_ratio)) if payload.get("oscillators") else height
     oscillator_height = int(price_height * oscillator_ratio) if payload.get("oscillators") else 0
@@ -1451,10 +1451,10 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         background: #ffffff;
     }}
     </style>
-    <div id="{chart_id}" style="height:{total_height}px;width:100%;display:flex;flex-direction:column;gap:{pane_gap}px;position:relative;">
+    <div id="{chart_id}" style="height:{total_height}px;width:100%;display:flex;flex-direction:column;gap:0;position:relative;">
         <div id="{chart_id}-price" style="height:{price_height}px;width:100%;position:relative;"></div>
         <div id="{chart_id}-splitter" style="height:{pane_gap}px;width:100%;display:{'flex' if oscillator_height else 'none'};align-items:center;justify-content:center;cursor:row-resize;user-select:none;touch-action:none;">
-            <div style="width:54px;height:3px;border-radius:999px;background:#d1d5db;"></div>
+            <div style="width:100%;height:0;border-top:1px dotted #9ca3af;"></div>
         </div>
         <div id="{chart_id}-osc" style="height:{oscillator_height}px;width:100%;position:relative;display:{'block' if oscillator_height else 'none'};"></div>
     </div>
