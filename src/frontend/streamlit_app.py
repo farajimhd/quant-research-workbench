@@ -1003,18 +1003,18 @@ def install_css() -> None:
             padding-right: 0.15rem;
         }
         .qq-file-card {
-            border: 1px solid var(--qq-border-soft);
+            border: 1px solid var(--qq-border);
             border-radius: var(--qq-radius);
-            background: var(--qq-surface-soft);
-            padding: 0.62rem 0.68rem;
-            margin-bottom: 0.5rem;
+            background: var(--qq-surface);
+            padding: 0.52rem 0.62rem;
+            margin-bottom: 0.42rem;
         }
         .qq-file-card-header {
             display: flex;
             justify-content: space-between;
             gap: 0.65rem;
             align-items: center;
-            margin-bottom: 0.42rem;
+            margin-bottom: 0.28rem;
         }
         .qq-file-card-header strong {
             font-size: 0.9rem;
@@ -1028,21 +1028,41 @@ def install_css() -> None:
             background: var(--qq-surface);
             white-space: nowrap;
         }
-        .qq-file-facts {
+        .qq-file-progress {
+            height: 0.32rem;
+            border: 1px solid var(--qq-border-soft);
+            border-radius: var(--qq-radius);
+            background: var(--qq-neutral-bg);
+            overflow: hidden;
+            margin: 0.22rem 0 0.42rem 0;
+        }
+        .qq-file-progress-fill {
+            height: 100%;
+            background: var(--qq-primary);
+            width: 0%;
+        }
+        .qq-step-list {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 0.4rem;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.24rem 0.75rem;
         }
-        .qq-file-facts span {
-            color: var(--qq-muted);
-            font-size: 0.7rem;
-            display: block;
+        .qq-step-row {
+            display: grid;
+            grid-template-columns: minmax(70px, 1fr) auto;
+            gap: 0.35rem;
+            align-items: center;
+            font-size: 0.72rem;
+            line-height: 1.15;
         }
-        .qq-file-facts b {
-            font-size: 0.8rem;
-            display: block;
+        .qq-step-row span {
+            color: var(--qq-muted-strong);
             overflow: hidden;
             text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .qq-step-row b {
+            color: var(--qq-muted);
+            font-weight: 500;
             white-space: nowrap;
         }
         @media (max-width: 1100px) {
@@ -3726,30 +3746,73 @@ def status_class(status: str) -> str:
     return "qq-neutral"
 
 
+def session_step_plan() -> dict[str, int]:
+    session_timeframes = [timeframe for timeframe in TIMEFRAMES if timeframe != "1mo"]
+    return {
+        "raw": 1,
+        "normalize": 1,
+        "bars": len(session_timeframes),
+        "features": len(session_timeframes) * len(FEATURE_GROUPS),
+        "labels": len(session_timeframes) * len(SUPERVISION_GROUPS),
+        "complete": 1,
+    }
+
+
+def step_status(done: int, total: int) -> str:
+    if done <= 0:
+        return "waiting"
+    if done >= total:
+        return "done"
+    return "running"
+
+
+def step_status_class(status: str) -> str:
+    if status == "done":
+        return "qq-good"
+    if status == "running":
+        return "qq-neutral"
+    return "qq-muted"
+
+
+def step_row(label: str, done: int, total: int) -> str:
+    status = step_status(done, total)
+    value = "done" if total == 1 and done >= 1 else ("-" if done <= 0 else f"{done}/{total}")
+    return (
+        '<div class="qq-step-row">'
+        f'<span>{escape(label)}</span>'
+        f'<b class="{step_status_class(status)}">{escape(value)}</b>'
+        "</div>"
+    )
+
+
 def file_card_html(row: dict) -> str:
     status = str(row.get("status") or "queued")
     session_date = str(row.get("session_date") or "-")
-    phase = str(row.get("phase") or status).replace("_", " ")
-    rows = int(row.get("rows_out", row.get("rows", 0)) or 0)
-    artifacts = int(row.get("artifacts", 0) or 0)
-    duration = format_duration(row.get("duration_sec", row.get("elapsed_sec", 0)))
-    size = format_bytes(row.get("size_bytes", row.get("source_size_bytes", 0)))
-    raw_path = str(row.get("path", ""))
-    path_name = Path(raw_path).name if raw_path else "-"
+    current_step = str(row.get("phase") or status).replace("_", " ")
+    steps = row.get("steps", {})
+    total_units = int(row.get("step_total") or 1)
+    completed_units = int(row.get("step_done") or 0)
+    progress_pct = min(100.0, max(0.0, (completed_units / total_units) * 100.0))
+    duration = format_duration(row.get("duration_sec", 0))
+    step_rows = "".join(
+        [
+            step_row("Raw load", int(steps.get("raw", 0)), 1),
+            step_row("Normalize 1m", int(steps.get("normalize", 0)), 1),
+            step_row("Bars", int(steps.get("bars", 0)), session_step_plan()["bars"]),
+            step_row("Features", int(steps.get("features", 0)), session_step_plan()["features"]),
+            step_row("Labels", int(steps.get("labels", 0)), session_step_plan()["labels"]),
+            step_row("Complete", int(steps.get("complete", 0)), 1),
+        ]
+    )
     return (
         '<div class="qq-file-card">'
         '<div class="qq-file-card-header">'
         f"<strong>{escape(session_date)}</strong>"
         f'<span class="qq-card-status {status_class(status)}">{escape(status.replace("_", " "))}</span>'
         "</div>"
-        '<div class="qq-file-facts">'
-        f"<div><span>Phase</span><b>{escape(phase)}</b></div>"
-        f"<div><span>Rows</span><b>{rows:,}</b></div>"
-        f"<div><span>Artifacts</span><b>{artifacts:,}</b></div>"
-        f"<div><span>Duration</span><b>{escape(duration)}</b></div>"
-        f"<div><span>Size</span><b>{escape(size)}</b></div>"
-        f'<div><span>File</span><b title="{escape(raw_path)}">{escape(path_name)}</b></div>'
-        "</div>"
+        f'<div class="qq-muted">Current: {escape(current_step)} | {completed_units}/{total_units} | {escape(duration)}</div>'
+        f'<div class="qq-file-progress"><div class="qq-file-progress-fill" style="width:{progress_pct:.1f}%"></div></div>'
+        f'<div class="qq-step-list">{step_rows}</div>'
         "</div>"
     )
 
@@ -3811,14 +3874,17 @@ def build_monitor_metrics(plan_rows: list[dict], events: list[dict], manifest: d
 
 def build_session_cards(plan_rows: list[dict], events: list[dict]) -> tuple[list[dict], list[dict]]:
     session_rows: dict[str, dict] = {}
+    planned_steps = session_step_plan()
+    planned_total = sum(planned_steps.values())
     for row in plan_rows:
         session_rows[row["session_date"]] = {
             "session_date": row["session_date"],
             "status": "queued" if row.get("exists") and row.get("expected_market_session") else row.get("status", "closed"),
             "phase": row.get("status", "queued"),
-            "path": row.get("path"),
-            "source_size_bytes": row.get("size_bytes", 0),
-            "artifacts": 0,
+            "duration_sec": 0.0,
+            "steps": {key: 0 for key in planned_steps},
+            "step_done": 0,
+            "step_total": planned_total,
         }
     completed_dates: set[str] = set()
     for event in events:
@@ -3831,15 +3897,26 @@ def build_session_cards(plan_rows: list[dict], events: list[dict]) -> tuple[list
             row["status"] = "running"
         elif event.get("event") not in {"session_complete", "session_skipped"}:
             row["status"] = "running"
-        row["rows_out"] = event.get("rows_out", row.get("rows_out", 0))
         row["duration_sec"] = float(row.get("duration_sec") or 0) + float(event.get("duration_sec") or 0)
-        row["size_bytes"] = int(row.get("size_bytes") or 0) + int(event.get("size_bytes") or 0)
-        row["path"] = event.get("path", row.get("path"))
-        if event.get("event") == "artifact_complete":
-            row["artifacts"] = int(row.get("artifacts") or 0) + 1
+        steps = row["steps"]
+        phase = event.get("phase")
+        group = event.get("group")
+        if phase == "raw_load":
+            steps["raw"] = 1
+        elif phase == "canonicalize_1m":
+            steps["normalize"] = 1
+        elif event.get("event") == "artifact_complete" and group == "bars":
+            steps["bars"] = min(planned_steps["bars"], int(steps.get("bars", 0)) + 1)
+        elif event.get("event") == "artifact_complete" and str(group or "").startswith("features_"):
+            steps["features"] = min(planned_steps["features"], int(steps.get("features", 0)) + 1)
+        elif event.get("event") == "artifact_complete" and str(group or "").startswith("supervision_"):
+            steps["labels"] = min(planned_steps["labels"], int(steps.get("labels", 0)) + 1)
         if event.get("event") in {"session_complete", "session_skipped"}:
             row["status"] = event.get("status", "complete")
+            if event.get("event") == "session_complete":
+                steps["complete"] = 1
             completed_dates.add(session_date)
+        row["step_done"] = sum(int(value) for value in steps.values())
     completed = [session_rows[session_date] for session_date in sorted(completed_dates, reverse=True)]
     active = [
         row
