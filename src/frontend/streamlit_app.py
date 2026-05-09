@@ -486,7 +486,7 @@ def install_css() -> None:
             border: 0;
             border-radius: var(--qq-radius);
             background: transparent;
-            color: var(--qq-muted-strong);
+            color: var(--qq-muted);
             box-shadow: none;
             font-size: 1rem;
             font-weight: 400;
@@ -500,24 +500,24 @@ def install_css() -> None:
         }
         [data-testid="stSidebar"] div[data-testid="stButton"] button:disabled {
             background: transparent !important;
-            color: var(--qq-text) !important;
+            color: var(--qq-muted-strong) !important;
             cursor: default;
             font-weight: 400;
             opacity: 1;
         }
         [data-testid="stSidebar"] button[kind="secondary"]:hover {
             background: transparent !important;
-            color: var(--qq-primary) !important;
+            color: var(--qq-muted-strong) !important;
             border: 0;
         }
         [data-testid="stSidebar"] button[kind="primary"] {
             background: transparent;
-            color: var(--qq-text);
+            color: var(--qq-muted-strong);
             font-weight: 400;
         }
         [data-testid="stSidebar"] button[kind="primary"]:hover {
             background: transparent !important;
-            color: var(--qq-primary) !important;
+            color: var(--qq-muted-strong) !important;
             border: 0;
         }
         [data-testid="stSidebar"] button svg {
