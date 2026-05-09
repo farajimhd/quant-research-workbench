@@ -2059,7 +2059,8 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
             color: indicator.color,
             lineWidth: indicator.lineWidth || 1,
             priceLineVisible: false,
-            lastValueVisible: false
+            lastValueVisible: false,
+            autoscaleInfoProvider: () => null
         }});
         line.setData(indicator.data || []);
         seriesLabelColors.set(line, {{
