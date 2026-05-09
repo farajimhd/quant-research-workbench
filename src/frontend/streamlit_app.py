@@ -930,6 +930,7 @@ def install_css() -> None:
             display: block;
             color: var(--qq-text);
             font-size: 0.82rem;
+            font-weight: 400;
             line-height: 1.2;
             overflow: hidden;
             text-overflow: ellipsis;
