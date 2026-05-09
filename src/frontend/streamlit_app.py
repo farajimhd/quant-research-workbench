@@ -121,7 +121,7 @@ DEFAULT_CANDLE_CHART_SETTINGS = {
     "wickVisible": True,
     "priceLineVisible": True,
     "barSpacing": 40,
-    "minBarSpacing": 7,
+    "minBarSpacing": 0.2,
     "rightOffset": 2,
 }
 
@@ -1417,6 +1417,9 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     </style>
     <div id="{chart_id}" style="height:{total_height}px;width:100%;display:flex;flex-direction:column;gap:{pane_gap}px;position:relative;">
         <div id="{chart_id}-price" style="height:{price_height}px;width:100%;position:relative;"></div>
+        <div id="{chart_id}-splitter" style="height:{pane_gap}px;width:100%;display:{'flex' if oscillator_height else 'none'};align-items:center;justify-content:center;cursor:row-resize;user-select:none;touch-action:none;">
+            <div style="width:54px;height:3px;border-radius:999px;background:#d1d5db;"></div>
+        </div>
         <div id="{chart_id}-osc" style="height:{oscillator_height}px;width:100%;position:relative;display:{'block' if oscillator_height else 'none'};"></div>
     </div>
     <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
@@ -1425,6 +1428,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     const candleSettings = {candle_settings_json};
     const container = document.getElementById("{chart_id}");
     const priceContainer = document.getElementById("{chart_id}-price");
+    const splitter = document.getElementById("{chart_id}-splitter");
     const oscillatorContainer = document.getElementById("{chart_id}-osc");
     const hasOscillators = !!(payload.oscillators && payload.oscillators.length);
     const rightScaleWidth = 62;
@@ -1432,6 +1436,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     const normalPriceHeight = {price_height};
     const normalOscillatorHeight = {oscillator_height};
     const paneGap = {pane_gap};
+    let paneRatio = {oscillator_ratio};
     const chartWidth = () => Math.max(260, container.clientWidth - indicatorLabelWidth);
     const exchangeTimeZone = "{CHART_EXCHANGE_TIME_ZONE}";
     const exchangeDateTimeFormatter = new Intl.DateTimeFormat("en-US", {{
@@ -2115,15 +2120,13 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     }}
 
     function chartHeights() {{
-        if (!isChartExpanded()) {{
-            return {{ price: normalPriceHeight, oscillator: normalOscillatorHeight, total: {total_height} }};
-        }}
-        const available = Math.max(360, window.innerHeight - 4);
+        const available = isChartExpanded() ? Math.max(360, window.innerHeight - 4) : {total_height};
         if (!hasOscillators) {{
             return {{ price: available, oscillator: 0, total: available }};
         }}
-        const price = Math.floor((available - paneGap) / (1 + {oscillator_ratio}));
-        const oscillator = Math.max(120, Math.floor(price * {oscillator_ratio}));
+        const usable = Math.max(260, available - paneGap);
+        const oscillator = Math.max(90, Math.min(Math.floor(usable * 0.62), Math.floor((usable * paneRatio) / (1 + paneRatio))));
+        const price = Math.max(170, usable - oscillator);
         return {{ price, oscillator, total: price + oscillator + paneGap }};
     }}
 
@@ -2137,6 +2140,36 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         if (oscillatorChart) oscillatorChart.applyOptions({{ width, height: heights.oscillator }});
         alignTimeScales();
         requestAnimationFrame(drawSessionRegions);
+    }}
+
+    function setPaneRatioFromPointer(clientY) {{
+        if (!hasOscillators || !oscillatorChart) return;
+        const rect = container.getBoundingClientRect();
+        const usable = Math.max(260, rect.height - paneGap);
+        const splitY = Math.max(170, Math.min(clientY - rect.top, usable - 90));
+        const oscillator = usable - splitY;
+        paneRatio = oscillator / Math.max(1, splitY);
+        resizeCharts();
+    }}
+
+    if (splitter && hasOscillators) {{
+        splitter.addEventListener("pointerdown", event => {{
+            event.preventDefault();
+            splitter.setPointerCapture(event.pointerId);
+            setPaneRatioFromPointer(event.clientY);
+        }});
+        splitter.addEventListener("pointermove", event => {{
+            if (splitter.hasPointerCapture(event.pointerId)) {{
+                event.preventDefault();
+                setPaneRatioFromPointer(event.clientY);
+            }}
+        }});
+        splitter.addEventListener("pointerup", event => {{
+            if (splitter.hasPointerCapture(event.pointerId)) splitter.releasePointerCapture(event.pointerId);
+        }});
+        splitter.addEventListener("pointercancel", event => {{
+            if (splitter.hasPointerCapture(event.pointerId)) splitter.releasePointerCapture(event.pointerId);
+        }});
     }}
 
     window.addEventListener("resize", resizeCharts);
@@ -2154,7 +2187,7 @@ def candle_chart(
     bars: pl.DataFrame,
     orders: pl.DataFrame,
     indicators: dict[str, dict],
-    height: int = 720,
+    height: int = 860,
 ) -> None:
     if bars.is_empty():
         st.info("No chart data available.")
