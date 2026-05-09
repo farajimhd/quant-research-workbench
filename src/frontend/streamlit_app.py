@@ -1035,7 +1035,7 @@ def install_css() -> None:
             width: 100%;
             height: 0.34rem;
             border-radius: var(--qq-radius);
-            background: #E5E7EB;
+            background: var(--qq-neutral-bg);
             overflow: hidden;
         }
         .qq-phase-fill {
@@ -1115,12 +1115,24 @@ def install_css() -> None:
             border-radius: var(--qq-radius);
             background: var(--qq-neutral-bg);
             overflow: hidden;
-            margin: 0.15rem 0 0.62rem 0;
         }
         .qq-file-progress-fill {
             height: 100%;
             background: var(--qq-primary);
             width: 0%;
+        }
+        .qq-file-progress-line {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) max-content;
+            gap: 0.75rem;
+            align-items: center;
+            margin: 0.15rem 0 0.62rem 0;
+        }
+        .qq-file-progress-meta {
+            color: var(--qq-muted);
+            font-size: 0.74rem;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
         }
         .qq-card-phase-summary {
             display: grid;
@@ -3804,10 +3816,9 @@ def render_scope_dialog() -> None:
 def render_build_metrics(metrics: dict[str, str]) -> None:
     with st.container(key="build_metrics", border=False):
         items = list(metrics.items())
-        for start in range(0, len(items), 6):
-            columns = st.columns(6, gap="small", border=False)
-            for column, (label, value) in zip(columns, items[start : start + 6]):
-                column.metric(label, value, border=False)
+        columns = st.columns(len(items), gap="small", border=False)
+        for column, (label, value) in zip(columns, items):
+            column.metric(label, value, border=False)
 
 
 def status_class(status: str) -> str:
@@ -3847,6 +3858,7 @@ def file_card_html(row: dict) -> str:
     completed_units = int(row.get("step_done") or 0)
     progress_pct = min(100.0, max(0.0, (completed_units / total_units) * 100.0))
     duration = format_duration(row.get("duration_sec", 0))
+    progress_meta = f"{completed_units}/{total_units}, {duration}"
     status_text = status.replace("_", " ")
     phase_summary = build_phase_summary([row], row.get("events", []), include_global=False, css_class="qq-card-phase-summary")
     return (
@@ -3861,7 +3873,10 @@ def file_card_html(row: dict) -> str:
         f'<span class="qq-card-status {status_class(status)}">{escape(status_text)}</span>'
         "</div>"
         "</div>"
+        '<div class="qq-file-progress-line">'
         f'<div class="qq-file-progress"><div class="qq-file-progress-fill" style="width:{progress_pct:.1f}%"></div></div>'
+        f'<div class="qq-file-progress-meta">{escape(progress_meta)}</div>'
+        "</div>"
         f"{phase_summary}"
         "</div>"
     )
@@ -3902,22 +3917,15 @@ def build_monitor_metrics(plan_rows: list[dict], events: list[dict], manifest: d
     buildable = [row for row in expected if row.get("exists")]
     missing = [row for row in expected if not row.get("exists")]
     artifact_events = [event for event in events if event.get("event") == "artifact_complete"]
-    work_total = max((int(event.get("work_total") or 0) for event in events), default=0)
-    work_completed = max((int(event.get("work_completed") or 0) for event in events), default=0)
     elapsed = (datetime.now() - started_at).total_seconds() if started_at else 0
-    slowest = max((event for event in events if event.get("duration_sec") is not None), key=lambda item: float(item.get("duration_sec") or 0), default={})
     return {
         "Raw": f"{len(buildable):,}",
         "Exp": f"{len(expected):,}",
         "Miss": f"{len(missing):,}",
         "Closed": f"{len(plan_rows) - len(expected):,}",
-        "Art": f"{len(artifact_events):,}",
-        "Manif": f"{len(manifest.get('artifacts', {})):,}",
         "Rows": f"{sum(int(event.get('rows_out') or 0) for event in artifact_events):,}",
         "Written": format_bytes(sum(int(event.get("size_bytes") or 0) for event in artifact_events)),
-        "Prog": f"{work_completed:,}/{work_total:,}" if work_total else "-",
         "Elapsed": format_duration(elapsed),
-        "Slowest": str(slowest.get("phase") or "-").replace("_", " "),
         "Status": str(events[-1].get("status") if events else "ready"),
     }
 
@@ -4073,7 +4081,7 @@ def render_data_provider_page() -> None:
             '<div class="qq-page-description">Rebuild the canonical market-data store with every supported timeframe, feature group, and supervision label.</div>',
             unsafe_allow_html=True,
         )
-        action_cols = st.columns([0.42, 0.24, 0.34], gap="small", vertical_alignment="center")
+        action_cols = st.columns([0.2, 0.2, 0.6], gap="small", vertical_alignment="center")
         start_clicked = action_cols[0].button("Rebuild selected range", type="primary", width="stretch")
         if action_cols[1].button("Edit scope", width="stretch"):
             render_scope_dialog()
@@ -4101,6 +4109,7 @@ def render_data_provider_page() -> None:
         work_total = max((int(event.get("work_total") or 0) for event in current_events), default=0)
         work_completed = max((int(event.get("work_completed") or 0) for event in current_events), default=0)
         ratio = min(1.0, work_completed / work_total) if work_total else 0.0
+        progress_text = f"{work_completed:,}/{work_total:,}" if work_total else "-"
         current = current_events[-1] if current_events else {}
         phase_summary = build_phase_summary(source_rows, current_events)
         with progress_slot.container():
@@ -4109,7 +4118,7 @@ def render_data_provider_page() -> None:
                 <div class="qq-progress-card">
                     <div class="qq-progress-top">
                         <div><strong>{escape(str(current.get("session_date") or "Ready"))}</strong><div class="qq-muted">{escape(str(current.get("phase") or "Waiting to start").replace("_", " "))}</div></div>
-                        <div class="qq-neutral">{escape(metrics["Prog"])}</div>
+                        <div class="qq-neutral">{escape(progress_text)}</div>
                     </div>
                     <div class="qq-progress-track"><div class="qq-progress-fill" style="width:{ratio * 100:.1f}%"></div></div>
                     {phase_summary}
