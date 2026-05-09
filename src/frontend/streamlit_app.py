@@ -1004,13 +1004,6 @@ def chart_marker_timestamp(value) -> int:
     return chart_timestamp(value, CHART_EXCHANGE_TIME_ZONE)
 
 
-def exchange_session_timestamp(session_date_value: str, minute_of_day: int) -> int:
-    session = date.fromisoformat(session_date_value)
-    hour, minute = divmod(minute_of_day, 60)
-    exchange_dt = datetime(session.year, session.month, session.day, hour, minute, tzinfo=ZoneInfo(CHART_EXCHANGE_TIME_ZONE))
-    return int(exchange_dt.astimezone(timezone.utc).timestamp())
-
-
 def parse_datetime_value(value) -> datetime | None:
     if isinstance(value, datetime):
         return value
@@ -1048,31 +1041,26 @@ def minute_of_day_from_row(row: dict) -> int | None:
 
 def extended_session_regions(rows: list[dict], candles: list[dict]) -> list[dict]:
     del candles
-    session_dates: set[str] = set()
+    regions: dict[tuple[str, str], dict] = {}
     for row in rows:
+        timestamp = row_chart_timestamp(row)
         minute = minute_of_day_from_row(row)
         parsed = row_exchange_datetime(row)
-        if minute is None or not parsed:
+        if not timestamp or minute is None or not parsed:
             continue
-        if CHART_EXTENDED_START_MINUTE <= minute < CHART_EXTENDED_END_MINUTE:
-            session_dates.add(parsed.date().isoformat())
-    regions = []
-    for session_date_value in sorted(session_dates):
-        regions.append(
-            {
-                "start": exchange_session_timestamp(session_date_value, CHART_EXTENDED_START_MINUTE),
-                "end": exchange_session_timestamp(session_date_value, CHART_REGULAR_START_MINUTE),
-                "color": "rgba(251, 146, 60, 0.16)",
-            }
-        )
-        regions.append(
-            {
-                "start": exchange_session_timestamp(session_date_value, CHART_REGULAR_END_MINUTE),
-                "end": exchange_session_timestamp(session_date_value, CHART_EXTENDED_END_MINUTE),
-                "color": "rgba(96, 165, 250, 0.15)",
-            }
-        )
-    return regions
+        if CHART_EXTENDED_START_MINUTE <= minute < CHART_REGULAR_START_MINUTE:
+            phase = "premarket"
+            color = "rgba(251, 146, 60, 0.10)"
+        elif CHART_REGULAR_END_MINUTE <= minute < CHART_EXTENDED_END_MINUTE:
+            phase = "afterhours"
+            color = "rgba(96, 165, 250, 0.10)"
+        else:
+            continue
+        key = (parsed.date().isoformat(), phase)
+        region = regions.setdefault(key, {"start": timestamp, "end": timestamp, "color": color})
+        region["start"] = min(region["start"], timestamp)
+        region["end"] = max(region["end"], timestamp)
+    return sorted(regions.values(), key=lambda item: item["start"])
 
 
 def hex_to_rgba(hex_color: str, opacity: float) -> str:
@@ -1514,9 +1502,9 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         (payload.sessionRegions || []).forEach(region => {{
             const start = chartInstance.timeScale().timeToCoordinate(region.start);
             const end = chartInstance.timeScale().timeToCoordinate(region.end);
-            if (start === null && end === null) return;
-            const left = Math.max(0, Math.min(start ?? 0, end ?? width));
-            const right = Math.min(width, Math.max(start ?? 0, end ?? width));
+            if (start === null || end === null) return;
+            const left = Math.max(0, Math.min(start, end));
+            const right = Math.min(width, Math.max(start, end));
             if (right <= left) return;
             const block = document.createElement("div");
             block.style.position = "absolute";
