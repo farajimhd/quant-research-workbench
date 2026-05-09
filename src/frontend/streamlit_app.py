@@ -956,16 +956,20 @@ def render_chart_fullscreen_button(component_key: str) -> None:
                 overflow: hidden !important;
                 padding: 0 !important;
             }}
-            .qq-streamlit-chart-fullscreen div[class*="st-key-chart_toolbar_"] {{
-                height: 2.85rem !important;
-                margin: 0 !important;
-            }}
-            .qq-streamlit-chart-fullscreen div[class*="st-key-chart_toolbar_"] iframe {{
-                height: 2.35rem !important;
-            }}
             .qq-streamlit-chart-fullscreen iframe {{
                 width: 100vw !important;
                 height: calc(100vh - 2.85rem) !important;
+            }}
+            .qq-streamlit-chart-fullscreen div[class*="st-key-chart_toolbar_"] {{
+                position: relative !important;
+                z-index: 2 !important;
+                height: 2.85rem !important;
+                margin: 0 !important;
+                background: #ffffff !important;
+            }}
+            .qq-streamlit-chart-fullscreen div[class*="st-key-chart_toolbar_"] iframe {{
+                width: 40px !important;
+                height: 34px !important;
             }}
             .qq-streamlit-chart-body-lock {{
                 overflow: hidden !important;
