@@ -392,13 +392,17 @@ def install_css() -> None:
         }
         [data-testid="stDataFrame"] {
             background: #FFFFFF !important;
-            border: 1px solid #E5E7EB !important;
+            border: 0 !important;
+            border-bottom: 1px solid #E5E7EB !important;
+            border-top: 1px solid #E5E7EB !important;
             border-radius: 2px !important;
             box-shadow: none !important;
             overflow: hidden !important;
         }
         [data-testid="stDataFrame"] > div {
             background: #FFFFFF !important;
+            border-left: 0 !important;
+            border-right: 0 !important;
             border-radius: 2px !important;
         }
         [data-testid="stDataFrame"] canvas {
@@ -440,14 +444,16 @@ def install_css() -> None:
         }
         [data-testid="stMarkdownContainer"] table {
             background: #FFFFFF;
-            border: 1px solid #E5E7EB;
+            border: 0;
+            border-bottom: 1px solid #E5E7EB;
+            border-top: 1px solid #E5E7EB;
             border-collapse: collapse;
             border-radius: 2px;
             overflow: hidden;
             width: 100%;
         }
         [data-testid="stMarkdownContainer"] th {
-            background: #FFFFFF;
+            background: transparent !important;
             color: #4B5563;
             font-size: 0.74rem;
             font-weight: 600;
