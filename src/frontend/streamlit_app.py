@@ -1478,6 +1478,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     }}
     const rightScaleWidth = 62;
     const indicatorLabelWidth = 62;
+    const timeAxisHeight = 28;
     const normalPriceHeight = {price_height};
     const normalOscillatorHeight = {oscillator_height};
     const paneGap = {pane_gap};
@@ -1592,22 +1593,22 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         }}
     }}) : null;
 
-    function createSessionLayer(parent) {{
+    function createSessionLayer(parent, reserveTimeAxis) {{
         if (!parent) return null;
         const layer = document.createElement("div");
         layer.style.position = "absolute";
         layer.style.top = "0";
         layer.style.left = "0";
         layer.style.right = `${{indicatorLabelWidth + rightScaleWidth}}px`;
-        layer.style.bottom = "0";
+        layer.style.bottom = reserveTimeAxis ? `${{timeAxisHeight}}px` : "0";
         layer.style.pointerEvents = "none";
         layer.style.zIndex = "1";
         parent.appendChild(layer);
         return layer;
     }}
 
-    const priceSessionLayer = createSessionLayer(priceContainer);
-    const oscillatorSessionLayer = oscillatorChart ? createSessionLayer(oscillatorContainer) : null;
+    const priceSessionLayer = createSessionLayer(priceContainer, !hasOscillators);
+    const oscillatorSessionLayer = oscillatorChart ? createSessionLayer(oscillatorContainer, true) : null;
 
     function drawSessionLayer(layer, chartInstance) {{
         if (!layer || !chartInstance) return;
