@@ -3778,6 +3778,31 @@ def render_file_container(title: str, rows: list[dict]) -> str:
     return f'<div class="qq-build-list"><h4>{escape(title)}</h4><div class="qq-build-scroll">{cards}</div></div>'
 
 
+def render_manifest_card(manifest: dict, processed_root: Path) -> None:
+    artifacts = manifest.get("artifacts", {})
+    rows = [
+        ("Processed root", str(processed_root)),
+        ("Artifact records", f"{len(artifacts):,}"),
+        ("Schema version", str(manifest.get("schema_version", "-"))),
+        ("Feature version", str(manifest.get("feature_version", "-"))),
+        ("Supervision version", str(manifest.get("supervision_version", "-"))),
+        ("Updated at", str(manifest.get("updated_at") or "-")),
+    ]
+    fields = "".join(
+        f'<div class="qq-scope-item"><span>{escape(label)}</span><b title="{escape(value)}">{escape(value)}</b></div>'
+        for label, value in rows
+    )
+    st.markdown(
+        f"""
+        <div class="qq-scope-card">
+            <div class="qq-scope-title"><strong>Manifest Summary</strong><span class="qq-card-status">metadata</span></div>
+            <div class="qq-scope-grid">{fields}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def build_monitor_metrics(plan_rows: list[dict], events: list[dict], manifest: dict, started_at: datetime | None) -> dict[str, str]:
     expected = [row for row in plan_rows if row.get("expected_market_session")]
     buildable = [row for row in expected if row.get("exists")]
@@ -3918,8 +3943,9 @@ def render_data_provider_page() -> None:
         phase_events = [event for event in current_events if event.get("duration_sec") is not None]
         ready_rows = MarketDataProvider(DataProviderConfig(raw_root=raw_root, processed_root=processed_root)).status_rows(start_date, end_date, list(TIMEFRAMES))
         with detail_slot.container():
-            tabs = st.tabs(["Phase Timings", "Artifacts", "Plan", "Processed Store", "Manifest"])
+            tabs = st.tabs(["Build Timings", "Artifacts", "Plan", "Processed Store", "Manifest"])
             with tabs[0]:
+                st.caption("Measured build steps such as raw loading, timestamp normalization, timeframe aggregation, feature writes, supervision writes, and monthly aggregation.")
                 app_dataframe(pl.DataFrame(phase_events[-500:]), width="stretch", hide_index=True)
             with tabs[1]:
                 app_dataframe(pl.DataFrame(artifact_events[-500:]), width="stretch", hide_index=True)
@@ -3928,17 +3954,7 @@ def render_data_provider_page() -> None:
             with tabs[3]:
                 app_dataframe(pl.DataFrame(ready_rows), width="stretch", hide_index=True)
             with tabs[4]:
-                st.json(
-                    {
-                        "processed_root": str(processed_root),
-                        "schema_version": current_manifest.get("schema_version"),
-                        "feature_version": current_manifest.get("feature_version"),
-                        "supervision_version": current_manifest.get("supervision_version"),
-                        "updated_at": current_manifest.get("updated_at"),
-                        "artifact_count": len(current_manifest.get("artifacts", {})),
-                    },
-                    expanded=False,
-                )
+                render_manifest_card(current_manifest, processed_root)
 
     render_progress_board(events)
 
