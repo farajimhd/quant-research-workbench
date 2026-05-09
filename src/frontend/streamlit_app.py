@@ -1384,6 +1384,15 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         const parts = Object.fromEntries(exchangeDateTimeFormatter.formatToParts(date).map(part => [part.type, part.value]));
         return `${{parts.year}}-${{parts.month}}-${{parts.day}} ${{parts.hour}}:${{parts.minute}}:${{parts.second}}`;
     }}
+    function formatTickMark(time, tickMarkType) {{
+        const text = formatDateTime(time);
+        const datePart = text.slice(0, 10);
+        const timePart = text.slice(11, 16);
+        if (Number(tickMarkType) <= 2) {{
+            return datePart;
+        }}
+        return timePart;
+    }}
     const commonOptions = {{
         layout: {{
             background: {{ type: "solid", color: "#ffffff" }},
@@ -1415,6 +1424,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         }},
         timeScale: {{
             borderColor: "#d1d5db",
+            tickMarkFormatter: formatTickMark,
             timeVisible: true,
             secondsVisible: true,
             rightOffset: candleSettings.rightOffset,
