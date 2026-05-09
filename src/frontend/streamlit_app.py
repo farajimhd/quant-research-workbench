@@ -1005,6 +1005,37 @@ def install_css() -> None:
             background: var(--qq-primary);
             width: 0%;
         }
+        .qq-phase-summary {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.36rem 1.45rem;
+            margin-top: 0.7rem;
+        }
+        .qq-phase-row {
+            display: grid;
+            grid-template-columns: minmax(92px, 1fr) auto auto;
+            gap: 0.5rem;
+            align-items: baseline;
+            min-width: 0;
+            font-size: 0.76rem;
+            line-height: 1.2;
+        }
+        .qq-phase-name {
+            color: var(--qq-muted-strong);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .qq-phase-progress {
+            color: var(--qq-text);
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        .qq-phase-time {
+            color: var(--qq-muted);
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
         .qq-build-board {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -3929,6 +3960,68 @@ def build_monitor_metrics(plan_rows: list[dict], events: list[dict], manifest: d
     }
 
 
+def build_phase_summary(plan_rows: list[dict], events: list[dict]) -> str:
+    buildable = [row for row in plan_rows if row.get("expected_market_session") and row.get("exists")]
+    buildable_count = len(buildable)
+    touched_months = {str(row["session_date"])[:7] for row in buildable}
+    month_count = len(touched_months)
+    session_timeframes = [timeframe for timeframe in TIMEFRAMES if timeframe != "1mo"]
+    intraday_timeframes = [timeframe for timeframe in session_timeframes if timeframe not in {"1d"}]
+    contexts_with_monthly = buildable_count * len(session_timeframes) + month_count
+    phase_totals = {
+        "scan_source": 1,
+        "raw_load": buildable_count,
+        "canonicalize_1m": buildable_count,
+        "aggregate": buildable_count * len(intraday_timeframes),
+        "aggregate_daily": buildable_count,
+        "bars_write": contexts_with_monthly,
+        "feature_compute": contexts_with_monthly,
+        "feature_write": contexts_with_monthly * len(FEATURE_GROUPS),
+        "supervision_bar": contexts_with_monthly,
+        "supervision_method": contexts_with_monthly,
+        "supervision_scanner": contexts_with_monthly,
+        "monthly_aggregate": month_count,
+        "run": 1,
+    }
+    phase_labels = [
+        ("scan_source", "Scan"),
+        ("raw_load", "Raw load"),
+        ("canonicalize_1m", "Normalize"),
+        ("aggregate", "Intraday bars"),
+        ("aggregate_daily", "Daily bars"),
+        ("bars_write", "Write bars"),
+        ("feature_compute", "Feature calc"),
+        ("feature_write", "Write features"),
+        ("supervision_bar", "Bar labels"),
+        ("supervision_method", "Method labels"),
+        ("supervision_scanner", "Scanner labels"),
+        ("monthly_aggregate", "Monthly bars"),
+        ("run", "Total run"),
+    ]
+    completed: dict[str, int] = {phase: 0 for phase in phase_totals}
+    elapsed: dict[str, float] = {phase: 0.0 for phase in phase_totals}
+    for event in events:
+        phase = str(event.get("phase") or "")
+        if phase not in phase_totals:
+            continue
+        completed[phase] += 1
+        elapsed[phase] += float(event.get("duration_sec") or 0.0)
+
+    rows = []
+    for phase, label in phase_labels:
+        total = phase_totals[phase]
+        done = min(completed[phase], total)
+        progress = f"{done}/{total}" if total else "-"
+        rows.append(
+            '<div class="qq-phase-row">'
+            f'<span class="qq-phase-name">{escape(label)}</span>'
+            f'<span class="qq-phase-progress">{escape(progress)}</span>'
+            f'<span class="qq-phase-time">{escape(format_duration(elapsed[phase]))}</span>'
+            "</div>"
+        )
+    return '<div class="qq-phase-summary">' + "".join(rows) + "</div>"
+
+
 def build_session_cards(plan_rows: list[dict], events: list[dict]) -> tuple[list[dict], list[dict]]:
     session_rows: dict[str, dict] = {}
     planned_steps = session_step_plan()
@@ -4031,6 +4124,7 @@ def render_data_provider_page() -> None:
         work_completed = max((int(event.get("work_completed") or 0) for event in current_events), default=0)
         ratio = min(1.0, work_completed / work_total) if work_total else 0.0
         current = current_events[-1] if current_events else {}
+        phase_summary = build_phase_summary(source_rows, current_events)
         with progress_slot.container():
             st.markdown(
                 f"""
@@ -4040,6 +4134,7 @@ def render_data_provider_page() -> None:
                         <div class="qq-neutral">{escape(metrics["Prog"])}</div>
                     </div>
                     <div class="qq-progress-track"><div class="qq-progress-fill" style="width:{ratio * 100:.1f}%"></div></div>
+                    {phase_summary}
                 </div>
                 """,
                 unsafe_allow_html=True,
