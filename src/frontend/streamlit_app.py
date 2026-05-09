@@ -271,18 +271,31 @@ def install_css() -> None:
             padding: 2.25rem 2rem 2rem;
         }
         [data-testid="stSidebar"] {
+            background: #ffffff;
             border-right: 1px solid #e5e7eb;
+            flex: 0 0 22rem !important;
+            min-width: 22rem !important;
+            width: 22rem !important;
+        }
+        [data-testid="stSidebar"] > div,
+        [data-testid="stSidebarContent"] {
+            background: #ffffff;
+            width: 22rem !important;
         }
         [data-testid="stSidebar"] > div:first-child {
-            padding: 1.25rem 1.2rem;
+            background: #ffffff;
+            padding: 0.7rem 1.15rem 1.1rem;
         }
         .qq-sidebar-brand {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-            padding: 0.35rem 0.25rem 1.25rem;
-            margin-bottom: 1.15rem;
-            border-bottom: 1px solid #edf0f2;
+            gap: 0.78rem;
+            min-height: 5.25rem;
+            padding: 0 0.3rem;
+            margin: 0 -1.15rem 1.05rem;
+            padding-left: 1.45rem;
+            padding-right: 1.25rem;
+            border-bottom: 1px solid #e5e7eb;
         }
         .qq-sidebar-mark {
             display: inline-flex;
@@ -300,9 +313,14 @@ def install_css() -> None:
         }
         .qq-sidebar-title {
             color: #111827;
-            font-size: 1.06rem;
+            font-size: 1rem;
             font-weight: 800;
-            line-height: 1.1;
+            line-height: 1;
+            letter-spacing: 0;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .qq-sidebar-group {
             color: #7a7f87;
@@ -310,25 +328,43 @@ def install_css() -> None:
             font-weight: 750;
             letter-spacing: 0.09em;
             line-height: 1;
-            padding: 0.85rem 0.35rem 0.45rem;
+            padding: 0.95rem 0.55rem 0.55rem;
             text-transform: uppercase;
         }
         [data-testid="stSidebar"] div[data-testid="stButton"] {
-            margin: 0.08rem 0;
+            margin: 0.05rem 0;
+            width: 100% !important;
         }
         [data-testid="stSidebar"] button[kind="secondary"],
-        [data-testid="stSidebar"] button[kind="primary"] {
-            justify-content: flex-start;
-            min-height: 2.75rem;
-            padding: 0.45rem 0.8rem;
+        [data-testid="stSidebar"] button[kind="primary"],
+        [data-testid="stSidebar"] div[data-testid="stButton"] button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-start !important;
+            width: 100% !important;
+            min-height: 3rem;
+            padding: 0.5rem 0.9rem;
             border: 0;
             border-radius: 10px;
             background: transparent;
             color: #5f646d;
             box-shadow: none;
-            font-size: 0.98rem;
+            font-size: 1rem;
             font-weight: 650;
-            gap: 0.72rem;
+            gap: 0.85rem;
+            line-height: 1;
+        }
+        [data-testid="stSidebar"] div[data-testid="stButton"] button > div,
+        [data-testid="stSidebar"] div[data-testid="stButton"] button span {
+            justify-content: flex-start !important;
+            text-align: left !important;
+        }
+        [data-testid="stSidebar"] div[data-testid="stButton"] button:disabled {
+            background: #f3f4f6 !important;
+            color: #111827 !important;
+            cursor: default;
+            font-weight: 760;
+            opacity: 1;
         }
         [data-testid="stSidebar"] button[kind="secondary"]:hover {
             background: #f6f7f8;
@@ -346,12 +382,22 @@ def install_css() -> None:
             border: 0;
         }
         [data-testid="stSidebar"] button svg {
-            width: 1.28rem;
-            height: 1.28rem;
+            width: 1.42rem;
+            height: 1.42rem;
             color: currentColor;
+            flex: 0 0 1.42rem;
         }
         [data-testid="stSidebar"] button p {
+            color: currentColor;
+            font-size: 1rem;
+            font-weight: inherit;
+            line-height: 1;
+            margin: 0;
+            min-width: 0;
+            overflow: hidden;
             text-align: left;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         h1 {
             font-size: 1.45rem !important;
@@ -549,8 +595,9 @@ def render_sidebar() -> str:
         if st.sidebar.button(
             display_name(strategy_name),
             key=f"sidebar_{page_key}",
-            type="primary" if selected_page == page_key else "secondary",
+            type="secondary",
             icon=":material/monitoring:",
+            disabled=selected_page == page_key,
             width="stretch",
         ):
             select_sidebar_page(page_key)
@@ -561,8 +608,9 @@ def render_sidebar() -> str:
     if st.sidebar.button(
         "Build Data",
         key=f"sidebar_{build_data_key}",
-        type="primary" if selected_page == build_data_key else "secondary",
+        type="secondary",
         icon=":material/database:",
+        disabled=selected_page == build_data_key,
         width="stretch",
     ):
         select_sidebar_page(build_data_key)
