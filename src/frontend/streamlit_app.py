@@ -274,6 +274,9 @@ def install_css() -> None:
             max-width: 100%;
             padding: 5.35rem 2rem 2rem;
         }
+        body:has(.qq-sidebar-state-collapsed) .block-container {
+            padding-left: 1rem;
+        }
         [data-testid="stHeader"] {
             align-items: center;
             background: rgba(255, 255, 255, 0.78);
@@ -304,20 +307,20 @@ def install_css() -> None:
         [data-testid="stSidebar"] {
             background: #ffffff;
             border-right: 1px solid #e5e7eb;
-            flex: 0 0 17.5rem !important;
+            flex: 0 0 15.5rem !important;
             height: calc(100vh - 4.5rem) !important;
-            min-width: 17.5rem !important;
+            min-width: 15.5rem !important;
             overflow: visible !important;
             position: relative;
             top: 4.5rem !important;
-            width: 17.5rem !important;
+            width: 15.5rem !important;
             z-index: 1000;
         }
         [data-testid="stSidebar"] > div,
         [data-testid="stSidebarContent"] {
             background: #ffffff;
             overflow: visible !important;
-            width: 17.5rem !important;
+            width: 15.5rem !important;
         }
         [data-testid="stSidebarHeader"] {
             display: none !important;
@@ -475,17 +478,17 @@ def install_css() -> None:
             -webkit-mask-size: 1.1rem 1.1rem;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) {
-            flex: 0 0 4.9rem !important;
-            min-width: 4.9rem !important;
-            width: 4.9rem !important;
+            flex: 0 0 3.35rem !important;
+            min-width: 3.35rem !important;
+            width: 3.35rem !important;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) > div,
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) [data-testid="stSidebarContent"] {
-            width: 4.9rem !important;
+            width: 3.35rem !important;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) > div:first-child {
-            padding-left: 0.7rem;
-            padding-right: 0.7rem;
+            padding-left: 0.3rem;
+            padding-right: 0.3rem;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[class*="st-key-sidebar_toggle"] button::before {
             mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E");
@@ -499,11 +502,22 @@ def install_css() -> None:
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[data-testid="stButton"] button {
             justify-content: center !important;
-            min-height: 3.35rem;
+            min-height: 2.85rem;
             padding: 0;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[data-testid="stButton"] button p {
             display: none;
+        }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[class*="st-key-sidebar_toggle"] {
+            margin-bottom: 0.6rem !important;
+            transform: translateX(1.05rem);
+        }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[class*="st-key-sidebar_toggle"] button {
+            border-radius: 999px !important;
+            height: 2rem !important;
+            min-height: 2rem !important;
+            padding: 0 !important;
+            width: 2rem !important;
         }
         h1 {
             font-size: 1.45rem !important;
