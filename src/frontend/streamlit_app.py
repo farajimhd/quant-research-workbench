@@ -1013,8 +1013,8 @@ def install_css() -> None:
         }
         .qq-phase-row {
             display: grid;
-            grid-template-columns: minmax(92px, 1fr) auto auto;
-            gap: 0.5rem;
+            grid-template-columns: max-content max-content max-content;
+            gap: 0.45rem;
             align-items: baseline;
             min-width: 0;
             font-size: 0.76rem;
@@ -1025,6 +1025,7 @@ def install_css() -> None:
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            max-width: 9.5rem;
         }
         .qq-phase-progress {
             color: var(--qq-text);
@@ -1109,39 +1110,18 @@ def install_css() -> None:
             background: var(--qq-primary);
             width: 0%;
         }
-        .qq-step-list {
+        .qq-card-phase-summary {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 0.35rem;
+            grid-template-columns: repeat(2, max-content);
+            gap: 0.3rem 1.2rem;
+            margin-top: 0.52rem;
         }
-        .qq-step-row {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            gap: 0.16rem 0.4rem;
-            align-items: center;
-            border: 1px solid var(--qq-border-soft);
-            border-radius: var(--qq-radius);
-            background: var(--qq-surface-soft);
-            padding: 0.34rem 0.42rem;
+        .qq-card-phase-summary .qq-phase-row {
             font-size: 0.72rem;
-            line-height: 1.15;
+            gap: 0.38rem;
         }
-        .qq-step-row span {
-            color: var(--qq-muted-strong);
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .qq-step-row b {
-            color: var(--qq-muted);
-            font-weight: 500;
-            white-space: nowrap;
-        }
-        .qq-step-row.qq-step-done b {
-            color: var(--qq-success);
-        }
-        .qq-step-row.qq-step-running b {
-            color: var(--qq-primary);
+        .qq-card-phase-summary .qq-phase-name {
+            max-width: 7.8rem;
         }
         @media (max-width: 1100px) {
             .qq-build-header,
@@ -3828,8 +3808,16 @@ def status_class(status: str) -> str:
     return "qq-neutral"
 
 
+def session_timeframes_for_build() -> list[str]:
+    return [timeframe for timeframe in TIMEFRAMES if timeframe != "1mo"]
+
+
+def intraday_timeframes_for_build() -> list[str]:
+    return [timeframe for timeframe in session_timeframes_for_build() if timeframe != "1d"]
+
+
 def session_step_plan() -> dict[str, int]:
-    session_timeframes = [timeframe for timeframe in TIMEFRAMES if timeframe != "1mo"]
+    session_timeframes = session_timeframes_for_build()
     return {
         "raw": 1,
         "normalize": 1,
@@ -3838,33 +3826,6 @@ def session_step_plan() -> dict[str, int]:
         "labels": len(session_timeframes) * len(SUPERVISION_GROUPS),
         "complete": 1,
     }
-
-
-def step_status(done: int, total: int) -> str:
-    if done <= 0:
-        return "waiting"
-    if done >= total:
-        return "done"
-    return "running"
-
-
-def step_status_class(status: str) -> str:
-    if status == "done":
-        return "qq-step-done"
-    if status == "running":
-        return "qq-step-running"
-    return "qq-step-waiting"
-
-
-def step_row(label: str, done: int, total: int) -> str:
-    status = step_status(done, total)
-    value = "done" if total == 1 and done >= 1 else ("-" if done <= 0 else f"{done}/{total}")
-    return (
-        f'<div class="qq-step-row {step_status_class(status)}">'
-        f'<span>{escape(label)}</span>'
-        f"<b>{escape(value)}</b>"
-        "</div>"
-    )
 
 
 def file_card_html(row: dict) -> str:
@@ -3877,16 +3838,7 @@ def file_card_html(row: dict) -> str:
     progress_pct = min(100.0, max(0.0, (completed_units / total_units) * 100.0))
     duration = format_duration(row.get("duration_sec", 0))
     status_text = status.replace("_", " ")
-    step_rows = "".join(
-        [
-            step_row("Raw load", int(steps.get("raw", 0)), 1),
-            step_row("Normalize 1m", int(steps.get("normalize", 0)), 1),
-            step_row("Bars", int(steps.get("bars", 0)), session_step_plan()["bars"]),
-            step_row("Features", int(steps.get("features", 0)), session_step_plan()["features"]),
-            step_row("Labels", int(steps.get("labels", 0)), session_step_plan()["labels"]),
-            step_row("Complete", int(steps.get("complete", 0)), 1),
-        ]
-    )
+    phase_summary = build_phase_summary([row], row.get("events", []), include_global=False, css_class="qq-card-phase-summary")
     return (
         '<div class="qq-file-card">'
         '<div class="qq-file-card-header">'
@@ -3900,7 +3852,7 @@ def file_card_html(row: dict) -> str:
         "</div>"
         "</div>"
         f'<div class="qq-file-progress"><div class="qq-file-progress-fill" style="width:{progress_pct:.1f}%"></div></div>'
-        f'<div class="qq-step-list">{step_rows}</div>'
+        f"{phase_summary}"
         "</div>"
     )
 
@@ -3960,16 +3912,19 @@ def build_monitor_metrics(plan_rows: list[dict], events: list[dict], manifest: d
     }
 
 
-def build_phase_summary(plan_rows: list[dict], events: list[dict]) -> str:
+def build_phase_summary(plan_rows: list[dict], events: list[dict], *, include_global: bool = True, css_class: str = "qq-phase-summary") -> str:
     buildable = [row for row in plan_rows if row.get("expected_market_session") and row.get("exists")]
     buildable_count = len(buildable)
     touched_months = {str(row["session_date"])[:7] for row in buildable}
     month_count = len(touched_months)
-    session_timeframes = [timeframe for timeframe in TIMEFRAMES if timeframe != "1mo"]
-    intraday_timeframes = [timeframe for timeframe in session_timeframes if timeframe not in {"1d"}]
-    contexts_with_monthly = buildable_count * len(session_timeframes) + month_count
-    phase_totals = {
-        "scan_source": 1,
+    session_timeframes = session_timeframes_for_build()
+    intraday_timeframes = intraday_timeframes_for_build()
+    contexts_with_monthly = buildable_count * len(session_timeframes) + (month_count if include_global else 0)
+    phase_totals = {}
+    if include_global:
+        phase_totals["scan_source"] = 1
+    phase_totals.update(
+        {
         "raw_load": buildable_count,
         "canonicalize_1m": buildable_count,
         "aggregate": buildable_count * len(intraday_timeframes),
@@ -3980,11 +3935,15 @@ def build_phase_summary(plan_rows: list[dict], events: list[dict]) -> str:
         "supervision_bar": contexts_with_monthly,
         "supervision_method": contexts_with_monthly,
         "supervision_scanner": contexts_with_monthly,
-        "monthly_aggregate": month_count,
-        "run": 1,
-    }
-    phase_labels = [
-        ("scan_source", "Scan"),
+        }
+    )
+    if include_global:
+        phase_totals.update({"monthly_aggregate": month_count, "run": 1})
+    phase_labels = []
+    if include_global:
+        phase_labels.append(("scan_source", "Scan"))
+    phase_labels.extend(
+        [
         ("raw_load", "Raw load"),
         ("canonicalize_1m", "Normalize"),
         ("aggregate", "Intraday bars"),
@@ -3995,9 +3954,10 @@ def build_phase_summary(plan_rows: list[dict], events: list[dict]) -> str:
         ("supervision_bar", "Bar labels"),
         ("supervision_method", "Method labels"),
         ("supervision_scanner", "Scanner labels"),
-        ("monthly_aggregate", "Monthly bars"),
-        ("run", "Total run"),
-    ]
+        ]
+    )
+    if include_global:
+        phase_labels.extend([("monthly_aggregate", "Monthly bars"), ("run", "Total run")])
     completed: dict[str, int] = {phase: 0 for phase in phase_totals}
     elapsed: dict[str, float] = {phase: 0.0 for phase in phase_totals}
     for event in events:
@@ -4019,7 +3979,7 @@ def build_phase_summary(plan_rows: list[dict], events: list[dict]) -> str:
             f'<span class="qq-phase-time">{escape(format_duration(elapsed[phase]))}</span>'
             "</div>"
         )
-    return '<div class="qq-phase-summary">' + "".join(rows) + "</div>"
+    return f'<div class="{escape(css_class)}">' + "".join(rows) + "</div>"
 
 
 def build_session_cards(plan_rows: list[dict], events: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -4029,12 +3989,15 @@ def build_session_cards(plan_rows: list[dict], events: list[dict]) -> tuple[list
     for row in plan_rows:
         session_rows[row["session_date"]] = {
             "session_date": row["session_date"],
+            "expected_market_session": row.get("expected_market_session"),
+            "exists": row.get("exists"),
             "status": "queued" if row.get("exists") and row.get("expected_market_session") else row.get("status", "closed"),
             "phase": row.get("status", "queued"),
             "duration_sec": 0.0,
             "steps": {key: 0 for key in planned_steps},
             "step_done": 0,
             "step_total": planned_total,
+            "events": [],
         }
     completed_dates: set[str] = set()
     for event in events:
@@ -4047,6 +4010,7 @@ def build_session_cards(plan_rows: list[dict], events: list[dict]) -> tuple[list
             row["status"] = "running"
         elif event.get("event") not in {"session_complete", "session_skipped"}:
             row["status"] = "running"
+        row["events"].append(event)
         row["duration_sec"] = float(row.get("duration_sec") or 0) + float(event.get("duration_sec") or 0)
         steps = row["steps"]
         phase = event.get("phase")
