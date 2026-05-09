@@ -66,11 +66,10 @@ def build_feature_groups(
     session_date: str,
     bars: pl.DataFrame,
     source_path: Path,
-) -> dict[str, pl.DataFrame]:
+) -> pl.DataFrame:
     if bars.is_empty():
-        return {}
+        return bars
     features = add_feature_columns(bars)
-    outputs = {}
     for group in request.feature_groups:
         if group not in FEATURE_COLUMNS:
             continue
@@ -84,8 +83,7 @@ def build_feature_groups(
             source_path=source_path,
             rebuild_mode=request.rebuild_mode,
         )
-        outputs[group] = group_frame
-    return outputs
+    return features
 
 
 def build_supervision_groups(
@@ -164,8 +162,8 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
                 source_path=source_path,
                 rebuild_mode=request.rebuild_mode,
             )
-            build_feature_groups(request=request, timeframe="1m", session_date=status.session_date, bars=bars_1m, source_path=source_path)
-            build_supervision_groups(request=request, timeframe="1m", session_date=status.session_date, bars=bars_1m, source_path=source_path)
+            featured_bars_1m = build_feature_groups(request=request, timeframe="1m", session_date=status.session_date, bars=bars_1m, source_path=source_path)
+            build_supervision_groups(request=request, timeframe="1m", session_date=status.session_date, bars=featured_bars_1m, source_path=source_path)
 
         day_frames_for_session = []
         for timeframe in request.timeframes:
@@ -184,8 +182,8 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
                     source_path=source_path,
                     rebuild_mode=request.rebuild_mode,
                 )
-                build_feature_groups(request=request, timeframe=timeframe, session_date=status.session_date, bars=bars, source_path=source_path)
-                build_supervision_groups(request=request, timeframe=timeframe, session_date=status.session_date, bars=bars, source_path=source_path)
+                featured_bars = build_feature_groups(request=request, timeframe=timeframe, session_date=status.session_date, bars=bars, source_path=source_path)
+                build_supervision_groups(request=request, timeframe=timeframe, session_date=status.session_date, bars=featured_bars, source_path=source_path)
             elif timeframe == "1d":
                 bars = aggregate_daily(bars_1m)
                 day_frames_for_session.append(bars)
@@ -198,8 +196,8 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
                     source_path=source_path,
                     rebuild_mode=request.rebuild_mode,
                 )
-                build_feature_groups(request=request, timeframe="1d", session_date=status.session_date, bars=bars, source_path=source_path)
-                build_supervision_groups(request=request, timeframe="1d", session_date=status.session_date, bars=bars, source_path=source_path)
+                featured_bars = build_feature_groups(request=request, timeframe="1d", session_date=status.session_date, bars=bars, source_path=source_path)
+                build_supervision_groups(request=request, timeframe="1d", session_date=status.session_date, bars=featured_bars, source_path=source_path)
         daily_frames.extend(day_frames_for_session)
         completed.append({"session_date": status.session_date, "status": "complete", "rows": bars_1m.height})
         if progress_callback:
@@ -221,8 +219,8 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
                 source_path=None,
                 rebuild_mode=request.rebuild_mode,
             )
-            build_feature_groups(request=request, timeframe="1mo", session_date=session_date, bars=month_frame, source_path=source_path)
-            build_supervision_groups(request=request, timeframe="1mo", session_date=session_date, bars=month_frame, source_path=source_path)
+            featured_month = build_feature_groups(request=request, timeframe="1mo", session_date=session_date, bars=month_frame, source_path=source_path)
+            build_supervision_groups(request=request, timeframe="1mo", session_date=session_date, bars=featured_month, source_path=source_path)
 
     return {
         "processed_root": str(request.processed_root),

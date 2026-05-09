@@ -1,12 +1,39 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from math import ceil
 from typing import Iterable
 
 import polars as pl
 
 
-FIXED_HORIZONS_MINUTES = [5, 10, 15, 30, 60, 120]
+FIXED_HORIZONS_MINUTES = [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    20,
+    25,
+    30,
+    45,
+    60,
+    90,
+    120,
+    150,
+    180,
+    360,
+    480,
+]
 METHOD_WINDOWS = {
     "SCALP": (1, 10),
     "MOMENTUM_SCALP": (5, 30),
@@ -49,6 +76,32 @@ def _path_efficiency(entry: float, future: list[dict], exit_index: int) -> float
     return distance / path if path > 0 else 0.0
 
 
+def _float(row: dict, key: str, default: float = 0.0) -> float:
+    value = row.get(key, default)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _volume_shock(row: dict, current_volume: float, current_dollar_volume: float) -> bool:
+    return (
+        _float(row, "volume_z20") >= 2.5
+        or _float(row, "relative_volume20") >= 3.0
+        or _float(row, "relative_dollar_volume20") >= 3.0
+        or (current_volume > 0 and _float(row, "volume") >= current_volume * 3.0)
+        or (current_dollar_volume > 0 and _float(row, "dollar_volume") >= current_dollar_volume * 3.0)
+    )
+
+
+def _liquidity_score(max_relative_volume: float, max_volume_z: float, capacity_score: float) -> float:
+    relative_component = min(max_relative_volume / 5.0, 1.0)
+    z_component = min(max(max_volume_z, 0.0) / 4.0, 1.0)
+    return max(0.0, min(1.0, (relative_component * 0.40) + (z_component * 0.30) + (capacity_score * 0.30)))
+
+
 def build_bar_supervision(frame: pl.DataFrame, horizons_minutes: Iterable[int] = FIXED_HORIZONS_MINUTES) -> pl.DataFrame:
     if frame.is_empty():
         return pl.DataFrame()
@@ -58,13 +111,21 @@ def build_bar_supervision(frame: pl.DataFrame, horizons_minutes: Iterable[int] =
         rows = ticker_frame.to_dicts()
         for index, row in enumerate(rows):
             entry = float(row["close"])
+            current_volume = _float(row, "volume")
+            current_dollar_volume = _float(row, "dollar_volume", entry * current_volume)
             for horizon_minutes in horizons_minutes:
-                max_bars = max(1, int(horizon_minutes / step))
+                max_bars = max(1, ceil(horizon_minutes / step))
                 future = _future_window(rows, index, 1, max_bars)
                 valid = bool(future)
                 highs = [float(item["high"]) for item in future]
                 lows = [float(item["low"]) for item in future]
                 closes = [float(item["close"]) for item in future]
+                volumes = [_float(item, "volume") for item in future]
+                dollar_volumes = [_float(item, "dollar_volume", _float(item, "close") * _float(item, "volume")) for item in future]
+                transactions = [_float(item, "transactions") for item in future]
+                relative_volumes = [_float(item, "relative_volume20") for item in future]
+                relative_dollar_volumes = [_float(item, "relative_dollar_volume20") for item in future]
+                volume_z_scores = [_float(item, "volume_z20") for item in future]
                 best_high = max(highs) if highs else entry
                 worst_low = min(lows) if lows else entry
                 best_index = highs.index(best_high) if highs else 0
@@ -72,6 +133,27 @@ def build_bar_supervision(frame: pl.DataFrame, horizons_minutes: Iterable[int] =
                 mfe = (best_high / entry) - 1.0 if entry else 0.0
                 mae = (worst_low / entry) - 1.0 if entry else 0.0
                 efficiency = _path_efficiency(entry, future, best_index)
+                volume_shock_index = next((offset for offset, item in enumerate(future) if _volume_shock(item, current_volume, current_dollar_volume)), None)
+                volume_shock_row = future[volume_shock_index] if volume_shock_index is not None else None
+                lows_before_volume_shock = lows[: volume_shock_index + 1] if volume_shock_index is not None else []
+                volume_shock_close = _float(volume_shock_row, "close") if volume_shock_row else entry
+                max_volume = max(volumes) if volumes else 0.0
+                max_dollar_volume = max(dollar_volumes) if dollar_volumes else 0.0
+                max_relative_volume = max(relative_volumes) if relative_volumes else 0.0
+                max_relative_dollar_volume = max(relative_dollar_volumes) if relative_dollar_volumes else 0.0
+                max_volume_z = max(volume_z_scores) if volume_z_scores else 0.0
+                estimated_capacity = max_dollar_volume * 0.01
+                capacity_score = min(estimated_capacity / 25_000.0, 1.0)
+                liquidity_quality = _liquidity_score(max_relative_volume, max_volume_z, capacity_score)
+                price_quality = _quality(entry, mfe, mae, efficiency)
+                if price_quality >= 0.60 and liquidity_quality >= 0.60:
+                    outcome_bucket = "good_price_good_volume"
+                elif price_quality >= 0.60:
+                    outcome_bucket = "good_price_bad_volume"
+                elif liquidity_quality >= 0.60:
+                    outcome_bucket = "bad_price_good_volume"
+                else:
+                    outcome_bucket = "bad_price_bad_volume"
                 rows_out.append(
                     {
                         "bar_id": row["bar_id"],
@@ -100,11 +182,34 @@ def build_bar_supervision(frame: pl.DataFrame, horizons_minutes: Iterable[int] =
                         "oracle_best_exit_price": best_high,
                         "oracle_best_exit_return": mfe,
                         "oracle_long_entry_signal": valid and mfe >= 0.01 and abs(mae) <= 0.005 and best_index <= worst_index,
-                        "oracle_long_entry_confidence": _quality(entry, mfe, mae, efficiency),
+                        "oracle_long_entry_confidence": price_quality,
                         "oracle_long_exit_signal": valid and mfe <= abs(mae),
                         "oracle_long_exit_confidence": _quality(entry, abs(mae), -mfe, 1.0 - efficiency),
                         "path_efficiency": efficiency,
                         "green_bar_ratio": sum(1 for item in future if float(item["close"]) >= float(item["open"])) / len(future) if future else 0.0,
+                        "fwd_volume_sum": sum(volumes),
+                        "fwd_dollar_volume_sum": sum(dollar_volumes),
+                        "fwd_transactions_sum": sum(transactions),
+                        "fwd_max_volume": max_volume,
+                        "fwd_max_dollar_volume": max_dollar_volume,
+                        "fwd_max_relative_volume20": max_relative_volume,
+                        "fwd_max_relative_dollar_volume20": max_relative_dollar_volume,
+                        "fwd_max_volume_z20": max_volume_z,
+                        "fwd_volume_expansion_ratio": max_volume / current_volume if current_volume > 0 else 0.0,
+                        "fwd_dollar_volume_expansion_ratio": max_dollar_volume / current_dollar_volume if current_dollar_volume > 0 else 0.0,
+                        "fwd_liquidity_confirmed": volume_shock_index is not None,
+                        "fwd_first_volume_shock_bar_id": volume_shock_row.get("bar_id") if volume_shock_row else None,
+                        "fwd_first_volume_shock_time_utc": volume_shock_row.get("bar_time_utc") if volume_shock_row else None,
+                        "fwd_first_volume_shock_time_market": volume_shock_row.get("bar_time_market") if volume_shock_row else None,
+                        "fwd_minutes_to_volume_shock": (volume_shock_index + 1) * step if volume_shock_index is not None else None,
+                        "fwd_volume_shock_before_mfe": volume_shock_index <= best_index if volume_shock_index is not None else None,
+                        "fwd_return_at_volume_shock": (volume_shock_close / entry) - 1.0 if volume_shock_row and entry else None,
+                        "fwd_drawdown_before_volume_shock": (min(lows_before_volume_shock) / entry) - 1.0 if lows_before_volume_shock and entry else None,
+                        "fwd_estimated_capacity_dollars": estimated_capacity,
+                        "fwd_capacity_score": capacity_score,
+                        "fwd_price_outcome_quality": price_quality,
+                        "fwd_liquidity_quality_score": liquidity_quality,
+                        "fwd_outcome_bucket": outcome_bucket,
                     }
                 )
     return pl.DataFrame(rows_out, infer_schema_length=None) if rows_out else pl.DataFrame()

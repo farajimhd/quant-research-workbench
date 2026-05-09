@@ -254,14 +254,34 @@ Supervision artifacts are future-looking labels for research and model training.
 
 ### Bar Supervision
 
-`supervision_bar` creates one row for each `(bar_id, horizon)` pair. Fixed horizons are:
+`supervision_bar` creates one row for each `(bar_id, horizon)` pair. A single bar therefore repeats across all fixed horizon rows, while the future-looking values change for each horizon. Fixed horizons are:
 
+- 1 minute
+- 2 minutes
+- 3 minutes
+- 4 minutes
 - 5 minutes
+- 6 minutes
+- 7 minutes
+- 8 minutes
+- 9 minutes
 - 10 minutes
+- 11 minutes
+- 12 minutes
+- 13 minutes
+- 14 minutes
 - 15 minutes
+- 20 minutes
+- 25 minutes
 - 30 minutes
+- 45 minutes
 - 60 minutes
+- 90 minutes
 - 120 minutes
+- 150 minutes
+- 180 minutes
+- 360 minutes
+- 480 minutes
 
 Columns:
 
@@ -290,6 +310,37 @@ Columns:
 - `oracle_long_exit_confidence`: bounded inverse-path score.
 - `path_efficiency`: direct entry-to-best distance divided by total path traveled.
 - `green_bar_ratio`: fraction of future bars closing green.
+- `fwd_volume_sum`: total share volume inside the future horizon.
+- `fwd_dollar_volume_sum`: total dollar volume inside the future horizon.
+- `fwd_transactions_sum`: total transactions inside the future horizon.
+- `fwd_max_volume`: largest single-bar future volume.
+- `fwd_max_dollar_volume`: largest single-bar future dollar volume.
+- `fwd_max_relative_volume20`: largest future `relative_volume20`.
+- `fwd_max_relative_dollar_volume20`: largest future `relative_dollar_volume20`.
+- `fwd_max_volume_z20`: largest future `volume_z20`.
+- `fwd_volume_expansion_ratio`: `fwd_max_volume / current_volume`.
+- `fwd_dollar_volume_expansion_ratio`: `fwd_max_dollar_volume / current_dollar_volume`.
+- `fwd_liquidity_confirmed`: true when a future volume shock appears in the horizon.
+- `fwd_first_volume_shock_bar_id`: first future bar where volume shock is detected.
+- `fwd_first_volume_shock_time_utc`: UTC time of the first future volume shock.
+- `fwd_first_volume_shock_time_market`: New York time of the first future volume shock.
+- `fwd_minutes_to_volume_shock`: minutes from the source bar to the first future volume shock.
+- `fwd_volume_shock_before_mfe`: true when the first volume shock occurs before or at the best future high.
+- `fwd_return_at_volume_shock`: close return at the first volume shock bar.
+- `fwd_drawdown_before_volume_shock`: worst low return before the first volume shock.
+- `fwd_estimated_capacity_dollars`: rough capacity estimate using 1 percent of max future dollar volume.
+- `fwd_capacity_score`: bounded capacity score, scaled against 25,000 dollars.
+- `fwd_price_outcome_quality`: same bounded price-path quality score used for long-entry confidence.
+- `fwd_liquidity_quality_score`: bounded score from future relative volume, volume z-score, and capacity.
+- `fwd_outcome_bucket`: combined label: `good_price_good_volume`, `good_price_bad_volume`, `bad_price_good_volume`, or `bad_price_bad_volume`.
+
+Volume shock is currently detected when any of these future conditions is true:
+
+- `volume_z20 >= 2.5`
+- `relative_volume20 >= 3.0`
+- `relative_dollar_volume20 >= 3.0`
+- future volume is at least 3 times current volume
+- future dollar volume is at least 3 times current dollar volume
 
 ### Method Supervision
 
