@@ -1087,6 +1087,11 @@ def complete_candle_timeline(rows: list[dict], candles: list[dict]) -> list[dict
     return [candles_by_time.get(timestamp, {"time": timestamp}) for timestamp in sorted(timeline_times)]
 
 
+def complete_points_timeline(points: list[dict], timeline_times: list[int]) -> list[dict]:
+    points_by_time = {int(point["time"]): point for point in points}
+    return [points_by_time.get(timestamp, {"time": timestamp}) for timestamp in timeline_times]
+
+
 def extended_session_regions(rows: list[dict]) -> list[dict]:
     regions = []
     for session_date_value in chart_session_dates_from_rows(rows):
@@ -1380,6 +1385,10 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
             )
 
     candles = complete_candle_timeline(rows, candles)
+    timeline_times = [int(candle["time"]) for candle in candles]
+    volumes = complete_points_timeline(volumes, timeline_times)
+    for series in overlay_series + oscillator_series:
+        series["data"] = complete_points_timeline(series.get("data") or [], timeline_times)
 
     return {
         "candles": candles,
