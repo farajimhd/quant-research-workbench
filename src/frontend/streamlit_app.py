@@ -65,8 +65,6 @@ OSCILLATOR_CHART_INDICATORS = ["macd_line", "macd_signal", "macd_hist"]
 
 CHART_INDICATORS = PRICE_CHART_INDICATORS + OSCILLATOR_CHART_INDICATORS
 
-DEFAULT_CHART_INDICATORS = CHART_INDICATORS
-
 DEFAULT_INDICATOR_COLORS = {
     "vwap": "#0891b2",
     "tema9": "#2563eb",
@@ -74,6 +72,15 @@ DEFAULT_INDICATOR_COLORS = {
     "macd_line": "#16a34a",
     "macd_signal": "#f59e0b",
     "macd_hist": "#7c3aed",
+}
+
+DEFAULT_INDICATOR_WIDTHS = {
+    "vwap": 1,
+    "tema9": 1,
+    "tema20": 1,
+    "macd_line": 1,
+    "macd_signal": 1,
+    "macd_hist": 2,
 }
 
 TRADE_STAT_GROUPS = {
@@ -805,52 +812,15 @@ def hex_to_rgba(hex_color: str, opacity: float) -> str:
     return f"rgba({red}, {green}, {blue}, {opacity:.2f})"
 
 
-def ensure_indicator_state(available_indicators: list[str], default_indicators: list[str], key_prefix: str) -> None:
-    for indicator in available_indicators:
-        st.session_state.setdefault(f"{key_prefix}_{indicator}_visible", indicator in default_indicators)
-        st.session_state.setdefault(f"{key_prefix}_{indicator}_color", DEFAULT_INDICATOR_COLORS.get(indicator, "#2563eb"))
-        st.session_state.setdefault(f"{key_prefix}_{indicator}_opacity", 0.72)
-
-
-def indicator_settings_from_state(available_indicators: list[str], default_indicators: list[str], key_prefix: str) -> dict:
-    ensure_indicator_state(available_indicators, default_indicators, key_prefix)
-    settings = {}
-    for indicator in available_indicators:
-        if st.session_state.get(f"{key_prefix}_{indicator}_visible"):
-            settings[indicator] = {
-                "color": st.session_state.get(f"{key_prefix}_{indicator}_color", DEFAULT_INDICATOR_COLORS.get(indicator, "#2563eb")),
-                "opacity": st.session_state.get(f"{key_prefix}_{indicator}_opacity", 0.72),
-            }
-    return settings
-
-
-def render_indicator_settings_form(available_indicators: list[str], default_indicators: list[str], key_prefix: str) -> None:
-    ensure_indicator_state(available_indicators, default_indicators, key_prefix)
-    st.caption("Price overlays stay on the candle pane. Oscillators render in the lower pane.")
-    header = st.columns([1.2, 1.2, 1.2])
-    header[0].caption("Visible")
-    header[1].caption("Color")
-    header[2].caption("Opacity")
-    for indicator in available_indicators:
-        cols = st.columns([1.2, 1.2, 1.2])
-        cols[0].checkbox(indicator, key=f"{key_prefix}_{indicator}_visible")
-        cols[1].color_picker(indicator, key=f"{key_prefix}_{indicator}_color", label_visibility="collapsed")
-        cols[2].slider(
-            indicator,
-            min_value=0.1,
-            max_value=1.0,
-            step=0.05,
-            key=f"{key_prefix}_{indicator}_opacity",
-            label_visibility="collapsed",
-        )
-
-
-if hasattr(st, "dialog"):
-    @st.dialog("Indicator Settings", width="small")
-    def indicator_settings_dialog(available_indicators: list[str], default_indicators: list[str], key_prefix: str) -> None:
-        render_indicator_settings_form(available_indicators, default_indicators, key_prefix)
-else:
-    indicator_settings_dialog = None
+def default_chart_indicator_settings() -> dict:
+    return {
+        indicator: {
+            "color": DEFAULT_INDICATOR_COLORS.get(indicator, "#2563eb"),
+            "opacity": 0.72,
+            "lineWidth": DEFAULT_INDICATOR_WIDTHS.get(indicator, 1),
+        }
+        for indicator in CHART_INDICATORS
+    }
 
 
 def chart_toolbar(
@@ -860,24 +830,17 @@ def chart_toolbar(
     timeframe_key: str,
     indicator_key: str,
 ) -> tuple[str | None, str, dict]:
-    columns = st.columns([0.45, 2.1, 0.75, 1.35, 1.15, 6.2], vertical_alignment="center")
+    del indicator_key
+    columns = st.columns([1.8, 1.15, 8.4], gap="small", vertical_alignment="center")
     ticker = selected_ticker
     with columns[0]:
-        st.markdown('<div class="qq-period-label">Ticker</div>', unsafe_allow_html=True)
-    with columns[1]:
         if tickers:
             ticker = st.selectbox("Ticker", tickers, index=tickers.index(selected_ticker) if selected_ticker in tickers else 0, label_visibility="collapsed")
         else:
             st.text(selected_ticker or "")
-    with columns[2]:
-        st.markdown('<div class="qq-period-label">Timeframe</div>', unsafe_allow_html=True)
-    with columns[3]:
+    with columns[1]:
         timeframe = st.segmented_control("Timeframe", ["1m", "5m"], default="1m", key=timeframe_key, label_visibility="collapsed")
-    with columns[4]:
-        ensure_indicator_state(CHART_INDICATORS, DEFAULT_CHART_INDICATORS, indicator_key)
-        with st.popover("Indicators", width="content"):
-            render_indicator_settings_form(CHART_INDICATORS, DEFAULT_CHART_INDICATORS, indicator_key)
-    return ticker, timeframe, indicator_settings_from_state(CHART_INDICATORS, DEFAULT_CHART_INDICATORS, indicator_key)
+    return ticker, timeframe, default_chart_indicator_settings()
 
 
 def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict]) -> dict:
@@ -923,6 +886,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
         points = []
         color = options.get("color", DEFAULT_INDICATOR_COLORS.get(column, "#2563eb"))
         opacity = float(options.get("opacity", 0.72))
+        line_width = int(options.get("lineWidth", DEFAULT_INDICATOR_WIDTHS.get(column, 1)))
         for row in rows:
             timestamp = chart_timestamp(row.get("bar_time_market"))
             value = numeric_value(row.get(column))
@@ -939,6 +903,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
                     "color": hex_to_rgba(color, opacity),
                     "legendColor": color,
                     "opacity": opacity,
+                    "lineWidth": line_width,
                     "style": "histogram" if column == "macd_hist" else "line",
                     "data": points,
                 }
@@ -974,12 +939,15 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
 def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     chart_id = f"tv-chart-{abs(hash(json.dumps(payload, sort_keys=True))) % 10_000_000}"
     payload_json = json.dumps(payload)
-    price_height = height - 170 if payload.get("oscillators") else height
-    oscillator_height = 160 if payload.get("oscillators") else 0
+    pane_gap = 10 if payload.get("oscillators") else 0
+    price_height = int((height - pane_gap) / 1.25) if payload.get("oscillators") else height
+    oscillator_height = int(price_height * 0.25) if payload.get("oscillators") else 0
+    total_height = price_height + oscillator_height + pane_gap
     html = f"""
-    <div id="{chart_id}" style="height:{height}px;width:100%;display:flex;flex-direction:column;gap:4px;">
+    <div id="{chart_id}" style="height:{total_height}px;width:100%;display:flex;flex-direction:column;gap:{pane_gap}px;position:relative;">
         <div id="{chart_id}-price" style="height:{price_height}px;width:100%;"></div>
         <div id="{chart_id}-osc" style="height:{oscillator_height}px;width:100%;display:{'block' if oscillator_height else 'none'};"></div>
+        <div id="{chart_id}-shared-crosshair" style="position:absolute;top:0;bottom:0;width:1px;background:rgba(17,24,39,0.32);display:none;z-index:4;pointer-events:none;"></div>
     </div>
     <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
     <script>
@@ -987,6 +955,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     const container = document.getElementById("{chart_id}");
     const priceContainer = document.getElementById("{chart_id}-price");
     const oscillatorContainer = document.getElementById("{chart_id}-osc");
+    const sharedCrosshair = document.getElementById("{chart_id}-shared-crosshair");
     const hasOscillators = !!(payload.oscillators && payload.oscillators.length);
     const commonOptions = {{
         layout: {{
@@ -999,7 +968,9 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             horzLines: {{ color: "#f3f4f6" }}
         }},
         crosshair: {{
-            mode: LightweightCharts.CrosshairMode.Normal
+            mode: LightweightCharts.CrosshairMode.Normal,
+            vertLine: {{ visible: false, labelVisible: false }},
+            horzLine: {{ color: "rgba(17,24,39,0.28)", width: 1, style: 2 }}
         }},
         rightPriceScale: {{
             borderColor: "#d1d5db",
@@ -1082,64 +1053,173 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     legend.style.position = "absolute";
     legend.style.left = "12px";
     legend.style.top = "8px";
-    legend.style.zIndex = 2;
+    legend.style.zIndex = 6;
     legend.style.display = "flex";
-    legend.style.gap = "10px";
+    legend.style.gap = "6px";
     legend.style.flexWrap = "wrap";
-    legend.style.font = "12px system-ui";
-    legend.style.background = "rgba(255,255,255,0.82)";
-    legend.style.padding = "4px 6px";
+    legend.style.font = "11px system-ui";
+    legend.style.background = "rgba(255,255,255,0.76)";
+    legend.style.backdropFilter = "blur(2px)";
+    legend.style.padding = "3px 5px";
     legend.style.borderRadius = "4px";
+    legend.style.maxWidth = "calc(100% - 130px)";
     priceContainer.style.position = "relative";
     priceContainer.appendChild(legend);
 
-    function addLegendItem(indicator, host) {{
+    function iconSvg(kind) {{
+        if (kind === "eye") {{
+            return '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+        }}
+        return '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7"></path><path d="M4 10V3"></path><path d="M12 21v-9"></path><path d="M12 8V3"></path><path d="M20 21v-5"></path><path d="M20 12V3"></path><path d="M2 14h4"></path><path d="M10 8h4"></path><path d="M18 16h4"></path></svg>';
+    }}
+
+    function addLegendItem(indicator, host, series) {{
         const item = document.createElement("span");
         item.style.display = "inline-flex";
         item.style.alignItems = "center";
         item.style.gap = "4px";
         item.style.color = indicator.legendColor || indicator.color;
         item.style.fontWeight = "600";
+        item.style.padding = "1px 3px";
+        item.style.borderRadius = "3px";
+        item.style.position = "relative";
         const swatch = document.createElement("span");
         swatch.style.width = "12px";
         swatch.style.height = indicator.style === "histogram" ? "6px" : "4px";
         swatch.style.borderRadius = "999px";
         swatch.style.background = indicator.color;
+        const label = document.createElement("span");
+        label.textContent = indicator.name;
+        indicator.currentData = indicator.data || [];
+        const actions = document.createElement("span");
+        actions.style.display = "none";
+        actions.style.gap = "2px";
+        actions.style.alignItems = "center";
+        const eye = document.createElement("button");
+        eye.type = "button";
+        eye.innerHTML = iconSvg("eye");
+        eye.title = "Hide or show";
+        const settings = document.createElement("button");
+        settings.type = "button";
+        settings.innerHTML = iconSvg("settings");
+        settings.title = "Visual settings";
+        [eye, settings].forEach(button => {{
+            button.style.border = "0";
+            button.style.background = "rgba(255,255,255,0.9)";
+            button.style.color = "#374151";
+            button.style.width = "18px";
+            button.style.height = "18px";
+            button.style.padding = "2px";
+            button.style.borderRadius = "3px";
+            button.style.cursor = "pointer";
+        }});
+        actions.appendChild(eye);
+        actions.appendChild(settings);
+        const panel = document.createElement("div");
+        panel.style.display = "none";
+        panel.style.position = "absolute";
+        panel.style.top = "22px";
+        panel.style.left = "0";
+        panel.style.zIndex = 8;
+        panel.style.background = "rgba(255,255,255,0.98)";
+        panel.style.border = "1px solid #d1d5db";
+        panel.style.borderRadius = "5px";
+        panel.style.padding = "6px";
+        panel.style.boxShadow = "0 8px 24px rgba(15,23,42,0.14)";
+        panel.style.color = "#111827";
+        panel.style.font = "11px system-ui";
+        panel.style.minWidth = "150px";
+        const colorInput = document.createElement("input");
+        colorInput.type = "color";
+        colorInput.value = indicator.legendColor || "#2563eb";
+        const opacityInput = document.createElement("input");
+        opacityInput.type = "range";
+        opacityInput.min = "0.15";
+        opacityInput.max = "1";
+        opacityInput.step = "0.05";
+        opacityInput.value = indicator.opacity || 0.72;
+        const widthInput = document.createElement("input");
+        widthInput.type = "range";
+        widthInput.min = "1";
+        widthInput.max = "4";
+        widthInput.step = "1";
+        widthInput.value = indicator.lineWidth || 1;
+        panel.innerHTML = '<div style="font-weight:700;margin-bottom:4px;">' + indicator.name + '</div>';
+        [["Color", colorInput], ["Opacity", opacityInput], ["Width", widthInput]].forEach(([caption, input]) => {{
+            const row = document.createElement("label");
+            row.style.display = "grid";
+            row.style.gridTemplateColumns = "48px 1fr";
+            row.style.alignItems = "center";
+            row.style.gap = "6px";
+            row.style.margin = "3px 0";
+            row.appendChild(document.createTextNode(caption));
+            row.appendChild(input);
+            panel.appendChild(row);
+        }});
         item.appendChild(swatch);
-        item.appendChild(document.createTextNode(indicator.name));
+        item.appendChild(label);
+        item.appendChild(actions);
+        item.appendChild(panel);
         host.appendChild(item);
+
+        function applyVisuals() {{
+            const opacity = parseFloat(opacityInput.value);
+            const baseColor = colorInput.value;
+            const rgba = hexToRgba(baseColor, opacity);
+            indicator.legendColor = baseColor;
+            indicator.color = rgba;
+            indicator.opacity = opacity;
+            indicator.lineWidth = parseInt(widthInput.value, 10);
+            swatch.style.background = rgba;
+            item.style.color = baseColor;
+            if (indicator.style === "histogram") {{
+                indicator.currentData = (indicator.data || []).map(point => ({{
+                    ...point,
+                    color: rgba
+                }}));
+                if (!indicator.hidden) series.setData(indicator.currentData);
+            }} else {{
+                series.applyOptions({{ color: rgba, lineWidth: indicator.lineWidth }});
+            }}
+        }}
+        item.addEventListener("mouseenter", () => {{ actions.style.display = "inline-flex"; }});
+        item.addEventListener("mouseleave", () => {{ if (panel.style.display === "none") actions.style.display = "none"; }});
+        settings.addEventListener("click", event => {{
+            event.stopPropagation();
+            panel.style.display = panel.style.display === "none" ? "block" : "none";
+            actions.style.display = "inline-flex";
+        }});
+        eye.addEventListener("click", event => {{
+            event.stopPropagation();
+            indicator.hidden = !indicator.hidden;
+            series.setData(indicator.hidden ? [] : (indicator.currentData || indicator.data || []));
+            item.style.opacity = indicator.hidden ? "0.38" : "1";
+            label.style.textDecoration = indicator.hidden ? "line-through" : "none";
+        }});
+        [colorInput, opacityInput, widthInput].forEach(input => input.addEventListener("input", applyVisuals));
+    }}
+
+    function hexToRgba(hex, opacity) {{
+        const normalized = hex.replace("#", "");
+        const value = parseInt(normalized.length === 3 ? normalized.split("").map(ch => ch + ch).join("") : normalized, 16);
+        const red = (value >> 16) & 255;
+        const green = (value >> 8) & 255;
+        const blue = value & 255;
+        return `rgba(${{red}}, ${{green}}, ${{blue}}, ${{opacity.toFixed(2)}})`;
     }}
 
     (payload.overlays || []).forEach((indicator) => {{
         const line = chart.addLineSeries({{
             color: indicator.color,
-            lineWidth: 1,
+            lineWidth: indicator.lineWidth || 1,
             priceLineVisible: false,
             lastValueVisible: false
         }});
         line.setData(indicator.data || []);
-        addLegendItem(indicator, legend);
+        addLegendItem(indicator, legend, line);
     }});
 
-    let oscillatorSeries = [];
-    let oscillatorValueByTime = new Map();
-    let priceByTime = new Map((payload.candles || []).map(bar => [bar.time, bar.close]));
     if (oscillatorChart) {{
-        const oscLegend = document.createElement("div");
-        oscLegend.style.position = "absolute";
-        oscLegend.style.left = "12px";
-        oscLegend.style.top = "6px";
-        oscLegend.style.zIndex = 2;
-        oscLegend.style.display = "flex";
-        oscLegend.style.gap = "10px";
-        oscLegend.style.flexWrap = "wrap";
-        oscLegend.style.font = "12px system-ui";
-        oscLegend.style.background = "rgba(255,255,255,0.82)";
-        oscLegend.style.padding = "3px 6px";
-        oscLegend.style.borderRadius = "4px";
-        oscillatorContainer.style.position = "relative";
-        oscillatorContainer.appendChild(oscLegend);
-
         (payload.oscillators || []).forEach((indicator) => {{
             const series = indicator.style === "histogram"
                 ? oscillatorChart.addHistogramSeries({{
@@ -1149,16 +1229,12 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
                 }})
                 : oscillatorChart.addLineSeries({{
                     color: indicator.color,
-                    lineWidth: 1,
+                    lineWidth: indicator.lineWidth || 1,
                     priceLineVisible: false,
                     lastValueVisible: false
-                }});
-            series.setData(indicator.data || []);
-            oscillatorSeries.push(series);
-            (indicator.data || []).forEach(point => {{
-                if (!oscillatorValueByTime.has(point.time)) oscillatorValueByTime.set(point.time, point.value);
             }});
-            addLegendItem(indicator, oscLegend);
+            series.setData(indicator.data || []);
+            addLegendItem(indicator, legend, series);
         }});
     }}
 
@@ -1176,25 +1252,21 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     if (oscillatorChart) {{
         syncRange(chart, oscillatorChart);
         syncRange(oscillatorChart, chart);
-        if (chart.setCrosshairPosition && chart.clearCrosshairPosition && oscillatorChart.setCrosshairPosition && oscillatorChart.clearCrosshairPosition) {{
-            chart.subscribeCrosshairMove(param => {{
-                if (!param || param.time === undefined) {{
-                    oscillatorChart.clearCrosshairPosition();
-                    return;
-                }}
-                const value = oscillatorValueByTime.get(param.time);
-                if (value !== undefined && oscillatorSeries.length) oscillatorChart.setCrosshairPosition(value, param.time, oscillatorSeries[0]);
-            }});
-            oscillatorChart.subscribeCrosshairMove(param => {{
-                if (!param || param.time === undefined) {{
-                    chart.clearCrosshairPosition();
-                    return;
-                }}
-                const value = priceByTime.get(param.time);
-                if (value !== undefined) chart.setCrosshairPosition(value, param.time, candleSeries);
-            }});
-        }}
     }}
+    function moveSharedCrosshair(event) {{
+        const rect = container.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        if (x < 0 || x > rect.width) {{
+            sharedCrosshair.style.display = "none";
+            return;
+        }}
+        sharedCrosshair.style.display = "block";
+        sharedCrosshair.style.transform = `translateX(${{Math.round(x)}}px)`;
+    }}
+    container.addEventListener("mousemove", moveSharedCrosshair);
+    container.addEventListener("mouseleave", () => {{
+        sharedCrosshair.style.display = "none";
+    }});
     const resizeObserver = new ResizeObserver(entries => {{
         if (!entries.length) return;
         const width = entries[0].contentRect.width;
@@ -1206,7 +1278,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     resizeObserver.observe(container);
     </script>
     """
-    components.html(html, height=height + 12, scrolling=False)
+    components.html(html, height=total_height + 12, scrolling=False)
 
 
 def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict]) -> None:
