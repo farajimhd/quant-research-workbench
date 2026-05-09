@@ -304,16 +304,20 @@ def install_css() -> None:
         [data-testid="stSidebar"] {
             background: #ffffff;
             border-right: 1px solid #e5e7eb;
-            flex: 0 0 22rem !important;
+            flex: 0 0 17.5rem !important;
             height: calc(100vh - 4.5rem) !important;
-            min-width: 22rem !important;
+            min-width: 17.5rem !important;
+            overflow: visible !important;
+            position: relative;
             top: 4.5rem !important;
-            width: 22rem !important;
+            width: 17.5rem !important;
+            z-index: 1000;
         }
         [data-testid="stSidebar"] > div,
         [data-testid="stSidebarContent"] {
             background: #ffffff;
-            width: 22rem !important;
+            overflow: visible !important;
+            width: 17.5rem !important;
         }
         [data-testid="stSidebarHeader"] {
             display: none !important;
@@ -323,7 +327,7 @@ def install_css() -> None:
         }
         [data-testid="stSidebar"] > div:first-child {
             background: #ffffff;
-            padding: 0.95rem 1.15rem 1.1rem;
+            padding: 1.05rem 0.95rem 1.1rem;
         }
         .qq-sidebar-group {
             color: #7a7f87;
@@ -363,25 +367,25 @@ def install_css() -> None:
             text-align: left !important;
         }
         [data-testid="stSidebar"] div[data-testid="stButton"] button:disabled {
-            background: #f3f4f6 !important;
+            background: transparent !important;
             color: #111827 !important;
             cursor: default;
             font-weight: 400;
             opacity: 1;
         }
         [data-testid="stSidebar"] button[kind="secondary"]:hover {
-            background: #f6f7f8;
-            color: #111827;
+            background: transparent !important;
+            color: #111827 !important;
             border: 0;
         }
         [data-testid="stSidebar"] button[kind="primary"] {
-            background: #f3f4f6;
+            background: transparent;
             color: #111827;
             font-weight: 400;
         }
         [data-testid="stSidebar"] button[kind="primary"]:hover {
-            background: #eceff2;
-            color: #111827;
+            background: transparent !important;
+            color: #111827 !important;
             border: 0;
         }
         [data-testid="stSidebar"] button svg {
@@ -427,21 +431,65 @@ def install_css() -> None:
             -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cellipse cx='12' cy='5' rx='8' ry='3'/%3E%3Cpath d='M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5'/%3E%3Cpath d='M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3'/%3E%3C/svg%3E");
         }
         [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button::before {
-            mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6h16'/%3E%3Cpath d='M4 12h16'/%3E%3Cpath d='M4 18h16'/%3E%3C/svg%3E");
-            -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6h16'/%3E%3Cpath d='M4 12h16'/%3E%3Cpath d='M4 18h16'/%3E%3C/svg%3E");
+            mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m15 18-6-6 6-6'/%3E%3C/svg%3E");
+            -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m15 18-6-6 6-6'/%3E%3C/svg%3E");
+        }
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] {
+            margin: 0 0 0.75rem auto !important;
+            pointer-events: auto;
+            position: relative;
+            transform: translateX(1.05rem);
+            width: 2.1rem !important;
+            z-index: 1001;
+        }
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button {
+            align-items: center;
+            background: #ffffff !important;
+            border: 1px solid #e5e7eb;
+            border-radius: 999px;
+            box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+            display: inline-flex;
+            height: 2.1rem;
+            justify-content: center !important;
+            min-height: 2.1rem;
+            padding: 0;
+            width: 2.1rem !important;
+        }
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button:hover {
+            background: #ffffff !important;
+            color: #111827 !important;
+            border: 1px solid #d1d5db;
+        }
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button p {
+            font-size: 0;
+            height: 0;
+            margin: 0;
+            overflow: hidden;
+            width: 0;
+        }
+        [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button::before {
+            width: 1.1rem;
+            height: 1.1rem;
+            flex-basis: 1.1rem;
+            mask-size: 1.1rem 1.1rem;
+            -webkit-mask-size: 1.1rem 1.1rem;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) {
-            flex: 0 0 5.75rem !important;
-            min-width: 5.75rem !important;
-            width: 5.75rem !important;
+            flex: 0 0 4.9rem !important;
+            min-width: 4.9rem !important;
+            width: 4.9rem !important;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) > div,
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) [data-testid="stSidebarContent"] {
-            width: 5.75rem !important;
+            width: 4.9rem !important;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) > div:first-child {
-            padding-left: 0.85rem;
-            padding-right: 0.85rem;
+            padding-left: 0.7rem;
+            padding-right: 0.7rem;
+        }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[class*="st-key-sidebar_toggle"] button::before {
+            mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E");
+            -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E");
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) .qq-sidebar-group {
             display: none;
