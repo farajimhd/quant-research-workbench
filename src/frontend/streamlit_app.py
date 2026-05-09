@@ -1004,6 +1004,13 @@ def chart_marker_timestamp(value) -> int:
     return chart_timestamp(value, CHART_EXCHANGE_TIME_ZONE)
 
 
+def exchange_session_timestamp(session_date_value: str, minute_of_day: int) -> int:
+    session = date.fromisoformat(session_date_value)
+    hour, minute = divmod(minute_of_day, 60)
+    exchange_dt = datetime(session.year, session.month, session.day, hour, minute, tzinfo=ZoneInfo(CHART_EXCHANGE_TIME_ZONE))
+    return int(exchange_dt.astimezone(timezone.utc).timestamp())
+
+
 def parse_datetime_value(value) -> datetime | None:
     if isinstance(value, datetime):
         return value
@@ -1039,28 +1046,65 @@ def minute_of_day_from_row(row: dict) -> int | None:
     return parsed.hour * 60 + parsed.minute
 
 
-def extended_session_regions(rows: list[dict], candles: list[dict]) -> list[dict]:
-    del candles
-    regions: dict[tuple[str, str], dict] = {}
+def chart_session_dates_from_rows(rows: list[dict]) -> list[str]:
+    session_dates: set[str] = set()
     for row in rows:
-        timestamp = row_chart_timestamp(row)
-        minute = minute_of_day_from_row(row)
         parsed = row_exchange_datetime(row)
-        if not timestamp or minute is None or not parsed:
-            continue
-        if CHART_EXTENDED_START_MINUTE <= minute < CHART_REGULAR_START_MINUTE:
-            phase = "premarket"
-            color = "rgba(251, 146, 60, 0.10)"
-        elif CHART_REGULAR_END_MINUTE <= minute < CHART_EXTENDED_END_MINUTE:
-            phase = "afterhours"
-            color = "rgba(96, 165, 250, 0.10)"
-        else:
-            continue
-        key = (parsed.date().isoformat(), phase)
-        region = regions.setdefault(key, {"start": timestamp, "end": timestamp, "color": color})
-        region["start"] = min(region["start"], timestamp)
-        region["end"] = max(region["end"], timestamp)
-    return sorted(regions.values(), key=lambda item: item["start"])
+        if parsed:
+            session_dates.add(parsed.date().isoformat())
+    return sorted(session_dates)
+
+
+def chart_step_minutes(rows: list[dict]) -> int:
+    deltas = []
+    for session_date_value in chart_session_dates_from_rows(rows):
+        minutes = sorted(
+            {
+                minute
+                for row in rows
+                if (parsed := row_exchange_datetime(row))
+                and parsed.date().isoformat() == session_date_value
+                and (minute := minute_of_day_from_row(row)) is not None
+            }
+        )
+        deltas.extend(b - a for a, b in zip(minutes, minutes[1:]) if 0 < b - a <= 15)
+    if not deltas:
+        return 1
+    deltas.sort()
+    median = deltas[len(deltas) // 2]
+    return 5 if median >= 4 else 1
+
+
+def complete_candle_timeline(rows: list[dict], candles: list[dict]) -> list[dict]:
+    candles_by_time = {int(candle["time"]): candle for candle in candles}
+    step = chart_step_minutes(rows)
+    timeline_times = set(candles_by_time)
+    for session_date_value in chart_session_dates_from_rows(rows):
+        minute = CHART_EXTENDED_START_MINUTE
+        while minute <= CHART_EXTENDED_END_MINUTE:
+            timeline_times.add(exchange_session_timestamp(session_date_value, minute))
+            minute += step
+    return [candles_by_time.get(timestamp, {"time": timestamp}) for timestamp in sorted(timeline_times)]
+
+
+def extended_session_regions(rows: list[dict]) -> list[dict]:
+    regions = []
+    for session_date_value in chart_session_dates_from_rows(rows):
+        regions.append(
+            {
+                "start": exchange_session_timestamp(session_date_value, CHART_EXTENDED_START_MINUTE),
+                "end": exchange_session_timestamp(session_date_value, CHART_REGULAR_START_MINUTE),
+                "color": "rgba(251, 146, 60, 0.10)",
+            }
+        )
+        regions.append(
+            {
+                "start": exchange_session_timestamp(session_date_value, CHART_REGULAR_END_MINUTE),
+                "end": exchange_session_timestamp(session_date_value, CHART_EXTENDED_END_MINUTE),
+                "color": "rgba(96, 165, 250, 0.10)",
+            }
+        )
+    return regions
 
 
 def hex_to_rgba(hex_color: str, opacity: float) -> str:
@@ -1335,13 +1379,15 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
                 }
             )
 
+    candles = complete_candle_timeline(rows, candles)
+
     return {
         "candles": candles,
         "volumes": volumes,
         "overlays": overlay_series,
         "oscillators": oscillator_series,
         "markers": markers,
-        "sessionRegions": extended_session_regions(rows, candles),
+        "sessionRegions": extended_session_regions(rows),
     }
 
 
