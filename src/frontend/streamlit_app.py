@@ -71,7 +71,7 @@ DEFAULT_INDICATOR_COLORS = {
     "tema20": "#db2777",
     "macd_line": "#16a34a",
     "macd_signal": "#f59e0b",
-    "macd_hist": "#7c3aed",
+    "macd_hist": "#33E42A",
 }
 
 DEFAULT_INDICATOR_WIDTHS = {
@@ -84,16 +84,16 @@ DEFAULT_INDICATOR_WIDTHS = {
 }
 
 DEFAULT_CANDLE_CHART_SETTINGS = {
-    "upColor": "#059669",
-    "downColor": "#dc2626",
-    "borderUpColor": "#047857",
-    "borderDownColor": "#b91c1c",
-    "wickUpColor": "#065f46",
-    "wickDownColor": "#991b1b",
+    "upColor": "#33E42A",
+    "downColor": "#FD0E50",
+    "borderUpColor": "#1DB914",
+    "borderDownColor": "#CB093F",
+    "wickUpColor": "#4DC746",
+    "wickDownColor": "#C52A55",
     "borderVisible": True,
     "wickVisible": True,
     "priceLineVisible": True,
-    "barSpacing": 18,
+    "barSpacing": 40,
     "minBarSpacing": 7,
     "rightOffset": 2,
 }
@@ -838,65 +838,15 @@ def default_chart_indicator_settings() -> dict:
     }
 
 
-def candle_settings_from_state(key_prefix: str) -> dict:
-    st.session_state.setdefault(f"{key_prefix}_up_color", DEFAULT_CANDLE_CHART_SETTINGS["upColor"])
-    st.session_state.setdefault(f"{key_prefix}_down_color", DEFAULT_CANDLE_CHART_SETTINGS["downColor"])
-    st.session_state.setdefault(f"{key_prefix}_border_up_color", DEFAULT_CANDLE_CHART_SETTINGS["borderUpColor"])
-    st.session_state.setdefault(f"{key_prefix}_border_down_color", DEFAULT_CANDLE_CHART_SETTINGS["borderDownColor"])
-    st.session_state.setdefault(f"{key_prefix}_wick_up_color", DEFAULT_CANDLE_CHART_SETTINGS["wickUpColor"])
-    st.session_state.setdefault(f"{key_prefix}_wick_down_color", DEFAULT_CANDLE_CHART_SETTINGS["wickDownColor"])
-    st.session_state.setdefault(f"{key_prefix}_border_visible", DEFAULT_CANDLE_CHART_SETTINGS["borderVisible"])
-    st.session_state.setdefault(f"{key_prefix}_wick_visible", DEFAULT_CANDLE_CHART_SETTINGS["wickVisible"])
-    st.session_state.setdefault(f"{key_prefix}_price_line_visible", DEFAULT_CANDLE_CHART_SETTINGS["priceLineVisible"])
-    st.session_state.setdefault(f"{key_prefix}_bar_spacing", DEFAULT_CANDLE_CHART_SETTINGS["barSpacing"])
-    st.session_state.setdefault(f"{key_prefix}_min_bar_spacing", DEFAULT_CANDLE_CHART_SETTINGS["minBarSpacing"])
-    st.session_state.setdefault(f"{key_prefix}_right_offset", DEFAULT_CANDLE_CHART_SETTINGS["rightOffset"])
-    return {
-        "upColor": st.session_state[f"{key_prefix}_up_color"],
-        "downColor": st.session_state[f"{key_prefix}_down_color"],
-        "borderUpColor": st.session_state[f"{key_prefix}_border_up_color"],
-        "borderDownColor": st.session_state[f"{key_prefix}_border_down_color"],
-        "wickUpColor": st.session_state[f"{key_prefix}_wick_up_color"],
-        "wickDownColor": st.session_state[f"{key_prefix}_wick_down_color"],
-        "borderVisible": bool(st.session_state[f"{key_prefix}_border_visible"]),
-        "wickVisible": bool(st.session_state[f"{key_prefix}_wick_visible"]),
-        "priceLineVisible": bool(st.session_state[f"{key_prefix}_price_line_visible"]),
-        "barSpacing": int(st.session_state[f"{key_prefix}_bar_spacing"]),
-        "minBarSpacing": int(st.session_state[f"{key_prefix}_min_bar_spacing"]),
-        "rightOffset": int(st.session_state[f"{key_prefix}_right_offset"]),
-    }
-
-
-def render_candle_settings(key_prefix: str) -> dict:
-    candle_settings_from_state(key_prefix)
-    colors = st.columns(2, gap="small")
-    with colors[0]:
-        st.color_picker("Up", key=f"{key_prefix}_up_color")
-        st.color_picker("Border up", key=f"{key_prefix}_border_up_color")
-        st.color_picker("Wick up", key=f"{key_prefix}_wick_up_color")
-    with colors[1]:
-        st.color_picker("Down", key=f"{key_prefix}_down_color")
-        st.color_picker("Border down", key=f"{key_prefix}_border_down_color")
-        st.color_picker("Wick down", key=f"{key_prefix}_wick_down_color")
-    toggles = st.columns(3, gap="small")
-    toggles[0].checkbox("Border", key=f"{key_prefix}_border_visible")
-    toggles[1].checkbox("Wick", key=f"{key_prefix}_wick_visible")
-    toggles[2].checkbox("Price line", key=f"{key_prefix}_price_line_visible")
-    spacing = st.columns(3, gap="small")
-    spacing[0].slider("Bar spacing", 5, 40, key=f"{key_prefix}_bar_spacing")
-    spacing[1].slider("Min spacing", 2, 20, key=f"{key_prefix}_min_bar_spacing")
-    spacing[2].slider("Right offset", 0, 20, key=f"{key_prefix}_right_offset")
-    return candle_settings_from_state(key_prefix)
-
-
 def chart_toolbar(
     *,
     tickers: list[str] | None,
     selected_ticker: str | None,
     timeframe_key: str,
     indicator_key: str,
-) -> tuple[str | None, str, dict, dict]:
-    columns = st.columns([1.8, 1.15, 1.0, 7.4], gap="small", vertical_alignment="center")
+) -> tuple[str | None, str, dict]:
+    del indicator_key
+    columns = st.columns([1.8, 1.15, 8.4], gap="small", vertical_alignment="center")
     ticker = selected_ticker
     with columns[0]:
         if tickers:
@@ -905,10 +855,7 @@ def chart_toolbar(
             st.text(selected_ticker or "")
     with columns[1]:
         timeframe = st.segmented_control("Timeframe", ["1m", "5m"], default="1m", key=timeframe_key, label_visibility="collapsed")
-    with columns[2]:
-        with st.popover("Candles", width="content"):
-            candle_settings = render_candle_settings(f"{indicator_key}_candles")
-    return ticker, timeframe, default_chart_indicator_settings(), candle_settings
+    return ticker, timeframe, default_chart_indicator_settings()
 
 
 def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict]) -> dict:
@@ -944,7 +891,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
                 {
                     "time": timestamp,
                     "value": volume,
-                    "color": "rgba(15, 138, 59, 0.28)" if close_price >= open_price else "rgba(192, 54, 44, 0.28)",
+                    "color": hex_to_rgba(DEFAULT_CANDLE_CHART_SETTINGS["upColor" if close_price >= open_price else "downColor"], 0.28),
                 }
             )
 
@@ -961,7 +908,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
             if timestamp and value is not None:
                 point = {"time": timestamp, "value": value}
                 if column == "macd_hist":
-                    point["color"] = hex_to_rgba("#0f8a3b" if value >= 0 else "#c0362c", opacity)
+                    point["color"] = hex_to_rgba(DEFAULT_CANDLE_CHART_SETTINGS["upColor" if value >= 0 else "downColor"], opacity)
                 points.append(point)
         if points:
             target = oscillator_series if column in OSCILLATOR_CHART_INDICATORS else overlay_series
@@ -1004,10 +951,10 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
     }
 
 
-def render_lightweight_candle_chart(payload: dict, candle_settings: dict | None = None, height: int = 720) -> None:
+def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     chart_id = f"tv-chart-{abs(hash(json.dumps(payload, sort_keys=True))) % 10_000_000}"
     payload_json = json.dumps(payload)
-    candle_settings_json = json.dumps({**DEFAULT_CANDLE_CHART_SETTINGS, **(candle_settings or {})})
+    candle_settings_json = json.dumps(DEFAULT_CANDLE_CHART_SETTINGS)
     pane_gap = 10 if payload.get("oscillators") else 0
     oscillator_ratio = 0.375
     price_height = int((height - pane_gap) / (1 + oscillator_ratio)) if payload.get("oscillators") else height
@@ -1259,32 +1206,48 @@ def render_lightweight_candle_chart(payload: dict, candle_settings: dict | None 
         panel.style.boxShadow = "0 8px 24px rgba(15,23,42,0.14)";
         panel.style.color = "#111827";
         panel.style.font = "11px system-ui";
-        panel.style.minWidth = "150px";
+        panel.style.minWidth = "210px";
         const colorInput = document.createElement("input");
         colorInput.type = "color";
         colorInput.value = indicator.legendColor || "#2563eb";
+        const hexInput = document.createElement("input");
+        hexInput.type = "text";
+        hexInput.value = colorInput.value.toUpperCase();
+        hexInput.spellcheck = false;
+        hexInput.style.width = "82px";
+        hexInput.style.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+        hexInput.style.border = "1px solid #d1d5db";
+        hexInput.style.borderRadius = "3px";
+        hexInput.style.padding = "2px 4px";
         const opacityInput = document.createElement("input");
         opacityInput.type = "range";
         opacityInput.min = "0.15";
         opacityInput.max = "1";
         opacityInput.step = "0.05";
         opacityInput.value = indicator.opacity || 0.72;
+        const opacityValue = document.createElement("span");
+        opacityValue.style.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+        opacityValue.textContent = Number(opacityInput.value).toFixed(2);
         const widthInput = document.createElement("input");
         widthInput.type = "range";
         widthInput.min = "1";
         widthInput.max = "4";
         widthInput.step = "1";
         widthInput.value = indicator.lineWidth || 1;
+        const widthValue = document.createElement("span");
+        widthValue.style.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+        widthValue.textContent = widthInput.value;
         panel.innerHTML = '<div style="font-weight:700;margin-bottom:4px;">' + indicator.name + '</div>';
-        [["Color", colorInput], ["Opacity", opacityInput], ["Width", widthInput]].forEach(([caption, input]) => {{
+        [["Color", colorInput], ["Hex", hexInput], ["Opacity", opacityInput, opacityValue], ["Width", widthInput, widthValue]].forEach(([caption, input, value]) => {{
             const row = document.createElement("label");
             row.style.display = "grid";
-            row.style.gridTemplateColumns = "48px 1fr";
+            row.style.gridTemplateColumns = value ? "48px 1fr 36px" : "48px 1fr";
             row.style.alignItems = "center";
             row.style.gap = "6px";
             row.style.margin = "3px 0";
             row.appendChild(document.createTextNode(caption));
             row.appendChild(input);
+            if (value) row.appendChild(value);
             panel.appendChild(row);
         }});
         item.appendChild(swatch);
@@ -1301,17 +1264,24 @@ def render_lightweight_candle_chart(payload: dict, candle_settings: dict | None 
             indicator.color = rgba;
             indicator.opacity = opacity;
             indicator.lineWidth = parseInt(widthInput.value, 10);
+            hexInput.value = baseColor.toUpperCase();
+            opacityValue.textContent = opacity.toFixed(2);
+            widthValue.textContent = String(indicator.lineWidth);
             swatch.style.background = rgba;
             item.style.color = "#111827";
             if (indicator.style === "histogram") {{
                 indicator.currentData = (indicator.data || []).map(point => ({{
                     ...point,
-                    color: rgba
+                    color: point.value >= 0 ? hexToRgba(candleSettings.upColor, opacity) : hexToRgba(candleSettings.downColor, opacity)
                 }}));
                 if (!indicator.hidden) series.setData(indicator.currentData);
             }} else {{
                 series.applyOptions({{ color: rgba, lineWidth: indicator.lineWidth }});
             }}
+        }}
+        function normalizeHex(value) {{
+            const match = String(value || "").trim().match(/^#?[0-9a-fA-F]{{6}}$/);
+            return match ? ("#" + String(value).trim().replace("#", "")).toUpperCase() : null;
         }}
         item.addEventListener("mouseenter", () => {{ actions.style.display = "inline-flex"; }});
         item.addEventListener("mouseleave", () => {{ if (panel.style.display === "none") actions.style.display = "none"; }});
@@ -1327,7 +1297,18 @@ def render_lightweight_candle_chart(payload: dict, candle_settings: dict | None 
             item.style.opacity = indicator.hidden ? "0.38" : "1";
             label.style.textDecoration = indicator.hidden ? "line-through" : "none";
         }});
-        [colorInput, opacityInput, widthInput].forEach(input => input.addEventListener("input", applyVisuals));
+        colorInput.addEventListener("input", applyVisuals);
+        opacityInput.addEventListener("input", applyVisuals);
+        widthInput.addEventListener("input", applyVisuals);
+        hexInput.addEventListener("change", () => {{
+            const normalized = normalizeHex(hexInput.value);
+            if (normalized) {{
+                colorInput.value = normalized;
+                applyVisuals();
+            }} else {{
+                hexInput.value = colorInput.value.toUpperCase();
+            }}
+        }});
     }}
 
     function hexToRgba(hex, opacity) {{
@@ -1431,7 +1412,7 @@ def render_lightweight_candle_chart(payload: dict, candle_settings: dict | None 
     components.html(html, height=total_height + 12, scrolling=False)
 
 
-def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict], candle_settings: dict | None = None) -> None:
+def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict]) -> None:
     if bars.is_empty():
         st.info("No chart data available.")
         return
@@ -1441,7 +1422,7 @@ def candle_chart(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str,
         st.info("Selected chart data is missing OHLC columns.")
         return
     payload = tradingview_chart_payload(bars, orders, indicators)
-    render_lightweight_candle_chart(payload, candle_settings)
+    render_lightweight_candle_chart(payload)
 
 
 def bars_for(data: dict, period: str, ticker: str, timeframe: str) -> pl.DataFrame:
@@ -1476,18 +1457,20 @@ def render_trades(data: dict, period: str) -> None:
             st.caption(f"{trade.get('entry_time')} -> {trade.get('exit_time')} | {pct(trade.get('return_pct'))}")
     trade = rows[min(st.session_state[selected_key], len(rows) - 1)]
     with right:
-        _, timeframe, indicators, candle_settings = chart_toolbar(
-            tickers=None,
-            selected_ticker=str(trade.get("symbol", "")),
-            timeframe_key=f"trade_tf_{period}",
-            indicator_key=f"trade_ind_{period}",
-        )
-        trade_day = str(trade.get("entry_time", ""))[:10] if period == "Whole Run" else period
-        bars = bars_for(data, trade_day, trade["symbol"], timeframe)
-        orders = filter_df(data["orders"], trade_day)
-        if "symbol" in orders.columns:
-            orders = orders.filter(pl.col("symbol") == trade["symbol"])
-        candle_chart(bars, orders, indicators, candle_settings)
+        with st.container(border=True):
+            with st.container(border=True):
+                _, timeframe, indicators = chart_toolbar(
+                    tickers=None,
+                    selected_ticker=str(trade.get("symbol", "")),
+                    timeframe_key=f"trade_tf_{period}",
+                    indicator_key=f"trade_ind_{period}",
+                )
+            trade_day = str(trade.get("entry_time", ""))[:10] if period == "Whole Run" else period
+            bars = bars_for(data, trade_day, trade["symbol"], timeframe)
+            orders = filter_df(data["orders"], trade_day)
+            if "symbol" in orders.columns:
+                orders = orders.filter(pl.col("symbol") == trade["symbol"])
+            candle_chart(bars, orders, indicators)
 
 
 def render_orders(data: dict, period: str) -> None:
@@ -1554,17 +1537,19 @@ def render_chart_inspector(data: dict, period: str) -> None:
         st.info("This run did not save chart bars.")
         return
     tickers = bars_1m.select("ticker").unique().sort("ticker")["ticker"].to_list()
-    ticker, timeframe, indicators, candle_settings = chart_toolbar(
-        tickers=tickers,
-        selected_ticker=tickers[0] if tickers else None,
-        timeframe_key=f"inspect_tf_{period}",
-        indicator_key=f"inspect_ind_{period}",
-    )
-    bars = bars_for(data, period, ticker, timeframe)
-    orders = filter_df(data["orders"], period)
-    if "symbol" in orders.columns:
-        orders = orders.filter(pl.col("symbol") == ticker)
-    candle_chart(bars, orders, indicators, candle_settings)
+    with st.container(border=True):
+        with st.container(border=True):
+            ticker, timeframe, indicators = chart_toolbar(
+                tickers=tickers,
+                selected_ticker=tickers[0] if tickers else None,
+                timeframe_key=f"inspect_tf_{period}",
+                indicator_key=f"inspect_ind_{period}",
+            )
+        bars = bars_for(data, period, ticker, timeframe)
+        orders = filter_df(data["orders"], period)
+        if "symbol" in orders.columns:
+            orders = orders.filter(pl.col("symbol") == ticker)
+        candle_chart(bars, orders, indicators)
 
 
 def render_run_dashboard(run_dir: Path, show_header: bool = True, show_back_button: bool = False) -> None:
