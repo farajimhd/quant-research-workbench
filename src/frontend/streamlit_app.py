@@ -940,8 +940,9 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     chart_id = f"tv-chart-{abs(hash(json.dumps(payload, sort_keys=True))) % 10_000_000}"
     payload_json = json.dumps(payload)
     pane_gap = 10 if payload.get("oscillators") else 0
-    price_height = int((height - pane_gap) / 1.25) if payload.get("oscillators") else height
-    oscillator_height = int(price_height * 0.25) if payload.get("oscillators") else 0
+    oscillator_ratio = 0.375
+    price_height = int((height - pane_gap) / (1 + oscillator_ratio)) if payload.get("oscillators") else height
+    oscillator_height = int(price_height * oscillator_ratio) if payload.get("oscillators") else 0
     total_height = price_height + oscillator_height + pane_gap
     html = f"""
     <div id="{chart_id}" style="height:{total_height}px;width:100%;display:flex;flex-direction:column;gap:{pane_gap}px;position:relative;">
@@ -1049,22 +1050,67 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         volumeSeries.setData(payload.volumes);
     }}
 
+    const legendShell = document.createElement("div");
+    legendShell.style.position = "absolute";
+    legendShell.style.left = "12px";
+    legendShell.style.top = "8px";
+    legendShell.style.zIndex = 6;
+    legendShell.style.font = "11px system-ui";
+    legendShell.style.color = "#111827";
+    legendShell.style.maxWidth = "220px";
+    const legendToggle = document.createElement("button");
+    legendToggle.type = "button";
+    legendToggle.textContent = `▾ ${{(payload.overlays || []).length + (payload.oscillators || []).length}} indicators`;
+    legendToggle.style.display = "none";
+    legendToggle.style.border = "0";
+    legendToggle.style.background = "rgba(255,255,255,0.78)";
+    legendToggle.style.backdropFilter = "blur(2px)";
+    legendToggle.style.borderRadius = "4px";
+    legendToggle.style.padding = "3px 6px";
+    legendToggle.style.font = "11px system-ui";
+    legendToggle.style.color = "#111827";
+    legendToggle.style.cursor = "pointer";
     const legend = document.createElement("div");
-    legend.style.position = "absolute";
-    legend.style.left = "12px";
-    legend.style.top = "8px";
-    legend.style.zIndex = 6;
     legend.style.display = "flex";
-    legend.style.gap = "6px";
-    legend.style.flexWrap = "wrap";
-    legend.style.font = "11px system-ui";
+    legend.style.flexDirection = "column";
+    legend.style.alignItems = "stretch";
+    legend.style.gap = "3px";
     legend.style.background = "rgba(255,255,255,0.76)";
     legend.style.backdropFilter = "blur(2px)";
-    legend.style.padding = "3px 5px";
+    legend.style.padding = "4px 5px";
     legend.style.borderRadius = "4px";
-    legend.style.maxWidth = "calc(100% - 130px)";
+    const legendItems = document.createElement("div");
+    legendItems.style.display = "flex";
+    legendItems.style.flexDirection = "column";
+    legendItems.style.gap = "3px";
+    const legendCollapse = document.createElement("button");
+    legendCollapse.type = "button";
+    legendCollapse.textContent = "⌃";
+    legendCollapse.title = "Collapse legend";
+    legendCollapse.style.alignSelf = "center";
+    legendCollapse.style.border = "0";
+    legendCollapse.style.background = "transparent";
+    legendCollapse.style.color = "#374151";
+    legendCollapse.style.cursor = "pointer";
+    legendCollapse.style.font = "14px system-ui";
+    legendCollapse.style.lineHeight = "12px";
+    legendCollapse.style.padding = "1px 10px";
+    legend.appendChild(legendItems);
+    legend.appendChild(legendCollapse);
+    legendShell.appendChild(legendToggle);
+    legendShell.appendChild(legend);
     priceContainer.style.position = "relative";
-    priceContainer.appendChild(legend);
+    priceContainer.appendChild(legendShell);
+    legendCollapse.addEventListener("click", event => {{
+        event.stopPropagation();
+        legend.style.display = "none";
+        legendToggle.style.display = "inline-flex";
+    }});
+    legendToggle.addEventListener("click", event => {{
+        event.stopPropagation();
+        legendToggle.style.display = "none";
+        legend.style.display = "flex";
+    }});
 
     function iconSvg(kind) {{
         if (kind === "eye") {{
@@ -1077,12 +1123,14 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         const item = document.createElement("span");
         item.style.display = "inline-flex";
         item.style.alignItems = "center";
+        item.style.justifyContent = "flex-start";
         item.style.gap = "4px";
-        item.style.color = indicator.legendColor || indicator.color;
-        item.style.fontWeight = "600";
+        item.style.color = "#111827";
+        item.style.fontWeight = "400";
         item.style.padding = "1px 3px";
         item.style.borderRadius = "3px";
         item.style.position = "relative";
+        item.style.minWidth = "125px";
         const swatch = document.createElement("span");
         swatch.style.width = "12px";
         swatch.style.height = indicator.style === "histogram" ? "6px" : "4px";
@@ -1171,7 +1219,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             indicator.opacity = opacity;
             indicator.lineWidth = parseInt(widthInput.value, 10);
             swatch.style.background = rgba;
-            item.style.color = baseColor;
+            item.style.color = "#111827";
             if (indicator.style === "histogram") {{
                 indicator.currentData = (indicator.data || []).map(point => ({{
                     ...point,
@@ -1216,7 +1264,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             lastValueVisible: false
         }});
         line.setData(indicator.data || []);
-        addLegendItem(indicator, legend, line);
+        addLegendItem(indicator, legendItems, line);
     }});
 
     if (oscillatorChart) {{
@@ -1234,7 +1282,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
                     lastValueVisible: false
             }});
             series.setData(indicator.data || []);
-            addLegendItem(indicator, legend, series);
+            addLegendItem(indicator, legendItems, series);
         }});
     }}
 
