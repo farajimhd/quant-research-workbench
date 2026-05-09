@@ -5,9 +5,10 @@ import re
 import shutil
 import sys
 import traceback
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import altair as alt
 import polars as pl
@@ -18,8 +19,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.backtest.config import BacktestConfig
-from src.backtest.data.minute_bars import add_market_time_columns, minute_file_path
 from src.backtest.metrics import compute_summary
 from src.backtest.indicators import add_standard_indicators
 from src.backtest.results import list_runs, read_run_metadata
@@ -34,6 +33,7 @@ CHART_EXTENDED_START_MINUTE = 4 * 60
 CHART_REGULAR_START_MINUTE = 9 * 60 + 30
 CHART_REGULAR_END_MINUTE = 16 * 60
 CHART_EXTENDED_END_MINUTE = 20 * 60
+CHART_EXCHANGE_TIME_ZONE = "America/New_York"
 
 STRATEGY_DESCRIPTIONS = {
     "orb_5m_momentum": (
@@ -454,11 +454,28 @@ def chart_session_dates(data: dict[str, Any], period: str) -> list[str]:
     return []
 
 
-def chart_source_config(data: dict[str, Any]) -> tuple[str, float]:
+def chart_source_config(data: dict[str, Any]) -> tuple[str, str]:
     config = data.get("metadata", {}).get("config", {})
     data_root = str(config.get("data_root") or DEFAULT_DATA_ROOT)
-    market_offset = float(config.get("market_utc_offset_hours", -4.0))
-    return data_root, market_offset
+    exchange_timezone = str(config.get("exchange_timezone") or CHART_EXCHANGE_TIME_ZONE)
+    return data_root, exchange_timezone
+
+
+def chart_minute_file_path(data_root: Path, session_date: date) -> Path:
+    return data_root / f"{session_date.year:04d}" / f"{session_date.month:02d}" / f"{session_date.isoformat()}.csv.gz"
+
+
+def add_chart_exchange_time_columns(frame: pl.DataFrame, exchange_timezone: str) -> pl.DataFrame:
+    return (
+        frame.with_columns(pl.from_epoch("window_start", time_unit="ns").dt.replace_time_zone("UTC").alias("bar_time_utc"))
+        .with_columns(pl.col("bar_time_utc").dt.convert_time_zone(exchange_timezone).alias("bar_time_market"))
+        .with_columns(
+            (
+                (pl.col("bar_time_market").dt.hour().cast(pl.Int32) * 60)
+                + pl.col("bar_time_market").dt.minute().cast(pl.Int32)
+            ).alias("minute_of_day")
+        )
+    )
 
 
 def consolidate_extended_chart_five_minute(minute_bars: pl.DataFrame) -> pl.DataFrame:
@@ -487,24 +504,17 @@ def consolidate_extended_chart_five_minute(minute_bars: pl.DataFrame) -> pl.Data
 @st.cache_data(show_spinner=False)
 def load_extended_chart_bars(
     data_root_value: str,
-    market_offset_hours: float,
+    exchange_timezone: str,
     session_dates: tuple[str, ...],
     ticker: str,
     timeframe: str,
 ) -> pl.DataFrame:
+    # Visualization data is intentionally separate from strategy execution windows.
+    # The chart always renders exchange-time extended hours from raw UTC source bars.
     minute_frames = []
     for session_date_value in session_dates:
         session = date.fromisoformat(session_date_value)
-        config = BacktestConfig(
-            strategy_name="chart_loader",
-            start_date=session,
-            end_date=session,
-            data_root=Path(data_root_value),
-            market_utc_offset_hours=market_offset_hours,
-            session_start_minute=0,
-            session_end_minute=24 * 60,
-        )
-        source = minute_file_path(config.data_root, session)
+        source = chart_minute_file_path(Path(data_root_value), session)
         if not source.exists():
             continue
         frame = (
@@ -516,7 +526,7 @@ def load_extended_chart_bars(
         if frame.is_empty():
             continue
         frame = (
-            add_market_time_columns(frame, config)
+            add_chart_exchange_time_columns(frame, exchange_timezone)
             .filter(
                 (pl.col("minute_of_day") >= CHART_EXTENDED_START_MINUTE)
                 & (pl.col("minute_of_day") < CHART_EXTENDED_END_MINUTE)
@@ -948,11 +958,40 @@ def normalize_bar_columns(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 
-def chart_timestamp(value) -> int:
+def chart_timestamp(value, assumed_timezone: str = "UTC") -> int:
     if isinstance(value, datetime):
-        return int(value.timestamp())
-    parsed = parse_datetime_value(value)
-    return int(parsed.timestamp()) if parsed else 0
+        parsed = value
+    else:
+        parsed = parse_datetime_value(value)
+    if not parsed:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo(assumed_timezone))
+    return int(parsed.astimezone(timezone.utc).timestamp())
+
+
+def row_chart_timestamp(row: dict) -> int:
+    if row.get("bar_time_utc") is not None:
+        return chart_timestamp(row.get("bar_time_utc"), "UTC")
+    return chart_timestamp(row.get("bar_time_market"), CHART_EXCHANGE_TIME_ZONE)
+
+
+def row_exchange_datetime(row: dict) -> datetime | None:
+    market_time = parse_datetime_value(row.get("bar_time_market"))
+    if market_time:
+        if market_time.tzinfo is None:
+            return market_time.replace(tzinfo=ZoneInfo(CHART_EXCHANGE_TIME_ZONE))
+        return market_time.astimezone(ZoneInfo(CHART_EXCHANGE_TIME_ZONE))
+    utc_time = parse_datetime_value(row.get("bar_time_utc"))
+    if utc_time:
+        if utc_time.tzinfo is None:
+            utc_time = utc_time.replace(tzinfo=timezone.utc)
+        return utc_time.astimezone(ZoneInfo(CHART_EXCHANGE_TIME_ZONE))
+    return None
+
+
+def chart_marker_timestamp(value) -> int:
+    return chart_timestamp(value, CHART_EXCHANGE_TIME_ZONE)
 
 
 def parse_datetime_value(value) -> datetime | None:
@@ -984,6 +1023,8 @@ def minute_of_day_from_row(row: dict) -> int | None:
             return None
     parsed = parse_datetime_value(row.get("bar_time_market"))
     if not parsed:
+        parsed = row_exchange_datetime(row)
+    if not parsed:
         return None
     return parsed.hour * 60 + parsed.minute
 
@@ -992,9 +1033,9 @@ def extended_session_regions(rows: list[dict], candles: list[dict]) -> list[dict
     del candles
     regions: dict[tuple[str, str], dict] = {}
     for row in rows:
-        timestamp = chart_timestamp(row.get("bar_time_market"))
+        timestamp = row_chart_timestamp(row)
         minute = minute_of_day_from_row(row)
-        parsed = parse_datetime_value(row.get("bar_time_market"))
+        parsed = row_exchange_datetime(row)
         if not timestamp or minute is None or not parsed:
             continue
         if CHART_EXTENDED_START_MINUTE <= minute < CHART_REGULAR_START_MINUTE:
@@ -1207,7 +1248,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
     oscillator_series = []
 
     for row in rows:
-        timestamp = chart_timestamp(row.get("bar_time_market"))
+        timestamp = row_chart_timestamp(row)
         if not timestamp:
             continue
         open_price = numeric_value(row.get("open"))
@@ -1243,7 +1284,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
         opacity = float(options.get("opacity", 0.72))
         line_width = int(options.get("lineWidth", DEFAULT_INDICATOR_WIDTHS.get(column, 1)))
         for row in rows:
-            timestamp = chart_timestamp(row.get("bar_time_market"))
+            timestamp = row_chart_timestamp(row)
             value = numeric_value(row.get(column))
             if timestamp and value is not None:
                 point = {"time": timestamp, "value": value}
@@ -1269,7 +1310,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
     markers = []
     if not orders.is_empty() and "filled_at" in orders.columns:
         for row in orders.filter(pl.col("status") == "FILLED").sort("filled_at").to_dicts():
-            timestamp = chart_timestamp(row.get("filled_at"))
+            timestamp = chart_marker_timestamp(row.get("filled_at"))
             if not timestamp:
                 continue
             side = str(row.get("side", "")).upper()
@@ -1327,10 +1368,21 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     const normalOscillatorHeight = {oscillator_height};
     const paneGap = {pane_gap};
     const chartWidth = () => Math.max(260, container.clientWidth - indicatorLabelWidth);
+    const exchangeTimeZone = "{CHART_EXCHANGE_TIME_ZONE}";
+    const exchangeDateTimeFormatter = new Intl.DateTimeFormat("en-US", {{
+        timeZone: exchangeTimeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23"
+    }});
     function formatDateTime(time) {{
         const date = new Date(Number(time) * 1000);
-        const pad = value => String(value).padStart(2, "0");
-        return `${{date.getFullYear()}}-${{pad(date.getMonth() + 1)}}-${{pad(date.getDate())}} ${{pad(date.getHours())}}:${{pad(date.getMinutes())}}:${{pad(date.getSeconds())}}`;
+        const parts = Object.fromEntries(exchangeDateTimeFormatter.formatToParts(date).map(part => [part.type, part.value]));
+        return `${{parts.year}}-${{parts.month}}-${{parts.day}} ${{parts.hour}}:${{parts.minute}}:${{parts.second}}`;
     }}
     const commonOptions = {{
         layout: {{
@@ -2042,10 +2094,10 @@ def candle_chart(
 
 
 def bars_for(data: dict, period: str, ticker: str, timeframe: str) -> pl.DataFrame:
-    data_root, market_offset = chart_source_config(data)
+    data_root, exchange_timezone = chart_source_config(data)
     session_dates = tuple(chart_session_dates(data, period))
     if session_dates and ticker:
-        extended_bars = load_extended_chart_bars(data_root, market_offset, session_dates, ticker, timeframe)
+        extended_bars = load_extended_chart_bars(data_root, exchange_timezone, session_dates, ticker, timeframe)
         if not extended_bars.is_empty():
             return extended_bars
     key = "bars_5m" if timeframe == "5m" else "bars_1m"
