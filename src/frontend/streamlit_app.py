@@ -1066,12 +1066,22 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     }});
     candleSeries.setData(payload.candles || []);
     const seriesLabelColors = new Map();
+    const priceLabelSeries = [];
+    const oscillatorLabelSeries = [];
+    function mapByTime(data) {{
+        const mapped = new Map();
+        (data || []).forEach(point => mapped.set(point.time, point));
+        return mapped;
+    }}
     seriesLabelColors.set(candleSeries, {{
         kind: "candle",
         upColor: candleSettings.upColor,
         downColor: candleSettings.downColor,
-        fallback: candleSettings.upColor
+        fallback: candleSettings.upColor,
+        series: candleSeries,
+        dataByTime: mapByTime(payload.candles)
     }});
+    priceLabelSeries.push(seriesLabelColors.get(candleSeries));
     if (payload.markers && payload.markers.length) {{
         candleSeries.setMarkers(payload.markers);
     }}
@@ -1089,9 +1099,33 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             kind: "histogram",
             upColor: candleSettings.upColor,
             downColor: candleSettings.downColor,
-            fallback: candleSettings.upColor
+            fallback: candleSettings.upColor,
+            series: volumeSeries,
+            dataByTime: mapByTime(payload.volumes),
+            skipAxisLabel: true
         }});
     }}
+
+    priceContainer.style.position = "relative";
+    if (oscillatorContainer) oscillatorContainer.style.position = "relative";
+    const priceAxisLabels = document.createElement("div");
+    priceAxisLabels.style.position = "absolute";
+    priceAxisLabels.style.top = "0";
+    priceAxisLabels.style.right = "0";
+    priceAxisLabels.style.width = `${{rightScaleWidth}}px`;
+    priceAxisLabels.style.height = "100%";
+    priceAxisLabels.style.zIndex = 5;
+    priceAxisLabels.style.pointerEvents = "none";
+    priceContainer.appendChild(priceAxisLabels);
+    const oscillatorAxisLabels = document.createElement("div");
+    oscillatorAxisLabels.style.position = "absolute";
+    oscillatorAxisLabels.style.top = "0";
+    oscillatorAxisLabels.style.right = "0";
+    oscillatorAxisLabels.style.width = `${{rightScaleWidth}}px`;
+    oscillatorAxisLabels.style.height = "100%";
+    oscillatorAxisLabels.style.zIndex = 5;
+    oscillatorAxisLabels.style.pointerEvents = "none";
+    if (oscillatorChart) oscillatorContainer.appendChild(oscillatorAxisLabels);
 
     const legendShell = document.createElement("div");
     legendShell.style.position = "absolute";
@@ -1142,7 +1176,6 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     legend.appendChild(legendCollapse);
     legendShell.appendChild(legendToggle);
     legendShell.appendChild(legend);
-    priceContainer.style.position = "relative";
     priceContainer.appendChild(legendShell);
     legendCollapse.addEventListener("click", event => {{
         event.stopPropagation();
@@ -1306,6 +1339,8 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         eye.addEventListener("click", event => {{
             event.stopPropagation();
             indicator.hidden = !indicator.hidden;
+            const meta = seriesLabelColors.get(series);
+            if (meta) meta.hidden = indicator.hidden;
             series.setData(indicator.hidden ? [] : (indicator.currentData || indicator.data || []));
             item.style.opacity = indicator.hidden ? "0.38" : "1";
             label.style.textDecoration = indicator.hidden ? "line-through" : "none";
@@ -1333,8 +1368,13 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         return `rgba(${{red}}, ${{green}}, ${{blue}}, ${{opacity.toFixed(2)}})`;
     }}
 
-    function crosshairColorForPoint(series, point) {{
-        const meta = seriesLabelColors.get(series);
+    function axisLabelValue(meta, point) {{
+        if (!meta || !point) return null;
+        if (meta.kind === "candle") return point.close;
+        return point.value;
+    }}
+
+    function axisLabelColor(meta, point) {{
         if (!meta || !point) return null;
         if (meta.kind === "candle") {{
             return point.close >= point.open ? meta.upColor : meta.downColor;
@@ -1346,21 +1386,56 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         return meta.fallback;
     }}
 
-    function updateAxisLabelColor(chartRef, param, fallback = "#111827") {{
-        let color = fallback;
-        if (param && param.seriesData) {{
-            for (const [series, point] of param.seriesData.entries()) {{
-                const selected = crosshairColorForPoint(series, point);
-                if (selected) color = selected;
-            }}
-        }}
-        chartRef.applyOptions({{
-            crosshair: {{
-                horzLine: {{
-                    labelBackgroundColor: color
-                }}
-            }}
+    function formatAxisLabelValue(value) {{
+        const absValue = Math.abs(Number(value));
+        if (!Number.isFinite(absValue)) return "";
+        if (absValue >= 1000) return Number(value).toFixed(0);
+        if (absValue >= 100) return Number(value).toFixed(2);
+        if (absValue >= 1) return Number(value).toFixed(4);
+        return Number(value).toFixed(5);
+    }}
+
+    function clearAxisLabels(layer) {{
+        if (layer) layer.replaceChildren();
+    }}
+
+    function renderAxisLabels(layer, entries, time) {{
+        if (!layer) return;
+        layer.replaceChildren();
+        if (time === undefined || time === null) return;
+        entries.forEach(meta => {{
+            if (!meta || meta.hidden || meta.skipAxisLabel || !meta.series || !meta.dataByTime) return;
+            const point = meta.dataByTime.get(time);
+            const value = axisLabelValue(meta, point);
+            if (value === null || value === undefined) return;
+            const coordinate = meta.series.priceToCoordinate(value);
+            if (coordinate === null || coordinate === undefined || Number.isNaN(coordinate)) return;
+            const label = document.createElement("div");
+            label.textContent = formatAxisLabelValue(value);
+            label.style.position = "absolute";
+            label.style.right = "2px";
+            label.style.top = `${{coordinate}}px`;
+            label.style.transform = "translateY(-50%)";
+            label.style.maxWidth = `${{rightScaleWidth - 4}}px`;
+            label.style.overflow = "hidden";
+            label.style.textOverflow = "ellipsis";
+            label.style.whiteSpace = "nowrap";
+            label.style.background = axisLabelColor(meta, point) || meta.fallback || "#111827";
+            label.style.color = "#ffffff";
+            label.style.borderRadius = "3px";
+            label.style.padding = "1px 4px";
+            label.style.font = "10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+            label.style.lineHeight = "13px";
+            label.style.boxShadow = "0 1px 2px rgba(15,23,42,0.22)";
+            layer.appendChild(label);
         }});
+    }}
+
+    function renderCrosshairAxisLabels(time) {{
+        renderAxisLabels(priceAxisLabels, priceLabelSeries, time);
+        if (oscillatorChart) {{
+            renderAxisLabels(oscillatorAxisLabels, oscillatorLabelSeries, time);
+        }}
     }}
 
     (payload.overlays || []).forEach((indicator) => {{
@@ -1373,13 +1448,15 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         line.setData(indicator.data || []);
         seriesLabelColors.set(line, {{
             kind: "line",
-            fallback: indicator.legendColor || indicator.color
+            fallback: indicator.legendColor || indicator.color,
+            series: line,
+            dataByTime: mapByTime(indicator.data)
         }});
+        priceLabelSeries.push(seriesLabelColors.get(line));
         addLegendItem(indicator, legendItems, line);
     }});
 
     let firstOscillatorSeries = null;
-    let firstOscillatorLabelColor = "#111827";
     const oscillatorValueByTime = new Map();
     const priceByTime = new Map((payload.candles || []).map(bar => [bar.time, bar.close]));
     if (oscillatorChart) {{
@@ -1401,11 +1478,13 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
                 kind: indicator.style === "histogram" ? "histogram" : "line",
                 upColor: candleSettings.upColor,
                 downColor: candleSettings.downColor,
-                fallback: indicator.legendColor || indicator.color
+                fallback: indicator.legendColor || indicator.color,
+                series,
+                dataByTime: mapByTime(indicator.data)
             }});
+            oscillatorLabelSeries.push(seriesLabelColors.get(series));
             if (!firstOscillatorSeries) {{
                 firstOscillatorSeries = series;
-                firstOscillatorLabelColor = indicator.legendColor || indicator.color || "#111827";
             }}
             (indicator.data || []).forEach(point => {{
                 if (!oscillatorValueByTime.has(point.time)) oscillatorValueByTime.set(point.time, point.value);
@@ -1439,36 +1518,35 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             chart.subscribeCrosshairMove(param => {{
                 if (!param || param.time === undefined) {{
                     oscillatorChart.clearCrosshairPosition();
-                    updateAxisLabelColor(chart, param);
+                    clearAxisLabels(priceAxisLabels);
+                    clearAxisLabels(oscillatorAxisLabels);
                     return;
                 }}
-                updateAxisLabelColor(chart, param);
+                renderCrosshairAxisLabels(param.time);
                 const value = oscillatorValueByTime.get(param.time);
                 if (value !== undefined && firstOscillatorSeries) {{
                     oscillatorChart.setCrosshairPosition(value, param.time, firstOscillatorSeries);
-                    oscillatorChart.applyOptions({{
-                        crosshair: {{
-                            horzLine: {{
-                                labelBackgroundColor: firstOscillatorLabelColor
-                            }}
-                        }}
-                    }});
                 }}
             }});
             oscillatorChart.subscribeCrosshairMove(param => {{
                 if (!param || param.time === undefined) {{
                     chart.clearCrosshairPosition();
-                    updateAxisLabelColor(oscillatorChart, param);
+                    clearAxisLabels(priceAxisLabels);
+                    clearAxisLabels(oscillatorAxisLabels);
                     return;
                 }}
-                updateAxisLabelColor(oscillatorChart, param);
+                renderCrosshairAxisLabels(param.time);
                 const value = priceByTime.get(param.time);
                 if (value !== undefined) chart.setCrosshairPosition(value, param.time, candleSeries);
             }});
         }}
     }} else {{
         chart.subscribeCrosshairMove(param => {{
-            updateAxisLabelColor(chart, param);
+            if (!param || param.time === undefined) {{
+                clearAxisLabels(priceAxisLabels);
+                return;
+            }}
+            renderCrosshairAxisLabels(param.time);
         }});
     }}
     const resizeObserver = new ResizeObserver(entries => {{
