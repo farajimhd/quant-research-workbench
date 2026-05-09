@@ -273,6 +273,38 @@ def install_css() -> None:
         [data-testid="stSidebar"] > div:first-child {
             padding: 1rem 1rem;
         }
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+            margin-bottom: 0.25rem;
+        }
+        [data-testid="stSidebar"] button[kind="secondary"],
+        [data-testid="stSidebar"] button[kind="primary"] {
+            justify-content: flex-start;
+            min-height: 2rem;
+            padding: 0.28rem 0.5rem;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: #374151;
+            box-shadow: none;
+        }
+        [data-testid="stSidebar"] button[kind="secondary"]:hover {
+            background: #f3f4f6;
+            color: #111827;
+            border: 0;
+        }
+        [data-testid="stSidebar"] button[kind="primary"] {
+            background: #e8eef8;
+            color: #111827;
+            font-weight: 650;
+        }
+        [data-testid="stSidebar"] button[kind="primary"]:hover {
+            background: #dfe8f6;
+            color: #111827;
+            border: 0;
+        }
+        [data-testid="stSidebar"] button p {
+            text-align: left;
+        }
         h1 {
             font-size: 1.45rem !important;
             line-height: 1.2 !important;
