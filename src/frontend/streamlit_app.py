@@ -1479,7 +1479,6 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     const normalPriceHeight = {price_height};
     const normalOscillatorHeight = {oscillator_height};
     const paneGap = {pane_gap};
-    const hostBottomPadding = 18;
     let paneRatio = {oscillator_ratio};
     const chartWidth = () => Math.max(260, container.clientWidth - indicatorLabelWidth);
     const exchangeTimeZone = "{CHART_EXCHANGE_TIME_ZONE}";
@@ -1596,7 +1595,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         layer.style.position = "absolute";
         layer.style.top = "0";
         layer.style.left = "0";
-        layer.style.right = `${{indicatorLabelWidth}}px`;
+        layer.style.right = `${{indicatorLabelWidth + rightScaleWidth}}px`;
         layer.style.bottom = "0";
         layer.style.pointerEvents = "none";
         layer.style.zIndex = "1";
@@ -2219,28 +2218,8 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         return document.fullscreenElement === container || window.innerHeight > {total_height + 80};
     }}
 
-    function resizeHostFrame() {{
-        const frame = window.frameElement;
-        if (!frame || isChartExpanded()) return;
-        let available = {total_height};
-        try {{
-            const frameTop = frame.getBoundingClientRect().top;
-            const parentHeight = window.parent && window.parent.innerHeight ? window.parent.innerHeight : available;
-            available = Math.max(520, Math.min({total_height}, Math.floor(parentHeight - frameTop - hostBottomPadding)));
-        }} catch (error) {{
-            available = {total_height};
-        }}
-        frame.style.height = `${{available}}px`;
-        frame.height = String(available);
-    }}
-
-    function availableChartHeight() {{
-        if (isChartExpanded()) return Math.max(360, window.innerHeight - 4);
-        return Math.max(360, Math.min({total_height}, window.innerHeight));
-    }}
-
     function chartHeights() {{
-        const available = availableChartHeight();
+        const available = isChartExpanded() ? Math.max(360, window.innerHeight - 4) : {total_height};
         if (!hasOscillators) {{
             return {{ price: available, oscillator: 0, total: available }};
         }}
@@ -2251,7 +2230,6 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     }}
 
     function resizeCharts() {{
-        resizeHostFrame();
         const heights = chartHeights();
         container.style.height = `${{heights.total}}px`;
         priceContainer.style.height = `${{heights.price}}px`;
@@ -2294,7 +2272,6 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     }}
 
     window.addEventListener("resize", resizeCharts);
-    resizeHostFrame();
     const resizeObserver = new ResizeObserver(entries => {{
         if (!entries.length) return;
         resizeCharts();
@@ -2302,14 +2279,14 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     resizeObserver.observe(container);
     </script>
     """
-    components.html(html, height=total_height, scrolling=False)
+    components.html(html, height=total_height + 4, scrolling=False)
 
 
 def candle_chart(
     bars: pl.DataFrame,
     orders: pl.DataFrame,
     indicators: dict[str, dict],
-    height: int = 1040,
+    height: int = 900,
     component_key: str | None = None,
 ) -> None:
     if bars.is_empty():
