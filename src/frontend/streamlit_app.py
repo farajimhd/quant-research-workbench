@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.backtest.metrics import compute_summary
+from src.backtest.indicators import add_standard_indicators
 from src.backtest.results import list_runs, read_run_metadata
 from src.backtest.runner import run_backtest
 from src.strategies.orb_5m_momentum.config import OrbMomentumConfig
@@ -58,9 +59,9 @@ SUMMARY_METRIC_LAYOUT = {
     ],
 }
 
-PRICE_CHART_INDICATORS = ["vwap", "tema9_5m", "tema20_5m"]
+PRICE_CHART_INDICATORS = ["vwap", "tema9", "tema20"]
 
-OSCILLATOR_CHART_INDICATORS = ["macd_line_5m", "macd_signal_5m", "macd_hist_5m"]
+OSCILLATOR_CHART_INDICATORS = ["macd_line", "macd_signal", "macd_hist"]
 
 CHART_INDICATORS = PRICE_CHART_INDICATORS + OSCILLATOR_CHART_INDICATORS
 
@@ -68,11 +69,11 @@ DEFAULT_CHART_INDICATORS = CHART_INDICATORS
 
 DEFAULT_INDICATOR_COLORS = {
     "vwap": "#0891b2",
-    "tema9_5m": "#2563eb",
-    "tema20_5m": "#db2777",
-    "macd_line_5m": "#16a34a",
-    "macd_signal_5m": "#f59e0b",
-    "macd_hist_5m": "#7c3aed",
+    "tema9": "#2563eb",
+    "tema20": "#db2777",
+    "macd_line": "#16a34a",
+    "macd_signal": "#f59e0b",
+    "macd_hist": "#7c3aed",
 }
 
 TRADE_STAT_GROUPS = {
@@ -320,6 +321,15 @@ def safe_read_parquet(path: Path) -> pl.DataFrame:
         return pl.DataFrame()
 
 
+def add_chart_indicators(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    required = {"ticker", "bar_time_market", "open", "high", "low", "close", "volume"}
+    if not required.issubset(set(frame.columns)):
+        return frame
+    return add_standard_indicators(frame.sort(["ticker", "bar_time_market"]))
+
+
 def artifact_mtime(run_dir: Path) -> float:
     if not run_dir.exists():
         return 0.0
@@ -341,8 +351,8 @@ def load_run_artifacts(run_dir_value: str, cache_key: float) -> dict[str, Any]:
         "live_rankings": safe_read_parquet(run_dir / "live_rankings.parquet"),
         "signals": safe_read_parquet(run_dir / "signal_events.parquet"),
         "rejections": safe_read_parquet(run_dir / "rejection_events.parquet"),
-        "bars_1m": safe_read_parquet(run_dir / "symbol_bars.parquet"),
-        "bars_5m": safe_read_parquet(run_dir / "symbol_bars_5m.parquet"),
+        "bars_1m": add_chart_indicators(safe_read_parquet(run_dir / "symbol_bars.parquet")),
+        "bars_5m": add_chart_indicators(safe_read_parquet(run_dir / "symbol_bars_5m.parquet")),
     }
     return data
 
@@ -755,18 +765,7 @@ def render_overview(data: dict, period: str) -> None:
 
 
 def normalize_bar_columns(df: pl.DataFrame) -> pl.DataFrame:
-    rename = {}
-    if "macd_line" in df.columns and "macd_line_5m" not in df.columns:
-        rename["macd_line"] = "macd_line_5m"
-    if "macd_signal" in df.columns and "macd_signal_5m" not in df.columns:
-        rename["macd_signal"] = "macd_signal_5m"
-    if "macd_hist" in df.columns and "macd_hist_5m" not in df.columns:
-        rename["macd_hist"] = "macd_hist_5m"
-    if "tema9" in df.columns and "tema9_5m" not in df.columns:
-        rename["tema9"] = "tema9_5m"
-    if "tema20" in df.columns and "tema20_5m" not in df.columns:
-        rename["tema20"] = "tema20_5m"
-    return df.rename(rename) if rename else df
+    return df
 
 
 def chart_timestamp(value) -> int:
@@ -929,7 +928,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
             value = numeric_value(row.get(column))
             if timestamp and value is not None:
                 point = {"time": timestamp, "value": value}
-                if column == "macd_hist_5m":
+                if column == "macd_hist":
                     point["color"] = hex_to_rgba("#0f8a3b" if value >= 0 else "#c0362c", opacity)
                 points.append(point)
         if points:
@@ -940,7 +939,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
                     "color": hex_to_rgba(color, opacity),
                     "legendColor": color,
                     "opacity": opacity,
-                    "style": "histogram" if column == "macd_hist_5m" else "line",
+                    "style": "histogram" if column == "macd_hist" else "line",
                     "data": points,
                 }
             )
