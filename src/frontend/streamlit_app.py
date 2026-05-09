@@ -1160,15 +1160,42 @@ def install_css() -> None:
             padding-top: 0.2rem;
         }
         .qq-status-metric-label {
-            color: var(--qq-muted);
-            font-size: 0.86rem;
+            color: rgba(49, 51, 63, 0.6);
+            font-size: 0.875rem;
             line-height: 1.2;
-            margin-bottom: 0.32rem;
+            margin-bottom: 0.25rem;
         }
-        .qq-status-metric .qq-card-status {
-            width: fit-content;
-            font-size: 1.12rem;
-            padding: 0.18rem 0.58rem;
+        .qq-status-metric-value {
+            font-size: 1.75rem;
+            line-height: 1.15;
+            font-weight: 400;
+            color: var(--qq-muted-strong);
+            overflow-wrap: anywhere;
+        }
+        .qq-status-metric-value.qq-status-good {
+            color: var(--qq-success);
+            background: transparent;
+            border-color: transparent;
+        }
+        .qq-status-metric-value.qq-status-bad {
+            color: var(--qq-danger);
+            background: transparent;
+            border-color: transparent;
+        }
+        .qq-status-metric-value.qq-status-running {
+            color: var(--qq-info);
+            background: transparent;
+            border-color: transparent;
+        }
+        .qq-status-metric-value.qq-status-warning {
+            color: var(--qq-warning);
+            background: transparent;
+            border-color: transparent;
+        }
+        .qq-status-metric-value.qq-status-neutral {
+            color: var(--qq-muted-strong);
+            background: transparent;
+            border-color: transparent;
         }
         .qq-file-progress {
             height: 0.42rem;
@@ -3883,7 +3910,7 @@ def render_build_metrics(metrics: dict[str, str]) -> None:
                     f"""
                     <div class="qq-status-metric">
                         <div class="qq-status-metric-label">Status</div>
-                        {status_badge_html(value)}
+                        <div class="qq-status-metric-value {status_class(value)}">{escape(value)}</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
