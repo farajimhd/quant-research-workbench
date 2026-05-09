@@ -8,8 +8,8 @@ import re
 
 
 DEFAULT_DATA_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1")
-DEFAULT_OUTPUT_ROOT = Path("D:/TradingData/qq-momentum-trading/runs")
-DEFAULT_PROCESSED_DATA_ROOT = Path("D:/TradingData/qq-momentum-trading/market_data")
+DEFAULT_OUTPUT_ROOT = Path("D:/TradingData/quant-research-workbench/runs")
+DEFAULT_PROCESSED_DATA_ROOT = Path("D:/TradingData/quant-research-workbench/market_data")
 
 
 def parse_date(value: str | date) -> date:

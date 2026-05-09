@@ -46,13 +46,13 @@ Phase 2 will also use quote and trade data when available. The code should treat
 Backtest and research outputs should be saved under:
 
 ```text
-D:/TradingData/qq-momentum-trading/runs/
+D:/TradingData/quant-research-workbench/runs/
 ```
 
 Each run should have its own timestamped folder:
 
 ```text
-D:/TradingData/qq-momentum-trading/runs/
+D:/TradingData/quant-research-workbench/runs/
   2026-05-08_001_opening_range_momentum/
     config.json
     summary.json
@@ -249,7 +249,7 @@ Current capabilities:
 - reranks live candidates every minute
 - simulates stop, limit, and market fills from OHLC bars
 - tracks cash, equity, positions, orders, trades, scanner snapshots, candidate rankings, signals, and rejections
-- saves every run under `D:/TradingData/qq-momentum-trading/runs/`
+- saves every run under `D:/TradingData/quant-research-workbench/runs/`
 - exposes completed runs through the Streamlit frontend
 
 The frontend now treats the sidebar as strategy navigation only. Each strategy opens a main-page workspace with:

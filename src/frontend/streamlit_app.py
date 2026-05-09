@@ -3732,7 +3732,7 @@ def render_scope_dialog() -> None:
 
 
 def render_build_metrics(metrics: dict[str, str]) -> None:
-    with st.container(key="build_metrics"):
+    with st.container(key="build_metrics", border=False):
         columns = st.columns(len(metrics), gap="small")
         for column, (label, value) in zip(columns, metrics.items()):
             column.metric(label, value)
