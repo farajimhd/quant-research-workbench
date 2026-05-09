@@ -1023,7 +1023,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     const oscillatorContainer = document.getElementById("{chart_id}-osc");
     const hasOscillators = !!(payload.oscillators && payload.oscillators.length);
     const rightScaleWidth = 90;
-    const indicatorLabelWidth = 72;
+    const indicatorLabelWidth = 54;
     const chartWidth = () => Math.max(260, container.clientWidth - indicatorLabelWidth);
     function formatDateTime(time) {{
         const date = new Date(Number(time) * 1000);
@@ -1495,19 +1495,19 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             const label = document.createElement("div");
             label.textContent = formatAxisLabelValue(value);
             label.style.position = "absolute";
-            label.style.left = "4px";
+            label.style.left = "1px";
             label.style.top = `${{coordinate}}px`;
             label.style.transform = "translateY(-50%)";
-            label.style.maxWidth = `${{indicatorLabelWidth - 8}}px`;
+            label.style.maxWidth = `${{indicatorLabelWidth - 2}}px`;
             label.style.overflow = "hidden";
             label.style.textOverflow = "ellipsis";
             label.style.whiteSpace = "nowrap";
             label.style.background = axisLabelColor(meta, point) || meta.fallback || "#111827";
             label.style.color = "#ffffff";
-            label.style.borderRadius = "3px";
-            label.style.padding = "1px 4px";
-            label.style.font = "10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-            label.style.lineHeight = "13px";
+            label.style.borderRadius = "0";
+            label.style.padding = "2px 5px";
+            label.style.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+            label.style.lineHeight = "15px";
             label.style.boxShadow = "0 1px 2px rgba(15,23,42,0.22)";
             layer.appendChild(label);
         }});
