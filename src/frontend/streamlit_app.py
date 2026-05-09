@@ -46,6 +46,7 @@ DEFAULT_MARKET_DATA_ROOT = DEFAULT_PROCESSED_ROOT
 CHART_EXTENDED_START_MINUTE = 4 * 60
 CHART_REGULAR_START_MINUTE = 9 * 60 + 30
 CHART_REGULAR_END_MINUTE = 16 * 60
+DEFAULT_TABLE_ROW_HEIGHT = 46
 CHART_EXTENDED_END_MINUTE = 20 * 60
 CHART_EXCHANGE_TIME_ZONE = "America/New_York"
 APP_TITLE = "Quant Research Workbench"
@@ -390,8 +391,57 @@ def install_css() -> None:
             border-radius: var(--qq-radius) !important;
         }
         [data-testid="stDataFrame"] {
-            border-color: #EEF2F7 !important;
-            border-radius: var(--qq-radius) !important;
+            background: #FFFFFF !important;
+            border: 1px solid #E5E7EB !important;
+            border-radius: 2px !important;
+            box-shadow: none !important;
+            overflow: hidden !important;
+        }
+        [data-testid="stDataFrame"] > div {
+            background: #FFFFFF !important;
+            border-radius: 2px !important;
+        }
+        [data-testid="stDataFrame"] canvas {
+            background: #FFFFFF !important;
+        }
+        [data-testid="stDataFrame"] [data-testid="stElementToolbar"] {
+            padding: 0.35rem !important;
+        }
+        [data-testid="stDataFrame"] [data-testid="stElementToolbarButton"] button {
+            background: rgba(255, 255, 255, 0.92) !important;
+            border: 1px solid #E5E7EB !important;
+            border-radius: 3px !important;
+            box-shadow: none !important;
+            color: #4B5563 !important;
+            height: 2rem !important;
+            width: 2rem !important;
+        }
+        [data-testid="stDataFrame"] [data-testid="stElementToolbarButton"] button:hover {
+            background: #F9FAFB !important;
+            border-color: #D1D5DB !important;
+            color: #111827 !important;
+        }
+        [data-testid="stMarkdownContainer"] table {
+            background: #FFFFFF;
+            border: 1px solid #E5E7EB;
+            border-collapse: collapse;
+            border-radius: 2px;
+            overflow: hidden;
+            width: 100%;
+        }
+        [data-testid="stMarkdownContainer"] th {
+            background: #FFFFFF;
+            color: #4B5563;
+            font-size: 0.74rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            line-height: 1;
+            text-transform: uppercase;
+        }
+        [data-testid="stMarkdownContainer"] th,
+        [data-testid="stMarkdownContainer"] td {
+            border-color: #E5E7EB;
+            padding: 0.78rem 1rem;
         }
         [data-baseweb="tab"][aria-selected="true"] {
             color: var(--qq-primary) !important;
@@ -838,6 +888,11 @@ def install_css() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def app_dataframe(data, **kwargs):
+    kwargs.setdefault("row_height", DEFAULT_TABLE_ROW_HEIGHT)
+    return st.dataframe(data, **kwargs)
 
 
 def display_name(value: str) -> str:
@@ -1313,7 +1368,7 @@ def render_live_run_header(config: dict, completed_rows: list[dict], run_dir: st
     top[3].metric("Latest P/L", money(latest.get("pnl", 0.0)))
     top[4].metric("Run Return", pct(summary.get("return_pct", 0.0)))
     st.progress(min(1.0, completed / total))
-    st.dataframe(pl.DataFrame(sessions), width="stretch", hide_index=True)
+    app_dataframe(pl.DataFrame(sessions), width="stretch", hide_index=True)
     if run_dir:
         st.caption(f"Writing artifacts to {run_dir}")
 
@@ -2967,7 +3022,7 @@ def render_scanner(data: dict, period: str) -> None:
     ranking_type = st.segmented_control("Ranking", ["Opening setup", "Live minute"], default="Opening setup")
     if ranking_type == "Opening setup":
         st.caption("Fixed setup ranking created after the opening box.")
-        st.dataframe(setup.sort("rank") if not setup.is_empty() else setup, width="stretch")
+        app_dataframe(setup.sort("rank") if not setup.is_empty() else setup, width="stretch")
         return
     st.caption("Minute-by-minute live ranking. Search a timestamp such as 10:30 to inspect that minute.")
     if live.is_empty():
@@ -2980,7 +3035,7 @@ def render_scanner(data: dict, period: str) -> None:
     status_filter = st.multiselect("Status", snapshot.select("status").unique()["status"].to_list(), default=[])
     if status_filter:
         snapshot = snapshot.filter(pl.col("status").is_in(status_filter))
-    st.dataframe(snapshot, width="stretch")
+    app_dataframe(snapshot, width="stretch")
 
 
 def render_rejections(data: dict, period: str) -> None:
@@ -2991,7 +3046,7 @@ def render_rejections(data: dict, period: str) -> None:
     if "reject_reason" in rejections.columns:
         counts = rejections.group_by("reject_reason").len().sort("len", descending=True)
         st.bar_chart(counts.to_pandas(), x="reject_reason", y="len")
-    st.dataframe(rejections.tail(500), width="stretch")
+    app_dataframe(rejections.tail(500), width="stretch")
 
 
 def render_positions(data: dict, period: str) -> None:
@@ -2999,7 +3054,7 @@ def render_positions(data: dict, period: str) -> None:
     if positions.is_empty():
         st.info("No position snapshots for this period.")
         return
-    st.dataframe(positions, width="stretch")
+    app_dataframe(positions, width="stretch")
 
 
 def render_chart_inspector(data: dict, period: str) -> None:
@@ -3070,7 +3125,7 @@ def humanize_key(key: str) -> str:
 
 def render_detail_table(items: list[tuple[str, object]]) -> None:
     rows = [{"Field": label, "Value": "-" if value is None else str(value)} for label, value in items]
-    st.dataframe(pl.DataFrame(rows), width="stretch", hide_index=True)
+    app_dataframe(pl.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def render_run_details_content(run_dir: Path) -> None:
@@ -3111,7 +3166,7 @@ def render_run_details_content(run_dir: Path) -> None:
 
     st.subheader("Strategy Parameters")
     param_rows = [{"Parameter": humanize_key(key), "Value": str(value)} for key, value in sorted(params.items())]
-    st.dataframe(pl.DataFrame(param_rows), width="stretch", hide_index=True)
+    app_dataframe(pl.DataFrame(param_rows), width="stretch", hide_index=True)
 
 
 if hasattr(st, "dialog"):
@@ -3300,7 +3355,7 @@ def render_runs(strategy_name: str, output_root: Path) -> None:
         return
     rows = run_table_rows(runs)
     actions_slot = st.empty()
-    table_state = st.dataframe(
+    table_state = app_dataframe(
         pl.DataFrame(rows),
         width="stretch",
         hide_index=True,
@@ -3430,9 +3485,9 @@ def render_data_provider_page() -> None:
             for timeframe in timeframes or ["1m"]:
                 row[timeframe] = processed.get(f"{timeframe}_status", "missing")
             plan.append(row)
-        st.dataframe(pl.DataFrame(plan), width="stretch", hide_index=True)
+        app_dataframe(pl.DataFrame(plan), width="stretch", hide_index=True)
     with plan_tabs[1]:
-        st.dataframe(pl.DataFrame(ready_rows), width="stretch", hide_index=True)
+        app_dataframe(pl.DataFrame(ready_rows), width="stretch", hide_index=True)
     with plan_tabs[2]:
         st.json(
             {
@@ -3458,7 +3513,7 @@ def render_data_provider_page() -> None:
             with progress_slot.container():
                 st.progress(min(1.0, completed_index / total), text=f"{event.get('session_date', '')} | {event.get('phase', '')}")
             with log_slot.container():
-                st.dataframe(pl.DataFrame(progress_rows[-30:]), width="stretch", hide_index=True)
+                app_dataframe(pl.DataFrame(progress_rows[-30:]), width="stretch", hide_index=True)
 
         request = BuildRequest(
             raw_root=raw_root,
@@ -3474,7 +3529,7 @@ def render_data_provider_page() -> None:
         try:
             result = build_market_data(request, progress_callback=on_progress)
             st.success(f"Build complete. Processed root: {result['processed_root']}")
-            st.dataframe(pl.DataFrame(result["completed"]), width="stretch", hide_index=True)
+            app_dataframe(pl.DataFrame(result["completed"]), width="stretch", hide_index=True)
         except Exception as exc:
             st.error(str(exc))
             with st.expander("Build error details"):
