@@ -270,37 +270,85 @@ def install_css() -> None:
             max-width: 100%;
             padding: 2.25rem 2rem 2rem;
         }
-        [data-testid="stSidebar"] > div:first-child {
-            padding: 1rem 1rem;
+        [data-testid="stSidebar"] {
+            border-right: 1px solid #e5e7eb;
         }
-        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
-            margin-bottom: 0.25rem;
+        [data-testid="stSidebar"] > div:first-child {
+            padding: 1.25rem 1.2rem;
+        }
+        .qq-sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.35rem 0.25rem 1.25rem;
+            margin-bottom: 1.15rem;
+            border-bottom: 1px solid #edf0f2;
+        }
+        .qq-sidebar-mark {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2.35rem;
+            height: 2.35rem;
+            border-radius: 999px;
+            background: #111827;
+            color: #ffffff;
+            font-size: 1.02rem;
+            font-weight: 800;
+            letter-spacing: 0;
+            flex: 0 0 auto;
+        }
+        .qq-sidebar-title {
+            color: #111827;
+            font-size: 1.06rem;
+            font-weight: 800;
+            line-height: 1.1;
+        }
+        .qq-sidebar-group {
+            color: #7a7f87;
+            font-size: 0.78rem;
+            font-weight: 750;
+            letter-spacing: 0.09em;
+            line-height: 1;
+            padding: 0.85rem 0.35rem 0.45rem;
+            text-transform: uppercase;
+        }
+        [data-testid="stSidebar"] div[data-testid="stButton"] {
+            margin: 0.08rem 0;
         }
         [data-testid="stSidebar"] button[kind="secondary"],
         [data-testid="stSidebar"] button[kind="primary"] {
             justify-content: flex-start;
-            min-height: 2rem;
-            padding: 0.28rem 0.5rem;
+            min-height: 2.75rem;
+            padding: 0.45rem 0.8rem;
             border: 0;
-            border-radius: 6px;
+            border-radius: 10px;
             background: transparent;
-            color: #374151;
+            color: #5f646d;
             box-shadow: none;
+            font-size: 0.98rem;
+            font-weight: 650;
+            gap: 0.72rem;
         }
         [data-testid="stSidebar"] button[kind="secondary"]:hover {
-            background: #f3f4f6;
+            background: #f6f7f8;
             color: #111827;
             border: 0;
         }
         [data-testid="stSidebar"] button[kind="primary"] {
-            background: #e8eef8;
+            background: #f3f4f6;
             color: #111827;
-            font-weight: 650;
+            font-weight: 760;
         }
         [data-testid="stSidebar"] button[kind="primary"]:hover {
-            background: #dfe8f6;
+            background: #eceff2;
             color: #111827;
             border: 0;
+        }
+        [data-testid="stSidebar"] button svg {
+            width: 1.28rem;
+            height: 1.28rem;
+            color: currentColor;
         }
         [data-testid="stSidebar"] button p {
             text-align: left;
@@ -486,25 +534,35 @@ def render_sidebar() -> str:
     default_page = f"strategy:{strategies[0]}" if strategies else "market_data:build_data"
     selected_page = st.session_state.setdefault("sidebar_page", default_page)
 
-    st.sidebar.title(APP_TITLE)
-    st.sidebar.markdown("**Strategies**")
+    st.sidebar.markdown(
+        f"""
+        <div class="qq-sidebar-brand">
+            <div class="qq-sidebar-mark">Q</div>
+            <div class="qq-sidebar-title">{escape(APP_TITLE)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown('<div class="qq-sidebar-group">Strategies</div>', unsafe_allow_html=True)
     for strategy_name in strategies:
         page_key = f"strategy:{strategy_name}"
         if st.sidebar.button(
             display_name(strategy_name),
             key=f"sidebar_{page_key}",
             type="primary" if selected_page == page_key else "secondary",
+            icon=":material/monitoring:",
             width="stretch",
         ):
             select_sidebar_page(page_key)
             st.rerun()
 
-    st.sidebar.markdown("**Market Data**")
+    st.sidebar.markdown('<div class="qq-sidebar-group">Market Data</div>', unsafe_allow_html=True)
     build_data_key = "market_data:build_data"
     if st.sidebar.button(
         "Build Data",
         key=f"sidebar_{build_data_key}",
         type="primary" if selected_page == build_data_key else "secondary",
+        icon=":material/database:",
         width="stretch",
     ):
         select_sidebar_page(build_data_key)
