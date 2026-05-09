@@ -276,11 +276,6 @@ def install_css() -> None:
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        .st-key-run_header [data-testid="stButton"] {
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-        }
         .qq-run-badges {
             display: flex;
             flex-wrap: nowrap;
@@ -310,58 +305,6 @@ def install_css() -> None:
             background: #f0fdf4;
             color: #166534;
             text-transform: capitalize;
-        }
-        .qq-run-header-metrics {
-            display: flex;
-            gap: 0.35rem;
-            align-items: center;
-            flex: 0 0 auto;
-        }
-        .qq-run-header-metric {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.32rem;
-            border: 1px solid #e5e7eb;
-            border-radius: 999px;
-            padding: 0.2rem 0.55rem;
-            background: #ffffff;
-            min-width: 0;
-        }
-        .qq-run-header-metric-label {
-            color: #4b5563;
-            font-size: 0.68rem;
-            line-height: 1;
-            text-transform: uppercase;
-            letter-spacing: 0.02em;
-        }
-        .qq-run-header-metric-value {
-            color: #111827;
-            font-size: 0.86rem;
-            font-weight: 700;
-            line-height: 1;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .st-key-run_details_action {
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            min-height: 2.15rem;
-        }
-        .st-key-run_details_action button {
-            border: 1px solid #d1d5db;
-            border-radius: 999px;
-            background: #ffffff;
-            color: #111827;
-            font-weight: 600;
-            min-height: 2rem;
-            height: 2rem;
-            padding: 0 0.8rem;
-        }
-        .st-key-run_details_action button:hover {
-            border-color: #9ca3af;
-            background: #f9fafb;
         }
         .st-key-back_to_runs button {
             min-width: 2rem;
@@ -2655,45 +2598,37 @@ def render_selected_run_header(run_dir: Path) -> None:
     date_range = f"{config.get('start_date', '')} to {config.get('end_date', '')}"
 
     with st.container(key="run_header"):
-        info_cols = st.columns([10.4, 1.8], gap="small", vertical_alignment="center")
+        info_cols = st.columns([3.0, 5.5, 3.7], gap="small", vertical_alignment="center")
         with info_cols[0]:
-            strategy_name = metadata.get("strategy_name", config.get("strategy_name", ""))
-            metric_items = [
-                ("Return", pct(summary.get("return_pct", 0.0))),
-                ("P/L", money(summary.get("total_pnl", 0.0))),
-                ("Trades", summary.get("trade_count", 0)),
-            ]
-            metric_html = "".join(
-                (
-                    '<div class="qq-run-header-metric">'
-                    f'<div class="qq-run-header-metric-label">{escape(label)}</div>'
-                    f'<div class="qq-run-header-metric-value">{escape(str(value))}</div>'
-                    "</div>"
-                )
-                for label, value in metric_items
-            )
-            st.markdown(
-                (
-                    '<div class="qq-run-header-line">'
-                    f'<div class="qq-run-header-title">{escape(str(run_name))}</div>'
-                    '<div class="qq-run-badges">'
-                    f'<span class="qq-run-badge">{escape(str(strategy_name))}</span>'
-                    f'<span class="qq-run-badge qq-run-badge-status">{escape(str(status))}</span>'
-                    f'<span class="qq-run-badge">{escape(date_range)}</span>'
-                    "</div>"
-                    f'<div class="qq-run-header-metrics">{metric_html}</div>'
-                    "</div>"
-                ),
-                unsafe_allow_html=True,
-            )
+            st.markdown(f'<div class="qq-run-header-title">{escape(str(run_name))}</div>', unsafe_allow_html=True)
         with info_cols[1]:
-            with st.container(key="run_details_action"):
+            strategy_name = metadata.get("strategy_name", config.get("strategy_name", ""))
+            badge_cols = st.columns([5.0, 1.45], gap="small", vertical_alignment="center")
+            with badge_cols[0]:
+                st.markdown(
+                    (
+                        '<div class="qq-run-header-line">'
+                        '<div class="qq-run-badges">'
+                        f'<span class="qq-run-badge">{escape(str(strategy_name))}</span>'
+                        f'<span class="qq-run-badge qq-run-badge-status">{escape(str(status))}</span>'
+                        f'<span class="qq-run-badge">{escape(date_range)}</span>'
+                        "</div>"
+                        "</div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+            with badge_cols[1]:
                 if run_details_dialog is not None:
-                    if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary", width="stretch"):
+                    if st.button("See more details", key=f"run_details_{run_dir.name}", type="tertiary", width="content"):
                         run_details_dialog(str(run_dir))
                 else:
                     with st.expander("See more details"):
                         render_run_details_content(run_dir)
+        with info_cols[2]:
+            metric_cols = st.columns(3, gap="small", vertical_alignment="center")
+            metric_cols[0].metric("Return", pct(summary.get("return_pct", 0.0)))
+            metric_cols[1].metric("P/L", money(summary.get("total_pnl", 0.0)))
+            metric_cols[2].metric("Trades", summary.get("trade_count", 0))
 
 
 def render_new_run_update_form(config_key: str) -> None:
