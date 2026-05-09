@@ -937,10 +937,6 @@ def install_css() -> None:
             white-space: nowrap;
         }
         .st-key-build_metrics [data-testid="stMetric"] {
-            border: 1px solid var(--qq-border-soft);
-            border-radius: var(--qq-radius);
-            background: var(--qq-surface);
-            padding: 0.45rem 0.5rem;
             min-height: 0;
         }
         .st-key-build_metrics [data-testid="stMetricLabel"] p {
@@ -3733,9 +3729,9 @@ def render_scope_dialog() -> None:
 
 def render_build_metrics(metrics: dict[str, str]) -> None:
     with st.container(key="build_metrics", border=False):
-        columns = st.columns(len(metrics), gap="small")
+        columns = st.columns(len(metrics), gap="small", border=False)
         for column, (label, value) in zip(columns, metrics.items()):
-            column.metric(label, value)
+            column.metric(label, value, border=False)
 
 
 def status_class(status: str) -> str:
