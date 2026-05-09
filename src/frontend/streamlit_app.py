@@ -1023,6 +1023,8 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     const oscillatorContainer = document.getElementById("{chart_id}-osc");
     const hasOscillators = !!(payload.oscillators && payload.oscillators.length);
     const rightScaleWidth = 90;
+    const indicatorLabelWidth = 72;
+    const chartWidth = () => Math.max(260, container.clientWidth - indicatorLabelWidth);
     function formatDateTime(time) {{
         const date = new Date(Number(time) * 1000);
         const pad = value => String(value).padStart(2, "0");
@@ -1079,7 +1081,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     }};
     const chart = LightweightCharts.createChart(priceContainer, {{
         ...commonOptions,
-        width: priceContainer.clientWidth,
+        width: chartWidth(),
         height: {price_height},
         rightPriceScale: {{
             borderColor: "#d1d5db",
@@ -1093,7 +1095,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     }});
     const oscillatorChart = oscillatorContainer && payload.oscillators && payload.oscillators.length ? LightweightCharts.createChart(oscillatorContainer, {{
         ...commonOptions,
-        width: oscillatorContainer.clientWidth,
+        width: chartWidth(),
         height: {oscillator_height},
         rightPriceScale: {{
             borderColor: "#d1d5db",
@@ -1130,7 +1132,6 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         series: candleSeries,
         dataByTime: mapByTime(payload.candles)
     }});
-    priceLabelSeries.push(seriesLabelColors.get(candleSeries));
     if (payload.markers && payload.markers.length) {{
         candleSeries.setMarkers(payload.markers);
     }}
@@ -1161,7 +1162,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     priceAxisLabels.style.position = "absolute";
     priceAxisLabels.style.top = "0";
     priceAxisLabels.style.right = "0";
-    priceAxisLabels.style.width = `${{rightScaleWidth}}px`;
+    priceAxisLabels.style.width = `${{indicatorLabelWidth}}px`;
     priceAxisLabels.style.height = "100%";
     priceAxisLabels.style.zIndex = 5;
     priceAxisLabels.style.pointerEvents = "none";
@@ -1170,7 +1171,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     oscillatorAxisLabels.style.position = "absolute";
     oscillatorAxisLabels.style.top = "0";
     oscillatorAxisLabels.style.right = "0";
-    oscillatorAxisLabels.style.width = `${{rightScaleWidth}}px`;
+    oscillatorAxisLabels.style.width = `${{indicatorLabelWidth}}px`;
     oscillatorAxisLabels.style.height = "100%";
     oscillatorAxisLabels.style.zIndex = 5;
     oscillatorAxisLabels.style.pointerEvents = "none";
@@ -1494,10 +1495,10 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             const label = document.createElement("div");
             label.textContent = formatAxisLabelValue(value);
             label.style.position = "absolute";
-            label.style.right = "2px";
+            label.style.left = "4px";
             label.style.top = `${{coordinate}}px`;
             label.style.transform = "translateY(-50%)";
-            label.style.maxWidth = `${{rightScaleWidth - 4}}px`;
+            label.style.maxWidth = `${{indicatorLabelWidth - 8}}px`;
             label.style.overflow = "hidden";
             label.style.textOverflow = "ellipsis";
             label.style.whiteSpace = "nowrap";
@@ -1561,9 +1562,10 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
                 downColor: candleSettings.downColor,
                 fallback: indicator.legendColor || indicator.color,
                 series,
-                dataByTime: mapByTime(indicator.data)
+                dataByTime: mapByTime(indicator.data),
+                skipAxisLabel: indicator.style === "histogram"
             }});
-            oscillatorLabelSeries.push(seriesLabelColors.get(series));
+            if (indicator.style !== "histogram") oscillatorLabelSeries.push(seriesLabelColors.get(series));
             if (!firstOscillatorSeries) {{
                 firstOscillatorSeries = series;
             }}
@@ -1632,7 +1634,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     }}
     const resizeObserver = new ResizeObserver(entries => {{
         if (!entries.length) return;
-        const width = entries[0].contentRect.width;
+        const width = Math.max(260, entries[0].contentRect.width - indicatorLabelWidth);
         chart.applyOptions({{ width }});
         if (oscillatorChart) oscillatorChart.applyOptions({{ width }});
         alignTimeScales();
