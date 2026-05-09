@@ -1138,7 +1138,7 @@ def chart_key_fragment(value: str) -> str:
     return fragment or "chart"
 
 
-def render_chart_fullscreen_button(component_key: str) -> None:
+def render_chart_toolbar_buttons(component_key: str) -> None:
     component_selector_json = json.dumps(f".st-key-{component_key}")
     html = """
     <style>
@@ -1148,7 +1148,14 @@ def render_chart_fullscreen_button(component_key: str) -> None:
         background: transparent;
         overflow: hidden;
     }}
-    #qq-fullscreen-toolbar-button {{
+    #qq-chart-toolbar-buttons {{
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 4px;
+        height: 34px;
+    }}
+    .qq-chart-tool-button {{
         width: 36px;
         height: 32px;
         border: 0;
@@ -1160,18 +1167,36 @@ def render_chart_fullscreen_button(component_key: str) -> None:
         align-items: center;
         justify-content: center;
         padding: 0;
-        margin: 0 0 0 auto;
         line-height: 1;
     }}
-    #qq-fullscreen-toolbar-button:hover {{
+    .qq-chart-tool-button:hover {{
         background: #f3f4f6;
     }}
+    .qq-chart-toolbar-divider {{
+        width: 1px;
+        height: 20px;
+        background: #d1d5db;
+        margin: 0 8px 0 6px;
+    }}
     </style>
-    <button id="qq-fullscreen-toolbar-button" title="Fullscreen" aria-label="Toggle fullscreen">
-        <svg viewBox="0 0 24 24" width="23" height="23" aria-hidden="true">
-            <path d="M8 3H3v5h2V5h3V3zm8 0v2h3v3h2V3h-5zM5 16H3v5h5v-2H5v-3zm14 3h-3v2h5v-5h-2v3z" fill="currentColor"></path>
-        </svg>
-    </button>
+    <div id="qq-chart-toolbar-buttons">
+        <button class="qq-chart-tool-button" data-action="fit-first-day" title="Fit first day" aria-label="Fit first day">
+            <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true">
+                <path d="M7 2h2v2h6V2h2v2h3v18H4V4h3V2zm11 8H6v10h12V10zM6 8h12V6H6v2zm2 4h3v3H8v-3z" fill="currentColor"></path>
+            </svg>
+        </button>
+        <button class="qq-chart-tool-button" data-action="fit-recent" title="Reset zoom to latest bars" aria-label="Reset zoom to latest bars">
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                <path d="M12 5V2L7 6l5 4V7c3.31 0 6 2.69 6 6 0 1.3-.42 2.5-1.12 3.48l1.46 1.46A7.94 7.94 0 0 0 20 13c0-4.42-3.58-8-8-8zm-6 6a5.98 5.98 0 0 1 1.12-3.48L5.66 6.06A7.94 7.94 0 0 0 4 11c0 4.42 3.58 8 8 8v3l5-4-5-4v3c-3.31 0-6-2.69-6-6z" fill="currentColor"></path>
+            </svg>
+        </button>
+        <span class="qq-chart-toolbar-divider"></span>
+        <button id="qq-fullscreen-toolbar-button" class="qq-chart-tool-button" title="Fullscreen" aria-label="Toggle fullscreen">
+            <svg viewBox="0 0 24 24" width="23" height="23" aria-hidden="true">
+                <path d="M8 3H3v5h2V5h3V3zm8 0v2h3v3h2V3h-5zM5 16H3v5h5v-2H5v-3zm14 3h-3v2h5v-5h-2v3z" fill="currentColor"></path>
+            </svg>
+        </button>
+    </div>
     <script>
     const componentSelector = __COMPONENT_SELECTOR__;
     const button = document.getElementById("qq-fullscreen-toolbar-button");
@@ -1217,7 +1242,7 @@ def render_chart_fullscreen_button(component_key: str) -> None:
                 background: #ffffff !important;
             }}
             .qq-streamlit-chart-fullscreen div[class*="st-key-chart_toolbar_"] iframe {{
-                width: 40px !important;
+                width: 158px !important;
                 height: 34px !important;
             }}
             .qq-streamlit-chart-body-lock {{
@@ -1254,6 +1279,16 @@ def render_chart_fullscreen_button(component_key: str) -> None:
         syncButton();
     }}
 
+    function dispatchChartAction(action) {{
+        if (!parentDocument) return;
+        parentDocument.dispatchEvent(new CustomEvent("qq-chart-action", {{
+            detail: {{ componentSelector, action }}
+        }}));
+    }}
+
+    document.querySelectorAll("[data-action]").forEach(actionButton => {{
+        actionButton.addEventListener("click", () => dispatchChartAction(actionButton.dataset.action));
+    }});
     button.addEventListener("click", () => setActive(!isActive()));
     if (parentDocument) {{
         parentDocument.addEventListener("keydown", event => {{
@@ -1284,7 +1319,7 @@ def chart_toolbar(
 ) -> tuple[str | None, str, dict]:
     del indicator_key
     options = timeframe_options or ["1m", "5m"]
-    columns = st.columns([0.9, 1.15, 8.9, 0.4], gap="small", vertical_alignment="center")
+    columns = st.columns([0.9, 1.15, 8.25, 1.05], gap="small", vertical_alignment="center")
     ticker = selected_ticker
     with columns[0]:
         if tickers:
@@ -1294,7 +1329,7 @@ def chart_toolbar(
     with columns[1]:
         timeframe = st.segmented_control("Timeframe", options, default=options[0], key=timeframe_key, label_visibility="collapsed")
     with columns[3]:
-        render_chart_fullscreen_button(component_key)
+        render_chart_toolbar_buttons(component_key)
     return ticker, timeframe, default_chart_indicator_settings()
 
 
@@ -1400,10 +1435,11 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
     }
 
 
-def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
+def render_lightweight_candle_chart(payload: dict, height: int = 720, component_key: str | None = None) -> None:
     chart_id = f"tv-chart-{abs(hash(json.dumps(payload, sort_keys=True))) % 10_000_000}"
     payload_json = json.dumps(payload)
     candle_settings_json = json.dumps(DEFAULT_CANDLE_CHART_SETTINGS)
+    component_selector_json = json.dumps(f".st-key-{component_key}" if component_key else "")
     pane_gap = 10 if payload.get("oscillators") else 0
     oscillator_ratio = 0.375
     price_height = int((height - pane_gap) / (1 + oscillator_ratio)) if payload.get("oscillators") else height
@@ -1431,6 +1467,13 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     const splitter = document.getElementById("{chart_id}-splitter");
     const oscillatorContainer = document.getElementById("{chart_id}-osc");
     const hasOscillators = !!(payload.oscillators && payload.oscillators.length);
+    const componentSelector = {component_selector_json};
+    let parentDocument = null;
+    try {{
+        parentDocument = window.parent && window.parent.document ? window.parent.document : null;
+    }} catch (error) {{
+        parentDocument = null;
+    }}
     const rightScaleWidth = 62;
     const indicatorLabelWidth = 62;
     const normalPriceHeight = {price_height};
@@ -1439,6 +1482,8 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     let paneRatio = {oscillator_ratio};
     const chartWidth = () => Math.max(260, container.clientWidth - indicatorLabelWidth);
     const exchangeTimeZone = "{CHART_EXCHANGE_TIME_ZONE}";
+    const allTimes = (payload.candles || []).map(bar => bar.time).filter(time => time !== undefined && time !== null);
+    const recentBarCount = Math.min(180, Math.max(60, allTimes.length));
     const exchangeDateTimeFormatter = new Intl.DateTimeFormat("en-US", {{
         timeZone: exchangeTimeZone,
         year: "numeric",
@@ -1448,6 +1493,12 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         minute: "2-digit",
         second: "2-digit",
         hourCycle: "h23"
+    }});
+    const exchangeDateFormatter = new Intl.DateTimeFormat("en-CA", {{
+        timeZone: exchangeTimeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
     }});
     function formatDateTime(time) {{
         const date = new Date(Number(time) * 1000);
@@ -2055,15 +2106,61 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
         }});
     }}
 
-    function alignTimeScales() {{
-        chart.timeScale().fitContent();
+    function synchronizeOscillatorRange() {{
         if (oscillatorChart) {{
             const range = chart.timeScale().getVisibleLogicalRange();
             if (range) oscillatorChart.timeScale().setVisibleLogicalRange(range);
         }}
         requestAnimationFrame(drawSessionRegions);
     }}
-    alignTimeScales();
+
+    function applyLogicalRange(from, to) {{
+        if (!allTimes.length) return;
+        const range = {{
+            from: Math.max(0, from),
+            to: Math.max(0, to)
+        }};
+        chart.timeScale().setVisibleLogicalRange(range);
+        if (oscillatorChart) oscillatorChart.timeScale().setVisibleLogicalRange(range);
+        requestAnimationFrame(drawSessionRegions);
+    }}
+
+    function fitRecentBars() {{
+        if (!allTimes.length) return;
+        const visibleBars = Math.min(recentBarCount, allTimes.length);
+        const lastIndex = allTimes.length - 1;
+        applyLogicalRange(Math.max(0, lastIndex - visibleBars + 1), lastIndex + Number(candleSettings.rightOffset || 0));
+    }}
+
+    function fitFirstDay() {{
+        if (!allTimes.length) return;
+        const firstDate = exchangeDateFormatter.format(new Date(Number(allTimes[0]) * 1000));
+        let firstIndex = null;
+        let lastIndex = null;
+        allTimes.forEach((time, index) => {{
+            if (exchangeDateFormatter.format(new Date(Number(time) * 1000)) === firstDate) {{
+                if (firstIndex === null) firstIndex = index;
+                lastIndex = index;
+            }}
+        }});
+        if (firstIndex !== null && lastIndex !== null) {{
+            applyLogicalRange(firstIndex, lastIndex + Number(candleSettings.rightOffset || 0));
+        }}
+    }}
+
+    function alignTimeScales() {{
+        synchronizeOscillatorRange();
+    }}
+
+    fitRecentBars();
+
+    if (parentDocument && componentSelector) {{
+        parentDocument.addEventListener("qq-chart-action", event => {{
+            if (!event.detail || event.detail.componentSelector !== componentSelector) return;
+            if (event.detail.action === "fit-recent") fitRecentBars();
+            if (event.detail.action === "fit-first-day") fitFirstDay();
+        }});
+    }}
     let syncing = false;
     function syncRange(source, target) {{
         source.timeScale().subscribeVisibleLogicalRangeChange(range => {{
@@ -2180,14 +2277,15 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     resizeObserver.observe(container);
     </script>
     """
-    components.html(html, height=total_height + 12, scrolling=False)
+    components.html(html, height=total_height + 48, scrolling=False)
 
 
 def candle_chart(
     bars: pl.DataFrame,
     orders: pl.DataFrame,
     indicators: dict[str, dict],
-    height: int = 860,
+    height: int = 1040,
+    component_key: str | None = None,
 ) -> None:
     if bars.is_empty():
         st.info("No chart data available.")
@@ -2198,7 +2296,7 @@ def candle_chart(
         st.info("Selected chart data is missing OHLC columns.")
         return
     payload = tradingview_chart_payload(bars, orders, indicators)
-    render_lightweight_candle_chart(payload, height=height)
+    render_lightweight_candle_chart(payload, height=height, component_key=component_key)
 
 
 def bars_for(data: dict, period: str, ticker: str, timeframe: str) -> pl.DataFrame:
@@ -2255,7 +2353,7 @@ def render_trades(data: dict, period: str) -> None:
             orders = filter_df(data["orders"], trade_day)
             if "symbol" in orders.columns:
                 orders = orders.filter(pl.col("symbol") == trade["symbol"])
-            candle_chart(bars, orders, indicators)
+            candle_chart(bars, orders, indicators, component_key=component_key)
 
 
 def render_orders(data: dict, period: str) -> None:
@@ -2337,7 +2435,7 @@ def render_chart_inspector(data: dict, period: str) -> None:
         orders = filter_df(data["orders"], period)
         if "symbol" in orders.columns:
             orders = orders.filter(pl.col("symbol") == ticker)
-        candle_chart(bars, orders, indicators)
+        candle_chart(bars, orders, indicators, component_key=component_key)
 
 
 def render_run_dashboard(run_dir: Path, show_header: bool = True, show_back_button: bool = False) -> None:
