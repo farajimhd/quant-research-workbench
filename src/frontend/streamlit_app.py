@@ -96,12 +96,12 @@ OSCILLATOR_CHART_INDICATORS = ["macd_line", "macd_signal", "macd_hist"]
 CHART_INDICATORS = PRICE_CHART_INDICATORS + OSCILLATOR_CHART_INDICATORS
 
 DEFAULT_INDICATOR_COLORS = {
-    "vwap": "#451F7F",
+    "vwap": "#7C3AED",
     "tema9": "#2563EB",
-    "tema20": "#E10E0E",
-    "macd_line": "#1C19D7",
-    "macd_signal": "#F5680A",
-    "macd_hist": "#33E42A",
+    "tema20": "#B7791F",
+    "macd_line": "#0F766E",
+    "macd_signal": "#B54708",
+    "macd_hist": "#087443",
 }
 
 DEFAULT_INDICATOR_WIDTHS = {
@@ -134,12 +134,12 @@ INDICATOR_DISPLAY_NAMES = {
 LEGEND_INDICATORS = {"vwap", "tema9", "tema20", "macd_line", "macd_signal"}
 
 DEFAULT_CANDLE_CHART_SETTINGS = {
-    "upColor": "#33E42A",
-    "downColor": "#FD0E50",
-    "borderUpColor": "#1DB914",
-    "borderDownColor": "#CB093F",
-    "wickUpColor": "#4DC746",
-    "wickDownColor": "#C52A55",
+    "upColor": "#087443",
+    "downColor": "#B42318",
+    "borderUpColor": "#05603A",
+    "borderDownColor": "#912018",
+    "wickUpColor": "#16A34A",
+    "wickDownColor": "#D92D20",
     "borderVisible": True,
     "wickVisible": True,
     "priceLineVisible": True,
@@ -267,8 +267,59 @@ def install_css() -> None:
         """
         <style>
         @import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap");
+        :root {
+            --qq-bg: var(--st-background-color, #F7F9FC);
+            --qq-surface: #FFFFFF;
+            --qq-surface-muted: var(--st-secondary-background-color, #EEF3F8);
+            --qq-surface-soft: #F4F7FA;
+            --qq-text: var(--st-text-color, #172033);
+            --qq-muted: #667085;
+            --qq-muted-strong: #475467;
+            --qq-border: var(--st-border-color, #D8E0EA);
+            --qq-border-soft: #E1E7EF;
+            --qq-primary: var(--st-primary-color, #0F766E);
+            --qq-primary-hover: #115E59;
+            --qq-success: #087443;
+            --qq-success-bg: #E8F6EF;
+            --qq-success-border: #B7E4CF;
+            --qq-danger: #B42318;
+            --qq-danger-bg: #FDEDEC;
+            --qq-neutral-bg: #F2F4F7;
+        }
         html, body, body *, .stApp, button, input, textarea, select {
-            font-family: "Inter" !important;
+            font-family: "Inter", sans-serif !important;
+        }
+        .stApp {
+            background: var(--qq-bg);
+            color: var(--qq-text);
+        }
+        div[data-testid="stButton"] button[kind="primary"] {
+            background: var(--qq-primary) !important;
+            border-color: var(--qq-primary) !important;
+            color: #FFFFFF !important;
+            font-weight: 500;
+        }
+        div[data-testid="stButton"] button[kind="primary"]:hover {
+            background: var(--qq-primary-hover) !important;
+            border-color: var(--qq-primary-hover) !important;
+            color: #FFFFFF !important;
+        }
+        div[data-testid="stButton"] button[kind="secondary"] {
+            border-color: var(--qq-border) !important;
+            color: var(--qq-text) !important;
+        }
+        div[data-testid="stButton"] button[kind="secondary"]:hover {
+            border-color: var(--qq-primary) !important;
+            color: var(--qq-primary) !important;
+        }
+        div[data-testid="stButton"] button p {
+            white-space: nowrap;
+        }
+        [data-baseweb="tab"][aria-selected="true"] {
+            color: var(--qq-primary) !important;
+        }
+        [data-baseweb="tab-highlight"] {
+            background-color: var(--qq-primary) !important;
         }
         .block-container {
             max-width: 100%;
@@ -279,10 +330,10 @@ def install_css() -> None:
         }
         [data-testid="stHeader"] {
             align-items: center;
-            background: rgba(255, 255, 255, 0.78);
+            background: rgba(255, 255, 255, 0.82);
             backdrop-filter: blur(14px);
             -webkit-backdrop-filter: blur(14px);
-            border-bottom: 1px solid rgba(229, 231, 235, 0.92);
+            border-bottom: 1px solid rgba(216, 224, 234, 0.92);
             box-shadow: none;
             display: flex;
             height: 4.5rem;
@@ -295,9 +346,9 @@ def install_css() -> None:
             z-index: 999;
         }
         [data-testid="stHeader"]::before {
-            color: #111827;
+            color: var(--qq-text);
             content: "Quant Research Workbench";
-            font-family: "Inter" !important;
+            font-family: "Inter", sans-serif !important;
             font-size: 1.05rem;
             font-weight: 650;
             letter-spacing: 0;
@@ -305,8 +356,8 @@ def install_css() -> None:
             white-space: nowrap;
         }
         [data-testid="stSidebar"] {
-            background: #ffffff;
-            border-right: 1px solid #e5e7eb;
+            background: var(--qq-surface);
+            border-right: 1px solid var(--qq-border-soft);
             flex: 0 0 15.5rem !important;
             height: calc(100vh - 4.5rem) !important;
             min-width: 15.5rem !important;
@@ -318,7 +369,7 @@ def install_css() -> None:
         }
         [data-testid="stSidebar"] > div,
         [data-testid="stSidebarContent"] {
-            background: #ffffff;
+            background: var(--qq-surface);
             overflow: visible !important;
             width: 15.5rem !important;
         }
@@ -329,11 +380,11 @@ def install_css() -> None:
             padding: 0 !important;
         }
         [data-testid="stSidebar"] > div:first-child {
-            background: #ffffff;
+            background: var(--qq-surface);
             padding: 1.05rem 0.95rem 1.1rem;
         }
         .qq-sidebar-group {
-            color: #7a7f87;
+            color: var(--qq-muted);
             font-size: 0.78rem;
             font-weight: 600;
             letter-spacing: 0.09em;
@@ -357,7 +408,7 @@ def install_css() -> None:
             border: 0;
             border-radius: 10px;
             background: transparent;
-            color: #5f646d;
+            color: var(--qq-muted-strong);
             box-shadow: none;
             font-size: 1rem;
             font-weight: 400;
@@ -371,24 +422,24 @@ def install_css() -> None:
         }
         [data-testid="stSidebar"] div[data-testid="stButton"] button:disabled {
             background: transparent !important;
-            color: #111827 !important;
+            color: var(--qq-text) !important;
             cursor: default;
             font-weight: 400;
             opacity: 1;
         }
         [data-testid="stSidebar"] button[kind="secondary"]:hover {
             background: transparent !important;
-            color: #111827 !important;
+            color: var(--qq-primary) !important;
             border: 0;
         }
         [data-testid="stSidebar"] button[kind="primary"] {
             background: transparent;
-            color: #111827;
+            color: var(--qq-text);
             font-weight: 400;
         }
         [data-testid="stSidebar"] button[kind="primary"]:hover {
             background: transparent !important;
-            color: #111827 !important;
+            color: var(--qq-primary) !important;
             border: 0;
         }
         [data-testid="stSidebar"] button svg {
@@ -451,9 +502,9 @@ def install_css() -> None:
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
             background: rgba(255, 255, 255, 0.68) !important;
-            border: 1px solid rgba(229, 231, 235, 0.82);
+            border: 1px solid rgba(216, 224, 234, 0.82);
             border-radius: 999px;
-            box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+            box-shadow: 0 6px 18px rgba(23, 32, 51, 0.08);
             display: inline-flex;
             gap: 0 !important;
             height: 2.1rem;
@@ -466,8 +517,8 @@ def install_css() -> None:
         }
         [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button:hover {
             background: rgba(255, 255, 255, 0.82) !important;
-            color: #111827 !important;
-            border: 1px solid rgba(209, 213, 219, 0.9);
+            color: var(--qq-primary) !important;
+            border: 1px solid rgba(194, 205, 219, 0.9);
         }
         [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button p {
             font-size: 0;
@@ -561,7 +612,7 @@ def install_css() -> None:
             white-space: nowrap;
         }
         .qq-run-header-title {
-            color: #111827;
+            color: var(--qq-text);
             font-size: 1.35rem;
             font-weight: 750;
             line-height: 1;
@@ -582,11 +633,11 @@ def install_css() -> None:
             align-items: center;
             flex: 0 1 auto;
             max-width: 100%;
-            border: 1px solid #d8dee4;
+            border: 1px solid var(--qq-border);
             border-radius: 999px;
             padding: 0.18rem 0.5rem;
-            background: #f8fafc;
-            color: #374151;
+            background: var(--qq-surface-soft);
+            color: var(--qq-muted-strong);
             font-size: 0.78rem;
             line-height: 1.1;
             white-space: nowrap;
@@ -594,9 +645,9 @@ def install_css() -> None:
             text-overflow: ellipsis;
         }
         .qq-run-badge-status {
-            border-color: #bbf7d0;
-            background: #f0fdf4;
-            color: #166534;
+            border-color: var(--qq-success-border);
+            background: var(--qq-success-bg);
+            color: var(--qq-success);
             text-transform: capitalize;
         }
         .st-key-back_to_runs button {
@@ -606,16 +657,16 @@ def install_css() -> None:
             margin-top: 0;
             padding: 0;
             border-radius: 999px;
-            color: #6b7280;
-            background: #f3f4f6;
-            border: 1px solid #e5e7eb;
+            color: var(--qq-muted);
+            background: var(--qq-neutral-bg);
+            border: 1px solid var(--qq-border-soft);
             display: inline-flex;
             align-items: center;
             justify-content: center;
             line-height: 1;
         }
         .qq-period-label {
-            color: #4b5563;
+            color: var(--qq-muted-strong);
             font-size: 0.86rem;
             font-weight: 600;
             line-height: 2.35rem;
@@ -641,51 +692,51 @@ def install_css() -> None:
         }
         .qq-overview-divider {
             border: 0;
-            border-top: 1px solid #e5e7eb;
+            border-top: 1px solid var(--qq-border-soft);
             margin: 0.25rem 0 0.35rem 0;
         }
         .qq-page-description {
-            color: #6b7280;
+            color: var(--qq-muted);
             font-size: 0.84rem;
             line-height: 1.25;
             margin: 0 0 0.45rem 0;
         }
         .qq-card {
-            border: 1px solid #d8dee4;
+            border: 1px solid var(--qq-border);
             border-radius: 8px;
             padding: 14px 16px;
-            background: #ffffff;
+            background: var(--qq-surface);
             margin-bottom: 10px;
         }
         .qq-card h4 { margin: 0 0 8px 0; font-size: 1.0rem; }
-        .qq-muted { color: #6b7280; font-size: 0.86rem; }
-        .qq-good { color: #0f8a3b; font-weight: 650; }
-        .qq-bad { color: #c0362c; font-weight: 650; }
-        .qq-neutral { color: #374151; font-weight: 650; }
-        .qq-metric-label { color: #6b7280; font-size: 0.78rem; margin-bottom: 3px; }
+        .qq-muted { color: var(--qq-muted); font-size: 0.86rem; }
+        .qq-good { color: var(--qq-success); font-weight: 650; }
+        .qq-bad { color: var(--qq-danger); font-weight: 650; }
+        .qq-neutral { color: var(--qq-muted-strong); font-weight: 650; }
+        .qq-metric-label { color: var(--qq-muted); font-size: 0.78rem; margin-bottom: 3px; }
         .qq-metric-value { font-size: 1.15rem; font-weight: 700; }
         .qq-pill {
             display: inline-block;
             border-radius: 999px;
             padding: 2px 8px;
-            border: 1px solid #d8dee4;
+            border: 1px solid var(--qq-border);
             margin-right: 4px;
             font-size: 0.78rem;
         }
         div[class*="st-key-chart_component_"] {
-            border: 1px solid #d8dee4;
+            border: 1px solid var(--qq-border);
             border-radius: 6px;
-            background: #ffffff;
+            background: var(--qq-surface);
             overflow: hidden;
             padding: 0 !important;
         }
         div[class*="st-key-chart_toolbar_"] {
             border: 0 !important;
-            border-bottom: 1px solid #d8dee4 !important;
+            border-bottom: 1px solid var(--qq-border) !important;
             border-radius: 0 !important;
             padding: 0.2rem 0.45rem 0.25rem !important;
             margin: 0 0 0.35rem 0 !important;
-            background: #ffffff;
+            background: var(--qq-surface);
         }
         div[class*="st-key-chart_toolbar_"] [data-testid="stHorizontalBlock"] {
             gap: 0.4rem;
@@ -695,7 +746,7 @@ def install_css() -> None:
             margin-bottom: 0 !important;
         }
         div[class*="st-key-chart_toolbar_"] [data-baseweb="select"] > div {
-            background-color: #ffffff !important;
+            background-color: var(--qq-surface) !important;
         }
         </style>
         """,
@@ -1330,7 +1381,7 @@ def render_profit_loss_chart(daily: pl.DataFrame) -> None:
         .encode(
             x=alt.X("session_date:N", title="Session", axis=alt.Axis(labelAngle=-35)),
             y=alt.Y("pnl:Q", title="P/L ($)"),
-            color=alt.Color("direction:N", scale=alt.Scale(domain=["profit", "loss"], range=["#0f8a3b", "#c0362c"])),
+            color=alt.Color("direction:N", scale=alt.Scale(domain=["profit", "loss"], range=["#087443", "#B42318"])),
             tooltip=list(chart_df.columns),
         )
         .properties(height=720, title="Daily Profit / Loss")
@@ -1351,7 +1402,7 @@ def render_equity_cash_chart(portfolio: pl.DataFrame) -> None:
         .encode(
             x=alt.X("timestamp:T", title="Time", axis=alt.Axis(labelOverlap=True, labelAngle=-25)),
             y=alt.Y("value:Q", title="$"),
-            color=alt.Color("series:N", scale=alt.Scale(range=["#2563eb", "#f59e0b"])),
+            color=alt.Color("series:N", scale=alt.Scale(range=["#0F766E", "#B7791F"])),
             tooltip=["timestamp:T", "series:N", "value:Q"],
         )
         .properties(height=720, title="Equity and Cash")
@@ -1510,14 +1561,14 @@ def extended_session_regions(rows: list[dict]) -> list[dict]:
             {
                 "start": exchange_session_timestamp(session_date_value, CHART_EXTENDED_START_MINUTE),
                 "end": exchange_session_timestamp(session_date_value, CHART_REGULAR_START_MINUTE),
-                "color": "rgba(251, 146, 60, 0.10)",
+                "color": "rgba(183, 121, 31, 0.10)",
             }
         )
         regions.append(
             {
                 "start": exchange_session_timestamp(session_date_value, CHART_REGULAR_END_MINUTE),
                 "end": exchange_session_timestamp(session_date_value, CHART_EXTENDED_END_MINUTE),
-                "color": "rgba(96, 165, 250, 0.10)",
+                "color": "rgba(15, 118, 110, 0.10)",
             }
         )
     return regions
@@ -1526,7 +1577,7 @@ def extended_session_regions(rows: list[dict]) -> list[dict]:
 def hex_to_rgba(hex_color: str, opacity: float) -> str:
     color = hex_color.lstrip("#")
     if len(color) != 6:
-        return f"rgba(37, 99, 235, {opacity:.2f})"
+        return f"rgba(15, 118, 110, {opacity:.2f})"
     red = int(color[0:2], 16)
     green = int(color[2:4], 16)
     blue = int(color[4:6], 16)
@@ -1536,7 +1587,7 @@ def hex_to_rgba(hex_color: str, opacity: float) -> str:
 def default_chart_indicator_settings() -> dict:
     return {
         indicator: {
-            "color": DEFAULT_INDICATOR_COLORS.get(indicator, "#2563eb"),
+            "color": DEFAULT_INDICATOR_COLORS.get(indicator, "#0F766E"),
             "opacity": DEFAULT_INDICATOR_OPACITIES.get(indicator, 0.72),
             "lineWidth": DEFAULT_INDICATOR_WIDTHS.get(indicator, 1),
         }
@@ -1571,8 +1622,8 @@ def render_chart_toolbar_buttons(component_key: str) -> None:
         height: 32px;
         border: 0;
         border-radius: 4px;
-        background: #ffffff;
-        color: #111827;
+        background: #FFFFFF;
+        color: #172033;
         cursor: pointer;
         display: flex;
         align-items: center;
@@ -1581,12 +1632,12 @@ def render_chart_toolbar_buttons(component_key: str) -> None:
         line-height: 1;
     }}
     .qq-chart-tool-button:hover {{
-        background: #f3f4f6;
+        background: #F4F7FA;
     }}
     .qq-chart-toolbar-divider {{
         width: 1px;
         height: 20px;
-        background: #d1d5db;
+        background: #D8E0EA;
         margin: 0 8px 0 6px;
     }}
     </style>
@@ -1637,7 +1688,7 @@ def render_chart_toolbar_buttons(component_key: str) -> None:
                 z-index: 2147483647 !important;
                 border-radius: 0 !important;
                 border: 0 !important;
-                background: #ffffff !important;
+                background: #FFFFFF !important;
                 overflow: hidden !important;
                 padding: 0 !important;
             }}
@@ -1650,7 +1701,7 @@ def render_chart_toolbar_buttons(component_key: str) -> None:
                 z-index: 2 !important;
                 height: 2.85rem !important;
                 margin: 0 !important;
-                background: #ffffff !important;
+                background: #FFFFFF !important;
             }}
             .qq-streamlit-chart-fullscreen div[class*="st-key-chart_toolbar_"] iframe {{
                 width: 158px !important;
@@ -1785,7 +1836,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
         if column not in bars.columns:
             continue
         points = []
-        color = options.get("color", DEFAULT_INDICATOR_COLORS.get(column, "#2563eb"))
+        color = options.get("color", DEFAULT_INDICATOR_COLORS.get(column, "#0F766E"))
         opacity = float(options.get("opacity", 0.72))
         line_width = int(options.get("lineWidth", DEFAULT_INDICATOR_WIDTHS.get(column, 1)))
         for row in rows:
@@ -1824,7 +1875,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
                 {
                     "time": timestamp,
                     "position": "belowBar" if is_buy else "aboveBar",
-                    "color": "#0f8a3b" if is_buy else "#c0362c",
+                    "color": "#087443" if is_buy else "#B42318",
                     "shape": "arrowUp" if is_buy else "arrowDown",
                     "text": f"{side} {row.get('quantity', '')} @ {money(row.get('fill_price'))}",
                 }
@@ -1861,13 +1912,13 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     html = f"""
     <style>
     #{chart_id} {{
-        background: #ffffff;
+        background: #FFFFFF;
     }}
     </style>
     <div id="{chart_id}" style="height:{outer_height}px;width:100%;display:flex;flex-direction:column;gap:0;position:relative;">
         <div id="{chart_id}-price" style="height:{price_height}px;width:100%;position:relative;"></div>
         <div id="{chart_id}-splitter" style="height:{pane_gap}px;width:100%;display:{'flex' if oscillator_height else 'none'};align-items:center;justify-content:center;cursor:row-resize;user-select:none;touch-action:none;">
-            <div style="width:100%;height:0;border-top:1px dotted #9ca3af;"></div>
+            <div style="width:100%;height:0;border-top:1px dotted #98A2B3;"></div>
         </div>
         <div id="{chart_id}-osc" style="height:{oscillator_height}px;width:100%;position:relative;display:{'block' if oscillator_height else 'none'};"></div>
     </div>
@@ -1931,35 +1982,35 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     }}
     const commonOptions = {{
         layout: {{
-            background: {{ type: "solid", color: "#ffffff" }},
-            textColor: "#111827",
+            background: {{ type: "solid", color: "#FFFFFF" }},
+            textColor: "#172033",
             fontSize: 12
         }},
         localization: {{
             timeFormatter: formatDateTime
         }},
         grid: {{
-            vertLines: {{ color: "#f3f4f6" }},
-            horzLines: {{ color: "#f3f4f6" }}
+            vertLines: {{ color: "#EEF3F8" }},
+            horzLines: {{ color: "#EEF3F8" }}
         }},
         crosshair: {{
             mode: LightweightCharts.CrosshairMode.Normal,
             vertLine: {{
                 visible: true,
                 labelVisible: true,
-                color: "rgba(17,24,39,0.38)",
+                color: "rgba(23,32,51,0.38)",
                 width: 1,
-                labelBackgroundColor: "#111827"
+                labelBackgroundColor: "#172033"
             }},
-            horzLine: {{ color: "rgba(17,24,39,0.28)", width: 1, style: 2 }}
+            horzLine: {{ color: "rgba(23,32,51,0.28)", width: 1, style: 2 }}
         }},
         rightPriceScale: {{
-            borderColor: "#d1d5db",
+            borderColor: "#D8E0EA",
             minimumWidth: rightScaleWidth,
             scaleMargins: {{ top: 0.08, bottom: 0.22 }}
         }},
         timeScale: {{
-            borderColor: "#d1d5db",
+            borderColor: "#D8E0EA",
             tickMarkFormatter: formatTickMark,
             timeVisible: true,
             secondsVisible: true,
@@ -1984,7 +2035,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         width: chartWidth(),
         height: {price_height},
         rightPriceScale: {{
-            borderColor: "#d1d5db",
+            borderColor: "#D8E0EA",
             minimumWidth: rightScaleWidth,
             scaleMargins: {{ top: 0.06, bottom: 0.18 }}
         }},
@@ -1998,7 +2049,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         width: chartWidth(),
         height: {oscillator_height},
         rightPriceScale: {{
-            borderColor: "#d1d5db",
+            borderColor: "#D8E0EA",
             minimumWidth: rightScaleWidth,
             scaleMargins: {{ top: 0.12, bottom: 0.12 }}
         }}
@@ -2128,27 +2179,27 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         shell.style.left = "12px";
         shell.style.top = "8px";
         shell.style.zIndex = 6;
-        shell.style.font = "11px system-ui";
-        shell.style.color = "#111827";
+        shell.style.font = "11px Inter, sans-serif";
+        shell.style.color = "#172033";
         shell.style.maxWidth = "220px";
         const toggle = document.createElement("button");
         toggle.type = "button";
         toggle.textContent = `v ${{indicatorCount}} indicators`;
         toggle.style.display = "none";
         toggle.style.border = "0";
-        toggle.style.background = "rgba(255,255,255,0.78)";
+        toggle.style.background = "rgba(255,255,255,0.82)";
         toggle.style.backdropFilter = "blur(2px)";
         toggle.style.borderRadius = "4px";
         toggle.style.padding = "3px 6px";
-        toggle.style.font = "11px system-ui";
-        toggle.style.color = "#111827";
+        toggle.style.font = "11px Inter, sans-serif";
+        toggle.style.color = "#172033";
         toggle.style.cursor = "pointer";
         const legendNode = document.createElement("div");
         legendNode.style.display = "flex";
         legendNode.style.flexDirection = "column";
         legendNode.style.alignItems = "stretch";
         legendNode.style.gap = "3px";
-        legendNode.style.background = "rgba(255,255,255,0.76)";
+        legendNode.style.background = "rgba(255,255,255,0.82)";
         legendNode.style.backdropFilter = "blur(2px)";
         legendNode.style.padding = "4px 5px";
         legendNode.style.borderRadius = "4px";
@@ -2163,9 +2214,9 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         collapse.style.alignSelf = "center";
         collapse.style.border = "0";
         collapse.style.background = "transparent";
-        collapse.style.color = "#374151";
+        collapse.style.color = "#475467";
         collapse.style.cursor = "pointer";
-        collapse.style.font = "14px system-ui";
+        collapse.style.font = "14px Inter, sans-serif";
         collapse.style.lineHeight = "12px";
         collapse.style.padding = "1px 10px";
         legendNode.appendChild(items);
@@ -2222,7 +2273,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         item.style.alignItems = "center";
         item.style.justifyContent = "flex-start";
         item.style.gap = "4px";
-        item.style.color = "#111827";
+        item.style.color = "#172033";
         item.style.fontWeight = "400";
         item.style.padding = "1px 3px";
         item.style.borderRadius = "3px";
@@ -2250,8 +2301,8 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         settings.title = "Visual settings";
         [eye, settings].forEach(button => {{
             button.style.border = "0";
-            button.style.background = "rgba(255,255,255,0.9)";
-            button.style.color = "#374151";
+            button.style.background = "rgba(255,255,255,0.92)";
+            button.style.color = "#475467";
             button.style.width = "18px";
             button.style.height = "18px";
             button.style.padding = "2px";
@@ -2267,25 +2318,25 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         panel.style.left = "0";
         panel.style.zIndex = 8;
         panel.style.background = "rgba(255,255,255,0.98)";
-        panel.style.border = "1px solid #d1d5db";
+        panel.style.border = "1px solid #D8E0EA";
         panel.style.borderRadius = "5px";
         panel.style.padding = "6px";
-        panel.style.boxShadow = "0 8px 24px rgba(15,23,42,0.14)";
-        panel.style.color = "#111827";
-        panel.style.font = "11px system-ui";
+        panel.style.boxShadow = "0 8px 24px rgba(23,32,51,0.14)";
+        panel.style.color = "#172033";
+        panel.style.font = "11px Inter, sans-serif";
         panel.style.minWidth = "210px";
         panel.addEventListener("click", event => event.stopPropagation());
         panel._legendActions = actions;
         const colorInput = document.createElement("input");
         colorInput.type = "color";
-        colorInput.value = indicator.legendColor || "#2563eb";
+        colorInput.value = indicator.legendColor || "#0F766E";
         const hexInput = document.createElement("input");
         hexInput.type = "text";
         hexInput.value = colorInput.value.toUpperCase();
         hexInput.spellcheck = false;
         hexInput.style.width = "82px";
-        hexInput.style.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-        hexInput.style.border = "1px solid #d1d5db";
+        hexInput.style.font = "11px Inter, sans-serif";
+        hexInput.style.border = "1px solid #D8E0EA";
         hexInput.style.borderRadius = "3px";
         hexInput.style.padding = "2px 4px";
         const opacityInput = document.createElement("input");
@@ -2295,7 +2346,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         opacityInput.step = "0.05";
         opacityInput.value = indicator.opacity || 0.72;
         const opacityValue = document.createElement("span");
-        opacityValue.style.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+        opacityValue.style.font = "11px Inter, sans-serif";
         opacityValue.textContent = Number(opacityInput.value).toFixed(2);
         const widthInput = document.createElement("input");
         widthInput.type = "range";
@@ -2304,7 +2355,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         widthInput.step = "1";
         widthInput.value = indicator.lineWidth || 1;
         const widthValue = document.createElement("span");
-        widthValue.style.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+        widthValue.style.font = "11px Inter, sans-serif";
         widthValue.textContent = widthInput.value;
         panel.innerHTML = '<div style="font-weight:700;margin-bottom:4px;">' + (indicator.label || String(indicator.name || "").toUpperCase()) + '</div>';
         [["Color", colorInput], ["Hex", hexInput], ["Opacity", opacityInput, opacityValue], ["Width", widthInput, widthValue]].forEach(([caption, input, value]) => {{
@@ -2337,7 +2388,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
             opacityValue.textContent = opacity.toFixed(2);
             widthValue.textContent = String(indicator.lineWidth);
             swatch.style.background = rgba;
-            item.style.color = "#111827";
+            item.style.color = "#172033";
             if (indicator.style === "histogram") {{
                 indicator.currentData = (indicator.data || []).map(point => ({{
                     ...point,
@@ -2447,13 +2498,13 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
             label.style.overflow = "hidden";
             label.style.textOverflow = "ellipsis";
             label.style.whiteSpace = "nowrap";
-            label.style.background = axisLabelColor(meta, point) || meta.fallback || "#111827";
-            label.style.color = "#ffffff";
+            label.style.background = axisLabelColor(meta, point) || meta.fallback || "#172033";
+            label.style.color = "#FFFFFF";
             label.style.borderRadius = "0";
             label.style.padding = "2px 5px";
-            label.style.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+            label.style.font = "12px Inter, sans-serif";
             label.style.lineHeight = "15px";
-            label.style.boxShadow = "0 1px 2px rgba(15,23,42,0.22)";
+            label.style.boxShadow = "0 1px 2px rgba(23,32,51,0.22)";
             layer.appendChild(label);
         }});
     }}
@@ -3128,13 +3179,13 @@ def render_new_run(strategy_name: str, output_root: Path) -> None:
     cols = st.columns([1, 1, 3])
     with cols[0]:
         if update_run_parameters_dialog is not None:
-            if st.button("Update Run Parameters"):
+            if st.button("Update Run Parameters", width="content"):
                 update_run_parameters_dialog(key)
         else:
             with st.expander("Update Run Parameters"):
                 render_new_run_update_form(key)
     with cols[1]:
-        if st.button("Start Backtest", type="primary"):
+        if st.button("Start Backtest", type="primary", width="content"):
             sessions = available_sessions(Path(config["data_root"]), date.fromisoformat(config["start_date"]), date.fromisoformat(config["end_date"]))
             missing_processed = MarketDataProvider(
                 DataProviderConfig(processed_root=Path(config.get("processed_data_root") or DEFAULT_MARKET_DATA_ROOT))
