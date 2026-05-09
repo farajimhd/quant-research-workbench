@@ -447,6 +447,7 @@ def install_css() -> None:
         }
         [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button {
             align-items: center;
+            aspect-ratio: 1 / 1;
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
             background: rgba(255, 255, 255, 0.68) !important;
@@ -457,8 +458,10 @@ def install_css() -> None:
             gap: 0 !important;
             height: 2.1rem;
             justify-content: center !important;
+            line-height: 0 !important;
             min-height: 2.1rem;
             padding: 0;
+            position: relative;
             width: 2.1rem !important;
         }
         [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button:hover {
@@ -474,11 +477,16 @@ def install_css() -> None:
             width: 0;
         }
         [data-testid="stSidebar"] div[class*="st-key-sidebar_toggle"] button::before {
+            display: block;
             width: 1.1rem;
             height: 1.1rem;
             flex-basis: 1.1rem;
+            left: 50%;
             margin: 0 !important;
             mask-size: 1.1rem 1.1rem;
+            position: absolute;
+            top: 50%;
+            transform: translate(-50%, -50%);
             -webkit-mask-size: 1.1rem 1.1rem;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) {
@@ -505,12 +513,22 @@ def install_css() -> None:
             margin: 0.18rem auto;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[data-testid="stButton"] button {
+            align-items: center !important;
+            display: flex !important;
             justify-content: center !important;
             min-height: 2.85rem;
             padding: 0;
+            width: 100% !important;
         }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[data-testid="stButton"] button > div,
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[data-testid="stButton"] button span,
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[data-testid="stButton"] button p {
             display: none;
+        }
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[class*="st-key-sidebar_strategy"] button::before,
+        [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[class*="st-key-sidebar_market_data"] button::before {
+            flex: 0 0 1.42rem;
+            margin: 0 !important;
         }
         [data-testid="stSidebar"]:has(.qq-sidebar-state-collapsed) div[class*="st-key-sidebar_toggle"] {
             margin-bottom: 0.6rem !important;
