@@ -96,12 +96,12 @@ OSCILLATOR_CHART_INDICATORS = ["macd_line", "macd_signal", "macd_hist"]
 CHART_INDICATORS = PRICE_CHART_INDICATORS + OSCILLATOR_CHART_INDICATORS
 
 DEFAULT_INDICATOR_COLORS = {
-    "vwap": "#7C3AED",
+    "vwap": "#5B21B6",
     "tema9": "#2563EB",
     "tema20": "#B7791F",
-    "macd_line": "#0F766E",
+    "macd_line": "#1E3A5F",
     "macd_signal": "#B54708",
-    "macd_hist": "#087443",
+    "macd_hist": "#067647",
 }
 
 DEFAULT_INDICATOR_WIDTHS = {
@@ -134,11 +134,11 @@ INDICATOR_DISPLAY_NAMES = {
 LEGEND_INDICATORS = {"vwap", "tema9", "tema20", "macd_line", "macd_signal"}
 
 DEFAULT_CANDLE_CHART_SETTINGS = {
-    "upColor": "#087443",
+    "upColor": "#067647",
     "downColor": "#B42318",
     "borderUpColor": "#05603A",
     "borderDownColor": "#912018",
-    "wickUpColor": "#16A34A",
+    "wickUpColor": "#17B26A",
     "wickDownColor": "#D92D20",
     "borderVisible": True,
     "wickVisible": True,
@@ -268,23 +268,26 @@ def install_css() -> None:
         <style>
         @import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap");
         :root {
-            --qq-bg: var(--st-background-color, #F7F9FC);
+            --qq-bg: var(--st-background-color, #FFFFFF);
             --qq-surface: #FFFFFF;
-            --qq-surface-muted: var(--st-secondary-background-color, #EEF3F8);
-            --qq-surface-soft: #F4F7FA;
-            --qq-text: var(--st-text-color, #172033);
-            --qq-muted: #667085;
-            --qq-muted-strong: #475467;
-            --qq-border: var(--st-border-color, #D8E0EA);
-            --qq-border-soft: #E1E7EF;
-            --qq-primary: var(--st-primary-color, #0F766E);
-            --qq-primary-hover: #115E59;
-            --qq-success: #087443;
-            --qq-success-bg: #E8F6EF;
-            --qq-success-border: #B7E4CF;
+            --qq-surface-muted: var(--st-secondary-background-color, #F8FAFC);
+            --qq-surface-soft: #F9FAFB;
+            --qq-text: var(--st-text-color, #111827);
+            --qq-muted: #6B7280;
+            --qq-muted-strong: #4B5563;
+            --qq-border: var(--st-border-color, #EAEFF5);
+            --qq-border-soft: #EEF2F7;
+            --qq-primary: var(--st-primary-color, #1E3A5F);
+            --qq-primary-hover: #172D49;
+            --qq-primary-soft: #EFF6FF;
+            --qq-primary-border: #BFDBFE;
+            --qq-success: #067647;
+            --qq-success-bg: #ECFDF3;
+            --qq-success-border: #ABEFC6;
             --qq-danger: #B42318;
-            --qq-danger-bg: #FDEDEC;
-            --qq-neutral-bg: #F2F4F7;
+            --qq-danger-bg: #FEF3F2;
+            --qq-neutral-bg: #F9FAFB;
+            --qq-radius: 3px;
         }
         html, body, body *, .stApp, button, input, textarea, select {
             font-family: "Inter", sans-serif !important;
@@ -314,6 +317,41 @@ def install_css() -> None:
         }
         div[data-testid="stButton"] button p {
             white-space: nowrap;
+        }
+        [data-testid="stMultiSelect"] [data-baseweb="tag"] {
+            background-color: var(--qq-primary-soft) !important;
+            border: 1px solid var(--qq-primary-border) !important;
+            border-radius: var(--qq-radius) !important;
+            color: var(--qq-primary) !important;
+            height: 1.62rem !important;
+            margin-bottom: 0.12rem !important;
+            margin-top: 0.12rem !important;
+            min-height: 1.62rem !important;
+        }
+        [data-testid="stMultiSelect"] [data-baseweb="tag"] span,
+        [data-testid="stMultiSelect"] [data-baseweb="tag"] svg,
+        [data-testid="stMultiSelect"] [data-baseweb="tag"] button {
+            color: var(--qq-primary) !important;
+            fill: var(--qq-primary) !important;
+        }
+        [data-testid="stMultiSelect"] [data-baseweb="tag"] span {
+            font-size: 0.88rem !important;
+            line-height: 1 !important;
+        }
+        [data-testid="stMultiSelect"] [data-baseweb="tag"]:hover {
+            background-color: #DBEAFE !important;
+            border-color: #93C5FD !important;
+        }
+        [data-testid="stMultiSelect"] [data-baseweb="select"] > div,
+        [data-testid="stTextInput"] input,
+        [data-testid="stDateInput"] input {
+            background-color: #FFFFFF !important;
+            border-color: var(--qq-border) !important;
+            border-radius: var(--qq-radius) !important;
+        }
+        [data-testid="stDataFrame"] {
+            border-color: #EEF2F7 !important;
+            border-radius: var(--qq-radius) !important;
         }
         [data-baseweb="tab"][aria-selected="true"] {
             color: var(--qq-primary) !important;
@@ -406,7 +444,7 @@ def install_css() -> None:
             min-height: 3rem;
             padding: 0.5rem 0.9rem;
             border: 0;
-            border-radius: 10px;
+            border-radius: var(--qq-radius);
             background: transparent;
             color: var(--qq-muted-strong);
             box-shadow: none;
@@ -503,7 +541,7 @@ def install_css() -> None:
             -webkit-backdrop-filter: blur(10px);
             background: rgba(255, 255, 255, 0.68) !important;
             border: 1px solid rgba(216, 224, 234, 0.82);
-            border-radius: 999px;
+            border-radius: var(--qq-radius);
             box-shadow: 0 6px 18px rgba(23, 32, 51, 0.08);
             display: inline-flex;
             gap: 0 !important;
@@ -634,7 +672,7 @@ def install_css() -> None:
             flex: 0 1 auto;
             max-width: 100%;
             border: 1px solid var(--qq-border);
-            border-radius: 999px;
+            border-radius: var(--qq-radius);
             padding: 0.18rem 0.5rem;
             background: var(--qq-surface-soft);
             color: var(--qq-muted-strong);
@@ -656,7 +694,7 @@ def install_css() -> None:
             min-height: 2rem;
             margin-top: 0;
             padding: 0;
-            border-radius: 999px;
+            border-radius: var(--qq-radius);
             color: var(--qq-muted);
             background: var(--qq-neutral-bg);
             border: 1px solid var(--qq-border-soft);
@@ -703,7 +741,7 @@ def install_css() -> None:
         }
         .qq-card {
             border: 1px solid var(--qq-border);
-            border-radius: 8px;
+            border-radius: var(--qq-radius);
             padding: 14px 16px;
             background: var(--qq-surface);
             margin-bottom: 10px;
@@ -717,7 +755,7 @@ def install_css() -> None:
         .qq-metric-value { font-size: 1.15rem; font-weight: 700; }
         .qq-pill {
             display: inline-block;
-            border-radius: 999px;
+            border-radius: var(--qq-radius);
             padding: 2px 8px;
             border: 1px solid var(--qq-border);
             margin-right: 4px;
@@ -725,7 +763,7 @@ def install_css() -> None:
         }
         div[class*="st-key-chart_component_"] {
             border: 1px solid var(--qq-border);
-            border-radius: 6px;
+            border-radius: var(--qq-radius);
             background: var(--qq-surface);
             overflow: hidden;
             padding: 0 !important;
@@ -1381,7 +1419,7 @@ def render_profit_loss_chart(daily: pl.DataFrame) -> None:
         .encode(
             x=alt.X("session_date:N", title="Session", axis=alt.Axis(labelAngle=-35)),
             y=alt.Y("pnl:Q", title="P/L ($)"),
-            color=alt.Color("direction:N", scale=alt.Scale(domain=["profit", "loss"], range=["#087443", "#B42318"])),
+            color=alt.Color("direction:N", scale=alt.Scale(domain=["profit", "loss"], range=["#067647", "#B42318"])),
             tooltip=list(chart_df.columns),
         )
         .properties(height=720, title="Daily Profit / Loss")
@@ -1402,7 +1440,7 @@ def render_equity_cash_chart(portfolio: pl.DataFrame) -> None:
         .encode(
             x=alt.X("timestamp:T", title="Time", axis=alt.Axis(labelOverlap=True, labelAngle=-25)),
             y=alt.Y("value:Q", title="$"),
-            color=alt.Color("series:N", scale=alt.Scale(range=["#0F766E", "#B7791F"])),
+            color=alt.Color("series:N", scale=alt.Scale(range=["#1E3A5F", "#B7791F"])),
             tooltip=["timestamp:T", "series:N", "value:Q"],
         )
         .properties(height=720, title="Equity and Cash")
@@ -1568,7 +1606,7 @@ def extended_session_regions(rows: list[dict]) -> list[dict]:
             {
                 "start": exchange_session_timestamp(session_date_value, CHART_REGULAR_END_MINUTE),
                 "end": exchange_session_timestamp(session_date_value, CHART_EXTENDED_END_MINUTE),
-                "color": "rgba(15, 118, 110, 0.10)",
+                "color": "rgba(30, 58, 95, 0.08)",
             }
         )
     return regions
@@ -1577,7 +1615,7 @@ def extended_session_regions(rows: list[dict]) -> list[dict]:
 def hex_to_rgba(hex_color: str, opacity: float) -> str:
     color = hex_color.lstrip("#")
     if len(color) != 6:
-        return f"rgba(15, 118, 110, {opacity:.2f})"
+        return f"rgba(30, 58, 95, {opacity:.2f})"
     red = int(color[0:2], 16)
     green = int(color[2:4], 16)
     blue = int(color[4:6], 16)
@@ -1587,7 +1625,7 @@ def hex_to_rgba(hex_color: str, opacity: float) -> str:
 def default_chart_indicator_settings() -> dict:
     return {
         indicator: {
-            "color": DEFAULT_INDICATOR_COLORS.get(indicator, "#0F766E"),
+            "color": DEFAULT_INDICATOR_COLORS.get(indicator, "#1E3A5F"),
             "opacity": DEFAULT_INDICATOR_OPACITIES.get(indicator, 0.72),
             "lineWidth": DEFAULT_INDICATOR_WIDTHS.get(indicator, 1),
         }
@@ -1623,7 +1661,7 @@ def render_chart_toolbar_buttons(component_key: str) -> None:
         border: 0;
         border-radius: 4px;
         background: #FFFFFF;
-        color: #172033;
+        color: #111827;
         cursor: pointer;
         display: flex;
         align-items: center;
@@ -1632,12 +1670,12 @@ def render_chart_toolbar_buttons(component_key: str) -> None:
         line-height: 1;
     }}
     .qq-chart-tool-button:hover {{
-        background: #F4F7FA;
+        background: #F9FAFB;
     }}
     .qq-chart-toolbar-divider {{
         width: 1px;
         height: 20px;
-        background: #D8E0EA;
+        background: #E5E7EB;
         margin: 0 8px 0 6px;
     }}
     </style>
@@ -1836,7 +1874,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
         if column not in bars.columns:
             continue
         points = []
-        color = options.get("color", DEFAULT_INDICATOR_COLORS.get(column, "#0F766E"))
+        color = options.get("color", DEFAULT_INDICATOR_COLORS.get(column, "#1E3A5F"))
         opacity = float(options.get("opacity", 0.72))
         line_width = int(options.get("lineWidth", DEFAULT_INDICATOR_WIDTHS.get(column, 1)))
         for row in rows:
@@ -1875,7 +1913,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
                 {
                     "time": timestamp,
                     "position": "belowBar" if is_buy else "aboveBar",
-                    "color": "#087443" if is_buy else "#B42318",
+                    "color": "#067647" if is_buy else "#B42318",
                     "shape": "arrowUp" if is_buy else "arrowDown",
                     "text": f"{side} {row.get('quantity', '')} @ {money(row.get('fill_price'))}",
                 }
@@ -1983,34 +2021,34 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     const commonOptions = {{
         layout: {{
             background: {{ type: "solid", color: "#FFFFFF" }},
-            textColor: "#172033",
+            textColor: "#111827",
             fontSize: 12
         }},
         localization: {{
             timeFormatter: formatDateTime
         }},
         grid: {{
-            vertLines: {{ color: "#EEF3F8" }},
-            horzLines: {{ color: "#EEF3F8" }}
+            vertLines: {{ color: "#F3F4F6" }},
+            horzLines: {{ color: "#F3F4F6" }}
         }},
         crosshair: {{
             mode: LightweightCharts.CrosshairMode.Normal,
             vertLine: {{
                 visible: true,
                 labelVisible: true,
-                color: "rgba(23,32,51,0.38)",
+                color: "rgba(17,24,39,0.36)",
                 width: 1,
-                labelBackgroundColor: "#172033"
+                labelBackgroundColor: "#111827"
             }},
-            horzLine: {{ color: "rgba(23,32,51,0.28)", width: 1, style: 2 }}
+            horzLine: {{ color: "rgba(17,24,39,0.26)", width: 1, style: 2 }}
         }},
         rightPriceScale: {{
-            borderColor: "#D8E0EA",
+            borderColor: "#E5E7EB",
             minimumWidth: rightScaleWidth,
             scaleMargins: {{ top: 0.08, bottom: 0.22 }}
         }},
         timeScale: {{
-            borderColor: "#D8E0EA",
+            borderColor: "#E5E7EB",
             tickMarkFormatter: formatTickMark,
             timeVisible: true,
             secondsVisible: true,
@@ -2035,7 +2073,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         width: chartWidth(),
         height: {price_height},
         rightPriceScale: {{
-            borderColor: "#D8E0EA",
+            borderColor: "#E5E7EB",
             minimumWidth: rightScaleWidth,
             scaleMargins: {{ top: 0.06, bottom: 0.18 }}
         }},
@@ -2049,7 +2087,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         width: chartWidth(),
         height: {oscillator_height},
         rightPriceScale: {{
-            borderColor: "#D8E0EA",
+            borderColor: "#E5E7EB",
             minimumWidth: rightScaleWidth,
             scaleMargins: {{ top: 0.12, bottom: 0.12 }}
         }}
@@ -2180,7 +2218,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         shell.style.top = "8px";
         shell.style.zIndex = 6;
         shell.style.font = "11px Inter, sans-serif";
-        shell.style.color = "#172033";
+        shell.style.color = "#111827";
         shell.style.maxWidth = "220px";
         const toggle = document.createElement("button");
         toggle.type = "button";
@@ -2192,7 +2230,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         toggle.style.borderRadius = "4px";
         toggle.style.padding = "3px 6px";
         toggle.style.font = "11px Inter, sans-serif";
-        toggle.style.color = "#172033";
+        toggle.style.color = "#111827";
         toggle.style.cursor = "pointer";
         const legendNode = document.createElement("div");
         legendNode.style.display = "flex";
@@ -2273,7 +2311,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         item.style.alignItems = "center";
         item.style.justifyContent = "flex-start";
         item.style.gap = "4px";
-        item.style.color = "#172033";
+        item.style.color = "#111827";
         item.style.fontWeight = "400";
         item.style.padding = "1px 3px";
         item.style.borderRadius = "3px";
@@ -2318,25 +2356,25 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         panel.style.left = "0";
         panel.style.zIndex = 8;
         panel.style.background = "rgba(255,255,255,0.98)";
-        panel.style.border = "1px solid #D8E0EA";
+        panel.style.border = "1px solid #E5E7EB";
         panel.style.borderRadius = "5px";
         panel.style.padding = "6px";
-        panel.style.boxShadow = "0 8px 24px rgba(23,32,51,0.14)";
-        panel.style.color = "#172033";
+        panel.style.boxShadow = "0 8px 24px rgba(17,24,39,0.12)";
+        panel.style.color = "#111827";
         panel.style.font = "11px Inter, sans-serif";
         panel.style.minWidth = "210px";
         panel.addEventListener("click", event => event.stopPropagation());
         panel._legendActions = actions;
         const colorInput = document.createElement("input");
         colorInput.type = "color";
-        colorInput.value = indicator.legendColor || "#0F766E";
+        colorInput.value = indicator.legendColor || "#1E3A5F";
         const hexInput = document.createElement("input");
         hexInput.type = "text";
         hexInput.value = colorInput.value.toUpperCase();
         hexInput.spellcheck = false;
         hexInput.style.width = "82px";
         hexInput.style.font = "11px Inter, sans-serif";
-        hexInput.style.border = "1px solid #D8E0EA";
+        hexInput.style.border = "1px solid #E5E7EB";
         hexInput.style.borderRadius = "3px";
         hexInput.style.padding = "2px 4px";
         const opacityInput = document.createElement("input");
@@ -2388,7 +2426,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
             opacityValue.textContent = opacity.toFixed(2);
             widthValue.textContent = String(indicator.lineWidth);
             swatch.style.background = rgba;
-            item.style.color = "#172033";
+            item.style.color = "#111827";
             if (indicator.style === "histogram") {{
                 indicator.currentData = (indicator.data || []).map(point => ({{
                     ...point,
@@ -2498,13 +2536,13 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
             label.style.overflow = "hidden";
             label.style.textOverflow = "ellipsis";
             label.style.whiteSpace = "nowrap";
-            label.style.background = axisLabelColor(meta, point) || meta.fallback || "#172033";
+            label.style.background = axisLabelColor(meta, point) || meta.fallback || "#111827";
             label.style.color = "#FFFFFF";
             label.style.borderRadius = "0";
             label.style.padding = "2px 5px";
             label.style.font = "12px Inter, sans-serif";
             label.style.lineHeight = "15px";
-            label.style.boxShadow = "0 1px 2px rgba(23,32,51,0.22)";
+            label.style.boxShadow = "0 1px 2px rgba(17,24,39,0.20)";
             layer.appendChild(label);
         }});
     }}
@@ -3311,7 +3349,7 @@ def render_data_provider_page() -> None:
     with source_cols[3]:
         end_date = st.date_input("End", value=defaults["end_date"])
 
-    option_cols = st.columns([2.2, 2.4, 1.5, 1.5], gap="small", vertical_alignment="bottom")
+    option_cols = st.columns([2.0, 3.0, 1.5, 1.5], gap="small", vertical_alignment="bottom")
     with option_cols[0]:
         timeframes = st.multiselect("Timeframes", list(TIMEFRAMES), default=["1m", "5m", "15m", "30m", "1h", "1d"])
     with option_cols[1]:
