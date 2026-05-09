@@ -8,6 +8,8 @@ import polars as pl
 
 from src.backtest.config import BacktestConfig
 from src.backtest.indicators import add_standard_indicators
+from src.data_provider.config import DataProviderConfig
+from src.data_provider.provider import MarketDataProvider
 
 
 @dataclass(slots=True)
@@ -63,21 +65,38 @@ def add_market_time_columns(frame: pl.DataFrame, config: BacktestConfig) -> pl.D
 
 
 def load_minute_bars(config: BacktestConfig, session_date: date) -> pl.DataFrame:
-    source = minute_file_path(config.data_root, session_date)
-    if not source.exists():
-        raise FileNotFoundError(f"Minute bar file not found: {source}")
-
-    return (
-        pl.read_csv(source)
-        .select("ticker", "volume", "open", "close", "high", "low", "window_start", "transactions")
-        .pipe(add_market_time_columns, config)
-        .filter(
-            (pl.col("minute_of_day") >= config.session_start_minute)
-            & (pl.col("minute_of_day") < config.session_end_minute)
+    bars = load_provider_bars(config, session_date, "1m")
+    if bars.is_empty():
+        raise FileNotFoundError(
+            f"Processed 1m provider bars not found for {session_date.isoformat()} under {config.processed_data_root}. "
+            "Build data from the Data Provider page first."
         )
-        .sort(["ticker", "bar_time_market"])
-        .pipe(add_standard_indicators)
+    return regular_session_filter(bars, config)
+
+
+def load_provider_bars(config: BacktestConfig, session_date: date, timeframe: str) -> pl.DataFrame:
+    provider = MarketDataProvider(
+        DataProviderConfig(
+            raw_root=config.data_root,
+            processed_root=config.processed_data_root,
+            exchange_timezone="America/New_York",
+        )
     )
+    return provider.load_bars(
+        start_date=session_date,
+        end_date=session_date,
+        timeframe=timeframe,
+        feature_groups=["core", "session", "momentum", "volatility", "volume_liquidity", "price_action"],
+    )
+
+
+def regular_session_filter(frame: pl.DataFrame, config: BacktestConfig) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    return frame.filter(
+        (pl.col("minute_of_day") >= config.session_start_minute)
+        & (pl.col("minute_of_day") < config.session_end_minute)
+    ).sort(["ticker", "bar_time_market"])
 
 
 def consolidate_five_minute(minute_bars: pl.DataFrame, config: BacktestConfig) -> pl.DataFrame:
@@ -104,7 +123,7 @@ def consolidate_five_minute(minute_bars: pl.DataFrame, config: BacktestConfig) -
         .pipe(add_standard_indicators)
         .with_columns(
             (pl.col("bar_time_market") + pl.duration(minutes=5))
-            .cast(pl.Datetime("ns"))
+            .cast(pl.Datetime("ns", "America/New_York"))
             .alias("indicator_available_time")
         )
     )
@@ -150,6 +169,34 @@ def prior_daily_paths(config: BacktestConfig, session_date: date, lookback_files
 
 
 def load_prior_daily_stats(config: BacktestConfig, session_date: date) -> pl.DataFrame:
+    provider = MarketDataProvider(
+        DataProviderConfig(
+            raw_root=config.data_root,
+            processed_root=config.processed_data_root,
+            exchange_timezone="America/New_York",
+        )
+    )
+    prior_start = session_date - timedelta(days=60)
+    prior_end = session_date - timedelta(days=1)
+    daily = provider.load_bars(
+        start_date=prior_start,
+        end_date=prior_end,
+        timeframe="1d",
+        feature_groups=["core", "volatility"],
+    )
+    if not daily.is_empty():
+        return (
+            daily.sort(["ticker", "session_date"])
+            .with_columns((pl.col("high") - pl.col("low")).alias("daily_range"))
+            .group_by("ticker")
+            .agg(
+                pl.col("volume").tail(14).mean().alias("avg_daily_volume_14"),
+                pl.col("daily_range").tail(14).mean().alias("atr_14"),
+                pl.col("close").last().alias("previous_close"),
+                pl.len().alias("daily_rows"),
+            )
+        )
+
     scans = []
     for source in prior_daily_paths(config, session_date):
         scans.append(
@@ -191,7 +238,15 @@ def load_prior_daily_stats(config: BacktestConfig, session_date: date) -> pl.Dat
 
 def load_day_frames(config: BacktestConfig, session_date: date) -> DayFrames:
     minute_bars = load_minute_bars(config, session_date)
-    five_minute_bars = consolidate_five_minute(minute_bars, config)
+    five_minute_bars = regular_session_filter(load_provider_bars(config, session_date, "5m"), config)
+    if five_minute_bars.is_empty():
+        five_minute_bars = consolidate_five_minute(minute_bars, config)
+    elif "indicator_available_time" not in five_minute_bars.columns:
+        five_minute_bars = five_minute_bars.with_columns(
+            (pl.col("bar_time_market") + pl.duration(minutes=5))
+            .cast(pl.Datetime("ns", "America/New_York"))
+            .alias("indicator_available_time")
+        )
     minute_bars = attach_five_minute_context(minute_bars, five_minute_bars)
     prior_daily_stats = load_prior_daily_stats(config, session_date)
     return DayFrames(

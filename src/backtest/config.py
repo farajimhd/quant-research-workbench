@@ -9,6 +9,7 @@ import re
 
 DEFAULT_DATA_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1")
 DEFAULT_OUTPUT_ROOT = Path("D:/TradingData/qq-momentum-trading/runs")
+DEFAULT_PROCESSED_DATA_ROOT = Path("D:/TradingData/qq-momentum-trading/market_data")
 
 
 def parse_date(value: str | date) -> date:
@@ -24,6 +25,7 @@ class BacktestConfig:
     end_date: date
     run_name: str = "Untitled run"
     data_root: Path = DEFAULT_DATA_ROOT
+    processed_data_root: Path = DEFAULT_PROCESSED_DATA_ROOT
     output_root: Path = DEFAULT_OUTPUT_ROOT
     initial_cash: float = 10_000.0
     market_utc_offset_hours: float = -4.0
@@ -40,6 +42,7 @@ class BacktestConfig:
         data["start_date"] = parse_date(data["start_date"])
         data["end_date"] = parse_date(data["end_date"])
         data["data_root"] = Path(data.get("data_root", DEFAULT_DATA_ROOT))
+        data["processed_data_root"] = Path(data.get("processed_data_root", DEFAULT_PROCESSED_DATA_ROOT))
         data["output_root"] = Path(data.get("output_root", DEFAULT_OUTPUT_ROOT))
         data["strategy_params"] = dict(data.get("strategy_params", {}))
         data["run_name"] = str(data.get("run_name") or "Untitled run").strip()
@@ -53,6 +56,7 @@ class BacktestConfig:
             "start_date": self.start_date.isoformat(),
             "end_date": self.end_date.isoformat(),
             "data_root": str(self.data_root),
+            "processed_data_root": str(self.processed_data_root),
             "output_root": str(self.output_root),
             "initial_cash": self.initial_cash,
             "market_utc_offset_hours": self.market_utc_offset_hours,

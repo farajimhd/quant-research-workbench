@@ -24,12 +24,25 @@ from src.backtest.metrics import compute_summary
 from src.backtest.indicators import add_standard_indicators
 from src.backtest.results import list_runs, read_run_metadata
 from src.backtest.runner import run_backtest
+from src.data_provider.builder import build_market_data
+from src.data_provider.config import (
+    DEFAULT_PROCESSED_ROOT,
+    FEATURE_GROUPS,
+    SUPERVISION_GROUPS,
+    TIMEFRAMES,
+    BuildRequest,
+    DataProviderConfig,
+)
+from src.data_provider.manifest import read_manifest
+from src.data_provider.provider import MarketDataProvider
+from src.data_provider.raw_loader import scan_source
 from src.strategies.orb_5m_momentum.config import OrbMomentumConfig
 from src.strategies.registry import available_strategies
 
 
 DEFAULT_DATA_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1")
 DEFAULT_OUTPUT_ROOT = Path("D:/TradingData/qq-momentum-trading/runs")
+DEFAULT_MARKET_DATA_ROOT = DEFAULT_PROCESSED_ROOT
 CHART_EXTENDED_START_MINUTE = 4 * 60
 CHART_REGULAR_START_MINUTE = 9 * 60 + 30
 CHART_REGULAR_END_MINUTE = 16 * 60
@@ -493,6 +506,15 @@ def chart_source_config(data: dict[str, Any]) -> tuple[str, str]:
     return data_root, exchange_timezone
 
 
+def chart_processed_config(data: dict[str, Any]) -> DataProviderConfig:
+    config = data.get("metadata", {}).get("config", {})
+    return DataProviderConfig(
+        raw_root=Path(config.get("data_root") or DEFAULT_DATA_ROOT),
+        processed_root=Path(config.get("processed_data_root") or DEFAULT_MARKET_DATA_ROOT),
+        exchange_timezone=str(config.get("exchange_timezone") or CHART_EXCHANGE_TIME_ZONE),
+    )
+
+
 def chart_minute_file_path(data_root: Path, session_date: date) -> Path:
     return data_root / f"{session_date.year:04d}" / f"{session_date.month:02d}" / f"{session_date.isoformat()}.csv.gz"
 
@@ -706,6 +728,7 @@ def default_config(strategy_name: str, output_root: Path) -> dict:
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
         "data_root": str(DEFAULT_DATA_ROOT),
+        "processed_data_root": str(DEFAULT_MARKET_DATA_ROOT),
         "output_root": str(output_root),
         "initial_cash": 10_000.0,
         "market_utc_offset_hours": -4.0,
@@ -730,9 +753,22 @@ def available_sessions(data_root: Path, start: date, end: date) -> list[date]:
     return sessions
 
 
+def processed_sessions(processed_root: Path, start: date, end: date, timeframe: str = "1m") -> list[str]:
+    provider = MarketDataProvider(DataProviderConfig(processed_root=processed_root))
+    available = set(provider.available_dates(timeframe))
+    return [session for session in date_strings_between(start.isoformat(), end.isoformat()) if session in available]
+
+
 def render_run_header(config: dict, status: str = "Draft", summary: dict | None = None) -> None:
     params = config.get("strategy_params", {})
     sessions = available_sessions(Path(config["data_root"]), date.fromisoformat(config["start_date"]), date.fromisoformat(config["end_date"]))
+    processed_ready = len(
+        processed_sessions(
+            Path(config.get("processed_data_root") or DEFAULT_MARKET_DATA_ROOT),
+            date.fromisoformat(config["start_date"]),
+            date.fromisoformat(config["end_date"]),
+        )
+    )
     summary = summary or {}
     st.markdown(
         f"""
@@ -741,6 +777,7 @@ def render_run_header(config: dict, status: str = "Draft", summary: dict | None 
           <div class="qq-muted">{config.get("strategy_name")} | {status} | {config.get("start_date")} to {config.get("end_date")}</div>
           <div style="margin-top:8px;">
             <span class="qq-pill">sessions {len(sessions)}</span>
+            <span class="qq-pill">processed {processed_ready}/{len(sessions)}</span>
             <span class="qq-pill">cash {money(config.get("initial_cash"))}</span>
             <span class="qq-pill">max pos {params.get("max_active_positions")}</span>
             <span class="qq-pill">watchlist {params.get("watchlist_size")}</span>
@@ -2356,8 +2393,24 @@ def candle_chart(
 
 
 def bars_for(data: dict, period: str, ticker: str, timeframe: str) -> pl.DataFrame:
-    data_root, exchange_timezone = chart_source_config(data)
+    provider = MarketDataProvider(chart_processed_config(data))
     session_dates = tuple(chart_session_dates(data, period))
+    if session_dates and ticker:
+        start = date.fromisoformat(session_dates[0])
+        end = date.fromisoformat(session_dates[-1])
+        provider_bars = provider.load_bars(
+            start_date=start,
+            end_date=end,
+            timeframe=timeframe,
+            tickers=[ticker],
+            feature_groups=list(FEATURE_GROUPS),
+        )
+        if not provider_bars.is_empty():
+            if period != "Whole Run" and "session_date" in provider_bars.columns:
+                provider_bars = provider_bars.filter(pl.col("session_date").is_in(session_dates))
+            return provider_bars
+
+    data_root, exchange_timezone = chart_source_config(data)
     if session_dates and ticker:
         extended_bars = load_extended_chart_bars(data_root, exchange_timezone, session_dates, ticker, timeframe)
         if not extended_bars.is_empty():
@@ -2569,6 +2622,7 @@ def render_run_details_content(run_dir: Path) -> None:
     render_detail_table(
         [
             ("Data root", config.get("data_root", "")),
+            ("Processed data root", config.get("processed_data_root", "")),
             ("Output root", config.get("output_root", "")),
             ("Market UTC offset", config.get("market_utc_offset_hours", "")),
             ("Slippage bps", config.get("slippage_bps", "")),
@@ -2597,13 +2651,13 @@ def render_selected_run_header(run_dir: Path) -> None:
     status = metadata.get("status", "unknown")
     date_range = f"{config.get('start_date', '')} to {config.get('end_date', '')}"
 
-    with st.container(key="run_header"):
-        info_cols = st.columns([3.0, 5.5, 3.7], gap="small", vertical_alignment="center")
+    with st.container(key="run_header", horizontal_alignment="left", vertical_alignment="center"):
+        info_cols = st.columns([0.25, 0.45, 0.3], gap="small", vertical_alignment="center")
         with info_cols[0]:
             st.markdown(f'<div class="qq-run-header-title">{escape(str(run_name))}</div>', unsafe_allow_html=True)
         with info_cols[1]:
             strategy_name = metadata.get("strategy_name", config.get("strategy_name", ""))
-            badge_cols = st.columns([5.0, 1.45], gap="small", vertical_alignment="center")
+            badge_cols = st.columns([0.45, 0.55], gap="small", vertical_alignment="center")
             with badge_cols[0]:
                 st.markdown(
                     (
@@ -2641,6 +2695,10 @@ def render_new_run_update_form(config_key: str) -> None:
             config["start_date"] = st.date_input("Start date", value=date.fromisoformat(config["start_date"])).isoformat()
             config["end_date"] = st.date_input("End date", value=date.fromisoformat(config["end_date"])).isoformat()
             config["data_root"] = st.text_input("Data root", value=config["data_root"])
+            config["processed_data_root"] = st.text_input(
+                "Processed data root",
+                value=str(config.get("processed_data_root") or DEFAULT_MARKET_DATA_ROOT),
+            )
         with cols[1]:
             config["initial_cash"] = st.number_input("Initial cash", value=float(config["initial_cash"]), step=1000.0)
             params["max_active_positions"] = st.number_input("Max positions", value=int(params["max_active_positions"]), step=1)
@@ -2736,8 +2794,17 @@ def render_new_run(strategy_name: str, output_root: Path) -> None:
     with cols[1]:
         if st.button("Start Backtest", type="primary"):
             sessions = available_sessions(Path(config["data_root"]), date.fromisoformat(config["start_date"]), date.fromisoformat(config["end_date"]))
+            missing_processed = MarketDataProvider(
+                DataProviderConfig(processed_root=Path(config.get("processed_data_root") or DEFAULT_MARKET_DATA_ROOT))
+            ).missing_dates(date.fromisoformat(config["start_date"]), date.fromisoformat(config["end_date"]), "1m")
             if not sessions:
                 st.error("No local data files found for this run range.")
+            elif missing_processed:
+                st.error(
+                    "Processed provider data is missing. Build data first for: "
+                    + ", ".join(missing_processed[:8])
+                    + ("..." if len(missing_processed) > 8 else "")
+                )
             else:
                 run_dir = run_backtest_live(config)
                 if run_dir:
@@ -2829,6 +2896,112 @@ def delete_run_folder(run_dir: Path, output_root: Path) -> bool:
         return False
 
 
+def render_data_provider_page() -> None:
+    st.title("Data Provider")
+    st.markdown(
+        '<div class="qq-page-description">Build canonical market data once, then reuse it for backtests, charts, scanner research, and supervision.</div>',
+        unsafe_allow_html=True,
+    )
+    defaults = {
+        "raw_root": str(DEFAULT_DATA_ROOT),
+        "processed_root": str(DEFAULT_MARKET_DATA_ROOT),
+        "start_date": date(2024, 5, 1),
+        "end_date": date(2024, 5, 31),
+    }
+    source_cols = st.columns([2.7, 2.7, 1.0, 1.0], gap="small", vertical_alignment="bottom")
+    with source_cols[0]:
+        raw_root = Path(st.text_input("Raw data root", value=defaults["raw_root"]))
+    with source_cols[1]:
+        processed_root = Path(st.text_input("Processed data root", value=defaults["processed_root"]))
+    with source_cols[2]:
+        start_date = st.date_input("Start", value=defaults["start_date"])
+    with source_cols[3]:
+        end_date = st.date_input("End", value=defaults["end_date"])
+
+    option_cols = st.columns([2.2, 2.4, 1.5, 1.5], gap="small", vertical_alignment="bottom")
+    with option_cols[0]:
+        timeframes = st.multiselect("Timeframes", list(TIMEFRAMES), default=["1m", "5m", "15m", "30m", "1h", "1d"])
+    with option_cols[1]:
+        feature_groups = st.multiselect("Feature groups", FEATURE_GROUPS, default=FEATURE_GROUPS)
+    with option_cols[2]:
+        supervision_groups = st.multiselect("Supervision", SUPERVISION_GROUPS, default=[])
+    with option_cols[3]:
+        rebuild_mode = st.selectbox("Rebuild mode", ["build_missing", "skip_existing", "force_rebuild"], index=0)
+
+    ticker_text = st.text_input("Ticker filter", value="", help="Optional comma-separated tickers. Leave empty for all tickers.")
+    tickers = [ticker.strip().upper() for ticker in ticker_text.split(",") if ticker.strip()] or None
+
+    provider = MarketDataProvider(DataProviderConfig(raw_root=raw_root, processed_root=processed_root))
+    source_rows = scan_source(raw_root, start_date, end_date)
+    ready_rows = provider.status_rows(start_date, end_date, timeframes or ["1m"])
+    status_cols = st.columns([1, 1, 1, 1], gap="small")
+    existing_raw = sum(1 for row in source_rows if row.exists)
+    missing_raw = len(source_rows) - existing_raw
+    manifest = read_manifest(processed_root)
+    status_cols[0].metric("Raw Files", f"{existing_raw}/{len(source_rows)}")
+    status_cols[1].metric("Missing Raw", missing_raw)
+    status_cols[2].metric("Artifacts", len(manifest.get("artifacts", {})))
+    status_cols[3].metric("Feature Version", manifest.get("feature_version", "-"))
+
+    plan_tabs = st.tabs(["Build Plan", "Processed Store", "Manifest"])
+    with plan_tabs[0]:
+        plan = []
+        for src, processed in zip(source_rows, ready_rows):
+            row = {"session_date": src.session_date, "raw": "found" if src.exists else "missing"}
+            for timeframe in timeframes or ["1m"]:
+                row[timeframe] = processed.get(f"{timeframe}_status", "missing")
+            plan.append(row)
+        st.dataframe(pl.DataFrame(plan), width="stretch", hide_index=True)
+    with plan_tabs[1]:
+        st.dataframe(pl.DataFrame(ready_rows), width="stretch", hide_index=True)
+    with plan_tabs[2]:
+        st.json(
+            {
+                "processed_root": str(processed_root),
+                "schema_version": manifest.get("schema_version"),
+                "feature_version": manifest.get("feature_version"),
+                "supervision_version": manifest.get("supervision_version"),
+                "updated_at": manifest.get("updated_at"),
+                "artifact_count": len(manifest.get("artifacts", {})),
+            },
+            expanded=False,
+        )
+
+    progress_slot = st.empty()
+    log_slot = st.empty()
+    if st.button("Start Build", type="primary", disabled=not timeframes):
+        progress_rows: list[dict] = []
+
+        def on_progress(event: dict) -> None:
+            progress_rows.append(event)
+            completed_index = int(event.get("index") or 0)
+            total = max(1, int(event.get("total") or len(source_rows) or 1))
+            with progress_slot.container():
+                st.progress(min(1.0, completed_index / total), text=f"{event.get('session_date', '')} | {event.get('phase', '')}")
+            with log_slot.container():
+                st.dataframe(pl.DataFrame(progress_rows[-30:]), width="stretch", hide_index=True)
+
+        request = BuildRequest(
+            raw_root=raw_root,
+            processed_root=processed_root,
+            start_date=start_date,
+            end_date=end_date,
+            timeframes=timeframes,
+            feature_groups=feature_groups,
+            supervision_groups=supervision_groups,
+            rebuild_mode=rebuild_mode,
+            tickers=tickers,
+        )
+        try:
+            result = build_market_data(request, progress_callback=on_progress)
+            st.success(f"Build complete. Processed root: {result['processed_root']}")
+            st.dataframe(pl.DataFrame(result["completed"]), width="stretch", hide_index=True)
+        except Exception as exc:
+            st.error(str(exc))
+            with st.expander("Build error details"):
+                st.code(traceback.format_exc())
+
+
 def strategy_workspace(strategy_name: str) -> None:
     output_root = DEFAULT_OUTPUT_ROOT
     active_run = st.session_state.get("active_run_dir")
@@ -2852,7 +3025,12 @@ def strategy_workspace(strategy_name: str) -> None:
 def main() -> None:
     st.set_page_config(page_title="QQ Momentum Backtests", layout="wide")
     install_css()
-    st.sidebar.title("Strategies")
+    st.sidebar.title("QQ Research")
+    workspace = st.sidebar.radio("Workspace", ["Strategies", "Data Provider"], label_visibility="collapsed")
+    if workspace == "Data Provider":
+        render_data_provider_page()
+        return
+    st.sidebar.markdown("**Strategies**")
     strategy_name = st.sidebar.radio("Select strategy", available_strategies(), label_visibility="collapsed")
     strategy_workspace(strategy_name)
 
