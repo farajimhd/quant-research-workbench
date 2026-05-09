@@ -292,9 +292,111 @@ def install_css() -> None:
         html, body, body *, .stApp, button, input, textarea, select {
             font-family: "Inter", sans-serif !important;
         }
+        [class*="material-icons"],
+        [class*="material-symbols"],
+        [class*="MaterialIcons"],
+        [class*="MaterialSymbols"] {
+            font-family: "Material Symbols Rounded", "Material Icons" !important;
+            font-feature-settings: "liga" !important;
+            font-size: 1rem !important;
+            font-style: normal !important;
+            font-weight: 400 !important;
+            letter-spacing: normal !important;
+            line-height: 1 !important;
+            text-transform: none !important;
+            white-space: nowrap !important;
+        }
         .stApp {
             background: var(--qq-bg);
             color: var(--qq-text);
+        }
+        [data-testid="stDataFrameColumnMenu"] {
+            background: #FFFFFF !important;
+            border: 1px solid var(--qq-border) !important;
+            border-radius: var(--qq-radius) !important;
+            box-shadow: 0 10px 24px rgba(17, 24, 39, 0.10) !important;
+            min-width: 11.5rem !important;
+            padding: 0.25rem !important;
+        }
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct4"] {
+            display: none !important;
+        }
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"] {
+            align-items: center !important;
+            color: transparent !important;
+            display: flex !important;
+            font-family: "Inter", sans-serif !important;
+            font-size: 0 !important;
+            font-weight: 400 !important;
+            line-height: 1.2 !important;
+            min-height: 2rem !important;
+            padding: 0.35rem 0.55rem !important;
+            white-space: nowrap !important;
+        }
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"] * {
+            color: transparent !important;
+            font-size: 0 !important;
+            max-width: 0 !important;
+            overflow: hidden !important;
+        }
+        [data-testid="stDataFrameColumnMenu"] button[title="Copy column name"] {
+            align-items: center !important;
+            color: transparent !important;
+            display: flex !important;
+            font-size: 0 !important;
+            min-height: 2rem !important;
+            padding: 0.35rem 0.55rem !important;
+            width: 100% !important;
+        }
+        [data-testid="stDataFrameColumnMenu"] button[title="Copy column name"] * {
+            color: transparent !important;
+            font-size: 0 !important;
+            max-width: 0 !important;
+            overflow: hidden !important;
+        }
+        [data-testid="stDataFrameColumnMenu"] button[title="Copy column name"]::after,
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"]::after {
+            color: var(--qq-text) !important;
+            display: block !important;
+            font-family: "Inter", sans-serif !important;
+            font-size: 0.9rem !important;
+            font-weight: 400 !important;
+            line-height: 1.2 !important;
+        }
+        [data-testid="stDataFrameColumnMenu"] button[title="Copy column name"]::after {
+            content: "Copy column name";
+        }
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"]:nth-child(1 of [class*="e1gmp2ct1"])::after {
+            content: "Sort ascending";
+        }
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"]:nth-child(2 of [class*="e1gmp2ct1"])::after {
+            content: "Sort descending";
+        }
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"]:nth-child(3 of [class*="e1gmp2ct1"])::after {
+            content: "Autosize";
+        }
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"]:nth-child(4 of [class*="e1gmp2ct1"])::after {
+            content: "Pin column";
+        }
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"]:nth-child(5 of [class*="e1gmp2ct1"])::after {
+            content: "Hide column";
+        }
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"]:hover,
+        [data-testid="stDataFrameColumnMenu"] button[title="Copy column name"]:hover {
+            background: #F8FAFC !important;
+            color: var(--qq-primary) !important;
+        }
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"]:focus,
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"]:focus-visible,
+        [data-testid="stDataFrameColumnMenu"] button[title="Copy column name"]:focus,
+        [data-testid="stDataFrameColumnMenu"] button[title="Copy column name"]:focus-visible {
+            border-color: var(--qq-primary) !important;
+            box-shadow: none !important;
+            outline: 1px solid var(--qq-primary) !important;
+        }
+        [data-testid="stDataFrameColumnMenu"] [class*="e1gmp2ct1"]:hover::after,
+        [data-testid="stDataFrameColumnMenu"] button[title="Copy column name"]:hover::after {
+            color: var(--qq-primary) !important;
         }
         div[data-testid="stButton"] button[kind="primary"] {
             background: var(--qq-primary) !important;
