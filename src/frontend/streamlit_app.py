@@ -4090,22 +4090,43 @@ def render_data_provider_page() -> None:
 
     events: list[dict] = st.session_state.setdefault("build_progress_events", [])
     started_at = st.session_state.get("build_started_at")
-    render_build_metrics(build_monitor_metrics(source_rows, events, manifest, started_at))
-    missing_sessions = [row["session_date"] for row in source_rows if row.get("expected_market_session") and not row.get("exists")]
-    if missing_sessions:
-        st.warning(
-            "Missing raw files for expected market sessions: "
-            + ", ".join(missing_sessions[:10])
-            + ("..." if len(missing_sessions) > 10 else "")
-        )
 
-    progress_slot = st.empty()
-    board_slot = st.empty()
-    detail_slot = st.empty()
+    build_tab, timings_tab, artifacts_tab, plan_tab, store_tab, manifest_tab = st.tabs(
+        ["Build", "Build Timings", "Artifacts", "Plan", "Processed Store", "Manifest"]
+    )
+
+    with build_tab:
+        metrics_slot = st.empty()
+        missing_slot = st.empty()
+        progress_slot = st.empty()
+        board_slot = st.empty()
+    with timings_tab:
+        st.caption(
+            "Measured build steps such as raw loading, timestamp normalization, timeframe aggregation, feature writes, supervision writes, and monthly aggregation."
+        )
+        timings_slot = st.empty()
+    with artifacts_tab:
+        artifacts_slot = st.empty()
+    with plan_tab:
+        plan_slot = st.empty()
+    with store_tab:
+        store_slot = st.empty()
+    with manifest_tab:
+        manifest_slot = st.empty()
 
     def render_progress_board(current_events: list[dict]) -> None:
         current_manifest = read_manifest(processed_root)
         metrics = build_monitor_metrics(source_rows, current_events, current_manifest, st.session_state.get("build_started_at"))
+        with metrics_slot.container():
+            render_build_metrics(metrics)
+        missing_sessions = [row["session_date"] for row in source_rows if row.get("expected_market_session") and not row.get("exists")]
+        with missing_slot.container():
+            if missing_sessions:
+                st.warning(
+                    "Missing raw files for expected market sessions: "
+                    + ", ".join(missing_sessions[:10])
+                    + ("..." if len(missing_sessions) > 10 else "")
+                )
         work_total = max((int(event.get("work_total") or 0) for event in current_events), default=0)
         work_completed = max((int(event.get("work_completed") or 0) for event in current_events), default=0)
         ratio = min(1.0, work_completed / work_total) if work_total else 0.0
@@ -4138,19 +4159,16 @@ def render_data_provider_page() -> None:
         artifact_events = [event for event in current_events if event.get("event") == "artifact_complete"]
         phase_events = [event for event in current_events if event.get("duration_sec") is not None]
         ready_rows = MarketDataProvider(DataProviderConfig(raw_root=raw_root, processed_root=processed_root)).status_rows(start_date, end_date, list(TIMEFRAMES))
-        with detail_slot.container():
-            tabs = st.tabs(["Build Timings", "Artifacts", "Plan", "Processed Store", "Manifest"])
-            with tabs[0]:
-                st.caption("Measured build steps such as raw loading, timestamp normalization, timeframe aggregation, feature writes, supervision writes, and monthly aggregation.")
-                app_dataframe(pl.DataFrame(phase_events[-500:]), width="stretch", hide_index=True)
-            with tabs[1]:
-                app_dataframe(pl.DataFrame(artifact_events[-500:]), width="stretch", hide_index=True)
-            with tabs[2]:
-                app_dataframe(pl.DataFrame(source_rows), width="stretch", hide_index=True)
-            with tabs[3]:
-                app_dataframe(pl.DataFrame(ready_rows), width="stretch", hide_index=True)
-            with tabs[4]:
-                render_manifest_card(current_manifest, processed_root)
+        with timings_slot.container():
+            app_dataframe(pl.DataFrame(phase_events[-500:]), width="stretch", hide_index=True)
+        with artifacts_slot.container():
+            app_dataframe(pl.DataFrame(artifact_events[-500:]), width="stretch", hide_index=True)
+        with plan_slot.container():
+            app_dataframe(pl.DataFrame(source_rows), width="stretch", hide_index=True)
+        with store_slot.container():
+            app_dataframe(pl.DataFrame(ready_rows), width="stretch", hide_index=True)
+        with manifest_slot.container():
+            render_manifest_card(current_manifest, processed_root)
 
     render_progress_board(events)
 
