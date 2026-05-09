@@ -1479,7 +1479,6 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     const normalPriceHeight = {price_height};
     const normalOscillatorHeight = {oscillator_height};
     const paneGap = {pane_gap};
-    const hostFrameExtraHeight = 48;
     const hostBottomPadding = 18;
     let paneRatio = {oscillator_ratio};
     const chartWidth = () => Math.max(260, container.clientWidth - indicatorLabelWidth);
@@ -2223,13 +2222,13 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     function resizeHostFrame() {{
         const frame = window.frameElement;
         if (!frame || isChartExpanded()) return;
-        let available = {total_height + 48};
+        let available = {total_height};
         try {{
             const frameTop = frame.getBoundingClientRect().top;
             const parentHeight = window.parent && window.parent.innerHeight ? window.parent.innerHeight : available;
-            available = Math.max(520, Math.min({total_height + 48}, Math.floor(parentHeight - frameTop - hostBottomPadding)));
+            available = Math.max(520, Math.min({total_height}, Math.floor(parentHeight - frameTop - hostBottomPadding)));
         }} catch (error) {{
-            available = {total_height + 48};
+            available = {total_height};
         }}
         frame.style.height = `${{available}}px`;
         frame.height = String(available);
@@ -2237,7 +2236,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
 
     function availableChartHeight() {{
         if (isChartExpanded()) return Math.max(360, window.innerHeight - 4);
-        return Math.max(360, Math.min({total_height}, window.innerHeight - hostFrameExtraHeight));
+        return Math.max(360, Math.min({total_height}, window.innerHeight));
     }}
 
     function chartHeights() {{
@@ -2303,7 +2302,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     resizeObserver.observe(container);
     </script>
     """
-    components.html(html, height=total_height + 48, scrolling=False)
+    components.html(html, height=total_height, scrolling=False)
 
 
 def candle_chart(
