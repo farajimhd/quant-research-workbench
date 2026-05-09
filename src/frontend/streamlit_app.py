@@ -1022,8 +1022,8 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
     const priceContainer = document.getElementById("{chart_id}-price");
     const oscillatorContainer = document.getElementById("{chart_id}-osc");
     const hasOscillators = !!(payload.oscillators && payload.oscillators.length);
-    const rightScaleWidth = 90;
-    const indicatorLabelWidth = 54;
+    const rightScaleWidth = 62;
+    const indicatorLabelWidth = 62;
     const chartWidth = () => Math.max(260, container.clientWidth - indicatorLabelWidth);
     function formatDateTime(time) {{
         const date = new Date(Number(time) * 1000);
@@ -1495,10 +1495,10 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720) -> None:
             const label = document.createElement("div");
             label.textContent = formatAxisLabelValue(value);
             label.style.position = "absolute";
-            label.style.left = "1px";
+            label.style.left = "-1px";
             label.style.top = `${{coordinate}}px`;
             label.style.transform = "translateY(-50%)";
-            label.style.maxWidth = `${{indicatorLabelWidth - 2}}px`;
+            label.style.maxWidth = `${{indicatorLabelWidth + 1}}px`;
             label.style.overflow = "hidden";
             label.style.textOverflow = "ellipsis";
             label.style.whiteSpace = "nowrap";
