@@ -1185,7 +1185,7 @@ def render_chart_toolbar_buttons(component_key: str) -> None:
                 <path d="M7 2h2v2h6V2h2v2h3v18H4V4h3V2zm11 8H6v10h12V10zM6 8h12V6H6v2zm2 4h3v3H8v-3z" fill="currentColor"></path>
             </svg>
         </button>
-        <button class="qq-chart-tool-button" data-action="fit-recent" title="Reset zoom to latest bars" aria-label="Reset zoom to latest bars">
+        <button class="qq-chart-tool-button" data-action="fit-recent" title="Reset zoom to latest hour" aria-label="Reset zoom to latest hour">
             <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
                 <path d="M12 5V2L7 6l5 4V7c3.31 0 6 2.69 6 6 0 1.3-.42 2.5-1.12 3.48l1.46 1.46A7.94 7.94 0 0 0 20 13c0-4.42-3.58-8-8-8zm-6 6a5.98 5.98 0 0 1 1.12-3.48L5.66 6.06A7.94 7.94 0 0 0 4 11c0 4.42 3.58 8 8 8v3l5-4-5-4v3c-3.31 0-6-2.69-6-6z" fill="currentColor"></path>
             </svg>
@@ -1486,8 +1486,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
     let paneRatio = {oscillator_ratio};
     const chartWidth = () => Math.max(260, container.clientWidth - indicatorLabelWidth);
     const exchangeTimeZone = "{CHART_EXCHANGE_TIME_ZONE}";
-    const allTimes = (payload.candles || []).map(bar => bar.time).filter(time => time !== undefined && time !== null);
-    const recentBarCount = Math.min(180, Math.max(60, allTimes.length));
+    const allTimes = (payload.candles || []).map(bar => Number(bar.time)).filter(time => Number.isFinite(time));
     const exchangeDateTimeFormatter = new Intl.DateTimeFormat("en-US", {{
         timeZone: exchangeTimeZone,
         year: "numeric",
@@ -2129,13 +2128,21 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         requestAnimationFrame(drawSessionRegions);
     }}
 
+    function applyRightOffset(offset) {{
+        const normalized = Math.max(0, offset);
+        chart.timeScale().applyOptions({{ rightOffset: normalized }});
+        if (oscillatorChart) oscillatorChart.timeScale().applyOptions({{ rightOffset: normalized }});
+    }}
+
     function fitRecentBars() {{
         if (!allTimes.length) return;
-        const visibleBars = Math.min(recentBarCount, allTimes.length);
         const lastIndex = allTimes.length - 1;
-        const leftBars = Math.min(Math.floor(visibleBars / 2), lastIndex);
-        const rightBars = Math.max(Math.ceil(visibleBars / 2), Number(candleSettings.rightOffset || 0));
-        applyLogicalRange(Math.max(0, lastIndex - leftBars), lastIndex + rightBars);
+        const latestTime = allTimes[lastIndex];
+        const firstRecentIndex = allTimes.findIndex(time => time >= latestTime - 3600);
+        const leftIndex = firstRecentIndex >= 0 ? firstRecentIndex : Math.max(0, lastIndex - 60);
+        const leftBars = Math.max(1, lastIndex - leftIndex + 1);
+        applyRightOffset(leftBars);
+        applyLogicalRange(leftIndex, lastIndex + leftBars);
     }}
 
     function fitFirstDay() {{
@@ -2150,6 +2157,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
             }}
         }});
         if (firstIndex !== null && lastIndex !== null) {{
+            applyRightOffset(Number(candleSettings.rightOffset || 0));
             applyLogicalRange(firstIndex, lastIndex + Number(candleSettings.rightOffset || 0));
         }}
     }}
