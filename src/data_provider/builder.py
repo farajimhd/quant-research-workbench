@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import os
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -19,9 +21,9 @@ from src.data_provider.store import partition_path, read_frame, write_frame
 from src.data_provider.supervision import (
     FIXED_HORIZONS_MINUTES,
     METHOD_WINDOWS,
-    build_bar_supervision,
     build_method_supervision,
     build_scanner_supervision,
+    iter_bar_supervision_frames,
 )
 from src.data_provider.timeframes import aggregate_daily, aggregate_intraday, aggregate_monthly, canonicalize_1m
 
@@ -50,6 +52,14 @@ def estimate_session_units(request: BuildRequest, buildable_sessions: int, month
     return max(1, buildable_sessions * per_session + monthly_units)
 
 
+def effective_worker_count(request: BuildRequest, requested_workers: int, buildable_sessions: int) -> tuple[int, str | None]:
+    requested = max(1, int(requested_workers))
+    capped = min(requested, buildable_sessions) if buildable_sessions else 0
+    if capped > 1 and request.tickers is None and "1m" in request.timeframes and request.supervision_groups:
+        return 1, "full_universe_1m_supervision_memory_bound"
+    return capped, None
+
+
 def write_artifact(
     *,
     root: Path,
@@ -73,6 +83,85 @@ def write_artifact(
             columns=list(frame.columns),
             built_at=datetime.now().isoformat(timespec="seconds"),
             source_path=str(source_path) if source_path else None,
+            source_modified_at=source_path.stat().st_mtime if source_exists else None,
+            source_size_bytes=source_path.stat().st_size if source_exists else None,
+        ),
+    )
+    return path
+
+
+def write_bar_supervision_artifact(
+    *,
+    request: BuildRequest,
+    timeframe: str,
+    session_date: str,
+    bars: pl.DataFrame,
+    source_path: Path,
+    progress_callback: ProgressCallback | None,
+    progress_state: dict | None,
+) -> Path:
+    import pyarrow.parquet as pq
+
+    path = partition_path(request.processed_root, "supervision_bar", timeframe, session_date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.unlink(missing_ok=True)
+    writer = None
+    rows_out = 0
+    columns: list[str] = []
+    horizons = list(FIXED_HORIZONS_MINUTES)
+    started_at = perf_counter()
+    try:
+        for horizon_index, (horizon, horizon_frame) in enumerate(iter_bar_supervision_frames(bars, horizons), start=1):
+            table = horizon_frame.to_arrow()
+            if writer is None:
+                writer = pq.ParquetWriter(tmp_path, table.schema, compression="zstd")
+                columns = list(horizon_frame.columns)
+            writer.write_table(table)
+            rows_out += horizon_frame.height
+            emit(
+                progress_callback,
+                {
+                    "event": "phase_progress",
+                    "phase": "supervision_bar",
+                    "status": "running",
+                    "session_date": session_date,
+                    "timeframe": timeframe,
+                    "group": "supervision_bar",
+                    "horizon": f"{horizon}m",
+                    "horizon_index": horizon_index,
+                    "horizon_total": len(horizons),
+                    "rows_out": rows_out,
+                    "duration_sec": elapsed_since(started_at),
+                    "work_completed": progress_state.get("completed_units") if progress_state else None,
+                    "work_total": progress_state.get("total_units") if progress_state else None,
+                },
+            )
+            del table, horizon_frame
+            gc.collect()
+    except Exception:
+        if writer is not None:
+            writer.close()
+        tmp_path.unlink(missing_ok=True)
+        raise
+    if writer is None:
+        write_frame(tmp_path, pl.DataFrame())
+    else:
+        writer.close()
+    tmp_path.replace(path)
+
+    source_exists = source_path.exists()
+    upsert_artifact(
+        request.processed_root,
+        ArtifactRecord(
+            group="supervision_bar",
+            timeframe=timeframe,
+            session_date=session_date,
+            path=str(path),
+            rows=rows_out,
+            columns=columns,
+            built_at=datetime.now().isoformat(timespec="seconds"),
+            source_path=str(source_path),
             source_modified_at=source_path.stat().st_mtime if source_exists else None,
             source_size_bytes=source_path.stat().st_size if source_exists else None,
         ),
@@ -177,14 +266,14 @@ def build_supervision_groups(
             },
         )
         started_at = perf_counter()
-        bar_supervision = build_bar_supervision(bars)
-        path = write_artifact(
-            root=request.processed_root,
-            group="supervision_bar",
+        path = write_bar_supervision_artifact(
+            request=request,
             timeframe=timeframe,
             session_date=session_date,
-            frame=bar_supervision,
+            bars=bars,
             source_path=source_path,
+            progress_callback=progress_callback,
+            progress_state=progress_state,
         )
         if progress_state is not None:
             progress_state["completed_units"] += 1
@@ -198,7 +287,7 @@ def build_supervision_groups(
                 "timeframe": timeframe,
                 "group": "supervision_bar",
                 "rows_in": bars.height,
-                "rows_out": bar_supervision.height,
+                "rows_out": estimated_rows["supervision_bar"],
                 "duration_sec": elapsed_since(started_at),
                 "path": str(path),
                 "size_bytes": artifact_size(path),
@@ -764,7 +853,7 @@ def build_market_data_parallel(
     max_workers: int = 4,
     progress_callback: ProgressCallback | None = None,
 ) -> dict:
-    if job_path is None or max_workers <= 1:
+    if job_path is None:
         return build_market_data(request, progress_callback=progress_callback)
     if request.start_date > request.end_date:
         raise ValueError("start_date must be on or before end_date")
@@ -816,7 +905,7 @@ def build_market_data_parallel(
             continue
         build_jobs.append((index, asdict(status)))
 
-    worker_count = min(max(1, int(max_workers)), len(build_jobs)) if build_jobs else 0
+    worker_count, worker_limit_reason = effective_worker_count(request, max_workers, len(build_jobs))
     emit(
         progress_callback,
         {
@@ -824,6 +913,8 @@ def build_market_data_parallel(
             "phase": "parallel_sessions",
             "status": "running" if worker_count else "complete",
             "worker_count": worker_count,
+            "requested_worker_count": max_workers,
+            "worker_limit_reason": worker_limit_reason,
             "buildable_sessions": len(build_jobs),
             "polars_threads_per_worker": os.environ.get("POLARS_MAX_THREADS"),
             "work_total": total_units,
@@ -864,6 +955,26 @@ def build_market_data_parallel(
                         }
                     )
                 check_cancelled(job_path)
+        except BrokenProcessPool as exc:
+            message = (
+                "A daily build worker terminated abruptly, usually because the worker exceeded available memory while "
+                "building a large supervision artifact."
+            )
+            emit(
+                progress_callback,
+                {
+                    "event": "parallel_failed",
+                    "phase": "parallel_sessions",
+                    "status": "failed",
+                    "message": message,
+                    "worker_count": worker_count,
+                    "worker_limit_reason": worker_limit_reason,
+                },
+            )
+            for future in pending:
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise RuntimeError(message) from exc
         except Exception:
             for future in pending:
                 future.cancel()

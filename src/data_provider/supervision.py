@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from math import ceil
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import polars as pl
 
@@ -264,10 +264,17 @@ def _bar_horizon_frame(frame: pl.DataFrame, horizon_minutes: int, step: int) -> 
 def build_bar_supervision(frame: pl.DataFrame, horizons_minutes: Iterable[int] = FIXED_HORIZONS_MINUTES) -> pl.DataFrame:
     if frame.is_empty():
         return pl.DataFrame()
+    frames = [horizon_frame for _, horizon_frame in iter_bar_supervision_frames(frame, horizons_minutes)]
+    return pl.concat(frames, how="diagonal") if frames else pl.DataFrame()
+
+
+def iter_bar_supervision_frames(frame: pl.DataFrame, horizons_minutes: Iterable[int] = FIXED_HORIZONS_MINUTES) -> Iterator[tuple[int, pl.DataFrame]]:
+    if frame.is_empty():
+        return
     sorted_frame = _sorted(frame)
     step = step_minutes_from_frame(sorted_frame)
-    frames = [_bar_horizon_frame(sorted_frame, horizon, step) for horizon in horizons_minutes]
-    return pl.concat(frames, how="diagonal") if frames else pl.DataFrame()
+    for horizon in horizons_minutes:
+        yield horizon, _bar_horizon_frame(sorted_frame, horizon, step)
 
 
 def _max_future_bars(frame: pl.DataFrame) -> int:

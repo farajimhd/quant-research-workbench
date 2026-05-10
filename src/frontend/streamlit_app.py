@@ -3832,6 +3832,15 @@ def format_duration(value: int | float | None) -> str:
     return f"{int(hours)}h {int(minutes)}m"
 
 
+def format_progress_units(value: int | float, total: int) -> str:
+    numeric = float(value)
+    if abs(numeric - round(numeric)) < 0.01:
+        done = f"{int(round(numeric)):,}"
+    else:
+        done = f"{numeric:,.1f}"
+    return f"{done}/{total:,}"
+
+
 def event_elapsed_seconds(event: dict, now: datetime | None = None) -> float:
     emitted_at = event.get("emitted_at")
     if not emitted_at:
@@ -4011,10 +4020,10 @@ def file_card_html(
     current_step = str(row.get("phase") or status).replace("_", " ")
     steps = row.get("steps", {})
     total_units = int(row.get("step_total") or 1)
-    completed_units = int(row.get("step_done") or 0)
+    completed_units = float(row.get("step_done_effective", row.get("step_done") or 0))
     progress_pct = min(100.0, max(0.0, (completed_units / total_units) * 100.0))
     duration = format_duration(row.get("duration_sec", 0))
-    progress_meta = f"{completed_units}/{total_units}, {duration}"
+    progress_meta = f"{format_progress_units(completed_units, total_units)}, {duration}"
     phase_summary = build_phase_summary(
         [row],
         row.get("events", []),
@@ -4141,16 +4150,31 @@ def build_plan_rows(events: list[dict], fallback_rows: list[dict]) -> list[dict]
     return fallback_rows
 
 
-def build_completed_work_units(events: list[dict]) -> int:
-    completed = 0
+def build_completed_work_units(events: list[dict]) -> float:
+    completed = 0.0
+    partials: dict[tuple[str, str, str, str], float] = {}
     for event in events:
+        phase = str(event.get("phase") or "")
+        key = (
+            str(event.get("session_date") or ""),
+            phase,
+            str(event.get("timeframe") or ""),
+            str(event.get("group") or ""),
+        )
+        if event.get("event") == "phase_progress":
+            total = float(event.get("horizon_total") or event.get("progress_total") or 0)
+            current = float(event.get("horizon_index") or event.get("progress_completed") or 0)
+            if total > 0:
+                partials[key] = max(partials.get(key, 0.0), min(1.0, current / total))
+            continue
         if event.get("status") != "complete":
             continue
-        if event.get("event") == "phase_complete" and event.get("phase") in {"raw_load", "canonicalize_1m"}:
-            completed += 1
+        if event.get("event") == "phase_complete" and phase in {"raw_load", "canonicalize_1m"}:
+            completed += 1.0
         elif event.get("event") == "artifact_complete":
-            completed += 1
-    return completed
+            completed += 1.0
+            partials.pop(key, None)
+    return completed + sum(partials.values())
 
 
 def build_request_options(job_status: dict[str, Any] | None) -> tuple[list[str], list[str], list[str]]:
@@ -4232,9 +4256,21 @@ def build_phase_summary(
     completed: dict[str, int] = {phase: 0 for phase in phase_totals}
     elapsed: dict[str, float] = {phase: 0.0 for phase in phase_totals}
     active_started: dict[str, list[dict]] = {phase: [] for phase in phase_totals}
+    partials: dict[str, dict[tuple[str, str, str], float]] = {phase: {} for phase in phase_totals}
     for event in events:
         phase = str(event.get("phase") or "")
         if phase not in phase_totals:
+            continue
+        partial_key = (
+            str(event.get("session_date") or ""),
+            str(event.get("timeframe") or ""),
+            str(event.get("group") or ""),
+        )
+        if event.get("event") == "phase_progress":
+            total = float(event.get("horizon_total") or event.get("progress_total") or 0)
+            current = float(event.get("horizon_index") or event.get("progress_completed") or 0)
+            if total > 0:
+                partials[phase][partial_key] = max(partials[phase].get(partial_key, 0.0), min(1.0, current / total))
             continue
         if event.get("event") == "phase_started" and event.get("status") == "running":
             active_started[phase].append(event)
@@ -4247,14 +4283,16 @@ def build_phase_summary(
         elapsed[phase] += float(event.get("duration_sec") or 0.0)
         if active_started.get(phase):
             active_started[phase].pop(0)
+        partials[phase].pop(partial_key, None)
 
     now = datetime.now(timezone.utc)
     rows = []
     for phase, label in phase_labels:
         total = phase_totals[phase]
         done = min(completed[phase], total)
-        progress = f"{done}/{total}" if total else "0/0"
-        progress_pct = min(100.0, max(0.0, (done / total) * 100.0)) if total else 0.0
+        display_done = min(float(total), float(done) + sum(partials[phase].values())) if total else 0.0
+        progress = format_progress_units(display_done, total) if total else "0/0"
+        progress_pct = min(100.0, max(0.0, (display_done / total) * 100.0)) if total else 0.0
         phase_elapsed = elapsed[phase] + sum(event_elapsed_seconds(started, now) for started in active_started.get(phase, []))
         summary = f"{progress}, {format_duration(phase_elapsed)}"
         rows.append(
@@ -4290,9 +4328,11 @@ def build_session_cards(
             "duration_sec": 0.0,
             "steps": {key: 0 for key in planned_steps},
             "step_done": 0,
+            "step_done_effective": 0.0,
             "step_total": planned_total,
             "events": [],
             "active_started": {},
+            "partial_steps": {},
         }
     completed_dates: set[str] = set()
     for event in events:
@@ -4316,6 +4356,12 @@ def build_session_cards(
         group = event.get("group")
         if event.get("event") == "phase_started" and event.get("status") == "running":
             row["active_started"].setdefault(str(phase), []).append(event)
+        if event.get("event") == "phase_progress":
+            total = float(event.get("horizon_total") or event.get("progress_total") or 0)
+            current = float(event.get("horizon_index") or event.get("progress_completed") or 0)
+            if total > 0:
+                partial_key = (str(phase), str(event.get("timeframe") or ""), str(event.get("group") or ""))
+                row["partial_steps"][partial_key] = max(row["partial_steps"].get(partial_key, 0.0), min(1.0, current / total))
         if phase == "raw_load":
             steps["raw"] = 1
         elif phase == "canonicalize_1m":
@@ -4333,7 +4379,10 @@ def build_session_cards(
             completed_dates.add(session_date)
         if event.get("status") == "complete" and row["active_started"].get(str(phase)):
             row["active_started"][str(phase)].pop(0)
+        if event.get("event") == "artifact_complete":
+            row["partial_steps"].pop((str(phase), str(event.get("timeframe") or ""), str(event.get("group") or "")), None)
         row["step_done"] = sum(int(value) for value in steps.values())
+        row["step_done_effective"] = row["step_done"] + sum(float(value) for value in row["partial_steps"].values())
     now = datetime.now(timezone.utc)
     for row in session_rows.values():
         active_elapsed = sum(
@@ -4447,7 +4496,7 @@ def render_data_provider_page() -> None:
             build_completed_work_units(current_events),
         )
         ratio = min(1.0, work_completed / work_total) if work_total else 0.0
-        progress_text = f"{work_completed:,}/{work_total:,}" if work_total else "-"
+        progress_text = format_progress_units(work_completed, work_total) if work_total else "-"
         current = current_events[-1] if current_events else {}
         phase_summary = build_phase_summary(
             plan_rows,
