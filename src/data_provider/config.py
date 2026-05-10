@@ -11,7 +11,7 @@ DEFAULT_PROCESSED_ROOT = Path("D:/TradingData/quant-research-workbench/market_da
 EXCHANGE_TIME_ZONE = "America/New_York"
 SCHEMA_VERSION = 1
 FEATURE_VERSION = 2
-SUPERVISION_VERSION = 2
+SUPERVISION_VERSION = 3
 
 TIMEFRAMES: dict[str, int | str] = {
     "1m": 1,
@@ -22,7 +22,6 @@ TIMEFRAMES: dict[str, int | str] = {
     "2h": 120,
     "4h": 240,
     "1d": "1d",
-    "1mo": "1mo",
 }
 
 FEATURE_GROUPS = [
@@ -95,7 +94,7 @@ class BuildRequest:
     start_date: date = date(2024, 5, 1)
     end_date: date = date(2024, 5, 1)
     exchange_timezone: str = EXCHANGE_TIME_ZONE
-    timeframes: list[str] = field(default_factory=lambda: ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1mo"])
+    timeframes: list[str] = field(default_factory=lambda: ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"])
     feature_groups: list[str] = field(default_factory=lambda: list(FEATURE_GROUPS))
     supervision_groups: list[str] = field(default_factory=lambda: list(SUPERVISION_GROUPS))
     rebuild_mode: str = "force_rebuild"

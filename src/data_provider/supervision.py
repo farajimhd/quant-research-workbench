@@ -1,24 +1,15 @@
 from __future__ import annotations
 
-from math import ceil
 from typing import Callable, Iterable, Iterator
 
 import polars as pl
 
 
-FIXED_HORIZONS_MINUTES = [1, 2, 3]
-METHOD_WINDOWS = {
-    "PRICE_VOLUME_SHOCK": (1, 45),
-    "SCALP": (1, 10),
-    "MOMENTUM_SCALP": (5, 30),
-    "DAY_TRADE": (30, None),
-    "SWING_TECHNICAL": (390, 20 * 390),
-    "MEAN_REVERSION_LONG": (390, 60 * 390),
-}
-ONE_MINUTE_METHOD_WINDOWS = {
-    method: window
-    for method, window in METHOD_WINDOWS.items()
-    if method in {"PRICE_VOLUME_SHOCK", "SCALP", "MOMENTUM_SCALP"}
+FIXED_HORIZON_BARS = [1, 2, 3]
+METHOD_BAR_WINDOWS = {
+    "PRICE_VOLUME_SHOCK": (1, 3),
+    "SCALP": (1, 2),
+    "MOMENTUM_SCALP": (2, 3),
 }
 BASE_COLUMNS = ["bar_id", "ticker", "timeframe", "bar_time_utc", "bar_time_market", "session_date"]
 
@@ -38,8 +29,8 @@ def _sorted(frame: pl.DataFrame) -> pl.DataFrame:
     return frame.sort(["ticker", "bar_time_utc"])
 
 
-def method_windows_for_timeframe(timeframe: str) -> dict[str, tuple[int, int | None]]:
-    return ONE_MINUTE_METHOD_WINDOWS if timeframe == "1m" else METHOD_WINDOWS
+def method_windows_for_timeframe(timeframe: str) -> dict[str, tuple[int, int]]:
+    return METHOD_BAR_WINDOWS
 
 
 def _future_list(column: str, offsets: range, *, default: pl.Expr | None = None) -> pl.Expr:
@@ -90,8 +81,8 @@ def _future_volume_shock_list(offsets: range) -> pl.Expr:
     return pl.concat_list(values)
 
 
-def _bar_horizon_frame(frame: pl.DataFrame, horizon_minutes: int, step: int) -> pl.DataFrame:
-    max_bars = max(1, ceil(horizon_minutes / step))
+def _bar_horizon_frame(frame: pl.DataFrame, horizon_bars: int, step: int) -> pl.DataFrame:
+    max_bars = max(1, int(horizon_bars))
     offsets = range(1, max_bars + 1)
     future_highs = _future_list("high", offsets)
     future_lows = _future_list("low", offsets)
@@ -184,8 +175,9 @@ def _bar_horizon_frame(frame: pl.DataFrame, horizon_minutes: int, step: int) -> 
         )
         .select(
             *BASE_COLUMNS,
-            pl.lit(f"{horizon_minutes}m").alias("horizon"),
-            pl.lit(horizon_minutes).alias("horizon_minutes"),
+            pl.lit(f"{horizon_bars}bar").alias("horizon"),
+            pl.lit(horizon_bars).alias("horizon_bars"),
+            pl.lit(horizon_bars * step).alias("horizon_minutes"),
             pl.col("_future_count").alias("future_bar_count"),
             (pl.col("_future_count") > 0).alias("valid_future_window"),
             _safe_ratio(pl.col("_last_future_close"), pl.col("close")).sub(1.0).fill_null(0.0).alias("fwd_close_return"),
@@ -243,28 +235,28 @@ def _bar_horizon_frame(frame: pl.DataFrame, horizon_minutes: int, step: int) -> 
     )
 
 
-def build_bar_supervision(frame: pl.DataFrame, horizons_minutes: Iterable[int] = FIXED_HORIZONS_MINUTES) -> pl.DataFrame:
+def build_bar_supervision(frame: pl.DataFrame, horizons_bars: Iterable[int] = FIXED_HORIZON_BARS) -> pl.DataFrame:
     if frame.is_empty():
         return pl.DataFrame()
-    frames = [horizon_frame for _, horizon_frame in iter_bar_supervision_frames(frame, horizons_minutes, assume_sorted=False)]
+    frames = [horizon_frame for _, horizon_frame in iter_bar_supervision_frames(frame, horizons_bars, assume_sorted=False)]
     return pl.concat(frames, how="diagonal") if frames else pl.DataFrame()
 
 
 def iter_bar_supervision_frames(
     frame: pl.DataFrame,
-    horizons_minutes: Iterable[int] = FIXED_HORIZONS_MINUTES,
+    horizons_bars: Iterable[int] = FIXED_HORIZON_BARS,
     on_horizon_start: Callable[[int, int, int], None] | None = None,
     assume_sorted: bool = False,
 ) -> Iterator[tuple[int, pl.DataFrame]]:
     if frame.is_empty():
         return
-    horizons = list(horizons_minutes)
+    horizons = list(horizons_bars)
     sorted_frame = frame if assume_sorted else _sorted(frame)
     step = step_minutes_from_frame(sorted_frame)
-    for horizon_index, horizon in enumerate(horizons, start=1):
+    for horizon_index, horizon_bars in enumerate(horizons, start=1):
         if on_horizon_start:
-            on_horizon_start(horizon_index, horizon, len(horizons))
-        yield horizon, _bar_horizon_frame(sorted_frame, horizon, step)
+            on_horizon_start(horizon_index, horizon_bars, len(horizons))
+        yield horizon_bars, _bar_horizon_frame(sorted_frame, horizon_bars, step)
 
 
 def _max_future_bars(frame: pl.DataFrame) -> int:
@@ -275,12 +267,14 @@ def _bool_future_list(column: str, offsets: range) -> pl.Expr:
     return pl.concat_list([pl.col(column).shift(-offset).over("ticker").fill_null(False) for offset in offsets])
 
 
-def _method_frame(frame: pl.DataFrame, method: str, min_minutes: int, max_minutes: int | None, step: int, max_future_bars: int) -> pl.DataFrame:
-    min_bars = max(1, ceil(min_minutes / step))
-    requested_max_bars = max_future_bars if max_minutes is None else max(1, ceil(max_minutes / step))
+def _method_frame(frame: pl.DataFrame, method: str, min_bars: int, max_bars: int, step: int, max_future_bars: int) -> pl.DataFrame:
+    min_bars = max(1, int(min_bars))
+    requested_max_bars = max(1, int(max_bars))
     max_bars = min(max_future_bars, requested_max_bars)
     if min_bars > max_bars:
         max_bars = min_bars
+    min_minutes = min_bars * step
+    max_minutes = max_bars * step
     offsets = range(min_bars, max_bars + 1)
     future_highs = _future_list("high", offsets)
     future_lows = _future_list("low", offsets)
@@ -386,7 +380,10 @@ def _method_frame(frame: pl.DataFrame, method: str, min_minutes: int, max_minute
             _safe_ratio(pl.col("_post_best_high"), pl.col("_confirmation_price")).sub(1.0).alias("_shock_return_after_confirmation"),
             _safe_ratio(pl.col("_low_before_confirmation"), pl.col("close")).sub(1.0).alias("_shock_drawdown_before_confirmation"),
             pl.max_horizontal(pl.col("price_volume_shock_score"), (pl.col("price_shock_score") * 0.55) + (pl.col("volume_shock_score") * 0.45)).alias("_shock_context_score"),
-            pl.when(pl.col("_shock_delay").is_not_null()).then(_bounded(1.0 - (pl.col("_shock_delay").cast(pl.Float64) / 45.0))).otherwise(0.0).alias("_confirmation_speed"),
+            pl.when(pl.col("_shock_delay").is_not_null())
+            .then(_bounded(1.0 - (pl.col("_shock_delay").cast(pl.Float64) / max(float(max_minutes), 1.0))))
+            .otherwise(0.0)
+            .alias("_confirmation_speed"),
             pl.when(pl.col("_shock_confirmation_type").is_in(["SAME_BAR", "PRICE_FIRST_IMMEDIATE_VOLUME"]))
             .then(0.15)
             .when(pl.col("_shock_confirmation_type") == "PRICE_FIRST_DELAYED_VOLUME")
@@ -421,6 +418,8 @@ def _method_frame(frame: pl.DataFrame, method: str, min_minutes: int, max_minute
         .select(
             *BASE_COLUMNS,
             pl.lit(method).alias("trade_method"),
+            pl.lit(min_bars).alias("method_min_horizon_bars"),
+            pl.lit(max_bars).alias("method_max_horizon_bars"),
             pl.lit(min_minutes).alias("method_min_horizon_minutes"),
             pl.lit(max_minutes).cast(pl.Int64).alias("method_max_horizon_minutes"),
             (pl.col("_future_count") > 0).alias("valid_future_window"),

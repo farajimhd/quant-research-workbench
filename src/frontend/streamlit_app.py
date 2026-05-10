@@ -1060,7 +1060,7 @@ def install_css() -> None:
         }
         .qq-build-board {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr;
             gap: 0.85rem;
             align-items: start;
         }
@@ -1232,6 +1232,79 @@ def install_css() -> None:
             grid-template-columns: 7.7rem minmax(5.5rem, 1fr) max-content;
             column-gap: 0.75rem;
             font-size: 0.72rem;
+        }
+        .qq-day-progress-rows {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 0.32rem;
+            margin: 0.5rem 0 0.62rem 0;
+        }
+        .qq-timeframe-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+            gap: 0.55rem;
+            align-items: start;
+        }
+        .qq-timeframe-card {
+            border: 1px solid var(--qq-border-soft);
+            border-radius: var(--qq-radius);
+            background: #ffffff;
+            padding: 0.5rem;
+            min-width: 0;
+        }
+        .qq-timeframe-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.4rem;
+            margin-bottom: 0.42rem;
+            font-size: 0.76rem;
+            font-weight: 700;
+            color: var(--qq-text);
+        }
+        .qq-timeframe-meta {
+            color: var(--qq-muted);
+            font-size: 0.68rem;
+            font-weight: 400;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        .qq-stage-list {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 0.28rem;
+        }
+        .qq-stage-row {
+            display: grid;
+            grid-template-columns: 5.7rem minmax(3.8rem, 1fr) max-content;
+            gap: 0.42rem;
+            align-items: center;
+            min-width: 0;
+            font-size: 0.68rem;
+            line-height: 1.1;
+        }
+        .qq-stage-name {
+            color: var(--qq-muted-strong);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .qq-stage-track {
+            height: 0.3rem;
+            border-radius: var(--qq-radius);
+            background: var(--qq-neutral-bg);
+            overflow: hidden;
+        }
+        .qq-stage-fill {
+            display: block;
+            height: 100%;
+            background: var(--qq-primary);
+            width: 0%;
+        }
+        .qq-stage-meta {
+            color: var(--qq-muted);
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
         }
         @media (max-width: 1100px) {
             .qq-build-header,
@@ -3998,14 +4071,97 @@ def session_step_plan(
     session_timeframes = session_timeframes_for_build(timeframes)
     selected_features = list(FEATURE_GROUPS) if feature_groups is None else list(feature_groups)
     selected_supervision = list(SUPERVISION_GROUPS) if supervision_groups is None else list(supervision_groups)
+    feature_compute = 1 if selected_features or selected_supervision else 0
     return {
         "raw": 1,
-        "normalize": 1,
+        "other_timeframes": max(0, len(session_timeframes) - 1),
+        "normalize": len(session_timeframes),
         "bars": len(session_timeframes),
+        "feature_calc": len(session_timeframes) * feature_compute,
         "features": len(session_timeframes) * len(selected_features),
         "labels": len(session_timeframes) * len(selected_supervision),
-        "complete": 1,
     }
+
+
+def stage_state(total: int) -> dict[str, Any]:
+    return {"done": 0.0, "total": int(total), "elapsed": 0.0, "active": [], "partial": 0.0}
+
+
+def stage_progress_html(label: str, state: dict[str, Any]) -> str:
+    total = int(state.get("total") or 0)
+    done = float(state.get("done") or 0.0)
+    partial = float(state.get("partial") or 0.0)
+    effective = min(float(total), done + partial) if total else 0.0
+    pct = min(100.0, max(0.0, (effective / total) * 100.0)) if total else 0.0
+    elapsed = float(state.get("elapsed") or 0.0)
+    if state.get("active"):
+        now = datetime.now(timezone.utc)
+        elapsed += sum(event_elapsed_seconds(event, now) for event in state.get("active", []))
+    meta = f"{format_progress_units(effective, total)}, {format_duration(elapsed)}" if total else "-"
+    return (
+        '<div class="qq-stage-row">'
+        f'<span class="qq-stage-name">{escape(label)}</span>'
+        f'<span class="qq-stage-track"><span class="qq-stage-fill" style="width:{pct:.1f}%"></span></span>'
+        f'<span class="qq-stage-meta">{escape(meta)}</span>'
+        "</div>"
+    )
+
+
+def timeframe_stage_totals(
+    feature_groups: Iterable[str] | None = None,
+    supervision_groups: Iterable[str] | None = None,
+) -> dict[str, int]:
+    selected_features = list(FEATURE_GROUPS) if feature_groups is None else list(feature_groups)
+    selected_supervision = list(SUPERVISION_GROUPS) if supervision_groups is None else list(supervision_groups)
+    return {
+        "normalize": 1,
+        "write_bars": 1,
+        "feature_calc": 1 if selected_features or selected_supervision else 0,
+        "write_features": len(selected_features),
+        "bar_labels": 1 if "bar" in selected_supervision else 0,
+        "method_labels": 1 if "method" in selected_supervision else 0,
+        "scanner_labels": 1 if "scanner" in selected_supervision else 0,
+    }
+
+
+def new_timeframe_state(stage_totals: dict[str, int]) -> dict[str, dict[str, Any]]:
+    return {stage: stage_state(total) for stage, total in stage_totals.items()}
+
+
+def complete_stage(state: dict[str, Any], event: dict, increment: float = 1.0) -> None:
+    total = int(state.get("total") or 0)
+    if total:
+        state["done"] = min(float(total), float(state.get("done") or 0.0) + increment)
+    state["elapsed"] = float(state.get("elapsed") or 0.0) + float(event.get("duration_sec") or 0.0)
+    if state.get("active"):
+        state["active"].pop(0)
+    state["partial"] = 0.0
+
+
+def start_stage(state: dict[str, Any], event: dict) -> None:
+    if int(state.get("total") or 0):
+        state.setdefault("active", []).append(event)
+
+
+def set_stage_partial(state: dict[str, Any], event: dict) -> None:
+    total = float(event.get("horizon_total") or event.get("progress_total") or 0)
+    current = float(event.get("horizon_index") or event.get("progress_completed") or 0)
+    if total > 0:
+        state["partial"] = max(float(state.get("partial") or 0.0), min(1.0, current / total))
+
+
+def total_stage_progress(stages: Iterable[dict[str, Any]]) -> tuple[float, int, float]:
+    done = 0.0
+    total = 0
+    elapsed = 0.0
+    now = datetime.now(timezone.utc)
+    for state in stages:
+        stage_total = int(state.get("total") or 0)
+        total += stage_total
+        done += min(float(stage_total), float(state.get("done") or 0.0) + float(state.get("partial") or 0.0)) if stage_total else 0.0
+        elapsed += float(state.get("elapsed") or 0.0)
+        elapsed += sum(event_elapsed_seconds(event, now) for event in state.get("active", []))
+    return done, total, elapsed
 
 
 def file_card_html(
@@ -4018,21 +4174,39 @@ def file_card_html(
     status = str(row.get("status") or "queued")
     session_date = str(row.get("session_date") or "-")
     current_step = str(row.get("phase") or status).replace("_", " ")
-    steps = row.get("steps", {})
     total_units = int(row.get("step_total") or 1)
     completed_units = float(row.get("step_done_effective", row.get("step_done") or 0))
     progress_pct = min(100.0, max(0.0, (completed_units / total_units) * 100.0))
     duration = format_duration(row.get("duration_sec", 0))
     progress_meta = f"{format_progress_units(completed_units, total_units)}, {duration}"
-    phase_summary = build_phase_summary(
-        [row],
-        row.get("events", []),
-        include_global=False,
-        css_class="qq-card-phase-summary",
-        timeframes=timeframes,
-        feature_groups=feature_groups,
-        supervision_groups=supervision_groups,
+    day_rows = (
+        '<div class="qq-day-progress-rows">'
+        + stage_progress_html("Raw load", row.get("raw", stage_state(1)))
+        + stage_progress_html("Other timeframes", row.get("other_timeframes", stage_state(max(0, len(session_timeframes_for_build(timeframes)) - 1))))
+        + "</div>"
     )
+    stage_labels = [
+        ("normalize", "Normalize"),
+        ("write_bars", "Write bars"),
+        ("feature_calc", "Feature calc"),
+        ("write_features", "Write features"),
+        ("bar_labels", "Bar labels"),
+        ("method_labels", "Method labels"),
+        ("scanner_labels", "Scanner labels"),
+    ]
+    timeframe_cards = []
+    for timeframe in session_timeframes_for_build(timeframes):
+        stages = row.get("timeframe_stages", {}).get(timeframe, new_timeframe_state(timeframe_stage_totals(feature_groups, supervision_groups)))
+        tf_done, tf_total, tf_elapsed = total_stage_progress(stages.values())
+        tf_meta = format_progress_units(tf_done, tf_total) if tf_total else "-"
+        stage_rows = "".join(stage_progress_html(label, stages.get(stage, stage_state(0))) for stage, label in stage_labels)
+        timeframe_cards.append(
+            '<div class="qq-timeframe-card">'
+            f'<div class="qq-timeframe-title"><span>{escape(timeframe)}</span><span class="qq-timeframe-meta">{escape(tf_meta)}, {escape(format_duration(tf_elapsed))}</span></div>'
+            f'<div class="qq-stage-list">{stage_rows}</div>'
+            "</div>"
+        )
+    timeframe_grid = f'<div class="qq-timeframe-grid">{"".join(timeframe_cards)}</div>'
     return (
         '<div class="qq-file-card">'
         '<div class="qq-file-card-header">'
@@ -4049,7 +4223,8 @@ def file_card_html(
         f'<div class="qq-file-progress"><div class="qq-file-progress-fill" style="width:{progress_pct:.1f}%"></div></div>'
         f'<div class="qq-file-progress-meta">{escape(progress_meta)}</div>'
         "</div>"
-        f"{phase_summary}"
+        f"{day_rows}"
+        f"{timeframe_grid}"
         "</div>"
     )
 
@@ -4169,7 +4344,7 @@ def build_completed_work_units(events: list[dict]) -> float:
             continue
         if event.get("status") != "complete":
             continue
-        if event.get("event") == "phase_complete" and phase in {"raw_load", "canonicalize_1m"}:
+        if event.get("event") == "phase_complete" and phase in {"raw_load", "canonicalize_1m", "aggregate", "aggregate_daily", "feature_compute"}:
             completed += 1.0
         elif event.get("event") == "artifact_complete":
             completed += 1.0
@@ -4197,16 +4372,13 @@ def build_phase_summary(
 ) -> str:
     buildable = [row for row in plan_rows if row.get("expected_market_session") and row.get("exists")]
     buildable_count = len(buildable)
-    touched_months = {str(row["session_date"])[:7] for row in buildable}
-    month_count = len(touched_months)
     selected_timeframes = list(TIMEFRAMES) if timeframes is None else list(timeframes)
     selected_features = list(FEATURE_GROUPS) if feature_groups is None else list(feature_groups)
     selected_supervision = list(SUPERVISION_GROUPS) if supervision_groups is None else list(supervision_groups)
-    include_monthly = "1mo" in selected_timeframes
     include_daily = "1d" in selected_timeframes
     session_timeframes = session_timeframes_for_build(selected_timeframes)
     intraday_timeframes = intraday_timeframes_for_build(selected_timeframes)
-    contexts_with_monthly = buildable_count * len(session_timeframes) + (month_count if include_global and include_monthly else 0)
+    contexts = buildable_count * len(session_timeframes)
     phase_totals = {}
     if include_global:
         phase_totals["scan_source"] = 1
@@ -4216,16 +4388,14 @@ def build_phase_summary(
         "canonicalize_1m": buildable_count,
         "aggregate": buildable_count * len(intraday_timeframes),
         "aggregate_daily": buildable_count if include_daily else 0,
-        "bars_write": contexts_with_monthly,
-        "feature_compute": contexts_with_monthly,
-        "feature_write": contexts_with_monthly * len(selected_features),
-        "supervision_bar": contexts_with_monthly if "bar" in selected_supervision else 0,
-        "supervision_method": contexts_with_monthly if "method" in selected_supervision else 0,
-        "supervision_scanner": contexts_with_monthly if "scanner" in selected_supervision else 0,
+        "bars_write": contexts,
+        "feature_compute": contexts if selected_features or selected_supervision else 0,
+        "feature_write": contexts * len(selected_features),
+        "supervision_bar": contexts if "bar" in selected_supervision else 0,
+        "supervision_method": contexts if "method" in selected_supervision else 0,
+        "supervision_scanner": contexts if "scanner" in selected_supervision else 0,
         }
     )
-    if include_global and include_monthly:
-        phase_totals["monthly_aggregate"] = month_count
     if include_global:
         phase_totals["run"] = 1
     phase_labels = []
@@ -4249,8 +4419,6 @@ def build_phase_summary(
         phase_labels.append(("supervision_method", "Method label files"))
     if "scanner" in selected_supervision:
         phase_labels.append(("supervision_scanner", "Scanner files"))
-    if include_global and include_monthly:
-        phase_labels.append(("monthly_aggregate", "Monthly aggregate"))
     if include_global:
         phase_labels.append(("run", "Total run"))
     completed: dict[str, int] = {phase: 0 for phase in phase_totals}
@@ -4316,7 +4484,9 @@ def build_session_cards(
     supervision_groups: Iterable[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     session_rows: dict[str, dict] = {}
-    planned_steps = session_step_plan(timeframes, feature_groups, supervision_groups)
+    selected_timeframes = session_timeframes_for_build(timeframes)
+    stage_totals = timeframe_stage_totals(feature_groups, supervision_groups)
+    planned_steps = session_step_plan(selected_timeframes, feature_groups, supervision_groups)
     planned_total = sum(planned_steps.values())
     for row in plan_rows:
         session_rows[row["session_date"]] = {
@@ -4326,20 +4496,23 @@ def build_session_cards(
             "status": "queued" if row.get("exists") and row.get("expected_market_session") else row.get("status", "closed"),
             "phase": row.get("status", "queued"),
             "duration_sec": 0.0,
-            "steps": {key: 0 for key in planned_steps},
             "step_done": 0,
             "step_done_effective": 0.0,
             "step_total": planned_total,
             "events": [],
-            "active_started": {},
-            "partial_steps": {},
+            "raw": stage_state(1),
+            "other_timeframes": stage_state(max(0, len(selected_timeframes) - 1)),
+            "timeframe_stages": {timeframe: new_timeframe_state(stage_totals) for timeframe in selected_timeframes},
         }
-    completed_dates: set[str] = set()
+
+    def timeframe_stage(row: dict, timeframe: str, stage: str) -> dict[str, Any] | None:
+        return row.get("timeframe_stages", {}).get(timeframe, {}).get(stage)
+
     for event in events:
         session_date = event.get("session_date")
         if not session_date or session_date not in session_rows:
             continue
-        if event.get("timeframe") == "1mo" or event.get("phase") in {"monthly_aggregate", "run"}:
+        if event.get("timeframe") == "1mo" or event.get("phase") in {"run"}:
             continue
         row = session_rows[session_date]
         row["phase"] = event.get("phase", row.get("phase"))
@@ -4347,56 +4520,116 @@ def build_session_cards(
             row["status"] = "failed"
         elif event.get("event") == "session_started":
             row["status"] = "running"
-        elif event.get("event") not in {"session_complete", "session_skipped"}:
+        elif event.get("event") not in {"session_skipped"} and row.get("status") not in {"failed", "complete"}:
             row["status"] = "running"
         row["events"].append(event)
-        row["duration_sec"] = float(row.get("duration_sec") or 0) + float(event.get("duration_sec") or 0)
-        steps = row["steps"]
         phase = event.get("phase")
         group = event.get("group")
+        timeframe = str(event.get("timeframe") or "")
+
         if event.get("event") == "phase_started" and event.get("status") == "running":
-            row["active_started"].setdefault(str(phase), []).append(event)
+            if phase == "raw_load":
+                start_stage(row["raw"], event)
+            elif phase in {"aggregate", "aggregate_daily"}:
+                start_stage(row["other_timeframes"], event)
+                stage = timeframe_stage(row, timeframe, "normalize")
+                if stage is not None:
+                    start_stage(stage, event)
+            elif phase == "canonicalize_1m":
+                stage = timeframe_stage(row, "1m", "normalize")
+                if stage is not None:
+                    start_stage(stage, event)
+            elif phase == "bars_write":
+                stage = timeframe_stage(row, timeframe, "write_bars")
+                if stage is not None:
+                    start_stage(stage, event)
+            elif phase == "feature_compute":
+                stage = timeframe_stage(row, timeframe, "feature_calc")
+                if stage is not None:
+                    start_stage(stage, event)
+            elif phase == "supervision_bar":
+                stage = timeframe_stage(row, timeframe, "bar_labels")
+                if stage is not None:
+                    start_stage(stage, event)
+            elif phase == "supervision_method":
+                stage = timeframe_stage(row, timeframe, "method_labels")
+                if stage is not None:
+                    start_stage(stage, event)
+            elif phase == "supervision_scanner":
+                stage = timeframe_stage(row, timeframe, "scanner_labels")
+                if stage is not None:
+                    start_stage(stage, event)
+
         if event.get("event") == "phase_progress":
-            total = float(event.get("horizon_total") or event.get("progress_total") or 0)
-            current = float(event.get("horizon_index") or event.get("progress_completed") or 0)
-            if total > 0:
-                partial_key = (str(phase), str(event.get("timeframe") or ""), str(event.get("group") or ""))
-                row["partial_steps"][partial_key] = max(row["partial_steps"].get(partial_key, 0.0), min(1.0, current / total))
-        if phase == "raw_load":
-            steps["raw"] = 1
-        elif phase == "canonicalize_1m":
-            steps["normalize"] = 1
-        elif event.get("event") == "artifact_complete" and group == "bars":
-            steps["bars"] = min(planned_steps["bars"], int(steps.get("bars", 0)) + 1)
-        elif event.get("event") == "artifact_complete" and str(group or "").startswith("features_"):
-            steps["features"] = min(planned_steps["features"], int(steps.get("features", 0)) + 1)
-        elif event.get("event") == "artifact_complete" and str(group or "").startswith("supervision_"):
-            steps["labels"] = min(planned_steps["labels"], int(steps.get("labels", 0)) + 1)
-        if event.get("event") in {"session_complete", "session_skipped"}:
-            row["status"] = event.get("status", "complete")
-            if event.get("event") == "session_complete":
-                steps["complete"] = 1
-            completed_dates.add(session_date)
-        if event.get("status") == "complete" and row["active_started"].get(str(phase)):
-            row["active_started"][str(phase)].pop(0)
-        if event.get("event") == "artifact_complete":
-            row["partial_steps"].pop((str(phase), str(event.get("timeframe") or ""), str(event.get("group") or "")), None)
-        row["step_done"] = sum(int(value) for value in steps.values())
-        row["step_done_effective"] = row["step_done"] + sum(float(value) for value in row["partial_steps"].values())
-    now = datetime.now(timezone.utc)
+            if phase == "supervision_bar":
+                stage = timeframe_stage(row, timeframe, "bar_labels")
+                if stage is not None:
+                    set_stage_partial(stage, event)
+
+        if event.get("status") == "complete":
+            if phase == "raw_load" and event.get("event") == "phase_complete":
+                complete_stage(row["raw"], event)
+            elif phase in {"aggregate", "aggregate_daily"} and event.get("event") == "phase_complete":
+                complete_stage(row["other_timeframes"], event)
+                stage = timeframe_stage(row, timeframe, "normalize")
+                if stage is not None:
+                    complete_stage(stage, event)
+            elif phase == "canonicalize_1m" and event.get("event") == "phase_complete":
+                stage = timeframe_stage(row, "1m", "normalize")
+                if stage is not None:
+                    complete_stage(stage, event)
+            elif event.get("event") == "artifact_complete" and group == "bars":
+                stage = timeframe_stage(row, timeframe, "write_bars")
+                if stage is not None:
+                    complete_stage(stage, event)
+            elif phase == "feature_compute" and event.get("event") == "phase_complete":
+                stage = timeframe_stage(row, timeframe, "feature_calc")
+                if stage is not None:
+                    complete_stage(stage, event)
+            elif event.get("event") == "artifact_complete" and str(group or "").startswith("features_"):
+                stage = timeframe_stage(row, timeframe, "write_features")
+                if stage is not None:
+                    complete_stage(stage, event)
+            elif event.get("event") == "artifact_complete" and group == "supervision_bar":
+                stage = timeframe_stage(row, timeframe, "bar_labels")
+                if stage is not None:
+                    complete_stage(stage, event)
+            elif event.get("event") == "artifact_complete" and group == "supervision_method":
+                stage = timeframe_stage(row, timeframe, "method_labels")
+                if stage is not None:
+                    complete_stage(stage, event)
+            elif event.get("event") == "artifact_complete" and group == "supervision_scanner":
+                stage = timeframe_stage(row, timeframe, "scanner_labels")
+                if stage is not None:
+                    complete_stage(stage, event)
+
+        if event.get("event") == "session_skipped":
+            row["status"] = event.get("status", "missing_raw")
+
     for row in session_rows.values():
-        active_elapsed = sum(
-            event_elapsed_seconds(started, now)
-            for started_events in row.get("active_started", {}).values()
-            for started in started_events
-        )
-        row["duration_sec"] = float(row.get("duration_sec") or 0.0) + active_elapsed
-    completed = [session_rows[session_date] for session_date in sorted(completed_dates, reverse=True)]
+        all_stages = [row["raw"], row["other_timeframes"]]
+        for stage_map in row.get("timeframe_stages", {}).values():
+            all_stages.extend(stage_map.values())
+        done, total, elapsed = total_stage_progress(all_stages)
+        row["step_done"] = int(done)
+        row["step_done_effective"] = done
+        row["step_total"] = total
+        row["duration_sec"] = elapsed
+        if row.get("status") == "failed":
+            continue
+        if row.get("expected_market_session") and row.get("exists") and total and done >= total:
+            row["status"] = "complete"
+        elif row.get("expected_market_session") and row.get("exists") and done > 0:
+            row["status"] = "running"
+
+    completed = [row for row in session_rows.values() if row.get("status") == "complete"]
+    completed.sort(key=lambda row: row["session_date"], reverse=True)
     active = [
         row
         for row in session_rows.values()
-        if row["session_date"] not in completed_dates and row.get("status") in {"queued", "running", "complete", "failed"}
+        if row.get("status") in {"queued", "running", "failed"}
     ]
+    active.sort(key=lambda row: row["session_date"])
     return active[:5], completed
 
 
@@ -4457,7 +4690,7 @@ def render_data_provider_page() -> None:
         board_slot = st.empty()
     with timings_tab:
         st.caption(
-            "Measured build steps such as raw loading, timestamp normalization, timeframe aggregation, feature writes, supervision writes, and monthly aggregation."
+            "Measured build steps such as raw loading, timestamp normalization, timeframe aggregation, feature writes, and supervision writes."
         )
         timings_slot = st.empty()
     with artifacts_tab:

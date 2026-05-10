@@ -47,6 +47,13 @@ The manifest key is `{group}|{timeframe}|{session_date}` and records rows, colum
 
 Builds intentionally use a single `force_rebuild` mode. Every selected session artifact is regenerated from the raw source and overwritten so the processed store reflects the current schema, feature definitions, supervision definitions, and raw inputs. The Build Data page uses the XNYS market calendar to separate expected trading sessions from weekends and exchange holidays, and reports missing raw files only for expected sessions.
 
+Build execution is split into two provider-owned phases:
+
+1. Read each raw `1m` source file, normalize it, and write every selected bar timeframe for that session.
+2. Run independent artifact jobs per `(session_date, timeframe)` to calculate features, bar supervision, method supervision, and scanner supervision from the written bar files.
+
+This keeps bar generation separate from heavier feature and label work, and it lets the provider parallelize artifact jobs without putting build work inside the Streamlit process.
+
 ## Time Handling
 
 Raw Massive minute bars use `window_start` in UTC nanoseconds. The provider creates:
@@ -71,9 +78,8 @@ Supported timeframes:
 - `2h`
 - `4h`
 - `1d`
-- `1mo`
 
-`1m` bars are canonicalized directly from raw rows. Intraday aggregations bucket by New York `minute_of_day`, grouped by ticker and session date. Daily bars aggregate every available raw bar for the New York session date, including extended hours. Monthly bars aggregate daily bars.
+`1m` bars are canonicalized directly from raw rows. Intraday aggregations bucket by New York `minute_of_day`, grouped by ticker and session date. Daily bars aggregate every available raw bar for the New York session date, including extended hours. Weekly and monthly artifacts are intentionally out of the active build path for now.
 
 Base OHLCV aggregation:
 
@@ -284,16 +290,19 @@ Supervision artifacts are future-looking labels for research and model training.
 
 ### Bar Supervision
 
-`supervision_bar` creates one row for each `(bar_id, horizon)` pair. A single bar therefore repeats across all fixed horizon rows, while the future-looking values change for each horizon. Fixed horizons are intentionally short so full-universe `1m` builds stay bounded:
+`supervision_bar` creates one row for each `(bar_id, horizon)` pair. A single bar therefore repeats across all fixed horizon rows, while the future-looking values change for each horizon. Fixed horizons are expressed in bars, not absolute clock time, so the same contract applies to every timeframe:
 
-- 1 minute
-- 2 minutes
-- 3 minutes
+- 1 bar
+- 2 bars
+- 3 bars
+
+For example, a 3-bar horizon means roughly 3 minutes on `1m`, 15 minutes on `5m`, and 3 trading sessions on `1d`.
 
 Columns:
 
-- `horizon`: string label such as `30m`.
-- `horizon_minutes`: numeric horizon.
+- `horizon`: string label such as `1bar`, `2bar`, or `3bar`.
+- `horizon_bars`: numeric bar-count horizon.
+- `horizon_minutes`: approximate compatibility field, calculated as `horizon_bars * timeframe_step_minutes`.
 - `future_bar_count`: available future bars in the horizon.
 - `valid_future_window`: true when at least one future bar exists.
 - `fwd_close_return`: final future close return over the horizon.
@@ -351,22 +360,19 @@ Volume shock is currently detected when any of these future conditions is true:
 
 ### Method Supervision
 
-`supervision_method` creates one row for each `(bar_id, trade_method)`. Methods define different horizon windows:
+`supervision_method` creates one row for each `(bar_id, trade_method)`. The provider currently builds the same three method families on every timeframe. The timeframe itself defines whether the signal behaves like a scalp, swing, or longer context:
 
-- `SCALP`: 1 to 10 minutes.
-- `PRICE_VOLUME_SHOCK`: 1 to 45 minutes.
-- `MOMENTUM_SCALP`: 5 to 30 minutes.
-- `DAY_TRADE`: 30 minutes to end of available session data.
-- `SWING_TECHNICAL`: 1 to 20 trading days by bar count approximation.
-- `MEAN_REVERSION_LONG`: 1 to 60 trading days by bar count approximation.
-
-For `1m` artifacts, method supervision is restricted to `PRICE_VOLUME_SHOCK`, `SCALP`, and `MOMENTUM_SCALP`. Longer day/swing methods are built on coarser timeframes where their windows do not require hundreds of future minute offsets per row.
+- `PRICE_VOLUME_SHOCK`: 1 to 3 bars.
+- `SCALP`: 1 to 2 bars.
+- `MOMENTUM_SCALP`: 2 to 3 bars.
 
 Columns:
 
 - `trade_method`: method family.
-- `method_min_horizon_minutes`: earliest allowed future exit.
-- `method_max_horizon_minutes`: latest allowed future exit, null for open-ended.
+- `method_min_horizon_bars`: earliest allowed future exit in bars.
+- `method_max_horizon_bars`: latest allowed future exit in bars.
+- `method_min_horizon_minutes`: approximate compatibility field based on timeframe step.
+- `method_max_horizon_minutes`: approximate compatibility field based on timeframe step.
 - `valid_future_window`: true when the future window has data.
 - `method_best_exit_bar_id`: future bar with best long exit.
 - `method_best_exit_time_utc`: timestamp for best long exit.
@@ -394,7 +400,7 @@ Columns:
 - `shock_best_exit_after_confirmation_bar_id`: future bar id of the best post-confirmation high.
 - `shock_best_exit_after_confirmation_time_utc`: UTC timestamp of the best post-confirmation high.
 
-`PRICE_VOLUME_SHOCK` uses the same method-supervision row shape but overrides confidence with shock context, confirmation speed, and post-signal price path. The method is intentionally long-only and is meant to capture price-first events where volume arrives on the same bar, within the next 1-2 bars, or later within the 45-minute method window.
+`PRICE_VOLUME_SHOCK` uses the same method-supervision row shape but overrides confidence with shock context, confirmation speed, and post-signal price path. The method is intentionally long-only and is meant to capture price-first events where volume arrives on the same bar or within the next few bars of the active timeframe.
 
 ### Scanner Supervision
 
@@ -428,18 +434,10 @@ Phase 1 backtests now use the provider for prepared minute data:
 
 The Streamlit sidebar has a `Data Provider` workspace:
 
-- Choose raw source root and processed output root.
-- Choose date range.
-- Choose timeframes.
-- Choose feature groups.
-- Choose supervision groups.
-- Optionally restrict to a comma-separated ticker list.
-- Choose rebuild mode:
-  - `skip_existing`: do not rewrite existing artifacts.
-  - `build_missing`: write only missing artifacts.
-  - `force_rebuild`: rewrite selected artifacts.
-- Scan raw files before building.
-- Build data and monitor per-date progress.
+- The Build Data page auto-fills raw root, processed root, start date, and end date from available data.
+- Scope changes are made through the compact data-scope editor.
+- The build always runs in `force_rebuild` mode and calculates every configured timeframe, feature group, and supervision group.
+- Progress is reported per source day and per timeframe. Each day card shows raw loading, other-timeframe generation, and timeframe-specific progress for normalization, bar writes, feature calculation, feature writes, bar labels, method labels, and scanner labels.
 
 Charts and run dashboards use `MarketDataProvider` first. If provider artifacts are missing, the chart loader can fall back to older run artifacts/raw paths where that fallback is still supported.
 
@@ -449,7 +447,8 @@ Charts and run dashboards use `MarketDataProvider` first. If provider artifacts 
 - Build output is partitioned by day and timeframe so the UI can load only the requested dates.
 - Feature groups are separate Parquet files to avoid loading every indicator for every use case.
 - Consumers can request specific tickers and columns.
-- Avoid rebuilding supervision tables for very large universes unless needed; supervision is future-looking and can be much larger than base bars.
+- Full builds run outside Streamlit in provider-managed worker processes. Bar generation runs first, then independent per-timeframe artifact jobs run from written bar files.
+- Supervision uses 1/2/3 bar horizons and the three active method families to keep full-universe builds bounded.
 
 ## Research Discipline
 
