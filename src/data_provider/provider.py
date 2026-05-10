@@ -7,6 +7,7 @@ from typing import Iterable
 import polars as pl
 
 from src.data_provider.config import DataProviderConfig
+from src.data_provider.calendar import market_sessions
 from src.data_provider.manifest import read_manifest
 from src.data_provider.raw_loader import date_range
 from src.data_provider.store import existing_dates, partition_path
@@ -25,7 +26,7 @@ class MarketDataProvider:
 
     def missing_dates(self, start: date, end: date, timeframe: str = "1m") -> list[str]:
         available = set(self.available_dates(timeframe))
-        return [session.isoformat() for session in date_range(start, end) if session.isoformat() not in available]
+        return [session.isoformat() for session in market_sessions(start, end) if session.isoformat() not in available]
 
     def status_rows(self, start: date, end: date, timeframes: Iterable[str]) -> list[dict]:
         manifest = read_manifest(self.processed_root)

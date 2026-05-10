@@ -1,0 +1,398 @@
+from __future__ import annotations
+
+import shutil
+from dataclasses import asdict
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import polars as pl
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from src.backtest.config import DEFAULT_OUTPUT_ROOT, BacktestConfig
+from src.backtest.jobs import get_backtest_status, list_backtest_jobs, submit_backtest_job
+from src.backtest.results import list_runs, read_run_metadata
+from src.backend.json_utils import json_safe, parse_csv_list
+from src.backend.market_data_service import (
+    artifact_records,
+    artifact_schema,
+    chart_payload,
+    coverage_rows,
+    first_matching_artifact,
+    first_ticker,
+    load_artifact_sample,
+    review_payload,
+    scope_defaults,
+    source_scan,
+)
+from src.backend.progress_model import build_progress_model
+from src.data_provider.calendar import scan_market_source
+from src.data_provider.config import (
+    DEFAULT_PROCESSED_ROOT,
+    DEFAULT_RAW_ROOT,
+    FEATURE_GROUPS,
+    SUPERVISION_GROUPS,
+    TIMEFRAMES,
+    BuildRequest,
+    DataProviderConfig,
+)
+from src.data_provider.jobs import cancel_build_job, get_build_status, list_build_jobs, submit_build_job
+from src.data_provider.manifest import read_manifest
+from src.data_provider.provider import MarketDataProvider
+from src.strategies.orb_5m_momentum.config import OrbMomentumConfig
+from src.strategies.registry import available_strategies
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+
+app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class ScopeUpdate(BaseModel):
+    raw_root: str = Field(default=str(DEFAULT_RAW_ROOT))
+    processed_root: str = Field(default=str(DEFAULT_PROCESSED_ROOT))
+    start_date: date
+    end_date: date
+
+
+class BuildSubmit(ScopeUpdate):
+    max_workers: int = Field(default=4, ge=1, le=24)
+    polars_threads: int = Field(default=6, ge=1, le=24)
+
+
+class BacktestSubmit(BaseModel):
+    strategy_name: str
+    run_name: str = "React app run"
+    start_date: date
+    end_date: date
+    data_root: str = Field(default=str(DEFAULT_RAW_ROOT))
+    processed_data_root: str = Field(default=str(DEFAULT_PROCESSED_ROOT))
+    output_root: str = Field(default=str(DEFAULT_OUTPUT_ROOT))
+    initial_cash: float = 10_000.0
+    slippage_bps: float = 2.0
+    save_symbol_bars: bool = True
+    strategy_params: dict[str, Any] = Field(default_factory=dict)
+
+
+def parse_date_param(value: date | None, fallback: str) -> date:
+    return value or date.fromisoformat(fallback)
+
+
+def read_table(path: Path, limit: int = 1000) -> dict[str, Any]:
+    if not path.exists():
+        return {"columns": [], "rows": []}
+    frame = pl.read_parquet(path)
+    if frame.height > limit:
+        frame = frame.head(limit)
+    return {"columns": frame.columns, "rows": json_safe(frame.to_dicts())}
+
+
+@app.get("/api/health")
+def health() -> dict[str, Any]:
+    return {"status": "ok", "app": "quant-research-workbench"}
+
+
+@app.get("/api/config/defaults")
+def config_defaults() -> dict[str, Any]:
+    return {
+        "raw_root": str(DEFAULT_RAW_ROOT),
+        "processed_root": str(DEFAULT_PROCESSED_ROOT),
+        "output_root": str(DEFAULT_OUTPUT_ROOT),
+        "timeframes": list(TIMEFRAMES),
+        "feature_groups": list(FEATURE_GROUPS),
+        "supervision_groups": list(SUPERVISION_GROUPS),
+    }
+
+
+@app.get("/api/strategies")
+def strategies() -> dict[str, Any]:
+    return {
+        "strategies": [
+            {
+                "name": name,
+                "display_name": name.replace("_", " ").title(),
+                "description": "Opening-range momentum strategy using a 09:30-09:35 setup ranking, live ranking, and 5-minute confirmation.",
+            }
+            for name in available_strategies()
+        ]
+    }
+
+
+@app.get("/api/strategies/{strategy_name}/readme")
+def strategy_readme(strategy_name: str) -> dict[str, str]:
+    path = PROJECT_ROOT / "src" / "strategies" / strategy_name / "README.md"
+    if not path.exists():
+        return {"content": "No README exists for this strategy."}
+    return {"content": path.read_text(encoding="utf-8")}
+
+
+@app.get("/api/strategies/{strategy_name}/default-config")
+def strategy_default_config(strategy_name: str) -> dict[str, Any]:
+    if strategy_name not in available_strategies():
+        raise HTTPException(status_code=404, detail="Unknown strategy")
+    return {
+        "strategy_name": strategy_name,
+        "run_name": "React app run",
+        "start_date": "2024-05-01",
+        "end_date": "2024-05-02",
+        "data_root": str(DEFAULT_RAW_ROOT),
+        "processed_data_root": str(DEFAULT_PROCESSED_ROOT),
+        "output_root": str(DEFAULT_OUTPUT_ROOT),
+        "initial_cash": 10_000.0,
+        "slippage_bps": 2.0,
+        "save_symbol_bars": True,
+        "strategy_params": OrbMomentumConfig().to_dict(),
+    }
+
+
+@app.get("/api/backtests/runs")
+def backtest_runs(output_root: str = str(DEFAULT_OUTPUT_ROOT), strategy_name: str | None = None) -> dict[str, Any]:
+    rows = []
+    for path in list_runs(Path(output_root), strategy_name):
+        metadata = read_run_metadata(path) or {}
+        summary = metadata.get("summary") or {}
+        config = metadata.get("config") or {}
+        rows.append(
+            {
+                "run_id": path.name,
+                "run_dir": str(path),
+                "run_name": metadata.get("run_name", path.name),
+                "strategy_name": metadata.get("strategy_name", config.get("strategy_name")),
+                "status": metadata.get("status", "unknown"),
+                "created_at": metadata.get("created_at"),
+                "date_range": f"{config.get('start_date', '')} to {config.get('end_date', '')}",
+                "return_pct": summary.get("return_pct", 0.0),
+                "total_pnl": summary.get("total_pnl", 0.0),
+                "trade_count": summary.get("trade_count", 0),
+            }
+        )
+    return {"runs": json_safe(rows)}
+
+
+@app.post("/api/backtests/jobs")
+def start_backtest(payload: BacktestSubmit) -> dict[str, Any]:
+    raw = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    config = BacktestConfig.from_dict({**raw, "created_by_app": True})
+    missing_processed = MarketDataProvider(
+        DataProviderConfig(processed_root=config.processed_data_root)
+    ).missing_dates(config.start_date, config.end_date, "1m")
+    if missing_processed:
+        shown = ", ".join(missing_processed[:10])
+        suffix = " ..." if len(missing_processed) > 10 else ""
+        raise HTTPException(status_code=400, detail=f"Processed provider data is missing for: {shown}{suffix}")
+    return submit_backtest_job(config)
+
+
+@app.get("/api/backtests/jobs")
+def get_backtest_jobs(output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    return {"jobs": list_backtest_jobs(Path(output_root))}
+
+
+@app.get("/api/backtests/jobs/{job_id}")
+def backtest_job_status(job_id: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    status = get_backtest_status(Path(output_root), job_id)
+    if not status.get("job_id"):
+        raise HTTPException(status_code=404, detail="Backtest job not found")
+    return status
+
+
+@app.get("/api/backtests/runs/{run_id}")
+def backtest_run_detail(run_id: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    root = Path(output_root).resolve()
+    run_dir = (root / run_id).resolve()
+    if root != run_dir and root not in run_dir.parents:
+        raise HTTPException(status_code=400, detail="Invalid run path")
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+    metadata = read_run_metadata(run_dir) or {}
+    return {
+        "metadata": json_safe(metadata),
+        "summary": json_safe(metadata.get("summary") or {}),
+        "tables": {
+            "daily": read_table(run_dir / "daily_summary.parquet"),
+            "trades": read_table(run_dir / "trades.parquet"),
+            "orders": read_table(run_dir / "orders.parquet"),
+            "scanner": read_table(run_dir / "scanner_snapshots.parquet"),
+            "rejections": read_table(run_dir / "rejection_events.parquet"),
+            "positions": read_table(run_dir / "positions.parquet"),
+            "portfolio": read_table(run_dir / "portfolio.parquet"),
+        },
+        "logs": (run_dir / "logs.txt").read_text(encoding="utf-8") if (run_dir / "logs.txt").exists() else "",
+    }
+
+
+@app.delete("/api/backtests/runs/{run_id}")
+def delete_backtest_run(run_id: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    root = Path(output_root).resolve()
+    run_dir = (root / run_id).resolve()
+    if root != run_dir and root not in run_dir.parents:
+        raise HTTPException(status_code=400, detail="Refusing to delete outside output root")
+    metadata = read_run_metadata(run_dir)
+    if not metadata or not metadata.get("created_by_app"):
+        raise HTTPException(status_code=400, detail="Refusing to delete a run not created by this app")
+    shutil.rmtree(run_dir)
+    return {"status": "deleted", "run_id": run_id}
+
+
+@app.get("/api/market-data/scope")
+def market_scope(raw_root: str = str(DEFAULT_RAW_ROOT), processed_root: str = str(DEFAULT_PROCESSED_ROOT)) -> dict[str, Any]:
+    return scope_defaults(Path(raw_root), Path(processed_root))
+
+
+@app.get("/api/market-data/source")
+def market_source(raw_root: str, start_date: date, end_date: date) -> dict[str, Any]:
+    return {"rows": source_scan(Path(raw_root), start_date, end_date)}
+
+
+@app.post("/api/market-data/build/jobs")
+def start_build(payload: BuildSubmit) -> dict[str, Any]:
+    request = BuildRequest(
+        raw_root=Path(payload.raw_root),
+        processed_root=Path(payload.processed_root),
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        timeframes=list(TIMEFRAMES),
+        feature_groups=list(FEATURE_GROUPS),
+        supervision_groups=list(SUPERVISION_GROUPS),
+        rebuild_mode="force_rebuild",
+        tickers=None,
+    )
+    return submit_build_job(request, max_workers=payload.max_workers, polars_threads=payload.polars_threads)
+
+
+@app.get("/api/market-data/build/jobs")
+def build_jobs(processed_root: str = str(DEFAULT_PROCESSED_ROOT)) -> dict[str, Any]:
+    return {"jobs": list_build_jobs(Path(processed_root))}
+
+
+@app.get("/api/market-data/build/jobs/{job_id}")
+def build_job_status(job_id: str, processed_root: str = str(DEFAULT_PROCESSED_ROOT), raw_root: str = str(DEFAULT_RAW_ROOT)) -> dict[str, Any]:
+    status = get_build_status(Path(processed_root), job_id)
+    if not status.get("job_id"):
+        raise HTTPException(status_code=404, detail="Build job not found")
+    request = status.get("request") or {}
+    start = date.fromisoformat(request.get("start_date"))
+    end = date.fromisoformat(request.get("end_date"))
+    source_rows = [asdict(row) for row in scan_market_source(Path(request.get("raw_root") or raw_root), start, end)]
+    status["progress"] = build_progress_model(source_rows=source_rows, events=status.get("events", []), job_status=status)
+    return json_safe(status)
+
+
+@app.post("/api/market-data/build/jobs/{job_id}/cancel")
+def stop_build(job_id: str, processed_root: str = str(DEFAULT_PROCESSED_ROOT)) -> dict[str, Any]:
+    return cancel_build_job(Path(processed_root), job_id)
+
+
+@app.get("/api/market-data/review")
+def market_review(
+    processed_root: str = str(DEFAULT_PROCESSED_ROOT),
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, Any]:
+    return json_safe(review_payload(Path(processed_root), start_date, end_date))
+
+
+@app.get("/api/market-data/coverage")
+def market_coverage(processed_root: str, group: str, start_date: date, end_date: date) -> dict[str, Any]:
+    return {"rows": coverage_rows(artifact_records(Path(processed_root)), start_date, end_date, group)}
+
+
+@app.get("/api/market-data/manifest")
+def market_manifest(processed_root: str = str(DEFAULT_PROCESSED_ROOT)) -> dict[str, Any]:
+    manifest = read_manifest(Path(processed_root))
+    return {
+        "card": {
+            "updated_at": manifest.get("updated_at"),
+            "schema_version": manifest.get("schema_version"),
+            "feature_version": manifest.get("feature_version"),
+            "supervision_version": manifest.get("supervision_version"),
+            "artifact_count": len(manifest.get("artifacts", {})),
+            "processed_root": processed_root,
+        }
+    }
+
+
+@app.get("/api/market-data/preview")
+def market_preview(
+    processed_root: str,
+    group: str,
+    timeframe: str,
+    session_date: date,
+    columns: str | None = None,
+    tickers: str | None = None,
+    row_limit: int = Query(default=250, ge=10, le=5000),
+) -> dict[str, Any]:
+    record = first_matching_artifact(artifact_records(Path(processed_root)), group, timeframe, session_date.isoformat())
+    if not record:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    selected_columns = parse_csv_list(columns)
+    selected_tickers = parse_csv_list(tickers)
+    return {"record": record, "sample": load_artifact_sample(record, selected_columns, row_limit, selected_tickers)}
+
+
+@app.get("/api/market-data/schema")
+def market_schema(processed_root: str, group: str, timeframe: str, session_date: date) -> dict[str, Any]:
+    record = first_matching_artifact(artifact_records(Path(processed_root)), group, timeframe, session_date.isoformat())
+    if not record:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return {"record": record, "schema": artifact_schema(record)}
+
+
+@app.get("/api/market-data/chart")
+def market_chart(
+    processed_root: str,
+    session_date: date,
+    timeframe: str,
+    ticker: str,
+    feature_groups: str | None = None,
+    columns: str | None = None,
+    supervision_groups: str | None = None,
+    marker_limit: int = Query(default=100, ge=0, le=500),
+    min_confidence: float = Query(default=0.7, ge=0.0, le=1.0),
+) -> dict[str, Any]:
+    selected_feature_groups = parse_csv_list(feature_groups) or ["core", "momentum"]
+    selected_columns = parse_csv_list(columns) or ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"]
+    selected_supervision = parse_csv_list(supervision_groups) or ["method"]
+    return json_safe(
+        chart_payload(
+            Path(processed_root),
+            session=session_date,
+            timeframe=timeframe,
+            ticker=ticker,
+            feature_groups_selected=selected_feature_groups,
+            selected_columns=selected_columns,
+            supervision_groups_selected=selected_supervision,
+            marker_limit=marker_limit,
+            min_confidence=min_confidence,
+        )
+    )
+
+
+@app.get("/api/market-data/chart/default-ticker")
+def chart_default_ticker(processed_root: str, timeframe: str, session_date: date) -> dict[str, str]:
+    record = first_matching_artifact(artifact_records(Path(processed_root)), "bars", timeframe, session_date.isoformat())
+    return {"ticker": first_ticker(record) or "AAPL"}
+
+
+if FRONTEND_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
+
+
+@app.get("/{path:path}")
+def frontend(path: str) -> FileResponse:
+    index = FRONTEND_DIST / "index.html"
+    if not index.exists():
+        raise HTTPException(status_code=404, detail="React build not found. Run `npm --prefix frontend run build`.")
+    return FileResponse(index)

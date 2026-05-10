@@ -1,4 +1,4 @@
-# QQ Momentum Trading
+# Quant Research Workbench
 
 This project is moving to a local-first research workflow. The goal is to develop, inspect, and improve momentum strategies on local historical data before translating anything to QuantConnect or live execution.
 
@@ -99,8 +99,10 @@ src/
     ibkr_adapter.py
     massive_adapter.py
     execution.py
+  backend/
+    app.py
   frontend/
-    streamlit_app.py
+    React/Vite operator UI
 ```
 
 Large strategy deviations can live in separate folders under `src/strategies`.
@@ -152,25 +154,44 @@ Typical parameters include:
 
 ## Frontend
 
-The frontend can be a Streamlit app.
+The frontend is a React/Vite operator UI served by the FastAPI backend. Streamlit has been removed so the UI can use the same design stance and component model as the larger trading dashboard.
 
-Run it from the repository root with:
-
-```powershell
-streamlit run src/frontend/streamlit_app.py
-```
-
-Install the local Phase 1 dependencies first if needed:
+Install Python dependencies:
 
 ```powershell
 pip install -r requirements.txt
 ```
 
+Install frontend dependencies:
+
+```powershell
+npm --prefix frontend install
+```
+
+Run the backend API:
+
+```powershell
+uvicorn src.backend.app:app --reload
+```
+
+Run the React development server:
+
+```powershell
+npm --prefix frontend run dev
+```
+
+For a production-style local build:
+
+```powershell
+npm --prefix frontend run build
+uvicorn src.backend.app:app
+```
+
 Sidebar:
 
 - strategy selector
-- backtest run selector, newest first
-- run/new-run controls
+- Market Data Build
+- Market Data Review
 
 Run panel:
 
@@ -250,9 +271,9 @@ Current capabilities:
 - simulates stop, limit, and market fills from OHLC bars
 - tracks cash, equity, positions, orders, trades, scanner snapshots, candidate rankings, signals, and rejections
 - saves every run under `D:/TradingData/quant-research-workbench/runs/`
-- exposes completed runs through the Streamlit frontend
+- exposes completed runs through the FastAPI/React frontend
 
-The frontend now treats the sidebar as strategy navigation only. Each strategy opens a main-page workspace with:
+The frontend treats backend services as the authority. Each strategy opens a main-page workspace with:
 
 - app-created run history sorted by recency
 - required run names
@@ -265,6 +286,12 @@ The frontend now treats the sidebar as strategy navigation only. Each strategy o
 - a parameters dialog for viewing the saved config and launching a copied run with edits
 - cached Polars artifact loading so selected-day/range filtering and chart pulls avoid repeated disk reads
 - scanner debugging for both ranking systems: the opening setup ranking and the minute-by-minute live ranking snapshots
+
+The Market Data workspace exposes:
+
+- Build Data: force-rebuilds the canonical provider store, submits durable backend worker jobs, polls backend-owned progress, and renders active/completed session cards without page reloads.
+- Review Data: summarizes the saved manifest, artifact coverage, schemas, sampled Parquet rows, and chart-ready bars/features/supervision markers.
+- Chart review: uses saved provider artifacts, centralized chart colors, extended-hours shading, timeframe buttons, settings, fit controls, and fullscreen mode.
 
 Runs without app metadata are not listed by the frontend. Local runs created by the app or engine include:
 

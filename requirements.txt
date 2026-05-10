@@ -1,6 +1,6 @@
 polars
-streamlit>=1.57.0
-starlette>=0.47.2,<1.0
+fastapi
+uvicorn[standard]
 pandas
 pandas-market-calendars
 pyarrow

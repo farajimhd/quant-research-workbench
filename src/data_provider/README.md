@@ -52,7 +52,7 @@ Build execution is split into two provider-owned phases:
 1. Read each raw `1m` source file, normalize it, and write every selected bar timeframe for that session.
 2. Run independent artifact jobs per `(session_date, timeframe)` to calculate features, bar supervision, method supervision, and scanner supervision from the written bar files.
 
-This keeps bar generation separate from heavier feature and label work, and it lets the provider parallelize artifact jobs without putting build work inside the Streamlit process.
+This keeps bar generation separate from heavier feature and label work, and it lets the provider parallelize artifact jobs without putting build work inside the frontend process.
 
 ## Time Handling
 
@@ -424,7 +424,7 @@ This table is intended to answer: at this timestamp, which tickers were the best
 
 Phase 1 backtests now use the provider for prepared minute data:
 
-1. The frontend checks whether requested `1m` provider artifacts exist before starting a run.
+1. The backend API checks whether requested `1m` provider artifacts exist before starting a run.
 2. The strategy loader reads provider `1m` bars and required features.
 3. Strategy-specific session filtering is applied inside the backtest adapter, not inside the provider.
 4. Five-minute strategy context is read from provider `5m` bars when available and joined to minute bars through an as-of join.
@@ -432,12 +432,13 @@ Phase 1 backtests now use the provider for prepared minute data:
 
 ## Frontend Integration
 
-The Streamlit sidebar has a `Data Provider` workspace:
+The React frontend has a `Market Data` workspace served by `src.backend.app`:
 
 - The Build Data page auto-fills raw root, processed root, start date, and end date from available data.
 - Scope changes are made through the compact data-scope editor.
 - The build always runs in `force_rebuild` mode and calculates every configured timeframe, feature group, and supervision group.
 - Progress is reported per source day and per timeframe. Each day card shows raw loading, other-timeframe generation, and timeframe-specific progress for normalization, bar writes, feature calculation, feature writes, bar labels, method labels, and scanner labels.
+- Progress aggregation is owned by the backend API and rendered by React without full page reloads.
 
 Charts and run dashboards use `MarketDataProvider` first. If provider artifacts are missing, the chart loader can fall back to older run artifacts/raw paths where that fallback is still supported.
 
@@ -447,7 +448,7 @@ Charts and run dashboards use `MarketDataProvider` first. If provider artifacts 
 - Build output is partitioned by day and timeframe so the UI can load only the requested dates.
 - Feature groups are separate Parquet files to avoid loading every indicator for every use case.
 - Consumers can request specific tickers and columns.
-- Full builds run outside Streamlit in provider-managed worker processes. Bar generation runs first, then independent per-timeframe artifact jobs run from written bar files.
+- Full builds run outside request/UI threads in provider-managed worker processes. Bar generation runs first, then independent per-timeframe artifact jobs run from written bar files.
 - Supervision uses 1/2/3 bar horizons and the three active method families to keep full-universe builds bounded.
 
 ## Research Discipline
