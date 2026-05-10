@@ -3820,6 +3820,8 @@ def format_bytes(value: int | float | None) -> str:
 
 def format_duration(value: int | float | None) -> str:
     seconds = float(value or 0)
+    if 0 < seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
     if seconds < 60:
         return f"{seconds:.2f}s"
     minutes, remainder = divmod(seconds, 60)
@@ -4042,7 +4044,16 @@ def build_monitor_metrics(plan_rows: list[dict], events: list[dict], manifest: d
     buildable = [row for row in expected if row.get("exists")]
     missing = [row for row in expected if not row.get("exists")]
     artifact_events = [event for event in events if event.get("event") == "artifact_complete"]
-    elapsed = (datetime.now() - started_at).total_seconds() if started_at else 0
+    run_complete = next((event for event in reversed(events) if event.get("event") == "run_complete"), None)
+    elapsed = float(run_complete.get("duration_sec") or 0) if run_complete else ((datetime.now() - started_at).total_seconds() if started_at else 0)
+    if not events:
+        status = "ready"
+    elif run_complete:
+        status = "complete"
+    elif any(event.get("status") in {"failed", "error"} for event in events):
+        status = "failed"
+    else:
+        status = "running"
     return {
         "Raw": f"{len(buildable):,}",
         "Exp": f"{len(expected):,}",
@@ -4051,7 +4062,7 @@ def build_monitor_metrics(plan_rows: list[dict], events: list[dict], manifest: d
         "Rows": f"{sum(int(event.get('rows_out') or 0) for event in artifact_events):,}",
         "Written": format_bytes(sum(int(event.get("size_bytes") or 0) for event in artifact_events)),
         "Elapsed": format_duration(elapsed),
-        "Status": str(events[-1].get("status") if events else "ready"),
+        "Status": status,
     }
 
 
@@ -4150,6 +4161,8 @@ def build_session_cards(plan_rows: list[dict], events: list[dict]) -> tuple[list
     for event in events:
         session_date = event.get("session_date")
         if not session_date or session_date not in session_rows:
+            continue
+        if event.get("timeframe") == "1mo" or event.get("phase") in {"monthly_aggregate", "run"}:
             continue
         row = session_rows[session_date]
         row["phase"] = event.get("phase", row.get("phase"))
