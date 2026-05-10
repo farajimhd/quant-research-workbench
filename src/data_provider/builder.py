@@ -14,11 +14,18 @@ from src.data_provider.features import FEATURE_COLUMNS, add_feature_columns, sel
 from src.data_provider.manifest import ArtifactRecord, upsert_artifact
 from src.data_provider.raw_loader import load_raw_minute_bars, raw_minute_path
 from src.data_provider.store import partition_path, read_frame, write_frame
-from src.data_provider.supervision import build_bar_supervision, build_method_supervision, build_scanner_supervision
+from src.data_provider.supervision import (
+    FIXED_HORIZONS_MINUTES,
+    METHOD_WINDOWS,
+    build_bar_supervision,
+    build_method_supervision,
+    build_scanner_supervision,
+)
 from src.data_provider.timeframes import aggregate_daily, aggregate_intraday, aggregate_monthly, canonicalize_1m
 
 
 ProgressCallback = Callable[[dict], None]
+MAX_SUPERVISION_OUTPUT_ROWS = 50_000_000
 
 
 def emit(progress_callback: ProgressCallback | None, event: dict) -> None:
@@ -146,9 +153,50 @@ def build_supervision_groups(
 ) -> None:
     if bars.is_empty() or not request.supervision_groups:
         return
+    estimated_rows = {
+        "supervision_bar": bars.height * len(FIXED_HORIZONS_MINUTES) if "bar" in request.supervision_groups else 0,
+        "supervision_method": bars.height * len(METHOD_WINDOWS) if "method" in request.supervision_groups or "scanner" in request.supervision_groups else 0,
+        "supervision_scanner": bars.height * len(METHOD_WINDOWS) if "scanner" in request.supervision_groups else 0,
+    }
+    oversized = {group: rows for group, rows in estimated_rows.items() if rows > MAX_SUPERVISION_OUTPUT_ROWS}
+    if oversized:
+        detail = ", ".join(f"{group}~{rows:,} rows" for group, rows in oversized.items())
+        emit(
+            progress_callback,
+            {
+                "event": "phase_blocked",
+                "phase": "supervision",
+                "status": "failed",
+                "session_date": session_date,
+                "timeframe": timeframe,
+                "rows_in": bars.height,
+                "reason": f"Estimated supervision output is too large for in-app synchronous build: {detail}.",
+                "work_completed": progress_state.get("completed_units") if progress_state else None,
+                "work_total": progress_state.get("total_units") if progress_state else None,
+            },
+        )
+        raise ValueError(
+            "Supervision build is too large for the current in-app builder. "
+            f"{session_date} {timeframe} has {bars.height:,} input bars and would create {detail}. "
+            "Build bars/features first, then run supervision with a narrower ticker universe or a batch/offline worker."
+        )
     bar_supervision = None
     method_supervision = None
     if "bar" in request.supervision_groups:
+        emit(
+            progress_callback,
+            {
+                "event": "phase_started",
+                "phase": "supervision_bar",
+                "status": "running",
+                "session_date": session_date,
+                "timeframe": timeframe,
+                "rows_in": bars.height,
+                "estimated_rows_out": estimated_rows["supervision_bar"],
+                "work_completed": progress_state.get("completed_units") if progress_state else None,
+                "work_total": progress_state.get("total_units") if progress_state else None,
+            },
+        )
         started_at = perf_counter()
         bar_supervision = build_bar_supervision(bars)
         path = write_artifact(
@@ -180,6 +228,20 @@ def build_supervision_groups(
             },
         )
     if "method" in request.supervision_groups or "scanner" in request.supervision_groups:
+        emit(
+            progress_callback,
+            {
+                "event": "phase_started",
+                "phase": "supervision_method",
+                "status": "running",
+                "session_date": session_date,
+                "timeframe": timeframe,
+                "rows_in": bars.height,
+                "estimated_rows_out": estimated_rows["supervision_method"],
+                "work_completed": progress_state.get("completed_units") if progress_state else None,
+                "work_total": progress_state.get("total_units") if progress_state else None,
+            },
+        )
         started_at = perf_counter()
         method_supervision = build_method_supervision(bars)
         if "method" in request.supervision_groups:
@@ -214,6 +276,20 @@ def build_supervision_groups(
     if "scanner" in request.supervision_groups:
         if method_supervision is None:
             method_supervision = build_method_supervision(bars)
+        emit(
+            progress_callback,
+            {
+                "event": "phase_started",
+                "phase": "supervision_scanner",
+                "status": "running",
+                "session_date": session_date,
+                "timeframe": timeframe,
+                "rows_in": method_supervision.height,
+                "estimated_rows_out": estimated_rows["supervision_scanner"],
+                "work_completed": progress_state.get("completed_units") if progress_state else None,
+                "work_total": progress_state.get("total_units") if progress_state else None,
+            },
+        )
         started_at = perf_counter()
         scanner_supervision = build_scanner_supervision(method_supervision)
         path = write_artifact(

@@ -4118,6 +4118,10 @@ def build_phase_summary(plan_rows: list[dict], events: list[dict], *, include_gl
         phase = str(event.get("phase") or "")
         if phase not in phase_totals:
             continue
+        if event.get("event") not in {"plan_complete", "phase_complete", "artifact_complete", "run_complete"}:
+            continue
+        if event.get("status") != "complete":
+            continue
         completed[phase] += 1
         elapsed[phase] += float(event.get("duration_sec") or 0.0)
 
@@ -4166,7 +4170,9 @@ def build_session_cards(plan_rows: list[dict], events: list[dict]) -> tuple[list
             continue
         row = session_rows[session_date]
         row["phase"] = event.get("phase", row.get("phase"))
-        if event.get("event") == "session_started":
+        if event.get("status") in {"failed", "error"}:
+            row["status"] = "failed"
+        elif event.get("event") == "session_started":
             row["status"] = "running"
         elif event.get("event") not in {"session_complete", "session_skipped"}:
             row["status"] = "running"
@@ -4195,7 +4201,7 @@ def build_session_cards(plan_rows: list[dict], events: list[dict]) -> tuple[list
     active = [
         row
         for row in session_rows.values()
-        if row["session_date"] not in completed_dates and row.get("status") in {"queued", "running", "complete"}
+        if row["session_date"] not in completed_dates and row.get("status") in {"queued", "running", "complete", "failed"}
     ]
     return active[:5], completed
 
