@@ -972,10 +972,10 @@ def install_css() -> None:
             text-overflow: ellipsis;
             white-space: nowrap;
         }
-        .st-key-build_metrics [data-testid="stMetric"] {
+        [class*="st-key-build_metrics"] [data-testid="stMetric"] {
             min-height: 0;
         }
-        .st-key-build_metrics [data-testid="stMetricLabel"] p {
+        [class*="st-key-build_metrics"] [data-testid="stMetricLabel"] p {
             color: var(--qq-muted);
             font-size: 0.68rem;
             line-height: 1;
@@ -983,7 +983,7 @@ def install_css() -> None:
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        .st-key-build_metrics [data-testid="stMetricValue"] {
+        [class*="st-key-build_metrics"] [data-testid="stMetricValue"] {
             font-size: 2.5rem;
             line-height: 0.95;
         }
@@ -3900,8 +3900,8 @@ def render_scope_dialog() -> None:
     update_scope_dialog()
 
 
-def render_build_metrics(metrics: dict[str, str]) -> None:
-    with st.container(key="build_metrics", border=False):
+def render_build_metrics(metrics: dict[str, str], key_suffix: str | int = 0) -> None:
+    with st.container(key=f"build_metrics_{key_suffix}", border=False):
         items = list(metrics.items())
         columns = st.columns(len(items), gap="small", border=False)
         for column, (label, value) in zip(columns, items):
@@ -4243,7 +4243,7 @@ def render_data_provider_page() -> None:
         current_manifest = read_manifest(processed_root)
         metrics = build_monitor_metrics(source_rows, current_events, current_manifest, st.session_state.get("build_started_at"))
         with metrics_slot.container():
-            render_build_metrics(metrics)
+            render_build_metrics(metrics, key_suffix=len(current_events))
         missing_sessions = [row["session_date"] for row in source_rows if row.get("expected_market_session") and not row.get("exists")]
         with missing_slot.container():
             if missing_sessions:
