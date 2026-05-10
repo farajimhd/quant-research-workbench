@@ -56,7 +56,12 @@ def effective_worker_count(request: BuildRequest, requested_workers: int, builda
     requested = max(1, int(requested_workers))
     capped = min(requested, buildable_sessions) if buildable_sessions else 0
     if capped > 1 and request.tickers is None and "1m" in request.timeframes and request.supervision_groups:
-        return 1, "full_universe_1m_supervision_memory_bound"
+        horizon_work = sum(FIXED_HORIZONS_MINUTES) if "bar" in request.supervision_groups else 0
+        if horizon_work > 60:
+            return 1, "full_universe_1m_bar_horizons_memory_bound"
+        limited = min(capped, 2)
+        if limited < capped:
+            return limited, "full_universe_1m_supervision_parallel_cap"
     return capped, None
 
 
