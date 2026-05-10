@@ -4396,8 +4396,6 @@ def build_phase_summary(
         "supervision_scanner": contexts if "scanner" in selected_supervision else 0,
         }
     )
-    if include_global:
-        phase_totals["run"] = 1
     phase_labels = []
     if include_global:
         phase_labels.append(("scan_source", "Scan"))
@@ -4419,8 +4417,6 @@ def build_phase_summary(
         phase_labels.append(("supervision_method", "Method label files"))
     if "scanner" in selected_supervision:
         phase_labels.append(("supervision_scanner", "Scanner files"))
-    if include_global:
-        phase_labels.append(("run", "Total run"))
     completed: dict[str, int] = {phase: 0 for phase in phase_totals}
     elapsed: dict[str, float] = {phase: 0.0 for phase in phase_totals}
     active_started: dict[str, list[dict]] = {phase: [] for phase in phase_totals}
@@ -4655,19 +4651,30 @@ def render_data_provider_page() -> None:
     with header_cols[1]:
         render_scope_card(scope)
 
-    job_status: dict[str, Any] | None = None
-    job_id = st.session_state.get("build_job_id")
-    if job_id:
-        job_status = get_build_status(processed_root, str(job_id))
-        if not job_status.get("job_id"):
+    def load_build_job_status() -> dict[str, Any] | None:
+        job_id = st.session_state.get("build_job_id")
+        if not job_id:
+            return None
+        current_status = get_build_status(processed_root, str(job_id))
+        if not current_status.get("job_id"):
             st.session_state.pop("build_job_id", None)
-            job_status = None
-    events: list[dict] = list(job_status.get("events", [])) if job_status else []
-    if job_status and not events and job_status.get("status") in {"queued", "running", "canceling"}:
-        events = [{"event": "job_started", "phase": "job", "status": "running"}]
-    started_at = None
-    if job_status and job_status.get("started_at"):
-        started_at = datetime.fromisoformat(str(job_status["started_at"]).replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+            return None
+        return current_status
+
+    def build_events_for_status(current_status: dict[str, Any] | None) -> list[dict]:
+        current_events = list(current_status.get("events", [])) if current_status else []
+        if current_status and not current_events and current_status.get("status") in {"queued", "running", "canceling"}:
+            return [{"event": "job_started", "phase": "job", "status": "running"}]
+        return current_events
+
+    def build_started_at_for_status(current_status: dict[str, Any] | None) -> datetime | None:
+        if current_status and current_status.get("started_at"):
+            return datetime.fromisoformat(str(current_status["started_at"]).replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+        return None
+
+    job_status = load_build_job_status()
+    events = build_events_for_status(job_status)
+    started_at = build_started_at_for_status(job_status)
     job_running = bool(job_status and job_status.get("status") in {"queued", "running", "canceling"})
 
     build_tab, timings_tab, artifacts_tab, plan_tab, store_tab, manifest_tab = st.tabs(
@@ -4702,16 +4709,20 @@ def render_data_provider_page() -> None:
     with manifest_tab:
         manifest_slot = st.empty()
 
-    def render_progress_board(current_events: list[dict]) -> None:
+    def render_progress_board(
+        current_events: list[dict],
+        current_job_status: dict[str, Any] | None,
+        current_started_at: datetime | None,
+    ) -> None:
         current_manifest = read_manifest(processed_root)
-        timeframes, feature_groups, supervision_groups = build_request_options(job_status)
+        timeframes, feature_groups, supervision_groups = build_request_options(current_job_status)
         plan_rows = build_plan_rows(current_events, source_rows)
         metrics = build_monitor_metrics(
             plan_rows,
             current_events,
             current_manifest,
-            started_at,
-            str(job_status.get("status")) if job_status else None,
+            current_started_at,
+            str(current_job_status.get("status")) if current_job_status else None,
         )
         with metrics_slot.container():
             render_build_metrics(metrics, key_suffix=len(current_events))
@@ -4793,7 +4804,22 @@ def render_data_provider_page() -> None:
         with manifest_slot.container():
             render_manifest_card(current_manifest, processed_root)
 
-    render_progress_board(events)
+    def render_current_progress() -> None:
+        current_job_status = load_build_job_status()
+        current_events = build_events_for_status(current_job_status)
+        current_started_at = build_started_at_for_status(current_job_status)
+        render_progress_board(current_events, current_job_status, current_started_at)
+        current_running = bool(current_job_status and current_job_status.get("status") in {"queued", "running", "canceling"})
+        if job_running and not current_running and current_job_status:
+            marker = f"{current_job_status.get('job_id')}:{current_job_status.get('status')}"
+            if st.session_state.get("build_terminal_refresh") != marker:
+                st.session_state["build_terminal_refresh"] = marker
+                st.rerun()
+
+    if hasattr(st, "fragment"):
+        st.fragment(render_current_progress, run_every="1s" if job_running else None)()
+    else:
+        render_progress_board(events, job_status, started_at)
 
     if start_clicked:
         request = BuildRequest(
@@ -4827,7 +4853,7 @@ def render_data_provider_page() -> None:
                 st.code(str(job_status["traceback"]))
     elif job_status and job_status.get("status") == "cancelled":
         st.warning("Build cancelled.")
-    if job_running:
+    if job_running and not hasattr(st, "fragment"):
         time.sleep(1)
         st.rerun()
 
