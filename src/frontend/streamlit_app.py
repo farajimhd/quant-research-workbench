@@ -137,12 +137,12 @@ INDICATOR_DISPLAY_NAMES = {
 LEGEND_INDICATORS = {"vwap", "tema9", "tema20", "macd_line", "macd_signal"}
 
 DEFAULT_CANDLE_CHART_SETTINGS = {
-    "upColor": "#067647",
-    "downColor": "#B42318",
-    "borderUpColor": "#05603A",
-    "borderDownColor": "#912018",
-    "wickUpColor": "#17B26A",
-    "wickDownColor": "#D92D20",
+    "upColor": "#33E42A",
+    "downColor": "#FD0E50",
+    "borderUpColor": "#1DB914",
+    "borderDownColor": "#CB093F",
+    "wickUpColor": "#4DC746",
+    "wickDownColor": "#C52A55",
     "borderVisible": True,
     "wickVisible": True,
     "priceLineVisible": True,
