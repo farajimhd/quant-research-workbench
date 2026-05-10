@@ -5072,16 +5072,16 @@ def render_review_chart_tab(records: list[dict[str, Any]], processed_root: Path)
             with toolbar_columns[4]:
                 st.markdown('<div class="qq-chart-toolbar-divider-inline"></div>', unsafe_allow_html=True)
             with toolbar_columns[5]:
-                settings_host = (
-                    st.popover(
-                        "Settings",
-                        icon=":material/settings:",
-                        key="review_chart_settings_popover",
-                        width="content",
+                with st.container(key="review_chart_settings_popover"):
+                    settings_host = (
+                        st.popover(
+                            "Settings",
+                            icon=":material/settings:",
+                            width="content",
+                        )
+                        if hasattr(st, "popover")
+                        else st.expander("Settings")
                     )
-                    if hasattr(st, "popover")
-                    else st.expander("Settings")
-                )
                 with settings_host:
                     selected_feature_groups = st.multiselect(
                         "Feature groups",
