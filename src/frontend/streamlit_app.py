@@ -3930,7 +3930,7 @@ def status_class(status: str) -> str:
         return "qq-status-bad"
     if normalized in {"running", "building", "processing", "in_progress"}:
         return "qq-status-running"
-    if normalized in {"skipped", "partial", "warning"}:
+    if normalized in {"skipped", "partial", "warning", "canceling", "cancelled"}:
         return "qq-status-warning"
     return "qq-status-neutral"
 
@@ -3943,7 +3943,7 @@ def status_icon(status: str) -> str:
         return "!"
     if normalized in {"running", "building", "processing", "in_progress"}:
         return "&#8230;"
-    if normalized in {"skipped", "partial", "warning"}:
+    if normalized in {"skipped", "partial", "warning", "canceling", "cancelled"}:
         return "!"
     return "&#8212;"
 
@@ -3958,27 +3958,40 @@ def status_badge_html(status: str) -> str:
     )
 
 
-def session_timeframes_for_build() -> list[str]:
-    return [timeframe for timeframe in TIMEFRAMES if timeframe != "1mo"]
+def session_timeframes_for_build(timeframes: Iterable[str] | None = None) -> list[str]:
+    selected = list(TIMEFRAMES) if timeframes is None else list(timeframes)
+    return [timeframe for timeframe in selected if timeframe != "1mo"]
 
 
-def intraday_timeframes_for_build() -> list[str]:
-    return [timeframe for timeframe in session_timeframes_for_build() if timeframe != "1d"]
+def intraday_timeframes_for_build(timeframes: Iterable[str] | None = None) -> list[str]:
+    return [timeframe for timeframe in session_timeframes_for_build(timeframes) if timeframe not in {"1m", "1d"}]
 
 
-def session_step_plan() -> dict[str, int]:
-    session_timeframes = session_timeframes_for_build()
+def session_step_plan(
+    timeframes: Iterable[str] | None = None,
+    feature_groups: Iterable[str] | None = None,
+    supervision_groups: Iterable[str] | None = None,
+) -> dict[str, int]:
+    session_timeframes = session_timeframes_for_build(timeframes)
+    selected_features = list(FEATURE_GROUPS) if feature_groups is None else list(feature_groups)
+    selected_supervision = list(SUPERVISION_GROUPS) if supervision_groups is None else list(supervision_groups)
     return {
         "raw": 1,
         "normalize": 1,
         "bars": len(session_timeframes),
-        "features": len(session_timeframes) * len(FEATURE_GROUPS),
-        "labels": len(session_timeframes) * len(SUPERVISION_GROUPS),
+        "features": len(session_timeframes) * len(selected_features),
+        "labels": len(session_timeframes) * len(selected_supervision),
         "complete": 1,
     }
 
 
-def file_card_html(row: dict) -> str:
+def file_card_html(
+    row: dict,
+    *,
+    timeframes: Iterable[str] | None = None,
+    feature_groups: Iterable[str] | None = None,
+    supervision_groups: Iterable[str] | None = None,
+) -> str:
     status = str(row.get("status") or "queued")
     session_date = str(row.get("session_date") or "-")
     current_step = str(row.get("phase") or status).replace("_", " ")
@@ -3988,7 +4001,15 @@ def file_card_html(row: dict) -> str:
     progress_pct = min(100.0, max(0.0, (completed_units / total_units) * 100.0))
     duration = format_duration(row.get("duration_sec", 0))
     progress_meta = f"{completed_units}/{total_units}, {duration}"
-    phase_summary = build_phase_summary([row], row.get("events", []), include_global=False, css_class="qq-card-phase-summary")
+    phase_summary = build_phase_summary(
+        [row],
+        row.get("events", []),
+        include_global=False,
+        css_class="qq-card-phase-summary",
+        timeframes=timeframes,
+        feature_groups=feature_groups,
+        supervision_groups=supervision_groups,
+    )
     return (
         '<div class="qq-file-card">'
         '<div class="qq-file-card-header">'
@@ -4010,8 +4031,26 @@ def file_card_html(row: dict) -> str:
     )
 
 
-def render_file_container(title: str, rows: list[dict]) -> str:
-    cards = "".join(file_card_html(row) for row in rows) or '<div class="qq-muted">No files yet.</div>'
+def render_file_container(
+    title: str,
+    rows: list[dict],
+    *,
+    timeframes: Iterable[str] | None = None,
+    feature_groups: Iterable[str] | None = None,
+    supervision_groups: Iterable[str] | None = None,
+) -> str:
+    cards = (
+        "".join(
+            file_card_html(
+                row,
+                timeframes=timeframes,
+                feature_groups=feature_groups,
+                supervision_groups=supervision_groups,
+            )
+            for row in rows
+        )
+        or '<div class="qq-muted">No files yet.</div>'
+    )
     return f'<div class="qq-build-list"><h4>{escape(title)}</h4><div class="qq-build-scroll">{cards}</div></div>'
 
 
@@ -4040,19 +4079,32 @@ def render_manifest_card(manifest: dict, processed_root: Path) -> None:
     )
 
 
-def build_monitor_metrics(plan_rows: list[dict], events: list[dict], manifest: dict, started_at: datetime | None) -> dict[str, str]:
+def build_monitor_metrics(
+    plan_rows: list[dict],
+    events: list[dict],
+    manifest: dict,
+    started_at: datetime | None,
+    job_status: str | None = None,
+) -> dict[str, str]:
     expected = [row for row in plan_rows if row.get("expected_market_session")]
     buildable = [row for row in expected if row.get("exists")]
     missing = [row for row in expected if not row.get("exists")]
     artifact_events = [event for event in events if event.get("event") == "artifact_complete"]
     run_complete = next((event for event in reversed(events) if event.get("event") == "run_complete"), None)
     elapsed = float(run_complete.get("duration_sec") or 0) if run_complete else ((datetime.now() - started_at).total_seconds() if started_at else 0)
-    if not events:
+    normalized_job_status = str(job_status or "").lower()
+    if normalized_job_status in {"cancelled", "canceling", "failed"}:
+        status = normalized_job_status
+    elif not events:
         status = "ready"
-    elif run_complete:
+    elif run_complete or normalized_job_status == "complete":
         status = "complete"
     elif any(event.get("status") in {"failed", "error"} for event in events):
         status = "failed"
+    elif any(event.get("event") == "job_cancelled" for event in events):
+        status = "cancelled"
+    elif any(event.get("event") == "cancel_requested" for event in events):
+        status = "canceling"
     else:
         status = "running"
     return {
@@ -4067,14 +4119,43 @@ def build_monitor_metrics(plan_rows: list[dict], events: list[dict], manifest: d
     }
 
 
-def build_phase_summary(plan_rows: list[dict], events: list[dict], *, include_global: bool = True, css_class: str = "qq-phase-summary") -> str:
+def build_plan_rows(events: list[dict], fallback_rows: list[dict]) -> list[dict]:
+    for event in reversed(events):
+        plan = event.get("plan")
+        if isinstance(plan, list):
+            return [row for row in plan if isinstance(row, dict)]
+    return fallback_rows
+
+
+def build_request_options(job_status: dict[str, Any] | None) -> tuple[list[str], list[str], list[str]]:
+    request = job_status.get("request", {}) if job_status else {}
+    timeframes = list(request["timeframes"]) if "timeframes" in request else list(TIMEFRAMES)
+    feature_groups = list(request["feature_groups"]) if "feature_groups" in request else list(FEATURE_GROUPS)
+    supervision_groups = list(request["supervision_groups"]) if "supervision_groups" in request else list(SUPERVISION_GROUPS)
+    return timeframes, feature_groups, supervision_groups
+
+
+def build_phase_summary(
+    plan_rows: list[dict],
+    events: list[dict],
+    *,
+    include_global: bool = True,
+    css_class: str = "qq-phase-summary",
+    timeframes: Iterable[str] | None = None,
+    feature_groups: Iterable[str] | None = None,
+    supervision_groups: Iterable[str] | None = None,
+) -> str:
     buildable = [row for row in plan_rows if row.get("expected_market_session") and row.get("exists")]
     buildable_count = len(buildable)
     touched_months = {str(row["session_date"])[:7] for row in buildable}
     month_count = len(touched_months)
-    session_timeframes = session_timeframes_for_build()
-    intraday_timeframes = intraday_timeframes_for_build()
-    contexts_with_monthly = buildable_count * len(session_timeframes) + (month_count if include_global else 0)
+    selected_timeframes = list(TIMEFRAMES) if timeframes is None else list(timeframes)
+    selected_features = list(FEATURE_GROUPS) if feature_groups is None else list(feature_groups)
+    selected_supervision = list(SUPERVISION_GROUPS) if supervision_groups is None else list(supervision_groups)
+    include_monthly = "1mo" in selected_timeframes
+    session_timeframes = session_timeframes_for_build(selected_timeframes)
+    intraday_timeframes = intraday_timeframes_for_build(selected_timeframes)
+    contexts_with_monthly = buildable_count * len(session_timeframes) + (month_count if include_global and include_monthly else 0)
     phase_totals = {}
     if include_global:
         phase_totals["scan_source"] = 1
@@ -4086,14 +4167,16 @@ def build_phase_summary(plan_rows: list[dict], events: list[dict], *, include_gl
         "aggregate_daily": buildable_count,
         "bars_write": contexts_with_monthly,
         "feature_compute": contexts_with_monthly,
-        "feature_write": contexts_with_monthly * len(FEATURE_GROUPS),
-        "supervision_bar": contexts_with_monthly,
-        "supervision_method": contexts_with_monthly,
-        "supervision_scanner": contexts_with_monthly,
+        "feature_write": contexts_with_monthly * len(selected_features),
+        "supervision_bar": contexts_with_monthly if "bar" in selected_supervision else 0,
+        "supervision_method": contexts_with_monthly if "method" in selected_supervision else 0,
+        "supervision_scanner": contexts_with_monthly if "scanner" in selected_supervision else 0,
         }
     )
+    if include_global and include_monthly:
+        phase_totals["monthly_aggregate"] = month_count
     if include_global:
-        phase_totals.update({"monthly_aggregate": month_count, "run": 1})
+        phase_totals["run"] = 1
     phase_labels = []
     if include_global:
         phase_labels.append(("scan_source", "Scan"))
@@ -4106,13 +4189,18 @@ def build_phase_summary(plan_rows: list[dict], events: list[dict], *, include_gl
         ("bars_write", "Write bars"),
         ("feature_compute", "Feature calc"),
         ("feature_write", "Write features"),
-        ("supervision_bar", "Bar labels"),
-        ("supervision_method", "Method labels"),
-        ("supervision_scanner", "Scanner labels"),
         ]
     )
+    if "bar" in selected_supervision:
+        phase_labels.append(("supervision_bar", "Bar labels"))
+    if "method" in selected_supervision:
+        phase_labels.append(("supervision_method", "Method labels"))
+    if "scanner" in selected_supervision:
+        phase_labels.append(("supervision_scanner", "Scanner labels"))
+    if include_global and include_monthly:
+        phase_labels.append(("monthly_aggregate", "Monthly bars"))
     if include_global:
-        phase_labels.extend([("monthly_aggregate", "Monthly bars"), ("run", "Total run")])
+        phase_labels.append(("run", "Total run"))
     completed: dict[str, int] = {phase: 0 for phase in phase_totals}
     elapsed: dict[str, float] = {phase: 0.0 for phase in phase_totals}
     for event in events:
@@ -4145,9 +4233,16 @@ def build_phase_summary(plan_rows: list[dict], events: list[dict], *, include_gl
     return f'<div class="{escape(css_class)}">' + "".join(rows) + "</div>"
 
 
-def build_session_cards(plan_rows: list[dict], events: list[dict]) -> tuple[list[dict], list[dict]]:
+def build_session_cards(
+    plan_rows: list[dict],
+    events: list[dict],
+    *,
+    timeframes: Iterable[str] | None = None,
+    feature_groups: Iterable[str] | None = None,
+    supervision_groups: Iterable[str] | None = None,
+) -> tuple[list[dict], list[dict]]:
     session_rows: dict[str, dict] = {}
-    planned_steps = session_step_plan()
+    planned_steps = session_step_plan(timeframes, feature_groups, supervision_groups)
     planned_total = sum(planned_steps.values())
     for row in plan_rows:
         session_rows[row["session_date"]] = {
@@ -4278,10 +4373,18 @@ def render_data_provider_page() -> None:
 
     def render_progress_board(current_events: list[dict]) -> None:
         current_manifest = read_manifest(processed_root)
-        metrics = build_monitor_metrics(source_rows, current_events, current_manifest, started_at)
+        timeframes, feature_groups, supervision_groups = build_request_options(job_status)
+        plan_rows = build_plan_rows(current_events, source_rows)
+        metrics = build_monitor_metrics(
+            plan_rows,
+            current_events,
+            current_manifest,
+            started_at,
+            str(job_status.get("status")) if job_status else None,
+        )
         with metrics_slot.container():
             render_build_metrics(metrics, key_suffix=len(current_events))
-        missing_sessions = [row["session_date"] for row in source_rows if row.get("expected_market_session") and not row.get("exists")]
+        missing_sessions = [row["session_date"] for row in plan_rows if row.get("expected_market_session") and not row.get("exists")]
         with missing_slot.container():
             if missing_sessions:
                 st.warning(
@@ -4294,7 +4397,13 @@ def render_data_provider_page() -> None:
         ratio = min(1.0, work_completed / work_total) if work_total else 0.0
         progress_text = f"{work_completed:,}/{work_total:,}" if work_total else "-"
         current = current_events[-1] if current_events else {}
-        phase_summary = build_phase_summary(source_rows, current_events)
+        phase_summary = build_phase_summary(
+            plan_rows,
+            current_events,
+            timeframes=timeframes,
+            feature_groups=feature_groups,
+            supervision_groups=supervision_groups,
+        )
         with progress_slot.container():
             st.markdown(
                 f"""
@@ -4309,12 +4418,30 @@ def render_data_provider_page() -> None:
                 """,
                 unsafe_allow_html=True,
             )
-        active_cards, completed_cards = build_session_cards(source_rows, current_events)
+        active_cards, completed_cards = build_session_cards(
+            plan_rows,
+            current_events,
+            timeframes=timeframes,
+            feature_groups=feature_groups,
+            supervision_groups=supervision_groups,
+        )
         with board_slot.container():
             st.markdown(
                 '<div class="qq-build-board">'
-                + render_file_container("Active Queue", active_cards)
-                + render_file_container("Completed Files", completed_cards)
+                + render_file_container(
+                    "Active Queue",
+                    active_cards,
+                    timeframes=timeframes,
+                    feature_groups=feature_groups,
+                    supervision_groups=supervision_groups,
+                )
+                + render_file_container(
+                    "Completed Files",
+                    completed_cards,
+                    timeframes=timeframes,
+                    feature_groups=feature_groups,
+                    supervision_groups=supervision_groups,
+                )
                 + "</div>",
                 unsafe_allow_html=True,
             )
@@ -4326,7 +4453,7 @@ def render_data_provider_page() -> None:
         with artifacts_slot.container():
             app_dataframe(pl.DataFrame(artifact_events[-500:]), width="stretch", hide_index=True)
         with plan_slot.container():
-            app_dataframe(pl.DataFrame(source_rows), width="stretch", hide_index=True)
+            app_dataframe(pl.DataFrame(plan_rows), width="stretch", hide_index=True)
         with store_slot.container():
             app_dataframe(pl.DataFrame(ready_rows), width="stretch", hide_index=True)
         with manifest_slot.container():
