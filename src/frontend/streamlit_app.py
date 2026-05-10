@@ -2244,6 +2244,13 @@ def complete_candle_timeline(rows: list[dict], candles: list[dict]) -> list[dict
     step = chart_step_minutes(rows)
     timeline_times = set(candles_by_time)
     for session_date_value in chart_session_dates_from_rows(rows):
+        for minute in [
+            CHART_EXTENDED_START_MINUTE,
+            CHART_REGULAR_START_MINUTE,
+            CHART_REGULAR_END_MINUTE,
+            CHART_EXTENDED_END_MINUTE,
+        ]:
+            timeline_times.add(exchange_session_timestamp(session_date_value, minute))
         minute = CHART_EXTENDED_START_MINUTE
         while minute <= CHART_EXTENDED_END_MINUTE:
             timeline_times.add(exchange_session_timestamp(session_date_value, minute))
@@ -2270,7 +2277,7 @@ def extended_session_regions(rows: list[dict]) -> list[dict]:
             {
                 "start": exchange_session_timestamp(session_date_value, CHART_REGULAR_END_MINUTE),
                 "end": exchange_session_timestamp(session_date_value, CHART_EXTENDED_END_MINUTE),
-                "color": "rgba(30, 58, 95, 0.08)",
+                "color": "rgba(96, 165, 250, 0.12)",
             }
         )
     return regions
@@ -3351,7 +3358,7 @@ def render_lightweight_candle_chart(payload: dict, height: int = 720, component_
         synchronizeOscillatorRange();
     }}
 
-    fitRecentBars();
+    fitFirstDay();
 
     if (parentDocument && componentSelector) {{
         parentDocument.addEventListener("qq-chart-action", event => {{
@@ -5043,7 +5050,7 @@ def render_review_chart_tab(records: list[dict[str, Any]], processed_root: Path)
     component_key = "chart_component_review_data"
     with st.container(key=component_key):
         with st.container(key="chart_toolbar_review_data"):
-            toolbar_columns = st.columns([0.075, 0.36, 0.365, 0.105, 0.02, 0.075], gap="small", vertical_alignment="center")
+            toolbar_columns = st.columns([0.075, 0.34, 0.34, 0.15, 0.02, 0.075], gap="small", vertical_alignment="center")
             timeframe = toolbar_columns[1].segmented_control(
                 "Timeframe",
                 timeframes,
@@ -5068,7 +5075,7 @@ def render_review_chart_tab(records: list[dict[str, Any]], processed_root: Path)
             default_feature_groups = [group for group in ["core", "momentum"] if group in feature_options] or feature_options[:2]
             settings_key = chart_key_fragment(f"{timeframe}_{session_value}")
             with toolbar_columns[3]:
-                render_chart_toolbar_buttons(component_key, include_fullscreen=False)
+                render_chart_toolbar_buttons(component_key)
             with toolbar_columns[4]:
                 st.markdown('<div class="qq-chart-toolbar-divider-inline"></div>', unsafe_allow_html=True)
             with toolbar_columns[5]:
