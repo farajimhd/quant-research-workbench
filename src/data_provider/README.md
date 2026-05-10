@@ -360,6 +360,8 @@ Volume shock is currently detected when any of these future conditions is true:
 - `SWING_TECHNICAL`: 1 to 20 trading days by bar count approximation.
 - `MEAN_REVERSION_LONG`: 1 to 60 trading days by bar count approximation.
 
+For `1m` artifacts, method supervision is restricted to `PRICE_VOLUME_SHOCK`, `SCALP`, and `MOMENTUM_SCALP`. Longer day/swing methods are built on coarser timeframes where their windows do not require hundreds of future minute offsets per row.
+
 Columns:
 
 - `trade_method`: method family.

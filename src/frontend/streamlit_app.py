@@ -4235,22 +4235,22 @@ def build_phase_summary(
         [
         ("raw_load", "Raw load"),
         ("canonicalize_1m", "Normalize"),
-        ("aggregate", "Intraday bars"),
-        ("bars_write", "Write bars"),
-        ("feature_compute", "Feature calc"),
-        ("feature_write", "Write features"),
+        ("aggregate", "Intraday aggregates"),
+        ("bars_write", "Bar files"),
+        ("feature_compute", "Feature calc frames"),
+        ("feature_write", "Feature files"),
         ]
     )
     if include_daily:
-        phase_labels.insert(4 if include_global else 3, ("aggregate_daily", "Daily bars"))
+        phase_labels.insert(4 if include_global else 3, ("aggregate_daily", "Daily aggregate"))
     if "bar" in selected_supervision:
-        phase_labels.append(("supervision_bar", "Bar labels"))
+        phase_labels.append(("supervision_bar", "Bar label files"))
     if "method" in selected_supervision:
-        phase_labels.append(("supervision_method", "Method labels"))
+        phase_labels.append(("supervision_method", "Method label files"))
     if "scanner" in selected_supervision:
-        phase_labels.append(("supervision_scanner", "Scanner labels"))
+        phase_labels.append(("supervision_scanner", "Scanner files"))
     if include_global and include_monthly:
-        phase_labels.append(("monthly_aggregate", "Monthly bars"))
+        phase_labels.append(("monthly_aggregate", "Monthly aggregate"))
     if include_global:
         phase_labels.append(("run", "Total run"))
     completed: dict[str, int] = {phase: 0 for phase in phase_totals}

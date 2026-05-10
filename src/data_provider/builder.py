@@ -20,10 +20,10 @@ from src.data_provider.raw_loader import load_raw_minute_bars, raw_minute_path
 from src.data_provider.store import partition_path, read_frame, write_frame
 from src.data_provider.supervision import (
     FIXED_HORIZONS_MINUTES,
-    METHOD_WINDOWS,
     build_method_supervision,
     build_scanner_supervision,
     iter_bar_supervision_frames,
+    method_windows_for_timeframe,
 )
 from src.data_provider.timeframes import aggregate_daily, aggregate_intraday, aggregate_monthly, canonicalize_1m
 
@@ -138,7 +138,7 @@ def write_bar_supervision_artifact(
         )
 
     try:
-        for horizon_index, (horizon, horizon_frame) in enumerate(iter_bar_supervision_frames(bars, horizons, on_horizon_start), start=1):
+        for horizon_index, (horizon, horizon_frame) in enumerate(iter_bar_supervision_frames(bars, horizons, on_horizon_start, assume_sorted=True), start=1):
             table = horizon_frame.to_arrow()
             if writer is None:
                 writer = pq.ParquetWriter(tmp_path, table.schema, compression="zstd")
@@ -271,8 +271,8 @@ def build_supervision_groups(
         return
     estimated_rows = {
         "supervision_bar": bars.height * len(FIXED_HORIZONS_MINUTES) if "bar" in request.supervision_groups else 0,
-        "supervision_method": bars.height * len(METHOD_WINDOWS) if "method" in request.supervision_groups or "scanner" in request.supervision_groups else 0,
-        "supervision_scanner": bars.height * len(METHOD_WINDOWS) if "scanner" in request.supervision_groups else 0,
+        "supervision_method": bars.height * len(method_windows_for_timeframe(timeframe)) if "method" in request.supervision_groups or "scanner" in request.supervision_groups else 0,
+        "supervision_scanner": bars.height * len(method_windows_for_timeframe(timeframe)) if "scanner" in request.supervision_groups else 0,
     }
     bar_supervision = None
     method_supervision = None
@@ -337,7 +337,7 @@ def build_supervision_groups(
             },
         )
         started_at = perf_counter()
-        method_supervision = build_method_supervision(bars)
+        method_supervision = build_method_supervision(bars, assume_sorted=True)
         if "method" in request.supervision_groups:
             path = write_artifact(
                 root=request.processed_root,
@@ -369,7 +369,7 @@ def build_supervision_groups(
             )
     if "scanner" in request.supervision_groups:
         if method_supervision is None:
-            method_supervision = build_method_supervision(bars)
+            method_supervision = build_method_supervision(bars, assume_sorted=True)
         emit(
             progress_callback,
             {
@@ -386,6 +386,7 @@ def build_supervision_groups(
         )
         started_at = perf_counter()
         scanner_supervision = build_scanner_supervision(method_supervision)
+        method_rows = method_supervision.height
         path = write_artifact(
             root=request.processed_root,
             group="supervision_scanner",
@@ -405,7 +406,7 @@ def build_supervision_groups(
                 "session_date": session_date,
                 "timeframe": timeframe,
                 "group": "supervision_scanner",
-                "rows_in": method_supervision.height,
+                "rows_in": method_rows,
                 "rows_out": scanner_supervision.height,
                 "duration_sec": elapsed_since(started_at),
                 "path": str(path),
@@ -414,6 +415,9 @@ def build_supervision_groups(
                 "work_total": progress_state.get("total_units") if progress_state else None,
             },
         )
+        del scanner_supervision
+    del method_supervision
+    gc.collect()
 
 
 def write_bars_artifact(
@@ -569,6 +573,9 @@ def build_session_artifacts(
     )
     started_at = perf_counter()
     bars_1m = canonicalize_1m(raw, request.exchange_timezone)
+    raw_rows = raw.height
+    del raw
+    gc.collect()
     progress_state["completed_units"] += 1
     emit(
         progress_callback,
@@ -578,7 +585,7 @@ def build_session_artifacts(
             "status": "complete",
             "session_date": session_text,
             "timeframe": "1m",
-            "rows_in": raw.height,
+            "rows_in": raw_rows,
             "rows_out": bars_1m.height,
             "duration_sec": elapsed_since(started_at),
             "work_completed": progress_state["completed_units"],
@@ -613,6 +620,8 @@ def build_session_artifacts(
             progress_callback=progress_callback,
             progress_state=progress_state,
         )
+        del featured_bars_1m
+        gc.collect()
 
     touched_month = None
     for timeframe in request.timeframes:
@@ -661,6 +670,8 @@ def build_session_artifacts(
                 progress_callback=progress_callback,
                 progress_state=progress_state,
             )
+            del featured_bars, bars
+            gc.collect()
         elif timeframe == "1d":
             started_at = perf_counter()
             bars = aggregate_daily(bars_1m)
@@ -705,6 +716,11 @@ def build_session_artifacts(
                 progress_state=progress_state,
             )
             touched_month = session_text[:7]
+            del featured_bars, bars
+            gc.collect()
+    rows_out = bars_1m.height
+    del bars_1m
+    gc.collect()
     emit(
         progress_callback,
         {
@@ -714,10 +730,10 @@ def build_session_artifacts(
             "session_date": session_text,
             "index": index,
             "total": total,
-            "rows_out": bars_1m.height,
+            "rows_out": rows_out,
         },
     )
-    return {"session_date": session_text, "status": "complete", "rows": bars_1m.height, "touched_month": touched_month}
+    return {"session_date": session_text, "status": "complete", "rows": rows_out, "touched_month": touched_month}
 
 
 def _parallel_session_worker(
