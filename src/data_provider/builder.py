@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -409,6 +411,264 @@ def rebuild_monthly_artifacts(
         )
 
 
+def build_session_artifacts(
+    *,
+    request: BuildRequest,
+    status: dict,
+    index: int,
+    total: int,
+    progress_callback: ProgressCallback | None,
+    progress_state: dict,
+) -> dict:
+    session_text = str(status["session_date"])
+    session_date = datetime.fromisoformat(session_text).date()
+    source_path = raw_minute_path(request.raw_root, session_date)
+    emit(
+        progress_callback,
+        {
+            "event": "session_started",
+            "phase": "session",
+            "status": "running",
+            "session_date": session_text,
+            "index": index,
+            "total": total,
+        },
+    )
+    started_at = perf_counter()
+    raw = load_raw_minute_bars(request.raw_root, session_date, request.tickers)
+    progress_state["completed_units"] += 1
+    emit(
+        progress_callback,
+        {
+            "event": "phase_complete",
+            "phase": "raw_load",
+            "status": "complete",
+            "session_date": session_text,
+            "rows_out": raw.height,
+            "duration_sec": elapsed_since(started_at),
+            "source_path": str(source_path),
+            "source_size_bytes": status.get("size_bytes", 0),
+            "work_completed": progress_state["completed_units"],
+            "work_total": progress_state["total_units"],
+        },
+    )
+    started_at = perf_counter()
+    bars_1m = canonicalize_1m(raw, request.exchange_timezone)
+    progress_state["completed_units"] += 1
+    emit(
+        progress_callback,
+        {
+            "event": "phase_complete",
+            "phase": "canonicalize_1m",
+            "status": "complete",
+            "session_date": session_text,
+            "timeframe": "1m",
+            "rows_in": raw.height,
+            "rows_out": bars_1m.height,
+            "duration_sec": elapsed_since(started_at),
+            "work_completed": progress_state["completed_units"],
+            "work_total": progress_state["total_units"],
+        },
+    )
+    if "1m" in request.timeframes:
+        write_bars_artifact(
+            request=request,
+            timeframe="1m",
+            session_date=session_text,
+            bars=bars_1m,
+            source_path=source_path,
+            progress_callback=progress_callback,
+            progress_state=progress_state,
+        )
+        featured_bars_1m = build_feature_groups(
+            request=request,
+            timeframe="1m",
+            session_date=session_text,
+            bars=bars_1m,
+            source_path=source_path,
+            progress_callback=progress_callback,
+            progress_state=progress_state,
+        )
+        build_supervision_groups(
+            request=request,
+            timeframe="1m",
+            session_date=session_text,
+            bars=featured_bars_1m,
+            source_path=source_path,
+            progress_callback=progress_callback,
+            progress_state=progress_state,
+        )
+
+    touched_month = None
+    for timeframe in request.timeframes:
+        if timeframe in {"1m", "1mo"}:
+            continue
+        if timeframe in {"5m", "15m", "30m", "1h", "2h", "4h"}:
+            started_at = perf_counter()
+            bars = aggregate_intraday(bars_1m, timeframe)
+            emit(
+                progress_callback,
+                {
+                    "event": "phase_complete",
+                    "phase": "aggregate",
+                    "status": "complete",
+                    "session_date": session_text,
+                    "timeframe": timeframe,
+                    "rows_in": bars_1m.height,
+                    "rows_out": bars.height,
+                    "duration_sec": elapsed_since(started_at),
+                },
+            )
+            write_bars_artifact(
+                request=request,
+                timeframe=timeframe,
+                session_date=session_text,
+                bars=bars,
+                source_path=source_path,
+                progress_callback=progress_callback,
+                progress_state=progress_state,
+            )
+            featured_bars = build_feature_groups(
+                request=request,
+                timeframe=timeframe,
+                session_date=session_text,
+                bars=bars,
+                source_path=source_path,
+                progress_callback=progress_callback,
+                progress_state=progress_state,
+            )
+            build_supervision_groups(
+                request=request,
+                timeframe=timeframe,
+                session_date=session_text,
+                bars=featured_bars,
+                source_path=source_path,
+                progress_callback=progress_callback,
+                progress_state=progress_state,
+            )
+        elif timeframe == "1d":
+            started_at = perf_counter()
+            bars = aggregate_daily(bars_1m)
+            emit(
+                progress_callback,
+                {
+                    "event": "phase_complete",
+                    "phase": "aggregate_daily",
+                    "status": "complete",
+                    "session_date": session_text,
+                    "timeframe": "1d",
+                    "rows_in": bars_1m.height,
+                    "rows_out": bars.height,
+                    "duration_sec": elapsed_since(started_at),
+                },
+            )
+            write_bars_artifact(
+                request=request,
+                timeframe="1d",
+                session_date=session_text,
+                bars=bars,
+                source_path=source_path,
+                progress_callback=progress_callback,
+                progress_state=progress_state,
+            )
+            featured_bars = build_feature_groups(
+                request=request,
+                timeframe="1d",
+                session_date=session_text,
+                bars=bars,
+                source_path=source_path,
+                progress_callback=progress_callback,
+                progress_state=progress_state,
+            )
+            build_supervision_groups(
+                request=request,
+                timeframe="1d",
+                session_date=session_text,
+                bars=featured_bars,
+                source_path=source_path,
+                progress_callback=progress_callback,
+                progress_state=progress_state,
+            )
+            touched_month = session_text[:7]
+    emit(
+        progress_callback,
+        {
+            "event": "session_complete",
+            "phase": "session",
+            "status": "complete",
+            "session_date": session_text,
+            "index": index,
+            "total": total,
+            "rows_out": bars_1m.height,
+        },
+    )
+    return {"session_date": session_text, "status": "complete", "rows": bars_1m.height, "touched_month": touched_month}
+
+
+def _parallel_session_worker(
+    request: BuildRequest,
+    status: dict,
+    index: int,
+    total: int,
+    total_units: int,
+    job_path_text: str,
+) -> dict:
+    from src.data_provider.jobs import BuildCancelled, append_event, check_cancelled
+
+    job_path = Path(job_path_text)
+    session_text = str(status["session_date"])
+    progress_state = {"completed_units": 0, "total_units": total_units}
+
+    def on_progress(event: dict) -> None:
+        payload = dict(event)
+        payload["parallel_session"] = True
+        payload["worker_pid"] = os.getpid()
+        payload.setdefault("work_total", total_units)
+        payload.pop("work_completed", None)
+        append_event(job_path, payload)
+        check_cancelled(job_path)
+
+    try:
+        check_cancelled(job_path)
+        return build_session_artifacts(
+            request=request,
+            status=status,
+            index=index,
+            total=total,
+            progress_callback=on_progress,
+            progress_state=progress_state,
+        )
+    except BuildCancelled:
+        append_event(
+            job_path,
+            {
+                "event": "session_cancelled",
+                "phase": "cancel",
+                "status": "cancelled",
+                "session_date": session_text,
+                "index": index,
+                "total": total,
+                "worker_pid": os.getpid(),
+            },
+        )
+        raise
+    except Exception as exc:
+        append_event(
+            job_path,
+            {
+                "event": "session_failed",
+                "phase": "session",
+                "status": "failed",
+                "session_date": session_text,
+                "index": index,
+                "total": total,
+                "message": str(exc),
+                "worker_pid": os.getpid(),
+            },
+        )
+        raise
+
+
 def build_market_data(request: BuildRequest, progress_callback: ProgressCallback | None = None) -> dict:
     if request.start_date > request.end_date:
         raise ValueError("start_date must be on or before end_date")
@@ -455,134 +715,17 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
             )
             continue
 
-        session_date = datetime.fromisoformat(status.session_date).date()
-        source_path = raw_minute_path(request.raw_root, session_date)
-        emit(progress_callback, {"event": "session_started", "phase": "session", "status": "running", "session_date": status.session_date, "index": index, "total": len(statuses)})
-        started_at = perf_counter()
-        raw = load_raw_minute_bars(request.raw_root, session_date, request.tickers)
-        progress_state["completed_units"] += 1
-        emit(
-            progress_callback,
-            {
-                "event": "phase_complete",
-                "phase": "raw_load",
-                "status": "complete",
-                "session_date": status.session_date,
-                "rows_out": raw.height,
-                "duration_sec": elapsed_since(started_at),
-                "source_path": str(source_path),
-                "source_size_bytes": status.size_bytes,
-                "work_completed": progress_state["completed_units"],
-                "work_total": progress_state["total_units"],
-            },
+        result = build_session_artifacts(
+            request=request,
+            status=asdict(status),
+            index=index,
+            total=len(statuses),
+            progress_callback=progress_callback,
+            progress_state=progress_state,
         )
-        started_at = perf_counter()
-        bars_1m = canonicalize_1m(raw, request.exchange_timezone)
-        progress_state["completed_units"] += 1
-        emit(
-            progress_callback,
-            {
-                "event": "phase_complete",
-                "phase": "canonicalize_1m",
-                "status": "complete",
-                "session_date": status.session_date,
-                "timeframe": "1m",
-                "rows_in": raw.height,
-                "rows_out": bars_1m.height,
-                "duration_sec": elapsed_since(started_at),
-                "work_completed": progress_state["completed_units"],
-                "work_total": progress_state["total_units"],
-            },
-        )
-        if "1m" in request.timeframes:
-            write_bars_artifact(
-                request=request,
-                timeframe="1m",
-                session_date=status.session_date,
-                bars=bars_1m,
-                source_path=source_path,
-                progress_callback=progress_callback,
-                progress_state=progress_state,
-            )
-            featured_bars_1m = build_feature_groups(
-                request=request,
-                timeframe="1m",
-                session_date=status.session_date,
-                bars=bars_1m,
-                source_path=source_path,
-                progress_callback=progress_callback,
-                progress_state=progress_state,
-            )
-            build_supervision_groups(
-                request=request,
-                timeframe="1m",
-                session_date=status.session_date,
-                bars=featured_bars_1m,
-                source_path=source_path,
-                progress_callback=progress_callback,
-                progress_state=progress_state,
-            )
-
-        for timeframe in request.timeframes:
-            if timeframe in {"1m", "1mo"}:
-                continue
-            if timeframe in {"5m", "15m", "30m", "1h", "2h", "4h"}:
-                started_at = perf_counter()
-                bars = aggregate_intraday(bars_1m, timeframe)
-                emit(
-                    progress_callback,
-                    {
-                        "event": "phase_complete",
-                        "phase": "aggregate",
-                        "status": "complete",
-                        "session_date": status.session_date,
-                        "timeframe": timeframe,
-                        "rows_in": bars_1m.height,
-                        "rows_out": bars.height,
-                        "duration_sec": elapsed_since(started_at),
-                    },
-                )
-                write_bars_artifact(
-                    request=request,
-                    timeframe=timeframe,
-                    session_date=status.session_date,
-                    bars=bars,
-                    source_path=source_path,
-                    progress_callback=progress_callback,
-                    progress_state=progress_state,
-                )
-                featured_bars = build_feature_groups(request=request, timeframe=timeframe, session_date=status.session_date, bars=bars, source_path=source_path, progress_callback=progress_callback, progress_state=progress_state)
-                build_supervision_groups(request=request, timeframe=timeframe, session_date=status.session_date, bars=featured_bars, source_path=source_path, progress_callback=progress_callback, progress_state=progress_state)
-            elif timeframe == "1d":
-                started_at = perf_counter()
-                bars = aggregate_daily(bars_1m)
-                emit(
-                    progress_callback,
-                    {
-                        "event": "phase_complete",
-                        "phase": "aggregate_daily",
-                        "status": "complete",
-                        "session_date": status.session_date,
-                        "timeframe": "1d",
-                        "rows_in": bars_1m.height,
-                        "rows_out": bars.height,
-                        "duration_sec": elapsed_since(started_at),
-                    },
-                )
-                write_bars_artifact(
-                    request=request,
-                    timeframe="1d",
-                    session_date=status.session_date,
-                    bars=bars,
-                    source_path=source_path,
-                    progress_callback=progress_callback,
-                    progress_state=progress_state,
-                )
-                featured_bars = build_feature_groups(request=request, timeframe="1d", session_date=status.session_date, bars=bars, source_path=source_path, progress_callback=progress_callback, progress_state=progress_state)
-                build_supervision_groups(request=request, timeframe="1d", session_date=status.session_date, bars=featured_bars, source_path=source_path, progress_callback=progress_callback, progress_state=progress_state)
-                touched_months.add(status.session_date[:7])
-        completed.append({"session_date": status.session_date, "status": "complete", "rows": bars_1m.height})
-        emit(progress_callback, {"event": "session_complete", "phase": "session", "status": "complete", "session_date": status.session_date, "index": index, "total": len(statuses), "rows_out": bars_1m.height})
+        if result.get("touched_month"):
+            touched_months.add(str(result["touched_month"]))
+        completed.append({"session_date": status.session_date, "status": "complete", "rows": int(result.get("rows") or 0)})
 
     rebuild_monthly_artifacts(request, touched_months, progress_callback, progress_state)
     emit(
@@ -597,6 +740,153 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
         },
     )
 
+    return {
+        "processed_root": str(request.processed_root),
+        "completed": completed,
+        "plan": [asdict(status) for status in statuses],
+        "request": {
+            "raw_root": str(request.raw_root),
+            "processed_root": str(request.processed_root),
+            "start_date": request.start_date.isoformat(),
+            "end_date": request.end_date.isoformat(),
+            "timeframes": request.timeframes,
+            "feature_groups": request.feature_groups,
+            "supervision_groups": request.supervision_groups,
+            "rebuild_mode": "force_rebuild",
+        },
+    }
+
+
+def build_market_data_parallel(
+    request: BuildRequest,
+    *,
+    job_path: Path | None,
+    max_workers: int = 4,
+    progress_callback: ProgressCallback | None = None,
+) -> dict:
+    if job_path is None or max_workers <= 1:
+        return build_market_data(request, progress_callback=progress_callback)
+    if request.start_date > request.end_date:
+        raise ValueError("start_date must be on or before end_date")
+
+    from src.data_provider.jobs import check_cancelled
+
+    run_started_at = perf_counter()
+    scan_started_at = perf_counter()
+    statuses = scan_market_source(request.raw_root, request.start_date, request.end_date)
+    buildable_statuses = [status for status in statuses if status.expected_market_session and status.exists]
+    missing_statuses = [status for status in statuses if status.expected_market_session and not status.exists]
+    touched_month_count = len({status.session_date[:7] for status in buildable_statuses})
+    total_units = estimate_session_units(request, len(buildable_statuses), touched_month_count)
+    daily_units = estimate_session_units(request, 1, 0)
+    emit(
+        progress_callback,
+        {
+            "event": "plan_complete",
+            "phase": "scan_source",
+            "status": "complete",
+            "duration_sec": elapsed_since(scan_started_at),
+            "raw_files_found": len(buildable_statuses),
+            "missing_sessions": len(missing_statuses),
+            "calendar_days": len(statuses),
+            "work_total": total_units,
+            "plan": [asdict(status) for status in statuses],
+        },
+    )
+
+    completed: list[dict] = []
+    build_jobs: list[tuple[int, dict]] = []
+    for index, status in enumerate(statuses, start=1):
+        if not status.expected_market_session:
+            completed.append({"session_date": status.session_date, "status": "closed", "rows": 0})
+            continue
+        if not status.exists:
+            completed.append({"session_date": status.session_date, "status": "missing_raw", "rows": 0})
+            emit(
+                progress_callback,
+                {
+                    "event": "session_skipped",
+                    "phase": "missing_raw",
+                    "status": "missing_raw",
+                    "session_date": status.session_date,
+                    "index": index,
+                    "total": len(statuses),
+                },
+            )
+            continue
+        build_jobs.append((index, asdict(status)))
+
+    worker_count = min(max(1, int(max_workers)), len(build_jobs)) if build_jobs else 0
+    emit(
+        progress_callback,
+        {
+            "event": "parallel_started",
+            "phase": "parallel_sessions",
+            "status": "running" if worker_count else "complete",
+            "worker_count": worker_count,
+            "buildable_sessions": len(build_jobs),
+            "polars_threads_per_worker": os.environ.get("POLARS_MAX_THREADS"),
+            "work_total": total_units,
+        },
+    )
+
+    touched_months: set[str] = set()
+    if build_jobs:
+        executor = ProcessPoolExecutor(max_workers=worker_count)
+        futures = {
+            executor.submit(
+                _parallel_session_worker,
+                request,
+                status,
+                index,
+                len(statuses),
+                total_units,
+                str(job_path),
+            ): status
+            for index, status in build_jobs
+        }
+        pending = set(futures)
+        try:
+            while pending:
+                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                if not done:
+                    check_cancelled(job_path)
+                    continue
+                for future in done:
+                    result = future.result()
+                    if result.get("touched_month"):
+                        touched_months.add(str(result["touched_month"]))
+                    completed.append(
+                        {
+                            "session_date": str(result.get("session_date")),
+                            "status": str(result.get("status") or "complete"),
+                            "rows": int(result.get("rows") or 0),
+                        }
+                    )
+                check_cancelled(job_path)
+        except Exception:
+            for future in pending:
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            executor.shutdown(wait=True)
+
+    progress_state = {"completed_units": daily_units * len(build_jobs), "total_units": total_units}
+    rebuild_monthly_artifacts(request, touched_months, progress_callback, progress_state)
+    emit(
+        progress_callback,
+        {
+            "event": "run_complete",
+            "phase": "run",
+            "status": "complete",
+            "duration_sec": elapsed_since(run_started_at),
+            "work_completed": total_units,
+            "work_total": total_units,
+        },
+    )
+
+    completed.sort(key=lambda row: str(row.get("session_date") or ""))
     return {
         "processed_root": str(request.processed_root),
         "completed": completed,

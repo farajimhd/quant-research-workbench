@@ -3832,6 +3832,20 @@ def format_duration(value: int | float | None) -> str:
     return f"{int(hours)}h {int(minutes)}m"
 
 
+def event_elapsed_seconds(event: dict, now: datetime | None = None) -> float:
+    emitted_at = event.get("emitted_at")
+    if not emitted_at:
+        return 0.0
+    try:
+        started_at = datetime.fromisoformat(str(emitted_at).replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    current = now or datetime.now(timezone.utc)
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return max(0.0, (current - started_at.astimezone(timezone.utc)).total_seconds())
+
+
 def build_scope_defaults() -> dict[str, Any]:
     raw_root = Path(st.session_state.get("build_raw_root", DEFAULT_DATA_ROOT))
     processed_root = Path(st.session_state.get("build_processed_root", DEFAULT_MARKET_DATA_ROOT))
@@ -4127,6 +4141,18 @@ def build_plan_rows(events: list[dict], fallback_rows: list[dict]) -> list[dict]
     return fallback_rows
 
 
+def build_completed_work_units(events: list[dict]) -> int:
+    completed = 0
+    for event in events:
+        if event.get("status") != "complete":
+            continue
+        if event.get("event") == "phase_complete" and event.get("phase") in {"raw_load", "canonicalize_1m"}:
+            completed += 1
+        elif event.get("event") == "artifact_complete":
+            completed += 1
+    return completed
+
+
 def build_request_options(job_status: dict[str, Any] | None) -> tuple[list[str], list[str], list[str]]:
     request = job_status.get("request", {}) if job_status else {}
     timeframes = list(request["timeframes"]) if "timeframes" in request else list(TIMEFRAMES)
@@ -4153,6 +4179,7 @@ def build_phase_summary(
     selected_features = list(FEATURE_GROUPS) if feature_groups is None else list(feature_groups)
     selected_supervision = list(SUPERVISION_GROUPS) if supervision_groups is None else list(supervision_groups)
     include_monthly = "1mo" in selected_timeframes
+    include_daily = "1d" in selected_timeframes
     session_timeframes = session_timeframes_for_build(selected_timeframes)
     intraday_timeframes = intraday_timeframes_for_build(selected_timeframes)
     contexts_with_monthly = buildable_count * len(session_timeframes) + (month_count if include_global and include_monthly else 0)
@@ -4164,7 +4191,7 @@ def build_phase_summary(
         "raw_load": buildable_count,
         "canonicalize_1m": buildable_count,
         "aggregate": buildable_count * len(intraday_timeframes),
-        "aggregate_daily": buildable_count,
+        "aggregate_daily": buildable_count if include_daily else 0,
         "bars_write": contexts_with_monthly,
         "feature_compute": contexts_with_monthly,
         "feature_write": contexts_with_monthly * len(selected_features),
@@ -4185,12 +4212,13 @@ def build_phase_summary(
         ("raw_load", "Raw load"),
         ("canonicalize_1m", "Normalize"),
         ("aggregate", "Intraday bars"),
-        ("aggregate_daily", "Daily bars"),
         ("bars_write", "Write bars"),
         ("feature_compute", "Feature calc"),
         ("feature_write", "Write features"),
         ]
     )
+    if include_daily:
+        phase_labels.insert(4 if include_global else 3, ("aggregate_daily", "Daily bars"))
     if "bar" in selected_supervision:
         phase_labels.append(("supervision_bar", "Bar labels"))
     if "method" in selected_supervision:
@@ -4203,9 +4231,13 @@ def build_phase_summary(
         phase_labels.append(("run", "Total run"))
     completed: dict[str, int] = {phase: 0 for phase in phase_totals}
     elapsed: dict[str, float] = {phase: 0.0 for phase in phase_totals}
+    active_started: dict[str, list[dict]] = {phase: [] for phase in phase_totals}
     for event in events:
         phase = str(event.get("phase") or "")
         if phase not in phase_totals:
+            continue
+        if event.get("event") == "phase_started" and event.get("status") == "running":
+            active_started[phase].append(event)
             continue
         if event.get("event") not in {"plan_complete", "phase_complete", "artifact_complete", "run_complete"}:
             continue
@@ -4213,14 +4245,18 @@ def build_phase_summary(
             continue
         completed[phase] += 1
         elapsed[phase] += float(event.get("duration_sec") or 0.0)
+        if active_started.get(phase):
+            active_started[phase].pop(0)
 
+    now = datetime.now(timezone.utc)
     rows = []
     for phase, label in phase_labels:
         total = phase_totals[phase]
         done = min(completed[phase], total)
         progress = f"{done}/{total}" if total else "0/0"
         progress_pct = min(100.0, max(0.0, (done / total) * 100.0)) if total else 0.0
-        summary = f"{progress}, {format_duration(elapsed[phase])}"
+        phase_elapsed = elapsed[phase] + sum(event_elapsed_seconds(started, now) for started in active_started.get(phase, []))
+        summary = f"{progress}, {format_duration(phase_elapsed)}"
         rows.append(
             '<div class="qq-phase-row">'
             f'<span class="qq-phase-name">{escape(label)}</span>'
@@ -4256,6 +4292,7 @@ def build_session_cards(
             "step_done": 0,
             "step_total": planned_total,
             "events": [],
+            "active_started": {},
         }
     completed_dates: set[str] = set()
     for event in events:
@@ -4277,6 +4314,8 @@ def build_session_cards(
         steps = row["steps"]
         phase = event.get("phase")
         group = event.get("group")
+        if event.get("event") == "phase_started" and event.get("status") == "running":
+            row["active_started"].setdefault(str(phase), []).append(event)
         if phase == "raw_load":
             steps["raw"] = 1
         elif phase == "canonicalize_1m":
@@ -4292,7 +4331,17 @@ def build_session_cards(
             if event.get("event") == "session_complete":
                 steps["complete"] = 1
             completed_dates.add(session_date)
+        if event.get("status") == "complete" and row["active_started"].get(str(phase)):
+            row["active_started"][str(phase)].pop(0)
         row["step_done"] = sum(int(value) for value in steps.values())
+    now = datetime.now(timezone.utc)
+    for row in session_rows.values():
+        active_elapsed = sum(
+            event_elapsed_seconds(started, now)
+            for started_events in row.get("active_started", {}).values()
+            for started in started_events
+        )
+        row["duration_sec"] = float(row.get("duration_sec") or 0.0) + active_elapsed
     completed = [session_rows[session_date] for session_date in sorted(completed_dates, reverse=True)]
     active = [
         row
@@ -4393,7 +4442,10 @@ def render_data_provider_page() -> None:
                     + ("..." if len(missing_sessions) > 10 else "")
                 )
         work_total = max((int(event.get("work_total") or 0) for event in current_events), default=0)
-        work_completed = max((int(event.get("work_completed") or 0) for event in current_events), default=0)
+        work_completed = max(
+            max((int(event.get("work_completed") or 0) for event in current_events), default=0),
+            build_completed_work_units(current_events),
+        )
         ratio = min(1.0, work_completed / work_total) if work_total else 0.0
         progress_text = f"{work_completed:,}/{work_total:,}" if work_total else "-"
         current = current_events[-1] if current_events else {}

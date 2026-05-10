@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from src.data_provider.config import FEATURE_VERSION, SCHEMA_VERSION, SUPERVISION_VERSION
+from src.data_provider.file_lock import file_lock
 from src.data_provider.store import manifest_path
 
 
@@ -46,7 +47,8 @@ def read_manifest(root: Path) -> dict[str, Any]:
     if not path.exists():
         return empty_manifest()
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        with file_lock(path.with_suffix(path.suffix + ".lock")):
+            return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return empty_manifest()
 
@@ -54,10 +56,22 @@ def read_manifest(root: Path) -> dict[str, Any]:
 def write_manifest(root: Path, manifest: dict[str, Any]) -> None:
     root.mkdir(parents=True, exist_ok=True)
     manifest["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    manifest_path(root).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    path = manifest_path(root)
+    with file_lock(path.with_suffix(path.suffix + ".lock")):
+        path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def upsert_artifact(root: Path, record: ArtifactRecord) -> None:
-    manifest = read_manifest(root)
-    manifest.setdefault("artifacts", {})[artifact_key(record.group, record.timeframe, record.session_date)] = asdict(record)
-    write_manifest(root, manifest)
+    root.mkdir(parents=True, exist_ok=True)
+    path = manifest_path(root)
+    with file_lock(path.with_suffix(path.suffix + ".lock")):
+        if path.exists():
+            try:
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                manifest = empty_manifest()
+        else:
+            manifest = empty_manifest()
+        manifest.setdefault("artifacts", {})[artifact_key(record.group, record.timeframe, record.session_date)] = asdict(record)
+        manifest["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")

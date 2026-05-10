@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from src.data_provider.config import BuildRequest
+from src.data_provider.file_lock import file_lock
 
 
 JOB_DIR = "jobs"
@@ -38,6 +39,10 @@ def job_file(path: Path) -> Path:
 
 def events_file(path: Path) -> Path:
     return path / EVENTS_FILE
+
+
+def events_lock_file(path: Path) -> Path:
+    return path / f"{EVENTS_FILE}.lock"
 
 
 def cancel_file(path: Path) -> Path:
@@ -86,17 +91,24 @@ def append_event(path: Path, event: dict[str, Any]) -> None:
     path.mkdir(parents=True, exist_ok=True)
     payload = dict(event)
     payload.setdefault("emitted_at", utc_now())
-    with events_file(path).open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, default=str, sort_keys=True) + "\n")
+    with file_lock(events_lock_file(path)):
+        with events_file(path).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, default=str, sort_keys=True) + "\n")
 
 
 def read_events(path: Path) -> list[dict[str, Any]]:
     if not events_file(path).exists():
         return []
     rows = []
-    for line in events_file(path).read_text(encoding="utf-8").splitlines():
-        if line.strip():
+    with file_lock(events_lock_file(path)):
+        lines = events_file(path).read_text(encoding="utf-8").splitlines()
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
             rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
     return rows
 
 

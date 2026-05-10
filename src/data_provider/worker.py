@@ -4,7 +4,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from src.data_provider.builder import build_market_data
+from src.data_provider.builder import build_market_data_parallel
 from src.data_provider.config import BuildRequest
 from src.data_provider.jobs import BuildCancelled, append_event, check_cancelled, read_job, update_job, utc_now
 
@@ -12,6 +12,8 @@ from src.data_provider.jobs import BuildCancelled, append_event, check_cancelled
 def run_job(path: Path) -> int:
     payload = read_job(path)
     request = BuildRequest.from_dict(payload["request"])
+    resources = payload.get("resources") or {}
+    max_workers = int(resources.get("max_workers") or 1)
     update_job(path, status="running", started_at=payload.get("started_at") or utc_now())
 
     def on_progress(event: dict) -> None:
@@ -19,7 +21,7 @@ def run_job(path: Path) -> int:
         check_cancelled(path)
 
     try:
-        result = build_market_data(request, progress_callback=on_progress)
+        result = build_market_data_parallel(request, job_path=path, max_workers=max_workers, progress_callback=on_progress)
         append_event(path, {"event": "job_complete", "phase": "job", "status": "complete", "processed_root": result["processed_root"]})
         update_job(path, status="complete", finished_at=utc_now(), result=result)
         return 0

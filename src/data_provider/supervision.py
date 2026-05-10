@@ -280,7 +280,8 @@ def _bool_future_list(column: str, offsets: range) -> pl.Expr:
 
 def _method_frame(frame: pl.DataFrame, method: str, min_minutes: int, max_minutes: int | None, step: int, max_future_bars: int) -> pl.DataFrame:
     min_bars = max(1, ceil(min_minutes / step))
-    max_bars = max_future_bars if max_minutes is None else max(1, ceil(max_minutes / step))
+    requested_max_bars = max_future_bars if max_minutes is None else max(1, ceil(max_minutes / step))
+    max_bars = min(max_future_bars, requested_max_bars)
     if min_bars > max_bars:
         max_bars = min_bars
     offsets = range(min_bars, max_bars + 1)

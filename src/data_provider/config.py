@@ -53,6 +53,12 @@ def parse_date(value: str | date) -> date:
     return date.fromisoformat(str(value))
 
 
+def list_from_dict(raw: dict[str, Any], key: str, default: list[str] | dict[str, Any]) -> list[str]:
+    if key in raw and raw[key] is not None:
+        return list(raw[key])
+    return list(default)
+
+
 @dataclass(slots=True)
 class DataProviderConfig:
     raw_root: Path = DEFAULT_RAW_ROOT
@@ -103,9 +109,9 @@ class BuildRequest:
             start_date=parse_date(raw["start_date"]),
             end_date=parse_date(raw["end_date"]),
             exchange_timezone=str(raw.get("exchange_timezone") or EXCHANGE_TIME_ZONE),
-            timeframes=list(raw.get("timeframes") or TIMEFRAMES.keys()),
-            feature_groups=list(raw.get("feature_groups") or FEATURE_GROUPS),
-            supervision_groups=list(raw.get("supervision_groups") or SUPERVISION_GROUPS),
+            timeframes=list_from_dict(raw, "timeframes", TIMEFRAMES),
+            feature_groups=list_from_dict(raw, "feature_groups", FEATURE_GROUPS),
+            supervision_groups=list_from_dict(raw, "supervision_groups", SUPERVISION_GROUPS),
             rebuild_mode="force_rebuild",
             tickers=list(raw["tickers"]) if raw.get("tickers") else None,
         )
