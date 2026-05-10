@@ -1362,6 +1362,32 @@ def install_css() -> None:
             font-size: 0.78rem;
             margin: 0.2rem 0 0.55rem 0;
         }
+        .qq-chart-toolbar-divider-inline {
+            width: 1px;
+            height: 20px;
+            background: var(--qq-border);
+            margin: 0.35rem auto 0 auto;
+        }
+        div[class*="st-key-review_chart_ticker"] input {
+            min-width: 4.8rem !important;
+            max-width: 6.2rem !important;
+            text-transform: uppercase;
+        }
+        div[class*="st-key-review_chart_settings_popover"] button {
+            width: 36px !important;
+            min-width: 36px !important;
+            height: 32px !important;
+            padding: 0 !important;
+            border: 0 !important;
+            border-radius: 4px !important;
+            background: #FFFFFF !important;
+        }
+        div[class*="st-key-review_chart_settings_popover"] button:hover {
+            background: #F9FAFB !important;
+        }
+        div[class*="st-key-review_chart_settings_popover"] button p {
+            display: none !important;
+        }
         @media (max-width: 1100px) {
             .qq-build-header,
             .qq-build-board {
@@ -1392,6 +1418,15 @@ def install_css() -> None:
         }
         div[class*="st-key-chart_toolbar_"] [data-baseweb="select"] > div {
             background-color: var(--qq-surface) !important;
+        }
+        div[class*="st-key-chart_toolbar_"] [data-testid="stSegmentedControl"] {
+            margin-bottom: 0 !important;
+        }
+        div[class*="st-key-chart_toolbar_"] [data-testid="stSegmentedControl"] button {
+            min-height: 30px !important;
+            padding: 0.18rem 0.52rem !important;
+            font-size: 0.8rem !important;
+            line-height: 1 !important;
         }
         </style>
         """,
@@ -2267,8 +2302,10 @@ def chart_key_fragment(value: str) -> str:
     return fragment or "chart"
 
 
-def render_chart_toolbar_buttons(component_key: str) -> None:
+def render_chart_toolbar_buttons(component_key: str, *, include_fullscreen: bool = True) -> None:
     component_selector_json = json.dumps(f".st-key-{component_key}")
+    fullscreen_divider_display = "inline-block" if include_fullscreen else "none"
+    fullscreen_button_display = "flex" if include_fullscreen else "none"
     html = """
     <style>
     html, body {{
@@ -2319,8 +2356,8 @@ def render_chart_toolbar_buttons(component_key: str) -> None:
                 <path d="M12 5V2L7 6l5 4V7c3.31 0 6 2.69 6 6 0 1.3-.42 2.5-1.12 3.48l1.46 1.46A7.94 7.94 0 0 0 20 13c0-4.42-3.58-8-8-8zm-6 6a5.98 5.98 0 0 1 1.12-3.48L5.66 6.06A7.94 7.94 0 0 0 4 11c0 4.42 3.58 8 8 8v3l5-4-5-4v3c-3.31 0-6-2.69-6-6z" fill="currentColor"></path>
             </svg>
         </button>
-        <span class="qq-chart-toolbar-divider"></span>
-        <button id="qq-fullscreen-toolbar-button" class="qq-chart-tool-button" title="Fullscreen" aria-label="Toggle fullscreen">
+        <span class="qq-chart-toolbar-divider" style="display:__FULLSCREEN_DIVIDER_DISPLAY__;"></span>
+        <button id="qq-fullscreen-toolbar-button" class="qq-chart-tool-button" style="display:__FULLSCREEN_BUTTON_DISPLAY__;" title="Fullscreen" aria-label="Toggle fullscreen">
             <svg viewBox="0 0 24 24" width="23" height="23" aria-hidden="true">
                 <path d="M8 3H3v5h2V5h3V3zm8 0v2h3v3h2V3h-5zM5 16H3v5h5v-2H5v-3zm14 3h-3v2h5v-5h-2v3z" fill="currentColor"></path>
             </svg>
@@ -2434,6 +2471,8 @@ def render_chart_toolbar_buttons(component_key: str) -> None:
     """
     html = html.replace("{{", "{").replace("}}", "}")
     html = html.replace("__COMPONENT_SELECTOR__", component_selector_json)
+    html = html.replace("__FULLSCREEN_DIVIDER_DISPLAY__", fullscreen_divider_display)
+    html = html.replace("__FULLSCREEN_BUTTON_DISPLAY__", fullscreen_button_display)
     components.html(html, height=34, scrolling=False)
 
 
@@ -4982,35 +5021,67 @@ def render_review_chart_tab(records: list[dict[str, Any]], processed_root: Path)
         st.info("No saved bar artifacts are available for charting in the selected range.")
         return
 
-    timeframes = sorted({record["timeframe"] for record in bar_records}, key=timeframe_sort_key)
+    sessions = sorted({record["session_date"] for record in bar_records}, reverse=True)
+    session_row = st.columns([0.055, 0.18, 0.765], gap="small", vertical_alignment="center")
+    with session_row[0]:
+        render_inline_label("Session")
+    session_value = session_row[1].selectbox(
+        "Session",
+        sessions,
+        key="review_chart_session",
+        label_visibility="collapsed",
+    )
+    timeframes = sorted({record["timeframe"] for record in bar_records if record["session_date"] == session_value}, key=timeframe_sort_key)
+    if not timeframes:
+        st.info("No saved bar timeframes are available for the selected session.")
+        return
+    timeframe_key = f"review_chart_timeframe_{chart_key_fragment(session_value)}"
+    default_timeframe = st.session_state.get(timeframe_key, timeframes[0])
+    if default_timeframe not in timeframes:
+        default_timeframe = timeframes[0]
+
     component_key = "chart_component_review_data"
     with st.container(key=component_key):
         with st.container(key="chart_toolbar_review_data"):
-            toolbar_columns = st.columns([0.045, 0.17, 0.052, 0.12, 0.06, 0.16, 0.11, 0.125, 0.158], gap="small", vertical_alignment="center")
-            with toolbar_columns[2]:
-                render_inline_label("Frame")
-            timeframe = toolbar_columns[3].selectbox("Timeframe", timeframes, key="review_chart_timeframe", label_visibility="collapsed")
-            sessions = sorted({record["session_date"] for record in bar_records if record["timeframe"] == timeframe}, reverse=True)
-            with toolbar_columns[4]:
-                render_inline_label("Session")
-            session_value = toolbar_columns[5].selectbox("Session", sessions, key="review_chart_session", label_visibility="collapsed")
+            toolbar_columns = st.columns([0.075, 0.36, 0.365, 0.105, 0.02, 0.075], gap="small", vertical_alignment="center")
+            timeframe = toolbar_columns[1].segmented_control(
+                "Timeframe",
+                timeframes,
+                default=default_timeframe,
+                key=timeframe_key,
+                label_visibility="collapsed",
+                width="content",
+            )
+            timeframe = str(timeframe or timeframes[0])
             bar_record = first_matching_artifact(records, "bars", timeframe, session_value)
             default_ticker = st.session_state.get("review_chart_ticker") or first_ticker_from_record(bar_record) or "AAPL"
-            with toolbar_columns[0]:
-                render_inline_label("Ticker")
-            ticker = toolbar_columns[1].text_input(
+            ticker = toolbar_columns[0].text_input(
                 "Ticker",
                 value=str(default_ticker).upper(),
                 key="review_chart_ticker",
                 label_visibility="collapsed",
                 placeholder="AAPL",
+                max_chars=10,
             ).strip().upper()
 
             feature_options = feature_group_options_for_chart(records, timeframe, session_value)
             default_feature_groups = [group for group in ["core", "momentum"] if group in feature_options] or feature_options[:2]
             settings_key = chart_key_fragment(f"{timeframe}_{session_value}")
-            with toolbar_columns[6]:
-                settings_host = st.popover("Settings") if hasattr(st, "popover") else st.expander("Settings")
+            with toolbar_columns[3]:
+                render_chart_toolbar_buttons(component_key, include_fullscreen=False)
+            with toolbar_columns[4]:
+                st.markdown('<div class="qq-chart-toolbar-divider-inline"></div>', unsafe_allow_html=True)
+            with toolbar_columns[5]:
+                settings_host = (
+                    st.popover(
+                        "Settings",
+                        icon=":material/settings:",
+                        key="review_chart_settings_popover",
+                        width="content",
+                    )
+                    if hasattr(st, "popover")
+                    else st.expander("Settings")
+                )
                 with settings_host:
                     selected_feature_groups = st.multiselect(
                         "Feature groups",
@@ -5046,8 +5117,6 @@ def render_review_chart_tab(records: list[dict[str, Any]], processed_root: Path)
                     )
                     min_confidence = float(st.slider("Min confidence", 0.0, 1.0, 0.70, 0.05, key=f"review_chart_min_confidence_{settings_key}"))
                     marker_limit = int(st.slider("Marker limit", 25, 500, 100, 25, key=f"review_chart_marker_limit_{settings_key}"))
-            with toolbar_columns[8]:
-                render_chart_toolbar_buttons(component_key)
         st.markdown(
             '<div class="qq-chart-note">Saved provider bars, feature groups, and supervision markers are loaded for the selected ticker/session/timeframe.</div>',
             unsafe_allow_html=True,
