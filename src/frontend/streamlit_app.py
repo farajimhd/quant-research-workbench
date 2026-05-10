@@ -34,7 +34,7 @@ from src.data_provider.config import (
     BuildRequest,
     DataProviderConfig,
 )
-from src.data_provider.calendar import discover_raw_bounds, scan_market_source
+from src.data_provider.calendar import discover_raw_bounds, market_sessions, scan_market_source
 from src.data_provider.jobs import cancel_build_job, get_build_status, submit_build_job
 from src.data_provider.manifest import read_manifest
 from src.data_provider.provider import MarketDataProvider
@@ -1306,6 +1306,51 @@ def install_css() -> None:
             font-variant-numeric: tabular-nums;
             white-space: nowrap;
         }
+        [class*="st-key-review_metrics"] [data-testid="stMetricLabel"] p {
+            color: var(--qq-muted);
+            font-size: 0.68rem;
+            line-height: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        [class*="st-key-review_metrics"] [data-testid="stMetricValue"] {
+            font-size: 2.2rem;
+            line-height: 0.95;
+        }
+        .qq-review-card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 0.7rem;
+            margin: 0.45rem 0 0.8rem 0;
+        }
+        .qq-review-card {
+            border: 1px solid var(--qq-border-soft);
+            border-radius: var(--qq-radius);
+            background: #ffffff;
+            padding: 0.68rem 0.72rem;
+            min-width: 0;
+        }
+        .qq-review-card span {
+            display: block;
+            color: var(--qq-muted);
+            font-size: 0.7rem;
+            line-height: 1.1;
+            margin-bottom: 0.2rem;
+        }
+        .qq-review-card strong {
+            display: block;
+            color: var(--qq-text);
+            font-size: 0.92rem;
+            line-height: 1.15;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .qq-review-path {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.78rem !important;
+        }
         @media (max-width: 1100px) {
             .qq-build-header,
             .qq-build-board {
@@ -1405,6 +1450,16 @@ def render_sidebar() -> str:
         width="stretch",
     ):
         select_sidebar_page(build_data_key)
+        st.rerun()
+    review_data_key = "market_data:review_data"
+    if st.sidebar.button(
+        "Review Data",
+        key=f"sidebar_{review_data_key}",
+        type="secondary",
+        disabled=selected_page == review_data_key,
+        width="stretch",
+    ):
+        select_sidebar_page(review_data_key)
         st.rerun()
 
     return st.session_state["sidebar_page"]
@@ -4277,6 +4332,264 @@ def render_manifest_card(manifest: dict, processed_root: Path) -> None:
     )
 
 
+def artifact_records_from_manifest(manifest: dict) -> list[dict[str, Any]]:
+    records = []
+    for key, record in (manifest.get("artifacts") or {}).items():
+        if not isinstance(record, dict):
+            continue
+        key_group, key_timeframe, key_session = (str(key).split("|") + ["", "", ""])[:3]
+        path = Path(str(record.get("path") or ""))
+        path_exists = path.exists()
+        columns = list(record.get("columns") or [])
+        records.append(
+            {
+                "key": key,
+                "group": str(record.get("group") or key_group),
+                "timeframe": str(record.get("timeframe") or key_timeframe),
+                "session_date": str(record.get("session_date") or key_session),
+                "rows": int(record.get("rows") or 0),
+                "columns": columns,
+                "column_count": len(columns),
+                "path": str(path),
+                "exists": path_exists,
+                "size_bytes": path.stat().st_size if path_exists else 0,
+                "size": format_bytes(path.stat().st_size if path_exists else 0),
+                "built_at": str(record.get("built_at") or "-"),
+                "source_path": str(record.get("source_path") or "-"),
+                "schema_version": record.get("schema_version"),
+                "feature_version": record.get("feature_version"),
+                "supervision_version": record.get("supervision_version"),
+            }
+        )
+    return sorted(records, key=lambda row: (row["session_date"], row["timeframe"], row["group"]))
+
+
+def artifact_date_bounds(records: list[dict[str, Any]]) -> tuple[date | None, date | None]:
+    dates = []
+    for record in records:
+        try:
+            dates.append(date.fromisoformat(str(record.get("session_date"))[:10]))
+        except ValueError:
+            continue
+    return (min(dates), max(dates)) if dates else (None, None)
+
+
+def review_scope_defaults(records: list[dict[str, Any]]) -> dict[str, Any]:
+    processed_root = Path(st.session_state.get("build_processed_root", DEFAULT_MARKET_DATA_ROOT))
+    first_saved, last_saved = artifact_date_bounds(records)
+    start_value = st.session_state.get("review_start_date", first_saved or date(2024, 5, 1))
+    end_value = st.session_state.get("review_end_date", last_saved or start_value)
+    st.session_state.setdefault("build_processed_root", str(processed_root))
+    st.session_state.setdefault("review_start_date", start_value)
+    st.session_state.setdefault("review_end_date", end_value)
+    return {
+        "processed_root": processed_root,
+        "start_date": start_value,
+        "end_date": end_value,
+    }
+
+
+def render_review_scope_card(scope: dict[str, Any], manifest: dict, records: list[dict[str, Any]]) -> None:
+    groups = len({record["group"] for record in records})
+    timeframes = len({record["timeframe"] for record in records})
+    st.markdown(
+        f"""
+        <div class="qq-scope-card">
+            <div class="qq-scope-title"><strong>Processed Store</strong><span class="qq-card-status">review</span></div>
+            <div class="qq-scope-grid">
+                <div class="qq-scope-column">
+                    <div class="qq-scope-item"><span>Start</span><b>{scope["start_date"]}</b></div>
+                    <div class="qq-scope-item"><span>End</span><b>{scope["end_date"]}</b></div>
+                </div>
+                <div class="qq-scope-column">
+                    <div class="qq-scope-item"><span>Processed root</span><b title="{escape(str(scope["processed_root"]))}">{escape(str(scope["processed_root"]))}</b></div>
+                    <div class="qq-scope-item"><span>Manifest</span><b>{escape(str(manifest.get("updated_at") or "-"))} | {groups} groups | {timeframes} timeframes</b></div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_review_scope_dialog(scope: dict[str, Any]) -> None:
+    if not hasattr(st, "dialog"):
+        with st.expander("Update Review Scope", expanded=True):
+            processed_root = st.text_input("Processed data root", value=str(scope["processed_root"]), key="review_scope_processed_root_fallback")
+            start_date = st.date_input("Start", value=scope["start_date"], key="review_scope_start_fallback")
+            end_date = st.date_input("End", value=scope["end_date"], key="review_scope_end_fallback")
+            if st.button("Apply", type="primary", width="stretch", key="review_scope_apply_fallback"):
+                st.session_state["build_processed_root"] = processed_root
+                st.session_state["review_start_date"] = start_date
+                st.session_state["review_end_date"] = end_date
+                st.rerun()
+        return
+
+    @st.dialog("Update Review Scope")
+    def update_review_scope_dialog() -> None:
+        processed_root = st.text_input("Processed data root", value=str(scope["processed_root"]))
+        start_date = st.date_input("Start", value=scope["start_date"])
+        end_date = st.date_input("End", value=scope["end_date"])
+        if st.button("Apply", type="primary", width="stretch"):
+            st.session_state["build_processed_root"] = processed_root
+            st.session_state["review_start_date"] = start_date
+            st.session_state["review_end_date"] = end_date
+            st.rerun()
+
+    update_review_scope_dialog()
+
+
+def records_in_date_range(records: list[dict[str, Any]], start_date: date, end_date: date) -> list[dict[str, Any]]:
+    filtered = []
+    for record in records:
+        try:
+            session = date.fromisoformat(str(record.get("session_date"))[:10])
+        except ValueError:
+            continue
+        if start_date <= session <= end_date:
+            filtered.append(record)
+    return filtered
+
+
+def review_metrics(records: list[dict[str, Any]], manifest: dict) -> dict[str, str]:
+    sessions = {record["session_date"] for record in records}
+    groups = {record["group"] for record in records}
+    timeframes = {record["timeframe"] for record in records}
+    latest = max((str(record.get("built_at") or "") for record in records), default="-")
+    missing_files = sum(1 for record in records if not record.get("exists"))
+    return {
+        "Files": f"{len(records):,}",
+        "Sessions": f"{len(sessions):,}",
+        "Groups": f"{len(groups):,}",
+        "Frames": f"{len(timeframes):,}",
+        "Rows": f"{sum(int(record.get('rows') or 0) for record in records):,}",
+        "Size": format_bytes(sum(int(record.get("size_bytes") or 0) for record in records)),
+        "Missing": f"{missing_files:,}",
+        "Sup v": str(manifest.get("supervision_version", "-")),
+        "Latest": latest[:10] if latest and latest != "-" else "-",
+    }
+
+
+def render_review_metrics(metrics: dict[str, str]) -> None:
+    with st.container(key="review_metrics", border=False):
+        columns = st.columns(len(metrics), gap="small", border=False)
+        for column, (label, value) in zip(columns, metrics.items()):
+            column.metric(label, value, border=False)
+
+
+def summarize_records(records: list[dict[str, Any]], by: str) -> pl.DataFrame:
+    if not records:
+        return pl.DataFrame()
+    rows = []
+    for value in sorted({str(record.get(by) or "-") for record in records}):
+        scoped = [record for record in records if str(record.get(by) or "-") == value]
+        rows.append(
+            {
+                by: value,
+                "files": len(scoped),
+                "sessions": len({record["session_date"] for record in scoped}),
+                "rows": sum(int(record.get("rows") or 0) for record in scoped),
+                "size": format_bytes(sum(int(record.get("size_bytes") or 0) for record in scoped)),
+                "latest_built": max((str(record.get("built_at") or "") for record in scoped), default="-"),
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def coverage_rows(records: list[dict[str, Any]], start_date: date, end_date: date, group: str) -> list[dict[str, Any]]:
+    selected = [record for record in records if record["group"] == group]
+    lookup = {(record["session_date"], record["timeframe"]): record for record in selected}
+    timeframes = [timeframe for timeframe in TIMEFRAMES if any(record["timeframe"] == timeframe for record in selected)]
+    sessions = [session.isoformat() for session in market_sessions(start_date, end_date)]
+    rows = []
+    for session in sessions:
+        row = {"session_date": session}
+        for timeframe in timeframes:
+            record = lookup.get((session, timeframe))
+            row[timeframe] = "ready" if record and record.get("exists") else "missing"
+            row[f"{timeframe}_rows"] = int(record.get("rows") or 0) if record else 0
+        rows.append(row)
+    return rows
+
+
+def artifact_selector(records: list[dict[str, Any]], key_prefix: str) -> dict[str, Any] | None:
+    if not records:
+        return None
+    groups = sorted({record["group"] for record in records})
+    group = st.selectbox("Group", groups, key=f"{key_prefix}_group")
+    group_records = [record for record in records if record["group"] == group]
+    timeframes = sorted({record["timeframe"] for record in group_records}, key=lambda item: list(TIMEFRAMES).index(item) if item in TIMEFRAMES else 999)
+    timeframe = st.selectbox("Timeframe", timeframes, key=f"{key_prefix}_timeframe")
+    timeframe_records = [record for record in group_records if record["timeframe"] == timeframe]
+    sessions = sorted({record["session_date"] for record in timeframe_records}, reverse=True)
+    session = st.selectbox("Session", sessions, key=f"{key_prefix}_session")
+    return next((record for record in timeframe_records if record["session_date"] == session), None)
+
+
+def render_artifact_cards(record: dict[str, Any]) -> None:
+    cards = [
+        ("Group", str(record.get("group") or "-")),
+        ("Timeframe", str(record.get("timeframe") or "-")),
+        ("Session", str(record.get("session_date") or "-")),
+        ("Rows", f"{int(record.get('rows') or 0):,}"),
+        ("Columns", f"{int(record.get('column_count') or 0):,}"),
+        ("Size", str(record.get("size") or "-")),
+        ("Built", str(record.get("built_at") or "-")),
+        ("Path", str(record.get("path") or "-")),
+    ]
+    st.markdown(
+        '<div class="qq-review-card-grid">'
+        + "".join(
+            '<div class="qq-review-card">'
+            f"<span>{escape(label)}</span>"
+            f'<strong class="{"qq-review-path" if label == "Path" else ""}" title="{escape(value)}">{escape(value)}</strong>'
+            "</div>"
+            for label, value in cards
+        )
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def artifact_schema(record: dict[str, Any]) -> dict[str, Any]:
+    path = Path(str(record.get("path") or ""))
+    if not path.exists():
+        return {}
+    return dict(pl.scan_parquet(path).collect_schema())
+
+
+def load_artifact_sample(record: dict[str, Any], columns: list[str], row_limit: int, tickers: list[str]) -> pl.DataFrame:
+    path = Path(str(record.get("path") or ""))
+    if not path.exists():
+        return pl.DataFrame()
+    scan = pl.scan_parquet(path)
+    schema = scan.collect_schema()
+    schema_names = schema.names()
+    if tickers and "ticker" in schema_names:
+        scan = scan.filter(pl.col("ticker").is_in(tickers))
+    selected_columns = [column for column in columns if column in schema_names]
+    if selected_columns:
+        scan = scan.select(selected_columns)
+    return scan.limit(row_limit).collect()
+
+
+def schema_profile_rows(frame: pl.DataFrame, schema: dict[str, Any]) -> list[dict[str, Any]]:
+    null_counts = frame.null_count().to_dicts()[0] if not frame.is_empty() else {}
+    total = max(frame.height, 1)
+    rows = []
+    for column, dtype in schema.items():
+        nulls = int(null_counts.get(column, 0))
+        rows.append(
+            {
+                "column": column,
+                "dtype": str(dtype),
+                "sample_nulls": nulls,
+                "sample_null_pct": round((nulls / total) * 100.0, 2),
+            }
+        )
+    return rows
+
+
 def build_monitor_metrics(
     plan_rows: list[dict],
     events: list[dict],
@@ -4629,6 +4942,169 @@ def build_session_cards(
     return active[:5], completed
 
 
+def render_market_data_review_page() -> None:
+    processed_root = Path(st.session_state.get("build_processed_root", DEFAULT_MARKET_DATA_ROOT))
+    manifest = read_manifest(processed_root)
+    all_records = artifact_records_from_manifest(manifest)
+    scope = review_scope_defaults(all_records)
+    processed_root = Path(scope["processed_root"])
+    if processed_root != Path(st.session_state.get("build_processed_root", processed_root)):
+        manifest = read_manifest(processed_root)
+        all_records = artifact_records_from_manifest(manifest)
+    start_date = scope["start_date"]
+    end_date = scope["end_date"]
+    if start_date > end_date:
+        st.error("Start date must be on or before end date.")
+        return
+    records = records_in_date_range(all_records, start_date, end_date)
+
+    header_cols = st.columns([1.55, 1.0], gap="medium", vertical_alignment="top")
+    with header_cols[0]:
+        st.title("Review Data")
+        st.markdown(
+            '<div class="qq-page-description">Inspect saved provider artifacts, coverage, schemas, and sampled Parquet rows.</div>',
+            unsafe_allow_html=True,
+        )
+    with header_cols[1]:
+        render_review_scope_card(scope, manifest, all_records)
+
+    action_cols = st.columns([0.2, 0.8], gap="small", vertical_alignment="center")
+    if action_cols[0].button("Edit scope", width="stretch", key="review_edit_scope"):
+        render_review_scope_dialog(scope)
+
+    if not all_records:
+        st.info(f"No provider artifacts found under {processed_root}.")
+        return
+
+    render_review_metrics(review_metrics(records, manifest))
+
+    overview_tab, coverage_tab, artifacts_tab, preview_tab, schema_tab = st.tabs(
+        ["Overview", "Coverage", "Artifacts", "Preview", "Schema"]
+    )
+
+    with overview_tab:
+        group_summary, timeframe_summary = st.columns(2, gap="medium", vertical_alignment="top")
+        with group_summary:
+            st.markdown("**Groups**")
+            app_dataframe(summarize_records(records, "group"), width="stretch", hide_index=True)
+        with timeframe_summary:
+            st.markdown("**Timeframes**")
+            app_dataframe(summarize_records(records, "timeframe"), width="stretch", hide_index=True)
+        latest_records = sorted(records, key=lambda row: str(row.get("built_at") or ""), reverse=True)[:30]
+        st.markdown("**Latest Artifacts**")
+        app_dataframe(
+            pl.DataFrame(
+                [
+                    {
+                        "built_at": record["built_at"],
+                        "group": record["group"],
+                        "timeframe": record["timeframe"],
+                        "session_date": record["session_date"],
+                        "rows": record["rows"],
+                        "size": record["size"],
+                        "exists": record["exists"],
+                    }
+                    for record in latest_records
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    with coverage_tab:
+        groups = sorted({record["group"] for record in records})
+        if groups:
+            selected_group = st.selectbox("Coverage group", groups, key="review_coverage_group")
+            coverage = coverage_rows(records, start_date, end_date, selected_group)
+            app_dataframe(pl.DataFrame(coverage), width="stretch", hide_index=True)
+        else:
+            st.info("No artifacts in the selected date range.")
+
+    with artifacts_tab:
+        filter_cols = st.columns([0.22, 0.22, 0.56], gap="small")
+        groups = ["All"] + sorted({record["group"] for record in records})
+        frames = ["All"] + sorted({record["timeframe"] for record in records}, key=lambda item: list(TIMEFRAMES).index(item) if item in TIMEFRAMES else 999)
+        selected_group = filter_cols[0].selectbox("Group", groups, key="review_artifacts_group")
+        selected_timeframe = filter_cols[1].selectbox("Timeframe", frames, key="review_artifacts_timeframe")
+        search_text = filter_cols[2].text_input("Path contains", value="", key="review_artifacts_search")
+        artifact_rows = [
+            record
+            for record in records
+            if (selected_group == "All" or record["group"] == selected_group)
+            and (selected_timeframe == "All" or record["timeframe"] == selected_timeframe)
+            and (not search_text or search_text.lower() in str(record.get("path") or "").lower())
+        ]
+        app_dataframe(
+            pl.DataFrame(
+                [
+                    {
+                        "group": record["group"],
+                        "timeframe": record["timeframe"],
+                        "session_date": record["session_date"],
+                        "rows": record["rows"],
+                        "columns": record["column_count"],
+                        "size": record["size"],
+                        "built_at": record["built_at"],
+                        "exists": record["exists"],
+                        "path": record["path"],
+                    }
+                    for record in artifact_rows
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    with preview_tab:
+        record = artifact_selector(records, "review_preview")
+        if record:
+            render_artifact_cards(record)
+            schema = artifact_schema(record)
+            if not schema:
+                st.warning("Artifact file is missing or unreadable.")
+            else:
+                control_cols = st.columns([0.22, 0.28, 0.5], gap="small")
+                row_limit = int(control_cols[0].number_input("Rows", min_value=10, max_value=5000, value=250, step=50, key="review_preview_rows"))
+                tickers_text = control_cols[1].text_input("Tickers", value="", key="review_preview_tickers")
+                schema_names = list(schema)
+                preferred = [
+                    column
+                    for column in [
+                        "bar_id",
+                        "ticker",
+                        "timeframe",
+                        "bar_time_market",
+                        "session_date",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                        "trade_method",
+                        "horizon",
+                        "horizon_bars",
+                    ]
+                    if column in schema_names
+                ]
+                default_columns = list(dict.fromkeys(preferred + schema_names[: max(0, 12 - len(preferred))]))
+                selected_columns = control_cols[2].multiselect("Columns", schema_names, default=default_columns, key="review_preview_columns")
+                tickers = [ticker.strip().upper() for ticker in tickers_text.split(",") if ticker.strip()]
+                sample = load_artifact_sample(record, selected_columns, row_limit, tickers)
+                app_dataframe(sample, width="stretch", hide_index=True)
+
+    with schema_tab:
+        record = artifact_selector(records, "review_schema")
+        if record:
+            render_artifact_cards(record)
+            schema = artifact_schema(record)
+            if not schema:
+                st.warning("Artifact file is missing or unreadable.")
+            else:
+                sample_rows = int(st.number_input("Profile rows", min_value=50, max_value=10000, value=1000, step=100, key="review_schema_rows"))
+                sample = load_artifact_sample(record, list(schema), sample_rows, [])
+                app_dataframe(pl.DataFrame(schema_profile_rows(sample, schema)), width="stretch", hide_index=True)
+
+
 def render_data_provider_page() -> None:
     scope = build_scope_defaults()
     raw_root = Path(scope["raw_root"])
@@ -4884,6 +5360,9 @@ def main() -> None:
     page_key = render_sidebar()
     if page_key == "market_data:build_data":
         render_data_provider_page()
+        return
+    if page_key == "market_data:review_data":
+        render_market_data_review_page()
         return
     if page_key.startswith("strategy:"):
         strategy_workspace(page_key.removeprefix("strategy:"))
