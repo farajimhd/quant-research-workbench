@@ -1351,6 +1351,17 @@ def install_css() -> None:
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-size: 0.78rem !important;
         }
+        .qq-inline-label {
+            color: var(--qq-muted);
+            font-size: 0.72rem;
+            line-height: 2.25rem;
+            white-space: nowrap;
+        }
+        .qq-chart-note {
+            color: var(--qq-muted);
+            font-size: 0.78rem;
+            margin: 0.2rem 0 0.55rem 0;
+        }
         @media (max-width: 1100px) {
             .qq-build-header,
             .qq-build-board {
@@ -2167,6 +2178,13 @@ def chart_session_dates_from_rows(rows: list[dict]) -> list[str]:
 
 
 def chart_step_minutes(rows: list[dict]) -> int:
+    for row in rows:
+        timeframe = str(row.get("timeframe") or "")
+        timeframe_minutes = TIMEFRAMES.get(timeframe)
+        if isinstance(timeframe_minutes, int):
+            return max(1, int(timeframe_minutes))
+        if timeframe_minutes == "1d":
+            return 24 * 60
     deltas = []
     for session_date_value in chart_session_dates_from_rows(rows):
         minutes = sorted(
@@ -2178,12 +2196,12 @@ def chart_step_minutes(rows: list[dict]) -> int:
                 and (minute := minute_of_day_from_row(row)) is not None
             }
         )
-        deltas.extend(b - a for a, b in zip(minutes, minutes[1:]) if 0 < b - a <= 15)
+        deltas.extend(b - a for a, b in zip(minutes, minutes[1:]) if 0 < b - a <= 480)
     if not deltas:
         return 1
     deltas.sort()
     median = deltas[len(deltas) // 2]
-    return 5 if median >= 4 else 1
+    return max(1, int(median))
 
 
 def complete_candle_timeline(rows: list[dict], candles: list[dict]) -> list[dict]:
@@ -2444,7 +2462,12 @@ def chart_toolbar(
     return ticker, timeframe, default_chart_indicator_settings()
 
 
-def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicators: dict[str, dict]) -> dict:
+def tradingview_chart_payload(
+    bars: pl.DataFrame,
+    orders: pl.DataFrame,
+    indicators: dict[str, dict],
+    extra_markers: list[dict[str, Any]] | None = None,
+) -> dict:
     bars = normalize_bar_columns(bars).sort("bar_time_market")
     rows = bars.to_dicts()
     candles = []
@@ -2497,7 +2520,7 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
                     point["color"] = hex_to_rgba(DEFAULT_CANDLE_CHART_SETTINGS["upColor" if value >= 0 else "downColor"], opacity)
                 points.append(point)
         if points:
-            target = oscillator_series if column in OSCILLATOR_CHART_INDICATORS else overlay_series
+            target = oscillator_series if options.get("pane") == "oscillator" or column in OSCILLATOR_CHART_INDICATORS else overlay_series
             target.append(
                 {
                     "name": column,
@@ -2505,9 +2528,9 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
                     "legendColor": color,
                     "opacity": opacity,
                     "lineWidth": line_width,
-                    "style": "histogram" if column == "macd_hist" else "line",
-                    "showInLegend": column in LEGEND_INDICATORS,
-                    "label": INDICATOR_DISPLAY_NAMES.get(column, column.upper()),
+                    "style": options.get("style") or ("histogram" if column == "macd_hist" else "line"),
+                    "showInLegend": bool(options.get("showInLegend", column in LEGEND_INDICATORS)),
+                    "label": options.get("label") or INDICATOR_DISPLAY_NAMES.get(column, column.upper()),
                     "data": points,
                 }
             )
@@ -2529,6 +2552,8 @@ def tradingview_chart_payload(bars: pl.DataFrame, orders: pl.DataFrame, indicato
                     "text": f"{side} {row.get('quantity', '')} @ {money(row.get('fill_price'))}",
                 }
             )
+    markers.extend(extra_markers or [])
+    markers.sort(key=lambda marker: int(marker.get("time") or 0))
 
     candles = complete_candle_timeline(rows, candles)
     timeline_times = [int(candle["time"]) for candle in candles]
@@ -4332,6 +4357,82 @@ def render_manifest_card(manifest: dict, processed_root: Path) -> None:
     )
 
 
+def timeframe_sort_key(value: str) -> tuple[int, str]:
+    timeframe = str(value or "")
+    order = list(TIMEFRAMES)
+    return (order.index(timeframe), timeframe) if timeframe in TIMEFRAMES else (len(order), timeframe)
+
+
+def review_format_number(value: float, column: str) -> str:
+    if column.endswith("_pct") or "percentile" in column:
+        return f"{float(value):,.2f}%"
+    if any(token in column for token in ("return", "ratio", "confidence", "score", "z20", "_z")):
+        return f"{float(value):,.4f}"
+    if not isinstance(value, bool) and float(value).is_integer():
+        return f"{int(value):,}"
+    if abs(float(value)) >= 1000:
+        return f"{float(value):,.2f}"
+    if abs(float(value)) >= 1:
+        return f"{float(value):,.4f}"
+    return f"{float(value):,.6f}"
+
+
+def review_format_cell(column: str, value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(item) for item in value)
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            if value != value:
+                return "-"
+            return review_format_number(float(value), column)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def review_sort_value(column: str, value: Any) -> Any:
+    if column == "timeframe":
+        return timeframe_sort_key(str(value))
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, date, datetime)):
+        return value
+    return str(value).lower()
+
+
+def review_dataframe(data, *, sort_by: str | list[str] | None = None, reverse: bool = False, **kwargs):
+    frame = data if isinstance(data, pl.DataFrame) else pl.DataFrame(data)
+    if frame.is_empty():
+        return app_dataframe(frame, **kwargs)
+    columns = frame.columns
+    rows = frame.to_dicts()
+    sort_columns = [sort_by] if isinstance(sort_by, str) else list(sort_by or [])
+    sort_columns = [column for column in sort_columns if column in columns]
+    if sort_columns:
+        rows.sort(key=lambda row: tuple(review_sort_value(column, row.get(column)) for column in sort_columns), reverse=reverse)
+    formatted_rows = [{column: review_format_cell(column, row.get(column)) for column in columns} for row in rows]
+    kwargs.setdefault("hide_index", True)
+    kwargs.setdefault(
+        "column_config",
+        {column: st.column_config.TextColumn(display_name(column)) for column in columns},
+    )
+    return app_dataframe(pl.DataFrame(formatted_rows), **kwargs)
+
+
+def render_inline_label(label: str) -> None:
+    st.markdown(f'<div class="qq-inline-label">{escape(label)}</div>', unsafe_allow_html=True)
+
+
 def artifact_records_from_manifest(manifest: dict) -> list[dict[str, Any]]:
     records = []
     for key, record in (manifest.get("artifacts") or {}).items():
@@ -4481,7 +4582,9 @@ def summarize_records(records: list[dict[str, Any]], by: str) -> pl.DataFrame:
     if not records:
         return pl.DataFrame()
     rows = []
-    for value in sorted({str(record.get(by) or "-") for record in records}):
+    values = {str(record.get(by) or "-") for record in records}
+    sort_key = timeframe_sort_key if by == "timeframe" else lambda item: str(item).lower()
+    for value in sorted(values, key=sort_key):
         scoped = [record for record in records if str(record.get(by) or "-") == value]
         rows.append(
             {
@@ -4524,6 +4627,81 @@ def artifact_selector(records: list[dict[str, Any]], key_prefix: str) -> dict[st
     sessions = sorted({record["session_date"] for record in timeframe_records}, reverse=True)
     session = st.selectbox("Session", sessions, key=f"{key_prefix}_session")
     return next((record for record in timeframe_records if record["session_date"] == session), None)
+
+
+def compact_artifact_selector(records: list[dict[str, Any]], key_prefix: str) -> dict[str, Any] | None:
+    if not records:
+        return None
+    groups = sorted({record["group"] for record in records})
+    columns = st.columns([0.045, 0.265, 0.065, 0.16, 0.06, 0.205, 0.2], gap="small", vertical_alignment="center")
+    with columns[0]:
+        render_inline_label("Group")
+    group = columns[1].selectbox("Group", groups, key=f"{key_prefix}_group", label_visibility="collapsed")
+    group_records = [record for record in records if record["group"] == group]
+    timeframes = sorted({record["timeframe"] for record in group_records}, key=timeframe_sort_key)
+    with columns[2]:
+        render_inline_label("Frame")
+    timeframe = columns[3].selectbox("Timeframe", timeframes, key=f"{key_prefix}_timeframe", label_visibility="collapsed")
+    timeframe_records = [record for record in group_records if record["timeframe"] == timeframe]
+    sessions = sorted({record["session_date"] for record in timeframe_records}, reverse=True)
+    with columns[4]:
+        render_inline_label("Session")
+    session = columns[5].selectbox("Session", sessions, key=f"{key_prefix}_session", label_visibility="collapsed")
+    return next((record for record in timeframe_records if record["session_date"] == session), None)
+
+
+def preferred_preview_columns(schema_names: list[str]) -> list[str]:
+    preferred = [
+        column
+        for column in [
+            "bar_id",
+            "ticker",
+            "timeframe",
+            "bar_time_market",
+            "session_date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "trade_method",
+            "horizon",
+            "horizon_bars",
+        ]
+        if column in schema_names
+    ]
+    return list(dict.fromkeys(preferred + schema_names[: max(0, 12 - len(preferred))]))
+
+
+def compact_preview_controls(schema_names: list[str], key_suffix: str) -> tuple[int, list[str], list[str]]:
+    columns = st.columns([0.042, 0.095, 0.052, 0.16, 0.065, 0.586], gap="small", vertical_alignment="center")
+    with columns[0]:
+        render_inline_label("Rows")
+    row_limit = int(
+        columns[1].number_input(
+            "Rows",
+            min_value=10,
+            max_value=5000,
+            value=250,
+            step=50,
+            key=f"review_preview_rows_{key_suffix}",
+            label_visibility="collapsed",
+        )
+    )
+    with columns[2]:
+        render_inline_label("Tickers")
+    tickers_text = columns[3].text_input("Tickers", value="", key=f"review_preview_tickers_{key_suffix}", label_visibility="collapsed")
+    with columns[4]:
+        render_inline_label("Columns")
+    selected_columns = columns[5].multiselect(
+        "Columns",
+        schema_names,
+        default=preferred_preview_columns(schema_names),
+        key=f"review_preview_columns_{key_suffix}",
+        label_visibility="collapsed",
+    )
+    tickers = [ticker.strip().upper() for ticker in tickers_text.split(",") if ticker.strip()]
+    return row_limit, tickers, selected_columns
 
 
 def render_artifact_cards(record: dict[str, Any]) -> None:
@@ -4588,6 +4766,319 @@ def schema_profile_rows(frame: pl.DataFrame, schema: dict[str, Any]) -> list[dic
             }
         )
     return rows
+
+
+CHART_FEATURE_EXCLUDE_COLUMNS = {
+    "bar_id",
+    "ticker",
+    "timeframe",
+    "bar_time_utc",
+    "bar_time_market",
+    "session_date",
+    "session_month",
+    "minute_of_day",
+    "window_start",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "transactions",
+}
+
+REVIEW_DYNAMIC_CHART_COLORS = [
+    "#1E3A5F",
+    "#B7791F",
+    "#067647",
+    "#B42318",
+    "#2563EB",
+    "#7C3AED",
+    "#0E7490",
+    "#C2410C",
+]
+
+
+def first_matching_artifact(records: list[dict[str, Any]], group: str, timeframe: str, session: str) -> dict[str, Any] | None:
+    return next(
+        (
+            record
+            for record in records
+            if record.get("group") == group
+            and record.get("timeframe") == timeframe
+            and record.get("session_date") == session
+        ),
+        None,
+    )
+
+
+def first_ticker_from_record(record: dict[str, Any] | None) -> str:
+    if not record:
+        return ""
+    path = Path(str(record.get("path") or ""))
+    if not path.exists():
+        return ""
+    try:
+        frame = pl.scan_parquet(path).select("ticker").drop_nulls().limit(1).collect()
+    except Exception:
+        return ""
+    if frame.is_empty():
+        return ""
+    return str(frame.item(0, "ticker")).upper()
+
+
+def feature_group_options_for_chart(records: list[dict[str, Any]], timeframe: str, session: str) -> list[str]:
+    groups = [
+        str(record["group"]).replace("features_", "", 1)
+        for record in records
+        if str(record.get("group") or "").startswith("features_")
+        and record.get("timeframe") == timeframe
+        and record.get("session_date") == session
+        and record.get("exists")
+    ]
+    return sorted(set(groups), key=lambda group: FEATURE_GROUPS.index(group) if group in FEATURE_GROUPS else 999)
+
+
+def is_numeric_polars_dtype(dtype: Any) -> bool:
+    dtype_text = str(dtype)
+    return dtype_text.startswith(("Float", "Int", "UInt"))
+
+
+def chart_feature_columns(records: list[dict[str, Any]], timeframe: str, session: str, feature_groups: list[str]) -> list[str]:
+    columns = []
+    for feature_group in feature_groups:
+        record = first_matching_artifact(records, f"features_{feature_group}", timeframe, session)
+        if not record:
+            continue
+        schema = artifact_schema(record)
+        for column, dtype in schema.items():
+            if column in CHART_FEATURE_EXCLUDE_COLUMNS or not is_numeric_polars_dtype(dtype):
+                continue
+            columns.append(column)
+    return sorted(set(columns))
+
+
+def chart_pane_for_column(column: str) -> str:
+    lower = column.lower()
+    price_terms = ("sma", "ema", "tema", "vwap", "bb_", "donchian", "keltner", "hvn", "lvn", "price_proxy")
+    return "price" if any(term in lower for term in price_terms) else "oscillator"
+
+
+def review_chart_indicator_settings(selected_columns: list[str]) -> dict[str, dict]:
+    settings = {}
+    for idx, column in enumerate(selected_columns):
+        if column in CHART_INDICATORS:
+            base = default_chart_indicator_settings()[column]
+            settings[column] = {
+                **base,
+                "label": INDICATOR_DISPLAY_NAMES.get(column, display_name(column)),
+                "pane": "oscillator" if column in OSCILLATOR_CHART_INDICATORS else "price",
+                "style": "histogram" if column == "macd_hist" else "line",
+                "showInLegend": True,
+            }
+            continue
+        color = REVIEW_DYNAMIC_CHART_COLORS[idx % len(REVIEW_DYNAMIC_CHART_COLORS)]
+        pane = chart_pane_for_column(column)
+        settings[column] = {
+            "color": color,
+            "opacity": 0.72 if pane == "price" else 0.82,
+            "lineWidth": 1,
+            "pane": pane,
+            "style": "line",
+            "label": display_name(column),
+            "showInLegend": True,
+        }
+    return settings
+
+
+def review_supervision_candidates(frame: pl.DataFrame, supervision_group: str, min_confidence: float) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    columns = set(frame.columns)
+    if supervision_group == "method":
+        if "method_entry_signal" not in columns:
+            return pl.DataFrame()
+        frame = frame.filter(pl.col("method_entry_signal") == True)
+        if "method_confidence" in columns:
+            frame = frame.filter(pl.col("method_confidence") >= min_confidence).sort("method_confidence", descending=True)
+    elif supervision_group == "scanner":
+        if "is_top_3" in columns:
+            frame = frame.filter(pl.col("is_top_3") == True)
+        elif "oracle_rank" in columns:
+            frame = frame.filter(pl.col("oracle_rank") <= 3)
+        if "method_confidence" in columns:
+            frame = frame.filter(pl.col("method_confidence") >= min_confidence)
+        if "oracle_rank" in columns:
+            frame = frame.sort("oracle_rank")
+    elif supervision_group == "bar":
+        if "oracle_long_entry_signal" not in columns:
+            return pl.DataFrame()
+        frame = frame.filter(pl.col("oracle_long_entry_signal") == True)
+        if "oracle_long_entry_confidence" in columns:
+            frame = frame.filter(pl.col("oracle_long_entry_confidence") >= min_confidence).sort("oracle_long_entry_confidence", descending=True)
+    if "bar_id" in frame.columns:
+        frame = frame.unique(subset=["bar_id"], keep="first")
+    sort_column = "bar_time_utc" if "bar_time_utc" in frame.columns else "bar_time_market" if "bar_time_market" in frame.columns else None
+    return frame.sort(sort_column) if sort_column else frame
+
+
+def review_supervision_marker_text(row: dict[str, Any], supervision_group: str) -> str:
+    if supervision_group == "scanner":
+        rank = row.get("oracle_rank")
+        method = display_name(str(row.get("trade_method") or "scan"))
+        return f"SCAN #{int(rank) if rank is not None else '-'} {method}"
+    if supervision_group == "method":
+        method = display_name(str(row.get("trade_method") or "method"))
+        return f"{method} {pct(row.get('method_best_return'))}"
+    horizon = row.get("horizon_bars") or row.get("horizon")
+    return f"BAR h{horizon or '-'} {pct(row.get('oracle_best_exit_return'))}"
+
+
+def review_chart_supervision_markers(
+    provider: MarketDataProvider,
+    *,
+    session: date,
+    timeframe: str,
+    ticker: str,
+    supervision_groups: list[str],
+    marker_limit: int,
+    min_confidence: float,
+) -> list[dict[str, Any]]:
+    style = {
+        "bar": ("#067647", "circle", "belowBar"),
+        "method": ("#2563EB", "arrowUp", "belowBar"),
+        "scanner": ("#7C3AED", "arrowUp", "aboveBar"),
+    }
+    markers: list[dict[str, Any]] = []
+    for supervision_group in supervision_groups:
+        frame = provider.load_supervision(
+            start_date=session,
+            end_date=session,
+            timeframe=timeframe,
+            supervision_type=supervision_group,
+            tickers=[ticker],
+        )
+        candidates = review_supervision_candidates(frame, supervision_group, min_confidence)
+        for row in candidates.head(marker_limit).to_dicts():
+            timestamp = row_chart_timestamp(row)
+            if not timestamp:
+                continue
+            color, shape, position = style.get(supervision_group, ("#1E3A5F", "circle", "belowBar"))
+            markers.append(
+                {
+                    "time": timestamp,
+                    "position": position,
+                    "color": color,
+                    "shape": shape,
+                    "text": review_supervision_marker_text(row, supervision_group),
+                }
+            )
+    markers.sort(key=lambda marker: int(marker.get("time") or 0))
+    return markers[:marker_limit]
+
+
+def render_review_chart_tab(records: list[dict[str, Any]], processed_root: Path) -> None:
+    bar_records = [record for record in records if record.get("group") == "bars" and record.get("exists")]
+    if not bar_records:
+        st.info("No saved bar artifacts are available for charting in the selected range.")
+        return
+
+    timeframes = sorted({record["timeframe"] for record in bar_records}, key=timeframe_sort_key)
+    component_key = "chart_component_review_data"
+    with st.container(key=component_key):
+        with st.container(key="chart_toolbar_review_data"):
+            toolbar_columns = st.columns([0.045, 0.17, 0.052, 0.12, 0.06, 0.16, 0.11, 0.125, 0.158], gap="small", vertical_alignment="center")
+            with toolbar_columns[2]:
+                render_inline_label("Frame")
+            timeframe = toolbar_columns[3].selectbox("Timeframe", timeframes, key="review_chart_timeframe", label_visibility="collapsed")
+            sessions = sorted({record["session_date"] for record in bar_records if record["timeframe"] == timeframe}, reverse=True)
+            with toolbar_columns[4]:
+                render_inline_label("Session")
+            session_value = toolbar_columns[5].selectbox("Session", sessions, key="review_chart_session", label_visibility="collapsed")
+            bar_record = first_matching_artifact(records, "bars", timeframe, session_value)
+            default_ticker = st.session_state.get("review_chart_ticker") or first_ticker_from_record(bar_record) or "AAPL"
+            with toolbar_columns[0]:
+                render_inline_label("Ticker")
+            ticker = toolbar_columns[1].text_input(
+                "Ticker",
+                value=str(default_ticker).upper(),
+                key="review_chart_ticker",
+                label_visibility="collapsed",
+                placeholder="AAPL",
+            ).strip().upper()
+
+            feature_options = feature_group_options_for_chart(records, timeframe, session_value)
+            default_feature_groups = [group for group in ["core", "momentum"] if group in feature_options] or feature_options[:2]
+            settings_key = chart_key_fragment(f"{timeframe}_{session_value}")
+            with toolbar_columns[6]:
+                settings_host = st.popover("Settings") if hasattr(st, "popover") else st.expander("Settings")
+                with settings_host:
+                    selected_feature_groups = st.multiselect(
+                        "Feature groups",
+                        feature_options,
+                        default=default_feature_groups,
+                        key=f"review_chart_feature_groups_{settings_key}",
+                    )
+                    available_columns = chart_feature_columns(records, timeframe, session_value, selected_feature_groups)
+                    standard_options = [column for column in CHART_INDICATORS if column in available_columns]
+                    selected_standard = st.multiselect(
+                        "Indicators",
+                        standard_options,
+                        default=standard_options,
+                        key=f"review_chart_standard_indicators_{settings_key}",
+                    )
+                    feature_line_options = [column for column in available_columns if column not in CHART_INDICATORS]
+                    selected_feature_lines = st.multiselect(
+                        "Feature lines",
+                        feature_line_options,
+                        default=[],
+                        key=f"review_chart_feature_lines_{settings_key}",
+                    )
+                    supervision_options = [
+                        group
+                        for group in SUPERVISION_GROUPS
+                        if first_matching_artifact(records, f"supervision_{group}", timeframe, session_value)
+                    ]
+                    selected_supervision = st.multiselect(
+                        "Supervision markers",
+                        supervision_options,
+                        default=["method"] if "method" in supervision_options else [],
+                        key=f"review_chart_supervision_{settings_key}",
+                    )
+                    min_confidence = float(st.slider("Min confidence", 0.0, 1.0, 0.70, 0.05, key=f"review_chart_min_confidence_{settings_key}"))
+                    marker_limit = int(st.slider("Marker limit", 25, 500, 100, 25, key=f"review_chart_marker_limit_{settings_key}"))
+            with toolbar_columns[8]:
+                render_chart_toolbar_buttons(component_key)
+        st.markdown(
+            '<div class="qq-chart-note">Saved provider bars, feature groups, and supervision markers are loaded for the selected ticker/session/timeframe.</div>',
+            unsafe_allow_html=True,
+        )
+        if not ticker:
+            st.info("Enter a ticker to load a saved-data chart.")
+            return
+        session_date = date.fromisoformat(session_value)
+        provider = MarketDataProvider(DataProviderConfig(processed_root=processed_root))
+        bars = provider.load_bars(
+            start_date=session_date,
+            end_date=session_date,
+            timeframe=timeframe,
+            tickers=[ticker],
+            feature_groups=selected_feature_groups,
+        )
+        if bars.is_empty():
+            st.info(f"No saved bars found for {ticker} on {session_value} at {timeframe}.")
+            return
+        indicators = review_chart_indicator_settings(list(dict.fromkeys(selected_standard + selected_feature_lines)))
+        markers = review_chart_supervision_markers(
+            provider,
+            session=session_date,
+            timeframe=timeframe,
+            ticker=ticker,
+            supervision_groups=selected_supervision,
+            marker_limit=marker_limit,
+            min_confidence=min_confidence,
+        )
+        payload = tradingview_chart_payload(bars, pl.DataFrame(), indicators, extra_markers=markers)
+        render_lightweight_candle_chart(payload, height=840, component_key=component_key)
 
 
 def build_monitor_metrics(
@@ -4978,21 +5469,21 @@ def render_market_data_review_page() -> None:
 
     render_review_metrics(review_metrics(records, manifest))
 
-    overview_tab, coverage_tab, artifacts_tab, preview_tab, schema_tab = st.tabs(
-        ["Overview", "Coverage", "Artifacts", "Preview", "Schema"]
+    overview_tab, coverage_tab, chart_tab, artifacts_tab, preview_tab, schema_tab = st.tabs(
+        ["Overview", "Coverage", "Chart", "Artifacts", "Preview", "Schema"]
     )
 
     with overview_tab:
         group_summary, timeframe_summary = st.columns(2, gap="medium", vertical_alignment="top")
         with group_summary:
             st.markdown("**Groups**")
-            app_dataframe(summarize_records(records, "group"), width="stretch", hide_index=True)
+            review_dataframe(summarize_records(records, "group"), sort_by="group", width="stretch")
         with timeframe_summary:
             st.markdown("**Timeframes**")
-            app_dataframe(summarize_records(records, "timeframe"), width="stretch", hide_index=True)
+            review_dataframe(summarize_records(records, "timeframe"), sort_by="timeframe", width="stretch")
         latest_records = sorted(records, key=lambda row: str(row.get("built_at") or ""), reverse=True)[:30]
         st.markdown("**Latest Artifacts**")
-        app_dataframe(
+        review_dataframe(
             pl.DataFrame(
                 [
                     {
@@ -5007,8 +5498,9 @@ def render_market_data_review_page() -> None:
                     for record in latest_records
                 ]
             ),
+            sort_by="built_at",
+            reverse=True,
             width="stretch",
-            hide_index=True,
         )
 
     with coverage_tab:
@@ -5016,14 +5508,17 @@ def render_market_data_review_page() -> None:
         if groups:
             selected_group = st.selectbox("Coverage group", groups, key="review_coverage_group")
             coverage = coverage_rows(records, start_date, end_date, selected_group)
-            app_dataframe(pl.DataFrame(coverage), width="stretch", hide_index=True)
+            review_dataframe(pl.DataFrame(coverage), sort_by="session_date", width="stretch")
         else:
             st.info("No artifacts in the selected date range.")
+
+    with chart_tab:
+        render_review_chart_tab(records, processed_root)
 
     with artifacts_tab:
         filter_cols = st.columns([0.22, 0.22, 0.56], gap="small")
         groups = ["All"] + sorted({record["group"] for record in records})
-        frames = ["All"] + sorted({record["timeframe"] for record in records}, key=lambda item: list(TIMEFRAMES).index(item) if item in TIMEFRAMES else 999)
+        frames = ["All"] + sorted({record["timeframe"] for record in records}, key=timeframe_sort_key)
         selected_group = filter_cols[0].selectbox("Group", groups, key="review_artifacts_group")
         selected_timeframe = filter_cols[1].selectbox("Timeframe", frames, key="review_artifacts_timeframe")
         search_text = filter_cols[2].text_input("Path contains", value="", key="review_artifacts_search")
@@ -5034,7 +5529,7 @@ def render_market_data_review_page() -> None:
             and (selected_timeframe == "All" or record["timeframe"] == selected_timeframe)
             and (not search_text or search_text.lower() in str(record.get("path") or "").lower())
         ]
-        app_dataframe(
+        review_dataframe(
             pl.DataFrame(
                 [
                     {
@@ -5051,46 +5546,27 @@ def render_market_data_review_page() -> None:
                     for record in artifact_rows
                 ]
             ),
+            sort_by=["group", "timeframe", "session_date"],
             width="stretch",
-            hide_index=True,
         )
 
     with preview_tab:
-        record = artifact_selector(records, "review_preview")
+        record = compact_artifact_selector(records, "review_preview")
         if record:
             render_artifact_cards(record)
             schema = artifact_schema(record)
             if not schema:
                 st.warning("Artifact file is missing or unreadable.")
             else:
-                control_cols = st.columns([0.22, 0.28, 0.5], gap="small")
-                row_limit = int(control_cols[0].number_input("Rows", min_value=10, max_value=5000, value=250, step=50, key="review_preview_rows"))
-                tickers_text = control_cols[1].text_input("Tickers", value="", key="review_preview_tickers")
                 schema_names = list(schema)
-                preferred = [
-                    column
-                    for column in [
-                        "bar_id",
-                        "ticker",
-                        "timeframe",
-                        "bar_time_market",
-                        "session_date",
-                        "open",
-                        "high",
-                        "low",
-                        "close",
-                        "volume",
-                        "trade_method",
-                        "horizon",
-                        "horizon_bars",
-                    ]
-                    if column in schema_names
-                ]
-                default_columns = list(dict.fromkeys(preferred + schema_names[: max(0, 12 - len(preferred))]))
-                selected_columns = control_cols[2].multiselect("Columns", schema_names, default=default_columns, key="review_preview_columns")
-                tickers = [ticker.strip().upper() for ticker in tickers_text.split(",") if ticker.strip()]
+                row_limit, tickers, selected_columns = compact_preview_controls(schema_names, chart_key_fragment(str(record.get("key") or "")))
                 sample = load_artifact_sample(record, selected_columns, row_limit, tickers)
-                app_dataframe(sample, width="stretch", hide_index=True)
+                sample_sort = [
+                    column
+                    for column in ["ticker", "bar_time_market", "bar_time_utc", "trade_method", "horizon_bars", "horizon"]
+                    if column in sample.columns
+                ]
+                review_dataframe(sample, sort_by=sample_sort, width="stretch")
 
     with schema_tab:
         record = artifact_selector(records, "review_schema")
@@ -5102,7 +5578,7 @@ def render_market_data_review_page() -> None:
             else:
                 sample_rows = int(st.number_input("Profile rows", min_value=50, max_value=10000, value=1000, step=100, key="review_schema_rows"))
                 sample = load_artifact_sample(record, list(schema), sample_rows, [])
-                app_dataframe(pl.DataFrame(schema_profile_rows(sample, schema)), width="stretch", hide_index=True)
+                review_dataframe(pl.DataFrame(schema_profile_rows(sample, schema)), sort_by="column", width="stretch")
 
 
 def render_data_provider_page() -> None:
