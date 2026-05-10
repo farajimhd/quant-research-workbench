@@ -111,8 +111,29 @@ def write_bar_supervision_artifact(
     columns: list[str] = []
     horizons = list(FIXED_HORIZONS_MINUTES)
     started_at = perf_counter()
+
+    def on_horizon_start(horizon_index: int, horizon: int, horizon_total: int) -> None:
+        emit(
+            progress_callback,
+            {
+                "event": "phase_checkpoint",
+                "phase": "supervision_bar",
+                "status": "running",
+                "session_date": session_date,
+                "timeframe": timeframe,
+                "group": "supervision_bar",
+                "horizon": f"{horizon}m",
+                "horizon_index": horizon_index,
+                "horizon_total": horizon_total,
+                "rows_out": rows_out,
+                "duration_sec": elapsed_since(started_at),
+                "work_completed": progress_state.get("completed_units") if progress_state else None,
+                "work_total": progress_state.get("total_units") if progress_state else None,
+            },
+        )
+
     try:
-        for horizon_index, (horizon, horizon_frame) in enumerate(iter_bar_supervision_frames(bars, horizons), start=1):
+        for horizon_index, (horizon, horizon_frame) in enumerate(iter_bar_supervision_frames(bars, horizons, on_horizon_start), start=1):
             table = horizon_frame.to_arrow()
             if writer is None:
                 writer = pq.ParquetWriter(tmp_path, table.schema, compression="zstd")

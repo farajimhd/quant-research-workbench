@@ -284,34 +284,11 @@ Supervision artifacts are future-looking labels for research and model training.
 
 ### Bar Supervision
 
-`supervision_bar` creates one row for each `(bar_id, horizon)` pair. A single bar therefore repeats across all fixed horizon rows, while the future-looking values change for each horizon. Fixed horizons are:
+`supervision_bar` creates one row for each `(bar_id, horizon)` pair. A single bar therefore repeats across all fixed horizon rows, while the future-looking values change for each horizon. Fixed horizons are intentionally short so full-universe `1m` builds stay bounded:
 
 - 1 minute
 - 2 minutes
 - 3 minutes
-- 4 minutes
-- 5 minutes
-- 6 minutes
-- 7 minutes
-- 8 minutes
-- 9 minutes
-- 10 minutes
-- 11 minutes
-- 12 minutes
-- 13 minutes
-- 14 minutes
-- 15 minutes
-- 20 minutes
-- 25 minutes
-- 30 minutes
-- 45 minutes
-- 60 minutes
-- 90 minutes
-- 120 minutes
-- 150 minutes
-- 180 minutes
-- 360 minutes
-- 480 minutes
 
 Columns:
 

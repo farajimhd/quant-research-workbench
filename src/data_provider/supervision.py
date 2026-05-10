@@ -1,39 +1,12 @@
 from __future__ import annotations
 
 from math import ceil
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 import polars as pl
 
 
-FIXED_HORIZONS_MINUTES = [
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7,
-    8,
-    9,
-    10,
-    11,
-    12,
-    13,
-    14,
-    15,
-    20,
-    25,
-    30,
-    45,
-    60,
-    90,
-    120,
-    150,
-    180,
-    360,
-    480,
-]
+FIXED_HORIZONS_MINUTES = [1, 2, 3]
 METHOD_WINDOWS = {
     "PRICE_VOLUME_SHOCK": (1, 45),
     "SCALP": (1, 10),
@@ -268,12 +241,19 @@ def build_bar_supervision(frame: pl.DataFrame, horizons_minutes: Iterable[int] =
     return pl.concat(frames, how="diagonal") if frames else pl.DataFrame()
 
 
-def iter_bar_supervision_frames(frame: pl.DataFrame, horizons_minutes: Iterable[int] = FIXED_HORIZONS_MINUTES) -> Iterator[tuple[int, pl.DataFrame]]:
+def iter_bar_supervision_frames(
+    frame: pl.DataFrame,
+    horizons_minutes: Iterable[int] = FIXED_HORIZONS_MINUTES,
+    on_horizon_start: Callable[[int, int, int], None] | None = None,
+) -> Iterator[tuple[int, pl.DataFrame]]:
     if frame.is_empty():
         return
+    horizons = list(horizons_minutes)
     sorted_frame = _sorted(frame)
     step = step_minutes_from_frame(sorted_frame)
-    for horizon in horizons_minutes:
+    for horizon_index, horizon in enumerate(horizons, start=1):
+        if on_horizon_start:
+            on_horizon_start(horizon_index, horizon, len(horizons))
         yield horizon, _bar_horizon_frame(sorted_frame, horizon, step)
 
 
