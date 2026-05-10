@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import sys
+import time
 import traceback
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
@@ -25,7 +26,6 @@ from src.backtest.metrics import compute_summary
 from src.backtest.indicators import add_standard_indicators
 from src.backtest.results import list_runs, read_run_metadata
 from src.backtest.runner import run_backtest
-from src.data_provider.builder import build_market_data
 from src.data_provider.config import (
     DEFAULT_PROCESSED_ROOT,
     FEATURE_GROUPS,
@@ -35,6 +35,7 @@ from src.data_provider.config import (
     DataProviderConfig,
 )
 from src.data_provider.calendar import discover_raw_bounds, scan_market_source
+from src.data_provider.jobs import cancel_build_job, get_build_status, submit_build_job
 from src.data_provider.manifest import read_manifest
 from src.data_provider.provider import MarketDataProvider
 from src.strategies.orb_5m_momentum.config import OrbMomentumConfig
@@ -4228,8 +4229,20 @@ def render_data_provider_page() -> None:
     with header_cols[1]:
         render_scope_card(scope)
 
-    events: list[dict] = st.session_state.setdefault("build_progress_events", [])
-    started_at = st.session_state.get("build_started_at")
+    job_status: dict[str, Any] | None = None
+    job_id = st.session_state.get("build_job_id")
+    if job_id:
+        job_status = get_build_status(processed_root, str(job_id))
+        if not job_status.get("job_id"):
+            st.session_state.pop("build_job_id", None)
+            job_status = None
+    events: list[dict] = list(job_status.get("events", [])) if job_status else []
+    if job_status and not events and job_status.get("status") in {"queued", "running", "canceling"}:
+        events = [{"event": "job_started", "phase": "job", "status": "running"}]
+    started_at = None
+    if job_status and job_status.get("started_at"):
+        started_at = datetime.fromisoformat(str(job_status["started_at"]).replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+    job_running = bool(job_status and job_status.get("status") in {"queued", "running", "canceling"})
 
     build_tab, timings_tab, artifacts_tab, plan_tab, store_tab, manifest_tab = st.tabs(
         ["Build", "Build Timings", "Artifacts", "Plan", "Processed Store", "Manifest"]
@@ -4237,7 +4250,12 @@ def render_data_provider_page() -> None:
 
     with build_tab:
         action_cols = st.columns([0.2, 0.2, 0.6], gap="small", vertical_alignment="center")
-        start_clicked = action_cols[0].button("Rebuild selected range", type="primary", width="stretch")
+        start_clicked = False
+        stop_clicked = False
+        if job_running:
+            stop_clicked = action_cols[0].button("Stop build", type="secondary", width="stretch")
+        else:
+            start_clicked = action_cols[0].button("Rebuild selected range", type="primary", width="stretch")
         if action_cols[1].button("Edit scope", width="stretch"):
             render_scope_dialog()
         metrics_slot = st.empty()
@@ -4260,7 +4278,7 @@ def render_data_provider_page() -> None:
 
     def render_progress_board(current_events: list[dict]) -> None:
         current_manifest = read_manifest(processed_root)
-        metrics = build_monitor_metrics(source_rows, current_events, current_manifest, st.session_state.get("build_started_at"))
+        metrics = build_monitor_metrics(source_rows, current_events, current_manifest, started_at)
         with metrics_slot.container():
             render_build_metrics(metrics, key_suffix=len(current_events))
         missing_sessions = [row["session_date"] for row in source_rows if row.get("expected_market_session") and not row.get("exists")]
@@ -4317,15 +4335,6 @@ def render_data_provider_page() -> None:
     render_progress_board(events)
 
     if start_clicked:
-        st.session_state["build_progress_events"] = []
-        st.session_state["build_started_at"] = datetime.now()
-        progress_rows: list[dict] = []
-
-        def on_progress(event: dict) -> None:
-            progress_rows.append(event)
-            st.session_state["build_progress_events"] = progress_rows
-            render_progress_board(progress_rows)
-
         request = BuildRequest(
             raw_root=raw_root,
             processed_root=processed_root,
@@ -4338,13 +4347,28 @@ def render_data_provider_page() -> None:
             tickers=None,
         )
         try:
-            result = build_market_data(request, progress_callback=on_progress)
-            st.session_state["build_progress_events"] = progress_rows
-            st.success(f"Build complete. Processed root: {result['processed_root']}")
+            job = submit_build_job(request, max_workers=4, polars_threads=6)
+            st.session_state["build_job_id"] = job["job_id"]
+            st.rerun()
         except Exception as exc:
             st.error(str(exc))
             with st.expander("Build error details"):
                 st.code(traceback.format_exc())
+    if stop_clicked and job_status:
+        cancel_build_job(processed_root, str(job_status["job_id"]))
+        st.rerun()
+    if job_status and job_status.get("status") == "complete":
+        st.success(f"Build complete. Processed root: {processed_root}")
+    elif job_status and job_status.get("status") == "failed":
+        st.error(str(job_status.get("error") or "Build failed."))
+        if job_status.get("traceback"):
+            with st.expander("Build error details"):
+                st.code(str(job_status["traceback"]))
+    elif job_status and job_status.get("status") == "cancelled":
+        st.warning("Build cancelled.")
+    if job_running:
+        time.sleep(1)
+        st.rerun()
 
 
 def strategy_workspace(strategy_name: str) -> None:

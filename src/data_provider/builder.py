@@ -25,7 +25,6 @@ from src.data_provider.timeframes import aggregate_daily, aggregate_intraday, ag
 
 
 ProgressCallback = Callable[[dict], None]
-MAX_SUPERVISION_OUTPUT_ROWS = 50_000_000
 
 
 def emit(progress_callback: ProgressCallback | None, event: dict) -> None:
@@ -158,28 +157,6 @@ def build_supervision_groups(
         "supervision_method": bars.height * len(METHOD_WINDOWS) if "method" in request.supervision_groups or "scanner" in request.supervision_groups else 0,
         "supervision_scanner": bars.height * len(METHOD_WINDOWS) if "scanner" in request.supervision_groups else 0,
     }
-    oversized = {group: rows for group, rows in estimated_rows.items() if rows > MAX_SUPERVISION_OUTPUT_ROWS}
-    if oversized:
-        detail = ", ".join(f"{group}~{rows:,} rows" for group, rows in oversized.items())
-        emit(
-            progress_callback,
-            {
-                "event": "phase_blocked",
-                "phase": "supervision",
-                "status": "failed",
-                "session_date": session_date,
-                "timeframe": timeframe,
-                "rows_in": bars.height,
-                "reason": f"Estimated supervision output is too large for in-app synchronous build: {detail}.",
-                "work_completed": progress_state.get("completed_units") if progress_state else None,
-                "work_total": progress_state.get("total_units") if progress_state else None,
-            },
-        )
-        raise ValueError(
-            "Supervision build is too large for the current in-app builder. "
-            f"{session_date} {timeframe} has {bars.height:,} input bars and would create {detail}. "
-            "Build bars/features first, then run supervision with a narrower ticker universe or a batch/offline worker."
-        )
     bar_supervision = None
     method_supervision = None
     if "bar" in request.supervision_groups:
