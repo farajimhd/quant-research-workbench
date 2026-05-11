@@ -8,6 +8,10 @@ type DataTableProps = {
 
 export function DataTable({ rows, columns, empty = "No rows." }: DataTableProps) {
   const resolvedColumns = columns ?? Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+  const sortedRows = [...rows].sort((left, right) => {
+    const primary = resolvedColumns[0];
+    return String(left[primary] ?? "").localeCompare(String(right[primary] ?? ""), undefined, { numeric: true });
+  });
   if (!rows.length) return <div className="empty-state">{empty}</div>;
   return (
     <div className="table-wrap">
@@ -20,7 +24,7 @@ export function DataTable({ rows, columns, empty = "No rows." }: DataTableProps)
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, index) => (
+          {sortedRows.map((row, index) => (
             <tr key={index}>
               {resolvedColumns.map((column) => (
                 <td key={column} title={String(row[column] ?? "")}>
@@ -38,4 +42,3 @@ export function DataTable({ rows, columns, empty = "No rows." }: DataTableProps)
 function formatHeader(value: string): string {
   return value.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
-

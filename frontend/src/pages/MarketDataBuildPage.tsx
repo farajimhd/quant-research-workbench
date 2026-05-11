@@ -3,13 +3,13 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api, query } from "../api/client";
 import { DataTable } from "../app/components/DataTable";
+import { InlineNotice } from "../app/components/InlineNotice";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { SessionProgressColumn, type SessionCard, StageRow, type Stage } from "../app/components/Progress";
-import { SemanticBadge, toneForStatus } from "../app/components/SemanticBadge";
 import { Tabs } from "../app/components/Tabs";
-import { formatBytes, formatDuration, formatNumber } from "../app/format";
+import { formatNumber } from "../app/format";
 
 type Scope = {
   raw_root: string;
@@ -175,15 +175,12 @@ export function MarketDataBuildPage() {
             />
           )}
           {missing.length ? (
-            <div className="panel phase-panel">
-              <SemanticBadge tone="warning">
-                <AlertTriangle size={13} /> Missing raw market sessions
-              </SemanticBadge>
-              <div className="muted" style={{ marginTop: 8 }}>
+            <InlineNotice tone="warning" icon={<AlertTriangle size={16} />} title="Missing raw market sessions">
+              <span>
                 {missing.map((row) => String(row.session_date)).slice(0, 16).join(", ")}
                 {missing.length > 16 ? " ..." : ""}
-              </div>
-            </div>
+              </span>
+            </InlineNotice>
           ) : null}
           <PhasePanel phases={progress?.phases ?? []} />
           <div className="build-board">
@@ -310,4 +307,3 @@ function ManifestCard({ scope }: { scope: Scope | null }) {
     </div>
   );
 }
-

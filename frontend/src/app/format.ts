@@ -7,6 +7,16 @@ export function formatNumber(value: unknown, decimals = 0): string {
   });
 }
 
+export function formatCompactNumber(value: unknown, decimals = 1): string {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) return "-";
+  return numeric.toLocaleString(undefined, {
+    maximumFractionDigits: decimals,
+    minimumFractionDigits: 0,
+    notation: "compact"
+  });
+}
+
 export function formatBytes(value: unknown): string {
   let size = Number(value ?? 0);
   if (!Number.isFinite(size)) return "-";
@@ -63,4 +73,3 @@ export function formatCell(key: string, value: unknown): string {
   if (typeof value === "number" && !Number.isInteger(value)) return formatNumber(value, 3);
   return String(value);
 }
-

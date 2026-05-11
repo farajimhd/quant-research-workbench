@@ -8,6 +8,7 @@ import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
+import { buildSegmentButtonClassName } from "../app/selectionStyles";
 import { displayName } from "../app/format";
 
 type Scope = {
@@ -250,7 +251,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
       <div className="toolbar">
         <input className="field ticker-input" value={ticker} maxLength={10} onChange={(event) => setTicker(event.target.value.toUpperCase())} aria-label="Ticker" />
         {timeframes.map((item) => (
-          <button className={item === timeframe ? "timeframe-button active" : "timeframe-button"} key={item} onClick={() => setTimeframe(item)} type="button">
+          <button className={buildSegmentButtonClassName(item === timeframe)} key={item} onClick={() => setTimeframe(item)} type="button">
             {item}
           </button>
         ))}
@@ -474,4 +475,3 @@ function timeframeSort(left: string, right: string) {
   const order = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"];
   return (order.indexOf(left) === -1 ? 999 : order.indexOf(left)) - (order.indexOf(right) === -1 ? 999 : order.indexOf(right)) || left.localeCompare(right);
 }
-
