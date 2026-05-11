@@ -1,4 +1,7 @@
 :root {
+  --font-size: 16px;
+  --font-size-base: 16px;
+  --font-size-panel: 15px;
   --font-body: "Inter", "Segoe UI Variable Text", "Segoe UI", sans-serif;
   --font-display: "Inter", "Segoe UI Variable Display", "Segoe UI", sans-serif;
   --background: #ffffff;
@@ -13,24 +16,38 @@
   --accent: #e9ebef;
   --accent-soft: rgba(3, 2, 19, 0.06);
   --border: rgba(0, 0, 0, 0.1);
+  --page-bg: #ffffff;
+  --surface: #ffffff;
+  --surface-alt: #f6f7f8;
+  --surface-border: rgba(0, 0, 0, 0.1);
+  --surface-shadow: 0 10px 30px rgba(15, 23, 42, 0.04);
+  --surface-strong: #ffffff;
   --divider: rgba(0, 0, 0, 0.1);
   --shell-bg: #ffffff;
   --shell-border: rgba(0, 0, 0, 0.08);
   --shell-muted: #717182;
   --shell-text: #030213;
   --sidebar: #fafafa;
+  --sidebar-bg: #fafafa;
   --sidebar-foreground: #030213;
   --sidebar-primary: #030213;
+  --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #f3f4f6;
+  --sidebar-accent-foreground: #030213;
+  --sidebar-border: rgba(0, 0, 0, 0.08);
+  --sidebar-section-text: #65748f;
   --progress-track: #ececf0;
   --success: #067647;
   --danger: #d4183d;
   --warning: #b54708;
   --info: #175cd3;
   --focus-ring: #030213;
-  --radius-control: 6px;
-  --radius-panel: 10px;
-  --radius-shell: 12px;
+  --chart-background: #ffffff;
+  --chart-grid: #f2f4f7;
+  --chart-text: #344054;
+  --radius-control: 10px;
+  --radius-panel: 18px;
+  --radius-shell: 22px;
   --badge-success-bg: #ecfdf3;
   --badge-success-border: #abefc6;
   --badge-success-fg: #067647;
@@ -62,7 +79,9 @@
 body {
   margin: 0;
   min-width: 1280px;
-  background: var(--background);
+  background: var(--page-bg);
+  color: var(--foreground);
+  font-size: var(--font-size-base);
 }
 
 button,
@@ -78,7 +97,7 @@ button {
 
 .app-shell {
   min-height: 100vh;
-  background: var(--background);
+  background: var(--page-bg);
   color: var(--foreground);
 }
 
@@ -110,8 +129,72 @@ button {
 .topbar h1 {
   margin: 0;
   font-size: 18px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0;
+}
+
+.theme-picker {
+  position: relative;
+}
+
+.theme-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 70;
+  width: 224px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--menu-shadow);
+  padding: 8px;
+}
+
+.theme-menu-title {
+  padding: 6px 8px 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.theme-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.theme-menu-group-label {
+  padding: 5px 8px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.theme-menu-items {
+  display: grid;
+  gap: 2px;
+}
+
+.theme-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--foreground);
+  min-height: 34px;
+  padding: 0 9px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.theme-menu-item.active {
+  background: color-mix(in oklab, var(--primary) 10%, transparent);
+  color: var(--foreground);
 }
 
 .account-pill {
@@ -123,8 +206,8 @@ button {
   color: var(--muted-foreground);
   min-height: 32px;
   padding: 0 12px;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .shell-body {
@@ -142,7 +225,7 @@ button {
   height: calc(100vh - 64px);
   align-self: start;
   border-right: 1px solid var(--shell-border);
-  background: var(--sidebar);
+  background: var(--sidebar-bg);
 }
 
 .collapse-button {
@@ -182,9 +265,9 @@ button {
 .nav-group-label {
   overflow: hidden;
   padding: 0 12px;
-  color: var(--muted-foreground);
+  color: var(--sidebar-section-text);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   text-overflow: ellipsis;
@@ -207,6 +290,8 @@ button {
   color: var(--sidebar-foreground);
   min-height: 38px;
   padding: 0 12px;
+  font-size: 14px;
+  font-weight: 500;
   text-align: left;
   transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
 }
@@ -218,12 +303,13 @@ button {
 
 .nav-item:hover {
   background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
 }
 
 .nav-item.active {
   border-color: var(--sidebar-primary);
   background: var(--sidebar-primary);
-  color: var(--primary-foreground);
+  color: var(--sidebar-primary-foreground);
 }
 
 .main {
@@ -233,7 +319,7 @@ button {
 .shell-content-inner {
   width: 100%;
   margin: 0 auto;
-  padding: 24px 61px 34px;
+  padding: 24px;
 }
 
 .page-intro {
@@ -260,8 +346,8 @@ button {
   margin: 4px 0 6px;
   font-family: var(--font-display);
   font-size: 30px;
-  font-weight: 650;
-  line-height: 1.15;
+  font-weight: 600;
+  line-height: 1.2;
   letter-spacing: 0;
 }
 
@@ -274,9 +360,10 @@ button {
 
 .scope-card {
   min-width: 560px;
-  border: 1px solid color-mix(in oklab, var(--primary) 5%, transparent);
+  border: 1px solid var(--surface-border);
   border-radius: var(--radius-panel);
-  background: color-mix(in oklab, var(--muted) 22%, var(--background));
+  background: var(--surface);
+  box-shadow: var(--surface-shadow);
   padding: 14px 16px;
 }
 
@@ -358,7 +445,7 @@ button {
   min-height: 36px;
   padding: 0 14px;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
@@ -899,22 +986,41 @@ button {
   margin: 12px 0;
 }
 
+.chart-session-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+}
+
+.chart-ticker-input,
 .ticker-input {
-  width: 84px;
+  width: 72px;
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg, var(--card));
+  color: var(--foreground);
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 500;
   text-transform: uppercase;
 }
 
 .timeframe-button {
-  min-width: 36px;
-  min-height: 30px;
-  padding: 0 8px;
+  min-width: 0;
+  min-height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 7px;
   font-size: 12px;
+  font-weight: 600;
 }
 
 .timeframe-button.active {
-  border-color: color-mix(in oklab, var(--primary) 24%, transparent);
   background: color-mix(in oklab, var(--primary) 8%, transparent);
-  color: var(--foreground);
+  color: var(--primary);
 }
 
 .toolbar-spacer {
@@ -929,23 +1035,56 @@ button {
 
 .chart-shell {
   position: relative;
-  border: 1px solid var(--border);
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  border: 1px solid var(--surface-border);
   border-radius: var(--radius-panel);
-  background: var(--card);
-  padding: 8px;
+  background: var(--surface);
+  box-shadow: var(--surface-shadow);
+  overflow: hidden;
 }
 
 .chart-shell.fullscreen {
   position: fixed;
   inset: 16px;
   z-index: 90;
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   box-shadow: 0 24px 80px rgba(16, 24, 40, 0.26);
+}
+
+.chart-component-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-bottom: 1px solid var(--surface-border);
+  background: color-mix(in oklab, var(--surface-alt) 42%, var(--surface));
+  min-height: 44px;
+  padding: 6px 8px;
+}
+
+.chart-timeframe-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.chart-canvas-stack {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  padding: 8px;
 }
 
 .chart-price {
   position: relative;
   height: 620px;
+  min-height: 320px;
+}
+
+.chart-shell.fullscreen .chart-price {
+  height: calc(100vh - 322px);
 }
 
 .chart-osc {
@@ -967,18 +1106,15 @@ button {
   bottom: 0;
 }
 
-.chart-note {
-  color: var(--muted-foreground);
-  font-size: 12px;
-  margin: 6px 0 8px;
+.chart-empty-state {
+  min-height: 360px;
+  padding: 28px;
 }
 
-.settings-panel {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-  background: color-mix(in oklab, var(--muted) 24%, transparent);
+.chart-settings-slot {
+  border-bottom: 1px solid var(--surface-border);
+  background: color-mix(in oklab, var(--surface-alt) 55%, var(--surface));
   padding: 12px;
-  margin: 10px 0;
 }
 
 .settings-grid {

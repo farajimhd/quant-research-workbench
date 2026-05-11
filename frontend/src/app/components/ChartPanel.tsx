@@ -5,7 +5,10 @@ import {
   type LogicalRange,
   type Time
 } from "lightweight-charts";
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { Maximize2, Minimize2, RotateCw, Settings, Shrink } from "lucide-react";
+import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useRef, useState } from "react";
+
+import { buildSegmentButtonClassName } from "../selectionStyles";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number };
 type ChartSeries = {
@@ -14,7 +17,7 @@ type ChartSeries = {
   style: "line" | "histogram";
   color: string;
   lineWidth: number;
-  data: Array<{ time: number; value: number }>;
+  data: Array<{ color?: string; time: number; value: number }>;
 };
 type Region = { start: number; end: number; color: string; label: string };
 
@@ -33,6 +36,18 @@ export type ChartPanelHandle = {
   toggleFullscreen: () => void;
 };
 
+type ChartPanelProps = {
+  onSettingsToggle: () => void;
+  onTickerChange: (value: string) => void;
+  onTimeframeChange: (value: string) => void;
+  payload: ChartPayload | null;
+  settingsContent?: ReactNode;
+  settingsOpen: boolean;
+  ticker: string;
+  timeframe: string;
+  timeframes: string[];
+};
+
 const candleSettings = {
   upColor: "#33E42A",
   downColor: "#FD0E50",
@@ -42,7 +57,23 @@ const candleSettings = {
   wickDownColor: "#C52A55"
 };
 
-export const ChartPanel = forwardRef<ChartPanelHandle, { payload: ChartPayload | null }>(({ payload }, ref) => {
+type ChartPalette = {
+  background: string;
+  grid: string;
+  text: string;
+};
+
+export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
+  onSettingsToggle,
+  onTickerChange,
+  onTimeframeChange,
+  payload,
+  settingsContent,
+  settingsOpen,
+  ticker,
+  timeframe,
+  timeframes
+}, ref) => {
   const priceRef = useRef<HTMLDivElement | null>(null);
   const oscRef = useRef<HTMLDivElement | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
@@ -51,6 +82,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, { payload: ChartPayload |
   const oscChartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [themeSignature, setThemeSignature] = useState(() => document.documentElement.dataset.shellTheme ?? "");
 
   useImperativeHandle(ref, () => ({
     fitFirstDay() {
@@ -66,10 +98,20 @@ export const ChartPanel = forwardRef<ChartPanelHandle, { payload: ChartPayload |
   }));
 
   useEffect(() => {
+    const target = document.documentElement;
+    const observer = new MutationObserver(() => {
+      setThemeSignature(`${target.dataset.shellTheme ?? ""}:${target.getAttribute("style") ?? ""}`);
+    });
+    observer.observe(target, { attributes: true, attributeFilter: ["class", "data-shell-theme", "style"] });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     if (!priceRef.current || !payload) return;
+    const palette = readChartPalette();
     priceRef.current.innerHTML = "";
     if (oscRef.current) oscRef.current.innerHTML = "";
-    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight));
+    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette));
     priceChartRef.current = priceChart;
     const candleSeries = priceChart.addCandlestickSeries({
       ...candleSettings,
@@ -95,7 +137,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, { payload: ChartPayload |
 
     let oscChart: IChartApi | null = null;
     if (oscRef.current && payload.oscillator_series.length) {
-      oscChart = createChart(oscRef.current, chartOptions(oscRef.current.clientWidth, oscRef.current.clientHeight, true));
+      oscChart = createChart(oscRef.current, chartOptions(oscRef.current.clientWidth, oscRef.current.clientHeight, true, palette));
       oscChartRef.current = oscChart;
       payload.oscillator_series.forEach((series) => {
         const renderer =
@@ -126,7 +168,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, { payload: ChartPayload |
       priceChartRef.current = null;
       oscChartRef.current = null;
     };
-  }, [payload]);
+  }, [payload, themeSignature]);
 
   function resizeCharts() {
     const price = priceRef.current;
@@ -139,32 +181,64 @@ export const ChartPanel = forwardRef<ChartPanelHandle, { payload: ChartPayload |
     }
   }
 
-  if (!payload || !payload.candles.length) {
-    return <div className="empty-state panel">No chart data for the selected ticker/session/timeframe.</div>;
-  }
   return (
     <div className={fullscreen ? "chart-shell fullscreen" : "chart-shell"} ref={shellRef}>
-      <div className="chart-price" ref={priceRef}>
-        <div className="session-layer" ref={priceLayerRef} />
+      <div className="chart-component-toolbar">
+        <input className="chart-ticker-input" value={ticker} maxLength={10} onChange={(event) => onTickerChange(event.target.value.toUpperCase())} aria-label="Ticker" />
+        <div className="chart-timeframe-row">
+          {timeframes.map((item) => (
+            <button className={buildSegmentButtonClassName(item === timeframe)} key={item} onClick={() => onTimeframeChange(item)} type="button">
+              {item}
+            </button>
+          ))}
+        </div>
+        <div className="toolbar-spacer" />
+        <button className="toolbar-button" type="button" title="Settings" onClick={onSettingsToggle}><Settings size={15} /></button>
+        <span className="toolbar-divider" />
+        <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, payload?.candles ?? [])}><RotateCw size={15} /></button>
+        <button className="toolbar-button" type="button" title="Fit recent" onClick={() => fitRecent(priceChartRef.current, payload?.candles ?? [])}><Shrink size={15} /></button>
+        <span className="toolbar-divider" />
+        <button className="toolbar-button" type="button" title={fullscreen ? "Exit fullscreen" : "Fullscreen"} onClick={() => setFullscreen((value) => !value)}>
+          {fullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+        </button>
       </div>
-      {payload.oscillator_series.length ? <div className="chart-osc" ref={oscRef} /> : null}
+      {settingsOpen ? <div className="chart-settings-slot">{settingsContent}</div> : null}
+      {!payload || !payload.candles.length ? (
+        <div className="empty-state chart-empty-state">No chart data for the selected ticker/session/timeframe.</div>
+      ) : (
+        <div className="chart-canvas-stack">
+          <div className="chart-price" ref={priceRef}>
+            <div className="session-layer" ref={priceLayerRef} />
+          </div>
+          {payload.oscillator_series.length ? <div className="chart-osc" ref={oscRef} /> : null}
+        </div>
+      )}
     </div>
   );
 });
 
-function chartOptions(width: number, height: number, compact = false) {
+function readChartPalette(): ChartPalette {
+  const styles = window.getComputedStyle(document.documentElement);
+  return {
+    background: styles.getPropertyValue("--chart-background").trim() || styles.getPropertyValue("--card").trim() || "#ffffff",
+    grid: styles.getPropertyValue("--chart-grid").trim() || styles.getPropertyValue("--border").trim() || "#f2f4f7",
+    text: styles.getPropertyValue("--chart-text").trim() || styles.getPropertyValue("--muted-foreground").trim() || "#344054"
+  };
+}
+
+function chartOptions(width: number, height: number, compact = false, palette: ChartPalette = readChartPalette()) {
   return {
     width: Math.max(320, width),
     height: Math.max(160, height),
-    layout: { background: { color: "#ffffff" }, textColor: "#344054" },
+    layout: { background: { color: palette.background }, textColor: palette.text },
     grid: {
-      vertLines: { color: "#f2f4f7" },
-      horzLines: { color: "#f2f4f7" }
+      vertLines: { color: palette.grid },
+      horzLines: { color: palette.grid }
     },
     crosshair: { mode: 0 },
-    rightPriceScale: { borderColor: "#eaecf0" },
+    rightPriceScale: { borderColor: palette.grid },
     timeScale: {
-      borderColor: "#eaecf0",
+      borderColor: palette.grid,
       rightOffset: compact ? 1 : 2,
       barSpacing: compact ? 22 : 40,
       minBarSpacing: 0.2,

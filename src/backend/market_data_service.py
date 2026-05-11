@@ -58,7 +58,7 @@ INDICATOR_COLORS = {
     "tema20": "#B7791F",
     "macd_line": "#1E3A5F",
     "macd_signal": "#B54708",
-    "macd_hist": "#067647",
+    "macd_hist": "#33E42A",
 }
 DYNAMIC_COLORS = ["#1E3A5F", "#B7791F", "#067647", "#B42318", "#2563EB", "#7C3AED", "#0E7490", "#C2410C"]
 
@@ -495,7 +495,11 @@ def chart_payload(
             timestamp = timestamp_seconds(row.get("bar_time_market"))
             value = row.get(column)
             if timestamp and value is not None:
-                points.append({"time": timestamp, "value": float(value)})
+                numeric_value = float(value)
+                point = {"time": timestamp, "value": numeric_value}
+                if column == "macd_hist":
+                    point["color"] = "#33E42A" if numeric_value >= 0 else "#FD0E50"
+                points.append(point)
         target = oscillator_series if option["pane"] == "oscillator" else overlay_series
         target.append({"column": column, "label": option["label"], "style": option["style"], "color": option["color"], "lineWidth": option["lineWidth"], "data": points})
     markers = supervision_markers(

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 
 import { Layout, type PageKey } from "./app/components/Layout";
-import { applyThemeDefinition } from "./app/theme";
 import { MarketDataBuildPage } from "./pages/MarketDataBuildPage";
 import { MarketDataReviewPage } from "./pages/MarketDataReviewPage";
 import { StrategyPage } from "./pages/StrategyPage";
@@ -17,10 +16,6 @@ export function App() {
   useEffect(() => {
     window.location.hash = page;
   }, [page]);
-
-  useEffect(() => {
-    applyThemeDefinition();
-  }, []);
 
   return (
     <Layout page={page} onPageChange={setPage}>

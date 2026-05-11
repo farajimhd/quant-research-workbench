@@ -1,14 +1,12 @@
-import { Maximize2, RotateCw, Settings, Shrink } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api, query } from "../api/client";
-import { ChartPanel, type ChartPanelHandle, type ChartPayload } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
 import { DataTable } from "../app/components/DataTable";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
-import { buildSegmentButtonClassName } from "../app/selectionStyles";
 import { displayName } from "../app/format";
 
 type Scope = {
@@ -184,7 +182,6 @@ function Coverage({ scope, records }: { scope: Scope; records: RecordRow[] }) {
 }
 
 function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
-  const chartRef = useRef<ChartPanelHandle | null>(null);
   const barRecords = records.filter((record) => record.group === "bars" && record.exists);
   const sessions = Array.from(new Set(barRecords.map((record) => record.session_date))).sort().reverse();
   const [session, setSession] = useState(sessions[0] ?? "");
@@ -238,7 +235,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   if (!barRecords.length) return <div className="empty-state panel">No saved bar artifacts are available for charting.</div>;
   return (
     <section>
-      <div className="toolbar">
+      <div className="chart-session-row">
         <div className="field" style={{ width: 230 }}>
           <label>Session</label>
           <select value={session} onChange={(event) => setSession(event.target.value)}>
@@ -248,22 +245,16 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
           </select>
         </div>
       </div>
-      <div className="toolbar">
-        <input className="field ticker-input" value={ticker} maxLength={10} onChange={(event) => setTicker(event.target.value.toUpperCase())} aria-label="Ticker" />
-        {timeframes.map((item) => (
-          <button className={buildSegmentButtonClassName(item === timeframe)} key={item} onClick={() => setTimeframe(item)} type="button">
-            {item}
-          </button>
-        ))}
-        <div className="toolbar-spacer" />
-        <button className="toolbar-button" type="button" title="Fit first day" onClick={() => chartRef.current?.fitFirstDay()}><RotateCw size={15} /></button>
-        <button className="toolbar-button" type="button" title="Fit recent" onClick={() => chartRef.current?.fitRecent()}><Shrink size={15} /></button>
-        <button className="toolbar-button" type="button" title="Fullscreen" onClick={() => chartRef.current?.toggleFullscreen()}><Maximize2 size={15} /></button>
-        <span className="toolbar-divider" />
-        <button className="toolbar-button" type="button" title="Settings" onClick={() => setSettingsOpen((value) => !value)}><Settings size={15} /></button>
-      </div>
-      {settingsOpen ? (
-        <div className="settings-panel">
+      <ChartPanel
+        onSettingsToggle={() => setSettingsOpen((value) => !value)}
+        onTickerChange={setTicker}
+        onTimeframeChange={setTimeframe}
+        payload={payload}
+        settingsOpen={settingsOpen}
+        ticker={ticker}
+        timeframe={timeframe}
+        timeframes={timeframes}
+        settingsContent={
           <div className="settings-grid">
             <CheckList title="Feature groups" values={featureGroups} options={featureOptions} onChange={setFeatureGroups} />
             <CheckList title="Indicators and features" values={columns} options={columnOptions} onChange={setColumns} />
@@ -279,10 +270,8 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
               </div>
             </div>
           </div>
-        </div>
-      ) : null}
-      <div className="chart-note">Saved provider bars, feature groups, and supervision markers are loaded for the selected ticker/session/timeframe.</div>
-      <ChartPanel ref={chartRef} payload={payload} />
+        }
+      />
     </section>
   );
 }

@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
-import { Activity, BarChart3, ChevronLeft, ChevronRight, Hammer, LineChart, Palette } from "lucide-react";
-import { useState } from "react";
+import { Activity, BarChart3, Check, ChevronLeft, ChevronRight, Hammer, LineChart, Palette } from "lucide-react";
+import { useEffect, useState } from "react";
 
-import { buildMenuItemButtonClassName } from "../selectionStyles";
+import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
+import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
 export type PageKey = "strategy" | "build-data" | "review-data";
 
@@ -26,8 +27,28 @@ const navGroups = [
   }
 ];
 
+const THEME_STORAGE_KEY = "quant-research-workbench.theme";
+
 export function Layout({ page, onPageChange, children }: LayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const [themeId, setThemeId] = useState<AppThemeId>(() => {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return stored && isAppThemeId(stored) ? stored : DEFAULT_THEME_ID;
+  });
+  const lightThemes = APP_THEMES.filter((theme) => theme.tone === "light");
+  const darkThemes = APP_THEMES.filter((theme) => theme.tone === "dark");
+
+  useEffect(() => {
+    applyThemeDefinition(document.documentElement, themeId);
+    window.localStorage.setItem(THEME_STORAGE_KEY, themeId);
+  }, [themeId]);
+
+  function selectTheme(nextThemeId: AppThemeId) {
+    setThemeId(nextThemeId);
+    setThemeMenuOpen(false);
+  }
+
   return (
     <div className={collapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
       <header className="topbar">
@@ -36,9 +57,20 @@ export function Layout({ page, onPageChange, children }: LayoutProps) {
           <h1>Quant Research Workbench</h1>
         </div>
         <div className="topbar-actions">
-          <button className="icon-button" type="button" aria-label="Theme">
-            <Palette size={18} />
-          </button>
+          <div className="theme-picker">
+            <button className="icon-button" type="button" aria-label="Change theme" onClick={() => setThemeMenuOpen((value) => !value)}>
+              <Palette size={18} />
+            </button>
+            {themeMenuOpen ? (
+              <div className="theme-menu" role="menu">
+                <div className="theme-menu-title">Select Theme</div>
+                <div className="theme-menu-divider" />
+                <ThemeMenuGroup activeThemeId={themeId} label="Light themes" themes={lightThemes} onSelect={selectTheme} />
+                <div className="theme-menu-divider" />
+                <ThemeMenuGroup activeThemeId={themeId} label="Dark themes" themes={darkThemes} onSelect={selectTheme} />
+              </div>
+            ) : null}
+          </div>
           <div className="account-pill">Local</div>
         </div>
       </header>
@@ -75,6 +107,38 @@ export function Layout({ page, onPageChange, children }: LayoutProps) {
         <main className="main">
           <div className="shell-content-inner">{children}</div>
         </main>
+      </div>
+    </div>
+  );
+}
+
+function ThemeMenuGroup({
+  activeThemeId,
+  label,
+  onSelect,
+  themes
+}: {
+  activeThemeId: AppThemeId;
+  label: string;
+  onSelect: (themeId: AppThemeId) => void;
+  themes: readonly AppThemeDefinition[];
+}) {
+  return (
+    <div className="theme-menu-group">
+      <div className="theme-menu-group-label">{label}</div>
+      <div className="theme-menu-items">
+        {themes.map((theme) => (
+          <button
+            className={buildThemeMenuItemButtonClassName(activeThemeId === theme.themeId)}
+            key={theme.themeId}
+            onClick={() => onSelect(theme.themeId)}
+            title={theme.description}
+            type="button"
+          >
+            <span>{theme.label}</span>
+            {activeThemeId === theme.themeId ? <Check size={15} /> : null}
+          </button>
+        ))}
       </div>
     </div>
   );
