@@ -105,8 +105,11 @@ export type ChartPanelHandle = {
 };
 
 type ChartPanelProps = {
+  emptyMessage?: string;
+  errorMessage?: string;
   featureOptions: string[];
   indicatorOptions: string[];
+  loading?: boolean;
   onTickerChange: (value: string) => void;
   onTimeframeChange: (value: string) => void;
   onVisibleColumnsChange: (value: string[]) => void;
@@ -148,8 +151,11 @@ type ChartPalette = {
 };
 
 export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
+  emptyMessage = "No chart data for the selected ticker/date range/timeframe.",
+  errorMessage,
   featureOptions,
   indicatorOptions,
+  loading = false,
   onTickerChange,
   onTimeframeChange,
   onVisibleColumnsChange,
@@ -484,8 +490,12 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           settings={chartSettings}
         />
       ) : null}
-      {!payload || !payload.candles.length ? (
-        <div className="empty-state chart-empty-state">No chart data for the selected ticker/session/timeframe.</div>
+      {loading ? (
+        <div className="empty-state chart-empty-state">Loading chart data...</div>
+      ) : errorMessage ? (
+        <div className="empty-state chart-empty-state">Chart data request failed: {errorMessage}</div>
+      ) : !payload || !payload.candles.length ? (
+        <div className="empty-state chart-empty-state">{emptyMessage}</div>
       ) : (
         <div className="chart-canvas-stack">
           <div className="chart-price">

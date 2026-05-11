@@ -226,6 +226,8 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [featureGroups, setFeatureGroups] = useState(DEFAULT_CHART_FEATURE_GROUPS);
   const [visibleColumns, setVisibleColumns] = useState(DEFAULT_CHART_COLUMNS);
   const [payload, setPayload] = useState<ChartPayload | null>(null);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartError, setChartError] = useState("");
 
   useEffect(() => {
     if (!availableSessions.length) return;
@@ -247,11 +249,15 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   useEffect(() => {
     if (!rangeStart || !rangeEnd || !timeframe || ticker.trim()) return;
     let active = true;
-    api<{ ticker: string }>(`/api/market-data/chart/default-ticker${query({ processed_root: scope.processed_root, start_date: rangeStart, end_date: rangeEnd, timeframe })}`).then(
+    api<{ ticker: string }>(
+      `/api/market-data/chart/default-ticker${query({ processed_root: scope.processed_root, session_date: rangeStart, start_date: rangeStart, end_date: rangeEnd, timeframe })}`
+    ).then(
       (result) => {
         if (active) setTicker(result.ticker || "AAPL");
       }
-    );
+    ).catch((error: Error) => {
+      if (active) setChartError(error.message);
+    });
     return () => {
       active = false;
     };
@@ -260,9 +266,12 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   useEffect(() => {
     if (!rangeStart || !rangeEnd || !timeframe || !ticker.trim()) return;
     let active = true;
+    setChartLoading(true);
+    setChartError("");
     api<ChartPayload>(
       `/api/market-data/chart${query({
         processed_root: scope.processed_root,
+        session_date: rangeStart,
         start_date: rangeStart,
         end_date: rangeEnd,
         timeframe,
@@ -280,6 +289,12 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
       if (nextFeatureGroups.length && !sameList(nextFeatureGroups, featureGroups)) {
         setFeatureGroups(nextFeatureGroups);
       }
+    }).catch((error: Error) => {
+      if (!active) return;
+      setPayload(null);
+      setChartError(error.message);
+    }).finally(() => {
+      if (active) setChartLoading(false);
     });
     return () => {
       active = false;
@@ -319,8 +334,11 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         </label>
       </div>
       <ChartPanel
+        emptyMessage="No chart data for the selected ticker/date range/timeframe."
+        errorMessage={chartError}
         featureOptions={featureOptions}
         indicatorOptions={indicatorOptions}
+        loading={chartLoading}
         onTickerChange={setTicker}
         onTimeframeChange={setTimeframe}
         onVisibleColumnsChange={setVisibleColumns}
