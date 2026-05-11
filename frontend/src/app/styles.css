@@ -1546,6 +1546,7 @@ button {
 }
 
 .data-table-shell {
+  container-type: inline-size;
   display: flex;
   height: var(--data-table-height, 430px);
   min-height: 0;
@@ -1576,8 +1577,15 @@ button {
 }
 
 .data-table-toolbar-actions {
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+}
+
+.data-table-toolbar-overflow {
+  position: relative;
+  display: none;
+  flex: 0 0 auto;
 }
 
 .data-table-title {
@@ -1717,10 +1725,62 @@ button {
   position: relative;
 }
 
+.data-table-popover.data-table-toolbar-menu {
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(340px, calc(100vw - 32px));
+  max-height: min(560px, calc(100vh - 96px));
+  overflow: auto;
+}
+
+.data-table-popover.data-table-toolbar-menu.table-popover-divided {
+  overflow: auto;
+  padding: 0;
+}
+
+.data-table-toolbar-menu-header,
+.data-table-toolbar-menu-section {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.data-table-toolbar-menu-header .data-table-popover-title {
+  padding: 0;
+}
+
+.data-table-toolbar-menu-header .data-table-sort-chip {
+  width: fit-content;
+}
+
+.data-table-toolbar-menu-section.actions {
+  justify-items: stretch;
+}
+
+.data-table-toolbar-menu-section.actions .table-text-button {
+  justify-content: center;
+}
+
 .data-table-toolbar-control {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.data-table-toolbar-control.menu-control {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.data-table-toolbar-control.menu-control .table-fit-button {
+  min-width: 0;
+}
+
+.data-table-columns-list.menu-columns {
+  max-height: 210px;
+  overflow: auto;
+  padding: 0;
 }
 
 .table-segment-button,
@@ -1747,6 +1807,33 @@ button {
 .table-fit-button:hover {
   background: color-mix(in oklab, var(--primary) 4%, transparent);
   color: var(--foreground);
+}
+
+@container (max-width: 1040px) {
+  .data-table-toolbar-actions-wide {
+    display: none;
+  }
+
+  .data-table-toolbar-overflow {
+    display: block;
+  }
+}
+
+@container (max-width: 760px) {
+  .data-table-stat-strip {
+    display: none;
+  }
+
+  .data-table-search {
+    width: min(220px, 100%);
+    min-width: 120px;
+  }
+}
+
+@container (max-width: 520px) {
+  .data-table-title {
+    display: none;
+  }
 }
 
 .data-table-scroll {

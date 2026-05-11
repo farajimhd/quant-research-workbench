@@ -6,6 +6,7 @@ import {
   Columns3,
   EyeOff,
   Filter,
+  MoreHorizontal,
   Search,
   X,
 } from "lucide-react";
@@ -77,6 +78,8 @@ type DataTableProps = {
   title?: string;
 };
 
+const TABLE_DENSITY_MODES = ["compact", "comfortable", "wide"] as const;
+
 export function DataTable({ columns, empty = "No rows.", rows, title }: DataTableProps) {
   const resolvedColumns = useMemo(() => {
     if (columns?.length) return columns;
@@ -92,6 +95,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
   const [openPopover, setOpenPopover] = useState<HeaderPopoverState | null>(null);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>(null);
+  const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
   const tableIdentityRef = useRef<string | null>(null);
 
   const profilesByColumn = useMemo<Record<string, ColumnProfile>>(() => {
@@ -194,6 +198,33 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
   }, [openPopover]);
 
   useEffect(() => {
+    if (!columnsMenuOpen && !toolbarMenuOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.closest(".data-table-popover") ||
+        target?.closest("[data-table-menu-trigger='true']")
+      ) {
+        return;
+      }
+      setColumnsMenuOpen(false);
+      setToolbarMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setColumnsMenuOpen(false);
+        setToolbarMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [columnsMenuOpen, toolbarMenuOpen]);
+
+  useEffect(() => {
     if (tableIdentityRef.current === null) {
       tableIdentityRef.current = tableIdentityKey;
       return;
@@ -269,7 +300,51 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
     setOpenPopover(null);
     setSearch("");
     setSort(null);
+    setToolbarMenuOpen(false);
   };
+
+  const renderDensityControls = (buttonClassName = "table-segment-button") =>
+    TABLE_DENSITY_MODES.map((candidateDensityMode) => (
+      <button
+        className={densityMode === candidateDensityMode ? `${buttonClassName} active` : buttonClassName}
+        key={candidateDensityMode}
+        onClick={() => setDensityMode(candidateDensityMode)}
+        type="button"
+      >
+        {candidateDensityMode}
+      </button>
+    ));
+
+  const renderLayoutControls = (buttonClassName = "table-fit-button") => (
+    <>
+      <button
+        className={layoutMode === "fit_header" ? `${buttonClassName} active` : buttonClassName}
+        onClick={() => setLayoutMode("fit_header")}
+        type="button"
+      >
+        Fit header
+      </button>
+      <button
+        className={layoutMode === "fit_data" ? `${buttonClassName} active` : buttonClassName}
+        onClick={() => setLayoutMode("fit_data")}
+        type="button"
+      >
+        Fit data
+      </button>
+    </>
+  );
+
+  const renderColumnToggles = () =>
+    resolvedColumns.map((column) => (
+      <label className="data-table-check-row" key={column}>
+        <input
+          checked={!hiddenColumns.includes(column)}
+          onChange={() => toggleColumnVisibility(column)}
+          type="checkbox"
+        />
+        <span>{displayName(column)}</span>
+      </label>
+    ));
 
   return (
     <div className="data-table-shell">
@@ -292,39 +367,18 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
             <span>{formatInteger(activeFilterCount)} filters</span>
           </div>
         </div>
-        <div className="data-table-toolbar-actions">
+        <div className="data-table-toolbar-actions data-table-toolbar-actions-wide">
           <span className="data-table-sort-chip">Sort: {activeSortLabel}</span>
           <div className="data-table-toolbar-control" aria-label="Table density">
-            {(["compact", "comfortable", "wide"] as const).map((candidateDensityMode) => (
-              <button
-                className={densityMode === candidateDensityMode ? "table-segment-button active" : "table-segment-button"}
-                key={candidateDensityMode}
-                onClick={() => setDensityMode(candidateDensityMode)}
-                type="button"
-              >
-                {candidateDensityMode}
-              </button>
-            ))}
+            {renderDensityControls()}
           </div>
           <div className="data-table-toolbar-control" aria-label="Table layout">
-            <button
-              className={layoutMode === "fit_header" ? "table-fit-button active" : "table-fit-button"}
-              onClick={() => setLayoutMode("fit_header")}
-              type="button"
-            >
-              Fit header
-            </button>
-            <button
-              className={layoutMode === "fit_data" ? "table-fit-button active" : "table-fit-button"}
-              onClick={() => setLayoutMode("fit_data")}
-              type="button"
-            >
-              Fit data
-            </button>
+            {renderLayoutControls()}
           </div>
           <div className="data-table-action-menu">
             <button
               className="table-icon-button"
+              data-table-menu-trigger="true"
               onClick={() => setColumnsMenuOpen((current) => !current)}
               title="Columns"
               type="button"
@@ -334,18 +388,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
             {columnsMenuOpen ? (
               <div className="data-table-popover data-table-columns-popover table-popover-divided">
                 <div className="data-table-popover-title">Columns</div>
-                <div className="data-table-columns-list">
-                  {resolvedColumns.map((column) => (
-                    <label className="data-table-check-row" key={column}>
-                      <input
-                        checked={!hiddenColumns.includes(column)}
-                        onChange={() => toggleColumnVisibility(column)}
-                        type="checkbox"
-                      />
-                      <span>{displayName(column)}</span>
-                    </label>
-                  ))}
-                </div>
+                <div className="data-table-columns-list">{renderColumnToggles()}</div>
                 <div className="data-table-columns-actions">
                   <button className="table-text-button data-table-show-all-button" onClick={() => setHiddenColumns([])} type="button">
                     Show all columns
@@ -357,6 +400,49 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
           <button className="table-text-button" onClick={resetTable} type="button">
             Reset
           </button>
+        </div>
+        <div className="data-table-toolbar-overflow">
+          <button
+            className={toolbarMenuOpen ? "table-icon-button active" : "table-icon-button"}
+            data-table-menu-trigger="true"
+            onClick={() => setToolbarMenuOpen((current) => !current)}
+            title="Table options"
+            type="button"
+          >
+            <MoreHorizontal size={16} />
+          </button>
+          {toolbarMenuOpen ? (
+            <div className="data-table-popover data-table-toolbar-menu table-popover-divided">
+              <div className="data-table-toolbar-menu-header">
+                <div className="data-table-popover-title">Table options</div>
+                <span className="data-table-sort-chip">Sort: {activeSortLabel}</span>
+              </div>
+              <div className="data-table-toolbar-menu-section">
+                <div className="table-popover-section-title">Density</div>
+                <div className="data-table-toolbar-control menu-control" aria-label="Table density">
+                  {renderDensityControls()}
+                </div>
+              </div>
+              <div className="data-table-toolbar-menu-section">
+                <div className="table-popover-section-title">Layout</div>
+                <div className="data-table-toolbar-control menu-control" aria-label="Table layout">
+                  {renderLayoutControls()}
+                </div>
+              </div>
+              <div className="data-table-toolbar-menu-section">
+                <div className="table-popover-section-title">Columns</div>
+                <div className="data-table-columns-list menu-columns">{renderColumnToggles()}</div>
+                <button className="table-text-button data-table-show-all-button" onClick={() => setHiddenColumns([])} type="button">
+                  Show all columns
+                </button>
+              </div>
+              <div className="data-table-toolbar-menu-section actions">
+                <button className="table-text-button" onClick={resetTable} type="button">
+                  Reset table
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 
