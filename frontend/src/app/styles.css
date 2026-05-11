@@ -798,6 +798,88 @@ button {
   margin: 12px 0 0;
 }
 
+.new-run-metric-strip {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.new-run-metric-card {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  overflow: hidden;
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 10px 28px rgba(16, 24, 40, 0.06);
+  padding: 11px 12px 12px;
+}
+
+.new-run-metric-card::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background: var(--border);
+  content: "";
+}
+
+.new-run-metric-card[data-tone="info"]::before {
+  background: var(--info);
+}
+
+.new-run-metric-card[data-tone="success"]::before {
+  background: var(--success);
+}
+
+.new-run-metric-card[data-tone="warning"]::before {
+  background: var(--warning);
+}
+
+.new-run-metric-icon {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--primary) 7%, transparent);
+  color: var(--primary);
+}
+
+.new-run-metric-label {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-run-metric-value {
+  overflow: hidden;
+  color: var(--foreground);
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-run-metric-detail {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .run-config-grid {
   display: grid;
   grid-template-columns: minmax(0, 0.96fr) minmax(0, 1.04fr);
@@ -2951,6 +3033,7 @@ button {
   }
 
   .metric-strip,
+  .new-run-metric-strip,
   .phase-grid,
   .schema-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

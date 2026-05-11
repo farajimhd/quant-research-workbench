@@ -1,4 +1,4 @@
-import { CircleHelp, Database, Pencil, Play, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Activity, Banknote, CalendarRange, CircleHelp, Database, Gauge, ListChecks, Pencil, Play, Shield, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
@@ -45,6 +45,14 @@ type StrategyConfig = {
 
 type StrategyParamValue = number | string | boolean;
 type EditTarget = "run" | "strategy";
+type NewRunMetricTone = "info" | "neutral" | "success" | "warning";
+type NewRunMetric = {
+  detail: string;
+  icon: ReactNode;
+  label: string;
+  tone?: NewRunMetricTone;
+  value: string;
+};
 
 const tabs = ["Runs", "New Run", "Strategy README"];
 const strategyName = "orb_5m_momentum";
@@ -254,6 +262,8 @@ function NewRunPanel({
     setEditing(null);
   }
 
+  const topMetrics = buildNewRunMetrics(config, params, job);
+
   return (
     <section className="new-run-page">
       <div className="new-run-action-row">
@@ -261,18 +271,7 @@ function NewRunPanel({
           <Play size={15} /> Start Backtest
         </button>
       </div>
-      <MetricStrip
-        items={[
-          { label: "Initial Cash", value: config.initial_cash, kind: "number" },
-          { label: "Max Positions", value: Number(params.max_active_positions ?? 0), kind: "number" },
-          { label: "Watchlist", value: Number(params.watchlist_size ?? 0), kind: "number" },
-          { label: "Min Setup", value: Number(params.min_setup_score ?? 0), kind: "number" },
-          { label: "Min Live", value: Number(params.min_live_score ?? 0), kind: "number" },
-          { label: "Status", value: String(job?.status ?? "draft"), kind: "status" },
-          { label: "Sessions", value: Array.isArray(job?.events) ? job.events.length : 0, kind: "number" },
-          { label: "Slippage", value: config.slippage_bps, kind: "number" }
-        ]}
-      />
+      <NewRunMetricStrip metrics={topMetrics} />
 
       <div className="run-config-grid">
         <ParameterCard
@@ -329,6 +328,21 @@ function NewRunPanel({
         </Modal>
       ) : null}
     </section>
+  );
+}
+
+function NewRunMetricStrip({ metrics }: { metrics: NewRunMetric[] }) {
+  return (
+    <div className="new-run-metric-strip">
+      {metrics.map((metric) => (
+        <article className="new-run-metric-card" data-tone={metric.tone ?? "neutral"} key={metric.label}>
+          <div className="new-run-metric-icon">{metric.icon}</div>
+          <span className="new-run-metric-label">{metric.label}</span>
+          <strong className="new-run-metric-value">{metric.value}</strong>
+          <span className="new-run-metric-detail">{metric.detail}</span>
+        </article>
+      ))}
+    </div>
   );
 }
 
@@ -624,6 +638,99 @@ function formatMinuteOfDay(value: number): string {
   const hours = Math.floor(value / 60);
   const minutes = value % 60;
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function buildNewRunMetrics(config: StrategyConfig, params: Record<string, StrategyParamValue>, job: Record<string, unknown> | null): NewRunMetric[] {
+  const status = String(job?.status ?? "draft");
+  const eventCount = Array.isArray(job?.events) ? job.events.length : 0;
+  return [
+    {
+      detail: eventCount ? `${formatNumber(eventCount)} sessions reported` : "Ready to submit",
+      icon: <Activity size={15} />,
+      label: "Status",
+      tone: statusMetricTone(status),
+      value: status
+    },
+    {
+      detail: dateRangeDetail(config.start_date, config.end_date),
+      icon: <CalendarRange size={15} />,
+      label: "Range",
+      value: compactDateRange(config.start_date, config.end_date)
+    },
+    {
+      detail: "Starting portfolio cash",
+      icon: <Banknote size={15} />,
+      label: "Capital",
+      value: formatMoney(config.initial_cash)
+    },
+    {
+      detail: "Candidate watchlist",
+      icon: <ListChecks size={15} />,
+      label: "Universe",
+      value: formatNumber(numberParam(params.watchlist_size))
+    },
+    {
+      detail: "Max concurrent positions",
+      icon: <Gauge size={15} />,
+      label: "Capacity",
+      value: formatNumber(numberParam(params.max_active_positions))
+    },
+    {
+      detail: "Setup / live score",
+      icon: <SlidersHorizontal size={15} />,
+      label: "Entry Gate",
+      value: `${formatNumber(numberParam(params.min_setup_score))} / ${formatNumber(numberParam(params.min_live_score))}`
+    },
+    {
+      detail: "Max capital per trade",
+      icon: <Shield size={15} />,
+      label: "Risk Cap",
+      value: formatPct(numberParam(params.max_capital_per_trade_pct))
+    }
+  ];
+}
+
+function numberParam(value: StrategyParamValue | undefined): number {
+  const numeric = Number(value ?? 0);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function statusMetricTone(status: string): NewRunMetricTone {
+  const normalized = status.toLowerCase();
+  if (normalized === "complete" || normalized === "ready") return "success";
+  if (normalized === "running" || normalized === "queued") return "info";
+  if (normalized === "failed" || normalized === "error") return "warning";
+  return "neutral";
+}
+
+function compactDateRange(start: string, end: string): string {
+  const startParts = parseIsoDate(start);
+  const endParts = parseIsoDate(end);
+  if (!startParts || !endParts) return `${start} to ${end}`;
+  const monthDay = new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", timeZone: "UTC" });
+  const dayOnly = new Intl.DateTimeFormat("en-US", { day: "numeric", timeZone: "UTC" });
+  if (startParts.year === endParts.year && startParts.month === endParts.month) {
+    return `${monthDay.format(startParts.date)}-${dayOnly.format(endParts.date)}`;
+  }
+  return `${monthDay.format(startParts.date)}-${monthDay.format(endParts.date)}`;
+}
+
+function dateRangeDetail(start: string, end: string): string {
+  const startParts = parseIsoDate(start);
+  const endParts = parseIsoDate(end);
+  if (!startParts || !endParts) return "Selected backtest dates";
+  const days = Math.max(1, Math.round((endParts.date.getTime() - startParts.date.getTime()) / 86_400_000) + 1);
+  const yearLabel = startParts.year === endParts.year ? String(startParts.year) : `${startParts.year}-${endParts.year}`;
+  return `${yearLabel}, ${formatNumber(days)} calendar days`;
+}
+
+function parseIsoDate(value: string): { date: Date; month: number; year: number } | null {
+  const [yearText, monthText, dayText] = value.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (![year, month, day].every(Number.isFinite)) return null;
+  return { date: new Date(Date.UTC(year, month - 1, day)), month, year };
 }
 
 function BacktestJobPanel({ job }: { job: Record<string, unknown> }) {
