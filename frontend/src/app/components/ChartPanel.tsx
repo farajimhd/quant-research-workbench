@@ -225,6 +225,26 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [ticker]);
 
   useEffect(() => {
+    if (!chartSettingsOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".chart-settings-slot") || target?.closest("[data-chart-settings-trigger='true']")) {
+        return;
+      }
+      setChartSettingsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setChartSettingsOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [chartSettingsOpen]);
+
+  useEffect(() => {
     indicatorSeriesRef.current.forEach((renderer, key) => {
       const source = indicatorSourceRef.current.get(key);
       if (!source) return;
@@ -397,6 +417,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <div className="toolbar-spacer" />
         <button
           className="toolbar-button"
+          data-chart-settings-trigger="true"
           type="button"
           title="Chart settings"
           onClick={() => {
