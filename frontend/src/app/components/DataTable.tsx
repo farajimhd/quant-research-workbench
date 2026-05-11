@@ -253,7 +253,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
     setOpenPopover((current) => {
       if (current?.kind === kind && current.column === column) return null;
       const rect = target.getBoundingClientRect();
-      const width = kind === "filter" ? 416 : 320;
+      const width = Math.min(kind === "filter" ? 760 : 640, window.innerWidth - 24);
       const left = Math.min(Math.max(12, rect.right - width), Math.max(12, window.innerWidth - width - 12));
       return { column, kind, left, top: rect.bottom + 8 };
     });
