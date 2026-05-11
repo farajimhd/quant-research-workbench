@@ -718,8 +718,9 @@ button {
 .coverage-panel,
 .table-fill-panel {
   display: flex;
-  min-height: max(560px, calc(100vh - 350px));
+  min-height: 0;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .coverage-panel .toolbar,
@@ -731,14 +732,15 @@ button {
 .table-fill-panel .data-table-shell {
   flex: 1 1 auto;
   height: auto;
-  min-height: 430px;
+  min-height: 0;
 }
 
 .schema-panel {
   display: flex;
-  min-height: max(560px, calc(100vh - 350px));
+  min-height: 0;
   flex-direction: column;
   gap: 12px;
+  overflow: hidden;
 }
 
 .schema-toolbar {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
@@ -172,6 +172,7 @@ function Coverage({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const groups = useMemo(() => Array.from(new Set(records.map((record) => record.group))).sort(), [records]);
   const [group, setGroup] = useState(groups[0] ?? "bars");
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const fillPanel = useViewportFillPanel(`${group}:${rows.length}`);
   useEffect(() => {
     if (!group) return;
     api<{ rows: Record<string, unknown>[] }>(
@@ -179,7 +180,7 @@ function Coverage({ scope, records }: { scope: Scope; records: RecordRow[] }) {
     ).then((payload) => setRows(payload.rows));
   }, [scope, group]);
   return (
-    <section className="panel coverage-panel">
+    <section className="panel coverage-panel" ref={fillPanel.ref} style={fillPanel.style}>
       <div className="toolbar">
         <div className="field" style={{ width: 260 }}>
           <label>Group</label>
@@ -294,8 +295,9 @@ function Artifacts({ records }: { records: RecordRow[] }) {
       (timeframe === "All" || record.timeframe === timeframe) &&
       (!search || record.path.toLowerCase().includes(search.toLowerCase()))
   );
+  const fillPanel = useViewportFillPanel(`${group}:${timeframe}:${search}:${rows.length}`);
   return (
-    <section className="panel table-fill-panel">
+    <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
       <div className="toolbar">
         <Select label="Group" value={group} options={groups} onChange={setGroup} />
         <Select label="Timeframe" value={timeframe} options={timeframes} onChange={setTimeframe} />
@@ -315,6 +317,7 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [rowLimit, setRowLimit] = useState(250);
   const [tickers, setTickers] = useState("");
   const [sample, setSample] = useState<{ columns: string[]; rows: Record<string, unknown>[] } | null>(null);
+  const fillPanel = useViewportFillPanel(`${recordKey}:${rowLimit}:${tickers}:${sample?.rows.length ?? 0}`);
   useEffect(() => {
     if (!record) return;
     api<{ sample: { columns: string[]; rows: Record<string, unknown>[] } }>(
@@ -330,7 +333,7 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   }, [scope.processed_root, record?.key, rowLimit, tickers]);
   if (!record) return <div className="empty-state">No records available.</div>;
   return (
-    <section className="panel table-fill-panel">
+    <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
       <div className="toolbar">
         <div className="field" style={{ flex: "1 1 360px", minWidth: 280 }}>
           <label>Artifact</label>
@@ -360,6 +363,7 @@ function Schema({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const temporalCount = fields.filter((field) => field.kind === "temporal").length;
   const booleanCount = fields.filter((field) => field.kind === "boolean").length;
   const textCount = fields.filter((field) => field.kind === "text").length;
+  const fillPanel = useViewportFillPanel(`${recordKey}:${fields.length}:${schemaLoading}`);
   useEffect(() => {
     if (!record) return;
     let active = true;
@@ -378,7 +382,7 @@ function Schema({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   }, [scope.processed_root, record?.key]);
   if (!record) return <div className="empty-state">No records available.</div>;
   return (
-    <section className="panel schema-panel">
+    <section className="panel schema-panel" ref={fillPanel.ref} style={fillPanel.style}>
       <div className="schema-toolbar">
         <div className="field" style={{ flex: "1 1 420px", minWidth: 300 }}>
           <label>Artifact</label>
@@ -495,6 +499,41 @@ function ScopeItem({ label, value }: { label: string; value: string }) {
       <b title={value}>{value}</b>
     </div>
   );
+}
+
+function useViewportFillPanel(trigger: unknown) {
+  const ref = useRef<HTMLElement | null>(null);
+  const [height, setHeight] = useState<number | undefined>();
+
+  useLayoutEffect(() => {
+    let frame = 0;
+    const update = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const node = ref.current;
+        if (!node) return;
+        const bottomInset = 24;
+        const availableHeight = Math.floor(window.innerHeight - node.getBoundingClientRect().top - bottomInset);
+        setHeight(Math.max(160, availableHeight));
+      });
+    };
+
+    update();
+    window.addEventListener("resize", update);
+    const observer = new ResizeObserver(update);
+    if (ref.current?.parentElement) observer.observe(ref.current.parentElement);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", update);
+      observer.disconnect();
+    };
+  }, [trigger]);
+
+  return {
+    ref,
+    style: height === undefined ? undefined : { height: `${height}px` }
+  };
 }
 
 function sameList(left: string[], right: string[]) {
