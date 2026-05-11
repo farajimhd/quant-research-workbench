@@ -401,31 +401,29 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
           </select>
         </div>
         <div className="preview-row-limit">
-          <InlineField
-            disabled={loadAllRows}
-            label="Rows"
-            type="number"
-            value={String(rowLimit)}
-            onChange={(value) => {
-              const next = Number(value);
-              if (Number.isFinite(next)) {
-                setRowLimit(Math.max(10, Math.round(next)));
-                setLoadAllRows(false);
-              }
-            }}
-          />
-          <label className="preview-all-rows-switch">
+          <div className="field preview-row-limit-field">
+            <div className="preview-row-limit-header">
+              <label htmlFor="preview-row-limit-input">Rows</label>
+              <label className="preview-all-rows-radio">
+                <input checked={loadAllRows} onChange={(event) => setLoadAllRows(event.target.checked)} type="checkbox" />
+                <span aria-hidden="true" />
+                <b>All rows</b>
+              </label>
+            </div>
             <input
-              checked={loadAllRows}
-              onChange={(event) => setLoadAllRows(event.target.checked)}
-              role="switch"
-              type="checkbox"
+              disabled={loadAllRows}
+              id="preview-row-limit-input"
+              type="number"
+              value={String(rowLimit)}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (Number.isFinite(next)) {
+                  setRowLimit(Math.max(10, Math.round(next)));
+                  setLoadAllRows(false);
+                }
+              }}
             />
-            <span className="preview-switch-track" aria-hidden="true">
-              <span />
-            </span>
-            <span>All rows</span>
-          </label>
+          </div>
         </div>
         <InlineField label="Tickers" value={tickers} onChange={setTickers} />
       </div>
