@@ -1,5 +1,5 @@
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, query } from "../api/client";
 import { DataTable } from "../app/components/DataTable";
@@ -10,6 +10,7 @@ import { PageIntro } from "../app/components/PageIntro";
 import { ProgressMeter, SessionProgressColumn, type SessionCard, StageRow, type Stage } from "../app/components/Progress";
 import { Tabs } from "../app/components/Tabs";
 import { formatNumber } from "../app/format";
+import { useViewportFillPanel } from "../app/hooks/useViewportFillPanel";
 
 type Scope = {
   raw_root: string;
@@ -190,9 +191,21 @@ export function MarketDataBuildPage() {
           {job?.status === "failed" ? <div className="error-panel" style={{ marginTop: 18 }}>{job.error ?? "Build failed."}</div> : null}
         </>
       ) : null}
-      {activeTab === "Build Timings" ? <DataTable rows={progress?.phase_events ?? []} /> : null}
-      {activeTab === "Artifacts" ? <DataTable rows={progress?.artifact_events ?? []} /> : null}
-      {activeTab === "Plan" ? <DataTable rows={progress?.plan ?? []} /> : null}
+      {activeTab === "Build Timings" ? (
+        <BuildTablePanel trigger={`timings:${job?.job_id ?? ""}:${progress?.phase_events?.length ?? 0}`}>
+          <DataTable rows={progress?.phase_events ?? []} />
+        </BuildTablePanel>
+      ) : null}
+      {activeTab === "Artifacts" ? (
+        <BuildTablePanel trigger={`artifacts:${job?.job_id ?? ""}:${progress?.artifact_events?.length ?? 0}`}>
+          <DataTable rows={progress?.artifact_events ?? []} />
+        </BuildTablePanel>
+      ) : null}
+      {activeTab === "Plan" ? (
+        <BuildTablePanel trigger={`plan:${job?.job_id ?? ""}:${progress?.plan?.length ?? 0}`}>
+          <DataTable rows={progress?.plan ?? []} />
+        </BuildTablePanel>
+      ) : null}
       {activeTab === "Processed Store" ? <ProcessedStore scope={scope} /> : null}
       {activeTab === "Manifest" ? <ManifestCard scope={scope} /> : null}
       {editingScope && draft ? (
@@ -277,15 +290,30 @@ function PhasePanel({ elapsedSec, phases, status }: { elapsedSec: number; phases
   );
 }
 
+function BuildTablePanel({ children, trigger }: { children: ReactNode; trigger: unknown }) {
+  const fillPanel = useViewportFillPanel<HTMLElement>(trigger);
+  return (
+    <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
+      {children}
+    </section>
+  );
+}
+
 function ProcessedStore({ scope }: { scope: Scope | null }) {
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const fillPanel = useViewportFillPanel<HTMLElement>(`${scope?.processed_root ?? ""}:${rows.length}`);
+
   useEffect(() => {
     if (!scope) return;
     api<{ records: Record<string, unknown>[] }>(`/api/market-data/review${query({ processed_root: scope.processed_root, start_date: scope.start_date, end_date: scope.end_date })}`).then((payload) =>
       setRows(payload.records)
     );
   }, [scope]);
-  return <DataTable rows={rows} columns={["group", "timeframe", "session_date", "rows", "column_count", "size", "built_at", "exists", "path"]} />;
+  return (
+    <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
+      <DataTable rows={rows} columns={["group", "timeframe", "session_date", "rows", "column_count", "size", "built_at", "exists", "path"]} />
+    </section>
+  );
 }
 
 function ManifestCard({ scope }: { scope: Scope | null }) {

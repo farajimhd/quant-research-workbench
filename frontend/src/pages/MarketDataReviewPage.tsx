@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
@@ -8,6 +8,7 @@ import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
 import { displayName } from "../app/format";
+import { useViewportFillPanel } from "../app/hooks/useViewportFillPanel";
 
 type Scope = {
   raw_root: string;
@@ -499,41 +500,6 @@ function ScopeItem({ label, value }: { label: string; value: string }) {
       <b title={value}>{value}</b>
     </div>
   );
-}
-
-function useViewportFillPanel(trigger: unknown) {
-  const ref = useRef<HTMLElement | null>(null);
-  const [height, setHeight] = useState<number | undefined>();
-
-  useLayoutEffect(() => {
-    let frame = 0;
-    const update = () => {
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        const node = ref.current;
-        if (!node) return;
-        const bottomInset = 24;
-        const availableHeight = Math.floor(window.innerHeight - node.getBoundingClientRect().top - bottomInset);
-        setHeight(Math.max(160, availableHeight));
-      });
-    };
-
-    update();
-    window.addEventListener("resize", update);
-    const observer = new ResizeObserver(update);
-    if (ref.current?.parentElement) observer.observe(ref.current.parentElement);
-
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener("resize", update);
-      observer.disconnect();
-    };
-  }, [trigger]);
-
-  return {
-    ref,
-    style: height === undefined ? undefined : { height: `${height}px` }
-  };
 }
 
 function sameList(left: string[], right: string[]) {
