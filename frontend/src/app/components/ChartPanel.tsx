@@ -11,6 +11,8 @@ import {
 } from "lightweight-charts";
 import {
   CalendarRange,
+  ChartNoAxesCombined,
+  Check,
   ChevronDown,
   ChevronRight,
   Eye,
@@ -24,6 +26,7 @@ import {
 } from "lucide-react";
 import { forwardRef, type FormEvent, type ReactNode, useEffect, useImperativeHandle, useRef, useState } from "react";
 
+import { displayName } from "../format";
 import { buildSegmentButtonClassName } from "../selectionStyles";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number };
@@ -74,6 +77,14 @@ export type ChartPayload = {
   oscillator_series: ChartSeries[];
   markers: Array<Record<string, unknown>>;
   regions: Region[];
+  options?: ChartOptions;
+};
+
+export type ChartOptions = {
+  feature_columns: string[];
+  feature_groups: string[];
+  standard_indicators: string[];
+  supervision_groups: string[];
 };
 
 export type ChartPanelHandle = {
@@ -83,12 +94,16 @@ export type ChartPanelHandle = {
 };
 
 type ChartPanelProps = {
+  featureOptions: string[];
+  indicatorOptions: string[];
   onTickerChange: (value: string) => void;
   onTimeframeChange: (value: string) => void;
+  onVisibleColumnsChange: (value: string[]) => void;
   payload: ChartPayload | null;
   ticker: string;
   timeframe: string;
   timeframes: string[];
+  visibleColumns: string[];
 };
 
 const defaultChartAppearanceSettings: ChartAppearanceSettings = {
@@ -120,12 +135,16 @@ type ChartPalette = {
 };
 
 export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
+  featureOptions,
+  indicatorOptions,
   onTickerChange,
   onTimeframeChange,
+  onVisibleColumnsChange,
   payload,
   ticker,
   timeframe,
-  timeframes
+  timeframes,
+  visibleColumns
 }, ref) => {
   const priceRef = useRef<HTMLDivElement | null>(null);
   const oscRef = useRef<HTMLDivElement | null>(null);
@@ -137,6 +156,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const indicatorSeriesRef = useRef<Map<string, AnySeriesApi>>(new Map());
   const indicatorSourceRef = useRef<Map<string, ChartSeries>>(new Map());
   const [draftTicker, setDraftTicker] = useState(ticker.toUpperCase());
+  const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
   const [chartSettings, setChartSettings] = useState<ChartAppearanceSettings>(() => loadChartAppearanceSettings());
@@ -351,8 +371,30 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             </button>
           ))}
         </div>
+        <span className="toolbar-divider" />
+        <IndicatorFeatureSelect
+          featureOptions={featureOptions}
+          indicatorOptions={indicatorOptions}
+          onChange={onVisibleColumnsChange}
+          onOpenChange={(value) => {
+            setColumnMenuOpen(value);
+            if (value) setChartSettingsOpen(false);
+          }}
+          open={columnMenuOpen}
+          values={visibleColumns}
+        />
         <div className="toolbar-spacer" />
-        <button className="toolbar-button" type="button" title="Chart settings" onClick={() => setChartSettingsOpen((value) => !value)}><Settings size={15} /></button>
+        <button
+          className="toolbar-button"
+          type="button"
+          title="Chart settings"
+          onClick={() => {
+            setColumnMenuOpen(false);
+            setChartSettingsOpen((value) => !value);
+          }}
+        >
+          <Settings size={15} />
+        </button>
         <span className="toolbar-divider" />
         <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, payload?.candles ?? [])}><CalendarRange size={15} /></button>
         <button className="toolbar-button" type="button" title="Fit recent" onClick={() => fitRecent(priceChartRef.current, payload?.candles ?? [])}><LocateFixed size={15} /></button>
@@ -538,6 +580,94 @@ function LegendEditor({
         Value in legend
       </label>
       <button className="legend-reset-button" onClick={onReset} type="button">Reset</button>
+    </div>
+  );
+}
+
+function IndicatorFeatureSelect({
+  featureOptions,
+  indicatorOptions,
+  onChange,
+  onOpenChange,
+  open,
+  values
+}: {
+  featureOptions: string[];
+  indicatorOptions: string[];
+  onChange: (value: string[]) => void;
+  onOpenChange: (value: boolean) => void;
+  open: boolean;
+  values: string[];
+}) {
+  const indicatorSet = new Set(indicatorOptions);
+  const visibleFeatures = featureOptions.filter((option) => !indicatorSet.has(option));
+  const visibleOptions = [...indicatorOptions, ...visibleFeatures];
+  const selected = new Set(values);
+  const selectedCount = visibleOptions.filter((option) => selected.has(option)).length;
+
+  const toggleValue = (value: string) => {
+    const nextSelected = new Set(values);
+    if (nextSelected.has(value)) {
+      nextSelected.delete(value);
+    } else {
+      nextSelected.add(value);
+    }
+    if (!nextSelected.size) return;
+    const ordered = visibleOptions.filter((option) => nextSelected.has(option));
+    onChange(ordered);
+  };
+
+  return (
+    <div className="chart-column-select">
+      <button
+        aria-expanded={open}
+        className="chart-column-select-button"
+        onClick={() => onOpenChange(!open)}
+        title="Indicators & Features"
+        type="button"
+      >
+        <ChartNoAxesCombined size={19} />
+        <span>Indicators &amp; Features</span>
+        {selectedCount ? <b>{selectedCount}</b> : null}
+        <ChevronDown size={14} />
+      </button>
+      {open ? (
+        <div className="chart-column-menu">
+          <div className="chart-column-menu-title">Indicators</div>
+          <div className="chart-column-menu-list">
+            {indicatorOptions.map((option) => (
+              <button
+                className={selected.has(option) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                key={option}
+                onClick={() => toggleValue(option)}
+                type="button"
+              >
+                <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
+                <span>{displayName(option)}</span>
+              </button>
+            ))}
+          </div>
+          <div className="chart-column-menu-divider" />
+          <div className="chart-column-menu-title">Features</div>
+          <div className="chart-column-menu-list feature-list">
+            {visibleFeatures.length ? (
+              visibleFeatures.map((option) => (
+                <button
+                  className={selected.has(option) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                  key={option}
+                  onClick={() => toggleValue(option)}
+                  type="button"
+                >
+                  <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
+                  <span>{displayName(option)}</span>
+                </button>
+              ))
+            ) : (
+              <div className="chart-column-menu-empty">No feature columns for this session.</div>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -1781,6 +1781,113 @@ button {
   opacity: 1;
 }
 
+.chart-column-select {
+  position: relative;
+}
+
+.chart-column-select-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--foreground);
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chart-column-select-button:hover,
+.chart-column-select-button[aria-expanded="true"] {
+  background: color-mix(in oklab, var(--primary) 4%, transparent);
+}
+
+.chart-column-select-button b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--primary) 9%, transparent);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.chart-column-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 8;
+  display: grid;
+  width: 292px;
+  max-height: min(520px, calc(100vh - 150px));
+  overflow: auto;
+  border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--surface) 96%, transparent);
+  box-shadow: 0 16px 42px rgba(16, 24, 40, 0.15);
+  padding: 8px;
+}
+
+.chart-column-menu-title {
+  padding: 5px 7px 6px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.chart-column-menu-list {
+  display: grid;
+  gap: 1px;
+}
+
+.chart-column-menu-list.feature-list {
+  max-height: 280px;
+  overflow: auto;
+}
+
+.chart-column-menu-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  min-height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--foreground);
+  padding: 0 7px;
+  font-size: 12px;
+  text-align: left;
+}
+
+.chart-column-menu-item:hover,
+.chart-column-menu-item.selected {
+  background: color-mix(in oklab, var(--primary) 5%, transparent);
+}
+
+.chart-column-menu-check {
+  display: inline-flex;
+  align-items: center;
+  color: var(--primary);
+}
+
+.chart-column-menu-divider {
+  height: 1px;
+  background: color-mix(in oklab, var(--surface-border) 72%, transparent);
+  margin: 7px 0;
+}
+
+.chart-column-menu-empty {
+  padding: 7px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
 .chart-canvas-stack {
   display: flex;
   min-height: 0;

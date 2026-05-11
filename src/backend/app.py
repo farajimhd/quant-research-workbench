@@ -363,7 +363,7 @@ def market_chart(
     min_confidence: float = Query(default=0.7, ge=0.0, le=1.0),
 ) -> dict[str, Any]:
     selected_feature_groups = parse_csv_list(feature_groups) or ["core", "momentum"]
-    selected_columns = parse_csv_list(columns) or ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"]
+    selected_columns = parse_csv_list(columns) if columns is not None else ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"]
     selected_supervision = parse_csv_list(supervision_groups) or ["method"]
     return json_safe(
         chart_payload(

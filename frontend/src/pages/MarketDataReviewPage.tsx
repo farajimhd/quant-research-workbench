@@ -39,6 +39,10 @@ type ReviewPayload = {
   latest: RecordRow[];
 };
 
+type ConfigDefaults = {
+  feature_groups: string[];
+};
+
 const tabs = ["Overview", "Coverage", "Chart", "Artifacts", "Preview", "Schema"];
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_COLUMNS = ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"];
@@ -195,7 +199,15 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   );
   const [timeframe, setTimeframe] = useState(timeframes[0] ?? "1m");
   const [ticker, setTicker] = useState("");
+  const [featureGroups, setFeatureGroups] = useState(DEFAULT_CHART_FEATURE_GROUPS);
+  const [visibleColumns, setVisibleColumns] = useState(DEFAULT_CHART_COLUMNS);
   const [payload, setPayload] = useState<ChartPayload | null>(null);
+
+  useEffect(() => {
+    api<ConfigDefaults>("/api/config/defaults").then((defaults) => {
+      if (defaults.feature_groups?.length) setFeatureGroups(defaults.feature_groups);
+    });
+  }, []);
 
   useEffect(() => {
     if (!session || !timeframes.length) return;
@@ -217,14 +229,23 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         session_date: session,
         timeframe,
         ticker: ticker.trim().toUpperCase(),
-        feature_groups: DEFAULT_CHART_FEATURE_GROUPS.join(","),
-        columns: DEFAULT_CHART_COLUMNS.join(","),
+        feature_groups: featureGroups.join(","),
+        columns: visibleColumns.join(","),
         supervision_groups: DEFAULT_CHART_SUPERVISION_GROUPS.join(","),
         min_confidence: DEFAULT_CHART_MIN_CONFIDENCE,
         marker_limit: DEFAULT_CHART_MARKER_LIMIT
       })}`
-    ).then(setPayload);
-  }, [scope.processed_root, session, timeframe, ticker]);
+    ).then((nextPayload) => {
+      setPayload(nextPayload);
+      const nextFeatureGroups = nextPayload.options?.feature_groups ?? [];
+      if (nextFeatureGroups.length && !sameList(nextFeatureGroups, featureGroups)) {
+        setFeatureGroups(nextFeatureGroups);
+      }
+    });
+  }, [scope.processed_root, session, timeframe, ticker, featureGroups, visibleColumns]);
+
+  const indicatorOptions = payload?.options?.standard_indicators ?? DEFAULT_CHART_COLUMNS;
+  const featureOptions = payload?.options?.feature_columns ?? [];
 
   if (!barRecords.length) return <div className="empty-state panel">No saved bar artifacts are available for charting.</div>;
   return (
@@ -240,12 +261,16 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         </div>
       </div>
       <ChartPanel
+        featureOptions={featureOptions}
+        indicatorOptions={indicatorOptions}
         onTickerChange={setTicker}
         onTimeframeChange={setTimeframe}
+        onVisibleColumnsChange={setVisibleColumns}
         payload={payload}
         ticker={ticker}
         timeframe={timeframe}
         timeframes={timeframes}
+        visibleColumns={visibleColumns}
       />
     </section>
   );
@@ -396,6 +421,10 @@ function ScopeItem({ label, value }: { label: string; value: string }) {
       <b title={value}>{value}</b>
     </div>
   );
+}
+
+function sameList(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function timeframeSort(left: string, right: string) {
