@@ -49,11 +49,19 @@ type SchemaField = {
   dtype: string;
   kind: "boolean" | "numeric" | "other" | "temporal" | "text";
 };
+type PreviewSample = {
+  columns: string[];
+  row_count: number;
+  row_limit: number;
+  row_offset: number;
+  rows: Record<string, unknown>[];
+};
 
 const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema"];
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_COLUMNS = ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
+const PREVIEW_PAGE_SIZE = 5000;
 
 export function MarketDataReviewPage() {
   const [scope, setScope] = useState<Scope | null>(null);
@@ -369,24 +377,29 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const record = records.find((item) => item.key === recordKey) ?? records[0];
   const [rowLimit, setRowLimit] = useState(250);
   const [loadAllRows, setLoadAllRows] = useState(true);
+  const [previewOffset, setPreviewOffset] = useState(0);
   const [tickers, setTickers] = useState("");
-  const [sample, setSample] = useState<{ columns: string[]; rows: Record<string, unknown>[] } | null>(null);
+  const [sample, setSample] = useState<PreviewSample | null>(null);
   const [sampleError, setSampleError] = useState("");
   const [sampleLoading, setSampleLoading] = useState(false);
-  const fillPanel = useViewportFillPanel(`${recordKey}:${rowLimit}:${loadAllRows}:${tickers}:${sample?.rows.length ?? 0}`);
+  const fillPanel = useViewportFillPanel(`${recordKey}:${rowLimit}:${loadAllRows}:${previewOffset}:${tickers}:${sample?.rows.length ?? 0}`);
+  useEffect(() => {
+    setPreviewOffset(0);
+  }, [record?.key, loadAllRows, rowLimit, tickers]);
   useEffect(() => {
     if (!record) return;
     let active = true;
     setSampleError("");
     setSampleLoading(true);
-    api<{ sample: { columns: string[]; rows: Record<string, unknown>[] } }>(
+    api<{ sample: PreviewSample }>(
       `/api/market-data/preview${query({
         processed_root: scope.processed_root,
         group: record.group,
         timeframe: record.timeframe,
         session_date: record.session_date,
         all_rows: loadAllRows,
-        row_limit: loadAllRows ? Math.max(10, Math.min(record.rows || rowLimit, 5000)) : rowLimit,
+        row_limit: loadAllRows ? PREVIEW_PAGE_SIZE : rowLimit,
+        row_offset: loadAllRows ? previewOffset : 0,
         tickers
       })}`
     )
@@ -396,7 +409,7 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
       })
       .catch((error: Error) => {
         if (!active) return;
-        setSample({ columns: record.columns, rows: [] });
+        setSample({ columns: record.columns, row_count: 0, row_limit: loadAllRows ? PREVIEW_PAGE_SIZE : rowLimit, row_offset: 0, rows: [] });
         setSampleError(error.message);
       })
       .finally(() => {
@@ -405,17 +418,13 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
     return () => {
       active = false;
     };
-  }, [scope.processed_root, record?.key, loadAllRows, rowLimit, tickers]);
+  }, [scope.processed_root, record?.key, loadAllRows, previewOffset, rowLimit, tickers]);
   if (!record) return <div className="empty-state">No records available.</div>;
-  const returnedPartialRows =
-    loadAllRows &&
-    !sampleLoading &&
-    !sampleError &&
-    !tickers.trim() &&
-    sample &&
-    Number.isFinite(record.rows) &&
-    sample.rows.length > 0 &&
-    sample.rows.length < record.rows;
+  const previewTotalRows = sample?.row_count ?? 0;
+  const previewStartRow = sample?.rows.length ? (sample.row_offset ?? 0) + 1 : 0;
+  const previewEndRow = sample ? (sample.row_offset ?? 0) + sample.rows.length : 0;
+  const canPageBack = loadAllRows && previewOffset > 0 && !sampleLoading;
+  const canPageForward = loadAllRows && previewEndRow < previewTotalRows && !sampleLoading;
   return (
     <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
       <div className="toolbar">
@@ -458,9 +467,17 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
       </div>
       {sampleError ? <div className="preview-sample-status error">Preview request failed: {sampleError}</div> : null}
       {sampleLoading ? <div className="preview-sample-status">Loading preview rows...</div> : null}
-      {returnedPartialRows ? (
-        <div className="preview-sample-status warning">
-          Returned {sample.rows.length.toLocaleString()} of {record.rows.toLocaleString()} rows while All rows is selected. Restart the backend if this persists.
+      {loadAllRows && sample && !sampleError ? (
+        <div className="preview-page-status">
+          <span>
+            Showing {previewStartRow.toLocaleString()}-{previewEndRow.toLocaleString()} of {previewTotalRows.toLocaleString()} rows
+          </span>
+          <button className="table-text-button" disabled={!canPageBack} onClick={() => setPreviewOffset((value) => Math.max(0, value - PREVIEW_PAGE_SIZE))} type="button">
+            Previous
+          </button>
+          <button className="table-text-button" disabled={!canPageForward} onClick={() => setPreviewOffset((value) => value + PREVIEW_PAGE_SIZE)} type="button">
+            Next
+          </button>
         </div>
       ) : null}
       <DataTable rows={sample?.rows ?? []} columns={sample?.columns} />

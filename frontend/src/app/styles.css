@@ -2735,8 +2735,19 @@ button {
   color: var(--danger);
 }
 
-.preview-sample-status.warning {
-  color: color-mix(in oklab, var(--warning, #b45309) 92%, var(--foreground));
+.preview-page-status {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: -2px 0 8px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.preview-page-status span {
+  margin-right: auto;
 }
 
 .split-row {

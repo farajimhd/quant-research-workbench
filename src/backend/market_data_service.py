@@ -213,25 +213,33 @@ def artifact_schema(record: dict[str, Any]) -> list[dict[str, str]]:
     return [{"column": column, "dtype": str(dtype)} for column, dtype in schema.items()]
 
 
-def load_artifact_sample(record: dict[str, Any], columns: list[str], row_limit: int | None, tickers: list[str]) -> dict[str, Any]:
+def load_artifact_sample(record: dict[str, Any], columns: list[str], row_limit: int, tickers: list[str], row_offset: int = 0) -> dict[str, Any]:
     path = Path(str(record.get("path") or ""))
     if not path.exists():
-        return {"rows": [], "columns": []}
+        return {"columns": [], "row_count": 0, "row_limit": row_limit, "row_offset": row_offset, "rows": []}
     scan = pl.scan_parquet(path)
     schema = scan.collect_schema()
     schema_names = schema.names()
     if tickers and "ticker" in schema_names:
         scan = scan.filter(pl.col("ticker").is_in([ticker.upper() for ticker in tickers]))
     selected_columns = [column for column in columns if column in schema_names]
+    row_count = int(scan.select(pl.len().alias("row_count")).collect().item(0, "row_count"))
     if selected_columns:
         scan = scan.select(selected_columns)
-    if row_limit is not None:
-        scan = scan.limit(max(1, min(row_limit, 5000)))
+    row_offset = max(0, min(row_offset, row_count))
+    row_limit = max(1, min(row_limit, 5000))
+    scan = scan.slice(row_offset, row_limit)
     frame = scan.collect()
     sort_columns = [column for column in ["ticker", "bar_time_market", "bar_time_utc", "trade_method", "horizon_bars", "horizon"] if column in frame.columns]
     if sort_columns:
         frame = frame.sort(sort_columns)
-    return {"columns": frame.columns, "rows": json_safe(frame.to_dicts())}
+    return {
+        "columns": frame.columns,
+        "row_count": row_count,
+        "row_limit": row_limit,
+        "row_offset": row_offset,
+        "rows": json_safe(frame.to_dicts()),
+    }
 
 
 def first_matching_artifact(records: list[dict[str, Any]], group: str, timeframe: str, session: str) -> dict[str, Any] | None:
