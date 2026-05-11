@@ -7,7 +7,6 @@ import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
-import { displayName } from "../app/format";
 
 type Scope = {
   raw_root: string;
@@ -41,6 +40,11 @@ type ReviewPayload = {
 };
 
 const tabs = ["Overview", "Coverage", "Chart", "Artifacts", "Preview", "Schema"];
+const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
+const DEFAULT_CHART_COLUMNS = ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"];
+const DEFAULT_CHART_SUPERVISION_GROUPS = ["method"];
+const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
+const DEFAULT_CHART_MARKER_LIMIT = 100;
 
 export function MarketDataReviewPage() {
   const [scope, setScope] = useState<Scope | null>(null);
@@ -191,13 +195,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   );
   const [timeframe, setTimeframe] = useState(timeframes[0] ?? "1m");
   const [ticker, setTicker] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [featureGroups, setFeatureGroups] = useState(["core", "momentum"]);
-  const [columns, setColumns] = useState(["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"]);
-  const [supervisionGroups, setSupervisionGroups] = useState(["method"]);
-  const [minConfidence, setMinConfidence] = useState(0.7);
-  const [markerLimit, setMarkerLimit] = useState(100);
-  const [payload, setPayload] = useState<(ChartPayload & { options?: ChartOptions }) | null>(null);
+  const [payload, setPayload] = useState<ChartPayload | null>(null);
 
   useEffect(() => {
     if (!session || !timeframes.length) return;
@@ -213,24 +211,20 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
 
   useEffect(() => {
     if (!session || !timeframe || !ticker.trim()) return;
-    api<ChartPayload & { options: ChartOptions }>(
+    api<ChartPayload>(
       `/api/market-data/chart${query({
         processed_root: scope.processed_root,
         session_date: session,
         timeframe,
         ticker: ticker.trim().toUpperCase(),
-        feature_groups: featureGroups.join(","),
-        columns: columns.join(","),
-        supervision_groups: supervisionGroups.join(","),
-        min_confidence: minConfidence,
-        marker_limit: markerLimit
+        feature_groups: DEFAULT_CHART_FEATURE_GROUPS.join(","),
+        columns: DEFAULT_CHART_COLUMNS.join(","),
+        supervision_groups: DEFAULT_CHART_SUPERVISION_GROUPS.join(","),
+        min_confidence: DEFAULT_CHART_MIN_CONFIDENCE,
+        marker_limit: DEFAULT_CHART_MARKER_LIMIT
       })}`
     ).then(setPayload);
-  }, [scope.processed_root, session, timeframe, ticker, featureGroups, columns, supervisionGroups, minConfidence, markerLimit]);
-
-  const featureOptions = payload?.options?.feature_groups ?? featureGroups;
-  const columnOptions = Array.from(new Set([...(payload?.options?.standard_indicators ?? []), ...(payload?.options?.feature_columns ?? columns)]));
-  const supervisionOptions = payload?.options?.supervision_groups ?? supervisionGroups;
+  }, [scope.processed_root, session, timeframe, ticker]);
 
   if (!barRecords.length) return <div className="empty-state panel">No saved bar artifacts are available for charting.</div>;
   return (
@@ -246,70 +240,14 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         </div>
       </div>
       <ChartPanel
-        onSettingsToggle={() => setSettingsOpen((value) => !value)}
         onTickerChange={setTicker}
         onTimeframeChange={setTimeframe}
         payload={payload}
-        settingsOpen={settingsOpen}
         ticker={ticker}
         timeframe={timeframe}
         timeframes={timeframes}
-        settingsContent={
-          <div className="settings-grid">
-            <CheckList title="Feature groups" values={featureGroups} options={featureOptions} onChange={setFeatureGroups} />
-            <CheckList title="Indicators and features" values={columns} options={columnOptions} onChange={setColumns} />
-            <CheckList title="Supervision markers" values={supervisionGroups} options={supervisionOptions} onChange={setSupervisionGroups} />
-            <div className="form-grid" style={{ gridTemplateColumns: "1fr" }}>
-              <div className="field">
-                <label>Min confidence</label>
-                <input type="number" min="0" max="1" step="0.05" value={minConfidence} onChange={(event) => setMinConfidence(Number(event.target.value))} />
-              </div>
-              <div className="field">
-                <label>Marker limit</label>
-                <input type="number" min="0" max="500" step="25" value={markerLimit} onChange={(event) => setMarkerLimit(Number(event.target.value))} />
-              </div>
-            </div>
-          </div>
-        }
       />
     </section>
-  );
-}
-
-type ChartOptions = {
-  feature_groups: string[];
-  feature_columns: string[];
-  standard_indicators: string[];
-  supervision_groups: string[];
-};
-
-function CheckList({
-  title,
-  options,
-  values,
-  onChange
-}: {
-  title: string;
-  options: string[];
-  values: string[];
-  onChange: (values: string[]) => void;
-}) {
-  return (
-    <div>
-      <div className="metric-label" style={{ marginBottom: 6 }}>{title}</div>
-      <div className="check-list">
-        {options.map((option) => (
-          <label key={option}>
-            <input
-              checked={values.includes(option)}
-              type="checkbox"
-              onChange={(event) => onChange(event.target.checked ? [...values, option] : values.filter((value) => value !== option))}
-            />
-            {displayName(option)}
-          </label>
-        ))}
-      </div>
-    </div>
   );
 }
 

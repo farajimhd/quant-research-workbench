@@ -47,6 +47,25 @@ type LegendSeriesSettings = {
   visible?: boolean;
 };
 type LegendSettingsMap = Record<string, LegendSeriesSettings>;
+type DaySeparatorStyle = "solid" | "dashed" | "dotted";
+type ChartAppearanceSettings = {
+  afterHoursColor: string;
+  afterHoursOpacity: number;
+  borderDownColor: string;
+  borderUpColor: string;
+  borderVisible: boolean;
+  candleSize: number;
+  daySeparatorColor: string;
+  daySeparatorStyle: DaySeparatorStyle;
+  daySeparatorsVisible: boolean;
+  downColor: string;
+  premarketColor: string;
+  premarketOpacity: number;
+  upColor: string;
+  wickDownColor: string;
+  wickUpColor: string;
+  wickVisible: boolean;
+};
 
 export type ChartPayload = {
   candles: Candle[];
@@ -64,27 +83,35 @@ export type ChartPanelHandle = {
 };
 
 type ChartPanelProps = {
-  onSettingsToggle: () => void;
   onTickerChange: (value: string) => void;
   onTimeframeChange: (value: string) => void;
   payload: ChartPayload | null;
-  settingsContent?: ReactNode;
-  settingsOpen: boolean;
   ticker: string;
   timeframe: string;
   timeframes: string[];
 };
 
-const candleSettings = {
-  upColor: "#33E42A",
-  downColor: "#FD0E50",
-  borderUpColor: "#1DB914",
+const defaultChartAppearanceSettings: ChartAppearanceSettings = {
+  afterHoursColor: "#BFDBFE",
+  afterHoursOpacity: 0.24,
   borderDownColor: "#CB093F",
+  borderUpColor: "#1DB914",
+  borderVisible: true,
+  candleSize: 40,
+  daySeparatorColor: "#94A3B8",
+  daySeparatorStyle: "dashed",
+  daySeparatorsVisible: true,
+  downColor: "#FD0E50",
+  premarketColor: "#FBBF24",
+  premarketOpacity: 0.22,
+  upColor: "#33E42A",
   wickUpColor: "#4DC746",
-  wickDownColor: "#C52A55"
+  wickDownColor: "#C52A55",
+  wickVisible: true
 };
 
 const LEGEND_SETTINGS_STORAGE_KEY = "quant-research-workbench.chart.legend-settings.v1";
+const CHART_APPEARANCE_STORAGE_KEY = "quant-research-workbench.chart.appearance-settings.v1";
 
 type ChartPalette = {
   background: string;
@@ -93,12 +120,9 @@ type ChartPalette = {
 };
 
 export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
-  onSettingsToggle,
   onTickerChange,
   onTimeframeChange,
   payload,
-  settingsContent,
-  settingsOpen,
   ticker,
   timeframe,
   timeframes
@@ -114,8 +138,24 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const indicatorSourceRef = useRef<Map<string, ChartSeries>>(new Map());
   const [draftTicker, setDraftTicker] = useState(ticker.toUpperCase());
   const [fullscreen, setFullscreen] = useState(false);
+  const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
+  const [chartSettings, setChartSettings] = useState<ChartAppearanceSettings>(() => loadChartAppearanceSettings());
   const [legendSettings, setLegendSettings] = useState<LegendSettingsMap>(() => loadLegendSettings());
   const [themeSignature, setThemeSignature] = useState(() => document.documentElement.dataset.shellTheme ?? "");
+
+  const updateChartSettings = <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => {
+    setChartSettings((current) => {
+      const next = normalizeChartAppearanceSettings({ ...current, [key]: value });
+      saveChartAppearanceSettings(next);
+      return next;
+    });
+  };
+
+  const resetChartSettings = () => {
+    const next = { ...defaultChartAppearanceSettings };
+    saveChartAppearanceSettings(next);
+    setChartSettings(next);
+  };
 
   const updateLegendSettings = (key: string, patch: LegendSeriesSettings) => {
     setLegendSettings((current) => {
@@ -176,12 +216,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (oscRef.current) oscRef.current.innerHTML = "";
     indicatorSeriesRef.current.clear();
     indicatorSourceRef.current.clear();
-    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette));
+    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettings));
     priceChartRef.current = priceChart;
     const candleSeries = priceChart.addCandlestickSeries({
-      ...candleSettings,
-      borderVisible: true,
-      wickVisible: true,
+      ...candleSeriesOptions(chartSettings),
       priceLineVisible: true
     });
     candleRef.current = candleSeries;
@@ -189,7 +227,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (payload.markers.length) candleSeries.setMarkers(payload.markers as never);
     const volume = priceChart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "", base: 0 });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    volume.setData(payload.volume as never);
+    volume.setData(volumeDataForSettings(payload, chartSettings) as never);
     payload.overlay_series.forEach((series) => {
       const key = legendSeriesKey("price", series);
       const settings = resolveLegendSettings(legendSettings, key, series);
@@ -210,7 +248,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     let oscChart: IChartApi | null = null;
     let primaryOscillatorSeries: AnySeriesApi | null = null;
     if (oscRef.current && payload.oscillator_series.length) {
-      oscChart = createChart(oscRef.current, chartOptions(oscRef.current.clientWidth, oscRef.current.clientHeight, true, palette));
+      oscChart = createChart(oscRef.current, chartOptions(oscRef.current.clientWidth, oscRef.current.clientHeight, true, palette, chartSettings));
       oscChartRef.current = oscChart;
       payload.oscillator_series.forEach((series) => {
         const key = legendSeriesKey("oscillator", series);
@@ -241,7 +279,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       oscChart && primaryOscillatorSeries
         ? syncCrosshairs(priceChart, oscChart, candleSeries, primaryOscillatorSeries, closeByTime, oscillatorByTime)
         : () => undefined;
-    const draw = () => drawRegions(priceChart, priceLayerRef.current, payload.regions, payload.candles);
+    const draw = () => drawRegions(priceChart, priceLayerRef.current, payload.regions, payload.candles, chartSettings);
     priceChart.timeScale().subscribeVisibleLogicalRangeChange(draw);
     window.setTimeout(() => {
       fitFirstDay(priceChart, payload.candles);
@@ -264,7 +302,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       indicatorSeriesRef.current.clear();
       indicatorSourceRef.current.clear();
     };
-  }, [payload, themeSignature]);
+  }, [payload, themeSignature, chartSettings]);
 
   function resizeCharts() {
     const price = priceRef.current;
@@ -277,7 +315,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
   }
 
-  const priceLegendItems = buildPriceLegendItems(payload, ticker, timeframe, legendSettings);
+  const priceLegendItems = buildPriceLegendItems(payload, ticker, timeframe, legendSettings, chartSettings);
   const oscillatorLegendItems = buildSeriesLegendItems(payload?.oscillator_series ?? [], "oscillator", legendSettings);
 
   const commitTicker = (event: FormEvent<HTMLFormElement>) => {
@@ -314,7 +352,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           ))}
         </div>
         <div className="toolbar-spacer" />
-        <button className="toolbar-button" type="button" title="Settings" onClick={onSettingsToggle}><Settings size={15} /></button>
+        <button className="toolbar-button" type="button" title="Chart settings" onClick={() => setChartSettingsOpen((value) => !value)}><Settings size={15} /></button>
         <span className="toolbar-divider" />
         <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, payload?.candles ?? [])}><CalendarRange size={15} /></button>
         <button className="toolbar-button" type="button" title="Fit recent" onClick={() => fitRecent(priceChartRef.current, payload?.candles ?? [])}><LocateFixed size={15} /></button>
@@ -331,7 +369,14 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           {fullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
         </button>
       </div>
-      {settingsOpen ? <div className="chart-settings-slot">{settingsContent}</div> : null}
+      {chartSettingsOpen ? (
+        <ChartSettingsPopover
+          onChange={updateChartSettings}
+          onClose={() => setChartSettingsOpen(false)}
+          onReset={resetChartSettings}
+          settings={chartSettings}
+        />
+      ) : null}
       {!payload || !payload.candles.length ? (
         <div className="empty-state chart-empty-state">No chart data for the selected ticker/session/timeframe.</div>
       ) : (
@@ -497,10 +542,168 @@ function LegendEditor({
   );
 }
 
-function buildPriceLegendItems(payload: ChartPayload | null, ticker: string, timeframe: string, settingsMap: LegendSettingsMap): LegendItem[] {
+function ChartSettingsPopover({
+  onChange,
+  onClose,
+  onReset,
+  settings
+}: {
+  onChange: <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => void;
+  onClose: () => void;
+  onReset: () => void;
+  settings: ChartAppearanceSettings;
+}) {
+  return (
+    <div className="chart-settings-slot">
+      <div className="chart-settings-header">
+        <div>
+          <b>Chart Settings</b>
+          <span>Appearance settings for candles, sessions, and day dividers.</span>
+        </div>
+        <button aria-label="Close chart settings" className="toolbar-button" onClick={onClose} title="Close" type="button">
+          <X size={14} />
+        </button>
+      </div>
+
+      <ChartSettingsSection title="Candles">
+        <p className="chart-settings-help">
+          Candle size changes horizontal spacing and visual candle width. It does not change the selected timeframe or source data.
+        </p>
+        <label className="chart-setting-row">
+          Up candle
+          <input type="color" value={settings.upColor} onChange={(event) => onChange("upColor", event.target.value)} />
+        </label>
+        <label className="chart-setting-row">
+          Down candle
+          <input type="color" value={settings.downColor} onChange={(event) => onChange("downColor", event.target.value)} />
+        </label>
+        <label className="chart-setting-row">
+          Candle size
+          <span className="chart-setting-inline">
+            <input min={8} max={80} type="range" value={settings.candleSize} onChange={(event) => onChange("candleSize", Number(event.target.value))} />
+            <b>{settings.candleSize}</b>
+          </span>
+        </label>
+        <label className="chart-setting-toggle">
+          <input checked={settings.borderVisible} type="checkbox" onChange={(event) => onChange("borderVisible", event.target.checked)} />
+          Draw candle borders
+        </label>
+        {settings.borderVisible ? (
+          <div className="chart-setting-two-column">
+            <label>
+              Up border
+              <input type="color" value={settings.borderUpColor} onChange={(event) => onChange("borderUpColor", event.target.value)} />
+            </label>
+            <label>
+              Down border
+              <input type="color" value={settings.borderDownColor} onChange={(event) => onChange("borderDownColor", event.target.value)} />
+            </label>
+          </div>
+        ) : null}
+      </ChartSettingsSection>
+
+      <ChartSettingsSection title="Wicks">
+        <p className="chart-settings-help">
+          Wick width is controlled by the chart renderer and follows candle spacing. These settings control wick visibility and color.
+        </p>
+        <label className="chart-setting-toggle">
+          <input checked={settings.wickVisible} type="checkbox" onChange={(event) => onChange("wickVisible", event.target.checked)} />
+          Show wicks
+        </label>
+        {settings.wickVisible ? (
+          <div className="chart-setting-two-column">
+            <label>
+              Up wick
+              <input type="color" value={settings.wickUpColor} onChange={(event) => onChange("wickUpColor", event.target.value)} />
+            </label>
+            <label>
+              Down wick
+              <input type="color" value={settings.wickDownColor} onChange={(event) => onChange("wickDownColor", event.target.value)} />
+            </label>
+          </div>
+        ) : null}
+      </ChartSettingsSection>
+
+      <ChartSettingsSection title="Extended Hours">
+        <p className="chart-settings-help">
+          Region opacity changes only the session shading layer. Candles remain fitted from price data only.
+        </p>
+        <label className="chart-setting-row">
+          Premarket
+          <input type="color" value={settings.premarketColor} onChange={(event) => onChange("premarketColor", event.target.value)} />
+        </label>
+        <label className="chart-setting-row">
+          Premarket opacity
+          <span className="chart-setting-inline">
+            <input min={0} max={60} type="range" value={Math.round(settings.premarketOpacity * 100)} onChange={(event) => onChange("premarketOpacity", Number(event.target.value) / 100)} />
+            <b>{Math.round(settings.premarketOpacity * 100)}%</b>
+          </span>
+        </label>
+        <label className="chart-setting-row">
+          Post market
+          <input type="color" value={settings.afterHoursColor} onChange={(event) => onChange("afterHoursColor", event.target.value)} />
+        </label>
+        <label className="chart-setting-row">
+          Post market opacity
+          <span className="chart-setting-inline">
+            <input min={0} max={60} type="range" value={Math.round(settings.afterHoursOpacity * 100)} onChange={(event) => onChange("afterHoursOpacity", Number(event.target.value) / 100)} />
+            <b>{Math.round(settings.afterHoursOpacity * 100)}%</b>
+          </span>
+        </label>
+      </ChartSettingsSection>
+
+      <ChartSettingsSection title="Day Separators">
+        <p className="chart-settings-help">
+          Day separators draw at the first visible candle of each new market date. They do not change candle timestamps.
+        </p>
+        <label className="chart-setting-toggle">
+          <input checked={settings.daySeparatorsVisible} type="checkbox" onChange={(event) => onChange("daySeparatorsVisible", event.target.checked)} />
+          Show day separators
+        </label>
+        {settings.daySeparatorsVisible ? (
+          <>
+            <label className="chart-setting-row">
+              Separator color
+              <input type="color" value={settings.daySeparatorColor} onChange={(event) => onChange("daySeparatorColor", event.target.value)} />
+            </label>
+            <label className="chart-setting-row">
+              Separator style
+              <select value={settings.daySeparatorStyle} onChange={(event) => onChange("daySeparatorStyle", event.target.value as DaySeparatorStyle)}>
+                <option value="solid">Solid</option>
+                <option value="dashed">Dashed</option>
+                <option value="dotted">Dotted</option>
+              </select>
+            </label>
+          </>
+        ) : null}
+      </ChartSettingsSection>
+
+      <div className="chart-setting-actions">
+        <button className="text-button" onClick={onReset} type="button">Reset</button>
+      </div>
+    </div>
+  );
+}
+
+function ChartSettingsSection({ children, title }: { children: ReactNode; title: string }) {
+  return (
+    <section className="chart-settings-section">
+      <h3>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function buildPriceLegendItems(
+  payload: ChartPayload | null,
+  ticker: string,
+  timeframe: string,
+  settingsMap: LegendSettingsMap,
+  chartSettings: ChartAppearanceSettings
+): LegendItem[] {
   if (!payload?.candles.length) return [];
   const candle = payload.candles[payload.candles.length - 1];
-  const candleColor = candle.close >= candle.open ? candleSettings.upColor : candleSettings.downColor;
+  const candleColor = candle.close >= candle.open ? chartSettings.upColor : chartSettings.downColor;
   return [
     {
       color: candleColor,
@@ -571,6 +774,89 @@ function saveLegendSettings(settings: LegendSettingsMap) {
   window.localStorage.setItem(LEGEND_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
 }
 
+function loadChartAppearanceSettings(): ChartAppearanceSettings {
+  if (typeof window === "undefined") return { ...defaultChartAppearanceSettings };
+  try {
+    const raw = window.localStorage.getItem(CHART_APPEARANCE_STORAGE_KEY);
+    if (!raw) return { ...defaultChartAppearanceSettings };
+    return normalizeChartAppearanceSettings(JSON.parse(raw) as Partial<ChartAppearanceSettings>);
+  } catch {
+    return { ...defaultChartAppearanceSettings };
+  }
+}
+
+function saveChartAppearanceSettings(settings: ChartAppearanceSettings) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(CHART_APPEARANCE_STORAGE_KEY, JSON.stringify(settings));
+}
+
+function normalizeChartAppearanceSettings(settings: Partial<ChartAppearanceSettings>): ChartAppearanceSettings {
+  return {
+    afterHoursColor: validHexColor(settings.afterHoursColor, defaultChartAppearanceSettings.afterHoursColor),
+    afterHoursOpacity: clampNumber(settings.afterHoursOpacity, 0, 0.6, defaultChartAppearanceSettings.afterHoursOpacity),
+    borderDownColor: validHexColor(settings.borderDownColor, defaultChartAppearanceSettings.borderDownColor),
+    borderUpColor: validHexColor(settings.borderUpColor, defaultChartAppearanceSettings.borderUpColor),
+    borderVisible: typeof settings.borderVisible === "boolean" ? settings.borderVisible : defaultChartAppearanceSettings.borderVisible,
+    candleSize: Math.round(clampNumber(settings.candleSize, 8, 80, defaultChartAppearanceSettings.candleSize)),
+    daySeparatorColor: validHexColor(settings.daySeparatorColor, defaultChartAppearanceSettings.daySeparatorColor),
+    daySeparatorStyle: isDaySeparatorStyle(settings.daySeparatorStyle) ? settings.daySeparatorStyle : defaultChartAppearanceSettings.daySeparatorStyle,
+    daySeparatorsVisible:
+      typeof settings.daySeparatorsVisible === "boolean" ? settings.daySeparatorsVisible : defaultChartAppearanceSettings.daySeparatorsVisible,
+    downColor: validHexColor(settings.downColor, defaultChartAppearanceSettings.downColor),
+    premarketColor: validHexColor(settings.premarketColor, defaultChartAppearanceSettings.premarketColor),
+    premarketOpacity: clampNumber(settings.premarketOpacity, 0, 0.6, defaultChartAppearanceSettings.premarketOpacity),
+    upColor: validHexColor(settings.upColor, defaultChartAppearanceSettings.upColor),
+    wickDownColor: validHexColor(settings.wickDownColor, defaultChartAppearanceSettings.wickDownColor),
+    wickUpColor: validHexColor(settings.wickUpColor, defaultChartAppearanceSettings.wickUpColor),
+    wickVisible: typeof settings.wickVisible === "boolean" ? settings.wickVisible : defaultChartAppearanceSettings.wickVisible
+  };
+}
+
+function candleSeriesOptions(settings: ChartAppearanceSettings) {
+  return {
+    borderDownColor: settings.borderDownColor,
+    borderUpColor: settings.borderUpColor,
+    borderVisible: settings.borderVisible,
+    downColor: settings.downColor,
+    upColor: settings.upColor,
+    wickDownColor: settings.wickDownColor,
+    wickUpColor: settings.wickUpColor,
+    wickVisible: settings.wickVisible
+  };
+}
+
+function volumeDataForSettings(payload: ChartPayload, settings: ChartAppearanceSettings) {
+  return payload.volume.map((point, index) => {
+    const candle = payload.candles[index];
+    if (!candle) return point;
+    return {
+      ...point,
+      color: candle.close >= candle.open ? rgbaFromHex(settings.upColor, 0.25) : rgbaFromHex(settings.downColor, 0.23)
+    };
+  });
+}
+
+function validHexColor(value: unknown, fallback: string) {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+}
+
+function isDaySeparatorStyle(value: unknown): value is DaySeparatorStyle {
+  return value === "solid" || value === "dashed" || value === "dotted";
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
+function rgbaFromHex(hex: string, opacity: number) {
+  const normalized = validHexColor(hex, "#000000").replace("#", "");
+  const red = parseInt(normalized.slice(0, 2), 16);
+  const green = parseInt(normalized.slice(2, 4), 16);
+  const blue = parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${clampNumber(opacity, 0, 1, 1)})`;
+}
+
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
   return {
     color: series.color,
@@ -633,7 +919,13 @@ function readChartPalette(): ChartPalette {
   };
 }
 
-function chartOptions(width: number, height: number, compact = false, palette: ChartPalette = readChartPalette()) {
+function chartOptions(
+  width: number,
+  height: number,
+  compact = false,
+  palette: ChartPalette = readChartPalette(),
+  settings: ChartAppearanceSettings = defaultChartAppearanceSettings
+) {
   return {
     width: Math.max(320, width),
     height: Math.max(160, height),
@@ -650,7 +942,7 @@ function chartOptions(width: number, height: number, compact = false, palette: C
     timeScale: {
       borderColor: palette.grid,
       rightOffset: compact ? 1 : 2,
-      barSpacing: compact ? 22 : 40,
+      barSpacing: compact ? Math.max(12, Math.round(settings.candleSize * 0.55)) : settings.candleSize,
       minBarSpacing: 0.2,
       timeVisible: true,
       secondsVisible: false,
@@ -775,7 +1067,7 @@ function syncCrosshairs(
   };
 }
 
-function drawRegions(chart: IChartApi, layer: HTMLDivElement | null, regions: Region[], candles: Candle[]) {
+function drawRegions(chart: IChartApi, layer: HTMLDivElement | null, regions: Region[], candles: Candle[], settings: ChartAppearanceSettings) {
   if (!layer) return;
   layer.innerHTML = "";
   const barWidth = estimateBarWidth(chart, candles);
@@ -791,7 +1083,33 @@ function drawRegions(chart: IChartApi, layer: HTMLDivElement | null, regions: Re
     node.title = region.label;
     node.style.left = `${left}px`;
     node.style.width = `${width}px`;
-    node.style.background = region.color;
+    node.style.background = sessionRegionColor(region, settings);
+    layer.appendChild(node);
+  });
+  drawDaySeparators(chart, layer, candles, settings, barWidth);
+}
+
+function sessionRegionColor(region: Region, settings: ChartAppearanceSettings) {
+  const label = region.label.toLowerCase();
+  if (label.includes("pre")) return rgbaFromHex(settings.premarketColor, settings.premarketOpacity);
+  if (label.includes("after") || label.includes("post")) return rgbaFromHex(settings.afterHoursColor, settings.afterHoursOpacity);
+  return region.color;
+}
+
+function drawDaySeparators(chart: IChartApi, layer: HTMLDivElement, candles: Candle[], settings: ChartAppearanceSettings, barWidth: number) {
+  if (!settings.daySeparatorsVisible || candles.length < 2) return;
+  let previousDate = marketDate(candles[0].time);
+  candles.slice(1).forEach((candle) => {
+    const currentDate = marketDate(candle.time);
+    if (currentDate === previousDate) return;
+    previousDate = currentDate;
+    const coordinate = chart.timeScale().timeToCoordinate(candle.time as Time);
+    if (coordinate === null) return;
+    const node = document.createElement("div");
+    node.className = "day-separator";
+    node.title = currentDate;
+    node.style.left = `${coordinate - barWidth / 2}px`;
+    node.style.borderLeft = `1px ${settings.daySeparatorStyle} ${rgbaFromHex(settings.daySeparatorColor, 0.78)}`;
     layer.appendChild(node);
   });
 }
