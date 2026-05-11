@@ -371,9 +371,14 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [loadAllRows, setLoadAllRows] = useState(true);
   const [tickers, setTickers] = useState("");
   const [sample, setSample] = useState<{ columns: string[]; rows: Record<string, unknown>[] } | null>(null);
+  const [sampleError, setSampleError] = useState("");
+  const [sampleLoading, setSampleLoading] = useState(false);
   const fillPanel = useViewportFillPanel(`${recordKey}:${rowLimit}:${loadAllRows}:${tickers}:${sample?.rows.length ?? 0}`);
   useEffect(() => {
     if (!record) return;
+    let active = true;
+    setSampleError("");
+    setSampleLoading(true);
     api<{ sample: { columns: string[]; rows: Record<string, unknown>[] } }>(
       `/api/market-data/preview${query({
         processed_root: scope.processed_root,
@@ -381,12 +386,36 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         timeframe: record.timeframe,
         session_date: record.session_date,
         all_rows: loadAllRows,
-        row_limit: loadAllRows ? 0 : rowLimit,
+        row_limit: loadAllRows ? Math.max(10, Math.min(record.rows || rowLimit, 5000)) : rowLimit,
         tickers
       })}`
-    ).then((payload) => setSample(payload.sample));
+    )
+      .then((payload) => {
+        if (!active) return;
+        setSample(payload.sample);
+      })
+      .catch((error: Error) => {
+        if (!active) return;
+        setSample({ columns: record.columns, rows: [] });
+        setSampleError(error.message);
+      })
+      .finally(() => {
+        if (active) setSampleLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [scope.processed_root, record?.key, loadAllRows, rowLimit, tickers]);
   if (!record) return <div className="empty-state">No records available.</div>;
+  const returnedPartialRows =
+    loadAllRows &&
+    !sampleLoading &&
+    !sampleError &&
+    !tickers.trim() &&
+    sample &&
+    Number.isFinite(record.rows) &&
+    sample.rows.length > 0 &&
+    sample.rows.length < record.rows;
   return (
     <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
       <div className="toolbar">
@@ -427,6 +456,13 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         </div>
         <InlineField label="Tickers" value={tickers} onChange={setTickers} />
       </div>
+      {sampleError ? <div className="preview-sample-status error">Preview request failed: {sampleError}</div> : null}
+      {sampleLoading ? <div className="preview-sample-status">Loading preview rows...</div> : null}
+      {returnedPartialRows ? (
+        <div className="preview-sample-status warning">
+          Returned {sample.rows.length.toLocaleString()} of {record.rows.toLocaleString()} rows while All rows is selected. Restart the backend if this persists.
+        </div>
+      ) : null}
       <DataTable rows={sample?.rows ?? []} columns={sample?.columns} />
     </section>
   );

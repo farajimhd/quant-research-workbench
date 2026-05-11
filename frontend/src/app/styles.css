@@ -2725,6 +2725,20 @@ button {
   font-weight: 500;
 }
 
+.preview-sample-status {
+  margin: -2px 0 8px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.preview-sample-status.error {
+  color: var(--danger);
+}
+
+.preview-sample-status.warning {
+  color: color-mix(in oklab, var(--warning, #b45309) 92%, var(--foreground));
+}
+
 .split-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
