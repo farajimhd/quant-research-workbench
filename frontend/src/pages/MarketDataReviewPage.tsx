@@ -368,7 +368,7 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [recordKey, setRecordKey] = useState(records[0]?.key ?? "");
   const record = records.find((item) => item.key === recordKey) ?? records[0];
   const [rowLimit, setRowLimit] = useState(250);
-  const [loadAllRows, setLoadAllRows] = useState(false);
+  const [loadAllRows, setLoadAllRows] = useState(true);
   const [tickers, setTickers] = useState("");
   const [sample, setSample] = useState<{ columns: string[]; rows: Record<string, unknown>[] } | null>(null);
   const fillPanel = useViewportFillPanel(`${recordKey}:${rowLimit}:${loadAllRows}:${tickers}:${sample?.rows.length ?? 0}`);
@@ -381,7 +381,7 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         timeframe: record.timeframe,
         session_date: record.session_date,
         all_rows: loadAllRows,
-        row_limit: loadAllRows ? undefined : rowLimit,
+        row_limit: loadAllRows ? 0 : rowLimit,
         tickers
       })}`
     ).then((payload) => setSample(payload.sample));
@@ -414,13 +414,18 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
               }
             }}
           />
-          <button
-            className={loadAllRows ? "table-text-button preview-load-all active" : "table-text-button preview-load-all"}
-            onClick={() => setLoadAllRows((value) => !value)}
-            type="button"
-          >
-            {loadAllRows ? "All rows" : "Load all"}
-          </button>
+          <label className="preview-all-rows-switch">
+            <input
+              checked={loadAllRows}
+              onChange={(event) => setLoadAllRows(event.target.checked)}
+              role="switch"
+              type="checkbox"
+            />
+            <span className="preview-switch-track" aria-hidden="true">
+              <span />
+            </span>
+            <span>All rows</span>
+          </label>
         </div>
         <InlineField label="Tickers" value={tickers} onChange={setTickers} />
       </div>

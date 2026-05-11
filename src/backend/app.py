@@ -343,14 +343,15 @@ def market_preview(
     all_rows: bool = False,
     columns: str | None = None,
     tickers: str | None = None,
-    row_limit: int = Query(default=250, ge=10, le=5000),
+    row_limit: int | None = Query(default=250, ge=0, le=5000),
 ) -> dict[str, Any]:
     record = first_matching_artifact(artifact_records(Path(processed_root)), group, timeframe, session_date.isoformat())
     if not record:
         raise HTTPException(status_code=404, detail="Artifact not found")
     selected_columns = parse_csv_list(columns)
     selected_tickers = parse_csv_list(tickers)
-    return {"record": record, "sample": load_artifact_sample(record, selected_columns, None if all_rows else row_limit, selected_tickers)}
+    sample_limit = None if all_rows or row_limit == 0 else row_limit
+    return {"record": record, "sample": load_artifact_sample(record, selected_columns, sample_limit, selected_tickers)}
 
 
 @app.get("/api/market-data/schema")
