@@ -8,7 +8,8 @@ import {
   Filter,
   Search,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { displayName, formatCell } from "../format";
 
@@ -16,17 +17,52 @@ type DataRow = Record<string, unknown>;
 type SortDirection = "asc" | "desc";
 type SortState = { column: string; direction: SortDirection } | null;
 type ColumnKind = "numeric" | "datetime" | "categorical" | "boolean" | "text";
+type TableVisualTone = "amber" | "emerald" | "neutral" | "sky" | "violet";
+
+type HistogramBin = {
+  count: number;
+  label: string;
+};
+
+type ValueCount = {
+  count: number;
+  value: string;
+};
+
+type ColumnManualFilterState = {
+  caseSensitive: boolean;
+  operator: string;
+  presetLabel?: string;
+  timeZoneName: string;
+  valueText: string;
+  valueTextSecondary: string;
+};
 
 type ColumnProfile = {
   average?: number;
+  blankCount: number;
+  column: string;
   distinct: number;
+  histogramBins: HistogramBin[];
   kind: ColumnKind;
   max?: number | string;
+  median?: number;
   min?: number | string;
   nonEmpty: number;
+  p25?: number;
+  p75?: number;
   stddev?: number;
-  topValues: Array<{ count: number; value: string }>;
+  topValues: ValueCount[];
   total?: number;
+  totalRows: number;
+  typeLabel: string;
+};
+
+type HeaderPopoverState = {
+  column: string;
+  kind: "filter" | "stats";
+  left: number;
+  top: number;
 };
 
 type DataTableProps = {
@@ -44,20 +80,22 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
 
   const [activeValueFiltersByColumn, setActiveValueFiltersByColumn] = useState<Record<string, string[]>>({});
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
-  const [filterColumn, setFilterColumn] = useState<string | null>(null);
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
+  const [manualFiltersByColumn, setManualFiltersByColumn] = useState<Record<string, ColumnManualFilterState>>({});
+  const [openPopover, setOpenPopover] = useState<HeaderPopoverState | null>(null);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>(null);
-  const [statsColumn, setStatsColumn] = useState<string | null>(null);
 
-  const profilesByColumn = useMemo(() => {
+  const profilesByColumn = useMemo<Record<string, ColumnProfile>>(() => {
     return Object.fromEntries(resolvedColumns.map((column) => [column, buildColumnProfile(rows, column)]));
   }, [resolvedColumns, rows]);
 
   const visibleColumns = resolvedColumns.filter((column) => !hiddenColumns.includes(column));
   const usableColumns = visibleColumns.length ? visibleColumns : resolvedColumns.slice(0, 1);
   const effectiveSort = sort ?? (resolvedColumns[0] ? { column: resolvedColumns[0], direction: "asc" as const } : null);
-  const activeFilterCount = Object.values(activeValueFiltersByColumn).reduce((count, values) => count + values.length, 0);
+  const activeFilterCount =
+    Object.values(activeValueFiltersByColumn).reduce((count, values) => count + values.length, 0) +
+    Object.keys(manualFiltersByColumn).length;
 
   const filteredRows = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -69,12 +107,17 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
         if (!matchesQuery) return false;
       }
 
-      return Object.entries(activeValueFiltersByColumn).every(([column, selectedValues]) => {
+      const matchesValueFilters = Object.entries(activeValueFiltersByColumn).every(([column, selectedValues]) => {
         if (!selectedValues.length) return true;
         return selectedValues.includes(formatFilterValue(row[column]));
       });
+      if (!matchesValueFilters) return false;
+
+      return Object.entries(manualFiltersByColumn).every(([column, filter]) =>
+        rowMatchesManualFilter(row[column], profilesByColumn[column], filter),
+      );
     });
-  }, [activeValueFiltersByColumn, resolvedColumns, rows, search]);
+  }, [activeValueFiltersByColumn, manualFiltersByColumn, profilesByColumn, resolvedColumns, rows, search]);
 
   const sortedRows = useMemo(() => {
     if (!effectiveSort) return filteredRows;
@@ -87,6 +130,30 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
 
   const numericColumnCount = resolvedColumns.filter((column) => profilesByColumn[column]?.kind === "numeric").length;
   const activeSortLabel = effectiveSort ? `${displayName(effectiveSort.column)} ${effectiveSort.direction}` : "None";
+  const openProfile = openPopover ? profilesByColumn[openPopover.column] : null;
+
+  useEffect(() => {
+    if (!openPopover) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.closest(".data-table-floating-popover") ||
+        target?.closest("[data-table-popover-trigger='true']")
+      ) {
+        return;
+      }
+      setOpenPopover(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenPopover(null);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openPopover]);
 
   const toggleSort = (column: string) => {
     setSort((current) => {
@@ -96,14 +163,19 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
     });
   };
 
-  const toggleValueFilter = (column: string, value: string) => {
+  const applyValueFilter = (column: string, values: string[]) => {
     setActiveValueFiltersByColumn((current) => {
-      const selected = new Set(current[column] ?? []);
-      if (selected.has(value)) selected.delete(value);
-      else selected.add(value);
-
       const next = { ...current };
-      if (selected.size) next[column] = Array.from(selected);
+      if (values.length) next[column] = values;
+      else delete next[column];
+      return next;
+    });
+  };
+
+  const applyManualFilter = (column: string, filter: ColumnManualFilterState | null) => {
+    setManualFiltersByColumn((current) => {
+      const next = { ...current };
+      if (filter) next[column] = filter;
       else delete next[column];
       return next;
     });
@@ -116,14 +188,24 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
     });
   };
 
+  const toggleHeaderPopover = (kind: HeaderPopoverState["kind"], column: string, target: HTMLElement) => {
+    setOpenPopover((current) => {
+      if (current?.kind === kind && current.column === column) return null;
+      const rect = target.getBoundingClientRect();
+      const width = kind === "filter" ? 416 : 320;
+      const left = Math.min(Math.max(12, rect.right - width), Math.max(12, window.innerWidth - width - 12));
+      return { column, kind, left, top: rect.bottom + 8 };
+    });
+  };
+
   const resetTable = () => {
     setActiveValueFiltersByColumn({});
     setColumnsMenuOpen(false);
-    setFilterColumn(null);
     setHiddenColumns([]);
+    setManualFiltersByColumn({});
+    setOpenPopover(null);
     setSearch("");
     setSort(null);
-    setStatsColumn(null);
   };
 
   return (
@@ -196,7 +278,8 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
                 ) : (
                   <ArrowUpDown size={13} />
                 );
-                const filterActive = Boolean(activeValueFiltersByColumn[column]?.length);
+                const filterActive =
+                  Boolean(activeValueFiltersByColumn[column]?.length) || Boolean(manualFiltersByColumn[column]);
 
                 return (
                   <th key={column}>
@@ -206,42 +289,31 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
                         {sortIcon}
                       </button>
                       <div className="data-table-header-actions">
+                        {profile.kind !== "text" ? (
+                          <button
+                            className="table-icon-button"
+                            data-table-popover-trigger="true"
+                            onClick={(event: MouseEvent<HTMLButtonElement>) =>
+                              toggleHeaderPopover("stats", column, event.currentTarget)
+                            }
+                            title={`Stats for ${displayName(column)}`}
+                            type="button"
+                          >
+                            <BarChart3 size={13} />
+                          </button>
+                        ) : null}
                         <button
                           className={filterActive ? "table-icon-button active" : "table-icon-button"}
-                          onClick={() => {
-                            setFilterColumn(filterColumn === column ? null : column);
-                            setStatsColumn(null);
-                          }}
+                          data-table-popover-trigger="true"
+                          onClick={(event: MouseEvent<HTMLButtonElement>) =>
+                            toggleHeaderPopover("filter", column, event.currentTarget)
+                          }
                           title={`Filter ${displayName(column)}`}
                           type="button"
                         >
                           <Filter size={13} />
                         </button>
-                        <button
-                          className="table-icon-button"
-                          onClick={() => {
-                            setStatsColumn(statsColumn === column ? null : column);
-                            setFilterColumn(null);
-                          }}
-                          title={`Stats for ${displayName(column)}`}
-                          type="button"
-                        >
-                          <BarChart3 size={13} />
-                        </button>
                       </div>
-                      {filterColumn === column ? (
-                        <ColumnFilterPopover
-                          column={column}
-                          onHideColumn={() => {
-                            toggleColumnVisibility(column);
-                            setFilterColumn(null);
-                          }}
-                          onToggleValue={toggleValueFilter}
-                          profile={profile}
-                          selectedValues={activeValueFiltersByColumn[column] ?? []}
-                        />
-                      ) : null}
-                      {statsColumn === column ? <ColumnStatsPopover profile={profile} /> : null}
                     </div>
                   </th>
                 );
@@ -269,154 +341,490 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
           </tbody>
         </table>
       </div>
+
+      {openPopover && openProfile && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className={`data-table-floating-popover ${openPopover.kind === "filter" ? "filter" : "stats"}`}
+              style={{ left: openPopover.left, top: openPopover.top }}
+            >
+              {openPopover.kind === "filter" ? (
+                <ColumnFilterPopover
+                  activeFilterValues={activeValueFiltersByColumn[openPopover.column] ?? []}
+                  manualFilter={manualFiltersByColumn[openPopover.column] ?? null}
+                  onApplyManualFilter={(filter) => applyManualFilter(openPopover.column, filter)}
+                  onApplyValueFilter={(values) => applyValueFilter(openPopover.column, values)}
+                  onHideColumn={() => {
+                    toggleColumnVisibility(openPopover.column);
+                    setOpenPopover(null);
+                  }}
+                  profile={openProfile}
+                />
+              ) : (
+                <ColumnStatsPopover profile={openProfile} />
+              )}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
 
 function ColumnFilterPopover({
-  column,
+  activeFilterValues,
+  manualFilter,
+  onApplyManualFilter,
+  onApplyValueFilter,
   onHideColumn,
-  onToggleValue,
   profile,
-  selectedValues,
 }: {
-  column: string;
+  activeFilterValues: string[];
+  manualFilter: ColumnManualFilterState | null;
+  onApplyManualFilter: (filter: ColumnManualFilterState | null) => void;
+  onApplyValueFilter: (values: string[]) => void;
   onHideColumn: () => void;
-  onToggleValue: (column: string, value: string) => void;
   profile: ColumnProfile;
-  selectedValues: string[];
 }) {
-  const values = profile.topValues.length ? profile.topValues : [{ count: profile.nonEmpty, value: "(all)" }];
+  const [mode, setMode] = useState<"values" | "custom">(manualFilter ? "custom" : "values");
+  const [searchText, setSearchText] = useState("");
+  const [draft, setDraft] = useState<ColumnManualFilterState>(manualFilter ?? defaultManualFilter(profile));
+
+  useEffect(() => {
+    setDraft(manualFilter ?? defaultManualFilter(profile));
+  }, [manualFilter, profile]);
+
+  useEffect(() => {
+    setMode(manualFilter ? "custom" : "values");
+    setSearchText("");
+  }, [manualFilter, profile.column]);
+
+  const filteredOptions = profile.topValues.filter((option) =>
+    searchText.trim()
+      ? option.value.toLowerCase().includes(searchText.trim().toLowerCase())
+      : true,
+  );
+  const presetFilters = buildPresetFilters(profile);
+  const tone = resolveTableVisualTone(profile);
+  const optionTotal = filteredOptions.reduce((total, option) => total + option.count, 0);
+
   return (
-    <div className="data-table-popover data-table-filter-popover">
-      <div className="data-table-popover-title">Filter values</div>
-      <div className="data-table-filter-list">
-        {values.map((item) => {
-          const selected = selectedValues.includes(item.value);
-          return (
-            <label className="data-table-check-row" key={item.value}>
-              <input checked={selected} onChange={() => onToggleValue(column, item.value)} type="checkbox" />
-              <span>{item.value}</span>
-              <small>{formatInteger(item.count)}</small>
-            </label>
-          );
-        })}
+    <div className="table-popover-panel">
+      <div className="table-popover-header">
+        <div>
+          <div className="table-popover-heading">{displayName(profile.column)}</div>
+          <div className="table-popover-subheading">{profile.typeLabel}</div>
+        </div>
+        <div className="table-popover-mode-switch">
+          <button className={mode === "values" ? "active" : ""} onClick={() => setMode("values")} type="button">
+            Values
+          </button>
+          <button className={mode === "custom" ? "active" : ""} onClick={() => setMode("custom")} type="button">
+            Manual
+          </button>
+        </div>
       </div>
-      <button className="table-text-button danger" onClick={onHideColumn} type="button">
-        <EyeOff size={13} />
-        Hide column
-      </button>
+
+      {mode === "custom" ? (
+        <div className="table-popover-section">
+          <div className="table-popover-field-grid">
+            <label className="table-popover-field">
+              <span>Operator</span>
+              <select
+                className="table-popover-control"
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, operator: event.target.value, presetLabel: undefined }))
+                }
+                value={draft.operator}
+              >
+                {buildManualFilterOperators(profile.kind).map((operator) => (
+                  <option key={operator} value={operator}>
+                    {operator}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="table-popover-field">
+              <span>Value</span>
+              <div className="table-popover-input-row">
+                <input
+                  className="table-popover-control"
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, presetLabel: undefined, valueText: event.target.value }))
+                  }
+                  placeholder={buildManualFilterPlaceholder(profile.kind)}
+                  type={resolveManualFilterInputType(profile)}
+                  value={draft.valueText}
+                />
+                {supportsTextCaseSensitivity(profile) ? (
+                  <button
+                    className={draft.caseSensitive ? "table-badge-toggle active" : "table-badge-toggle"}
+                    onClick={() => setDraft((current) => ({ ...current, caseSensitive: !current.caseSensitive }))}
+                    type="button"
+                  >
+                    Aa
+                  </button>
+                ) : null}
+              </div>
+            </label>
+          </div>
+          {profile.kind === "datetime" ? (
+            <label className="table-popover-field">
+              <span>Input timezone</span>
+              <select
+                className="table-popover-control"
+                onChange={(event) => setDraft((current) => ({ ...current, timeZoneName: event.target.value }))}
+                value={draft.timeZoneName}
+              >
+                <option value="UTC">UTC</option>
+                <option value="America/New_York">America/New York</option>
+                <option value="America/Vancouver">America/Vancouver</option>
+              </select>
+            </label>
+          ) : null}
+          {draft.operator === "between" ? (
+            <label className="table-popover-field">
+              <span>Second value</span>
+              <input
+                className="table-popover-control"
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, presetLabel: undefined, valueTextSecondary: event.target.value }))
+                }
+                placeholder={buildManualFilterPlaceholder(profile.kind)}
+                type={resolveManualFilterInputType(profile)}
+                value={draft.valueTextSecondary}
+              />
+            </label>
+          ) : null}
+          <div className="table-popover-action-row separated">
+            <button className="table-text-button" onClick={() => onApplyManualFilter(null)} type="button">
+              Clear
+            </button>
+            <button className="table-text-button" onClick={() => setMode("values")} type="button">
+              Values
+            </button>
+            <button
+              className="table-text-button primary"
+              onClick={() => onApplyManualFilter(buildNormalizedManualFilter(draft))}
+              type="button"
+            >
+              Apply filter
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="table-popover-divided">
+          {presetFilters.length ? (
+            <div className="table-popover-section">
+              <div className="table-popover-section-title">Presets</div>
+              <div className="table-option-chip-row">
+                {presetFilters.map((preset) => (
+                  <button
+                    className={isPresetFilterActive(manualFilter, preset.filter) ? "table-option-chip active" : "table-option-chip"}
+                    key={preset.label}
+                    onClick={() => onApplyManualFilter(preset.filter)}
+                    type="button"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {profile.histogramBins.length ? (
+            <div className="table-popover-section">
+              <HistogramPanel histogramBins={profile.histogramBins} title="Distribution" tone={tone} />
+            </div>
+          ) : null}
+
+          <div className="table-popover-section">
+            <div className="table-popover-section-title">Value list</div>
+            <input
+              className="table-popover-control"
+              onChange={(event) => setSearchText(event.target.value)}
+              placeholder="Filter values..."
+              value={searchText}
+            />
+            {filteredOptions.length ? (
+              <div className="table-overlay-list">
+                {filteredOptions.map((option) => {
+                  const selected = activeFilterValues.includes(option.value);
+                  return (
+                    <button
+                      className="table-overlay-button"
+                      key={option.value}
+                      onClick={() =>
+                        onApplyValueFilter(
+                          selected
+                            ? activeFilterValues.filter((value) => value !== option.value)
+                            : [...activeFilterValues, option.value],
+                        )
+                      }
+                      type="button"
+                    >
+                      <OverlayBar
+                        emphasized={selected}
+                        label={option.value}
+                        tone={tone}
+                        totalValue={optionTotal}
+                        value={option.count}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="table-popover-empty">No current value list is available for this column.</div>
+            )}
+          </div>
+
+          <div className="table-popover-section">
+            <div className="table-popover-action-row">
+              <button
+                className="table-text-button"
+                disabled={activeFilterValues.length === 0 && manualFilter === null}
+                onClick={() => {
+                  onApplyValueFilter([]);
+                  onApplyManualFilter(null);
+                }}
+                type="button"
+              >
+                Clear
+              </button>
+              <button className="table-text-button" onClick={() => setMode("custom")} type="button">
+                Manual filter
+              </button>
+              <button className="table-text-button" onClick={onHideColumn} type="button">
+                <EyeOff size={13} />
+                Hide column
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 function ColumnStatsPopover({ profile }: { profile: ColumnProfile }) {
+  const hasBlankValues = profile.blankCount > 0;
   return (
-    <div className="data-table-popover data-table-stats-popover">
-      <div className="data-table-popover-title">Column stats</div>
-      <dl>
-        <div>
-          <dt>Type</dt>
-          <dd>{profile.kind}</dd>
+    <div className="table-popover-panel stats">
+      <div className="table-popover-section">
+        <div className="table-popover-title-block">
+          <div className="table-popover-heading">{displayName(profile.column)}</div>
+          <div className="table-popover-subheading">{profile.kind}</div>
         </div>
-        <div>
-          <dt>Non-empty</dt>
-          <dd>{formatInteger(profile.nonEmpty)}</dd>
+        <div className="table-stat-pill-grid">
+          <StatPill label="Non-null" tone="neutral" value={formatInteger(profile.nonEmpty)} />
+          <StatPill label="Null" tone={hasBlankValues ? "warning" : "neutral"} value={formatInteger(profile.blankCount)} />
+          <StatPill label="Distinct" tone="neutral" value={formatInteger(profile.distinct)} />
         </div>
-        <div>
-          <dt>Distinct</dt>
-          <dd>{formatInteger(profile.distinct)}</dd>
+        <div className="table-stat-line-grid">
+          {profile.kind === "numeric" ? (
+            <>
+              <StatLine label="Min" value={formatProfileMetric(profile.min)} />
+              <StatLine label="P25" value={formatProfileMetric(profile.p25)} />
+              <StatLine label="Median" value={formatProfileMetric(profile.median)} />
+              <StatLine label="Average" value={formatProfileMetric(profile.average)} />
+              <StatLine label="P75" value={formatProfileMetric(profile.p75)} />
+              <StatLine label="Max" value={formatProfileMetric(profile.max)} />
+              <StatLine label="Std. dev." value={formatProfileMetric(profile.stddev)} />
+              <StatLine label="Total" value={formatProfileMetric(profile.total)} />
+            </>
+          ) : null}
+          {profile.kind === "datetime" ? (
+            <>
+              <StatLine label="Earliest" value={formatProfileMetric(profile.min)} />
+              <StatLine label="Latest" value={formatProfileMetric(profile.max)} />
+            </>
+          ) : null}
         </div>
-        {profile.min !== undefined ? (
+        {profile.histogramBins.length ? (
+          <HistogramPanel histogramBins={profile.histogramBins} title="Distribution" tone={resolveTableVisualTone(profile)} />
+        ) : null}
+        {profile.topValues.length ? (
           <div>
-            <dt>Min</dt>
-            <dd>{formatStat(profile.min)}</dd>
+            <div className="table-popover-section-title">Top values</div>
+            <div className="table-overlay-list compact">
+              {profile.topValues.slice(0, 8).map((topValue) => (
+                <OverlayBar
+                  emphasized={false}
+                  key={topValue.value}
+                  label={topValue.value}
+                  tone={resolveTableVisualTone(profile)}
+                  totalValue={profile.topValues.reduce((count, value) => count + value.count, 0)}
+                  value={topValue.count}
+                />
+              ))}
+            </div>
           </div>
         ) : null}
-        {profile.max !== undefined ? (
-          <div>
-            <dt>Max</dt>
-            <dd>{formatStat(profile.max)}</dd>
-          </div>
-        ) : null}
-        {profile.average !== undefined ? (
-          <div>
-            <dt>Avg</dt>
-            <dd>{formatNumber(profile.average)}</dd>
-          </div>
-        ) : null}
-        {profile.total !== undefined ? (
-          <div>
-            <dt>Total</dt>
-            <dd>{formatNumber(profile.total)}</dd>
-          </div>
-        ) : null}
-        {profile.stddev !== undefined ? (
-          <div>
-            <dt>Std</dt>
-            <dd>{formatNumber(profile.stddev)}</dd>
-          </div>
-        ) : null}
-      </dl>
-      {profile.topValues.length ? (
-        <div className="data-table-top-values">
-          {profile.topValues.slice(0, 6).map((item) => (
-            <span key={item.value}>
-              {item.value} <b>{formatInteger(item.count)}</b>
-            </span>
-          ))}
-        </div>
-      ) : null}
+      </div>
+    </div>
+  );
+}
+
+function HistogramPanel({
+  histogramBins,
+  title,
+  tone,
+}: {
+  histogramBins: HistogramBin[];
+  title: string;
+  tone: TableVisualTone;
+}) {
+  const totalRowCount = histogramBins.reduce((currentTotal, histogramBin) => currentTotal + histogramBin.count, 0);
+  return (
+    <div>
+      <div className="table-popover-section-title">{title}</div>
+      <div className="table-overlay-list compact">
+        {histogramBins.map((histogramBin) => (
+          <OverlayBar
+            emphasized={false}
+            key={`${histogramBin.label}:${histogramBin.count}`}
+            label={histogramBin.label}
+            tone={tone}
+            totalValue={totalRowCount}
+            value={histogramBin.count}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OverlayBar({
+  emphasized = false,
+  label,
+  tone,
+  totalValue,
+  value,
+}: {
+  emphasized?: boolean;
+  label: string;
+  tone: TableVisualTone;
+  totalValue: number;
+  value: number;
+}) {
+  return (
+    <div className={`table-overlay-row ${tone} ${emphasized ? "emphasized" : ""}`}>
+      <span className="table-overlay-label">{label}</span>
+      <div className="table-overlay-track">
+        <span className="table-overlay-fill" style={{ width: `${buildHistogramBarWidth(value, totalValue)}%` }} />
+        <span className="table-overlay-value">{formatInteger(value)}</span>
+      </div>
+    </div>
+  );
+}
+
+function StatPill({ label, tone, value }: { label: string; tone: "neutral" | "warning"; value: string }) {
+  return (
+    <div className={tone === "warning" ? "table-stat-pill warning" : "table-stat-pill"}>
+      <div>{label}</div>
+      <b>{value}</b>
+    </div>
+  );
+}
+
+function StatLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="table-stat-line">
+      <div>{label}</div>
+      <b>{value}</b>
     </div>
   );
 }
 
 function buildColumnProfile(rows: DataRow[], column: string): ColumnProfile {
-  const values = rows.map((row) => row[column]).filter((value) => !isBlank(value));
-  const topValues = countTopValues(values);
-  const distinct = topValues.length ? new Set(values.map(formatFilterValue)).size : 0;
+  const allValues = rows.map((row) => row[column]);
+  const values = allValues.filter((value) => !isBlank(value));
+  const topValues = countTopValues(allValues);
+  const distinct = values.length ? new Set(values.map(formatFilterValue)).size : 0;
   const numericValues = values.map(coerceNumber).filter((value): value is number => Number.isFinite(value));
   const booleanValues = values.filter((value) => typeof value === "boolean");
   const dateValues = values.map(coerceDate).filter((value): value is number => Number.isFinite(value));
+  const blankCount = rows.length - values.length;
 
   if (values.length && numericValues.length === values.length) {
+    const sorted = [...numericValues].sort((left, right) => left - right);
     const total = numericValues.reduce((sum, value) => sum + value, 0);
     const average = total / numericValues.length;
     const variance =
       numericValues.reduce((sum, value) => sum + Math.pow(value - average, 2), 0) / Math.max(numericValues.length, 1);
     return {
       average,
+      blankCount,
+      column,
       distinct,
+      histogramBins: buildNumericHistogram(sorted),
       kind: "numeric",
-      max: Math.max(...numericValues),
-      min: Math.min(...numericValues),
+      max: sorted[sorted.length - 1],
+      median: percentile(sorted, 0.5),
+      min: sorted[0],
       nonEmpty: values.length,
+      p25: percentile(sorted, 0.25),
+      p75: percentile(sorted, 0.75),
       stddev: Math.sqrt(variance),
       topValues,
       total,
+      totalRows: rows.length,
+      typeLabel: "numeric",
     };
   }
 
   if (values.length && booleanValues.length === values.length) {
-    return { distinct, kind: "boolean", nonEmpty: values.length, topValues };
+    return baseProfile({ blankCount, column, distinct, kind: "boolean", rows, topValues, values });
   }
 
   if (values.length && dateValues.length === values.length && looksLikeTimeColumn(column)) {
+    const sorted = [...dateValues].sort((left, right) => left - right);
     return {
-      distinct,
-      kind: "datetime",
-      max: new Date(Math.max(...dateValues)).toISOString(),
-      min: new Date(Math.min(...dateValues)).toISOString(),
-      nonEmpty: values.length,
-      topValues,
+      ...baseProfile({ blankCount, column, distinct, kind: "datetime", rows, topValues, values }),
+      max: new Date(sorted[sorted.length - 1]).toISOString(),
+      min: new Date(sorted[0]).toISOString(),
     };
   }
 
-  return {
+  return baseProfile({
+    blankCount,
+    column,
     distinct,
     kind: distinct <= Math.max(20, rows.length * 0.15) ? "categorical" : "text",
+    rows,
+    topValues,
+    values,
+  });
+}
+
+function baseProfile({
+  blankCount,
+  column,
+  distinct,
+  kind,
+  rows,
+  topValues,
+  values,
+}: {
+  blankCount: number;
+  column: string;
+  distinct: number;
+  kind: ColumnKind;
+  rows: DataRow[];
+  topValues: ValueCount[];
+  values: unknown[];
+}): ColumnProfile {
+  return {
+    blankCount,
+    column,
+    distinct,
+    histogramBins: [],
+    kind,
     nonEmpty: values.length,
     topValues,
+    totalRows: rows.length,
+    typeLabel: kind,
   };
 }
 
@@ -467,6 +875,217 @@ function coerceNumber(value: unknown) {
   return Number(normalized);
 }
 
+function rowMatchesManualFilter(value: unknown, profile: ColumnProfile | undefined, filter: ColumnManualFilterState) {
+  if (filter.operator === "is_null") return isBlank(value);
+  if (filter.operator === "not_null") return !isBlank(value);
+  if (isBlank(value) || !profile) return false;
+
+  if (profile.kind === "numeric") {
+    return compareManualNumbers(coerceNumber(value), filter);
+  }
+  if (profile.kind === "datetime") {
+    return compareManualDates(coerceDate(value), filter);
+  }
+  return compareManualText(value, filter);
+}
+
+function compareManualNumbers(value: number, filter: ColumnManualFilterState) {
+  if (!Number.isFinite(value)) return false;
+  const target = coerceNumber(filter.valueText);
+  const secondary = coerceNumber(filter.valueTextSecondary);
+  if (filter.operator === "between") return Number.isFinite(target) && Number.isFinite(secondary) && value >= target && value <= secondary;
+  if (!Number.isFinite(target)) return false;
+  if (filter.operator === "gte") return value >= target;
+  if (filter.operator === "lte") return value <= target;
+  if (filter.operator === "gt") return value > target;
+  if (filter.operator === "lt") return value < target;
+  if (filter.operator === "eq") return value === target;
+  if (filter.operator === "neq") return value !== target;
+  return false;
+}
+
+function compareManualDates(value: number, filter: ColumnManualFilterState) {
+  if (!Number.isFinite(value)) return false;
+  const target = coerceDate(filter.valueText);
+  const secondary = coerceDate(filter.valueTextSecondary);
+  if (filter.operator === "between") return Number.isFinite(target) && Number.isFinite(secondary) && value >= target && value <= secondary;
+  if (!Number.isFinite(target)) return false;
+  if (filter.operator === "gte") return value >= target;
+  if (filter.operator === "lte") return value <= target;
+  if (filter.operator === "gt") return value > target;
+  if (filter.operator === "lt") return value < target;
+  if (filter.operator === "eq") return value === target;
+  if (filter.operator === "neq") return value !== target;
+  return false;
+}
+
+function compareManualText(value: unknown, filter: ColumnManualFilterState) {
+  const source = filter.caseSensitive ? String(value) : String(value).toLowerCase();
+  const target = filter.caseSensitive ? filter.valueText : filter.valueText.toLowerCase();
+  if (filter.operator === "contains") return source.includes(target);
+  if (filter.operator === "eq") return source === target;
+  if (filter.operator === "neq") return source !== target;
+  return false;
+}
+
+function defaultManualFilter(profile: ColumnProfile): ColumnManualFilterState {
+  return {
+    caseSensitive: false,
+    operator: buildDefaultManualFilterOperator(profile.kind),
+    timeZoneName: "UTC",
+    valueText: "",
+    valueTextSecondary: "",
+  };
+}
+
+function buildManualFilterOperators(kind: ColumnKind) {
+  if (kind === "numeric" || kind === "datetime") {
+    return ["between", "gte", "lte", "gt", "lt", "eq", "neq", "is_null", "not_null"];
+  }
+  if (kind === "boolean" || kind === "categorical") {
+    return ["eq", "neq", "contains", "is_null", "not_null"];
+  }
+  return ["contains", "eq", "neq", "is_null", "not_null"];
+}
+
+function buildDefaultManualFilterOperator(kind: ColumnKind) {
+  return kind === "numeric" || kind === "datetime" ? "between" : "contains";
+}
+
+function buildManualFilterPlaceholder(kind: ColumnKind) {
+  if (kind === "datetime") return "Select a date or time";
+  if (kind === "numeric") return "Enter a number";
+  return "Enter a value";
+}
+
+function resolveManualFilterInputType(profile: ColumnProfile): "date" | "datetime-local" | "number" | "text" {
+  if (profile.kind === "numeric") return "number";
+  if (profile.kind === "datetime") {
+    const minValue = typeof profile.min === "string" ? profile.min : "";
+    return minValue.includes("T") ? "datetime-local" : "date";
+  }
+  return "text";
+}
+
+function buildPresetFilters(profile: ColumnProfile) {
+  if (profile.kind === "numeric") {
+    return [
+      { label: "Positive", filter: presetFilter("Positive", "gt", "0") },
+      { label: "Negative", filter: presetFilter("Negative", "lt", "0") },
+      { label: "Zero", filter: presetFilter("Zero", "eq", "0") },
+      ...(profile.p75 === undefined ? [] : [{ label: "Top quartile", filter: presetFilter("Top quartile", "gte", String(profile.p75)) }]),
+      ...(profile.p25 === undefined ? [] : [{ label: "Bottom quartile", filter: presetFilter("Bottom quartile", "lte", String(profile.p25)) }]),
+    ];
+  }
+  if (profile.kind === "datetime") {
+    const today = formatDateValue(new Date());
+    const tomorrow = formatDateValue(addDays(new Date(), 1));
+    const yesterday = formatDateValue(addDays(new Date(), -1));
+    const lastWeek = formatDateValue(addDays(new Date(), -6));
+    const lastMonth = formatDateValue(addDays(new Date(), -29));
+    const startOfWeek = formatDateValue(addDays(new Date(), -((new Date().getDay() + 6) % 7)));
+    const startOfMonth = formatDateValue(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+    const startOfYear = formatDateValue(new Date(new Date().getFullYear(), 0, 1));
+    return [
+      { label: "Today", filter: presetFilter("Today", "between", today, tomorrow) },
+      { label: "From today", filter: presetFilter("From today", "gte", today) },
+      { label: "Yesterday", filter: presetFilter("Yesterday", "between", yesterday, today) },
+      { label: "This week", filter: presetFilter("This week", "between", startOfWeek, tomorrow) },
+      { label: "Last 7 days", filter: presetFilter("Last 7 days", "between", lastWeek, tomorrow) },
+      { label: "Last 30 days", filter: presetFilter("Last 30 days", "between", lastMonth, tomorrow) },
+      { label: "This month", filter: presetFilter("This month", "between", startOfMonth, tomorrow) },
+      { label: "Year to date", filter: presetFilter("Year to date", "between", startOfYear, tomorrow) },
+    ];
+  }
+  if (profile.kind === "boolean") {
+    return [
+      { label: "Is true", filter: presetFilter("Is true", "eq", "true") },
+      { label: "Is false", filter: presetFilter("Is false", "eq", "false") },
+      { label: "Has value", filter: presetFilter("Has value", "not_null") },
+    ];
+  }
+  return [
+    { label: "Has value", filter: presetFilter("Has value", "not_null") },
+    { label: "Is empty", filter: presetFilter("Is empty", "is_null") },
+  ];
+}
+
+function presetFilter(label: string, operator: string, valueText = "", valueTextSecondary = ""): ColumnManualFilterState {
+  return {
+    caseSensitive: false,
+    operator,
+    presetLabel: label,
+    timeZoneName: "UTC",
+    valueText,
+    valueTextSecondary,
+  };
+}
+
+function buildNormalizedManualFilter(draft: ColumnManualFilterState): ColumnManualFilterState | null {
+  if (draft.operator === "is_null" || draft.operator === "not_null") {
+    return { ...draft, valueText: "", valueTextSecondary: "" };
+  }
+  if (!draft.valueText.trim()) return null;
+  if (draft.operator === "between" && !draft.valueTextSecondary.trim()) return null;
+  return {
+    ...draft,
+    valueText: draft.valueText.trim(),
+    valueTextSecondary: draft.valueTextSecondary.trim(),
+  };
+}
+
+function isPresetFilterActive(manualFilter: ColumnManualFilterState | null, presetFilterValue: ColumnManualFilterState) {
+  if (!manualFilter) return false;
+  return (
+    manualFilter.presetLabel === presetFilterValue.presetLabel &&
+    manualFilter.operator === presetFilterValue.operator &&
+    manualFilter.valueText === presetFilterValue.valueText &&
+    manualFilter.valueTextSecondary === presetFilterValue.valueTextSecondary
+  );
+}
+
+function supportsTextCaseSensitivity(profile: ColumnProfile) {
+  return profile.kind === "text" || profile.kind === "categorical";
+}
+
+function buildNumericHistogram(sortedValues: number[]) {
+  if (!sortedValues.length) return [];
+  const min = sortedValues[0];
+  const max = sortedValues[sortedValues.length - 1];
+  if (min === max) return [{ count: sortedValues.length, label: formatProfileMetric(min) }];
+  const binCount = Math.min(8, Math.max(4, Math.ceil(Math.sqrt(sortedValues.length))));
+  const width = (max - min) / binCount;
+  return Array.from({ length: binCount }, (_, index) => {
+    const start = min + width * index;
+    const end = index === binCount - 1 ? max : start + width;
+    const count = sortedValues.filter((value) => (index === binCount - 1 ? value >= start && value <= end : value >= start && value < end)).length;
+    return { count, label: `${formatProfileMetric(start)} - ${formatProfileMetric(end)}` };
+  }).filter((bin) => bin.count > 0);
+}
+
+function percentile(sortedValues: number[], p: number) {
+  if (!sortedValues.length) return undefined;
+  const index = (sortedValues.length - 1) * p;
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
+  if (lower === upper) return sortedValues[lower];
+  const weight = index - lower;
+  return sortedValues[lower] * (1 - weight) + sortedValues[upper] * weight;
+}
+
+function buildHistogramBarWidth(rowCount: number, totalRowCount: number) {
+  if (totalRowCount <= 0) return 0;
+  return Math.max(2, (rowCount / totalRowCount) * 100);
+}
+
+function resolveTableVisualTone(profile: ColumnProfile): TableVisualTone {
+  if (profile.kind === "numeric") return "sky";
+  if (profile.kind === "datetime") return "amber";
+  if (profile.kind === "boolean") return "violet";
+  if (profile.kind === "categorical") return "emerald";
+  return "neutral";
+}
+
 function isBlank(value: unknown) {
   return value === null || value === undefined || value === "";
 }
@@ -486,13 +1105,27 @@ function formatInteger(value: number) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
 }
 
-function formatNumber(value: number) {
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 3 }).format(value);
+function formatProfileMetric(value: unknown) {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "number") {
+    return Number.isInteger(value)
+      ? value.toLocaleString(undefined, { maximumFractionDigits: 0 })
+      : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  }
+  return String(value);
 }
 
-function formatStat(value: number | string) {
-  if (typeof value === "number") return formatNumber(value);
-  return value;
+function addDays(value: Date, dayOffset: number) {
+  const nextValue = new Date(value);
+  nextValue.setDate(nextValue.getDate() + dayOffset);
+  return nextValue;
+}
+
+function formatDateValue(value: Date) {
+  const year = value.getFullYear();
+  const month = `${value.getMonth() + 1}`.padStart(2, "0");
+  const day = `${value.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function cellClassName(value: unknown, column: string) {
