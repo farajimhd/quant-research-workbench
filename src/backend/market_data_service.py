@@ -236,6 +236,19 @@ def first_matching_artifact(records: list[dict[str, Any]], group: str, timeframe
     return next((record for record in records if record.get("group") == group and record.get("timeframe") == timeframe and record.get("session_date") == session), None)
 
 
+def matching_artifacts(records: list[dict[str, Any]], group: str, timeframe: str, start: date, end: date) -> list[dict[str, Any]]:
+    start_key = start.isoformat()
+    end_key = end.isoformat()
+    return [
+        record
+        for record in records
+        if record.get("group") == group
+        and record.get("timeframe") == timeframe
+        and start_key <= str(record.get("session_date") or "") <= end_key
+        and record.get("exists")
+    ]
+
+
 def first_ticker(record: dict[str, Any] | None) -> str:
     if not record:
         return ""
@@ -249,13 +262,23 @@ def first_ticker(record: dict[str, Any] | None) -> str:
     return "" if frame.is_empty() else str(frame.item(0, "ticker")).upper()
 
 
-def feature_group_options(records: list[dict[str, Any]], timeframe: str, session: str) -> list[str]:
+def first_ticker_in_range(records: list[dict[str, Any]], timeframe: str, start: date, end: date) -> str:
+    for record in matching_artifacts(records, "bars", timeframe, start, end):
+        ticker = first_ticker(record)
+        if ticker:
+            return ticker
+    return ""
+
+
+def feature_group_options(records: list[dict[str, Any]], timeframe: str, start: date, end: date) -> list[str]:
+    start_key = start.isoformat()
+    end_key = end.isoformat()
     groups = [
         str(record["group"]).replace("features_", "", 1)
         for record in records
         if str(record.get("group") or "").startswith("features_")
         and record.get("timeframe") == timeframe
-        and record.get("session_date") == session
+        and start_key <= str(record.get("session_date") or "") <= end_key
         and record.get("exists")
     ]
     return sorted(set(groups), key=lambda group: FEATURE_GROUPS.index(group) if group in FEATURE_GROUPS else 999)
@@ -265,15 +288,13 @@ def is_numeric_dtype(dtype: Any) -> bool:
     return str(dtype).startswith(("Float", "Int", "UInt"))
 
 
-def chart_feature_columns(records: list[dict[str, Any]], timeframe: str, session: str, groups: list[str]) -> list[str]:
+def chart_feature_columns(records: list[dict[str, Any]], timeframe: str, start: date, end: date, groups: list[str]) -> list[str]:
     columns = []
     for group in groups:
-        record = first_matching_artifact(records, f"features_{group}", timeframe, session)
-        if not record:
-            continue
-        for item in artifact_schema(record):
-            if item["column"] not in CHART_FEATURE_EXCLUDE_COLUMNS and is_numeric_dtype(item["dtype"]):
-                columns.append(item["column"])
+        for record in matching_artifacts(records, f"features_{group}", timeframe, start, end):
+            for item in artifact_schema(record):
+                if item["column"] not in CHART_FEATURE_EXCLUDE_COLUMNS and is_numeric_dtype(item["dtype"]):
+                    columns.append(item["column"])
     return sorted(set(columns))
 
 
@@ -421,7 +442,8 @@ def marker_text(row: dict[str, Any], supervision_group: str) -> str:
 def supervision_markers(
     provider: MarketDataProvider,
     *,
-    session: date,
+    start_date: date,
+    end_date: date,
     timeframe: str,
     ticker: str,
     supervision_groups: list[str],
@@ -435,7 +457,7 @@ def supervision_markers(
     }
     markers: list[dict[str, Any]] = []
     for supervision_group in supervision_groups:
-        frame = provider.load_supervision(start_date=session, end_date=session, timeframe=timeframe, supervision_type=supervision_group, tickers=[ticker])
+        frame = provider.load_supervision(start_date=start_date, end_date=end_date, timeframe=timeframe, supervision_type=supervision_group, tickers=[ticker])
         candidates = supervision_candidates(frame, supervision_group, min_confidence)
         for row in candidates.head(marker_limit).to_dicts():
             timestamp = chart_timestamp_seconds(row, timeframe)
@@ -450,7 +472,8 @@ def supervision_markers(
 def chart_payload(
     processed_root: Path,
     *,
-    session: date,
+    start_date: date,
+    end_date: date,
     timeframe: str,
     ticker: str,
     feature_groups_selected: list[str],
@@ -462,20 +485,20 @@ def chart_payload(
     records = artifact_records(processed_root)
     provider = MarketDataProvider(DataProviderConfig(processed_root=processed_root))
     bars = provider.load_bars(
-        start_date=session,
-        end_date=session,
+        start_date=start_date,
+        end_date=end_date,
         timeframe=timeframe,
         tickers=[ticker.upper()],
         feature_groups=feature_groups_selected,
     )
     options = {
-        "feature_groups": feature_group_options(records, timeframe, session.isoformat()),
-        "feature_columns": chart_feature_columns(records, timeframe, session.isoformat(), feature_groups_selected),
+        "feature_groups": feature_group_options(records, timeframe, start_date, end_date),
+        "feature_columns": chart_feature_columns(records, timeframe, start_date, end_date, feature_groups_selected),
         "standard_indicators": CHART_INDICATORS,
         "supervision_groups": [
             group
             for group in SUPERVISION_GROUPS
-            if first_matching_artifact(records, f"supervision_{group}", timeframe, session.isoformat())
+            if matching_artifacts(records, f"supervision_{group}", timeframe, start_date, end_date)
         ],
     }
     if bars.is_empty():
@@ -526,7 +549,8 @@ def chart_payload(
         target.append({"column": column, "label": option["label"], "style": option["style"], "color": option["color"], "lineWidth": option["lineWidth"], "data": points})
     markers = supervision_markers(
         provider,
-        session=session,
+        start_date=start_date,
+        end_date=end_date,
         timeframe=timeframe,
         ticker=ticker.upper(),
         supervision_groups=supervision_groups_selected,

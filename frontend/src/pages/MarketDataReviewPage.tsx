@@ -196,12 +196,30 @@ function Coverage({ scope, records }: { scope: Scope; records: RecordRow[] }) {
 }
 
 function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
-  const barRecords = records.filter((record) => record.group === "bars" && record.exists);
-  const sessions = Array.from(new Set(barRecords.map((record) => record.session_date))).sort().reverse();
-  const [session, setSession] = useState(sessions[0] ?? "");
+  const barRecords = useMemo(() => records.filter((record) => record.group === "bars" && record.exists), [records]);
+  const availableSessions = useMemo(() => Array.from(new Set(barRecords.map((record) => record.session_date))).sort(), [barRecords]);
+  const defaultRange = useMemo(() => {
+    const first = availableSessions[0] ?? scope.start_date;
+    const last = availableSessions[availableSessions.length - 1] ?? scope.end_date;
+    return {
+      start: availableSessions.find((item) => item >= scope.start_date) ?? first,
+      end: [...availableSessions].reverse().find((item) => item <= scope.end_date) ?? last
+    };
+  }, [availableSessions, scope.start_date, scope.end_date]);
+  const [startDate, setStartDate] = useState(defaultRange.start);
+  const [endDate, setEndDate] = useState(defaultRange.end);
+  const rangeStart = startDate <= endDate ? startDate : endDate;
+  const rangeEnd = endDate >= startDate ? endDate : startDate;
   const timeframes = useMemo(
-    () => Array.from(new Set(barRecords.filter((record) => record.session_date === session).map((record) => record.timeframe))).sort(timeframeSort),
-    [barRecords, session]
+    () =>
+      Array.from(
+        new Set(
+          barRecords
+            .filter((record) => record.session_date >= rangeStart && record.session_date <= rangeEnd)
+            .map((record) => record.timeframe)
+        )
+      ).sort(timeframeSort),
+    [barRecords, rangeEnd, rangeStart]
   );
   const [timeframe, setTimeframe] = useState(timeframes[0] ?? "1m");
   const [ticker, setTicker] = useState("");
@@ -210,29 +228,43 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [payload, setPayload] = useState<ChartPayload | null>(null);
 
   useEffect(() => {
+    if (!availableSessions.length) return;
+    setStartDate((current) => (current && current >= defaultRange.start && current <= defaultRange.end ? current : defaultRange.start));
+    setEndDate((current) => (current && current >= defaultRange.start && current <= defaultRange.end ? current : defaultRange.end));
+  }, [availableSessions.length, defaultRange.end, defaultRange.start]);
+
+  useEffect(() => {
     api<ConfigDefaults>("/api/config/defaults").then((defaults) => {
       if (defaults.feature_groups?.length) setFeatureGroups(defaults.feature_groups);
     });
   }, []);
 
   useEffect(() => {
-    if (!session || !timeframes.length) return;
+    if (!rangeStart || !rangeEnd || !timeframes.length) return;
     if (!timeframes.includes(timeframe)) setTimeframe(timeframes[0]);
-  }, [session, timeframes, timeframe]);
+  }, [rangeEnd, rangeStart, timeframes, timeframe]);
 
   useEffect(() => {
-    if (!session || !timeframe || ticker.trim()) return;
-    api<{ ticker: string }>(`/api/market-data/chart/default-ticker${query({ processed_root: scope.processed_root, session_date: session, timeframe })}`).then((result) =>
-      setTicker(result.ticker || "AAPL")
+    if (!rangeStart || !rangeEnd || !timeframe || ticker.trim()) return;
+    let active = true;
+    api<{ ticker: string }>(`/api/market-data/chart/default-ticker${query({ processed_root: scope.processed_root, start_date: rangeStart, end_date: rangeEnd, timeframe })}`).then(
+      (result) => {
+        if (active) setTicker(result.ticker || "AAPL");
+      }
     );
-  }, [scope.processed_root, session, timeframe, ticker]);
+    return () => {
+      active = false;
+    };
+  }, [scope.processed_root, rangeEnd, rangeStart, timeframe, ticker]);
 
   useEffect(() => {
-    if (!session || !timeframe || !ticker.trim()) return;
+    if (!rangeStart || !rangeEnd || !timeframe || !ticker.trim()) return;
+    let active = true;
     api<ChartPayload>(
       `/api/market-data/chart${query({
         processed_root: scope.processed_root,
-        session_date: session,
+        start_date: rangeStart,
+        end_date: rangeEnd,
         timeframe,
         ticker: ticker.trim().toUpperCase(),
         feature_groups: featureGroups.join(","),
@@ -242,13 +274,27 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         marker_limit: DEFAULT_CHART_MARKER_LIMIT
       })}`
     ).then((nextPayload) => {
+      if (!active) return;
       setPayload(nextPayload);
       const nextFeatureGroups = nextPayload.options?.feature_groups ?? [];
       if (nextFeatureGroups.length && !sameList(nextFeatureGroups, featureGroups)) {
         setFeatureGroups(nextFeatureGroups);
       }
     });
-  }, [scope.processed_root, session, timeframe, ticker, featureGroups, visibleColumns]);
+    return () => {
+      active = false;
+    };
+  }, [scope.processed_root, rangeEnd, rangeStart, timeframe, ticker, featureGroups, visibleColumns]);
+
+  function updateStartDate(value: string) {
+    setStartDate(value);
+    if (endDate && value > endDate) setEndDate(value);
+  }
+
+  function updateEndDate(value: string) {
+    setEndDate(value);
+    if (startDate && value < startDate) setStartDate(value);
+  }
 
   const indicatorOptions = payload?.options?.standard_indicators ?? DEFAULT_CHART_COLUMNS;
   const featureOptions = payload?.options?.feature_columns ?? [];
@@ -257,14 +303,20 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   return (
     <section>
       <div className="chart-session-row">
-        <div className="field" style={{ width: 230 }}>
-          <label>Session</label>
-          <select value={session} onChange={(event) => setSession(event.target.value)}>
-            {sessions.map((item) => (
-              <option value={item} key={item}>{item}</option>
-            ))}
-          </select>
-        </div>
+        <label className="chart-date-field">
+          <span>Start</span>
+          <input type="date" value={startDate} min={availableSessions[0] ?? scope.start_date} max={endDate || defaultRange.end} onChange={(event) => updateStartDate(event.target.value)} />
+        </label>
+        <label className="chart-date-field">
+          <span>End</span>
+          <input
+            type="date"
+            value={endDate}
+            min={startDate || defaultRange.start}
+            max={availableSessions[availableSessions.length - 1] ?? scope.end_date}
+            onChange={(event) => updateEndDate(event.target.value)}
+          />
+        </label>
       </div>
       <ChartPanel
         featureOptions={featureOptions}

@@ -23,7 +23,7 @@ from src.backend.market_data_service import (
     chart_payload,
     coverage_rows,
     first_matching_artifact,
-    first_ticker,
+    first_ticker_in_range,
     load_artifact_sample,
     review_payload,
     scope_defaults,
@@ -97,6 +97,16 @@ def read_table(path: Path, limit: int = 1000) -> dict[str, Any]:
     if frame.height > limit:
         frame = frame.head(limit)
     return {"columns": frame.columns, "rows": json_safe(frame.to_dicts())}
+
+
+def resolve_chart_range(start_date: date | None, end_date: date | None, session_date: date | None) -> tuple[date, date]:
+    range_start = start_date or session_date
+    range_end = end_date or range_start
+    if range_start is None or range_end is None:
+        raise HTTPException(status_code=400, detail="start_date and end_date are required")
+    if range_end < range_start:
+        raise HTTPException(status_code=400, detail="end_date must be on or after start_date")
+    return range_start, range_end
 
 
 @app.get("/api/health")
@@ -353,9 +363,11 @@ def market_schema(processed_root: str, group: str, timeframe: str, session_date:
 @app.get("/api/market-data/chart")
 def market_chart(
     processed_root: str,
-    session_date: date,
     timeframe: str,
     ticker: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    session_date: date | None = None,
     feature_groups: str | None = None,
     columns: str | None = None,
     supervision_groups: str | None = None,
@@ -365,10 +377,12 @@ def market_chart(
     selected_feature_groups = parse_csv_list(feature_groups) or ["core", "momentum"]
     selected_columns = parse_csv_list(columns) if columns is not None else ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"]
     selected_supervision = parse_csv_list(supervision_groups) or ["method"]
+    range_start, range_end = resolve_chart_range(start_date, end_date, session_date)
     return json_safe(
         chart_payload(
             Path(processed_root),
-            session=session_date,
+            start_date=range_start,
+            end_date=range_end,
             timeframe=timeframe,
             ticker=ticker,
             feature_groups_selected=selected_feature_groups,
@@ -381,9 +395,15 @@ def market_chart(
 
 
 @app.get("/api/market-data/chart/default-ticker")
-def chart_default_ticker(processed_root: str, timeframe: str, session_date: date) -> dict[str, str]:
-    record = first_matching_artifact(artifact_records(Path(processed_root)), "bars", timeframe, session_date.isoformat())
-    return {"ticker": first_ticker(record) or "AAPL"}
+def chart_default_ticker(
+    processed_root: str,
+    timeframe: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    session_date: date | None = None,
+) -> dict[str, str]:
+    range_start, range_end = resolve_chart_range(start_date, end_date, session_date)
+    return {"ticker": first_ticker_in_range(artifact_records(Path(processed_root)), timeframe, range_start, range_end) or "AAPL"}
 
 
 if FRONTEND_DIST.exists():
