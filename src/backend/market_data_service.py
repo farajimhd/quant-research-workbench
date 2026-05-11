@@ -263,9 +263,13 @@ def apply_table_query(scan: pl.LazyFrame, schema: pl.Schema, table_query: dict[s
         if expression is not None
     ]
     if filters:
+        match_mode = str(table_query.get("matchMode") or table_query.get("match_mode") or "all").lower()
         combined = filters[0]
         for expression in filters[1:]:
-            combined = combined & expression
+            if match_mode == "any":
+                combined = combined | expression
+            else:
+                combined = combined & expression
         scan = scan.filter(combined)
 
     sort_column = str(table_query.get("sortColumn") or table_query.get("sort_column") or "")

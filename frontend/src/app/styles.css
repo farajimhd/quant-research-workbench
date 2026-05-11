@@ -2124,6 +2124,13 @@ button {
   align-items: center;
 }
 
+.data-table-query-mode {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
+}
+
 .data-table-query-sort-row {
   grid-template-columns: minmax(160px, 1fr) minmax(130px, 0.55fr);
 }

@@ -26,6 +26,7 @@ type ColumnKind = "numeric" | "datetime" | "categorical" | "boolean" | "text";
 type TableDensityMode = "comfortable" | "compact" | "wide";
 type TableLayoutMode = "fit_header" | "fit_data";
 type TableVisualTone = "amber" | "emerald" | "neutral" | "sky" | "violet";
+export type BackendQueryMatchMode = "all" | "any";
 export type BackendQueryOperator =
   | "between"
   | "contains"
@@ -50,6 +51,7 @@ export type BackendQueryCondition = {
 
 export type BackendTableQuery = {
   conditions: BackendQueryCondition[];
+  matchMode?: BackendQueryMatchMode;
   sortColumn?: string;
   sortDirection?: SortDirection;
 };
@@ -513,6 +515,22 @@ export function DataTable({ backendQuery, columns, empty = "No rows.", rows, tit
         <div className="data-table-query-body">
           <div className="data-table-query-section">
             <div className="table-popover-section-title">Where</div>
+            <div className="data-table-query-mode" aria-label="Backend query match mode" role="group">
+              <button
+                className={draft.matchMode === "all" ? "table-segment-button active" : "table-segment-button"}
+                onClick={() => setBackendQueryDraft((current) => ({ ...normalizeBackendQuery(current), matchMode: "all" }))}
+                type="button"
+              >
+                Match all
+              </button>
+              <button
+                className={draft.matchMode === "any" ? "table-segment-button active" : "table-segment-button"}
+                onClick={() => setBackendQueryDraft((current) => ({ ...normalizeBackendQuery(current), matchMode: "any" }))}
+                type="button"
+              >
+                Match any
+              </button>
+            </div>
             {draft.conditions.length ? (
               draft.conditions.map((condition) => {
                 const operator = BACKEND_QUERY_OPERATORS.find((item) => item.value === condition.operator) ?? BACKEND_QUERY_OPERATORS[0];
@@ -868,7 +886,7 @@ export function DataTable({ backendQuery, columns, empty = "No rows.", rows, tit
 }
 
 function emptyBackendTableQuery(): BackendTableQuery {
-  return { conditions: [], sortDirection: "asc" };
+  return { conditions: [], matchMode: "all", sortDirection: "asc" };
 }
 
 function normalizeBackendQuery(query?: BackendTableQuery): BackendTableQuery {
@@ -880,6 +898,7 @@ function normalizeBackendQuery(query?: BackendTableQuery): BackendTableQuery {
       value: condition.value ?? "",
       valueSecondary: condition.valueSecondary ?? "",
     })),
+    matchMode: query?.matchMode === "any" ? "any" : "all",
     sortColumn: query?.sortColumn,
     sortDirection: query?.sortDirection ?? "asc",
   };
@@ -899,6 +918,7 @@ function cleanBackendQuery(query: BackendTableQuery, columns: string[]): Backend
   const sortColumn = query.sortColumn && allowedColumns.has(query.sortColumn) ? query.sortColumn : undefined;
   return {
     conditions,
+    matchMode: query.matchMode === "any" ? "any" : "all",
     sortColumn,
     sortDirection: query.sortDirection ?? "asc",
   };

@@ -379,7 +379,7 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [loadAllRows, setLoadAllRows] = useState(false);
   const [previewOffset, setPreviewOffset] = useState(0);
   const [tickers, setTickers] = useState("");
-  const [backendQuery, setBackendQuery] = useState<BackendTableQuery>({ conditions: [], sortDirection: "asc" });
+  const [backendQuery, setBackendQuery] = useState<BackendTableQuery>({ conditions: [], matchMode: "all", sortDirection: "asc" });
   const [sample, setSample] = useState<PreviewSample | null>(null);
   const [sampleError, setSampleError] = useState("");
   const [sampleLoading, setSampleLoading] = useState(false);
@@ -513,6 +513,7 @@ function cleanPreviewBackendQuery(queryValue: BackendTableQuery): BackendTableQu
       if (condition.operator === "between" && !condition.valueSecondary?.trim()) return false;
       return true;
     }),
+    matchMode: queryValue.matchMode === "any" ? "any" : "all",
     sortColumn: queryValue.sortColumn,
     sortDirection: queryValue.sortDirection ?? "asc",
   };
