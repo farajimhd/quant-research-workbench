@@ -6,6 +6,7 @@ import {
   type LineWidth,
   type LogicalRange,
   type MouseEventParams,
+  type SeriesMarker,
   type SeriesType,
   type Time
 } from "lightweight-charts";
@@ -40,6 +41,7 @@ type ChartSeries = {
 };
 type Region = { start: number; end: number; color: string; label: string };
 type AnySeriesApi = ISeriesApi<SeriesType>;
+type ChartMarker = SeriesMarker<Time>;
 type LegendPane = "price" | "oscillator";
 type LegendLineStyle = "solid" | "dashed" | "dotted";
 type LegendSeriesSettings = {
@@ -75,7 +77,7 @@ export type ChartPayload = {
   volume: Array<{ time: number; value: number; color: string }>;
   overlay_series: ChartSeries[];
   oscillator_series: ChartSeries[];
-  markers: Array<Record<string, unknown>>;
+  markers: ChartMarker[];
   regions: Region[];
   options?: ChartOptions;
 };
@@ -127,6 +129,8 @@ const defaultChartAppearanceSettings: ChartAppearanceSettings = {
 
 const LEGEND_SETTINGS_STORAGE_KEY = "quant-research-workbench.chart.legend-settings.v1";
 const CHART_APPEARANCE_STORAGE_KEY = "quant-research-workbench.chart.appearance-settings.v1";
+const MARKER_REFERENCE_CANDLE_SIZE = defaultChartAppearanceSettings.candleSize;
+const MIN_MARKER_SIZE = 0.45;
 
 type ChartPalette = {
   background: string;
@@ -231,6 +235,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   useEffect(() => {
     if (!priceRef.current || !payload) return;
+    let disposed = false;
     const palette = readChartPalette();
     priceRef.current.innerHTML = "";
     if (oscRef.current) oscRef.current.innerHTML = "";
@@ -244,7 +249,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
     candleRef.current = candleSeries;
     candleSeries.setData(payload.candles as never);
-    if (payload.markers.length) candleSeries.setMarkers(payload.markers as never);
+    if (payload.markers.length) candleSeries.setMarkers(markerDataForSettings(payload.markers, chartSettings));
     const volume = priceChart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "", base: 0 });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     volume.setData(volumeDataForSettings(payload, chartSettings) as never);
@@ -299,9 +304,13 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       oscChart && primaryOscillatorSeries
         ? syncCrosshairs(priceChart, oscChart, candleSeries, primaryOscillatorSeries, closeByTime, oscillatorByTime)
         : () => undefined;
-    const draw = () => drawRegions(priceChart, priceLayerRef.current, payload.regions, payload.candles, chartSettings);
+    const draw = () => {
+      if (disposed) return;
+      drawRegions(priceChart, priceLayerRef.current, payload.regions, payload.candles, chartSettings);
+    };
     priceChart.timeScale().subscribeVisibleLogicalRangeChange(draw);
-    window.setTimeout(() => {
+    const initialFitTimer = window.setTimeout(() => {
+      if (disposed) return;
       fitFirstDay(priceChart, payload.candles);
       draw();
     }, 20);
@@ -311,6 +320,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
     if (shellRef.current) observer.observe(shellRef.current);
     return () => {
+      disposed = true;
+      window.clearTimeout(initialFitTimer);
       observer.disconnect();
       crosshairCleanup();
       rangeCleanup();
@@ -953,6 +964,14 @@ function candleSeriesOptions(settings: ChartAppearanceSettings) {
     wickUpColor: settings.wickUpColor,
     wickVisible: settings.wickVisible
   };
+}
+
+function markerDataForSettings(markers: ChartMarker[], settings: ChartAppearanceSettings): ChartMarker[] {
+  const markerSize = Math.max(MIN_MARKER_SIZE, Math.min(1, MARKER_REFERENCE_CANDLE_SIZE / Math.max(1, settings.candleSize)));
+  return markers.map((marker) => ({
+    ...marker,
+    size: Math.min(marker.size ?? 1, markerSize)
+  }));
 }
 
 function volumeDataForSettings(payload: ChartPayload, settings: ChartAppearanceSettings) {
