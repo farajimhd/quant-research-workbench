@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
-import { DataTable } from "../app/components/DataTable";
+import { DataTable, type BackendTableQuery } from "../app/components/DataTable";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
@@ -61,7 +61,7 @@ const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema"]
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_COLUMNS = ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
-const PREVIEW_PAGE_SIZE = 5000;
+const PREVIEW_PAGE_SIZE = 1000;
 
 export function MarketDataReviewPage() {
   const [scope, setScope] = useState<Scope | null>(null);
@@ -375,20 +375,24 @@ function Artifacts({ records }: { records: RecordRow[] }) {
 function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [recordKey, setRecordKey] = useState(records[0]?.key ?? "");
   const record = records.find((item) => item.key === recordKey) ?? records[0];
-  const [rowLimit, setRowLimit] = useState(250);
-  const [loadAllRows, setLoadAllRows] = useState(true);
+  const [rowLimit, setRowLimit] = useState(1000);
+  const [loadAllRows, setLoadAllRows] = useState(false);
   const [previewOffset, setPreviewOffset] = useState(0);
   const [tickers, setTickers] = useState("");
+  const [backendQuery, setBackendQuery] = useState<BackendTableQuery>({ conditions: [], sortDirection: "asc" });
   const [sample, setSample] = useState<PreviewSample | null>(null);
   const [sampleError, setSampleError] = useState("");
   const [sampleLoading, setSampleLoading] = useState(false);
-  const fillPanel = useViewportFillPanel(`${recordKey}:${rowLimit}:${loadAllRows}:${previewOffset}:${tickers}:${sample?.rows.length ?? 0}`);
+  const backendQueryKey = useMemo(() => JSON.stringify(cleanPreviewBackendQuery(backendQuery)), [backendQuery]);
+  const fillPanel = useViewportFillPanel(`${recordKey}:${rowLimit}:${loadAllRows}:${previewOffset}:${tickers}:${backendQueryKey}:${sample?.rows.length ?? 0}`);
   useEffect(() => {
     setPreviewOffset(0);
-  }, [record?.key, loadAllRows, rowLimit, tickers]);
+  }, [record?.key, loadAllRows, rowLimit, tickers, backendQueryKey]);
   useEffect(() => {
     if (!record) return;
     let active = true;
+    const cleanedQuery = cleanPreviewBackendQuery(backendQuery);
+    const tableQuery = previewBackendQueryIsActive(cleanedQuery) ? JSON.stringify(cleanedQuery) : undefined;
     setSampleError("");
     setSampleLoading(true);
     api<{ sample: PreviewSample }>(
@@ -400,6 +404,7 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         all_rows: loadAllRows,
         row_limit: loadAllRows ? PREVIEW_PAGE_SIZE : rowLimit,
         row_offset: loadAllRows ? previewOffset : 0,
+        table_query: tableQuery,
         tickers
       })}`
     )
@@ -418,7 +423,7 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
     return () => {
       active = false;
     };
-  }, [scope.processed_root, record?.key, loadAllRows, previewOffset, rowLimit, tickers]);
+  }, [scope.processed_root, record?.key, loadAllRows, previewOffset, rowLimit, tickers, backendQuery, backendQueryKey]);
   if (!record) return <div className="empty-state">No records available.</div>;
   const previewTotalRows = sample?.row_count ?? 0;
   const previewStartRow = sample?.rows.length ? (sample.row_offset ?? 0) + 1 : 0;
@@ -466,7 +471,12 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         <InlineField label="Tickers" value={tickers} onChange={setTickers} />
       </div>
       {sampleError ? <div className="preview-sample-status error">Preview request failed: {sampleError}</div> : null}
-      {sampleLoading ? <div className="preview-sample-status">Loading preview rows...</div> : null}
+      {sampleLoading ? (
+        <div className="preview-sample-status">
+          <span className="loading-spinner" aria-hidden="true" />
+          Loading preview rows...
+        </div>
+      ) : null}
       {loadAllRows && sample && !sampleError ? (
         <div className="preview-page-status">
           <span>
@@ -480,9 +490,36 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
           </button>
         </div>
       ) : null}
-      <DataTable rows={sample?.rows ?? []} columns={sample?.columns} />
+      <DataTable
+        backendQuery={{
+          columns: record.columns,
+          loading: sampleLoading,
+          onChange: setBackendQuery,
+          value: backendQuery,
+        }}
+        rows={sample?.rows ?? []}
+        columns={sample?.columns}
+      />
     </section>
   );
+}
+
+function cleanPreviewBackendQuery(queryValue: BackendTableQuery): BackendTableQuery {
+  return {
+    conditions: queryValue.conditions.filter((condition) => {
+      if (!condition.column || !condition.operator) return false;
+      if (condition.operator === "is_null" || condition.operator === "is_not_null") return true;
+      if (!condition.value.trim()) return false;
+      if (condition.operator === "between" && !condition.valueSecondary?.trim()) return false;
+      return true;
+    }),
+    sortColumn: queryValue.sortColumn,
+    sortDirection: queryValue.sortDirection ?? "asc",
+  };
+}
+
+function previewBackendQueryIsActive(queryValue: BackendTableQuery): boolean {
+  return queryValue.conditions.length > 0 || Boolean(queryValue.sortColumn);
 }
 
 function Schema({ scope, records }: { scope: Scope; records: RecordRow[] }) {
@@ -547,7 +584,16 @@ function Schema({ scope, records }: { scope: Scope; records: RecordRow[] }) {
           ))}
         </div>
       ) : (
-        <div className="empty-state">{schemaLoading ? "Loading schema..." : "No schema fields found for the selected artifact."}</div>
+        <div className="empty-state">
+          {schemaLoading ? (
+            <>
+              <span className="loading-spinner" aria-hidden="true" />
+              Loading schema...
+            </>
+          ) : (
+            "No schema fields found for the selected artifact."
+          )}
+        </div>
       )}
     </section>
   );

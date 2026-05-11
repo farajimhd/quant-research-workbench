@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import asdict
 from datetime import date
@@ -107,6 +108,18 @@ def resolve_chart_range(start_date: date | None, end_date: date | None, session_
     if range_end < range_start:
         raise HTTPException(status_code=400, detail="end_date must be on or after start_date")
     return range_start, range_end
+
+
+def parse_table_query(value: str | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid table query JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Table query must be an object")
+    return payload
 
 
 @app.get("/api/health")
@@ -343,7 +356,8 @@ def market_preview(
     all_rows: bool = False,
     columns: str | None = None,
     tickers: str | None = None,
-    row_limit: int = Query(default=250, ge=1, le=5000),
+    table_query: str | None = None,
+    row_limit: int = Query(default=1000, ge=1, le=5000),
     row_offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     record = first_matching_artifact(artifact_records(Path(processed_root)), group, timeframe, session_date.isoformat())
@@ -351,7 +365,17 @@ def market_preview(
         raise HTTPException(status_code=404, detail="Artifact not found")
     selected_columns = parse_csv_list(columns)
     selected_tickers = parse_csv_list(tickers)
-    return {"record": record, "sample": load_artifact_sample(record, selected_columns, row_limit, selected_tickers, row_offset if all_rows else 0)}
+    return {
+        "record": record,
+        "sample": load_artifact_sample(
+            record,
+            selected_columns,
+            row_limit,
+            selected_tickers,
+            row_offset if all_rows else 0,
+            parse_table_query(table_query),
+        ),
+    }
 
 
 @app.get("/api/market-data/schema")

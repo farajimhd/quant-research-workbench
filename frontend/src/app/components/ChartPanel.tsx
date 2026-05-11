@@ -698,7 +698,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         />
       ) : null}
       {loading && !hasChartData ? (
-        <div className="empty-state chart-empty-state">Loading chart data...</div>
+        <div className="empty-state chart-empty-state">
+          <span className="loading-spinner" aria-hidden="true" />
+          Loading chart data...
+        </div>
       ) : errorMessage && !hasChartData ? (
         <div className="empty-state chart-empty-state">Chart data request failed: {errorMessage}</div>
       ) : !hasChartData ? (

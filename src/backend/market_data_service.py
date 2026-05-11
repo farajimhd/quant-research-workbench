@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from datetime import date, datetime, time
 from pathlib import Path
@@ -213,7 +214,14 @@ def artifact_schema(record: dict[str, Any]) -> list[dict[str, str]]:
     return [{"column": column, "dtype": str(dtype)} for column, dtype in schema.items()]
 
 
-def load_artifact_sample(record: dict[str, Any], columns: list[str], row_limit: int, tickers: list[str], row_offset: int = 0) -> dict[str, Any]:
+def load_artifact_sample(
+    record: dict[str, Any],
+    columns: list[str],
+    row_limit: int,
+    tickers: list[str],
+    row_offset: int = 0,
+    table_query: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     path = Path(str(record.get("path") or ""))
     if not path.exists():
         return {"columns": [], "row_count": 0, "row_limit": row_limit, "row_offset": row_offset, "rows": []}
@@ -222,6 +230,7 @@ def load_artifact_sample(record: dict[str, Any], columns: list[str], row_limit: 
     schema_names = schema.names()
     if tickers and "ticker" in schema_names:
         scan = scan.filter(pl.col("ticker").is_in([ticker.upper() for ticker in tickers]))
+    scan = apply_table_query(scan, schema, table_query)
     selected_columns = [column for column in columns if column in schema_names]
     row_count = int(scan.select(pl.len().alias("row_count")).collect().item(0, "row_count"))
     if selected_columns:
@@ -231,7 +240,8 @@ def load_artifact_sample(record: dict[str, Any], columns: list[str], row_limit: 
     scan = scan.slice(row_offset, row_limit)
     frame = scan.collect()
     sort_columns = [column for column in ["ticker", "bar_time_market", "bar_time_utc", "trade_method", "horizon_bars", "horizon"] if column in frame.columns]
-    if sort_columns:
+    backend_sort_column = str((table_query or {}).get("sortColumn") or (table_query or {}).get("sort_column") or "")
+    if sort_columns and not backend_sort_column:
         frame = frame.sort(sort_columns)
     return {
         "columns": frame.columns,
@@ -240,6 +250,145 @@ def load_artifact_sample(record: dict[str, Any], columns: list[str], row_limit: 
         "row_offset": row_offset,
         "rows": json_safe(frame.to_dicts()),
     }
+
+
+def apply_table_query(scan: pl.LazyFrame, schema: pl.Schema, table_query: dict[str, Any] | None) -> pl.LazyFrame:
+    if not table_query:
+        return scan
+    schema_by_name = dict(schema.items())
+    conditions = table_query.get("conditions") if isinstance(table_query.get("conditions"), list) else []
+    filters = [
+        expression
+        for expression in (build_table_query_expression(condition, schema_by_name) for condition in conditions)
+        if expression is not None
+    ]
+    if filters:
+        combined = filters[0]
+        for expression in filters[1:]:
+            combined = combined & expression
+        scan = scan.filter(combined)
+
+    sort_column = str(table_query.get("sortColumn") or table_query.get("sort_column") or "")
+    if sort_column in schema_by_name:
+        sort_direction = str(table_query.get("sortDirection") or table_query.get("sort_direction") or "asc").lower()
+        scan = scan.sort(sort_column, descending=sort_direction == "desc")
+    return scan
+
+
+def build_table_query_expression(condition: Any, schema_by_name: dict[str, pl.DataType]) -> pl.Expr | None:
+    if not isinstance(condition, dict):
+        return None
+    column = str(condition.get("column") or "")
+    if column not in schema_by_name:
+        return None
+    operator = str(condition.get("operator") or "contains").lower()
+    dtype = schema_by_name[column]
+    column_expr = pl.col(column)
+    value = condition.get("value")
+    value_secondary = condition.get("valueSecondary", condition.get("value_secondary"))
+
+    if operator == "is_null":
+        return column_expr.is_null()
+    if operator == "is_not_null":
+        return column_expr.is_not_null()
+
+    if operator in {"contains", "starts_with", "ends_with"}:
+        text = str(value or "")
+        if not text:
+            return None
+        text_expr = column_expr.cast(pl.String).str.to_lowercase()
+        text_value = text.lower()
+        if operator == "contains":
+            return text_expr.str.contains(re.escape(text_value))
+        if operator == "starts_with":
+            return text_expr.str.starts_with(text_value)
+        return text_expr.str.ends_with(text_value)
+
+    coerced_value = coerce_table_query_value(value, dtype)
+    if coerced_value is None:
+        return None
+
+    if operator == "eq":
+        return column_expr == pl.lit(coerced_value)
+    if operator == "ne":
+        return column_expr != pl.lit(coerced_value)
+    if operator == "gt":
+        return column_expr > pl.lit(coerced_value)
+    if operator == "gte":
+        return column_expr >= pl.lit(coerced_value)
+    if operator == "lt":
+        return column_expr < pl.lit(coerced_value)
+    if operator == "lte":
+        return column_expr <= pl.lit(coerced_value)
+    if operator == "between":
+        coerced_secondary = coerce_table_query_value(value_secondary, dtype)
+        if coerced_secondary is None:
+            return None
+        lower, upper = sorted([coerced_value, coerced_secondary])
+        return (column_expr >= pl.lit(lower)) & (column_expr <= pl.lit(upper))
+    return None
+
+
+def coerce_table_query_value(value: Any, dtype: pl.DataType) -> Any:
+    if value is None:
+        return None
+    if is_boolean_dtype(dtype):
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "y"}:
+            return True
+        if text in {"0", "false", "no", "n"}:
+            return False
+        return None
+    if is_temporal_dtype(dtype):
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            if dtype == pl.Date:
+                return date.fromisoformat(text[:10])
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if is_numeric_dtype(dtype):
+        text = str(value).replace(",", "").strip()
+        if not text:
+            return None
+        try:
+            if dtype in INTEGER_DTYPES:
+                return int(float(text))
+            return float(text)
+        except ValueError:
+            return None
+    text = str(value)
+    return text if text else None
+
+
+INTEGER_DTYPES = {
+    pl.Int8,
+    pl.Int16,
+    pl.Int32,
+    pl.Int64,
+    pl.UInt8,
+    pl.UInt16,
+    pl.UInt32,
+    pl.UInt64,
+}
+
+
+def is_numeric_dtype(dtype: pl.DataType) -> bool:
+    checker = getattr(dtype, "is_numeric", None)
+    return bool(checker()) if callable(checker) else dtype in INTEGER_DTYPES or dtype in {pl.Float32, pl.Float64}
+
+
+def is_temporal_dtype(dtype: pl.DataType) -> bool:
+    checker = getattr(dtype, "is_temporal", None)
+    return bool(checker()) if callable(checker) else dtype == pl.Date or "Datetime" in str(dtype)
+
+
+def is_boolean_dtype(dtype: pl.DataType) -> bool:
+    return dtype == pl.Boolean
 
 
 def first_matching_artifact(records: list[dict[str, Any]], group: str, timeframe: str, session: str) -> dict[str, Any] | None:

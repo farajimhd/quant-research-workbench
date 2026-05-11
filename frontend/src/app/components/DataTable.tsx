@@ -5,10 +5,13 @@ import {
   BarChart3,
   Check,
   Columns3,
+  Database,
   EyeOff,
   Filter,
   MoreHorizontal,
+  Plus,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -17,12 +20,46 @@ import { createPortal } from "react-dom";
 import { displayName, formatCell } from "../format";
 
 type DataRow = Record<string, unknown>;
-type SortDirection = "asc" | "desc";
+export type SortDirection = "asc" | "desc";
 type SortState = { column: string; direction: SortDirection } | null;
 type ColumnKind = "numeric" | "datetime" | "categorical" | "boolean" | "text";
 type TableDensityMode = "comfortable" | "compact" | "wide";
 type TableLayoutMode = "fit_header" | "fit_data";
 type TableVisualTone = "amber" | "emerald" | "neutral" | "sky" | "violet";
+export type BackendQueryOperator =
+  | "between"
+  | "contains"
+  | "ends_with"
+  | "eq"
+  | "gt"
+  | "gte"
+  | "is_not_null"
+  | "is_null"
+  | "lt"
+  | "lte"
+  | "ne"
+  | "starts_with";
+
+export type BackendQueryCondition = {
+  column: string;
+  id: string;
+  operator: BackendQueryOperator;
+  value: string;
+  valueSecondary?: string;
+};
+
+export type BackendTableQuery = {
+  conditions: BackendQueryCondition[];
+  sortColumn?: string;
+  sortDirection?: SortDirection;
+};
+
+type BackendQueryConfig = {
+  columns: string[];
+  loading?: boolean;
+  onChange: (query: BackendTableQuery) => void;
+  value: BackendTableQuery;
+};
 
 type HistogramBin = {
   count: number;
@@ -73,6 +110,7 @@ type HeaderPopoverState = {
 };
 
 type DataTableProps = {
+  backendQuery?: BackendQueryConfig;
   columns?: string[];
   empty?: string;
   rows: DataRow[];
@@ -80,14 +118,31 @@ type DataTableProps = {
 };
 
 const TABLE_DENSITY_MODES = ["compact", "comfortable", "wide"] as const;
+const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean; needsValue?: boolean; value: BackendQueryOperator }> = [
+  { label: "Contains", needsValue: true, value: "contains" },
+  { label: "Equals", needsValue: true, value: "eq" },
+  { label: "Not equal", needsValue: true, value: "ne" },
+  { label: "Greater than", needsValue: true, value: "gt" },
+  { label: "Greater or equal", needsValue: true, value: "gte" },
+  { label: "Less than", needsValue: true, value: "lt" },
+  { label: "Less or equal", needsValue: true, value: "lte" },
+  { label: "Between", needsSecondValue: true, needsValue: true, value: "between" },
+  { label: "Starts with", needsValue: true, value: "starts_with" },
+  { label: "Ends with", needsValue: true, value: "ends_with" },
+  { label: "Is blank", value: "is_null" },
+  { label: "Is not blank", value: "is_not_null" },
+];
+let backendQueryConditionSequence = 0;
 
-export function DataTable({ columns, empty = "No rows.", rows, title }: DataTableProps) {
+export function DataTable({ backendQuery, columns, empty = "No rows.", rows, title }: DataTableProps) {
   const resolvedColumns = useMemo(() => {
     if (columns?.length) return columns;
     return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
   }, [columns, rows]);
 
   const [activeValueFiltersByColumn, setActiveValueFiltersByColumn] = useState<Record<string, string[]>>({});
+  const [backendQueryOpen, setBackendQueryOpen] = useState(false);
+  const [backendQueryDraft, setBackendQueryDraft] = useState<BackendTableQuery>(() => normalizeBackendQuery(backendQuery?.value));
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const [columnsSearch, setColumnsSearch] = useState("");
   const [densityMode, setDensityMode] = useState<TableDensityMode>("compact");
@@ -182,11 +237,17 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
   const numericColumnCount = resolvedColumns.filter((column) => profilesByColumn[column]?.kind === "numeric").length;
   const activeSortLabel = effectiveSort ? `${displayName(effectiveSort.column)} ${effectiveSort.direction}` : "None";
   const openProfile = openPopover ? profilesByColumn[openPopover.column] : null;
+  const backendQueryColumns = backendQuery?.columns.length ? backendQuery.columns : resolvedColumns;
+  const backendQueryActiveCount = backendQuery ? countBackendQueryClauses(backendQuery.value) : 0;
   const columnWidthsByName = useMemo(
     () => buildColumnWidthsByName({ layoutMode, rows: sortedRows, visibleColumns: usableColumns }),
     [layoutMode, sortedRows, usableColumns],
   );
   const fitHeaderWidth = usableColumns.reduce((total, column) => total + (columnWidthsByName[column] ?? 120), 0);
+
+  useEffect(() => {
+    setBackendQueryDraft(normalizeBackendQuery(backendQuery?.value));
+  }, [backendQuery?.value]);
 
   useEffect(() => {
     if (!openPopover) return;
@@ -212,7 +273,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
   }, [openPopover]);
 
   useEffect(() => {
-    if (!columnsMenuOpen && !toolbarMenuOpen) return;
+    if (!backendQueryOpen && !columnsMenuOpen && !toolbarMenuOpen) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
       if (
@@ -221,11 +282,13 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
       ) {
         return;
       }
+      setBackendQueryOpen(false);
       setColumnsMenuOpen(false);
       setToolbarMenuOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        setBackendQueryOpen(false);
         setColumnsMenuOpen(false);
         setToolbarMenuOpen(false);
       }
@@ -236,7 +299,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
       document.removeEventListener("pointerdown", closeOnOutsidePointer);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [columnsMenuOpen, toolbarMenuOpen]);
+  }, [backendQueryOpen, columnsMenuOpen, toolbarMenuOpen]);
 
   useEffect(() => {
     if (tableIdentityRef.current === null) {
@@ -246,6 +309,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
     if (tableIdentityRef.current === tableIdentityKey) return;
     tableIdentityRef.current = tableIdentityKey;
     setActiveValueFiltersByColumn({});
+    setBackendQueryOpen(false);
     setColumnsSearch("");
     setManualFiltersByColumn({});
     setOpenPopover(null);
@@ -307,6 +371,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
 
   const resetTable = () => {
     setActiveValueFiltersByColumn({});
+    setBackendQueryOpen(false);
     setColumnsMenuOpen(false);
     setDensityMode("compact");
     setHiddenColumns([]);
@@ -316,6 +381,11 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
     setSearch("");
     setSort(null);
     setToolbarMenuOpen(false);
+    if (backendQuery) {
+      const emptyQuery = emptyBackendTableQuery();
+      setBackendQueryDraft(emptyQuery);
+      backendQuery.onChange(emptyQuery);
+    }
   };
 
   const renderDensityControls = (buttonClassName = "table-segment-button") =>
@@ -389,6 +459,156 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
     </>
   );
 
+  const addBackendCondition = () => {
+    const condition = buildBackendQueryCondition(backendQueryColumns);
+    setBackendQueryDraft((current) => ({
+      ...normalizeBackendQuery(current),
+      conditions: [...normalizeBackendQuery(current).conditions, condition],
+    }));
+  };
+
+  const updateBackendCondition = (id: string, patch: Partial<BackendQueryCondition>) => {
+    setBackendQueryDraft((current) => ({
+      ...normalizeBackendQuery(current),
+      conditions: normalizeBackendQuery(current).conditions.map((condition) =>
+        condition.id === id ? { ...condition, ...patch } : condition,
+      ),
+    }));
+  };
+
+  const removeBackendCondition = (id: string) => {
+    setBackendQueryDraft((current) => ({
+      ...normalizeBackendQuery(current),
+      conditions: normalizeBackendQuery(current).conditions.filter((condition) => condition.id !== id),
+    }));
+  };
+
+  const applyBackendQuery = () => {
+    if (!backendQuery) return;
+    const cleanedQuery = cleanBackendQuery(backendQueryDraft, backendQueryColumns);
+    setBackendQueryDraft(cleanedQuery);
+    backendQuery.onChange(cleanedQuery);
+    setBackendQueryOpen(false);
+    setToolbarMenuOpen(false);
+  };
+
+  const clearBackendQuery = () => {
+    if (!backendQuery) return;
+    const emptyQuery = emptyBackendTableQuery();
+    setBackendQueryDraft(emptyQuery);
+    backendQuery.onChange(emptyQuery);
+  };
+
+  const renderBackendQueryPanel = () => {
+    if (!backendQuery) return null;
+    const draft = normalizeBackendQuery(backendQueryDraft);
+    return (
+      <div className="data-table-query-panel">
+        <div className="data-table-query-header">
+          <div>
+            <div className="data-table-popover-title">Backend Query</div>
+          </div>
+          {backendQuery.loading ? <span className="data-table-query-loading">Running</span> : null}
+        </div>
+        <div className="data-table-query-body">
+          <div className="data-table-query-section">
+            <div className="table-popover-section-title">Where</div>
+            {draft.conditions.length ? (
+              draft.conditions.map((condition) => {
+                const operator = BACKEND_QUERY_OPERATORS.find((item) => item.value === condition.operator) ?? BACKEND_QUERY_OPERATORS[0];
+                return (
+                  <div className="data-table-query-row" key={condition.id}>
+                    <select
+                      aria-label="Query column"
+                      onChange={(event) => updateBackendCondition(condition.id, { column: event.target.value })}
+                      value={condition.column}
+                    >
+                      {backendQueryColumns.map((column) => (
+                        <option key={column} value={column}>
+                          {displayName(column)}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Query operator"
+                      onChange={(event) => updateBackendCondition(condition.id, { operator: event.target.value as BackendQueryOperator })}
+                      value={condition.operator}
+                    >
+                      {BACKEND_QUERY_OPERATORS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    {operator.needsValue ? (
+                      <input
+                        aria-label="Query value"
+                        onChange={(event) => updateBackendCondition(condition.id, { value: event.target.value })}
+                        placeholder="Value"
+                        value={condition.value}
+                      />
+                    ) : null}
+                    {operator.needsSecondValue ? (
+                      <input
+                        aria-label="Query second value"
+                        onChange={(event) => updateBackendCondition(condition.id, { valueSecondary: event.target.value })}
+                        placeholder="And"
+                        value={condition.valueSecondary ?? ""}
+                      />
+                    ) : null}
+                    <button className="table-icon-button danger" onClick={() => removeBackendCondition(condition.id)} title="Remove condition" type="button">
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="data-table-query-empty">No backend filters.</div>
+            )}
+            <button className="table-text-button data-table-query-add" onClick={addBackendCondition} type="button">
+              <Plus size={13} />
+              Add condition
+            </button>
+          </div>
+          <div className="data-table-query-section">
+            <div className="table-popover-section-title">Sort before load</div>
+            <div className="data-table-query-sort-row">
+              <select
+                aria-label="Backend sort column"
+                onChange={(event) => setBackendQueryDraft((current) => ({ ...normalizeBackendQuery(current), sortColumn: event.target.value || undefined }))}
+                value={draft.sortColumn ?? ""}
+              >
+                <option value="">No backend sort</option>
+                {backendQueryColumns.map((column) => (
+                  <option key={column} value={column}>
+                    {displayName(column)}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="Backend sort direction"
+                disabled={!draft.sortColumn}
+                onChange={(event) => setBackendQueryDraft((current) => ({ ...normalizeBackendQuery(current), sortDirection: event.target.value as SortDirection }))}
+                value={draft.sortDirection ?? "asc"}
+              >
+                <option value="asc">Ascending</option>
+                <option value="desc">Descending</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="data-table-query-actions">
+          <button className="table-text-button" onClick={clearBackendQuery} type="button">
+            Clear query
+          </button>
+          <button className="table-text-button primary" disabled={backendQuery.loading} onClick={applyBackendQuery} type="button">
+            Apply query
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="data-table-shell">
       <div className="data-table-toolbar">
@@ -418,6 +638,25 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
           <div className="data-table-toolbar-control" aria-label="Table layout">
             {renderLayoutControls()}
           </div>
+          {backendQuery ? (
+            <div className="data-table-action-menu">
+              <button
+                className={backendQueryOpen ? "table-icon-button active" : "table-icon-button"}
+                data-table-menu-trigger="true"
+                onClick={() => setBackendQueryOpen((current) => !current)}
+                title="Backend query"
+                type="button"
+              >
+                <Database size={15} />
+                {backendQueryActiveCount ? <span className="table-icon-button-badge">{backendQueryActiveCount}</span> : null}
+              </button>
+              {backendQueryOpen ? (
+                <div className="data-table-popover data-table-query-popover table-popover-divided">
+                  {renderBackendQueryPanel()}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="data-table-action-menu">
             <button
               className={columnsMenuOpen ? "table-icon-button active" : "table-icon-button"}
@@ -466,6 +705,11 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
                   {renderLayoutControls()}
                 </div>
               </div>
+              {backendQuery ? (
+                <div className="data-table-toolbar-menu-section">
+                  {renderBackendQueryPanel()}
+                </div>
+              ) : null}
               <div className="data-table-toolbar-menu-section">
                 {renderColumnsPanel(true)}
               </div>
@@ -621,6 +865,71 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
         : null}
     </div>
   );
+}
+
+function emptyBackendTableQuery(): BackendTableQuery {
+  return { conditions: [], sortDirection: "asc" };
+}
+
+function normalizeBackendQuery(query?: BackendTableQuery): BackendTableQuery {
+  return {
+    conditions: (query?.conditions ?? []).map((condition) => ({
+      column: condition.column,
+      id: condition.id || nextBackendQueryConditionId(),
+      operator: condition.operator || "contains",
+      value: condition.value ?? "",
+      valueSecondary: condition.valueSecondary ?? "",
+    })),
+    sortColumn: query?.sortColumn,
+    sortDirection: query?.sortDirection ?? "asc",
+  };
+}
+
+function cleanBackendQuery(query: BackendTableQuery, columns: string[]): BackendTableQuery {
+  const allowedColumns = new Set(columns);
+  const conditions = normalizeBackendQuery(query).conditions.filter((condition) => {
+    if (!allowedColumns.has(condition.column)) return false;
+    const operator = BACKEND_QUERY_OPERATORS.find((item) => item.value === condition.operator);
+    if (!operator) return false;
+    if (!operator.needsValue) return true;
+    if (!condition.value.trim()) return false;
+    if (operator.needsSecondValue && !condition.valueSecondary?.trim()) return false;
+    return true;
+  });
+  const sortColumn = query.sortColumn && allowedColumns.has(query.sortColumn) ? query.sortColumn : undefined;
+  return {
+    conditions,
+    sortColumn,
+    sortDirection: query.sortDirection ?? "asc",
+  };
+}
+
+function countBackendQueryClauses(query: BackendTableQuery): number {
+  const cleaned = normalizeBackendQuery(query);
+  const conditions = cleaned.conditions.filter((condition) => {
+    const operator = BACKEND_QUERY_OPERATORS.find((item) => item.value === condition.operator);
+    if (!operator) return false;
+    if (!operator.needsValue) return true;
+    if (!condition.value.trim()) return false;
+    if (operator.needsSecondValue && !condition.valueSecondary?.trim()) return false;
+    return true;
+  }).length;
+  return conditions + (cleaned.sortColumn ? 1 : 0);
+}
+
+function buildBackendQueryCondition(columns: string[]): BackendQueryCondition {
+  return {
+    column: columns[0] ?? "",
+    id: nextBackendQueryConditionId(),
+    operator: "contains",
+    value: "",
+    valueSecondary: "",
+  };
+}
+
+function nextBackendQueryConditionId(): string {
+  backendQueryConditionSequence += 1;
+  return `query-condition-${Date.now()}-${backendQueryConditionSequence}`;
 }
 
 function ColumnFilterPopover({

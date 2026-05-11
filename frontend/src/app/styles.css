@@ -1761,6 +1761,21 @@ button {
   justify-content: center;
 }
 
+.data-table-toolbar-menu .data-table-query-panel {
+  border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.data-table-toolbar-menu .data-table-query-row,
+.data-table-toolbar-menu .data-table-query-sort-row {
+  grid-template-columns: 1fr;
+}
+
+.data-table-toolbar-menu .data-table-query-row .table-icon-button {
+  justify-self: end;
+}
+
 .data-table-toolbar-control {
   display: inline-flex;
   align-items: center;
@@ -1948,6 +1963,7 @@ button {
 }
 
 .table-icon-button {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1965,6 +1981,29 @@ button {
   border-color: color-mix(in oklab, var(--primary) 18%, transparent);
   background: color-mix(in oklab, var(--primary) 5%, transparent);
   color: var(--foreground);
+}
+
+.table-icon-button.danger {
+  color: var(--danger);
+}
+
+.table-icon-button-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: inline-flex;
+  min-width: 15px;
+  height: 15px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--surface);
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1;
+  padding: 0 4px;
 }
 
 .table-text-button {
@@ -2022,6 +2061,107 @@ button {
   width: min(330px, calc(100vw - 32px));
   max-height: min(480px, calc(100vh - 96px));
   overflow: hidden;
+}
+
+.data-table-query-popover {
+  top: calc(100% + 8px);
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(610px, calc(100vh - 96px));
+  overflow: auto;
+}
+
+.data-table-query-panel {
+  display: grid;
+  min-width: 0;
+}
+
+.data-table-query-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  background: color-mix(in oklab, var(--surface-alt) 26%, var(--surface));
+  padding: 10px 12px;
+}
+
+.data-table-query-header .data-table-popover-title {
+  padding: 0;
+}
+
+.data-table-query-header span,
+.data-table-query-empty {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.data-table-query-loading {
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--primary) 9%, var(--surface));
+  color: var(--primary);
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  padding: 2px 7px;
+}
+
+.data-table-query-body {
+  display: grid;
+}
+
+.data-table-query-section {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  padding: 10px 12px;
+}
+
+.data-table-query-row,
+.data-table-query-sort-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1.05fr) minmax(124px, 0.85fr) minmax(100px, 0.8fr) minmax(86px, 0.72fr) 28px;
+  gap: 7px;
+  align-items: center;
+}
+
+.data-table-query-sort-row {
+  grid-template-columns: minmax(160px, 1fr) minmax(130px, 0.55fr);
+}
+
+.data-table-query-row input,
+.data-table-query-row select,
+.data-table-query-sort-row select {
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg, var(--surface));
+  color: var(--foreground);
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.data-table-query-row input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.data-table-query-row input:focus,
+.data-table-query-row select:focus,
+.data-table-query-sort-row select:focus {
+  border-color: color-mix(in oklab, var(--primary) 28%, var(--border));
+  outline: 0;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--primary) 12%, transparent);
+}
+
+.data-table-query-add {
+  width: fit-content;
+}
+
+.data-table-query-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 12px;
 }
 
 .data-table-show-all-button {
@@ -2567,6 +2707,9 @@ button {
 }
 
 .empty-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   color: var(--muted-foreground);
   font-size: 13px;
   padding: 14px 0;
@@ -2726,6 +2869,9 @@ button {
 }
 
 .preview-sample-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   margin: -2px 0 8px;
   color: var(--muted-foreground);
   font-size: 12px;
@@ -2748,6 +2894,22 @@ button {
 
 .preview-page-status span {
   margin-right: auto;
+}
+
+.loading-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid color-mix(in oklab, var(--border) 76%, transparent);
+  border-top-color: var(--primary);
+  border-radius: 999px;
+  animation: qrw-spin 0.72s linear infinite;
+}
+
+@keyframes qrw-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .split-row {
