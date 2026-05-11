@@ -165,7 +165,7 @@ function Coverage({ scope, records }: { scope: Scope; records: RecordRow[] }) {
     ).then((payload) => setRows(payload.rows));
   }, [scope, group]);
   return (
-    <section className="panel">
+    <section className="panel coverage-panel">
       <div className="toolbar">
         <div className="field" style={{ width: 260 }}>
           <label>Group</label>
