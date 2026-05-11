@@ -7,7 +7,7 @@ import { InlineNotice } from "../app/components/InlineNotice";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
-import { SessionProgressColumn, type SessionCard, StageRow, type Stage } from "../app/components/Progress";
+import { ProgressMeter, SessionProgressColumn, type SessionCard, StageRow, type Stage } from "../app/components/Progress";
 import { Tabs } from "../app/components/Tabs";
 import { formatNumber } from "../app/format";
 
@@ -182,7 +182,7 @@ export function MarketDataBuildPage() {
               </span>
             </InlineNotice>
           ) : null}
-          <PhasePanel phases={progress?.phases ?? []} />
+          <PhasePanel elapsedSec={metrics?.elapsed_sec ?? 0} phases={progress?.phases ?? []} status={metrics?.status ?? job?.status} />
           <div className="build-board">
             <SessionProgressColumn title="Active Queue" cards={progress?.active_sessions ?? []} />
             <SessionProgressColumn title="Completed Files" cards={progress?.completed_sessions ?? []} />
@@ -254,16 +254,22 @@ function Field({ label, value, onChange, type = "text" }: { label: string; value
   );
 }
 
-function PhasePanel({ phases }: { phases: Stage[] }) {
+function PhasePanel({ elapsedSec, phases, status }: { elapsedSec: number; phases: Stage[]; status?: string }) {
+  const done = phases.reduce((total, phase) => total + Number(phase.done || 0), 0);
+  const total = phases.reduce((sum, phase) => sum + Number(phase.total || 0), 0);
+  const progress = total > 0 ? (done / total) * 100 : 0;
   return (
     <section className="panel phase-panel">
       <h2>Build Progress</h2>
       {phases.length ? (
-        <div className="phase-grid">
-          {phases.map((phase) => (
-            <StageRow key={phase.label} stage={phase} />
-          ))}
-        </div>
+        <>
+          <ProgressMeter done={done} elapsed_sec={elapsedSec} label="Total build progress" progress={progress} status={status} total={total} />
+          <div className="phase-grid">
+            {phases.map((phase) => (
+              <StageRow key={phase.label} stage={phase} />
+            ))}
+          </div>
+        </>
       ) : (
         <div className="empty-state">Progress will appear after the build starts.</div>
       )}

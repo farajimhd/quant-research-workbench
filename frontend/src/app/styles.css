@@ -913,21 +913,30 @@ button {
 .phase-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px 28px;
+  gap: 5px 24px;
 }
 
 .stage-row {
   display: grid;
-  grid-template-columns: 138px minmax(160px, 1fr) 132px;
+  grid-template-columns: minmax(78px, 0.72fr) minmax(72px, 1fr) minmax(76px, max-content);
   align-items: center;
-  gap: 10px;
-  min-height: 24px;
+  gap: 8px;
+  min-width: 0;
+  min-height: 22px;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: 11px;
+}
+
+.stage-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stage-track {
-  height: 6px;
+  min-width: 0;
+  height: 5px;
   overflow: hidden;
   border-radius: 999px;
   background: var(--progress-track);
@@ -937,24 +946,31 @@ button {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--primary);
+  background: #9ca3af;
 }
 
 .stage-meta {
+  min-width: 0;
   color: var(--muted-foreground);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .build-board {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 18px;
+  min-width: 0;
 }
 
 .progress-column-body {
   display: grid;
   max-height: 820px;
   gap: 12px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-right: 3px;
 }
 
@@ -965,6 +981,11 @@ button {
   background: var(--card);
   padding: 14px;
   transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.progress-column,
+.session-card {
+  min-width: 0;
 }
 
 .run-card {
@@ -985,10 +1006,24 @@ button {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  min-width: 0;
+}
+
+.session-card-header > div:first-child {
+  min-width: 0;
+}
+
+.session-card-header strong,
+.session-card-header .muted {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-card-status {
   display: grid;
+  flex: 0 0 auto;
   justify-items: end;
   gap: 5px;
 }
@@ -998,18 +1033,64 @@ button {
   font-weight: 800;
 }
 
-.file-progress {
-  height: 7px;
+.progress-meter {
+  display: grid;
+  gap: 6px;
   margin: 12px 0;
+}
+
+.progress-meter.compact {
+  margin: 0 0 8px;
+}
+
+.progress-meter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.progress-meter-row span:last-child {
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.progress-meter-track {
+  display: block;
+  height: 7px;
   overflow: hidden;
   border-radius: 999px;
   background: var(--progress-track);
 }
 
-.file-progress span {
+.progress-meter.compact .progress-meter-track {
+  height: 5px;
+}
+
+.progress-meter-fill {
   display: block;
   height: 100%;
-  background: var(--primary);
+  border-radius: inherit;
+}
+
+.progress-meter-fill.running {
+  background: #050510;
+}
+
+.progress-meter-fill.complete {
+  background: #16a34a;
+}
+
+.progress-meter-fill.stopped {
+  background: #dc2626;
+}
+
+.progress-meter-fill.queued {
+  background: #9ca3af;
 }
 
 .day-stage-grid {
@@ -1020,23 +1101,41 @@ button {
 
 .timeframe-progress-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 8px;
 }
 
 .timeframe-card {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: color-mix(in oklab, var(--muted) 20%, transparent);
-  padding: 10px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 9px;
 }
 
 .timeframe-card-title {
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 10px;
   margin-bottom: 6px;
   font-size: 12px;
   font-weight: 700;
+}
+
+.timeframe-card-title span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeframe-card-title span:last-child {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .data-table-shell {

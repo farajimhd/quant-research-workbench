@@ -35,8 +35,39 @@ export function StageRow({ stage }: { stage: Stage }) {
       <span className="stage-track">
         <span className="stage-fill" style={{ width: `${Math.max(0, Math.min(100, stage.progress))}%` }} />
       </span>
-      <span className="stage-meta">
-        {formatNumber(stage.done, stage.done % 1 ? 1 : 0)}/{formatNumber(stage.total)}, {formatDuration(stage.elapsed_sec)}
+      <span className="stage-meta">{progressMeta(stage.done, stage.total, stage.elapsed_sec)}</span>
+    </div>
+  );
+}
+
+export function ProgressMeter({
+  done,
+  elapsed_sec,
+  label,
+  progress,
+  showLabel = true,
+  status,
+  total
+}: {
+  done: number;
+  elapsed_sec: number;
+  label: string;
+  progress: number;
+  showLabel?: boolean;
+  status?: string;
+  total: number;
+}) {
+  const boundedProgress = Math.max(0, Math.min(100, progress || 0));
+  return (
+    <div className={showLabel ? "progress-meter" : "progress-meter compact"}>
+      {showLabel ? (
+        <div className="progress-meter-row">
+          <span>{label}</span>
+          <span>{progressMeta(done, total, elapsed_sec)}</span>
+        </div>
+      ) : null}
+      <span aria-label={label} className="progress-meter-track" role="meter" aria-valuemax={100} aria-valuemin={0} aria-valuenow={Math.round(boundedProgress)}>
+        <span className={`progress-meter-fill ${progressTone(status, boundedProgress)}`} style={{ width: `${boundedProgress}%` }} />
       </span>
     </div>
   );
@@ -55,9 +86,7 @@ export function SessionProgressCard({ card }: { card: SessionCard }) {
           <SemanticBadge tone={toneForStatus(card.status)}>{String(card.status).replaceAll("_", " ")}</SemanticBadge>
         </div>
       </header>
-      <div className="file-progress">
-        <span style={{ width: `${Math.max(0, Math.min(100, card.progress))}%` }} />
-      </div>
+      <ProgressMeter done={card.done} elapsed_sec={card.elapsed_sec} label="Total progress" progress={card.progress} status={card.status} total={card.total} />
       <div className="day-stage-grid">
         {card.day_stages.map((stage) => (
           <StageRow key={stage.label} stage={stage} />
@@ -68,10 +97,17 @@ export function SessionProgressCard({ card }: { card: SessionCard }) {
           <section className="timeframe-card" key={timeframe.timeframe}>
             <div className="timeframe-card-title">
               <span>{timeframe.timeframe}</span>
-              <span>
-                {formatNumber(timeframe.done, timeframe.done % 1 ? 1 : 0)}/{formatNumber(timeframe.total)}, {formatDuration(timeframe.elapsed_sec)}
-              </span>
+              <span>{progressMeta(timeframe.done, timeframe.total, timeframe.elapsed_sec)}</span>
             </div>
+            <ProgressMeter
+              done={timeframe.done}
+              elapsed_sec={timeframe.elapsed_sec}
+              label={`${timeframe.timeframe} total progress`}
+              progress={timeframe.progress}
+              showLabel={false}
+              status={card.status}
+              total={timeframe.total}
+            />
             {timeframe.stages.map((stage) => (
               <StageRow key={`${timeframe.timeframe}-${stage.label}`} stage={stage} />
             ))}
@@ -93,3 +129,14 @@ export function SessionProgressColumn({ title, cards }: { title: string; cards: 
   );
 }
 
+function progressMeta(done: number, total: number, elapsedSec: number) {
+  return `${formatNumber(done, done % 1 ? 1 : 0)}/${formatNumber(total)}, ${formatDuration(elapsedSec)}`;
+}
+
+function progressTone(status: string | undefined, progress: number) {
+  const normalized = String(status ?? "").toLowerCase();
+  if (["failed", "stopped", "canceled", "cancelled", "canceling", "error"].some((item) => normalized.includes(item))) return "stopped";
+  if (normalized.includes("complete") || normalized.includes("success") || progress >= 100) return "complete";
+  if (normalized.includes("queued") || (!normalized && progress <= 0)) return "queued";
+  return "running";
+}
