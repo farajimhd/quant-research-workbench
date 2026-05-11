@@ -400,7 +400,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
   }
 
-  const priceLegendItems = buildPriceLegendItems(payload, ticker, legendSettings, chartSettings);
+  const priceLegendItems = buildSeriesLegendItems(payload?.overlay_series ?? [], "price", legendSettings);
 
   const commitTicker = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -565,7 +565,7 @@ function ChartLegend({
                   <i style={{ background: item.color }} />
                 </span>
                 <span className="legend-label">{item.label}</span>
-                {item.showValue && item.visible ? <span className="legend-value">{item.value}</span> : null}
+                {item.showValue && item.visible ? <span className="legend-value" style={{ color: item.color }}>{item.value}</span> : null}
                 {item.configurable ? (
                   <span className="legend-row-actions">
                     <button
@@ -889,32 +889,6 @@ function ChartSettingsSection({ children, title }: { children: ReactNode; title:
       {children}
     </section>
   );
-}
-
-function buildPriceLegendItems(
-  payload: ChartPayload | null,
-  ticker: string,
-  settingsMap: LegendSettingsMap,
-  chartSettings: ChartAppearanceSettings
-): LegendItem[] {
-  if (!payload?.candles.length) return [];
-  const candle = payload.candles[payload.candles.length - 1];
-  const candleColor = candle.close >= candle.open ? chartSettings.upColor : chartSettings.downColor;
-  return [
-    {
-      color: candleColor,
-      configurable: false,
-      key: "price:candles",
-      label: ticker.toUpperCase(),
-      lineStyle: "solid",
-      lineWidth: 1,
-      seriesStyle: "candlestick",
-      showValue: true,
-      value: `O ${formatPrice(candle.open)} H ${formatPrice(candle.high)} L ${formatPrice(candle.low)} C ${formatPrice(candle.close)}`,
-      visible: true
-    },
-    ...buildSeriesLegendItems(payload.overlay_series, "price", settingsMap)
-  ];
 }
 
 function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, settingsMap: LegendSettingsMap): LegendItem[] {

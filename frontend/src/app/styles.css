@@ -2573,7 +2573,7 @@ button {
 .chart-legend-rows {
   display: grid;
   gap: 0;
-  padding: 2px 0 0;
+  padding: 3px 0 0 10px;
 }
 
 .chart-legend-row {
@@ -2601,6 +2601,7 @@ button {
   max-width: 128px;
   flex: 0 1 auto;
   color: var(--foreground);
+  font-size: 10px;
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2609,6 +2610,7 @@ button {
 .legend-value {
   color: var(--foreground);
   flex: 0 0 auto;
+  font-size: 8px;
   font-weight: 400;
   text-align: left;
   white-space: nowrap;
