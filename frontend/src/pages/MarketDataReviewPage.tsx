@@ -250,7 +250,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
     if (!rangeStart || !rangeEnd || !timeframe || ticker.trim()) return;
     let active = true;
     api<{ ticker: string }>(
-      `/api/market-data/chart/default-ticker${query({ processed_root: scope.processed_root, session_date: rangeStart, start_date: rangeStart, end_date: rangeEnd, timeframe })}`
+      `/api/market-data/chart/default-ticker${query({ processed_root: scope.processed_root, start_date: rangeStart, end_date: rangeEnd, timeframe })}`
     ).then(
       (result) => {
         if (active) setTicker(result.ticker || "AAPL");
@@ -271,7 +271,6 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
     api<ChartPayload>(
       `/api/market-data/chart${query({
         processed_root: scope.processed_root,
-        session_date: rangeStart,
         start_date: rangeStart,
         end_date: rangeEnd,
         timeframe,

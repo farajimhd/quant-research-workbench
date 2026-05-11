@@ -371,7 +371,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     priceChart.timeScale().subscribeVisibleLogicalRangeChange(draw);
     const initialFitTimer = window.setTimeout(() => {
       if (disposed) return;
-      fitFirstDay(priceChart, payload.candles);
+      fitInitialRange(priceChart, payload.candles);
       draw();
     }, 20);
     const observer = new ResizeObserver(() => {
@@ -1204,12 +1204,27 @@ function fitFirstDay(chart: IChartApi | null, candles: Candle[]) {
   chart.timeScale().setVisibleLogicalRange({ from: -1, to: Math.max(8, lastIndex + 1) });
 }
 
+function fitInitialRange(chart: IChartApi | null, candles: Candle[]) {
+  if (!chart || !candles.length) return;
+  if (hasMultipleMarketDates(candles)) {
+    chart.timeScale().setVisibleLogicalRange({ from: -1, to: Math.max(8, candles.length) });
+    return;
+  }
+  fitFirstDay(chart, candles);
+}
+
 function fitRecent(chart: IChartApi | null, candles: Candle[]) {
   if (!chart || !candles.length) return;
   const last = candles.length - 1;
   const span = Math.min(180, Math.max(60, Math.ceil(candles.length * 0.18)));
   const halfSpan = Math.ceil(span / 2);
   chart.timeScale().setVisibleLogicalRange({ from: Math.max(-1, last - halfSpan), to: last + halfSpan });
+}
+
+function hasMultipleMarketDates(candles: Candle[]) {
+  if (candles.length < 2) return false;
+  const first = marketDate(candles[0].time);
+  return candles.some((candle) => marketDate(candle.time) !== first);
 }
 
 function syncRanges(source: IChartApi, target: IChartApi) {
