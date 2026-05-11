@@ -256,7 +256,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         if (active) setTicker(result.ticker || "AAPL");
       }
     ).catch((error: Error) => {
-      if (active) setChartError(error.message);
+      if (active) setChartError(chartRequestErrorMessage(error));
     });
     return () => {
       active = false;
@@ -291,7 +291,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
     }).catch((error: Error) => {
       if (!active) return;
       setPayload(null);
-      setChartError(error.message);
+      setChartError(chartRequestErrorMessage(error));
     }).finally(() => {
       if (active) setChartLoading(false);
     });
@@ -571,6 +571,14 @@ function ScopeItem({ className, label, value }: { className?: string; label: str
 
 function sameList(left: string[], right: string[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function chartRequestErrorMessage(error: Error) {
+  const status = "status" in error ? (error as Error & { status?: number }).status : undefined;
+  if (status === 422 && /session_date|field required|required/i.test(error.message)) {
+    return "The running backend is still using the old single-session chart API. Restart the backend, then refresh this page.";
+  }
+  return error.message || "Unknown chart API error.";
 }
 
 function timeframeSort(left: string, right: string) {
