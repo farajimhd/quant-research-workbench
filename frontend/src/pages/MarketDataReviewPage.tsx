@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { BookOpen, Database, Filter, Search, SlidersHorizontal, Tags } from "lucide-react";
 
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartCatalogItem, type ChartLabelOption, type ChartPayload } from "../app/components/ChartPanel";
@@ -69,6 +70,7 @@ type CatalogItem = ChartCatalogItem & {
   dtype?: string;
   groups?: string[];
   knowledge?: CatalogKnowledge;
+  leakage?: Record<string, unknown>;
   presentation?: CatalogPresentation;
   semantics?: Record<string, unknown>;
 };
@@ -88,6 +90,13 @@ type CatalogPayload = {
   scanners: CatalogMethod[];
   supervisionMethods: CatalogMethod[];
 };
+type CatalogKindFilter = "all" | "columns" | "methods" | "scanners";
+type CatalogCardItem = CatalogItem & {
+  catalogKind: "columns" | "methods" | "scanners";
+  groupLabel: string;
+  sourceLabel: string;
+  summary: string;
+};
 
 const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema", "Catalog"];
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
@@ -100,6 +109,8 @@ export function MarketDataReviewPage() {
   const [draft, setDraft] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
   const [activeTab, setActiveTab] = useState(tabs[0]);
   const [editingScope, setEditingScope] = useState(false);
 
@@ -113,7 +124,25 @@ export function MarketDataReviewPage() {
   useEffect(() => {
     if (!scope) return;
     api<ReviewPayload>(`/api/market-data/review${query({ processed_root: scope.processed_root, start_date: scope.start_date, end_date: scope.end_date })}`).then(setReview);
-    api<CatalogPayload>(`/api/market-data/catalog${query({ processed_root: scope.processed_root })}`).then(setCatalog);
+    let active = true;
+    setCatalog(null);
+    setCatalogLoading(true);
+    setCatalogError("");
+    api<CatalogPayload>(`/api/market-data/catalog${query({ processed_root: scope.processed_root })}`)
+      .then((payload) => {
+        if (!active) return;
+        setCatalog(payload);
+      })
+      .catch((error: Error) => {
+        if (!active) return;
+        setCatalogError(error.message || "Catalog request failed.");
+      })
+      .finally(() => {
+        if (active) setCatalogLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [scope]);
 
   function applyScope() {
@@ -150,7 +179,7 @@ export function MarketDataReviewPage() {
       {activeTab === "Artifacts" && review ? <Artifacts records={review.records} /> : null}
       {activeTab === "Preview" && scope && review ? <Preview scope={scope} records={review.records} /> : null}
       {activeTab === "Schema" && scope && review ? <Schema scope={scope} records={review.records} /> : null}
-      {activeTab === "Catalog" && scope ? <CatalogTab catalog={catalog} scope={scope} onCatalogChange={setCatalog} /> : null}
+      {activeTab === "Catalog" && scope ? <CatalogTab catalog={catalog} catalogError={catalogError} catalogLoading={catalogLoading} scope={scope} onCatalogChange={setCatalog} /> : null}
       {editingScope && draft ? (
         <Modal title="Update Review Scope" onClose={() => setEditingScope(false)}>
           <div className="form-grid">
@@ -577,10 +606,34 @@ function previewBackendQueryIsActive(queryValue: BackendTableQuery): boolean {
   return queryValue.conditions.length > 0 || Boolean(queryValue.sortColumn);
 }
 
-function CatalogTab({ catalog, onCatalogChange, scope }: { catalog: CatalogPayload | null; onCatalogChange: (catalog: CatalogPayload) => void; scope: Scope }) {
-  const [kind, setKind] = useState<"columns" | "methods" | "scanners">("columns");
+function CatalogTab({
+  catalog,
+  catalogError,
+  catalogLoading,
+  onCatalogChange,
+  scope
+}: {
+  catalog: CatalogPayload | null;
+  catalogError: string;
+  catalogLoading: boolean;
+  onCatalogChange: (catalog: CatalogPayload) => void;
+  scope: Scope;
+}) {
+  const [kind, setKind] = useState<CatalogKindFilter>("all");
+  const [category, setCategory] = useState("all");
+  const [group, setGroup] = useState("all");
   const [search, setSearch] = useState("");
-  const items = useMemo(() => catalogItems(catalog, kind, search), [catalog, kind, search]);
+  const [catalogWidth, setCatalogWidth] = useState(31);
+  const [isResizing, setIsResizing] = useState(false);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const allItems = useMemo(() => catalogItems(catalog), [catalog]);
+  const categoryOptions = useMemo(() => catalogOptionValues(allItems.map((item) => item.category)), [allItems]);
+  const groupOptions = useMemo(() => catalogOptionValues(allItems.map((item) => item.groupLabel)), [allItems]);
+  const items = useMemo(
+    () => filterCatalogItems(allItems, { category, group, kind, search }),
+    [allItems, category, group, kind, search],
+  );
+  const groupedItems = useMemo(() => groupCatalogItems(items), [items]);
   const [selectedId, setSelectedId] = useState("");
   const selected = items.find((item) => item.id === selectedId) ?? items[0];
   const [draft, setDraft] = useState<CatalogPresentation>({});
@@ -591,100 +644,227 @@ function CatalogTab({ catalog, onCatalogChange, scope }: { catalog: CatalogPaylo
 
   useEffect(() => {
     setDraft({ ...(selected?.presentation ?? {}) });
+    setSaveState("idle");
   }, [selected?.id]);
-
-  if (!catalog) {
-    return (
-      <section className="panel catalog-panel">
-        <div className="empty-state"><span className="loading-spinner" aria-hidden="true" />Loading catalog...</div>
-      </section>
-    );
-  }
 
   function updatePresentation(key: string, value: string | number | boolean) {
     setDraft((current) => ({ ...current, [key]: value }));
+    setSaveState("idle");
   }
 
   function savePresentation() {
     if (!selected) return;
+    setSaveState("saving");
     api<{ catalog: CatalogPayload }>("/api/market-data/catalog/presentation", {
       method: "PATCH",
       body: JSON.stringify({ processed_root: scope.processed_root, item_id: selected.id, presentation: draft })
-    }).then((payload) => onCatalogChange(payload.catalog));
+    }).then((payload) => {
+      onCatalogChange(payload.catalog);
+      setSaveState("saved");
+    }).catch(() => setSaveState("failed"));
+  }
+
+  function startResize() {
+    setIsResizing(true);
+  }
+
+  function stopResize() {
+    setIsResizing(false);
+  }
+
+  function resizeCatalog(event: ReactMouseEvent<HTMLDivElement>) {
+    if (!isResizing) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const next = ((event.clientX - rect.left) / rect.width) * 100;
+    setCatalogWidth(Math.max(24, Math.min(46, next)));
   }
 
   return (
-    <section className="panel catalog-panel">
-      <div className="catalog-layout">
-        <aside className="catalog-browser">
-          <div className="catalog-toolbar">
-            <div className="catalog-kind-switch" role="group" aria-label="Catalog type">
-              <button className={kind === "columns" ? "table-segment-button active" : "table-segment-button"} onClick={() => setKind("columns")} type="button">Columns</button>
-              <button className={kind === "methods" ? "table-segment-button active" : "table-segment-button"} onClick={() => setKind("methods")} type="button">Methods</button>
-              <button className={kind === "scanners" ? "table-segment-button active" : "table-segment-button"} onClick={() => setKind("scanners")} type="button">Scanners</button>
+    <section
+      className={isResizing ? "catalog-workbench resizing" : "catalog-workbench"}
+      onMouseLeave={stopResize}
+      onMouseMove={resizeCatalog}
+      onMouseUp={stopResize}
+    >
+      <aside className="catalog-rail" style={{ width: `${catalogWidth}%` }}>
+        <div className={catalogLoading ? "catalog-rail-card busy" : "catalog-rail-card"}>
+          <div className="catalog-rail-header">
+            <div className="catalog-title-row">
+              <Database size={16} />
+              <h2>Provider Catalog</h2>
             </div>
-            <input className="catalog-search" placeholder="Search catalog" value={search} onChange={(event) => setSearch(event.target.value)} />
+            <p>Browse the provider-owned contract for chartable indicators, features, labels, methods, and scanner outputs.</p>
+            <div className="catalog-summary-strip">
+              <CatalogStat label="Items" value={allItems.length} />
+              <CatalogStat label="Visible" value={allItems.filter((item) => item.presentation?.defaultVisible).length} />
+              <CatalogStat label="Shown" value={items.length} />
+            </div>
+            <label className="catalog-search-field" aria-label="Search provider catalog">
+              <Search size={14} />
+              <input placeholder="Search names, groups, or descriptions" value={search} onChange={(event) => setSearch(event.target.value)} />
+            </label>
+            <div className="catalog-filter-grid">
+              <CatalogFilter label="Type" value={kind} onChange={(value) => setKind(value as CatalogKindFilter)} options={["all", "columns", "methods", "scanners"]} />
+              <CatalogFilter label="Category" value={category} onChange={setCategory} options={categoryOptions} />
+              <CatalogFilter label="Group" value={group} onChange={setGroup} options={groupOptions} />
+            </div>
           </div>
           <div className="catalog-list">
-            {items.map((item) => (
-              <button className={selected?.id === item.id ? "catalog-list-item selected" : "catalog-list-item"} key={item.id} onClick={() => setSelectedId(item.id)} type="button">
-                <span>{item.title}</span>
-                <small>{item.category} / {item.group ?? "-"}</small>
-              </button>
-            ))}
-          </div>
-        </aside>
-        <article className="catalog-detail">
-          {selected ? (
-            <>
-              <div className="catalog-detail-header">
-                <div>
-                  <h2>{selected.title}</h2>
-                  <span>{selected.id}</span>
+            {catalogError ? <div className="catalog-error">{catalogError}</div> : null}
+            {groupedItems.map((section) => (
+              <div className="catalog-list-section" key={section.label}>
+                <div className="catalog-list-section-header">
+                  <span>{section.label}</span>
+                  <small>{section.items.length}</small>
                 </div>
-                <button className="button primary" onClick={savePresentation} type="button">Save presentation</button>
+                {section.items.map((item) => (
+                  <button className={selected?.id === item.id ? "catalog-item-card selected" : "catalog-item-card"} key={item.id} onClick={() => setSelectedId(item.id)} type="button">
+                    <div className="catalog-item-card-top">
+                      <span>{item.title}</span>
+                      <small>{item.presentation?.defaultVisible ? "on" : "off"}</small>
+                    </div>
+                    <p>{item.summary}</p>
+                    <div className="catalog-item-meta-row">
+                      <span>{item.sourceLabel}</span>
+                      <span>{item.category}</span>
+                      {item.dtype ? <span>{item.dtype}</span> : null}
+                    </div>
+                  </button>
+                ))}
               </div>
-              <div className="catalog-detail-grid">
-                <section className="catalog-section">
-                  <h3>Knowledge</h3>
-                  <p>{selected.knowledge?.shortDescription}</p>
-                  <p>{selected.knowledge?.detailedDescription}</p>
+            ))}
+            {catalogLoading && !allItems.length ? (
+              <div className="catalog-loading-card">
+                <span className="loading-spinner" aria-hidden="true" />
+                Loading catalog...
+              </div>
+            ) : null}
+            {!catalogLoading && !items.length ? <div className="catalog-empty-card">No catalog items match the current filters.</div> : null}
+          </div>
+          {catalogLoading ? <div className="catalog-busy-overlay"><span className="loading-spinner" aria-hidden="true" />Loading catalog...</div> : null}
+        </div>
+      </aside>
+      <div aria-label="Resize catalog detail" className={isResizing ? "catalog-resize-handle active" : "catalog-resize-handle"} onMouseDown={startResize} role="separator" />
+      <article className="catalog-detail-pane" style={{ width: `${100 - catalogWidth}%` }}>
+        {selected ? (
+          <div className="catalog-detail-stack">
+            <div className="catalog-detail-card catalog-detail-hero">
+              <div>
+                <div className="catalog-kicker">{selected.sourceLabel}</div>
+                <h2>{selected.title}</h2>
+                <p>{selected.summary}</p>
+              </div>
+              <div className="catalog-detail-actions">
+                <span className="catalog-status-pill">{selected.presentation?.defaultVisible ? "Default on" : "Default off"}</span>
+                <button className="button primary" disabled={saveState === "saving"} onClick={savePresentation} type="button">
+                  {saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : "Save presentation"}
+                </button>
+              </div>
+            </div>
+            {saveState === "failed" ? <div className="error-panel">Catalog presentation update failed.</div> : null}
+            <div className="catalog-detail-metrics">
+              <CatalogMetric icon={<Tags size={14} />} label="Category" value={selected.category} />
+              <CatalogMetric icon={<Filter size={14} />} label="Group" value={selected.groupLabel} />
+              <CatalogMetric icon={<SlidersHorizontal size={14} />} label="Chart role" value={String(draft.chartRole ?? selected.presentation?.chartRole ?? "table_only")} />
+              <CatalogMetric icon={<BookOpen size={14} />} label="Value" value={String(draft.valueFormat ?? selected.presentation?.valueFormat ?? "-")} />
+            </div>
+            <div className="catalog-detail-grid">
+              <section className="catalog-section-card">
+                <h3>Knowledge</h3>
+                <p>{selected.knowledge?.shortDescription}</p>
+                <p>{selected.knowledge?.detailedDescription}</p>
+                <div className="catalog-copy-block">
                   <h4>Theory</h4>
                   <p>{selected.knowledge?.theory}</p>
+                </div>
+                <div className="catalog-copy-block">
                   <h4>Interpretation</h4>
                   <p>{selected.knowledge?.interpretation}</p>
-                  {selected.knowledge?.equations?.map((equation) => (
-                    <div className="catalog-equation" key={equation.title}>
-                      <strong>{equation.title}</strong>
-                      <pre>{equation.markdown}</pre>
-                    </div>
-                  ))}
-                </section>
-                <section className="catalog-section presentation-editor">
-                  <h3>Presentation</h3>
-                  <div className="catalog-form-grid">
-                    <CatalogCheckbox checked={Boolean(draft.selectable)} label="Selectable" onChange={(value) => updatePresentation("selectable", value)} />
-                    <CatalogCheckbox checked={Boolean(draft.defaultVisible)} label="Default on" onChange={(value) => updatePresentation("defaultVisible", value)} />
-                    <CatalogCheckbox checked={Boolean(draft.legend)} label="Legend" onChange={(value) => updatePresentation("legend", value)} />
-                    <CatalogSelect label="Chart role" options={catalog.presentationOptions.chartRoles} value={String(draft.chartRole ?? "table_only")} onChange={(value) => updatePresentation("chartRole", value)} />
-                    <CatalogSelect label="Pane" options={catalog.presentationOptions.panes} value={String(draft.pane ?? "price")} onChange={(value) => updatePresentation("pane", value)} />
-                    <CatalogSelect label="Line style" options={catalog.presentationOptions.lineStyles} value={String(draft.lineStyle ?? "solid")} onChange={(value) => updatePresentation("lineStyle", value)} />
-                    <CatalogSelect label="Marker shape" options={catalog.presentationOptions.markerShapes} value={String(draft.markerShape ?? "circle")} onChange={(value) => updatePresentation("markerShape", value)} />
-                    <CatalogSelect label="Marker position" options={catalog.presentationOptions.markerPositions} value={String(draft.markerPosition ?? "belowBar")} onChange={(value) => updatePresentation("markerPosition", value)} />
-                    <CatalogSelect label="Value format" options={catalog.presentationOptions.valueFormats} value={String(draft.valueFormat ?? "number")} onChange={(value) => updatePresentation("valueFormat", value)} />
-                    <CatalogText label="Color" value={String(draft.color ?? "#1E3A5F")} onChange={(value) => updatePresentation("color", value)} />
-                    <CatalogNumber label="Line width" max={6} min={1} value={Number(draft.lineWidth ?? 1)} onChange={(value) => updatePresentation("lineWidth", value)} />
-                    <CatalogNumber label="Precision" max={8} min={0} value={Number(draft.precision ?? 2)} onChange={(value) => updatePresentation("precision", value)} />
+                </div>
+                {selected.knowledge?.caveats?.length ? (
+                  <div className="catalog-copy-block">
+                    <h4>Caveats</h4>
+                    <ul>
+                      {selected.knowledge.caveats.map((caveat) => <li key={caveat}>{caveat}</li>)}
+                    </ul>
                   </div>
-                </section>
+                ) : null}
+              </section>
+              <section className="catalog-section-card presentation-editor">
+                <h3>Presentation</h3>
+                <div className="catalog-form-grid">
+                  <CatalogCheckbox checked={Boolean(draft.selectable)} label="Selectable" onChange={(value) => updatePresentation("selectable", value)} />
+                  <CatalogCheckbox checked={Boolean(draft.defaultVisible)} label="Default on" onChange={(value) => updatePresentation("defaultVisible", value)} />
+                  <CatalogCheckbox checked={Boolean(draft.legend)} label="Legend" onChange={(value) => updatePresentation("legend", value)} />
+                  <CatalogSelect label="Chart role" options={catalog?.presentationOptions.chartRoles ?? []} value={String(draft.chartRole ?? "table_only")} onChange={(value) => updatePresentation("chartRole", value)} />
+                  <CatalogSelect label="Pane" options={catalog?.presentationOptions.panes ?? []} value={String(draft.pane ?? "price")} onChange={(value) => updatePresentation("pane", value)} />
+                  <CatalogSelect label="Line style" options={catalog?.presentationOptions.lineStyles ?? []} value={String(draft.lineStyle ?? "solid")} onChange={(value) => updatePresentation("lineStyle", value)} />
+                  <CatalogSelect label="Marker shape" options={catalog?.presentationOptions.markerShapes ?? []} value={String(draft.markerShape ?? "circle")} onChange={(value) => updatePresentation("markerShape", value)} />
+                  <CatalogSelect label="Marker position" options={catalog?.presentationOptions.markerPositions ?? []} value={String(draft.markerPosition ?? "belowBar")} onChange={(value) => updatePresentation("markerPosition", value)} />
+                  <CatalogSelect label="Value format" options={catalog?.presentationOptions.valueFormats ?? []} value={String(draft.valueFormat ?? "number")} onChange={(value) => updatePresentation("valueFormat", value)} />
+                  <CatalogText label="Color" value={String(draft.color ?? "#1E3A5F")} onChange={(value) => updatePresentation("color", value)} />
+                  <CatalogNumber label="Line width" max={6} min={1} value={Number(draft.lineWidth ?? 1)} onChange={(value) => updatePresentation("lineWidth", value)} />
+                  <CatalogNumber label="Precision" max={8} min={0} value={Number(draft.precision ?? 2)} onChange={(value) => updatePresentation("precision", value)} />
+                </div>
+              </section>
+            </div>
+            <section className="catalog-section-card">
+              <h3>Equations</h3>
+              <div className="catalog-equation-grid">
+                {selected.knowledge?.equations?.map((equation) => (
+                  <div className="catalog-equation" key={equation.title}>
+                    <strong>{equation.title}</strong>
+                    <pre>{equation.markdown}</pre>
+                  </div>
+                ))}
               </div>
-            </>
-          ) : (
-            <div className="empty-state">No catalog items match the current filters.</div>
-          )}
-        </article>
-      </div>
+            </section>
+          </div>
+        ) : (
+          <div className="catalog-detail-empty">
+            {catalogLoading ? (
+              <>
+                <span className="loading-spinner" aria-hidden="true" />
+                Loading catalog...
+              </>
+            ) : (
+              "Select a catalog item to inspect its contract and presentation settings."
+            )}
+          </div>
+        )}
+      </article>
     </section>
+  );
+}
+
+function CatalogStat({ label, value }: { label: string; value: number }) {
+  return (
+    <span className="catalog-stat">
+      <small>{label}</small>
+      <strong>{value.toLocaleString()}</strong>
+    </span>
+  );
+}
+
+function CatalogMetric({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+  return (
+    <div className="catalog-metric">
+      <div>{icon}<span>{label}</span></div>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function CatalogFilter({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: string[]; value: string }) {
+  return (
+    <label className="catalog-filter">
+      <span>{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => (
+          <option key={option} value={option}>{option === "all" ? "All" : displayName(option)}</option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -897,30 +1077,72 @@ function CatalogCheckbox({ checked, label, onChange }: { checked: boolean; label
   );
 }
 
-function catalogItems(catalog: CatalogPayload | null, kind: "columns" | "methods" | "scanners", search: string): CatalogItem[] {
+function catalogItems(catalog: CatalogPayload | null): CatalogCardItem[] {
   if (!catalog) return [];
-  const source: CatalogItem[] =
-    kind === "columns"
-      ? catalog.columns
-      : kind === "methods"
-        ? catalog.supervisionMethods.map(catalogMethodToItem)
-        : catalog.scanners.map(catalogMethodToItem);
-  const queryText = search.trim().toLowerCase();
-  if (!queryText) return source;
-  return source.filter((item) =>
-    [item.title, item.id, item.category, item.group, item.column].some((value) => String(value ?? "").toLowerCase().includes(queryText)),
+  return [
+    ...catalog.columns.map((item) => catalogColumnToCard(item)),
+    ...catalog.supervisionMethods.map((item) => catalogMethodToItem(item, "methods")),
+    ...catalog.scanners.map((item) => catalogMethodToItem(item, "scanners")),
+  ].sort((left, right) =>
+    left.catalogKind.localeCompare(right.catalogKind) ||
+    left.groupLabel.localeCompare(right.groupLabel) ||
+    left.title.localeCompare(right.title),
   );
 }
 
-function catalogMethodToItem(item: CatalogMethod): CatalogItem {
+function catalogColumnToCard(item: CatalogItem): CatalogCardItem {
+  const groupLabel = item.group ?? item.groups?.[0] ?? item.category;
+  return {
+    ...item,
+    catalogKind: "columns",
+    groupLabel,
+    sourceLabel: "Column",
+    summary: item.knowledge?.shortDescription ?? `${item.title} provider column.`,
+  };
+}
+
+function catalogMethodToItem(item: CatalogMethod, catalogKind: "methods" | "scanners"): CatalogCardItem {
+  const groupLabel = item.method ?? item.category;
   return {
     id: item.id,
     title: item.title,
     category: item.category,
-    group: item.method ?? item.category,
+    catalogKind,
+    group: groupLabel,
+    groupLabel,
     knowledge: item.knowledge,
     presentation: item.presentation,
+    sourceLabel: catalogKind === "methods" ? "Method" : "Scanner",
+    summary: item.knowledge?.shortDescription ?? item.thesis ?? `${item.title} catalog item.`,
   };
+}
+
+function catalogOptionValues(values: string[]): string[] {
+  return ["all", ...Array.from(new Set(values.filter(Boolean))).sort((left, right) => displayName(left).localeCompare(displayName(right)))];
+}
+
+function filterCatalogItems(
+  items: CatalogCardItem[],
+  filters: { category: string; group: string; kind: CatalogKindFilter; search: string },
+): CatalogCardItem[] {
+  const queryText = filters.search.trim().toLowerCase();
+  return items.filter((item) =>
+    (filters.kind === "all" || item.catalogKind === filters.kind) &&
+    (filters.category === "all" || item.category === filters.category) &&
+    (filters.group === "all" || item.groupLabel === filters.group) &&
+    (!queryText ||
+      [item.title, item.id, item.category, item.groupLabel, item.column, item.summary]
+        .some((value) => String(value ?? "").toLowerCase().includes(queryText))),
+  );
+}
+
+function groupCatalogItems(items: CatalogCardItem[]): Array<{ label: string; items: CatalogCardItem[] }> {
+  const sections = new Map<string, CatalogCardItem[]>();
+  items.forEach((item) => {
+    const label = displayName(item.groupLabel);
+    sections.set(label, [...(sections.get(label) ?? []), item]);
+  });
+  return Array.from(sections.entries()).map(([label, sectionItems]) => ({ label, items: sectionItems }));
 }
 
 function defaultCatalogChartColumns(catalog: CatalogPayload | null): string[] {
