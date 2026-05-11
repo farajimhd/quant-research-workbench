@@ -308,12 +308,7 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const record = records.find((item) => item.key === recordKey) ?? records[0];
   const [rowLimit, setRowLimit] = useState(250);
   const [tickers, setTickers] = useState("");
-  const [columns, setColumns] = useState<string[]>(record?.columns.slice(0, 12) ?? []);
   const [sample, setSample] = useState<{ columns: string[]; rows: Record<string, unknown>[] } | null>(null);
-  useEffect(() => {
-    if (!record) return;
-    setColumns(record.columns.slice(0, 12));
-  }, [record?.key]);
   useEffect(() => {
     if (!record) return;
     api<{ sample: { columns: string[]; rows: Record<string, unknown>[] } }>(
@@ -323,26 +318,26 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         timeframe: record.timeframe,
         session_date: record.session_date,
         row_limit: rowLimit,
-        tickers,
-        columns: columns.join(",")
+        tickers
       })}`
     ).then((payload) => setSample(payload.sample));
-  }, [scope.processed_root, record?.key, rowLimit, tickers, columns]);
+  }, [scope.processed_root, record?.key, rowLimit, tickers]);
   if (!record) return <div className="empty-state">No records available.</div>;
   return (
-    <section className="panel">
-      <ArtifactSelector records={records} value={recordKey} onChange={setRecordKey} />
+    <section className="panel table-fill-panel">
       <div className="toolbar">
-        <InlineField label="Rows" type="number" value={String(rowLimit)} onChange={(value) => setRowLimit(Number(value))} />
-        <InlineField label="Tickers" value={tickers} onChange={setTickers} />
-        <div className="field" style={{ flex: 1 }}>
-          <label>Columns</label>
-          <select multiple value={columns} onChange={(event) => setColumns(Array.from(event.target.selectedOptions).map((option) => option.value))}>
-            {record.columns.map((column) => (
-              <option key={column} value={column}>{column}</option>
+        <div className="field" style={{ flex: "1 1 360px", minWidth: 280 }}>
+          <label>Artifact</label>
+          <select value={recordKey} onChange={(event) => setRecordKey(event.target.value)}>
+            {records.map((item) => (
+              <option key={item.key} value={item.key}>
+                {item.group} | {item.timeframe} | {item.session_date}
+              </option>
             ))}
           </select>
         </div>
+        <InlineField label="Rows" type="number" value={String(rowLimit)} onChange={(value) => setRowLimit(Number(value))} />
+        <InlineField label="Tickers" value={tickers} onChange={setTickers} />
       </div>
       <DataTable rows={sample?.rows ?? []} columns={sample?.columns} />
     </section>
