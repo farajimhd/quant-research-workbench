@@ -296,14 +296,14 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
     };
   }, [scope.processed_root, rangeEnd, rangeStart, timeframe, ticker, featureGroups, visibleColumns]);
 
-  function updateStartDate(value: string) {
-    setStartDate(value);
-    if (endDate && value > endDate) setEndDate(value);
-  }
-
-  function updateEndDate(value: string) {
-    setEndDate(value);
-    if (startDate && value < startDate) setStartDate(value);
+  function updateChartPeriod(start: string, end: string) {
+    if (start <= end) {
+      setStartDate(start);
+      setEndDate(end);
+    } else {
+      setStartDate(end);
+      setEndDate(start);
+    }
   }
 
   const indicatorOptions = payload?.options?.standard_indicators ?? DEFAULT_CHART_COLUMNS;
@@ -312,32 +312,21 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   if (!barRecords.length) return <div className="empty-state panel">No saved bar artifacts are available for charting.</div>;
   return (
     <section>
-      <div className="chart-session-row">
-        <label className="chart-date-field">
-          <span>Start</span>
-          <input type="date" value={startDate} min={availableSessions[0] ?? scope.start_date} max={endDate || defaultRange.end} onChange={(event) => updateStartDate(event.target.value)} />
-        </label>
-        <label className="chart-date-field">
-          <span>End</span>
-          <input
-            type="date"
-            value={endDate}
-            min={startDate || defaultRange.start}
-            max={availableSessions[availableSessions.length - 1] ?? scope.end_date}
-            onChange={(event) => updateEndDate(event.target.value)}
-          />
-        </label>
-      </div>
       <ChartPanel
         emptyMessage="No chart data for the selected ticker/date range/timeframe."
         errorMessage={chartError}
         featureOptions={featureOptions}
         indicatorOptions={indicatorOptions}
         loading={chartLoading}
+        onPeriodChange={updateChartPeriod}
         onTickerChange={setTicker}
         onTimeframeChange={setTimeframe}
         onVisibleColumnsChange={setVisibleColumns}
         payload={payload}
+        periodEnd={rangeEnd}
+        periodMax={availableSessions[availableSessions.length - 1] ?? scope.end_date}
+        periodMin={availableSessions[0] ?? scope.start_date}
+        periodStart={rangeStart}
         ticker={ticker}
         timeframe={timeframe}
         timeframes={timeframes}

@@ -110,10 +110,15 @@ type ChartPanelProps = {
   featureOptions: string[];
   indicatorOptions: string[];
   loading?: boolean;
+  onPeriodChange?: (start: string, end: string) => void;
   onTickerChange: (value: string) => void;
   onTimeframeChange: (value: string) => void;
   onVisibleColumnsChange: (value: string[]) => void;
   payload: ChartPayload | null;
+  periodEnd?: string;
+  periodMax?: string;
+  periodMin?: string;
+  periodStart?: string;
   ticker: string;
   timeframe: string;
   timeframes: string[];
@@ -154,9 +159,14 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   featureOptions,
   indicatorOptions,
   loading = false,
+  onPeriodChange,
   onTickerChange,
   onTimeframeChange,
   onVisibleColumnsChange,
+  periodEnd,
+  periodMax,
+  periodMin,
+  periodStart,
   payload,
   ticker,
   timeframe,
@@ -178,6 +188,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
   const [chartSettings, setChartSettings] = useState<ChartAppearanceSettings>(() => loadChartAppearanceSettings());
   const [legendSettings, setLegendSettings] = useState<LegendSettingsMap>(() => loadLegendSettings());
+  const [periodMenuOpen, setPeriodMenuOpen] = useState(false);
   const [themeSignature, setThemeSignature] = useState(() => document.documentElement.dataset.shellTheme ?? "");
 
   const updateChartSettings = <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => {
@@ -266,14 +277,18 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [chartSettingsOpen]);
 
   useEffect(() => {
-    if (!columnMenuOpen) return;
+    if (!columnMenuOpen && !periodMenuOpen) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.closest(".chart-column-select")) return;
+      if (target?.closest(".chart-column-select") || target?.closest(".chart-period-select")) return;
       setColumnMenuOpen(false);
+      setPeriodMenuOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setColumnMenuOpen(false);
+      if (event.key === "Escape") {
+        setColumnMenuOpen(false);
+        setPeriodMenuOpen(false);
+      }
     };
     document.addEventListener("pointerdown", closeOnOutsidePointer);
     document.addEventListener("keydown", closeOnEscape);
@@ -281,7 +296,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       document.removeEventListener("pointerdown", closeOnOutsidePointer);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [columnMenuOpen]);
+  }, [columnMenuOpen, periodMenuOpen]);
 
   useEffect(() => {
     indicatorSeriesRef.current.forEach((renderer, key) => {
@@ -431,6 +446,24 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             value={draftTicker}
           />
         </form>
+        {periodStart && periodEnd && onPeriodChange ? (
+          <ChartPeriodSelect
+            end={periodEnd}
+            max={periodMax}
+            min={periodMin}
+            onChange={onPeriodChange}
+            onOpenChange={(value) => {
+              setPeriodMenuOpen(value);
+              if (value) {
+                setColumnMenuOpen(false);
+                setChartSettingsOpen(false);
+              }
+            }}
+            open={periodMenuOpen}
+            start={periodStart}
+          />
+        ) : null}
+        <span className="toolbar-divider" />
         <div className="chart-timeframe-row">
           {timeframes.map((item) => (
             <button className={buildSegmentButtonClassName(item === timeframe)} key={item} onClick={() => onTimeframeChange(item)} type="button">
@@ -445,7 +478,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           onChange={onVisibleColumnsChange}
           onOpenChange={(value) => {
             setColumnMenuOpen(value);
-            if (value) setChartSettingsOpen(false);
+            if (value) {
+              setChartSettingsOpen(false);
+              setPeriodMenuOpen(false);
+            }
           }}
           open={columnMenuOpen}
           values={visibleColumns}
@@ -458,6 +494,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           title="Chart settings"
           onClick={() => {
             setColumnMenuOpen(false);
+            setPeriodMenuOpen(false);
             setChartSettingsOpen((value) => !value);
           }}
         >
@@ -523,6 +560,82 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     </div>
   );
 });
+
+function ChartPeriodSelect({
+  end,
+  max,
+  min,
+  onChange,
+  onOpenChange,
+  open,
+  start
+}: {
+  end: string;
+  max?: string;
+  min?: string;
+  onChange: (start: string, end: string) => void;
+  onOpenChange: (value: boolean) => void;
+  open: boolean;
+  start: string;
+}) {
+  const updateStart = (value: string) => {
+    if (!value) return;
+    onChange(value, end && value <= end ? end : value);
+  };
+  const updateEnd = (value: string) => {
+    if (!value) return;
+    onChange(start && start <= value ? start : value, value);
+  };
+  return (
+    <div className="chart-period-select">
+      <button
+        aria-expanded={open}
+        className="chart-period-select-button"
+        onClick={() => onOpenChange(!open)}
+        title="Chart period"
+        type="button"
+      >
+        <CalendarRange size={15} />
+        <span>{formatChartPeriodLabel(start, end)}</span>
+        <ChevronDown size={14} />
+      </button>
+      {open ? (
+        <div className="chart-period-menu">
+          <div className="chart-period-menu-title">Chart period</div>
+          <div className="chart-period-grid">
+            <label className="chart-period-field">
+              <span>Start</span>
+              <input
+                max={end || max}
+                min={min}
+                onChange={(event) => updateStart(event.target.value)}
+                onInput={(event) => updateStart(event.currentTarget.value)}
+                type="date"
+                value={start}
+              />
+            </label>
+            <label className="chart-period-field">
+              <span>End</span>
+              <input
+                max={max}
+                min={start || min}
+                onChange={(event) => updateEnd(event.target.value)}
+                onInput={(event) => updateEnd(event.currentTarget.value)}
+                type="date"
+                value={end}
+              />
+            </label>
+          </div>
+          {min && max ? (
+            <button className="chart-period-link" onClick={() => onChange(min, max)} type="button">
+              Use full available range
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 type LegendItem = {
   color: string;
@@ -928,6 +1041,12 @@ function latestSeriesValue(data: Array<{ value: number }>) {
 
 function formatIndicatorCount(count: number) {
   return `${count} indicator${count === 1 ? "" : "s"}`;
+}
+
+function formatChartPeriodLabel(start: string, end: string) {
+  if (!start && !end) return "Period";
+  if (start === end) return start;
+  return `${start} - ${end}`;
 }
 
 function buildOscillatorPaneGroups(series: ChartSeries[]): OscillatorPaneGroup[] {

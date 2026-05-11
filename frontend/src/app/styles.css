@@ -2518,34 +2518,6 @@ button {
   margin: 12px 0;
 }
 
-.chart-session-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0 0 10px;
-}
-
-.chart-date-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted-foreground);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.chart-date-field input {
-  width: 142px;
-  min-height: 32px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--control-bg, var(--card));
-  color: var(--foreground);
-  padding: 0 8px;
-  font-size: 13px;
-  font-weight: 500;
-}
-
 .chart-ticker-form {
   display: inline-flex;
   align-items: center;
@@ -2563,6 +2535,97 @@ button {
   font-size: 13px;
   font-weight: 500;
   text-transform: uppercase;
+}
+
+.chart-period-select {
+  position: relative;
+}
+
+.chart-period-select-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chart-period-select-button:hover,
+.chart-period-select-button[aria-expanded="true"] {
+  background: color-mix(in oklab, var(--primary) 4%, transparent);
+}
+
+.chart-period-select-button span {
+  white-space: nowrap;
+}
+
+.chart-period-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 10;
+  display: grid;
+  width: 292px;
+  gap: 10px;
+  border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--surface) 96%, transparent);
+  box-shadow: 0 16px 42px rgba(16, 24, 40, 0.15);
+  padding: 10px;
+}
+
+.chart-period-menu-title {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.chart-period-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.chart-period-field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chart-period-field input {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg, var(--card));
+  color: var(--foreground);
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.chart-period-link {
+  justify-self: start;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.chart-period-link:hover {
+  color: var(--foreground);
 }
 
 .timeframe-button {
