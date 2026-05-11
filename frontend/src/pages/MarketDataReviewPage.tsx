@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { BookOpen, CircleHelp, Database, Filter, Search, SlidersHorizontal, Tags } from "lucide-react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
@@ -711,6 +712,7 @@ function CatalogTab({
   const presentationRole = String(draft.chartRole ?? selected?.presentation?.chartRole ?? "table_only");
   const presentationPane = String(draft.pane ?? selected?.presentation?.pane ?? "price");
   const isTableOnlyPresentation = presentationRole === "table_only";
+  const fillPanel = useViewportFillPanel(`${catalogLoading}:${allItems.length}:${items.length}:${selected?.id ?? ""}`);
 
   return (
     <section
@@ -718,6 +720,8 @@ function CatalogTab({
       onMouseLeave={stopResize}
       onMouseMove={resizeCatalog}
       onMouseUp={stopResize}
+      ref={fillPanel.ref}
+      style={fillPanel.style}
     >
       <aside className="catalog-rail" style={{ width: `${catalogWidth}%` }}>
         <div className={catalogLoading ? "catalog-rail-card busy" : "catalog-rail-card"}>
@@ -1237,6 +1241,9 @@ function CatalogStylePopover({
   const [open, setOpen] = useState(false);
   const [customColor, setCustomColor] = useState(color.startsWith("#") ? color : "");
   const popoverRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [panelPosition, setPanelPosition] = useState<{ left: number; maxHeight: number; top: number } | null>(null);
   const resolvedLineStyles = lineStyleOptions.length ? lineStyleOptions : ["solid", "dashed", "dotted"];
   const colorLabel = STYLE_COLOR_OPTIONS.find((option) => option.value === color)?.label ?? color;
   const isBand = chartRole === "band";
@@ -1253,148 +1260,193 @@ function CatalogStylePopover({
   useEffect(() => {
     if (!open) return;
     function closeOnOutsideClick(event: MouseEvent) {
-      if (!popoverRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!popoverRef.current?.contains(target) && !panelRef.current?.contains(target)) setOpen(false);
     }
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") setOpen(false);
     }
+    function updatePosition() {
+      setPanelPosition(stylePanelPosition(triggerRef.current, isBand));
+    }
+    updatePosition();
     document.addEventListener("mousedown", closeOnOutsideClick);
     document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
     return () => {
       document.removeEventListener("mousedown", closeOnOutsideClick);
       document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [open]);
+  }, [isBand, open]);
 
   function setCustomHex(value: string) {
     setCustomColor(value);
     if (/^#[0-9a-f]{6}$/i.test(value)) onChange("color", value.toUpperCase());
   }
 
+  function toggleOpen() {
+    if (!open) setPanelPosition(stylePanelPosition(triggerRef.current, isBand));
+    setOpen((value) => !value);
+  }
+
+  const panel = open && typeof document !== "undefined" ? createPortal(
+    <div
+      className="catalog-style-popover-panel"
+      ref={panelRef}
+      role="dialog"
+      aria-label="Visual style editor"
+      style={panelPosition ? { left: panelPosition.left, maxHeight: panelPosition.maxHeight, top: panelPosition.top } : undefined}
+    >
+      <section className="catalog-style-popover-section">
+        <h5>Preview</h5>
+        <div className={isBand ? "catalog-style-preview is-band" : "catalog-style-preview"}>
+          <div className="catalog-style-preview-chart" aria-hidden="true">
+            <span className="catalog-style-preview-axis horizontal" />
+            <span className="catalog-style-preview-axis vertical" />
+            {isBand ? <span className="catalog-style-preview-band" style={{ background: shadeColor }} /> : null}
+            <span
+              className={`catalog-style-preview-line ${previewLineStyle}`}
+              style={{
+                borderColor: strokeColor,
+                borderTopWidth: resolvedLineWidth
+              }}
+            />
+          </div>
+          <div className="catalog-style-preview-copy">
+            <strong>{displayName(chartRole)}</strong>
+            <span>{isBand ? `${opacityLabel(resolvedBandFillOpacity)} band shade` : `${displayName(lineStyle)} stroke`}</span>
+          </div>
+        </div>
+      </section>
+      <section className="catalog-style-popover-section">
+        <h5>Color</h5>
+        <div className="catalog-color-swatch-grid">
+          {STYLE_COLOR_OPTIONS.map((option) => (
+            <button
+              className={color === option.value ? "catalog-color-swatch-option selected" : "catalog-color-swatch-option"}
+              key={option.value}
+              onClick={() => onChange("color", option.value)}
+              type="button"
+            >
+              <span className="catalog-style-swatch" style={{ background: presentationColor(option.value) }} />
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </div>
+        <label className="catalog-style-color-picker">
+          <span>Color picker</span>
+          <input
+            aria-label="Style color picker"
+            type="color"
+            value={colorInputValue(color)}
+            onChange={(event) => onChange("color", event.target.value.toUpperCase())}
+          />
+        </label>
+        <label className="catalog-style-inline-field">
+          <span>Custom hex</span>
+          <input maxLength={7} placeholder="#1E3A5F" value={customColor} onChange={(event) => setCustomHex(event.target.value)} />
+        </label>
+      </section>
+      {isBand ? (
+        <section className="catalog-style-popover-section">
+          <h5>Band Shade</h5>
+          <div className="catalog-band-style-grid">
+            <label className="catalog-style-color-picker">
+              <span>
+                Shade color
+                <CatalogHelpButton help={PRESENTATION_HELP.bandFillColor} label="Shade color" />
+              </span>
+              <input
+                aria-label="Band shade color picker"
+                type="color"
+                value={colorInputValue(bandFillColor)}
+                onChange={(event) => onChange("bandFillColor", event.target.value.toUpperCase())}
+              />
+            </label>
+            <label className="catalog-style-range-field">
+              <span>
+                Opacity
+                <CatalogHelpButton help={PRESENTATION_HELP.bandFillOpacity} label="Band shade opacity" />
+                <b>{opacityLabel(resolvedBandFillOpacity)}</b>
+              </span>
+              <input
+                max={0.6}
+                min={0}
+                step={0.01}
+                type="range"
+                value={String(resolvedBandFillOpacity)}
+                onChange={(event) => onChange("bandFillOpacity", boundedNumber(event.target.value, 0, 0.6))}
+              />
+            </label>
+          </div>
+        </section>
+      ) : null}
+      <section className="catalog-style-popover-section">
+        <h5>Line Style</h5>
+        <div className="catalog-line-style-grid">
+          {resolvedLineStyles.map((option) => (
+            <button className={lineStyle === option ? "catalog-line-style-option selected" : "catalog-line-style-option"} key={option} onClick={() => onChange("lineStyle", option)} type="button">
+              <span className={`catalog-line-preview ${option}`} />
+              <span>{displayName(option)}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+      <section className="catalog-style-popover-section">
+        <h5>Readout</h5>
+        <div className="catalog-style-number-grid">
+          <label className="catalog-style-inline-field">
+            <span>Line width</span>
+            <input max={6} min={1} type="number" value={String(resolvedLineWidth)} onChange={(event) => onChange("lineWidth", boundedNumber(event.target.value, 1, 6))} />
+          </label>
+          <label className="catalog-style-inline-field">
+            <span>Precision</span>
+            <input max={8} min={0} type="number" value={String(precision)} onChange={(event) => onChange("precision", boundedNumber(event.target.value, 0, 8))} />
+          </label>
+        </div>
+      </section>
+    </div>,
+    document.body,
+  ) : null;
+
   return (
     <div className="catalog-style-popover" ref={popoverRef}>
       <CatalogFieldLabel help={`${PRESENTATION_HELP.color} ${PRESENTATION_HELP.lineStyle} ${PRESENTATION_HELP.lineWidth}`} label="Style editor" />
-      <button aria-expanded={open} className="catalog-style-trigger" onClick={() => setOpen((value) => !value)} type="button">
+      <button aria-expanded={open} className="catalog-style-trigger" onClick={toggleOpen} ref={triggerRef} type="button">
         <span className="catalog-style-trigger-swatch" style={{ background: strokeColor }} />
         <span>
           <strong>{colorLabel}</strong>
           <small>{displayName(lineStyle)} | {resolvedLineWidth}px | {precision} dp{isBand ? ` | ${opacityLabel(resolvedBandFillOpacity)} shade` : ""}</small>
         </span>
       </button>
-      {open ? (
-        <div className="catalog-style-popover-panel" role="dialog" aria-label="Visual style editor">
-          <section className="catalog-style-popover-section">
-            <h5>Preview</h5>
-            <div className={isBand ? "catalog-style-preview is-band" : "catalog-style-preview"}>
-              <div className="catalog-style-preview-chart" aria-hidden="true">
-                <span className="catalog-style-preview-axis horizontal" />
-                <span className="catalog-style-preview-axis vertical" />
-                {isBand ? <span className="catalog-style-preview-band" style={{ background: shadeColor }} /> : null}
-                <span
-                  className={`catalog-style-preview-line ${previewLineStyle}`}
-                  style={{
-                    borderColor: strokeColor,
-                    borderTopWidth: resolvedLineWidth
-                  }}
-                />
-              </div>
-              <div className="catalog-style-preview-copy">
-                <strong>{displayName(chartRole)}</strong>
-                <span>{isBand ? `${opacityLabel(resolvedBandFillOpacity)} band shade` : `${displayName(lineStyle)} stroke`}</span>
-              </div>
-            </div>
-          </section>
-          <section className="catalog-style-popover-section">
-            <h5>Color</h5>
-            <div className="catalog-color-swatch-grid">
-              {STYLE_COLOR_OPTIONS.map((option) => (
-                <button
-                  className={color === option.value ? "catalog-color-swatch-option selected" : "catalog-color-swatch-option"}
-                  key={option.value}
-                  onClick={() => onChange("color", option.value)}
-                  type="button"
-                >
-                  <span className="catalog-style-swatch" style={{ background: presentationColor(option.value) }} />
-                  <span>{option.label}</span>
-                </button>
-              ))}
-            </div>
-            <label className="catalog-style-color-picker">
-              <span>Color picker</span>
-              <input
-                aria-label="Style color picker"
-                type="color"
-                value={colorInputValue(color)}
-                onChange={(event) => onChange("color", event.target.value.toUpperCase())}
-              />
-            </label>
-            <label className="catalog-style-inline-field">
-              <span>Custom hex</span>
-              <input maxLength={7} placeholder="#1E3A5F" value={customColor} onChange={(event) => setCustomHex(event.target.value)} />
-            </label>
-          </section>
-          {isBand ? (
-            <section className="catalog-style-popover-section">
-              <h5>Band Shade</h5>
-              <div className="catalog-band-style-grid">
-                <label className="catalog-style-color-picker">
-                  <span>
-                    Shade color
-                    <CatalogHelpButton help={PRESENTATION_HELP.bandFillColor} label="Shade color" />
-                  </span>
-                  <input
-                    aria-label="Band shade color picker"
-                    type="color"
-                    value={colorInputValue(bandFillColor)}
-                    onChange={(event) => onChange("bandFillColor", event.target.value.toUpperCase())}
-                  />
-                </label>
-                <label className="catalog-style-range-field">
-                  <span>
-                    Opacity
-                    <CatalogHelpButton help={PRESENTATION_HELP.bandFillOpacity} label="Band shade opacity" />
-                    <b>{opacityLabel(resolvedBandFillOpacity)}</b>
-                  </span>
-                  <input
-                    max={0.6}
-                    min={0}
-                    step={0.01}
-                    type="range"
-                    value={String(resolvedBandFillOpacity)}
-                    onChange={(event) => onChange("bandFillOpacity", boundedNumber(event.target.value, 0, 0.6))}
-                  />
-                </label>
-              </div>
-            </section>
-          ) : null}
-          <section className="catalog-style-popover-section">
-            <h5>Line Style</h5>
-            <div className="catalog-line-style-grid">
-              {resolvedLineStyles.map((option) => (
-                <button className={lineStyle === option ? "catalog-line-style-option selected" : "catalog-line-style-option"} key={option} onClick={() => onChange("lineStyle", option)} type="button">
-                  <span className={`catalog-line-preview ${option}`} />
-                  <span>{displayName(option)}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-          <section className="catalog-style-popover-section">
-            <h5>Readout</h5>
-            <div className="catalog-style-number-grid">
-              <label className="catalog-style-inline-field">
-                <span>Line width</span>
-                <input max={6} min={1} type="number" value={String(resolvedLineWidth)} onChange={(event) => onChange("lineWidth", boundedNumber(event.target.value, 1, 6))} />
-              </label>
-              <label className="catalog-style-inline-field">
-                <span>Precision</span>
-                <input max={8} min={0} type="number" value={String(precision)} onChange={(event) => onChange("precision", boundedNumber(event.target.value, 0, 8))} />
-              </label>
-            </div>
-          </section>
-        </div>
-      ) : null}
+      {panel}
     </div>
   );
+}
+
+function stylePanelPosition(trigger: HTMLButtonElement | null, isBand: boolean): { left: number; maxHeight: number; top: number } | null {
+  if (!trigger) return null;
+  const panelWidth = 320;
+  const viewportPadding = 12;
+  const rect = trigger.getBoundingClientRect();
+  const estimatedHeight = isBand ? 640 : 540;
+  const rightBound = Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding);
+  const left = Math.min(Math.max(viewportPadding, rect.left), rightBound);
+  const belowTop = rect.bottom + 8;
+  const belowSpace = window.innerHeight - belowTop - viewportPadding;
+  const aboveSpace = rect.top - viewportPadding - 8;
+  const opensAbove = belowSpace < 360 && aboveSpace > belowSpace;
+  const availableHeight = Math.max(160, opensAbove ? aboveSpace : belowSpace);
+  const maxHeight = Math.min(estimatedHeight, availableHeight);
+  const top = opensAbove ? Math.max(viewportPadding, rect.top - maxHeight - 8) : Math.max(viewportPadding, belowTop);
+  return {
+    left,
+    maxHeight,
+    top,
+  };
 }
 
 function boundedNumber(value: string, min: number, max: number): number {

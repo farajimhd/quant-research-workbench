@@ -1273,9 +1273,9 @@ button {
 
 .catalog-workbench {
   display: flex;
-  min-height: calc(100vh - 350px);
-  max-height: calc(100vh - 210px);
+  min-height: 0;
   gap: 0;
+  overflow: hidden;
 }
 
 .catalog-workbench.resizing {
@@ -1876,14 +1876,13 @@ button {
 }
 
 .catalog-style-popover-panel {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  z-index: 130;
+  position: fixed;
+  z-index: 220;
   display: grid;
-  width: 400px;
-  max-width: min(400px, calc(100vw - 48px));
+  width: 320px;
+  max-width: min(320px, calc(100vw - 24px));
   gap: 12px;
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--popover);
@@ -1911,8 +1910,8 @@ button {
 
 .catalog-style-preview {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  grid-template-columns: 1fr;
+  align-items: start;
   gap: 10px;
   border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
   border-radius: 8px;
@@ -1978,9 +1977,11 @@ button {
 }
 
 .catalog-style-preview-copy {
-  display: grid;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   gap: 2px;
-  min-width: 90px;
+  min-width: 0;
 }
 
 .catalog-style-preview-copy strong {
@@ -1998,7 +1999,7 @@ button {
 
 .catalog-color-swatch-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
 }
 
