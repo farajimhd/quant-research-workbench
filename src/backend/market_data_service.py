@@ -323,13 +323,35 @@ def timestamp_seconds(value: Any, timezone_name: str = EXCHANGE_TIME_ZONE) -> in
     return int(dt.timestamp())
 
 
+def timeframe_minutes(timeframe: str) -> int | None:
+    value = TIMEFRAMES.get(timeframe)
+    return value if isinstance(value, int) else None
+
+
 def session_region_timestamp(session: str, minute_of_day: int) -> int:
     hour, minute = divmod(minute_of_day, 60)
     dt = datetime.combine(date.fromisoformat(session), time(hour=hour, minute=minute), tzinfo=ZoneInfo(EXCHANGE_TIME_ZONE))
     return int(dt.timestamp())
 
 
-def extended_session_regions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def chart_timestamp_seconds(row: dict[str, Any], timeframe: str) -> int | None:
+    minutes = timeframe_minutes(timeframe)
+    session = row.get("session_date")
+    minute_of_day = row.get("minute_of_day")
+    if minutes and session and minute_of_day is not None:
+        try:
+            minute = int(float(minute_of_day))
+        except (TypeError, ValueError):
+            minute = -1
+        if 0 <= minute < 24 * 60:
+            bucket_minute = (minute // minutes) * minutes if minutes > 1 else minute
+            return session_region_timestamp(str(session), bucket_minute)
+    return timestamp_seconds(row.get("bar_time_market") or row.get("bar_time_utc"))
+
+
+def extended_session_regions(rows: list[dict[str, Any]], timeframe: str) -> list[dict[str, Any]]:
+    if timeframe_minutes(timeframe) is None:
+        return []
     sessions = sorted({str(row.get("session_date")) for row in rows if row.get("session_date")})
     regions = []
     for session in sessions:
@@ -416,7 +438,7 @@ def supervision_markers(
         frame = provider.load_supervision(start_date=session, end_date=session, timeframe=timeframe, supervision_type=supervision_group, tickers=[ticker])
         candidates = supervision_candidates(frame, supervision_group, min_confidence)
         for row in candidates.head(marker_limit).to_dicts():
-            timestamp = timestamp_seconds(row.get("bar_time_market") or row.get("bar_time_utc"))
+            timestamp = chart_timestamp_seconds(row, timeframe)
             if not timestamp:
                 continue
             color, shape, position = style.get(supervision_group, ("#1E3A5F", "circle", "belowBar"))
@@ -463,7 +485,7 @@ def chart_payload(
     candles = []
     volume = []
     for row in rows:
-        timestamp = timestamp_seconds(row.get("bar_time_market"))
+        timestamp = chart_timestamp_seconds(row, timeframe)
         if not timestamp:
             continue
         open_value = float(row.get("open") or 0)
@@ -492,7 +514,7 @@ def chart_payload(
             continue
         points = []
         for row in rows:
-            timestamp = timestamp_seconds(row.get("bar_time_market"))
+            timestamp = chart_timestamp_seconds(row, timeframe)
             value = row.get(column)
             if timestamp and value is not None:
                 numeric_value = float(value)
@@ -517,7 +539,7 @@ def chart_payload(
         "overlay_series": overlay_series,
         "oscillator_series": oscillator_series,
         "markers": markers,
-        "regions": extended_session_regions(rows),
+        "regions": extended_session_regions(rows, timeframe),
         "options": options,
     }
 

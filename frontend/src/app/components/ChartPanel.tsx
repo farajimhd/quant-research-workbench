@@ -642,6 +642,9 @@ function chartOptions(width: number, height: number, compact = false, palette: C
       vertLines: { color: palette.grid },
       horzLines: { color: palette.grid }
     },
+    localization: {
+      timeFormatter: (timeValue: Time) => formatMarketDateTime(timeValue)
+    },
     crosshair: { mode: 0 },
     rightPriceScale: { borderColor: palette.grid },
     timeScale: {
@@ -650,7 +653,8 @@ function chartOptions(width: number, height: number, compact = false, palette: C
       barSpacing: compact ? 22 : 40,
       minBarSpacing: 0.2,
       timeVisible: true,
-      secondsVisible: false
+      secondsVisible: false,
+      tickMarkFormatter: (timeValue: Time) => formatMarketAxisTime(timeValue)
     }
   };
 }
@@ -658,6 +662,23 @@ function chartOptions(width: number, height: number, compact = false, palette: C
 const marketDateFormatter = new Intl.DateTimeFormat("en-CA", {
   day: "2-digit",
   month: "2-digit",
+  timeZone: "America/New_York",
+  year: "numeric"
+});
+
+const marketAxisFormatter = new Intl.DateTimeFormat("en-US", {
+  hour: "2-digit",
+  hour12: false,
+  minute: "2-digit",
+  timeZone: "America/New_York"
+});
+
+const marketDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  day: "2-digit",
+  hour: "2-digit",
+  hour12: false,
+  minute: "2-digit",
+  month: "short",
   timeZone: "America/New_York",
   year: "numeric"
 });
@@ -758,8 +779,9 @@ function drawRegions(chart: IChartApi, layer: HTMLDivElement | null, regions: Re
   if (!layer) return;
   layer.innerHTML = "";
   const barWidth = estimateBarWidth(chart, candles);
+  const candleDuration = estimateCandleDuration(candles);
   regions.forEach((region) => {
-    const coordinates = regionCoordinates(chart, region, candles, barWidth);
+    const coordinates = regionCoordinates(chart, region, candles, barWidth, candleDuration);
     if (!coordinates) return;
     const left = Math.min(coordinates.start, coordinates.end);
     const width = Math.abs(coordinates.end - coordinates.start);
@@ -774,17 +796,19 @@ function drawRegions(chart: IChartApi, layer: HTMLDivElement | null, regions: Re
   });
 }
 
-function regionCoordinates(chart: IChartApi, region: Region, candles: Candle[], barWidth: number) {
+function regionCoordinates(chart: IChartApi, region: Region, candles: Candle[], barWidth: number, candleDuration: number) {
+  const overlappingCandles = candles.filter((candle) => candle.time < region.end && candle.time + candleDuration > region.start);
+  if (overlappingCandles.length) {
+    const first = chart.timeScale().timeToCoordinate(overlappingCandles[0]?.time as Time);
+    const last = chart.timeScale().timeToCoordinate(overlappingCandles[overlappingCandles.length - 1]?.time as Time);
+    if (first !== null && last !== null) return { end: last + barWidth / 2, start: first - barWidth / 2 };
+  }
+
   const start = chart.timeScale().timeToCoordinate(region.start as Time);
   const end = chart.timeScale().timeToCoordinate(region.end as Time);
   if (start !== null && end !== null) return { end, start };
 
-  const regionCandles = candles.filter((candle) => candle.time >= region.start && candle.time <= region.end);
-  if (!regionCandles.length) return null;
-  const first = chart.timeScale().timeToCoordinate(regionCandles[0]?.time as Time);
-  const last = chart.timeScale().timeToCoordinate(regionCandles[regionCandles.length - 1]?.time as Time);
-  if (first === null || last === null) return null;
-  return { end: last + barWidth / 2, start: first - barWidth / 2 };
+  return null;
 }
 
 function estimateBarWidth(chart: IChartApi, candles: Candle[]) {
@@ -803,8 +827,31 @@ function estimateBarWidth(chart: IChartApi, candles: Candle[]) {
   return Math.max(2, Math.min(24, deltas[Math.floor(deltas.length / 2)] ?? 4));
 }
 
+function estimateCandleDuration(candles: Candle[]) {
+  const deltas = candles
+    .slice(1)
+    .map((candle, index) => candle.time - candles[index].time)
+    .filter((value) => value > 0)
+    .sort((left, right) => left - right);
+  return deltas[Math.floor(deltas.length / 2)] ?? 60;
+}
+
 function marketDate(time: number) {
   return marketDateFormatter.format(new Date(time * 1000));
+}
+
+function timestampFromChartTime(timeValue: Time) {
+  if (typeof timeValue === "number") return timeValue;
+  if (typeof timeValue === "string") return Date.parse(`${timeValue}T00:00:00Z`) / 1000;
+  return Date.UTC(timeValue.year, timeValue.month - 1, timeValue.day) / 1000;
+}
+
+function formatMarketAxisTime(timeValue: Time) {
+  return marketAxisFormatter.format(new Date(timestampFromChartTime(timeValue) * 1000));
+}
+
+function formatMarketDateTime(timeValue: Time) {
+  return marketDateTimeFormatter.format(new Date(timestampFromChartTime(timeValue) * 1000));
 }
 
 function formatPrice(value: number) {
