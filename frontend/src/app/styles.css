@@ -892,6 +892,11 @@ button {
   gap: 8px;
 }
 
+.data-table-toolbar-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .data-table-title {
   color: var(--foreground);
   font-size: 13px;
@@ -949,6 +954,38 @@ button {
   position: relative;
 }
 
+.data-table-toolbar-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.table-segment-button,
+.table-fit-button {
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  padding: 0 9px;
+}
+
+.table-segment-button.active,
+.table-fit-button.active {
+  border-color: color-mix(in oklab, var(--primary) 24%, transparent);
+  background: color-mix(in oklab, var(--primary) 8%, transparent);
+  color: var(--foreground);
+}
+
+.table-segment-button:hover,
+.table-fit-button:hover {
+  background: color-mix(in oklab, var(--primary) 4%, transparent);
+  color: var(--foreground);
+}
+
 .data-table-scroll {
   flex: 1 1 auto;
   min-height: 0;
@@ -961,6 +998,31 @@ button {
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12px;
+}
+
+.data-table.fit-header {
+  table-layout: fixed;
+}
+
+.data-table.fit-header th,
+.data-table.fit-header td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.data-table.compact th,
+.data-table.compact td {
+  padding: 7px 8px;
+}
+
+.data-table.comfortable th,
+.data-table.comfortable td {
+  padding: 9px 10px;
+}
+
+.data-table.wide th,
+.data-table.wide td {
+  padding: 13px 12px;
 }
 
 .data-table th,
@@ -1001,6 +1063,11 @@ button {
   gap: 8px;
 }
 
+.data-table.fit-header .data-table-header-cell {
+  min-width: 0;
+  gap: 2px;
+}
+
 .data-table-header-sort {
   display: inline-flex;
   min-width: 0;
@@ -1021,8 +1088,13 @@ button {
 
 .data-table-header-actions {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 2px;
+}
+
+.data-table.fit-header .data-table-header-actions {
+  gap: 0;
 }
 
 .table-icon-button {
@@ -1094,6 +1166,11 @@ button {
   top: calc(100% + 8px);
   max-height: 360px;
   overflow: auto;
+}
+
+.data-table-show-all-button {
+  width: 100%;
+  margin-top: 8px;
 }
 
 .data-table-popover-title {

@@ -17,6 +17,8 @@ type DataRow = Record<string, unknown>;
 type SortDirection = "asc" | "desc";
 type SortState = { column: string; direction: SortDirection } | null;
 type ColumnKind = "numeric" | "datetime" | "categorical" | "boolean" | "text";
+type TableDensityMode = "comfortable" | "compact" | "wide";
+type TableLayoutMode = "fit_header" | "fit_data";
 type TableVisualTone = "amber" | "emerald" | "neutral" | "sky" | "violet";
 
 type HistogramBin = {
@@ -80,7 +82,9 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
 
   const [activeValueFiltersByColumn, setActiveValueFiltersByColumn] = useState<Record<string, string[]>>({});
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
+  const [densityMode, setDensityMode] = useState<TableDensityMode>("compact");
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
+  const [layoutMode, setLayoutMode] = useState<TableLayoutMode>("fit_data");
   const [manualFiltersByColumn, setManualFiltersByColumn] = useState<Record<string, ColumnManualFilterState>>({});
   const [openPopover, setOpenPopover] = useState<HeaderPopoverState | null>(null);
   const [search, setSearch] = useState("");
@@ -131,6 +135,11 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
   const numericColumnCount = resolvedColumns.filter((column) => profilesByColumn[column]?.kind === "numeric").length;
   const activeSortLabel = effectiveSort ? `${displayName(effectiveSort.column)} ${effectiveSort.direction}` : "None";
   const openProfile = openPopover ? profilesByColumn[openPopover.column] : null;
+  const columnWidthsByName = useMemo(
+    () => buildColumnWidthsByName({ layoutMode, rows: sortedRows, visibleColumns: usableColumns }),
+    [layoutMode, sortedRows, usableColumns],
+  );
+  const fitHeaderWidth = usableColumns.reduce((total, column) => total + (columnWidthsByName[column] ?? 120), 0);
 
   useEffect(() => {
     if (!openPopover) return;
@@ -201,7 +210,9 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
   const resetTable = () => {
     setActiveValueFiltersByColumn({});
     setColumnsMenuOpen(false);
+    setDensityMode("compact");
     setHiddenColumns([]);
+    setLayoutMode("fit_data");
     setManualFiltersByColumn({});
     setOpenPopover(null);
     setSearch("");
@@ -231,6 +242,34 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
         </div>
         <div className="data-table-toolbar-actions">
           <span className="data-table-sort-chip">Sort: {activeSortLabel}</span>
+          <div className="data-table-toolbar-control" aria-label="Table density">
+            {(["compact", "comfortable", "wide"] as const).map((candidateDensityMode) => (
+              <button
+                className={densityMode === candidateDensityMode ? "table-segment-button active" : "table-segment-button"}
+                key={candidateDensityMode}
+                onClick={() => setDensityMode(candidateDensityMode)}
+                type="button"
+              >
+                {candidateDensityMode}
+              </button>
+            ))}
+          </div>
+          <div className="data-table-toolbar-control" aria-label="Table layout">
+            <button
+              className={layoutMode === "fit_header" ? "table-fit-button active" : "table-fit-button"}
+              onClick={() => setLayoutMode("fit_header")}
+              type="button"
+            >
+              Fit header
+            </button>
+            <button
+              className={layoutMode === "fit_data" ? "table-fit-button active" : "table-fit-button"}
+              onClick={() => setLayoutMode("fit_data")}
+              type="button"
+            >
+              Fit data
+            </button>
+          </div>
           <div className="data-table-action-menu">
             <button
               className="table-icon-button"
@@ -253,6 +292,9 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
                     <span>{displayName(column)}</span>
                   </label>
                 ))}
+                <button className="table-text-button data-table-show-all-button" onClick={() => setHiddenColumns([])} type="button">
+                  Show all columns
+                </button>
               </div>
             ) : null}
           </div>
@@ -263,7 +305,17 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
       </div>
 
       <div className="data-table-scroll">
-        <table className="data-table">
+        <table
+          className={`data-table ${densityMode} ${layoutMode === "fit_header" ? "fit-header" : "fit-data"}`}
+          style={layoutMode === "fit_header" ? { width: `${fitHeaderWidth}px` } : undefined}
+        >
+          {layoutMode === "fit_header" ? (
+            <colgroup>
+              {usableColumns.map((column) => (
+                <col key={column} style={{ width: `${columnWidthsByName[column] ?? 120}px` }} />
+              ))}
+            </colgroup>
+          ) : null}
           <thead>
             <tr>
               {usableColumns.map((column) => {
@@ -735,6 +787,50 @@ function StatLine({ label, value }: { label: string; value: string }) {
       <b>{value}</b>
     </div>
   );
+}
+
+function buildColumnWidthsByName({
+  layoutMode,
+  rows,
+  visibleColumns,
+}: {
+  layoutMode: TableLayoutMode;
+  rows: DataRow[];
+  visibleColumns: string[];
+}) {
+  return Object.fromEntries(
+    visibleColumns.map((column) => {
+      const headerWidth = estimateHeaderColumnWidth(column);
+      if (layoutMode === "fit_header") return [column, headerWidth];
+      return [column, Math.max(headerWidth, estimateDataColumnWidth(column, rows))];
+    }),
+  );
+}
+
+function estimateHeaderColumnWidth(column: string) {
+  return clamp(estimateTextWidth(displayName(column)) + 74, 108, 260);
+}
+
+function estimateDataColumnWidth(column: string, rows: DataRow[]) {
+  const sampledRows = rows.slice(0, 80);
+  const maxTextWidth = sampledRows.reduce((currentMax, row) => {
+    return Math.max(currentMax, estimateTextWidth(formatCell(column, row[column])));
+  }, 0);
+  return clamp(maxTextWidth + 28, 108, 460);
+}
+
+function estimateTextWidth(value: string) {
+  return value.split("").reduce((width, character) => {
+    if (character === " ") return width + 4;
+    if ("MW@#%&".includes(character)) return width + 9;
+    if ("il.,'|".includes(character)) return width + 3.5;
+    if (character === character.toUpperCase() && character !== character.toLowerCase()) return width + 7.5;
+    return width + 6.5;
+  }, 0);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function buildColumnProfile(rows: DataRow[], column: string): ColumnProfile {
