@@ -146,6 +146,7 @@ const defaultChartAppearanceSettings: ChartAppearanceSettings = {
 
 const LEGEND_SETTINGS_STORAGE_KEY = "quant-research-workbench.chart.legend-settings.v1";
 const CHART_APPEARANCE_STORAGE_KEY = "quant-research-workbench.chart.appearance-settings.v1";
+const CHART_PRICE_SCALE_MIN_WIDTH = 84;
 
 type ChartPalette = {
   background: string;
@@ -373,7 +374,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         valuesByTime: primaryValuesByTime
       });
     });
-    const rangeCleanups = oscillatorPanes.map((pane) => syncRanges(priceChart, pane.chart));
+    const rangeCleanup = syncChartRanges([priceChart, ...oscillatorPanes.map((pane) => pane.chart)]);
     const closeByTime = new Map(payload.candles.map((candle) => [candle.time, candle.close]));
     const crosshairCleanup = syncCrosshairs(priceChart, oscillatorPanes, candleSeries, closeByTime);
     const draw = () => {
@@ -396,7 +397,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       window.clearTimeout(initialFitTimer);
       observer.disconnect();
       crosshairCleanup();
-      rangeCleanups.forEach((cleanup) => cleanup());
+      rangeCleanup();
       priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(draw);
       priceChart.remove();
       oscillatorPanes.forEach((pane) => pane.chart.remove());
@@ -419,6 +420,15 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }
 
   const priceLegendItems = buildSeriesLegendItems(payload?.overlay_series ?? [], "price", legendSettings);
+  const oscillatorPaneGroups = buildOscillatorPaneGroups(payload?.oscillator_series ?? []);
+
+  const closeOscillatorPane = (group: OscillatorPaneGroup) => {
+    const paneColumns = new Set(group.series.map((series) => series.column.toLowerCase()));
+    const nextColumns = visibleColumns.filter((column) => !paneColumns.has(column.toLowerCase()));
+    if (nextColumns.length !== visibleColumns.length) {
+      onVisibleColumnsChange(nextColumns);
+    }
+  };
 
   const commitTicker = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -542,10 +552,19 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
               onUpdate={updateLegendSettings}
             />
           </div>
-          {buildOscillatorPaneGroups(payload.oscillator_series).map((group) => {
+          {oscillatorPaneGroups.map((group) => {
             return (
               <div className="chart-osc" key={group.key}>
                 <div className="chart-pane-canvas" ref={(node) => setOscillatorPaneRef(group.key, node)} />
+                <button
+                  aria-label={`Close ${formatOscillatorPaneLabel(group)} pane`}
+                  className="chart-pane-close"
+                  onClick={() => closeOscillatorPane(group)}
+                  title={`Close ${formatOscillatorPaneLabel(group)} pane`}
+                  type="button"
+                >
+                  <X size={12} />
+                </button>
                 <ChartLegend
                   indicatorCount={group.series.length}
                   items={buildSeriesLegendItems(group.series, "oscillator", legendSettings)}
@@ -1058,6 +1077,12 @@ function buildOscillatorPaneGroups(series: ChartSeries[]): OscillatorPaneGroup[]
   return Array.from(groups, ([key, items]) => ({ key, series: items }));
 }
 
+function formatOscillatorPaneLabel(group: OscillatorPaneGroup) {
+  if (group.key === "oscillator:macd") return "MACD";
+  if (group.series.length === 1) return group.series[0].label;
+  return `${group.series.length} indicators`;
+}
+
 function oscillatorPaneKey(series: ChartSeries) {
   const column = series.column.toLowerCase();
   if (column.startsWith("macd_")) return "oscillator:macd";
@@ -1263,7 +1288,7 @@ function chartOptions(
       timeFormatter: (timeValue: Time) => formatMarketDateTime(timeValue)
     },
     crosshair: { mode: 0 },
-    rightPriceScale: { borderColor: palette.grid },
+    rightPriceScale: { borderColor: palette.grid, minimumWidth: CHART_PRICE_SCALE_MIN_WIDTH },
     timeScale: {
       borderColor: palette.grid,
       rightOffset: compact ? 1 : 2,
@@ -1335,25 +1360,25 @@ function hasMultipleMarketDates(candles: Candle[]) {
   return candles.some((candle) => marketDate(candle.time) !== first);
 }
 
-function syncRanges(source: IChartApi, target: IChartApi) {
+function syncChartRanges(charts: IChartApi[]) {
+  if (charts.length < 2) return () => undefined;
   let syncing = false;
-  const sourceHandler = (range: LogicalRange | null) => {
-    if (syncing || !range) return;
-    syncing = true;
-    target.timeScale().setVisibleLogicalRange(range);
-    syncing = false;
-  };
-  const targetHandler = (range: LogicalRange | null) => {
-    if (syncing || !range) return;
-    syncing = true;
-    source.timeScale().setVisibleLogicalRange(range);
-    syncing = false;
-  };
-  source.timeScale().subscribeVisibleLogicalRangeChange(sourceHandler);
-  target.timeScale().subscribeVisibleLogicalRangeChange(targetHandler);
+  const handlers = charts.map((source) => {
+    const handler = (range: LogicalRange | null) => {
+      if (syncing || !range) return;
+      syncing = true;
+      charts.forEach((target) => {
+        if (target !== source) target.timeScale().setVisibleLogicalRange(range);
+      });
+      syncing = false;
+    };
+    source.timeScale().subscribeVisibleLogicalRangeChange(handler);
+    return { handler, source };
+  });
   return () => {
-    source.timeScale().unsubscribeVisibleLogicalRangeChange(sourceHandler);
-    target.timeScale().unsubscribeVisibleLogicalRangeChange(targetHandler);
+    handlers.forEach(({ handler, source }) => {
+      source.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
+    });
   };
 }
 

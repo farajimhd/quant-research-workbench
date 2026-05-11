@@ -2855,6 +2855,32 @@ button {
   overflow: hidden;
 }
 
+.chart-pane-close {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  z-index: 5;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in oklab, var(--surface-border) 52%, transparent);
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--surface) 82%, transparent);
+  color: var(--muted-foreground);
+  opacity: 0.78;
+  padding: 0;
+}
+
+.chart-pane-close:hover,
+.chart-pane-close:focus-visible {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--foreground);
+  opacity: 1;
+}
+
 .chart-pane-canvas {
   position: absolute;
   inset: 0;
