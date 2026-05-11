@@ -596,7 +596,7 @@ function FieldLabel({ help, label }: { help: string; label: string }) {
 
 function HelpButton({ help, label }: { help: string; label: string }) {
   return (
-    <button aria-label={`Help for ${label}`} className="parameter-help-button" data-help={help} title={help} type="button">
+    <button aria-label={`Help for ${label}`} className="parameter-help-button" data-help={help} type="button">
       <CircleHelp size={13} />
     </button>
   );
