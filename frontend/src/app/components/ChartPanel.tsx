@@ -137,6 +137,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const line = priceChart.addLineSeries({
         color: series.color,
         lineWidth: Math.max(1, Math.min(4, series.lineWidth)) as 1,
+        autoscaleInfoProvider: () => null,
         priceLineVisible: false,
         title: series.label
       });
