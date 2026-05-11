@@ -1722,13 +1722,49 @@ button {
   font-size: 12px;
 }
 
-.catalog-equation pre {
+.catalog-equation-formula {
   overflow: auto;
-  margin: 0;
+  padding: 3px 0;
+}
+
+.catalog-equation-formula .katex-display {
+  margin: 2px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 0;
+}
+
+.catalog-equation-formula .katex {
+  color: var(--foreground);
+  font-size: 1.02em;
+}
+
+.catalog-equation-formula code {
   color: var(--foreground);
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 11px;
   white-space: pre-wrap;
+}
+
+.catalog-equation-variables {
+  display: grid;
+  gap: 5px;
+  border-top: 1px solid color-mix(in oklab, var(--surface-border) 60%, transparent);
+  padding-top: 8px;
+}
+
+.catalog-equation-variables span {
+  display: flex;
+  gap: 6px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.catalog-equation-variables b {
+  flex: 0 0 auto;
+  color: var(--foreground);
+  font-weight: 650;
 }
 
 .catalog-form-grid {

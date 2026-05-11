@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { BookOpen, Database, Filter, Search, SlidersHorizontal, Tags } from "lucide-react";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartCatalogItem, type ChartLabelOption, type ChartPayload } from "../app/components/ChartPanel";
@@ -812,10 +814,7 @@ function CatalogTab({
               <h3>Equations</h3>
               <div className="catalog-equation-grid">
                 {selected.knowledge?.equations?.map((equation) => (
-                  <div className="catalog-equation" key={equation.title}>
-                    <strong>{equation.title}</strong>
-                    <pre>{equation.markdown}</pre>
-                  </div>
+                  <CatalogEquation equation={equation} key={equation.title} />
                 ))}
               </div>
             </section>
@@ -866,6 +865,49 @@ function CatalogFilter({ label, onChange, options, value }: { label: string; onC
       </select>
     </label>
   );
+}
+
+function CatalogEquation({ equation }: { equation: CatalogKnowledge["equations"][number] }) {
+  const variables = Object.entries(equation.variables ?? {});
+  const formulas = mathBlocks(equation.markdown);
+  return (
+    <div className="catalog-equation">
+      <strong>{equation.title}</strong>
+      <div className="catalog-equation-formula">
+        {formulas.length ? (
+          formulas.map((formula, index) => (
+            <div dangerouslySetInnerHTML={{ __html: renderFormula(formula) }} key={`${equation.title}:${index}`} />
+          ))
+        ) : (
+          <code>{equation.markdown}</code>
+        )}
+      </div>
+      {variables.length ? (
+        <div className="catalog-equation-variables">
+          {variables.map(([name, description]) => (
+            <span key={name}>
+              <b>{name}</b>
+              {description}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function mathBlocks(markdown: string): string[] {
+  const matches = [...markdown.matchAll(/\$\$([\s\S]*?)\$\$/g)].map((match) => match[1]?.trim()).filter(Boolean);
+  return matches.length ? matches : markdown.trim() ? [markdown.trim()] : [];
+}
+
+function renderFormula(formula: string): string {
+  return katex.renderToString(formula, {
+    displayMode: true,
+    output: "html",
+    strict: false,
+    throwOnError: false,
+  });
 }
 
 function Schema({ scope, records }: { scope: Scope; records: RecordRow[] }) {
