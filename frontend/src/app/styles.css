@@ -2979,6 +2979,44 @@ button {
   background: color-mix(in oklab, var(--primary) 3%, transparent);
 }
 
+.data-table tbody tr.data-table-row-actionable {
+  cursor: context-menu;
+}
+
+.data-table-row-menu {
+  position: fixed;
+  z-index: 120;
+  min-width: 184px;
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 16px 42px rgba(16, 24, 40, 0.16);
+  padding: 5px;
+}
+
+.data-table-row-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 0 8px;
+  text-align: left;
+}
+
+.data-table-row-menu button:hover,
+.data-table-row-menu button:focus-visible {
+  background: color-mix(in oklab, var(--foreground) 5%, transparent);
+  outline: 0;
+}
+
 .data-table-header-cell {
   position: relative;
   display: flex;
@@ -3815,6 +3853,67 @@ button {
   font-size: 18px;
 }
 
+.chart-context-modal-panel {
+  display: flex;
+  width: min(1500px, calc(100vw - 40px));
+  height: min(940px, calc(100vh - 40px));
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chart-context-modal-panel .modal-header {
+  flex: 0 0 auto;
+}
+
+.chart-context-modal-panel .chart-shell {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.chart-context-modal-panel .chart-price {
+  height: min(560px, calc(100vh - 390px));
+  min-height: 300px;
+}
+
+.chart-context-summary {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(120px, 0.4fr) minmax(220px, 1fr);
+  gap: 8px;
+  margin: -2px 0 12px;
+}
+
+.chart-context-summary div {
+  min-width: 0;
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-alt) 38%, var(--surface));
+  padding: 8px 10px;
+}
+
+.chart-context-summary span,
+.chart-context-summary b {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-context-summary span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.chart-context-summary b {
+  margin-top: 3px;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 550;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -4392,6 +4491,23 @@ button {
   position: absolute;
   top: 0;
   bottom: 0;
+}
+
+.chart-reference-stack-layer {
+  position: absolute;
+  inset: 8px;
+  z-index: 3;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.chart-reference-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dotted #050505;
+  pointer-events: none;
 }
 
 .day-separator {

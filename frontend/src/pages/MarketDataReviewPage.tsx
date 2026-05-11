@@ -5,7 +5,7 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 
 import { api, query } from "../api/client";
-import { ChartPanel, type ChartCatalogItem, type ChartLabelOption, type ChartPayload } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartCatalogItem, type ChartLabelOption, type ChartPayload, type ChartReference } from "../app/components/ChartPanel";
 import { DataTable, type BackendTableQuery } from "../app/components/DataTable";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
@@ -99,6 +99,10 @@ type CatalogCardItem = CatalogItem & {
   groupLabel: string;
   sourceLabel: string;
   summary: string;
+};
+type PreviewChartTarget = {
+  record: RecordRow;
+  row: Record<string, unknown>;
 };
 
 const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema", "Catalog"];
@@ -207,7 +211,7 @@ export function MarketDataReviewPage() {
       {activeTab === "Coverage" && scope && review ? <Coverage scope={scope} records={review.records} /> : null}
       {activeTab === "Chart" && scope && review ? <ChartTab catalog={catalog} scope={scope} records={review.records} /> : null}
       {activeTab === "Artifacts" && review ? <Artifacts records={review.records} /> : null}
-      {activeTab === "Preview" && scope && review ? <Preview scope={scope} records={review.records} /> : null}
+      {activeTab === "Preview" && scope && review ? <Preview catalog={catalog} scope={scope} records={review.records} /> : null}
       {activeTab === "Schema" && scope && review ? <Schema scope={scope} records={review.records} /> : null}
       {activeTab === "Catalog" && scope ? <CatalogTab catalog={catalog} catalogError={catalogError} catalogLoading={catalogLoading} scope={scope} onCatalogChange={setCatalog} /> : null}
       {editingScope && draft ? (
@@ -485,7 +489,7 @@ function Artifacts({ records }: { records: RecordRow[] }) {
   );
 }
 
-function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
+function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; scope: Scope; records: RecordRow[] }) {
   const [recordKey, setRecordKey] = useState(records[0]?.key ?? "");
   const record = records.find((item) => item.key === recordKey) ?? records[0];
   const [rowLimit, setRowLimit] = useState(1000);
@@ -496,6 +500,7 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [sample, setSample] = useState<PreviewSample | null>(null);
   const [sampleError, setSampleError] = useState("");
   const [sampleLoading, setSampleLoading] = useState(false);
+  const [chartTarget, setChartTarget] = useState<PreviewChartTarget | null>(null);
   const backendQueryKey = useMemo(() => JSON.stringify(cleanPreviewBackendQuery(backendQuery)), [backendQuery]);
   const fillPanel = useViewportFillPanel(`${recordKey}:${rowLimit}:${loadAllRows}:${previewOffset}:${tickers}:${backendQueryKey}:${sample?.rows.length ?? 0}`);
   useEffect(() => {
@@ -610,11 +615,300 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
           onChange: setBackendQuery,
           value: backendQuery,
         }}
+        rowAction={{
+          isAvailable: (row) => rowHasChartContext(row, record),
+          label: "Open row in chart",
+          onSelect: (row) => setChartTarget({ record, row }),
+        }}
         rows={sample?.rows ?? []}
         columns={sample?.columns}
       />
+      {chartTarget ? (
+        <PreviewRowChartModal
+          catalog={catalog}
+          key={`${chartTarget.record.key}:${rowStringValue(chartTarget.row, "ticker")}:${rowStringValue(chartTarget.row, "bar_id")}:${rowStringValue(chartTarget.row, "bar_time_market")}`}
+          onClose={() => setChartTarget(null)}
+          records={records}
+          scope={scope}
+          target={chartTarget}
+        />
+      ) : null}
     </section>
   );
+}
+
+function PreviewRowChartModal({
+  catalog,
+  onClose,
+  records,
+  scope,
+  target,
+}: {
+  catalog: CatalogPayload | null;
+  onClose: () => void;
+  records: RecordRow[];
+  scope: Scope;
+  target: PreviewChartTarget;
+}) {
+  const initial = useMemo(() => previewChartInitialState(target, records, catalog), [catalog, records, target]);
+  const [timeframe, setTimeframe] = useState(initial.timeframe);
+  const [ticker, setTicker] = useState(initial.ticker);
+  const [rangeStart, setRangeStart] = useState(initial.range.start);
+  const [rangeEnd, setRangeEnd] = useState(initial.range.end);
+  const [featureGroups, setFeatureGroups] = useState(initial.featureGroups);
+  const [visibleColumns, setVisibleColumns] = useState(initial.visibleColumns);
+  const [visibleSupervisionGroups, setVisibleSupervisionGroups] = useState(initial.visibleSupervisionGroups);
+  const [payload, setPayload] = useState<ChartPayload | null>(null);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartError, setChartError] = useState("");
+  const timeframes = useMemo(() => chartTimeframesForRange(records, rangeStart, rangeEnd, timeframe), [records, rangeEnd, rangeStart, timeframe]);
+
+  useEffect(() => {
+    if (!timeframes.includes(timeframe) && timeframes.length) setTimeframe(timeframes[0]);
+  }, [timeframe, timeframes]);
+
+  useEffect(() => {
+    if (!ticker || !timeframe || !rangeStart || !rangeEnd) return;
+    let active = true;
+    setChartLoading(true);
+    setChartError("");
+    api<ChartPayload>(
+      `/api/market-data/chart${query({
+        processed_root: scope.processed_root,
+        start_date: rangeStart,
+        end_date: rangeEnd,
+        timeframe,
+        ticker,
+        feature_groups: featureGroups.join(","),
+        columns: visibleColumns.join(","),
+        supervision_groups: visibleSupervisionGroups.join(","),
+        min_confidence: DEFAULT_CHART_MIN_CONFIDENCE,
+      })}`
+    )
+      .then((nextPayload) => {
+        if (!active) return;
+        setPayload(nextPayload);
+        const nextFeatureGroups = nextPayload.options?.feature_groups ?? [];
+        const nextSelectedFeatureGroups = nextFeatureGroups.filter((group) => featureGroups.includes(group));
+        if (nextSelectedFeatureGroups.length && !sameList(nextSelectedFeatureGroups, featureGroups)) {
+          setFeatureGroups(nextSelectedFeatureGroups);
+        }
+      })
+      .catch((error: Error) => {
+        if (!active) return;
+        setPayload(null);
+        setChartError(chartRequestErrorMessage(error));
+      })
+      .finally(() => {
+        if (active) setChartLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [featureGroups, rangeEnd, rangeStart, scope.processed_root, ticker, timeframe, visibleColumns, visibleSupervisionGroups]);
+
+  function updateChartPeriod(start: string, end: string) {
+    if (start <= end) {
+      setRangeStart(start);
+      setRangeEnd(end);
+    } else {
+      setRangeStart(end);
+      setRangeEnd(start);
+    }
+  }
+
+  const indicatorOptions = payload?.options?.standard_indicators ?? initial.visibleColumns;
+  const featureOptions = payload?.options?.feature_columns ?? [];
+  const labelOptions = chartLabelOptions(catalog, payload?.options?.supervision_groups ?? []);
+  const periodBounds = chartPeriodBounds(records, timeframe, scope);
+
+  return (
+    <Modal className="chart-context-modal-panel" onClose={onClose} title="Row Chart Context">
+      <div className="chart-context-summary">
+        <div>
+          <span>Artifact</span>
+          <b>{target.record.group} / {target.record.timeframe} / {target.record.session_date}</b>
+        </div>
+        <div>
+          <span>Ticker</span>
+          <b>{ticker || "-"}</b>
+        </div>
+        <div>
+          <span>Focus</span>
+          <b>{initial.reference.label ?? target.record.session_date}</b>
+        </div>
+      </div>
+      {ticker ? (
+        <ChartPanel
+          catalogColumns={catalog?.columns ?? []}
+          emptyMessage="No chart data around the selected row."
+          errorMessage={chartError}
+          featureOptions={featureOptions}
+          indicatorOptions={indicatorOptions}
+          labelOptions={labelOptions}
+          loading={chartLoading}
+          onPeriodChange={updateChartPeriod}
+          onTickerChange={setTicker}
+          onTimeframeChange={setTimeframe}
+          onVisibleColumnsChange={setVisibleColumns}
+          onVisibleSupervisionGroupsChange={setVisibleSupervisionGroups}
+          payload={payload}
+          periodEnd={rangeEnd}
+          periodMax={periodBounds.max}
+          periodMin={periodBounds.min}
+          periodStart={rangeStart}
+          reference={initial.reference}
+          ticker={ticker}
+          timeframe={timeframe}
+          timeframes={timeframes}
+          visibleColumns={visibleColumns}
+          visibleSupervisionGroups={visibleSupervisionGroups}
+        />
+      ) : (
+        <div className="empty-state">This row does not include a ticker, so it cannot be opened on the chart.</div>
+      )}
+    </Modal>
+  );
+}
+
+function previewChartInitialState(target: PreviewChartTarget, records: RecordRow[], catalog: CatalogPayload | null) {
+  const row = target.row;
+  const timeframe = rowStringValue(row, "timeframe") || target.record.timeframe || "1m";
+  const ticker = rowStringValue(row, "ticker").toUpperCase();
+  const sessionDate = rowStringValue(row, "session_date") || target.record.session_date;
+  const range = surroundingChartRange(records, timeframe, sessionDate);
+  const visibleColumns = previewChartColumns(target.record, catalog);
+  const visibleSupervisionGroups = previewSupervisionGroups(target.record);
+  return {
+    featureGroups: previewFeatureGroups(target.record, catalog, visibleColumns),
+    range,
+    reference: previewChartReference(row, target.record),
+    ticker,
+    timeframe,
+    visibleColumns,
+    visibleSupervisionGroups,
+  };
+}
+
+function rowHasChartContext(row: Record<string, unknown>, record: RecordRow) {
+  return Boolean(rowStringValue(row, "ticker") && (rowStringValue(row, "session_date") || record.session_date));
+}
+
+function rowStringValue(row: Record<string, unknown>, column: string) {
+  const value = row[column];
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function rowNumberValue(row: Record<string, unknown>, column: string) {
+  const value = Number(row[column]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function previewChartReference(row: Record<string, unknown>, record: RecordRow): ChartReference {
+  const sessionDate = rowStringValue(row, "session_date") || record.session_date;
+  const minuteOfDay = rowNumberValue(row, "minute_of_day");
+  const timestamp = rowUtcTimestamp(row);
+  const marketTime = rowStringValue(row, "bar_time_market") || rowStringValue(row, "bar_time_utc") || sessionDate;
+  return {
+    label: `${rowStringValue(row, "ticker").toUpperCase() || "Row"} ${formatReferenceTimeLabel(marketTime, minuteOfDay)}`,
+    minuteOfDay,
+    sessionDate,
+    time: timestamp,
+  };
+}
+
+function rowUtcTimestamp(row: Record<string, unknown>) {
+  const utcValue = rowStringValue(row, "bar_time_utc");
+  if (!utcValue) return undefined;
+  const normalized = /z$|[+-]\d\d:?\d\d$/i.test(utcValue) ? utcValue : `${utcValue}Z`;
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : undefined;
+}
+
+function formatReferenceTimeLabel(value: string, minuteOfDay?: number) {
+  if (value && value.includes("T")) return value.replace("T", " ").slice(0, 16);
+  if (typeof minuteOfDay === "number" && Number.isFinite(minuteOfDay)) {
+    const hour = Math.floor(minuteOfDay / 60);
+    const minute = Math.round(minuteOfDay % 60);
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+  return value || "selected row";
+}
+
+function previewChartColumns(record: RecordRow, catalog: CatalogPayload | null) {
+  const catalogByColumn = new Map((catalog?.columns ?? []).map((item) => [item.column ?? item.id, item]));
+  const chartable = record.columns.filter((column) => {
+    const item = catalogByColumn.get(column);
+    const role = String(item?.presentation?.chartRole ?? "");
+    return item?.presentation?.selectable !== false && role && role !== "table_only" && role !== "marker";
+  });
+  if (chartable.length) return chartable;
+  const defaults = defaultCatalogChartColumns(catalog);
+  return defaults.length ? defaults : DEFAULT_CHART_COLUMNS;
+}
+
+function previewFeatureGroups(record: RecordRow, catalog: CatalogPayload | null, columns: string[]) {
+  const groups = new Set<string>();
+  const recordGroup = artifactFeatureGroup(record.group);
+  if (recordGroup) groups.add(recordGroup);
+  const catalogByColumn = new Map((catalog?.columns ?? []).map((item) => [item.column ?? item.id, item]));
+  columns.forEach((column) => {
+    const item = catalogByColumn.get(column);
+    (item?.artifactGroups ?? []).forEach((group) => {
+      const featureGroup = artifactFeatureGroup(group);
+      if (featureGroup) groups.add(featureGroup);
+    });
+  });
+  if (!groups.size) {
+    DEFAULT_CHART_FEATURE_GROUPS.forEach((group) => groups.add(group));
+  }
+  return Array.from(groups);
+}
+
+function artifactFeatureGroup(group: string) {
+  return group.startsWith("features_") ? group.replace("features_", "") : "";
+}
+
+function previewSupervisionGroups(record: RecordRow) {
+  if (!record.group.startsWith("supervision_")) return [];
+  return [record.group.replace("supervision_", "")];
+}
+
+function surroundingChartRange(records: RecordRow[], timeframe: string, sessionDate: string) {
+  const sessions = Array.from(
+    new Set(records.filter((record) => record.group === "bars" && record.timeframe === timeframe && record.exists).map((record) => record.session_date))
+  ).sort();
+  if (!sessions.length || !sessionDate) return { start: sessionDate, end: sessionDate };
+  const exactIndex = sessions.indexOf(sessionDate);
+  const insertionIndex = exactIndex >= 0 ? exactIndex : sessions.findIndex((session) => session > sessionDate);
+  const anchorIndex = insertionIndex >= 0 ? insertionIndex : sessions.length - 1;
+  return {
+    start: sessions[Math.max(0, anchorIndex - 1)] ?? sessionDate,
+    end: sessions[Math.min(sessions.length - 1, anchorIndex + 1)] ?? sessionDate,
+  };
+}
+
+function chartTimeframesForRange(records: RecordRow[], start: string, end: string, current: string) {
+  const timeframes = Array.from(
+    new Set(
+      records
+        .filter((record) => record.group === "bars" && record.exists && record.session_date >= start && record.session_date <= end)
+        .map((record) => record.timeframe)
+    )
+  ).sort(timeframeSort);
+  if (current && !timeframes.includes(current)) timeframes.unshift(current);
+  return timeframes.length ? timeframes : [current || "1m"];
+}
+
+function chartPeriodBounds(records: RecordRow[], timeframe: string, scope: Scope) {
+  const sessions = records
+    .filter((record) => record.group === "bars" && record.timeframe === timeframe && record.exists)
+    .map((record) => record.session_date)
+    .sort();
+  return {
+    max: sessions[sessions.length - 1] ?? scope.end_date,
+    min: sessions[0] ?? scope.start_date,
+  };
 }
 
 function cleanPreviewBackendQuery(queryValue: BackendTableQuery): BackendTableQuery {

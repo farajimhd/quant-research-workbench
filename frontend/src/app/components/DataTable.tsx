@@ -110,11 +110,22 @@ type HeaderPopoverState = {
   left: number;
   top: number;
 };
+type RowActionConfig = {
+  isAvailable?: (row: DataRow) => boolean;
+  label: string;
+  onSelect: (row: DataRow) => void;
+};
+type RowMenuState = {
+  left: number;
+  row: DataRow;
+  top: number;
+};
 
 type DataTableProps = {
   backendQuery?: BackendQueryConfig;
   columns?: string[];
   empty?: string;
+  rowAction?: RowActionConfig;
   rows: DataRow[];
   title?: string;
 };
@@ -136,7 +147,7 @@ const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean
 ];
 let backendQueryConditionSequence = 0;
 
-export function DataTable({ backendQuery, columns, empty = "No rows.", rows, title }: DataTableProps) {
+export function DataTable({ backendQuery, columns, empty = "No rows.", rowAction, rows, title }: DataTableProps) {
   const resolvedColumns = useMemo(() => {
     if (columns?.length) return columns;
     return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -152,6 +163,7 @@ export function DataTable({ backendQuery, columns, empty = "No rows.", rows, tit
   const [layoutMode, setLayoutMode] = useState<TableLayoutMode>("fit_data");
   const [manualFiltersByColumn, setManualFiltersByColumn] = useState<Record<string, ColumnManualFilterState>>({});
   const [openPopover, setOpenPopover] = useState<HeaderPopoverState | null>(null);
+  const [rowMenu, setRowMenu] = useState<RowMenuState | null>(null);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>(null);
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
@@ -275,6 +287,24 @@ export function DataTable({ backendQuery, columns, empty = "No rows.", rows, tit
   }, [openPopover]);
 
   useEffect(() => {
+    if (!rowMenu) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".data-table-row-menu")) return;
+      setRowMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRowMenu(null);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [rowMenu]);
+
+  useEffect(() => {
     if (!backendQueryOpen && !columnsMenuOpen && !toolbarMenuOpen) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
@@ -315,6 +345,7 @@ export function DataTable({ backendQuery, columns, empty = "No rows.", rows, tit
     setColumnsSearch("");
     setManualFiltersByColumn({});
     setOpenPopover(null);
+    setRowMenu(null);
   }, [tableIdentityKey]);
 
   const toggleSort = (column: string) => {
@@ -380,6 +411,7 @@ export function DataTable({ backendQuery, columns, empty = "No rows.", rows, tit
     setLayoutMode("fit_data");
     setManualFiltersByColumn({});
     setOpenPopover(null);
+    setRowMenu(null);
     setSearch("");
     setSort(null);
     setToolbarMenuOpen(false);
@@ -388,6 +420,17 @@ export function DataTable({ backendQuery, columns, empty = "No rows.", rows, tit
       setBackendQueryDraft(emptyQuery);
       backendQuery.onChange(emptyQuery);
     }
+  };
+
+  const openRowActionMenu = (event: MouseEvent<HTMLTableRowElement>, row: DataRow) => {
+    if (!rowAction || rowAction.isAvailable?.(row) === false) return;
+    const menuWidth = 210;
+    const menuHeight = 46;
+    setRowMenu({
+      left: Math.min(Math.max(12, event.clientX), Math.max(12, window.innerWidth - menuWidth - 12)),
+      row,
+      top: Math.min(Math.max(12, event.clientY + 8), Math.max(12, window.innerHeight - menuHeight - 12)),
+    });
   };
 
   const renderDensityControls = (buttonClassName = "table-segment-button") =>
@@ -836,15 +879,22 @@ export function DataTable({ backendQuery, columns, empty = "No rows.", rows, tit
           </thead>
           <tbody>
             {sortedRows.length ? (
-              sortedRows.map((row, rowIndex) => (
-                <tr key={rowIndex}>
-                  {usableColumns.map((column) => (
-                    <td className={cellClassName(row[column], column)} key={column}>
-                      {formatCell(column, row[column])}
-                    </td>
-                  ))}
-                </tr>
-              ))
+              sortedRows.map((row, rowIndex) => {
+                const rowActionAvailable = Boolean(rowAction && rowAction.isAvailable?.(row) !== false);
+                return (
+                  <tr
+                    className={rowActionAvailable ? "data-table-row-actionable" : undefined}
+                    key={rowIndex}
+                    onClick={rowActionAvailable ? (event) => openRowActionMenu(event, row) : undefined}
+                  >
+                    {usableColumns.map((column) => (
+                      <td className={cellClassName(row[column], column)} key={column}>
+                        {formatCell(column, row[column])}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })
             ) : (
               <tr>
                 <td className="data-table-empty" colSpan={Math.max(usableColumns.length, 1)}>
@@ -877,6 +927,23 @@ export function DataTable({ backendQuery, columns, empty = "No rows.", rows, tit
               ) : (
                 <ColumnStatsPopover profile={openProfile} />
               )}
+            </div>,
+            document.body,
+          )
+        : null}
+      {rowMenu && rowAction && typeof document !== "undefined"
+        ? createPortal(
+            <div className="data-table-row-menu" style={{ left: rowMenu.left, top: rowMenu.top }}>
+              <button
+                onClick={() => {
+                  rowAction.onSelect(rowMenu.row);
+                  setRowMenu(null);
+                }}
+                type="button"
+              >
+                <BarChart3 size={14} />
+                {rowAction.label}
+              </button>
             </div>,
             document.body,
           )

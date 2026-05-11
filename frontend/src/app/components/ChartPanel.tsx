@@ -45,6 +45,12 @@ type ChartSeries = {
   data: Array<{ color?: string; time: number; value: number }>;
 };
 type Region = { start: number; end: number; color: string; label: string };
+export type ChartReference = {
+  label?: string;
+  minuteOfDay?: number;
+  sessionDate?: string;
+  time?: number;
+};
 export type ChartCatalogItem = {
   id: string;
   column?: string;
@@ -148,6 +154,7 @@ type ChartPanelProps = {
   periodMax?: string;
   periodMin?: string;
   periodStart?: string;
+  reference?: ChartReference | null;
   ticker: string;
   timeframe: string;
   timeframes: string[];
@@ -202,6 +209,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   periodMin,
   periodStart,
   payload,
+  reference = null,
   ticker,
   timeframe,
   timeframes,
@@ -212,6 +220,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const oscillatorPaneRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const shellRef = useRef<HTMLDivElement | null>(null);
   const priceLayerRef = useRef<HTMLDivElement | null>(null);
+  const referenceLayerRef = useRef<HTMLDivElement | null>(null);
   const priceChartRef = useRef<IChartApi | null>(null);
   const oscillatorChartRefs = useRef<Map<string, IChartApi>>(new Map());
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -243,6 +252,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
   const priceLegendItems = buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings);
   const hasChartData = Boolean(payload?.candles.length);
+  const referenceKey = reference ? `${reference.time ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
 
   const updateChartSettings = <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => {
     setChartSettings((current) => {
@@ -408,7 +418,11 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       initialFitTimerRef.current = window.setTimeout(() => {
         const currentPayload = payloadRef.current;
         if (!currentPayload || !priceChartRef.current) return;
-        fitInitialRange(priceChartRef.current, currentPayload.candles);
+        if (reference) {
+          fitAroundReference(priceChartRef.current, currentPayload.candles, reference);
+        } else {
+          fitInitialRange(priceChartRef.current, currentPayload.candles);
+        }
         drawCurrentRegions();
         initialFitTimerRef.current = null;
       }, 20);
@@ -416,7 +430,13 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       drawCurrentRegions();
     }
     refreshInteractionSync();
-  }, [payload]);
+  }, [payload, reference]);
+
+  useEffect(() => {
+    if (!priceChartRef.current || !payload?.candles.length || !reference) return;
+    fitAroundReference(priceChartRef.current, payload.candles, reference);
+    drawCurrentRegions();
+  }, [referenceKey]);
 
   useEffect(() => {
     if (!priceChartRef.current) return;
@@ -575,6 +595,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const currentPayload = payloadRef.current;
     if (!chart || !currentPayload) return;
     drawRegions(chart, priceLayerRef.current, currentPayload.regions, currentPayload.candles, chartSettingsRef.current);
+    drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, reference);
   }
 
   function cleanupChartRuntime() {
@@ -746,6 +767,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <div className="chart-canvas-stack">
           {loading ? <div className="chart-update-status">Updating chart...</div> : null}
           {errorMessage ? <div className="chart-update-status error">Chart update failed</div> : null}
+          <div className="chart-reference-stack-layer" ref={referenceLayerRef} />
           <div className="chart-price">
             <div className="chart-pane-canvas" ref={priceRef} />
             <div className="session-layer" ref={priceLayerRef} />
@@ -1552,6 +1574,18 @@ const marketDateFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: "America/New_York",
   year: "numeric"
 });
+const marketDateKeyFormatter = new Intl.DateTimeFormat("en-US", {
+  day: "2-digit",
+  month: "2-digit",
+  timeZone: "America/New_York",
+  year: "numeric"
+});
+const marketTimePartFormatter = new Intl.DateTimeFormat("en-US", {
+  hour: "2-digit",
+  hour12: false,
+  minute: "2-digit",
+  timeZone: "America/New_York"
+});
 
 const marketAxisFormatter = new Intl.DateTimeFormat("en-US", {
   hour: "2-digit",
@@ -1597,6 +1631,22 @@ function fitRecent(chart: IChartApi | null, candles: Candle[]) {
   const span = Math.min(180, Math.max(60, Math.ceil(candles.length * 0.18)));
   const halfSpan = Math.ceil(span / 2);
   chart.timeScale().setVisibleLogicalRange({ from: Math.max(-1, last - halfSpan), to: last + halfSpan });
+}
+
+function fitAroundReference(chart: IChartApi | null, candles: Candle[], reference: ChartReference) {
+  if (!chart || !candles.length) return;
+  const referenceTime = resolveReferenceTime(reference, candles);
+  if (referenceTime === null) {
+    fitInitialRange(chart, candles);
+    return;
+  }
+  const referenceIndex = nearestCandleIndex(candles, referenceTime);
+  const span = Math.min(candles.length, Math.max(60, Math.min(220, Math.ceil(candles.length * 0.35))));
+  const halfSpan = Math.ceil(span / 2);
+  chart.timeScale().setVisibleLogicalRange({
+    from: Math.max(-1, referenceIndex - halfSpan),
+    to: Math.min(candles.length + halfSpan, referenceIndex + halfSpan),
+  });
 }
 
 function buildCandleDataSignature(candles: Candle[]) {
@@ -1703,7 +1753,13 @@ function syncCrosshairs(
   };
 }
 
-function drawRegions(chart: IChartApi, layer: HTMLDivElement | null, regions: Region[], candles: Candle[], settings: ChartAppearanceSettings) {
+function drawRegions(
+  chart: IChartApi,
+  layer: HTMLDivElement | null,
+  regions: Region[],
+  candles: Candle[],
+  settings: ChartAppearanceSettings
+) {
   if (!layer) return;
   layer.innerHTML = "";
   const barWidth = estimateBarWidth(chart, candles);
@@ -1750,6 +1806,53 @@ function drawDaySeparators(chart: IChartApi, layer: HTMLDivElement, candles: Can
   });
 }
 
+function drawReferenceLine(chart: IChartApi, layer: HTMLDivElement | null, candles: Candle[], reference?: ChartReference | null) {
+  if (!layer) return;
+  layer.innerHTML = "";
+  if (!reference || !candles.length) return;
+  const referenceTime = resolveReferenceTime(reference, candles);
+  if (referenceTime === null) return;
+  const coordinate = chart.timeScale().timeToCoordinate(referenceTime as Time);
+  if (coordinate === null) return;
+  const node = document.createElement("div");
+  node.className = "chart-reference-line";
+  node.title = reference.label || "Selected row";
+  node.style.left = `${coordinate}px`;
+  layer.appendChild(node);
+}
+
+function resolveReferenceTime(reference: ChartReference, candles: Candle[]) {
+  if (typeof reference.time === "number" && Number.isFinite(reference.time)) {
+    return candles[nearestCandleIndex(candles, reference.time)]?.time ?? reference.time;
+  }
+  if (!reference.sessionDate) return null;
+  const sameSession = candles
+    .map((candle, index) => ({ candle, index }))
+    .filter((item) => marketDateKey(item.candle.time) === reference.sessionDate);
+  if (!sameSession.length) return null;
+  if (typeof reference.minuteOfDay !== "number" || !Number.isFinite(reference.minuteOfDay)) {
+    return sameSession[0].candle.time;
+  }
+  const nearest = sameSession.reduce((best, item) => {
+    const distance = Math.abs(marketMinuteOfDay(item.candle.time) - Number(reference.minuteOfDay));
+    return distance < best.distance ? { distance, time: item.candle.time } : best;
+  }, { distance: Number.POSITIVE_INFINITY, time: sameSession[0].candle.time });
+  return nearest.time;
+}
+
+function nearestCandleIndex(candles: Candle[], targetTime: number) {
+  let bestIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  candles.forEach((candle, index) => {
+    const distance = Math.abs(candle.time - targetTime);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+  return bestIndex;
+}
+
 function regionCoordinates(chart: IChartApi, region: Region, candles: Candle[], barWidth: number, candleDuration: number) {
   const overlappingCandles = candles.filter((candle) => candle.time < region.end && candle.time + candleDuration > region.start);
   if (overlappingCandles.length) {
@@ -1792,6 +1895,18 @@ function estimateCandleDuration(candles: Candle[]) {
 
 function marketDate(time: number) {
   return marketDateFormatter.format(new Date(time * 1000));
+}
+
+function marketDateKey(time: number) {
+  const parts = Object.fromEntries(marketDateKeyFormatter.formatToParts(new Date(time * 1000)).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function marketMinuteOfDay(time: number) {
+  const parts = Object.fromEntries(marketTimePartFormatter.formatToParts(new Date(time * 1000)).map((part) => [part.type, part.value]));
+  const hour = Number(parts.hour) % 24;
+  const minute = Number(parts.minute);
+  return hour * 60 + minute;
 }
 
 function timestampFromChartTime(timeValue: Time) {
