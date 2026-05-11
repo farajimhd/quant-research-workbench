@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { BookOpen, CircleHelp, Database, Filter, Search, SlidersHorizontal, Tags } from "lucide-react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
@@ -105,6 +105,17 @@ const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_COLUMNS = ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
 const PREVIEW_PAGE_SIZE = 1000;
+const STYLE_COLOR_OPTIONS = [
+  { label: "Black", value: "#030213" },
+  { label: "Navy", value: "#1E3A5F" },
+  { label: "Blue", value: "#2563EB" },
+  { label: "Teal", value: "#0E7490" },
+  { label: "Green", value: "#067647" },
+  { label: "Amber", value: "#B7791F" },
+  { label: "Orange", value: "#C2410C" },
+  { label: "Red", value: "#B42318" },
+  { label: "Candle direction", value: "inherit_candle_direction" },
+];
 const PRESENTATION_HELP = {
   selectable: "Controls whether this item appears in the chart Indicators & Features picker. Off keeps the catalog contract but hides it from chart selection.",
   defaultVisible: "Adds this item to charts automatically when the selected artifact contains the required column or label group.",
@@ -814,12 +825,14 @@ function CatalogTab({
                 </div>
                 <div className="catalog-presentation-section">
                   <h4>Visual Style</h4>
-                  <div className="catalog-form-grid compact">
-                    <CatalogSelect help={PRESENTATION_HELP.lineStyle} label="Line style" options={catalog?.presentationOptions.lineStyles ?? []} value={String(draft.lineStyle ?? "solid")} onChange={(value) => updatePresentation("lineStyle", value)} />
-                    <CatalogText help={PRESENTATION_HELP.color} label="Color" value={String(draft.color ?? "#1E3A5F")} onChange={(value) => updatePresentation("color", value)} />
-                    <CatalogNumber help={PRESENTATION_HELP.lineWidth} label="Line width" max={6} min={1} value={Number(draft.lineWidth ?? 1)} onChange={(value) => updatePresentation("lineWidth", value)} />
-                    <CatalogNumber help={PRESENTATION_HELP.precision} label="Precision" max={8} min={0} value={Number(draft.precision ?? 2)} onChange={(value) => updatePresentation("precision", value)} />
-                  </div>
+                  <CatalogStylePopover
+                    color={String(draft.color ?? "#1E3A5F")}
+                    lineStyle={String(draft.lineStyle ?? "solid")}
+                    lineStyleOptions={catalog?.presentationOptions.lineStyles ?? []}
+                    lineWidth={Number(draft.lineWidth ?? 1)}
+                    precision={Number(draft.precision ?? 2)}
+                    onChange={updatePresentation}
+                  />
                 </div>
                 <div className="catalog-presentation-section">
                   <h4>Markers & Format</h4>
@@ -1165,24 +1178,6 @@ function CatalogSelect({ help, label, onChange, options, value }: { help: string
   );
 }
 
-function CatalogText({ help, label, onChange, value }: { help: string; label: string; onChange: (value: string) => void; value: string }) {
-  return (
-    <div className="catalog-field">
-      <CatalogFieldLabel help={help} label={label} />
-      <input value={value} onChange={(event) => onChange(event.target.value)} />
-    </div>
-  );
-}
-
-function CatalogNumber({ help, label, max, min, onChange, value }: { help: string; label: string; max: number; min: number; onChange: (value: number) => void; value: number }) {
-  return (
-    <div className="catalog-field">
-      <CatalogFieldLabel help={help} label={label} />
-      <input max={max} min={min} type="number" value={String(value)} onChange={(event) => onChange(Number(event.target.value))} />
-    </div>
-  );
-}
-
 function CatalogCheckbox({ checked, help, label, onChange }: { checked: boolean; help: string; label: string; onChange: (value: boolean) => void }) {
   return (
     <div className="catalog-checkbox">
@@ -1193,6 +1188,120 @@ function CatalogCheckbox({ checked, help, label, onChange }: { checked: boolean;
       <CatalogHelpButton help={help} label={label} />
     </div>
   );
+}
+
+function CatalogStylePopover({
+  color,
+  lineStyle,
+  lineStyleOptions,
+  lineWidth,
+  precision,
+  onChange
+}: {
+  color: string;
+  lineStyle: string;
+  lineStyleOptions: string[];
+  lineWidth: number;
+  precision: number;
+  onChange: (key: string, value: string | number | boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [customColor, setCustomColor] = useState(color.startsWith("#") ? color : "");
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const resolvedLineStyles = lineStyleOptions.length ? lineStyleOptions : ["solid", "dashed", "dotted"];
+  const colorLabel = STYLE_COLOR_OPTIONS.find((option) => option.value === color)?.label ?? color;
+
+  useEffect(() => {
+    setCustomColor(color.startsWith("#") ? color : "");
+  }, [color]);
+
+  useEffect(() => {
+    if (!open) return;
+    function closeOnOutsideClick(event: MouseEvent) {
+      if (!popoverRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  function setCustomHex(value: string) {
+    setCustomColor(value);
+    if (/^#[0-9a-f]{6}$/i.test(value)) onChange("color", value);
+  }
+
+  return (
+    <div className="catalog-style-popover" ref={popoverRef}>
+      <CatalogFieldLabel help={`${PRESENTATION_HELP.color} ${PRESENTATION_HELP.lineStyle} ${PRESENTATION_HELP.lineWidth}`} label="Style editor" />
+      <button aria-expanded={open} className="catalog-style-trigger" onClick={() => setOpen((value) => !value)} type="button">
+        <span className="catalog-style-trigger-swatch" style={{ background: presentationColor(color) }} />
+        <span>
+          <strong>{colorLabel}</strong>
+          <small>{displayName(lineStyle)} | {lineWidth}px | {precision} dp</small>
+        </span>
+      </button>
+      {open ? (
+        <div className="catalog-style-popover-panel" role="dialog" aria-label="Visual style editor">
+          <section className="catalog-style-popover-section">
+            <h5>Color</h5>
+            <div className="catalog-color-swatch-grid">
+              {STYLE_COLOR_OPTIONS.map((option) => (
+                <button
+                  className={color === option.value ? "catalog-color-swatch-option selected" : "catalog-color-swatch-option"}
+                  key={option.value}
+                  onClick={() => onChange("color", option.value)}
+                  type="button"
+                >
+                  <span className="catalog-style-swatch" style={{ background: presentationColor(option.value) }} />
+                  <span>{option.label}</span>
+                </button>
+              ))}
+            </div>
+            <label className="catalog-style-inline-field">
+              <span>Custom hex</span>
+              <input maxLength={7} placeholder="#1E3A5F" value={customColor} onChange={(event) => setCustomHex(event.target.value)} />
+            </label>
+          </section>
+          <section className="catalog-style-popover-section">
+            <h5>Line Style</h5>
+            <div className="catalog-line-style-grid">
+              {resolvedLineStyles.map((option) => (
+                <button className={lineStyle === option ? "catalog-line-style-option selected" : "catalog-line-style-option"} key={option} onClick={() => onChange("lineStyle", option)} type="button">
+                  <span className={`catalog-line-preview ${option}`} />
+                  <span>{displayName(option)}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+          <section className="catalog-style-popover-section">
+            <h5>Readout</h5>
+            <div className="catalog-style-number-grid">
+              <label className="catalog-style-inline-field">
+                <span>Line width</span>
+                <input max={6} min={1} type="number" value={String(lineWidth)} onChange={(event) => onChange("lineWidth", boundedNumber(event.target.value, 1, 6))} />
+              </label>
+              <label className="catalog-style-inline-field">
+                <span>Precision</span>
+                <input max={8} min={0} type="number" value={String(precision)} onChange={(event) => onChange("precision", boundedNumber(event.target.value, 0, 8))} />
+              </label>
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function boundedNumber(value: string, min: number, max: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return min;
+  return Math.max(min, Math.min(max, numeric));
 }
 
 function catalogItems(catalog: CatalogPayload | null): CatalogCardItem[] {
