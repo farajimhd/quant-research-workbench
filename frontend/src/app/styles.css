@@ -1572,9 +1572,7 @@ button {
 .catalog-detail-pane {
   min-width: 0;
   overflow: auto;
-  background:
-    linear-gradient(180deg, color-mix(in oklab, var(--surface-alt) 22%, var(--card)) 0%, var(--card) 180px),
-    var(--card);
+  background: var(--card);
   padding: 14px;
 }
 
@@ -1600,8 +1598,7 @@ button {
   gap: 18px;
   overflow: hidden;
   border-color: color-mix(in oklab, var(--primary) 18%, var(--surface-border));
-  background:
-    linear-gradient(135deg, color-mix(in oklab, var(--primary) 8%, var(--card)) 0%, var(--card) 48%, color-mix(in oklab, var(--success) 5%, var(--card)) 100%);
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
   padding: 16px;
 }
 
@@ -1678,8 +1675,7 @@ button {
   display: grid;
   gap: 14px;
   border-color: color-mix(in oklab, var(--primary) 20%, var(--surface-border));
-  background:
-    linear-gradient(180deg, color-mix(in oklab, var(--primary) 5%, var(--card)) 0%, var(--card) 100%);
+  background: color-mix(in oklab, var(--primary) 4%, var(--card));
   padding: 14px;
 }
 

@@ -42,7 +42,6 @@ type AppThemeTokenMap = {
   divider: string;
   focusRing: string;
   foreground: string;
-  gradientBackdrop: string;
   menuBackground: string;
   menuShadow: string;
   muted: string;
@@ -300,7 +299,6 @@ export function applyThemeDefinition(target: HTMLElement, themeId: AppThemeId = 
     "--muted": tokens.muted,
     "--muted-foreground": tokens.mutedForeground,
     "--page-bg": tokens.background,
-    "--page-gradient": tokens.gradientBackdrop,
     "--popover": tokens.popover,
     "--popover-foreground": tokens.foreground,
     "--primary": tokens.primary,
@@ -404,7 +402,6 @@ function buildTheme({
       divider: palette.border,
       focusRing: tone === "light" ? "rgba(3, 2, 19, 0.14)" : withOpacity(palette.primary, "0.22"),
       foreground: palette.foreground,
-      gradientBackdrop: palette.background,
       menuBackground: palette.card,
       menuShadow: tone === "light" ? "0 18px 42px rgba(15, 23, 42, 0.12)" : "0 18px 42px rgba(2, 6, 23, 0.34)",
       muted: palette.muted,
