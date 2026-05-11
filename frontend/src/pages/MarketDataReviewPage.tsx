@@ -764,13 +764,62 @@ function CatalogTab({
               </div>
             </div>
             {saveState === "failed" ? <div className="error-panel">Catalog presentation update failed.</div> : null}
+            <section className="catalog-presentation-card">
+              <div className="catalog-presentation-header">
+                <div>
+                  <div className="catalog-kicker">Presentation</div>
+                  <h3>Chart Display Contract</h3>
+                </div>
+                <div className="catalog-presentation-preview">
+                  <span className="catalog-preview-swatch" style={{ background: presentationColor(draft.color) }} />
+                  <div>
+                    <strong>{String(draft.chartRole ?? selected.presentation?.chartRole ?? "table_only")}</strong>
+                    <span>{String(draft.pane ?? selected.presentation?.pane ?? "price")} pane</span>
+                  </div>
+                </div>
+              </div>
+              <div className="catalog-presentation-grid">
+                <div className="catalog-presentation-section">
+                  <h4>Visibility</h4>
+                  <div className="catalog-check-grid">
+                    <CatalogCheckbox checked={Boolean(draft.selectable)} label="Selectable" onChange={(value) => updatePresentation("selectable", value)} />
+                    <CatalogCheckbox checked={Boolean(draft.defaultVisible)} label="Default on" onChange={(value) => updatePresentation("defaultVisible", value)} />
+                    <CatalogCheckbox checked={Boolean(draft.legend)} label="Legend" onChange={(value) => updatePresentation("legend", value)} />
+                  </div>
+                </div>
+                <div className="catalog-presentation-section">
+                  <h4>Placement</h4>
+                  <div className="catalog-form-grid compact">
+                    <CatalogSelect label="Chart role" options={catalog?.presentationOptions.chartRoles ?? []} value={String(draft.chartRole ?? "table_only")} onChange={(value) => updatePresentation("chartRole", value)} />
+                    <CatalogSelect label="Pane" options={catalog?.presentationOptions.panes ?? []} value={String(draft.pane ?? "price")} onChange={(value) => updatePresentation("pane", value)} />
+                  </div>
+                </div>
+                <div className="catalog-presentation-section">
+                  <h4>Visual Style</h4>
+                  <div className="catalog-form-grid compact">
+                    <CatalogSelect label="Line style" options={catalog?.presentationOptions.lineStyles ?? []} value={String(draft.lineStyle ?? "solid")} onChange={(value) => updatePresentation("lineStyle", value)} />
+                    <CatalogText label="Color" value={String(draft.color ?? "#1E3A5F")} onChange={(value) => updatePresentation("color", value)} />
+                    <CatalogNumber label="Line width" max={6} min={1} value={Number(draft.lineWidth ?? 1)} onChange={(value) => updatePresentation("lineWidth", value)} />
+                    <CatalogNumber label="Precision" max={8} min={0} value={Number(draft.precision ?? 2)} onChange={(value) => updatePresentation("precision", value)} />
+                  </div>
+                </div>
+                <div className="catalog-presentation-section">
+                  <h4>Markers & Format</h4>
+                  <div className="catalog-form-grid compact">
+                    <CatalogSelect label="Marker shape" options={catalog?.presentationOptions.markerShapes ?? []} value={String(draft.markerShape ?? "circle")} onChange={(value) => updatePresentation("markerShape", value)} />
+                    <CatalogSelect label="Marker position" options={catalog?.presentationOptions.markerPositions ?? []} value={String(draft.markerPosition ?? "belowBar")} onChange={(value) => updatePresentation("markerPosition", value)} />
+                    <CatalogSelect label="Value format" options={catalog?.presentationOptions.valueFormats ?? []} value={String(draft.valueFormat ?? "number")} onChange={(value) => updatePresentation("valueFormat", value)} />
+                  </div>
+                </div>
+              </div>
+            </section>
             <div className="catalog-detail-metrics">
               <CatalogMetric icon={<Tags size={14} />} label="Category" value={selected.category} />
               <CatalogMetric icon={<Filter size={14} />} label="Group" value={selected.groupLabel} />
               <CatalogMetric icon={<SlidersHorizontal size={14} />} label="Chart role" value={String(draft.chartRole ?? selected.presentation?.chartRole ?? "table_only")} />
               <CatalogMetric icon={<BookOpen size={14} />} label="Value" value={String(draft.valueFormat ?? selected.presentation?.valueFormat ?? "-")} />
             </div>
-            <div className="catalog-detail-grid">
+            <div className="catalog-knowledge-grid">
               <section className="catalog-section-card">
                 <h3>Knowledge</h3>
                 <p>{selected.knowledge?.shortDescription}</p>
@@ -792,32 +841,15 @@ function CatalogTab({
                   </div>
                 ) : null}
               </section>
-              <section className="catalog-section-card presentation-editor">
-                <h3>Presentation</h3>
-                <div className="catalog-form-grid">
-                  <CatalogCheckbox checked={Boolean(draft.selectable)} label="Selectable" onChange={(value) => updatePresentation("selectable", value)} />
-                  <CatalogCheckbox checked={Boolean(draft.defaultVisible)} label="Default on" onChange={(value) => updatePresentation("defaultVisible", value)} />
-                  <CatalogCheckbox checked={Boolean(draft.legend)} label="Legend" onChange={(value) => updatePresentation("legend", value)} />
-                  <CatalogSelect label="Chart role" options={catalog?.presentationOptions.chartRoles ?? []} value={String(draft.chartRole ?? "table_only")} onChange={(value) => updatePresentation("chartRole", value)} />
-                  <CatalogSelect label="Pane" options={catalog?.presentationOptions.panes ?? []} value={String(draft.pane ?? "price")} onChange={(value) => updatePresentation("pane", value)} />
-                  <CatalogSelect label="Line style" options={catalog?.presentationOptions.lineStyles ?? []} value={String(draft.lineStyle ?? "solid")} onChange={(value) => updatePresentation("lineStyle", value)} />
-                  <CatalogSelect label="Marker shape" options={catalog?.presentationOptions.markerShapes ?? []} value={String(draft.markerShape ?? "circle")} onChange={(value) => updatePresentation("markerShape", value)} />
-                  <CatalogSelect label="Marker position" options={catalog?.presentationOptions.markerPositions ?? []} value={String(draft.markerPosition ?? "belowBar")} onChange={(value) => updatePresentation("markerPosition", value)} />
-                  <CatalogSelect label="Value format" options={catalog?.presentationOptions.valueFormats ?? []} value={String(draft.valueFormat ?? "number")} onChange={(value) => updatePresentation("valueFormat", value)} />
-                  <CatalogText label="Color" value={String(draft.color ?? "#1E3A5F")} onChange={(value) => updatePresentation("color", value)} />
-                  <CatalogNumber label="Line width" max={6} min={1} value={Number(draft.lineWidth ?? 1)} onChange={(value) => updatePresentation("lineWidth", value)} />
-                  <CatalogNumber label="Precision" max={8} min={0} value={Number(draft.precision ?? 2)} onChange={(value) => updatePresentation("precision", value)} />
+              <section className="catalog-section-card">
+                <h3>Equations</h3>
+                <div className="catalog-equation-grid">
+                  {selected.knowledge?.equations?.map((equation) => (
+                    <CatalogEquation equation={equation} key={equation.title} />
+                  ))}
                 </div>
               </section>
             </div>
-            <section className="catalog-section-card">
-              <h3>Equations</h3>
-              <div className="catalog-equation-grid">
-                {selected.knowledge?.equations?.map((equation) => (
-                  <CatalogEquation equation={equation} key={equation.title} />
-                ))}
-              </div>
-            </section>
           </div>
         ) : (
           <div className="catalog-detail-empty">
@@ -865,6 +897,12 @@ function CatalogFilter({ label, onChange, options, value }: { label: string; onC
       </select>
     </label>
   );
+}
+
+function presentationColor(value: unknown): string {
+  const color = String(value ?? "");
+  if (color === "inherit_candle_direction") return "#33E42A";
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : "#1E3A5F";
 }
 
 function CatalogEquation({ equation }: { equation: CatalogKnowledge["equations"][number] }) {
