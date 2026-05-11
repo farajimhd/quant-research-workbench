@@ -43,6 +43,11 @@ type Region = { start: number; end: number; color: string; label: string };
 type AnySeriesApi = ISeriesApi<SeriesType>;
 type ChartMarker = SeriesMarker<Time>;
 type LegendPane = "price" | "oscillator";
+type OscillatorPaneRuntime = {
+  chart: IChartApi;
+  renderer: AnySeriesApi;
+  valuesByTime: Map<number, number>;
+};
 type LegendLineStyle = "solid" | "dashed" | "dotted";
 type LegendSeriesSettings = {
   color?: string;
@@ -151,11 +156,11 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   visibleColumns
 }, ref) => {
   const priceRef = useRef<HTMLDivElement | null>(null);
-  const oscRef = useRef<HTMLDivElement | null>(null);
+  const oscillatorPaneRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const shellRef = useRef<HTMLDivElement | null>(null);
   const priceLayerRef = useRef<HTMLDivElement | null>(null);
   const priceChartRef = useRef<IChartApi | null>(null);
-  const oscChartRef = useRef<IChartApi | null>(null);
+  const oscillatorChartRefs = useRef<Map<string, IChartApi>>(new Map());
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const indicatorSeriesRef = useRef<Map<string, AnySeriesApi>>(new Map());
   const indicatorSourceRef = useRef<Map<string, ChartSeries>>(new Map());
@@ -196,6 +201,14 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       saveLegendSettings(next);
       return next;
     });
+  };
+
+  const setOscillatorPaneRef = (key: string, node: HTMLDivElement | null) => {
+    if (node) {
+      oscillatorPaneRefs.current.set(key, node);
+    } else {
+      oscillatorPaneRefs.current.delete(key);
+    }
   };
 
   useImperativeHandle(ref, () => ({
@@ -258,7 +271,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     let disposed = false;
     const palette = readChartPalette();
     priceRef.current.innerHTML = "";
-    if (oscRef.current) oscRef.current.innerHTML = "";
+    oscillatorPaneRefs.current.forEach((pane) => {
+      pane.innerHTML = "";
+    });
+    oscillatorChartRefs.current.clear();
     indicatorSeriesRef.current.clear();
     indicatorSourceRef.current.clear();
     const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettings));
@@ -290,40 +306,27 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       indicatorSourceRef.current.set(key, series);
     });
 
-    let oscChart: IChartApi | null = null;
-    let primaryOscillatorSeries: AnySeriesApi | null = null;
-    if (oscRef.current && payload.oscillator_series.length) {
-      oscChart = createChart(oscRef.current, chartOptions(oscRef.current.clientWidth, oscRef.current.clientHeight, true, palette, chartSettings));
-      oscChartRef.current = oscChart;
-      payload.oscillator_series.forEach((series) => {
-        const key = legendSeriesKey("oscillator", series);
-        const settings = resolveLegendSettings(legendSettings, key, series);
-        const renderer =
-          series.style === "histogram"
-            ? oscChart!.addHistogramSeries({ color: settings.color, priceLineVisible: false, title: series.label, visible: settings.visible })
-            : oscChart!.addLineSeries({
-                color: settings.color,
-                lineStyle: toChartLineStyle(settings.lineStyle),
-                lineWidth: toLineWidth(settings.lineWidth),
-                priceLineVisible: false,
-                title: series.label,
-                visible: settings.visible
-              });
-        if (!primaryOscillatorSeries) primaryOscillatorSeries = renderer;
-        renderer.setData(seriesDataForSettings(series, settings) as never);
-        indicatorSeriesRef.current.set(key, renderer);
-        indicatorSourceRef.current.set(key, series);
+    const oscillatorPanes: OscillatorPaneRuntime[] = [];
+    payload.oscillator_series.forEach((series) => {
+      const key = legendSeriesKey("oscillator", series);
+      const pane = oscillatorPaneRefs.current.get(key);
+      if (!pane) return;
+      const oscChart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, true, palette, chartSettings));
+      oscillatorChartRefs.current.set(key, oscChart);
+      const settings = resolveLegendSettings(legendSettings, key, series);
+      const renderer = addChartSeries(oscChart, series, settings);
+      renderer.setData(seriesDataForSettings(series, settings) as never);
+      indicatorSeriesRef.current.set(key, renderer);
+      indicatorSourceRef.current.set(key, series);
+      oscillatorPanes.push({
+        chart: oscChart,
+        renderer,
+        valuesByTime: new Map(series.data.map((point) => [point.time, point.value]))
       });
-    } else {
-      oscChartRef.current = null;
-    }
-    const rangeCleanup = oscChart ? syncRanges(priceChart, oscChart) : () => undefined;
+    });
+    const rangeCleanups = oscillatorPanes.map((pane) => syncRanges(priceChart, pane.chart));
     const closeByTime = new Map(payload.candles.map((candle) => [candle.time, candle.close]));
-    const oscillatorByTime = new Map((payload.oscillator_series[0]?.data ?? []).map((point) => [point.time, point.value]));
-    const crosshairCleanup =
-      oscChart && primaryOscillatorSeries
-        ? syncCrosshairs(priceChart, oscChart, candleSeries, primaryOscillatorSeries, closeByTime, oscillatorByTime)
-        : () => undefined;
+    const crosshairCleanup = syncCrosshairs(priceChart, oscillatorPanes, candleSeries, closeByTime);
     const draw = () => {
       if (disposed) return;
       drawRegions(priceChart, priceLayerRef.current, payload.regions, payload.candles, chartSettings);
@@ -344,12 +347,12 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       window.clearTimeout(initialFitTimer);
       observer.disconnect();
       crosshairCleanup();
-      rangeCleanup();
+      rangeCleanups.forEach((cleanup) => cleanup());
       priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(draw);
       priceChart.remove();
-      oscChart?.remove();
+      oscillatorPanes.forEach((pane) => pane.chart.remove());
       priceChartRef.current = null;
-      oscChartRef.current = null;
+      oscillatorChartRefs.current.clear();
       indicatorSeriesRef.current.clear();
       indicatorSourceRef.current.clear();
     };
@@ -357,17 +360,16 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   function resizeCharts() {
     const price = priceRef.current;
-    const osc = oscRef.current;
     if (price && priceChartRef.current) {
       priceChartRef.current.applyOptions({ width: price.clientWidth, height: price.clientHeight });
     }
-    if (osc && oscChartRef.current) {
-      oscChartRef.current.applyOptions({ width: osc.clientWidth, height: osc.clientHeight });
-    }
+    oscillatorChartRefs.current.forEach((chart, key) => {
+      const pane = oscillatorPaneRefs.current.get(key);
+      if (pane) chart.applyOptions({ width: pane.clientWidth, height: pane.clientHeight });
+    });
   }
 
   const priceLegendItems = buildPriceLegendItems(payload, ticker, legendSettings, chartSettings);
-  const oscillatorLegendItems = buildSeriesLegendItems(payload?.oscillator_series ?? [], "oscillator", legendSettings);
 
   const commitTicker = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -465,17 +467,20 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
               onUpdate={updateLegendSettings}
             />
           </div>
-          {payload.oscillator_series.length ? (
-            <div className="chart-osc">
-              <div className="chart-pane-canvas" ref={oscRef} />
-              <ChartLegend
-                indicatorCount={payload.oscillator_series.length}
-                items={oscillatorLegendItems}
-                onReset={resetLegendSettings}
-                onUpdate={updateLegendSettings}
-              />
-            </div>
-          ) : null}
+          {payload.oscillator_series.map((series) => {
+            const key = legendSeriesKey("oscillator", series);
+            return (
+              <div className="chart-osc" key={key}>
+                <div className="chart-pane-canvas" ref={(node) => setOscillatorPaneRef(key, node)} />
+                <ChartLegend
+                  indicatorCount={1}
+                  items={buildSeriesLegendItems([series], "oscillator", legendSettings)}
+                  onReset={resetLegendSettings}
+                  onUpdate={updateLegendSettings}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1062,6 +1067,20 @@ function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settin
   renderer.setData(seriesDataForSettings(source, settings) as never);
 }
 
+function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Required<LegendSeriesSettings>): AnySeriesApi {
+  if (series.style === "histogram") {
+    return chart.addHistogramSeries({ color: settings.color, priceLineVisible: false, title: series.label, visible: settings.visible });
+  }
+  return chart.addLineSeries({
+    color: settings.color,
+    lineStyle: toChartLineStyle(settings.lineStyle),
+    lineWidth: toLineWidth(settings.lineWidth),
+    priceLineVisible: false,
+    title: series.label,
+    visible: settings.visible
+  });
+}
+
 function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSeriesSettings>) {
   if (series.style !== "histogram") return series.data;
   if (!settings.color || settings.color === series.color) return series.data;
@@ -1188,51 +1207,70 @@ function syncRanges(source: IChartApi, target: IChartApi) {
 
 function syncCrosshairs(
   priceChart: IChartApi,
-  oscillatorChart: IChartApi,
+  oscillatorPanes: OscillatorPaneRuntime[],
   candleSeries: AnySeriesApi,
-  oscillatorSeries: AnySeriesApi,
-  closeByTime: Map<number, number>,
-  oscillatorByTime: Map<number, number>
+  closeByTime: Map<number, number>
 ) {
+  if (!oscillatorPanes.length) return () => undefined;
   let syncing = false;
 
-  const syncToOscillator = (param: MouseEventParams<Time>) => {
+  const setOscillatorCrosshairs = (time: Time, excludedChart?: IChartApi) => {
+    oscillatorPanes.forEach((pane) => {
+      if (pane.chart === excludedChart) return;
+      const value = pane.valuesByTime.get(Number(time));
+      if (typeof value === "number" && Number.isFinite(value)) {
+        pane.chart.setCrosshairPosition(value, time, pane.renderer);
+      } else {
+        pane.chart.clearCrosshairPosition();
+      }
+    });
+  };
+
+  const clearOscillatorCrosshairs = (excludedChart?: IChartApi) => {
+    oscillatorPanes.forEach((pane) => {
+      if (pane.chart !== excludedChart) pane.chart.clearCrosshairPosition();
+    });
+  };
+
+  const syncToOscillators = (param: MouseEventParams<Time>) => {
     if (syncing) return;
     if (!param.time) {
-      oscillatorChart.clearCrosshairPosition();
-      return;
-    }
-    const value = oscillatorByTime.get(Number(param.time));
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-      oscillatorChart.clearCrosshairPosition();
+      clearOscillatorCrosshairs();
       return;
     }
     syncing = true;
-    oscillatorChart.setCrosshairPosition(value, param.time, oscillatorSeries);
+    setOscillatorCrosshairs(param.time);
     syncing = false;
   };
 
-  const syncToPrice = (param: MouseEventParams<Time>) => {
+  const syncToPriceAndPeers = (sourceChart: IChartApi, param: MouseEventParams<Time>) => {
     if (syncing) return;
     if (!param.time) {
       priceChart.clearCrosshairPosition();
+      clearOscillatorCrosshairs(sourceChart);
       return;
     }
     const value = closeByTime.get(Number(param.time));
     if (typeof value !== "number" || !Number.isFinite(value)) {
       priceChart.clearCrosshairPosition();
+      clearOscillatorCrosshairs(sourceChart);
       return;
     }
     syncing = true;
     priceChart.setCrosshairPosition(value, param.time, candleSeries);
+    setOscillatorCrosshairs(param.time, sourceChart);
     syncing = false;
   };
 
-  priceChart.subscribeCrosshairMove(syncToOscillator);
-  oscillatorChart.subscribeCrosshairMove(syncToPrice);
+  priceChart.subscribeCrosshairMove(syncToOscillators);
+  const paneHandlers = oscillatorPanes.map((pane) => {
+    const handler = (param: MouseEventParams<Time>) => syncToPriceAndPeers(pane.chart, param);
+    pane.chart.subscribeCrosshairMove(handler);
+    return { pane, handler };
+  });
   return () => {
-    priceChart.unsubscribeCrosshairMove(syncToOscillator);
-    oscillatorChart.unsubscribeCrosshairMove(syncToPrice);
+    priceChart.unsubscribeCrosshairMove(syncToOscillators);
+    paneHandlers.forEach(({ pane, handler }) => pane.chart.unsubscribeCrosshairMove(handler));
   };
 }
 
