@@ -1,15 +1,16 @@
 import type { ReactNode } from "react";
 
 type PageIntroProps = {
+  className?: string;
   groupLabel: string;
   title: string;
   description: string;
   actions?: ReactNode;
 };
 
-export function PageIntro({ groupLabel, title, description, actions }: PageIntroProps) {
+export function PageIntro({ className, groupLabel, title, description, actions }: PageIntroProps) {
   return (
-    <div className="page-intro">
+    <div className={className ? `page-intro ${className}` : "page-intro"}>
       <div className="page-intro-copy">
         <div className="page-kicker">{groupLabel}</div>
         <h1>{title}</h1>
@@ -19,4 +20,3 @@ export function PageIntro({ groupLabel, title, description, actions }: PageIntro
     </div>
   );
 }
-

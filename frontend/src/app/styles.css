@@ -334,6 +334,28 @@ button {
   min-width: 0;
 }
 
+.page-intro-actions {
+  display: flex;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.review-data-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(500px, 40%);
+  align-items: stretch;
+  gap: 24px;
+  margin-bottom: 12px;
+}
+
+.review-data-intro .page-intro-copy {
+  align-self: center;
+}
+
+.review-data-intro .page-intro-actions {
+  width: 100%;
+}
+
 .page-kicker {
   color: var(--muted-foreground);
   font-size: 11px;
@@ -367,6 +389,12 @@ button {
   padding: 14px 16px;
 }
 
+.review-data-intro .scope-card {
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px;
+}
+
 .scope-card-header,
 .scope-card-grid {
   display: grid;
@@ -379,8 +407,52 @@ button {
   margin-bottom: 10px;
 }
 
+.review-data-intro .scope-card-header {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.review-data-intro .scope-card-header .meta-tag {
+  min-width: 0;
+  justify-self: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .scope-title {
   font-weight: 700;
+}
+
+.scope-edit-button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.review-data-intro .scope-card-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px 14px;
+}
+
+.review-data-intro .scope-item {
+  margin-bottom: 0;
+}
+
+.review-data-intro .scope-item-small {
+  grid-column: span 2;
+}
+
+.review-data-intro .scope-item-root {
+  grid-column: span 3;
+}
+
+.review-data-intro .scope-item span {
+  font-size: 11px;
+}
+
+.review-data-intro .scope-item b {
+  font-size: 12px;
 }
 
 .force-badge {
@@ -2856,6 +2928,19 @@ button {
 
   .page-intro {
     flex-direction: column;
+  }
+
+  .review-data-intro {
+    grid-template-columns: 1fr;
+  }
+
+  .review-data-intro .scope-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .review-data-intro .scope-item-small,
+  .review-data-intro .scope-item-root {
+    grid-column: auto;
   }
 
   .scope-card {

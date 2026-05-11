@@ -85,12 +85,12 @@ export function MarketDataReviewPage() {
   return (
     <>
       <PageIntro
+        className="review-data-intro"
         groupLabel="Market Data"
         title="Review Data"
         description="Inspect saved provider artifacts, coverage, schemas, sampled rows, and chart-ready feature/supervision overlays."
-        actions={scope ? <ReviewScopeCard scope={scope} manifest={review?.manifest} /> : null}
+        actions={scope ? <ReviewScopeCard scope={scope} manifest={review?.manifest} onEdit={() => setEditingScope(true)} /> : null}
       />
-      <button className="button" onClick={() => setEditingScope(true)} type="button">Edit scope</button>
       <MetricStrip
         items={[
           { label: "Artifacts", value: review?.metrics.artifacts ?? 0, kind: "number" },
@@ -128,22 +128,20 @@ export function MarketDataReviewPage() {
   );
 }
 
-function ReviewScopeCard({ scope, manifest }: { scope: Scope; manifest?: Record<string, unknown> }) {
+function ReviewScopeCard({ scope, manifest, onEdit }: { scope: Scope; manifest?: Record<string, unknown>; onEdit: () => void }) {
   return (
     <div className="scope-card">
       <div className="scope-card-header">
         <div className="scope-title">Data Scope</div>
         <span className="meta-tag">Updated {String(manifest?.updated_at ?? "-")}</span>
+        <button className="text-button scope-edit-button" onClick={onEdit} type="button">Edit scope</button>
       </div>
       <div className="scope-card-grid">
-        <div>
-          <ScopeItem label="Start" value={scope.start_date} />
-          <ScopeItem label="End" value={scope.end_date} />
-        </div>
-        <div>
-          <ScopeItem label="Processed root" value={scope.processed_root} />
-          <ScopeItem label="Artifacts" value={String(manifest?.artifact_count ?? "-")} />
-        </div>
+        <ScopeItem className="scope-item-small" label="Start" value={scope.start_date} />
+        <ScopeItem className="scope-item-small" label="End" value={scope.end_date} />
+        <ScopeItem className="scope-item-small" label="Artifacts" value={String(manifest?.artifact_count ?? "-")} />
+        <ScopeItem className="scope-item-root" label="Raw root" value={scope.raw_root} />
+        <ScopeItem className="scope-item-root" label="Processed root" value={scope.processed_root} />
       </div>
     </div>
   );
@@ -493,9 +491,9 @@ function Field({ label, value, onChange, type = "text" }: { label: string; value
   );
 }
 
-function ScopeItem({ label, value }: { label: string; value: string }) {
+function ScopeItem({ className, label, value }: { className?: string; label: string; value: string }) {
   return (
-    <div className="scope-item">
+    <div className={className ? `scope-item ${className}` : "scope-item"}>
       <span>{label}</span>
       <b title={value}>{value}</b>
     </div>
