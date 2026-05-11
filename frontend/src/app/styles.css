@@ -1753,8 +1753,32 @@ button {
   min-height: 26px;
   border: 0;
   background: transparent;
+  background-color: transparent;
+  color: #050505;
+  opacity: 0.46;
   padding: 0 6px;
   font-size: 12px;
+}
+
+.chart-timeframe-row .timeframe-button:hover {
+  background: transparent;
+  background-color: transparent;
+  color: #050505;
+  opacity: 0.72;
+}
+
+.chart-timeframe-row .timeframe-button:focus,
+.chart-timeframe-row .timeframe-button:focus-visible {
+  outline: 0;
+  box-shadow: none;
+}
+
+.chart-timeframe-row .timeframe-button.active {
+  background: transparent;
+  background-color: transparent;
+  color: #050505;
+  font-weight: 750;
+  opacity: 1;
 }
 
 .chart-canvas-stack {
