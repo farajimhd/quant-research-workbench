@@ -141,8 +141,6 @@ const defaultChartAppearanceSettings: ChartAppearanceSettings = {
 
 const LEGEND_SETTINGS_STORAGE_KEY = "quant-research-workbench.chart.legend-settings.v1";
 const CHART_APPEARANCE_STORAGE_KEY = "quant-research-workbench.chart.appearance-settings.v1";
-const MARKER_REFERENCE_CANDLE_SIZE = defaultChartAppearanceSettings.candleSize;
-const MIN_MARKER_SIZE = 0.45;
 
 type ChartPalette = {
   background: string;
@@ -313,7 +311,6 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
     candleRef.current = candleSeries;
     candleSeries.setData(payload.candles as never);
-    if (payload.markers.length) candleSeries.setMarkers(markerDataForSettings(payload.markers, chartSettings));
     const volume = priceChart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "", base: 0 });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     volume.setData(volumeDataForSettings(payload, chartSettings) as never);
@@ -1018,14 +1015,6 @@ function candleSeriesOptions(settings: ChartAppearanceSettings) {
     wickUpColor: settings.wickUpColor,
     wickVisible: settings.wickVisible
   };
-}
-
-function markerDataForSettings(markers: ChartMarker[], settings: ChartAppearanceSettings): ChartMarker[] {
-  const markerSize = Math.max(MIN_MARKER_SIZE, Math.min(1, MARKER_REFERENCE_CANDLE_SIZE / Math.max(1, settings.candleSize)));
-  return markers.map((marker) => ({
-    ...marker,
-    size: Math.min(marker.size ?? 1, markerSize)
-  }));
 }
 
 function volumeDataForSettings(payload: ChartPayload, settings: ChartAppearanceSettings) {

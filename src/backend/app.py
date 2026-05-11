@@ -376,7 +376,7 @@ def market_chart(
 ) -> dict[str, Any]:
     selected_feature_groups = parse_csv_list(feature_groups) or ["core", "momentum"]
     selected_columns = parse_csv_list(columns) if columns is not None else ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"]
-    selected_supervision = parse_csv_list(supervision_groups) or ["method"]
+    selected_supervision = parse_csv_list(supervision_groups) if supervision_groups is not None else []
     range_start, range_end = resolve_chart_range(start_date, end_date, session_date)
     return json_safe(
         chart_payload(

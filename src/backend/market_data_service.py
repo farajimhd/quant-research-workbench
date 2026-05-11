@@ -547,15 +547,19 @@ def chart_payload(
                 points.append(point)
         target = oscillator_series if option["pane"] == "oscillator" else overlay_series
         target.append({"column": column, "label": option["label"], "style": option["style"], "color": option["color"], "lineWidth": option["lineWidth"], "data": points})
-    markers = supervision_markers(
-        provider,
-        start_date=start_date,
-        end_date=end_date,
-        timeframe=timeframe,
-        ticker=ticker.upper(),
-        supervision_groups=supervision_groups_selected,
-        marker_limit=marker_limit,
-        min_confidence=min_confidence,
+    markers = (
+        []
+        if not supervision_groups_selected or marker_limit <= 0
+        else supervision_markers(
+            provider,
+            start_date=start_date,
+            end_date=end_date,
+            timeframe=timeframe,
+            ticker=ticker.upper(),
+            supervision_groups=supervision_groups_selected,
+            marker_limit=marker_limit,
+            min_confidence=min_confidence,
+        )
     )
     return {
         "candles": candles,

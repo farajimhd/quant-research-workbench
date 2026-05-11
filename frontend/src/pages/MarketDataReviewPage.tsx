@@ -53,9 +53,7 @@ type SchemaField = {
 const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema"];
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_COLUMNS = ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"];
-const DEFAULT_CHART_SUPERVISION_GROUPS = ["method"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
-const DEFAULT_CHART_MARKER_LIMIT = 100;
 
 export function MarketDataReviewPage() {
   const [scope, setScope] = useState<Scope | null>(null);
@@ -88,7 +86,7 @@ export function MarketDataReviewPage() {
         className="review-data-intro"
         groupLabel="Market Data"
         title="Review Data"
-        description="Inspect saved provider artifacts, coverage, schemas, sampled rows, and chart-ready feature/supervision overlays."
+        description="Inspect saved provider artifacts, coverage, schemas, sampled rows, and chart-ready feature overlays."
         actions={scope ? <ReviewScopeCard scope={scope} manifest={review?.manifest} onEdit={() => setEditingScope(true)} /> : null}
       />
       <MetricStrip
@@ -277,9 +275,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         ticker: ticker.trim().toUpperCase(),
         feature_groups: featureGroups.join(","),
         columns: visibleColumns.join(","),
-        supervision_groups: DEFAULT_CHART_SUPERVISION_GROUPS.join(","),
-        min_confidence: DEFAULT_CHART_MIN_CONFIDENCE,
-        marker_limit: DEFAULT_CHART_MARKER_LIMIT
+        min_confidence: DEFAULT_CHART_MIN_CONFIDENCE
       })}`
     ).then((nextPayload) => {
       if (!active) return;
