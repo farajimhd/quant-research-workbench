@@ -282,21 +282,25 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
               <Columns3 size={15} />
             </button>
             {columnsMenuOpen ? (
-              <div className="data-table-popover data-table-columns-popover">
+              <div className="data-table-popover data-table-columns-popover table-popover-divided">
                 <div className="data-table-popover-title">Columns</div>
-                {resolvedColumns.map((column) => (
-                  <label className="data-table-check-row" key={column}>
-                    <input
-                      checked={!hiddenColumns.includes(column)}
-                      onChange={() => toggleColumnVisibility(column)}
-                      type="checkbox"
-                    />
-                    <span>{displayName(column)}</span>
-                  </label>
-                ))}
-                <button className="table-text-button data-table-show-all-button" onClick={() => setHiddenColumns([])} type="button">
-                  Show all columns
-                </button>
+                <div className="data-table-columns-list">
+                  {resolvedColumns.map((column) => (
+                    <label className="data-table-check-row" key={column}>
+                      <input
+                        checked={!hiddenColumns.includes(column)}
+                        onChange={() => toggleColumnVisibility(column)}
+                        type="checkbox"
+                      />
+                      <span>{displayName(column)}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="data-table-columns-actions">
+                  <button className="table-text-button data-table-show-all-button" onClick={() => setHiddenColumns([])} type="button">
+                    Show all columns
+                  </button>
+                </div>
               </div>
             ) : null}
           </div>
@@ -463,7 +467,7 @@ function ColumnFilterPopover({
   const optionTotal = filteredOptions.reduce((total, option) => total + option.count, 0);
 
   return (
-    <div className="table-popover-panel">
+    <div className="table-popover-panel table-popover-divided">
       <div className="table-popover-header">
         <div>
           <div className="table-popover-heading">{displayName(profile.column)}</div>
@@ -1169,33 +1173,140 @@ function supportsTextCaseSensitivity(profile: ColumnProfile) {
 }
 
 function buildNumericHistogram(sortedValues: number[]) {
-  if (!sortedValues.length) return [];
-  const min = sortedValues[0];
-  const max = sortedValues[sortedValues.length - 1];
-  if (min === max) return [{ count: sortedValues.length, label: formatProfileMetric(min) }];
-  const binCount = Math.min(8, Math.max(4, Math.ceil(Math.sqrt(sortedValues.length))));
-  const width = (max - min) / binCount;
-  return Array.from({ length: binCount }, (_, index) => {
-    const start = min + width * index;
-    const end = index === binCount - 1 ? max : start + width;
-    const count = sortedValues.filter((value) => (index === binCount - 1 ? value >= start && value <= end : value >= start && value < end)).length;
-    return { count, label: `${formatProfileMetric(start)} - ${formatProfileMetric(end)}` };
-  }).filter((bin) => bin.count > 0);
+  const formatter = sortedValues.every((value) => Number.isInteger(value))
+    ? (value: number) => formatProfileMetric(Math.round(value))
+    : formatProfileMetric;
+  return buildStatisticalHistogram(sortedValues, formatter);
 }
 
 function buildDatetimeHistogram(sortedValues: number[], temporalUnit: ColumnProfile["temporalUnit"], timeZoneName?: string) {
-  if (!sortedValues.length) return [];
+  return buildStatisticalHistogram(sortedValues, (value) => formatDateTimeMetric(value, temporalUnit, timeZoneName));
+}
+
+function buildStatisticalHistogram(sortedValues: number[], formatter: (value: number) => string) {
+  const values = sortedValues.filter((value) => Number.isFinite(value));
+  if (!values.length) return [];
+  const uniqueCount = countUniqueSorted(values);
+  if (uniqueCount <= 10) return buildExactValueHistogram(values, formatter);
+
+  const stats = buildDistributionStats(values);
+  const fdEdges = buildFreedmanDiaconisEdges(stats);
+  const fdBins = buildHistogramBinsFromEdges(values, fdEdges, formatter);
+  if (!shouldUseQuantileBins(stats, fdBins, fdEdges.length - 1)) return fdBins;
+
+  const quantileEdges = buildQuantileEdges(values, clampInteger(Math.ceil(Math.log2(values.length)) + 1, 4, 10));
+  const quantileBins = buildHistogramBinsFromEdges(values, quantileEdges, formatter);
+  return quantileBins.length > 1 ? quantileBins : fdBins;
+}
+
+function buildDistributionStats(sortedValues: number[]) {
   const min = sortedValues[0];
   const max = sortedValues[sortedValues.length - 1];
-  if (min === max) return [{ count: sortedValues.length, label: formatDateTimeMetric(min, temporalUnit, timeZoneName) }];
-  const binCount = Math.min(8, Math.max(4, Math.ceil(Math.sqrt(sortedValues.length))));
+  const q1 = percentile(sortedValues, 0.25) ?? min;
+  const median = percentile(sortedValues, 0.5) ?? min;
+  const q3 = percentile(sortedValues, 0.75) ?? max;
+  return {
+    iqr: q3 - q1,
+    max,
+    median,
+    min,
+    q1,
+    q3,
+    range: max - min,
+    rowCount: sortedValues.length,
+  };
+}
+
+function buildFreedmanDiaconisEdges(stats: ReturnType<typeof buildDistributionStats>) {
+  if (stats.range <= 0) return [stats.min, stats.max];
+  const fdWidth = stats.iqr > 0 ? (2 * stats.iqr) / Math.cbrt(stats.rowCount) : Number.NaN;
+  const fdBinCount = Number.isFinite(fdWidth) && fdWidth > 0 ? Math.ceil(stats.range / fdWidth) : 0;
+  const sturgesBinCount = Math.ceil(Math.log2(stats.rowCount)) + 1;
+  const binCount = clampInteger(fdBinCount || sturgesBinCount, 4, 10);
+  return buildEqualWidthEdges(stats.min, stats.max, binCount);
+}
+
+function shouldUseQuantileBins(
+  stats: ReturnType<typeof buildDistributionStats>,
+  bins: HistogramBin[],
+  candidateBinCount: number,
+) {
+  if (stats.rowCount < 20 || stats.iqr <= 0 || stats.range <= 0 || candidateBinCount <= 1) return false;
+  const largestBinShare = Math.max(...bins.map((bin) => bin.count)) / stats.rowCount;
+  const nonEmptyBinShare = bins.length / candidateBinCount;
+  const iqrRangeShare = stats.iqr / stats.range;
+  const robustSkew = (stats.q3 + stats.q1 - 2 * stats.median) / stats.iqr;
+  return largestBinShare > 0.55 || nonEmptyBinShare < 0.65 || iqrRangeShare < 0.08 || Math.abs(robustSkew) > 0.65;
+}
+
+function buildEqualWidthEdges(min: number, max: number, binCount: number) {
   const width = (max - min) / binCount;
-  return Array.from({ length: binCount }, (_, index) => {
-    const start = min + width * index;
-    const end = index === binCount - 1 ? max : start + width;
-    const count = sortedValues.filter((value) => (index === binCount - 1 ? value >= start && value <= end : value >= start && value < end)).length;
-    return { count, label: `${formatDateTimeMetric(start, temporalUnit, timeZoneName)} - ${formatDateTimeMetric(end, temporalUnit, timeZoneName)}` };
-  }).filter((bin) => bin.count > 0);
+  return Array.from({ length: binCount + 1 }, (_, index) => (index === binCount ? max : min + width * index));
+}
+
+function buildQuantileEdges(sortedValues: number[], binCount: number) {
+  const min = sortedValues[0];
+  const max = sortedValues[sortedValues.length - 1];
+  const edges = [min];
+  for (let index = 1; index < binCount; index += 1) {
+    const edge = percentile(sortedValues, index / binCount);
+    if (edge !== undefined && edge > edges[edges.length - 1]) edges.push(edge);
+  }
+  if (max > edges[edges.length - 1]) edges.push(max);
+  return edges.length > 2 ? edges : buildEqualWidthEdges(min, max, Math.min(4, binCount));
+}
+
+function buildHistogramBinsFromEdges(
+  sortedValues: number[],
+  edges: number[],
+  formatter: (value: number) => string,
+) {
+  if (edges.length < 2) return buildExactValueHistogram(sortedValues, formatter);
+  const bins: HistogramBin[] = [];
+  let cursor = 0;
+  for (let index = 0; index < edges.length - 1; index += 1) {
+    const start = edges[index];
+    const end = edges[index + 1];
+    const startIndex = cursor;
+    while (
+      cursor < sortedValues.length &&
+      (index === edges.length - 2 ? sortedValues[cursor] <= end : sortedValues[cursor] < end)
+    ) {
+      cursor += 1;
+    }
+    const count = cursor - startIndex;
+    if (count > 0) bins.push({ count, label: formatDistributionRange(start, end, formatter) });
+  }
+  return bins;
+}
+
+function buildExactValueHistogram(sortedValues: number[], formatter: (value: number) => string) {
+  const bins: HistogramBin[] = [];
+  let currentValue = sortedValues[0];
+  let currentCount = 0;
+  sortedValues.forEach((value) => {
+    if (value !== currentValue) {
+      bins.push({ count: currentCount, label: formatter(currentValue) });
+      currentValue = value;
+      currentCount = 0;
+    }
+    currentCount += 1;
+  });
+  bins.push({ count: currentCount, label: formatter(currentValue) });
+  return bins;
+}
+
+function countUniqueSorted(sortedValues: number[]) {
+  return sortedValues.reduce((count, value, index) => count + (index === 0 || value !== sortedValues[index - 1] ? 1 : 0), 0);
+}
+
+function clampInteger(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function formatDistributionRange(start: number, end: number, formatter: (value: number) => string) {
+  if (start === end) return formatter(start);
+  return `${formatter(start)} - ${formatter(end)}`;
 }
 
 function percentile(sortedValues: number[], p: number) {

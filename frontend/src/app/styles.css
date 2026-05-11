@@ -1845,6 +1845,11 @@ button {
   padding: 10px;
 }
 
+.data-table-popover.table-popover-divided {
+  overflow: hidden;
+  padding: 0;
+}
+
 .data-table-columns-popover {
   top: calc(100% + 8px);
   max-height: 360px;
@@ -1853,15 +1858,22 @@ button {
 
 .data-table-show-all-button {
   width: 100%;
-  margin-top: 8px;
+  margin-top: 0;
 }
 
 .data-table-popover-title {
-  margin-bottom: 8px;
   color: var(--muted-foreground);
   font-size: 11px;
   font-weight: 600;
+  padding: 10px 12px;
   text-transform: uppercase;
+}
+
+.data-table-columns-list,
+.data-table-columns-actions {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
 }
 
 .data-table-check-row {
