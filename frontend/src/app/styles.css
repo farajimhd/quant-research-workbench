@@ -864,6 +864,7 @@ button {
 
 .data-table-shell {
   display: flex;
+  height: var(--data-table-height, 430px);
   min-height: 0;
   flex-direction: column;
   border: 1px solid var(--surface-border);
@@ -874,6 +875,7 @@ button {
 
 .data-table-toolbar {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -948,6 +950,8 @@ button {
 }
 
 .data-table-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
 }
 
