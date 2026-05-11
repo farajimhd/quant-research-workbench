@@ -473,7 +473,11 @@ def indicator_settings(selected_columns: list[str], catalog: dict[str, Any]) -> 
         pane_name = str(presentation.get("pane") or chart_pane_for_column(column))
         pane = "price" if pane_name == "price" or role in {"price_overlay", "band"} else "oscillator"
         color = str(presentation.get("color") or DYNAMIC_COLORS[index % len(DYNAMIC_COLORS)])
+        band_fill_opacity = bounded_float(presentation.get("bandFillOpacity"), default=0.16, lower=0.0, upper=0.6)
         settings[column] = {
+            "bandFillColor": str(presentation.get("bandFillColor") or color),
+            "bandFillOpacity": band_fill_opacity,
+            "chartRole": role,
             "color": "#33E42A" if color == "inherit_candle_direction" else color,
             "dynamicColor": color == "inherit_candle_direction",
             "lineWidth": int(presentation.get("lineWidth") or (2 if column == "vwap" else 1)),
@@ -485,6 +489,14 @@ def indicator_settings(selected_columns: list[str], catalog: dict[str, Any]) -> 
             "label": str(column_contract.get("title") or display_name(column)),
         }
     return settings
+
+
+def bounded_float(value: Any, default: float, lower: float, upper: float) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = default
+    return max(lower, min(upper, numeric))
 
 
 def timestamp_seconds(value: Any, timezone_name: str = EXCHANGE_TIME_ZONE) -> int | None:
@@ -741,8 +753,11 @@ def chart_payload(
                 "column": column,
                 "label": option["label"],
                 "style": option["style"],
+                "chartRole": option["chartRole"],
                 "lineStyle": option["lineStyle"],
                 "color": option["color"],
+                "bandFillColor": option["bandFillColor"],
+                "bandFillOpacity": option["bandFillOpacity"],
                 "legend": option["legend"],
                 "lineWidth": option["lineWidth"],
                 "data": points,

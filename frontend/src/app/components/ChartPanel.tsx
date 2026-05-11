@@ -32,6 +32,9 @@ import { buildSegmentButtonClassName } from "../selectionStyles";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number };
 type ChartSeries = {
+  bandFillColor?: string;
+  bandFillOpacity?: number;
+  chartRole?: string;
   column: string;
   label: string;
   style: "line" | "histogram";

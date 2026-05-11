@@ -125,6 +125,8 @@ const PRESENTATION_HELP = {
   lineStyle: "Chooses the stroke pattern for line-like items. Solid is the default; dashed or dotted are for separating related overlays.",
   color: "Default display color. Use a hex color for a fixed line or marker color; inherit_candle_direction follows the candle up/down color where supported.",
   lineWidth: "Controls line or band stroke thickness in pixels. Larger values make the item visually heavier.",
+  bandFillColor: "Controls the translucent fill used inside a band. This is separate from the band boundary stroke color.",
+  bandFillOpacity: "Controls how visible the band shade is. Lower values keep candles readable; higher values make the band easier to scan.",
   precision: "Controls how many decimal places are shown in legends, tooltips, and readouts for numeric values.",
   markerShape: "Chooses the symbol used when the item renders as markers: circle, arrowUp, arrowDown, or square.",
   markerPosition: "Chooses where marker symbols sit relative to the candle: aboveBar, belowBar, or inBar.",
@@ -826,6 +828,9 @@ function CatalogTab({
                 <div className="catalog-presentation-section">
                   <h4>Visual Style</h4>
                   <CatalogStylePopover
+                    bandFillColor={String(draft.bandFillColor ?? draft.color ?? "#1E3A5F")}
+                    bandFillOpacity={Number(draft.bandFillOpacity ?? 0.16)}
+                    chartRole={presentationRole}
                     color={String(draft.color ?? "#1E3A5F")}
                     lineStyle={String(draft.lineStyle ?? "solid")}
                     lineStyleOptions={catalog?.presentationOptions.lineStyles ?? []}
@@ -934,6 +939,24 @@ function presentationColor(value: unknown): string {
   const color = String(value ?? "");
   if (color === "inherit_candle_direction") return "#33E42A";
   return /^#[0-9a-f]{6}$/i.test(color) ? color : "#1E3A5F";
+}
+
+function colorInputValue(value: unknown, fallback = "#1E3A5F"): string {
+  const color = presentationColor(value);
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+}
+
+function colorWithOpacity(value: unknown, opacity: number): string {
+  const color = colorInputValue(value);
+  const alpha = Math.max(0, Math.min(1, opacity));
+  const red = parseInt(color.slice(1, 3), 16);
+  const green = parseInt(color.slice(3, 5), 16);
+  const blue = parseInt(color.slice(5, 7), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha.toFixed(2)})`;
+}
+
+function opacityLabel(value: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
 function CatalogEquation({ equation }: { equation: CatalogKnowledge["equations"][number] }) {
@@ -1191,6 +1214,9 @@ function CatalogCheckbox({ checked, help, label, onChange }: { checked: boolean;
 }
 
 function CatalogStylePopover({
+  bandFillColor,
+  bandFillOpacity,
+  chartRole,
   color,
   lineStyle,
   lineStyleOptions,
@@ -1198,6 +1224,9 @@ function CatalogStylePopover({
   precision,
   onChange
 }: {
+  bandFillColor: string;
+  bandFillOpacity: number;
+  chartRole: string;
   color: string;
   lineStyle: string;
   lineStyleOptions: string[];
@@ -1210,6 +1239,12 @@ function CatalogStylePopover({
   const popoverRef = useRef<HTMLDivElement>(null);
   const resolvedLineStyles = lineStyleOptions.length ? lineStyleOptions : ["solid", "dashed", "dotted"];
   const colorLabel = STYLE_COLOR_OPTIONS.find((option) => option.value === color)?.label ?? color;
+  const isBand = chartRole === "band";
+  const resolvedBandFillOpacity = Math.max(0, Math.min(0.6, Number.isFinite(bandFillOpacity) ? bandFillOpacity : 0.16));
+  const resolvedLineWidth = Math.max(1, Math.min(6, Number.isFinite(lineWidth) ? lineWidth : 1));
+  const previewLineStyle = resolvedLineStyles.includes(lineStyle) ? lineStyle : "solid";
+  const strokeColor = presentationColor(color);
+  const shadeColor = colorWithOpacity(bandFillColor, resolvedBandFillOpacity);
 
   useEffect(() => {
     setCustomColor(color.startsWith("#") ? color : "");
@@ -1233,21 +1268,42 @@ function CatalogStylePopover({
 
   function setCustomHex(value: string) {
     setCustomColor(value);
-    if (/^#[0-9a-f]{6}$/i.test(value)) onChange("color", value);
+    if (/^#[0-9a-f]{6}$/i.test(value)) onChange("color", value.toUpperCase());
   }
 
   return (
     <div className="catalog-style-popover" ref={popoverRef}>
       <CatalogFieldLabel help={`${PRESENTATION_HELP.color} ${PRESENTATION_HELP.lineStyle} ${PRESENTATION_HELP.lineWidth}`} label="Style editor" />
       <button aria-expanded={open} className="catalog-style-trigger" onClick={() => setOpen((value) => !value)} type="button">
-        <span className="catalog-style-trigger-swatch" style={{ background: presentationColor(color) }} />
+        <span className="catalog-style-trigger-swatch" style={{ background: strokeColor }} />
         <span>
           <strong>{colorLabel}</strong>
-          <small>{displayName(lineStyle)} | {lineWidth}px | {precision} dp</small>
+          <small>{displayName(lineStyle)} | {resolvedLineWidth}px | {precision} dp{isBand ? ` | ${opacityLabel(resolvedBandFillOpacity)} shade` : ""}</small>
         </span>
       </button>
       {open ? (
         <div className="catalog-style-popover-panel" role="dialog" aria-label="Visual style editor">
+          <section className="catalog-style-popover-section">
+            <h5>Preview</h5>
+            <div className={isBand ? "catalog-style-preview is-band" : "catalog-style-preview"}>
+              <div className="catalog-style-preview-chart" aria-hidden="true">
+                <span className="catalog-style-preview-axis horizontal" />
+                <span className="catalog-style-preview-axis vertical" />
+                {isBand ? <span className="catalog-style-preview-band" style={{ background: shadeColor }} /> : null}
+                <span
+                  className={`catalog-style-preview-line ${previewLineStyle}`}
+                  style={{
+                    borderColor: strokeColor,
+                    borderTopWidth: resolvedLineWidth
+                  }}
+                />
+              </div>
+              <div className="catalog-style-preview-copy">
+                <strong>{displayName(chartRole)}</strong>
+                <span>{isBand ? `${opacityLabel(resolvedBandFillOpacity)} band shade` : `${displayName(lineStyle)} stroke`}</span>
+              </div>
+            </div>
+          </section>
           <section className="catalog-style-popover-section">
             <h5>Color</h5>
             <div className="catalog-color-swatch-grid">
@@ -1263,11 +1319,54 @@ function CatalogStylePopover({
                 </button>
               ))}
             </div>
+            <label className="catalog-style-color-picker">
+              <span>Color picker</span>
+              <input
+                aria-label="Style color picker"
+                type="color"
+                value={colorInputValue(color)}
+                onChange={(event) => onChange("color", event.target.value.toUpperCase())}
+              />
+            </label>
             <label className="catalog-style-inline-field">
               <span>Custom hex</span>
               <input maxLength={7} placeholder="#1E3A5F" value={customColor} onChange={(event) => setCustomHex(event.target.value)} />
             </label>
           </section>
+          {isBand ? (
+            <section className="catalog-style-popover-section">
+              <h5>Band Shade</h5>
+              <div className="catalog-band-style-grid">
+                <label className="catalog-style-color-picker">
+                  <span>
+                    Shade color
+                    <CatalogHelpButton help={PRESENTATION_HELP.bandFillColor} label="Shade color" />
+                  </span>
+                  <input
+                    aria-label="Band shade color picker"
+                    type="color"
+                    value={colorInputValue(bandFillColor)}
+                    onChange={(event) => onChange("bandFillColor", event.target.value.toUpperCase())}
+                  />
+                </label>
+                <label className="catalog-style-range-field">
+                  <span>
+                    Opacity
+                    <CatalogHelpButton help={PRESENTATION_HELP.bandFillOpacity} label="Band shade opacity" />
+                    <b>{opacityLabel(resolvedBandFillOpacity)}</b>
+                  </span>
+                  <input
+                    max={0.6}
+                    min={0}
+                    step={0.01}
+                    type="range"
+                    value={String(resolvedBandFillOpacity)}
+                    onChange={(event) => onChange("bandFillOpacity", boundedNumber(event.target.value, 0, 0.6))}
+                  />
+                </label>
+              </div>
+            </section>
+          ) : null}
           <section className="catalog-style-popover-section">
             <h5>Line Style</h5>
             <div className="catalog-line-style-grid">
@@ -1284,7 +1383,7 @@ function CatalogStylePopover({
             <div className="catalog-style-number-grid">
               <label className="catalog-style-inline-field">
                 <span>Line width</span>
-                <input max={6} min={1} type="number" value={String(lineWidth)} onChange={(event) => onChange("lineWidth", boundedNumber(event.target.value, 1, 6))} />
+                <input max={6} min={1} type="number" value={String(resolvedLineWidth)} onChange={(event) => onChange("lineWidth", boundedNumber(event.target.value, 1, 6))} />
               </label>
               <label className="catalog-style-inline-field">
                 <span>Precision</span>

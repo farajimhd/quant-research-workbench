@@ -1878,8 +1878,8 @@ button {
   left: 0;
   z-index: 130;
   display: grid;
-  width: 360px;
-  max-width: min(360px, calc(100vw - 48px));
+  width: 400px;
+  max-width: min(400px, calc(100vw - 48px));
   gap: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1904,6 +1904,93 @@ button {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0;
+}
+
+.catalog-style-preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface) 86%, var(--surface-alt));
+  padding: 9px;
+}
+
+.catalog-style-preview-chart {
+  position: relative;
+  height: 64px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 7px;
+  background: var(--card);
+}
+
+.catalog-style-preview-axis {
+  position: absolute;
+  background: color-mix(in oklab, var(--muted-foreground) 18%, transparent);
+}
+
+.catalog-style-preview-axis.horizontal {
+  right: 8px;
+  bottom: 17px;
+  left: 8px;
+  height: 1px;
+}
+
+.catalog-style-preview-axis.vertical {
+  top: 8px;
+  bottom: 8px;
+  left: 18px;
+  width: 1px;
+}
+
+.catalog-style-preview-band {
+  position: absolute;
+  top: 17px;
+  right: 10px;
+  bottom: 19px;
+  left: 24px;
+  border-radius: 6px;
+}
+
+.catalog-style-preview-line {
+  position: absolute;
+  top: 31px;
+  right: 12px;
+  left: 22px;
+  height: 0;
+  border-top: 2px solid var(--foreground);
+  transform: rotate(-3deg);
+  transform-origin: center;
+}
+
+.catalog-style-preview-line.dashed {
+  border-top-style: dashed;
+}
+
+.catalog-style-preview-line.dotted {
+  border-top-style: dotted;
+}
+
+.catalog-style-preview-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 90px;
+}
+
+.catalog-style-preview-copy strong {
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.catalog-style-preview-copy span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .catalog-color-swatch-grid {
@@ -1969,12 +2056,73 @@ button {
   gap: 8px;
 }
 
+.catalog-band-style-grid {
+  display: grid;
+  gap: 8px;
+}
+
 .catalog-style-inline-field {
   display: grid;
   gap: 5px;
   color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 650;
+}
+
+.catalog-style-color-picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 650;
+  padding: 6px 7px;
+}
+
+.catalog-style-color-picker > span,
+.catalog-style-range-field > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.catalog-style-color-picker input[type="color"] {
+  width: 42px;
+  height: 24px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card);
+  padding: 2px;
+}
+
+.catalog-style-range-field {
+  display: grid;
+  gap: 7px;
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 650;
+  padding: 7px;
+}
+
+.catalog-style-range-field b {
+  margin-left: auto;
+  color: var(--foreground);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.catalog-style-range-field input[type="range"] {
+  width: 100%;
+  accent-color: var(--foreground);
 }
 
 .catalog-style-inline-field input {
