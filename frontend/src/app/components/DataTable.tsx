@@ -7,8 +7,9 @@ import {
   EyeOff,
   Filter,
   Search,
+  X,
 } from "lucide-react";
-import { type MouseEvent, useEffect, useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { displayName, formatCell } from "../format";
@@ -91,6 +92,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
   const [openPopover, setOpenPopover] = useState<HeaderPopoverState | null>(null);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>(null);
+  const tableIdentityRef = useRef<string | null>(null);
 
   const profilesByColumn = useMemo<Record<string, ColumnProfile>>(() => {
     return Object.fromEntries(resolvedColumns.map((column) => [column, buildColumnProfile(rows, column)]));
@@ -102,6 +104,31 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
   const activeFilterCount =
     Object.values(activeValueFiltersByColumn).reduce((count, values) => count + values.length, 0) +
     Object.keys(manualFiltersByColumn).length;
+  const tableIdentityKey = useMemo(() => buildTableIdentityKey(rows, resolvedColumns), [resolvedColumns, rows]);
+  const activeFilterChips = useMemo(() => {
+    return resolvedColumns.flatMap((column) => {
+      const chips: Array<{ column: string; key: string; summary: string; type: "manual" | "value" }> = [];
+      const valueFilters = activeValueFiltersByColumn[column]?.filter(Boolean) ?? [];
+      if (valueFilters.length) {
+        chips.push({
+          column,
+          key: `value:${column}`,
+          summary: formatValueFilterSummary(valueFilters),
+          type: "value",
+        });
+      }
+      const manualFilter = manualFiltersByColumn[column];
+      if (manualFilter) {
+        chips.push({
+          column,
+          key: `manual:${column}`,
+          summary: formatManualFilterSummary(manualFilter, profilesByColumn[column]),
+          type: "manual",
+        });
+      }
+      return chips;
+    });
+  }, [activeValueFiltersByColumn, manualFiltersByColumn, profilesByColumn, resolvedColumns]);
 
   const filteredRows = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -166,6 +193,18 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
     };
   }, [openPopover]);
 
+  useEffect(() => {
+    if (tableIdentityRef.current === null) {
+      tableIdentityRef.current = tableIdentityKey;
+      return;
+    }
+    if (tableIdentityRef.current === tableIdentityKey) return;
+    tableIdentityRef.current = tableIdentityKey;
+    setActiveValueFiltersByColumn({});
+    setManualFiltersByColumn({});
+    setOpenPopover(null);
+  }, [tableIdentityKey]);
+
   const toggleSort = (column: string) => {
     setSort((current) => {
       if (!current || current.column !== column) return { column, direction: "asc" };
@@ -190,6 +229,17 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
       else delete next[column];
       return next;
     });
+  };
+
+  const clearActiveFilters = () => {
+    setActiveValueFiltersByColumn({});
+    setManualFiltersByColumn({});
+    setOpenPopover(null);
+  };
+
+  const removeActiveFilter = (chip: { column: string; type: "manual" | "value" }) => {
+    if (chip.type === "manual") applyManualFilter(chip.column, null);
+    else applyValueFilter(chip.column, []);
   };
 
   const toggleColumnVisibility = (column: string) => {
@@ -309,6 +359,31 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
           </button>
         </div>
       </div>
+
+      {activeFilterChips.length ? (
+        <div className="data-table-active-filters" aria-label="Active filters">
+          <span className="data-table-active-filters-label">Filters</span>
+          <div className="data-table-active-filter-list">
+            {activeFilterChips.map((chip) => (
+              <span className="data-table-active-filter-chip" key={chip.key}>
+                <span className="data-table-active-filter-column">{displayName(chip.column)}</span>
+                <span className="data-table-active-filter-summary">{chip.summary}</span>
+                <button
+                  aria-label={`Remove ${displayName(chip.column)} filter`}
+                  onClick={() => removeActiveFilter(chip)}
+                  title={`Remove ${displayName(chip.column)} filter`}
+                  type="button"
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
+          </div>
+          <button className="table-text-button data-table-clear-filters-button" onClick={clearActiveFilters} type="button">
+            Clear all
+          </button>
+        </div>
+      ) : null}
 
       <div className="data-table-scroll">
         <table
@@ -952,6 +1027,55 @@ function countTopValues(values: unknown[]) {
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
     .slice(0, 30)
     .map(([value, count]) => ({ count, value }));
+}
+
+function buildTableIdentityKey(rows: DataRow[], columns: string[]) {
+  const sampledColumns = columns.slice(0, 16);
+  const rowCount = rows.length;
+  const candidateIndexes = [0, 1, 2, Math.floor(rowCount / 2), rowCount - 3, rowCount - 2, rowCount - 1];
+  const sampledIndexes = Array.from(new Set(candidateIndexes)).filter((index) => index >= 0 && index < rowCount);
+  const sample = sampledIndexes.map((rowIndex) =>
+    sampledColumns.map((column) => formatFilterValue(rows[rowIndex]?.[column])),
+  );
+  return JSON.stringify({ columns: sampledColumns, rowCount, sample });
+}
+
+function formatValueFilterSummary(values: string[]) {
+  const preview = values.slice(0, 2).join(", ");
+  return values.length <= 2 ? preview : `${preview} +${values.length - 2}`;
+}
+
+function formatManualFilterSummary(filter: ColumnManualFilterState, profile?: ColumnProfile) {
+  if (filter.presetLabel) return filter.presetLabel;
+  if (filter.operator === "is_null") return "is empty";
+  if (filter.operator === "not_null") return "has value";
+  const operatorLabel = formatFilterOperator(filter.operator);
+  const value = formatManualFilterValue(filter.valueText, profile);
+  if (filter.operator === "between") {
+    return `${operatorLabel} ${value} and ${formatManualFilterValue(filter.valueTextSecondary, profile)}`;
+  }
+  return `${operatorLabel} ${value}`;
+}
+
+function formatFilterOperator(operator: string) {
+  if (operator === "gte") return ">=";
+  if (operator === "lte") return "<=";
+  if (operator === "gt") return ">";
+  if (operator === "lt") return "<";
+  if (operator === "eq") return "=";
+  if (operator === "neq") return "!=";
+  if (operator === "contains") return "contains";
+  if (operator === "between") return "between";
+  return operator;
+}
+
+function formatManualFilterValue(value: string, profile?: ColumnProfile) {
+  if (!value) return "-";
+  if (profile?.kind === "datetime") {
+    const parsed = coerceDate(value);
+    if (Number.isFinite(parsed)) return formatDateTimeMetric(parsed, profile.temporalUnit, profile.timeZoneName);
+  }
+  return value;
 }
 
 function compareCells(left: unknown, right: unknown) {
