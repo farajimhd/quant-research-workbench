@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { BookOpen, Database, Filter, Search, SlidersHorizontal, Tags } from "lucide-react";
+import { BookOpen, CircleHelp, Database, Filter, Search, SlidersHorizontal, Tags } from "lucide-react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 
@@ -105,6 +105,20 @@ const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_COLUMNS = ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
 const PREVIEW_PAGE_SIZE = 1000;
+const PRESENTATION_HELP = {
+  selectable: "Controls whether this item appears in the chart Indicators & Features picker. Off keeps the catalog contract but hides it from chart selection.",
+  defaultVisible: "Adds this item to charts automatically when the selected artifact contains the required column or label group.",
+  legend: "Shows a legend row and live value for this item when it is drawn on the chart or in a lower pane.",
+  chartRole: "Chooses how the chart renders the item: price_overlay draws on candles, oscillator and histogram use lower panes, marker draws event symbols, band draws ranges, and table_only keeps it out of the chart.",
+  pane: "Chooses the target pane: price overlays candles, macd groups MACD lines and histogram together, oscillator uses a lower pane, new creates a dedicated pane, and supervision groups labels.",
+  lineStyle: "Chooses the stroke pattern for line-like items. Solid is the default; dashed or dotted are for separating related overlays.",
+  color: "Default display color. Use a hex color for a fixed line or marker color; inherit_candle_direction follows the candle up/down color where supported.",
+  lineWidth: "Controls line or band stroke thickness in pixels. Larger values make the item visually heavier.",
+  precision: "Controls how many decimal places are shown in legends, tooltips, and readouts for numeric values.",
+  markerShape: "Chooses the symbol used when the item renders as markers: circle, arrowUp, arrowDown, or square.",
+  markerPosition: "Chooses where marker symbols sit relative to the candle: aboveBar, belowBar, or inBar.",
+  valueFormat: "Chooses how values are formatted for the user: price, percent, number, integer, boolean, datetime, or text.",
+};
 
 export function MarketDataReviewPage() {
   const [scope, setScope] = useState<Scope | null>(null);
@@ -782,33 +796,33 @@ function CatalogTab({
                 <div className="catalog-presentation-section">
                   <h4>Visibility</h4>
                   <div className="catalog-check-grid">
-                    <CatalogCheckbox checked={Boolean(draft.selectable)} label="Selectable" onChange={(value) => updatePresentation("selectable", value)} />
-                    <CatalogCheckbox checked={Boolean(draft.defaultVisible)} label="Default on" onChange={(value) => updatePresentation("defaultVisible", value)} />
-                    <CatalogCheckbox checked={Boolean(draft.legend)} label="Legend" onChange={(value) => updatePresentation("legend", value)} />
+                    <CatalogCheckbox checked={Boolean(draft.selectable)} help={PRESENTATION_HELP.selectable} label="Selectable" onChange={(value) => updatePresentation("selectable", value)} />
+                    <CatalogCheckbox checked={Boolean(draft.defaultVisible)} help={PRESENTATION_HELP.defaultVisible} label="Default on" onChange={(value) => updatePresentation("defaultVisible", value)} />
+                    <CatalogCheckbox checked={Boolean(draft.legend)} help={PRESENTATION_HELP.legend} label="Legend" onChange={(value) => updatePresentation("legend", value)} />
                   </div>
                 </div>
                 <div className="catalog-presentation-section">
                   <h4>Placement</h4>
                   <div className="catalog-form-grid compact">
-                    <CatalogSelect label="Chart role" options={catalog?.presentationOptions.chartRoles ?? []} value={String(draft.chartRole ?? "table_only")} onChange={(value) => updatePresentation("chartRole", value)} />
-                    <CatalogSelect label="Pane" options={catalog?.presentationOptions.panes ?? []} value={String(draft.pane ?? "price")} onChange={(value) => updatePresentation("pane", value)} />
+                    <CatalogSelect help={PRESENTATION_HELP.chartRole} label="Chart role" options={catalog?.presentationOptions.chartRoles ?? []} value={String(draft.chartRole ?? "table_only")} onChange={(value) => updatePresentation("chartRole", value)} />
+                    <CatalogSelect help={PRESENTATION_HELP.pane} label="Pane" options={catalog?.presentationOptions.panes ?? []} value={String(draft.pane ?? "price")} onChange={(value) => updatePresentation("pane", value)} />
                   </div>
                 </div>
                 <div className="catalog-presentation-section">
                   <h4>Visual Style</h4>
                   <div className="catalog-form-grid compact">
-                    <CatalogSelect label="Line style" options={catalog?.presentationOptions.lineStyles ?? []} value={String(draft.lineStyle ?? "solid")} onChange={(value) => updatePresentation("lineStyle", value)} />
-                    <CatalogText label="Color" value={String(draft.color ?? "#1E3A5F")} onChange={(value) => updatePresentation("color", value)} />
-                    <CatalogNumber label="Line width" max={6} min={1} value={Number(draft.lineWidth ?? 1)} onChange={(value) => updatePresentation("lineWidth", value)} />
-                    <CatalogNumber label="Precision" max={8} min={0} value={Number(draft.precision ?? 2)} onChange={(value) => updatePresentation("precision", value)} />
+                    <CatalogSelect help={PRESENTATION_HELP.lineStyle} label="Line style" options={catalog?.presentationOptions.lineStyles ?? []} value={String(draft.lineStyle ?? "solid")} onChange={(value) => updatePresentation("lineStyle", value)} />
+                    <CatalogText help={PRESENTATION_HELP.color} label="Color" value={String(draft.color ?? "#1E3A5F")} onChange={(value) => updatePresentation("color", value)} />
+                    <CatalogNumber help={PRESENTATION_HELP.lineWidth} label="Line width" max={6} min={1} value={Number(draft.lineWidth ?? 1)} onChange={(value) => updatePresentation("lineWidth", value)} />
+                    <CatalogNumber help={PRESENTATION_HELP.precision} label="Precision" max={8} min={0} value={Number(draft.precision ?? 2)} onChange={(value) => updatePresentation("precision", value)} />
                   </div>
                 </div>
                 <div className="catalog-presentation-section">
                   <h4>Markers & Format</h4>
                   <div className="catalog-form-grid compact">
-                    <CatalogSelect label="Marker shape" options={catalog?.presentationOptions.markerShapes ?? []} value={String(draft.markerShape ?? "circle")} onChange={(value) => updatePresentation("markerShape", value)} />
-                    <CatalogSelect label="Marker position" options={catalog?.presentationOptions.markerPositions ?? []} value={String(draft.markerPosition ?? "belowBar")} onChange={(value) => updatePresentation("markerPosition", value)} />
-                    <CatalogSelect label="Value format" options={catalog?.presentationOptions.valueFormats ?? []} value={String(draft.valueFormat ?? "number")} onChange={(value) => updatePresentation("valueFormat", value)} />
+                    <CatalogSelect help={PRESENTATION_HELP.markerShape} label="Marker shape" options={catalog?.presentationOptions.markerShapes ?? []} value={String(draft.markerShape ?? "circle")} onChange={(value) => updatePresentation("markerShape", value)} />
+                    <CatalogSelect help={PRESENTATION_HELP.markerPosition} label="Marker position" options={catalog?.presentationOptions.markerPositions ?? []} value={String(draft.markerPosition ?? "belowBar")} onChange={(value) => updatePresentation("markerPosition", value)} />
+                    <CatalogSelect help={PRESENTATION_HELP.valueFormat} label="Value format" options={catalog?.presentationOptions.valueFormats ?? []} value={String(draft.valueFormat ?? "number")} onChange={(value) => updatePresentation("valueFormat", value)} />
                   </div>
                 </div>
               </div>
@@ -1117,43 +1131,63 @@ function ScopeItem({ className, label, value }: { className?: string; label: str
   );
 }
 
-function CatalogSelect({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: string[]; value: string }) {
+function CatalogHelpButton({ help, label }: { help: string; label: string }) {
   return (
-    <label className="catalog-field">
+    <button aria-label={`Help for ${label}`} className="parameter-help-button catalog-help-button" data-help={help} type="button">
+      <CircleHelp size={12} />
+    </button>
+  );
+}
+
+function CatalogFieldLabel({ help, label }: { help: string; label: string }) {
+  return (
+    <span className="catalog-field-label">
       <span>{label}</span>
+      <CatalogHelpButton help={help} label={label} />
+    </span>
+  );
+}
+
+function CatalogSelect({ help, label, onChange, options, value }: { help: string; label: string; onChange: (value: string) => void; options: string[]; value: string }) {
+  return (
+    <div className="catalog-field">
+      <CatalogFieldLabel help={help} label={label} />
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         {options.map((option) => (
           <option key={option} value={option}>{option}</option>
         ))}
       </select>
-    </label>
+    </div>
   );
 }
 
-function CatalogText({ label, onChange, value }: { label: string; onChange: (value: string) => void; value: string }) {
+function CatalogText({ help, label, onChange, value }: { help: string; label: string; onChange: (value: string) => void; value: string }) {
   return (
-    <label className="catalog-field">
-      <span>{label}</span>
+    <div className="catalog-field">
+      <CatalogFieldLabel help={help} label={label} />
       <input value={value} onChange={(event) => onChange(event.target.value)} />
-    </label>
+    </div>
   );
 }
 
-function CatalogNumber({ label, max, min, onChange, value }: { label: string; max: number; min: number; onChange: (value: number) => void; value: number }) {
+function CatalogNumber({ help, label, max, min, onChange, value }: { help: string; label: string; max: number; min: number; onChange: (value: number) => void; value: number }) {
   return (
-    <label className="catalog-field">
-      <span>{label}</span>
+    <div className="catalog-field">
+      <CatalogFieldLabel help={help} label={label} />
       <input max={max} min={min} type="number" value={String(value)} onChange={(event) => onChange(Number(event.target.value))} />
-    </label>
+    </div>
   );
 }
 
-function CatalogCheckbox({ checked, label, onChange }: { checked: boolean; label: string; onChange: (value: boolean) => void }) {
+function CatalogCheckbox({ checked, help, label, onChange }: { checked: boolean; help: string; label: string; onChange: (value: boolean) => void }) {
   return (
-    <label className="catalog-checkbox">
-      <input checked={checked} type="checkbox" onChange={(event) => onChange(event.target.checked)} />
-      <span>{label}</span>
-    </label>
+    <div className="catalog-checkbox">
+      <label className="catalog-checkbox-control">
+        <input checked={checked} type="checkbox" onChange={(event) => onChange(event.target.checked)} />
+        <span>{label}</span>
+      </label>
+      <CatalogHelpButton help={help} label={label} />
+    </div>
   );
 }
 

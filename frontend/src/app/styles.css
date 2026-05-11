@@ -91,6 +91,17 @@ textarea {
   font: inherit;
 }
 
+input[type="checkbox"],
+input[type="radio"],
+select {
+  accent-color: var(--foreground);
+}
+
+select option:checked {
+  background-color: var(--foreground);
+  color: var(--background);
+}
+
 button {
   cursor: pointer;
 }
@@ -1050,8 +1061,8 @@ button {
 
 .parameter-help-button:hover,
 .parameter-help-button:focus-visible {
-  background: color-mix(in oklab, var(--primary) 8%, transparent);
-  color: var(--primary);
+  background: color-mix(in oklab, var(--foreground) 8%, transparent);
+  color: var(--foreground);
 }
 
 .parameter-help-button::after {
@@ -1404,6 +1415,37 @@ button {
   font-size: 12px;
   font-weight: 500;
   padding: 0 8px;
+}
+
+.catalog-filter select:focus,
+.catalog-field input:focus,
+.catalog-field select:focus {
+  border-color: color-mix(in oklab, var(--foreground) 26%, var(--border));
+  outline: 0;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--foreground) 10%, transparent);
+}
+
+.catalog-field-label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.catalog-field-label > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-help-button {
+  width: 16px;
+  height: 16px;
+}
+
+.catalog-help-button::after {
+  left: -10px;
+  width: 292px;
 }
 
 .catalog-list {
@@ -1889,6 +1931,7 @@ button {
   display: flex;
   min-height: 32px;
   align-items: center;
+  justify-content: space-between;
   gap: 7px;
   border: 1px solid color-mix(in oklab, var(--surface-border) 62%, transparent);
   border-radius: 8px;
@@ -1897,6 +1940,19 @@ button {
   font-size: 12px;
   font-weight: 500;
   padding: 0 8px;
+}
+
+.catalog-checkbox-control {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.catalog-checkbox-control span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .catalog-detail-empty {
@@ -3520,12 +3576,12 @@ button {
 }
 
 .preview-all-rows-radio input:checked + span {
-  border-color: color-mix(in oklab, var(--primary) 32%, var(--border));
-  background: color-mix(in oklab, var(--primary) 15%, var(--surface));
+  border-color: color-mix(in oklab, var(--foreground) 32%, var(--border));
+  background: color-mix(in oklab, var(--foreground) 12%, var(--surface));
 }
 
 .preview-all-rows-radio input:checked + span::after {
-  background: var(--primary);
+  background: var(--foreground);
 }
 
 .preview-all-rows-radio input:checked ~ b {
@@ -3533,7 +3589,7 @@ button {
 }
 
 .preview-all-rows-radio input:focus-visible + span {
-  outline: 2px solid color-mix(in oklab, var(--primary) 35%, transparent);
+  outline: 2px solid color-mix(in oklab, var(--foreground) 35%, transparent);
   outline-offset: 2px;
 }
 
