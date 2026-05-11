@@ -734,6 +734,164 @@ button {
   min-height: 430px;
 }
 
+.schema-panel {
+  display: flex;
+  min-height: max(560px, calc(100vh - 350px));
+  flex-direction: column;
+  gap: 12px;
+}
+
+.schema-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.schema-artifact-meta {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 2px;
+}
+
+.schema-artifact-meta span {
+  border: 1px solid color-mix(in oklab, var(--border) 68%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface-alt) 42%, transparent);
+  color: var(--muted-foreground);
+  padding: 5px 9px;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.schema-summary-grid {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(5, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.schema-summary-card {
+  display: grid;
+  gap: 3px;
+  border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-alt) 34%, var(--surface));
+  padding: 9px 10px;
+}
+
+.schema-summary-card span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.schema-summary-card b {
+  color: var(--foreground);
+  font-size: 18px;
+  font-weight: 760;
+}
+
+.schema-card-grid {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 4px 2px 0;
+}
+
+.schema-field-card {
+  display: grid;
+  gap: 9px;
+  min-height: 118px;
+  border: 1px solid color-mix(in oklab, var(--surface-border) 74%, transparent);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(16, 24, 40, 0.06);
+  padding: 11px;
+}
+
+.schema-field-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.schema-field-index {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.schema-field-name {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.25;
+}
+
+.schema-field-column {
+  margin-top: 3px;
+  color: var(--muted-foreground);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.schema-field-type {
+  align-self: end;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.schema-type-badge {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.schema-type-badge.numeric {
+  border-color: color-mix(in oklab, #0f766e 24%, transparent);
+  background: color-mix(in oklab, #0f766e 8%, transparent);
+  color: #0f766e;
+}
+
+.schema-type-badge.temporal {
+  border-color: color-mix(in oklab, #2563eb 22%, transparent);
+  background: color-mix(in oklab, #2563eb 7%, transparent);
+  color: #2563eb;
+}
+
+.schema-type-badge.boolean {
+  border-color: color-mix(in oklab, #7c3aed 22%, transparent);
+  background: color-mix(in oklab, #7c3aed 7%, transparent);
+  color: #7c3aed;
+}
+
+.schema-type-badge.text {
+  border-color: color-mix(in oklab, #b45309 22%, transparent);
+  background: color-mix(in oklab, #b45309 7%, transparent);
+  color: #b45309;
+}
+
+.schema-type-badge.other {
+  border-color: color-mix(in oklab, var(--border) 80%, transparent);
+  background: color-mix(in oklab, var(--surface-alt) 46%, transparent);
+  color: var(--muted-foreground);
+}
+
 .panel-header {
   display: flex;
   align-items: flex-start;
@@ -2356,7 +2514,12 @@ button {
   }
 
   .metric-strip,
-  .phase-grid {
+  .phase-grid,
+  .schema-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .schema-card-grid {
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   }
 }

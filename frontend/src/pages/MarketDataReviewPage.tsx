@@ -7,6 +7,7 @@ import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
+import { displayName } from "../app/format";
 
 type Scope = {
   raw_root: string;
@@ -41,6 +42,11 @@ type ReviewPayload = {
 
 type ConfigDefaults = {
   feature_groups: string[];
+};
+type SchemaField = {
+  column: string;
+  dtype: string;
+  kind: "boolean" | "numeric" | "other" | "temporal" | "text";
 };
 
 const tabs = ["Overview", "Coverage", "Chart", "Artifacts", "Preview", "Schema"];
@@ -347,35 +353,108 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
 function Schema({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [recordKey, setRecordKey] = useState(records[0]?.key ?? "");
   const [schema, setSchema] = useState<Record<string, unknown>[]>([]);
+  const [schemaLoading, setSchemaLoading] = useState(false);
   const record = records.find((item) => item.key === recordKey) ?? records[0];
+  const fields = schema.map(toSchemaField);
+  const numericCount = fields.filter((field) => field.kind === "numeric").length;
+  const temporalCount = fields.filter((field) => field.kind === "temporal").length;
+  const booleanCount = fields.filter((field) => field.kind === "boolean").length;
+  const textCount = fields.filter((field) => field.kind === "text").length;
   useEffect(() => {
     if (!record) return;
+    let active = true;
+    setSchemaLoading(true);
+    setSchema([]);
     api<{ schema: Record<string, unknown>[] }>(
       `/api/market-data/schema${query({ processed_root: scope.processed_root, group: record.group, timeframe: record.timeframe, session_date: record.session_date })}`
-    ).then((payload) => setSchema(payload.schema));
+    ).then((payload) => {
+      if (!active) return;
+      setSchema(payload.schema);
+      setSchemaLoading(false);
+    });
+    return () => {
+      active = false;
+    };
   }, [scope.processed_root, record?.key]);
   if (!record) return <div className="empty-state">No records available.</div>;
   return (
-    <section className="panel">
-      <ArtifactSelector records={records} value={recordKey} onChange={setRecordKey} />
-      <DataTable rows={schema} columns={["column", "dtype"]} />
+    <section className="panel schema-panel">
+      <div className="schema-toolbar">
+        <div className="field" style={{ flex: "1 1 420px", minWidth: 300 }}>
+          <label>Artifact</label>
+          <select value={recordKey} onChange={(event) => setRecordKey(event.target.value)}>
+            {records.map((item) => (
+              <option key={item.key} value={item.key}>
+                {item.group} | {item.timeframe} | {item.session_date}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="schema-artifact-meta">
+          <span>{record.group}</span>
+          <span>{record.timeframe}</span>
+          <span>{record.session_date}</span>
+          <span>{record.rows.toLocaleString()} rows</span>
+        </div>
+      </div>
+      <div className="schema-summary-grid">
+        <SchemaSummary label="Fields" value={fields.length} />
+        <SchemaSummary label="Numeric" value={numericCount} />
+        <SchemaSummary label="Temporal" value={temporalCount} />
+        <SchemaSummary label="Boolean" value={booleanCount} />
+        <SchemaSummary label="Text" value={textCount} />
+      </div>
+      {fields.length ? (
+        <div className="schema-card-grid">
+          {fields.map((field, index) => (
+            <SchemaFieldCard field={field} index={index} key={`${field.column}:${field.dtype}`} />
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state">{schemaLoading ? "Loading schema..." : "No schema fields found for the selected artifact."}</div>
+      )}
     </section>
   );
 }
 
-function ArtifactSelector({ records, value, onChange }: { records: RecordRow[]; value: string; onChange: (value: string) => void }) {
+function SchemaSummary({ label, value }: { label: string; value: number }) {
   return (
-    <div className="field" style={{ marginBottom: 12 }}>
-      <label>Artifact</label>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {records.map((record) => (
-          <option key={record.key} value={record.key}>
-            {record.group} | {record.timeframe} | {record.session_date}
-          </option>
-        ))}
-      </select>
+    <div className="schema-summary-card">
+      <span>{label}</span>
+      <b>{value.toLocaleString()}</b>
     </div>
   );
+}
+
+function SchemaFieldCard({ field, index }: { field: SchemaField; index: number }) {
+  return (
+    <article className="schema-field-card">
+      <div className="schema-field-top">
+        <span className="schema-field-index">{String(index + 1).padStart(2, "0")}</span>
+        <span className={`schema-type-badge ${field.kind}`}>{field.kind}</span>
+      </div>
+      <div>
+        <div className="schema-field-name">{displayName(field.column)}</div>
+        <div className="schema-field-column">{field.column}</div>
+      </div>
+      <div className="schema-field-type">{field.dtype}</div>
+    </article>
+  );
+}
+
+function toSchemaField(row: Record<string, unknown>): SchemaField {
+  const column = String(row.column ?? "");
+  const dtype = String(row.dtype ?? "");
+  return { column, dtype, kind: schemaKind(dtype) };
+}
+
+function schemaKind(dtype: string): SchemaField["kind"] {
+  const lower = dtype.toLowerCase();
+  if (lower.includes("date") || lower.includes("time")) return "temporal";
+  if (lower.includes("bool")) return "boolean";
+  if (lower.includes("float") || lower.includes("int") || lower.includes("decimal") || lower.includes("uint")) return "numeric";
+  if (lower.includes("str") || lower.includes("utf") || lower.includes("categorical")) return "text";
+  return "other";
 }
 
 function Select({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
