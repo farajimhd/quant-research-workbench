@@ -1745,6 +1745,10 @@ button {
   padding: 9px 11px;
 }
 
+.catalog-presentation-preview.table-only {
+  min-width: 170px;
+}
+
 .catalog-preview-swatch {
   width: 30px;
   height: 30px;

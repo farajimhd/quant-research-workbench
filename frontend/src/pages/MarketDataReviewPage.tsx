@@ -695,6 +695,10 @@ function CatalogTab({
     setCatalogWidth(Math.max(24, Math.min(46, next)));
   }
 
+  const presentationRole = String(draft.chartRole ?? selected?.presentation?.chartRole ?? "table_only");
+  const presentationPane = String(draft.pane ?? selected?.presentation?.pane ?? "price");
+  const isTableOnlyPresentation = presentationRole === "table_only";
+
   return (
     <section
       className={isResizing ? "catalog-workbench resizing" : "catalog-workbench"}
@@ -784,11 +788,11 @@ function CatalogTab({
                   <div className="catalog-kicker">Presentation</div>
                   <h3>Chart Display Contract</h3>
                 </div>
-                <div className="catalog-presentation-preview">
-                  <span className="catalog-preview-swatch" style={{ background: presentationColor(draft.color) }} />
+                <div className={isTableOnlyPresentation ? "catalog-presentation-preview table-only" : "catalog-presentation-preview"}>
+                  {isTableOnlyPresentation ? null : <span className="catalog-preview-swatch" style={{ background: presentationColor(draft.color) }} />}
                   <div>
-                    <strong>{String(draft.chartRole ?? selected.presentation?.chartRole ?? "table_only")}</strong>
-                    <span>{String(draft.pane ?? selected.presentation?.pane ?? "price")} pane</span>
+                    <strong>{displayName(presentationRole)}</strong>
+                    <span>{isTableOnlyPresentation ? "No chart color used" : `${displayName(presentationPane)} pane`}</span>
                   </div>
                 </div>
               </div>
