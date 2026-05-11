@@ -258,6 +258,24 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [chartSettingsOpen]);
 
   useEffect(() => {
+    if (!columnMenuOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".chart-column-select")) return;
+      setColumnMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setColumnMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [columnMenuOpen]);
+
+  useEffect(() => {
     indicatorSeriesRef.current.forEach((renderer, key) => {
       const source = indicatorSourceRef.current.get(key);
       if (!source) return;
