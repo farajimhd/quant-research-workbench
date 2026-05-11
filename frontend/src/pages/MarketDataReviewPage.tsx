@@ -368,9 +368,10 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [recordKey, setRecordKey] = useState(records[0]?.key ?? "");
   const record = records.find((item) => item.key === recordKey) ?? records[0];
   const [rowLimit, setRowLimit] = useState(250);
+  const [loadAllRows, setLoadAllRows] = useState(false);
   const [tickers, setTickers] = useState("");
   const [sample, setSample] = useState<{ columns: string[]; rows: Record<string, unknown>[] } | null>(null);
-  const fillPanel = useViewportFillPanel(`${recordKey}:${rowLimit}:${tickers}:${sample?.rows.length ?? 0}`);
+  const fillPanel = useViewportFillPanel(`${recordKey}:${rowLimit}:${loadAllRows}:${tickers}:${sample?.rows.length ?? 0}`);
   useEffect(() => {
     if (!record) return;
     api<{ sample: { columns: string[]; rows: Record<string, unknown>[] } }>(
@@ -379,11 +380,12 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         group: record.group,
         timeframe: record.timeframe,
         session_date: record.session_date,
-        row_limit: rowLimit,
+        all_rows: loadAllRows,
+        row_limit: loadAllRows ? undefined : rowLimit,
         tickers
       })}`
     ).then((payload) => setSample(payload.sample));
-  }, [scope.processed_root, record?.key, rowLimit, tickers]);
+  }, [scope.processed_root, record?.key, loadAllRows, rowLimit, tickers]);
   if (!record) return <div className="empty-state">No records available.</div>;
   return (
     <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
@@ -398,7 +400,28 @@ function Preview({ scope, records }: { scope: Scope; records: RecordRow[] }) {
             ))}
           </select>
         </div>
-        <InlineField label="Rows" type="number" value={String(rowLimit)} onChange={(value) => setRowLimit(Number(value))} />
+        <div className="preview-row-limit">
+          <InlineField
+            disabled={loadAllRows}
+            label="Rows"
+            type="number"
+            value={String(rowLimit)}
+            onChange={(value) => {
+              const next = Number(value);
+              if (Number.isFinite(next)) {
+                setRowLimit(Math.max(10, Math.round(next)));
+                setLoadAllRows(false);
+              }
+            }}
+          />
+          <button
+            className={loadAllRows ? "table-text-button preview-load-all active" : "table-text-button preview-load-all"}
+            onClick={() => setLoadAllRows((value) => !value)}
+            type="button"
+          >
+            {loadAllRows ? "All rows" : "Load all"}
+          </button>
+        </div>
         <InlineField label="Tickers" value={tickers} onChange={setTickers} />
       </div>
       <DataTable rows={sample?.rows ?? []} columns={sample?.columns} />
@@ -527,11 +550,23 @@ function Select({ label, value, options, onChange }: { label: string; value: str
   );
 }
 
-function InlineField({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (value: string) => void; type?: string }) {
+function InlineField({
+  disabled = false,
+  label,
+  value,
+  onChange,
+  type = "text"
+}: {
+  disabled?: boolean;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+}) {
   return (
     <div className="field" style={{ width: 150 }}>
       <label>{label}</label>
-      <input type={type} value={value} onChange={(event) => onChange(event.target.value)} />
+      <input disabled={disabled} type={type} value={value} onChange={(event) => onChange(event.target.value)} />
     </div>
   );
 }

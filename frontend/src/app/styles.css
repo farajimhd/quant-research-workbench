@@ -2019,8 +2019,9 @@ button {
 
 .data-table-columns-popover {
   top: calc(100% + 8px);
-  max-height: 360px;
-  overflow: auto;
+  width: min(330px, calc(100vw - 32px));
+  max-height: min(480px, calc(100vh - 96px));
+  overflow: hidden;
 }
 
 .data-table-show-all-button {
@@ -2036,11 +2037,137 @@ button {
   text-transform: uppercase;
 }
 
+.data-table-columns-header {
+  display: grid;
+  gap: 9px;
+  border-bottom: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  background: color-mix(in oklab, var(--surface-alt) 26%, var(--surface));
+  padding: 10px 12px;
+}
+
+.data-table-columns-header > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.data-table-columns-header .data-table-popover-title {
+  padding: 0;
+}
+
+.data-table-columns-header span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.data-table-columns-search {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--control-bg, var(--surface));
+  color: var(--muted-foreground);
+  padding: 0 8px;
+}
+
+.data-table-columns-search input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: 12px;
+}
+
 .data-table-columns-list,
 .data-table-columns-actions {
   display: grid;
-  gap: 7px;
-  padding: 10px 12px;
+  gap: 5px;
+  padding: 8px;
+}
+
+.data-table-columns-list {
+  max-height: 292px;
+  overflow: auto;
+}
+
+.data-table-columns-actions {
+  border-top: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  padding: 9px 12px;
+}
+
+.data-table-column-toggle {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  min-height: 36px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.data-table-column-toggle:hover {
+  background: color-mix(in oklab, var(--primary) 4%, transparent);
+}
+
+.data-table-column-toggle.selected {
+  border-color: color-mix(in oklab, var(--primary) 18%, transparent);
+  background: color-mix(in oklab, var(--primary) 6%, transparent);
+}
+
+.data-table-column-toggle-mark {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 1px solid color-mix(in oklab, var(--border) 68%, transparent);
+  border-radius: 5px;
+  color: var(--primary);
+}
+
+.data-table-column-toggle.selected .data-table-column-toggle-mark {
+  border-color: color-mix(in oklab, var(--primary) 30%, var(--border));
+  background: color-mix(in oklab, var(--primary) 8%, transparent);
+}
+
+.data-table-column-toggle-text {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.data-table-column-toggle-text span {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.data-table-column-toggle-text small {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.data-table-columns-empty {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  padding: 10px 8px;
 }
 
 .data-table-check-row {
@@ -2506,6 +2633,34 @@ button {
   background: var(--card);
   color: var(--foreground);
   padding: 0 10px;
+}
+
+.field input:disabled,
+.field select:disabled,
+.field textarea:disabled {
+  background: color-mix(in oklab, var(--surface-alt) 55%, var(--surface));
+  color: var(--muted-foreground);
+}
+
+.preview-row-limit {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.preview-row-limit .field {
+  width: 112px !important;
+}
+
+.preview-load-all {
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+.preview-load-all.active {
+  border-color: color-mix(in oklab, var(--primary) 28%, var(--border));
+  background: color-mix(in oklab, var(--primary) 8%, var(--surface));
+  color: var(--foreground);
 }
 
 .split-row {

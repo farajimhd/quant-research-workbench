@@ -340,6 +340,7 @@ def market_preview(
     group: str,
     timeframe: str,
     session_date: date,
+    all_rows: bool = False,
     columns: str | None = None,
     tickers: str | None = None,
     row_limit: int = Query(default=250, ge=10, le=5000),
@@ -349,7 +350,7 @@ def market_preview(
         raise HTTPException(status_code=404, detail="Artifact not found")
     selected_columns = parse_csv_list(columns)
     selected_tickers = parse_csv_list(tickers)
-    return {"record": record, "sample": load_artifact_sample(record, selected_columns, row_limit, selected_tickers)}
+    return {"record": record, "sample": load_artifact_sample(record, selected_columns, None if all_rows else row_limit, selected_tickers)}
 
 
 @app.get("/api/market-data/schema")

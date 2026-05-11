@@ -213,7 +213,7 @@ def artifact_schema(record: dict[str, Any]) -> list[dict[str, str]]:
     return [{"column": column, "dtype": str(dtype)} for column, dtype in schema.items()]
 
 
-def load_artifact_sample(record: dict[str, Any], columns: list[str], row_limit: int, tickers: list[str]) -> dict[str, Any]:
+def load_artifact_sample(record: dict[str, Any], columns: list[str], row_limit: int | None, tickers: list[str]) -> dict[str, Any]:
     path = Path(str(record.get("path") or ""))
     if not path.exists():
         return {"rows": [], "columns": []}
@@ -225,7 +225,9 @@ def load_artifact_sample(record: dict[str, Any], columns: list[str], row_limit: 
     selected_columns = [column for column in columns if column in schema_names]
     if selected_columns:
         scan = scan.select(selected_columns)
-    frame = scan.limit(max(1, min(row_limit, 5000))).collect()
+    if row_limit is not None:
+        scan = scan.limit(max(1, min(row_limit, 5000)))
+    frame = scan.collect()
     sort_columns = [column for column in ["ticker", "bar_time_market", "bar_time_utc", "trade_method", "horizon_bars", "horizon"] if column in frame.columns]
     if sort_columns:
         frame = frame.sort(sort_columns)

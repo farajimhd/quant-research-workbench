@@ -3,6 +3,7 @@ import {
   ArrowUp,
   ArrowUpDown,
   BarChart3,
+  Check,
   Columns3,
   EyeOff,
   Filter,
@@ -88,6 +89,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
 
   const [activeValueFiltersByColumn, setActiveValueFiltersByColumn] = useState<Record<string, string[]>>({});
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
+  const [columnsSearch, setColumnsSearch] = useState("");
   const [densityMode, setDensityMode] = useState<TableDensityMode>("compact");
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
   const [layoutMode, setLayoutMode] = useState<TableLayoutMode>("fit_data");
@@ -104,6 +106,18 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
 
   const visibleColumns = resolvedColumns.filter((column) => !hiddenColumns.includes(column));
   const usableColumns = visibleColumns.length ? visibleColumns : resolvedColumns.slice(0, 1);
+  const filteredColumnOptions = useMemo(() => {
+    const query = columnsSearch.trim().toLowerCase();
+    if (!query) return resolvedColumns;
+    return resolvedColumns.filter((column) => {
+      const profile = profilesByColumn[column];
+      return (
+        column.toLowerCase().includes(query) ||
+        displayName(column).toLowerCase().includes(query) ||
+        profile?.typeLabel.toLowerCase().includes(query)
+      );
+    });
+  }, [columnsSearch, profilesByColumn, resolvedColumns]);
   const effectiveSort = sort ?? (resolvedColumns[0] ? { column: resolvedColumns[0], direction: "asc" as const } : null);
   const activeFilterCount =
     Object.values(activeValueFiltersByColumn).reduce((count, values) => count + values.length, 0) +
@@ -232,6 +246,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
     if (tableIdentityRef.current === tableIdentityKey) return;
     tableIdentityRef.current = tableIdentityKey;
     setActiveValueFiltersByColumn({});
+    setColumnsSearch("");
     setManualFiltersByColumn({});
     setOpenPopover(null);
   }, [tableIdentityKey]);
@@ -335,16 +350,44 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
   );
 
   const renderColumnToggles = () =>
-    resolvedColumns.map((column) => (
-      <label className="data-table-check-row" key={column}>
-        <input
-          checked={!hiddenColumns.includes(column)}
-          onChange={() => toggleColumnVisibility(column)}
-          type="checkbox"
-        />
-        <span>{displayName(column)}</span>
-      </label>
-    ));
+    filteredColumnOptions.length ? (
+      filteredColumnOptions.map((column) => {
+        const visible = !hiddenColumns.includes(column);
+        const profile = profilesByColumn[column];
+        return (
+          <button className={visible ? "data-table-column-toggle selected" : "data-table-column-toggle"} key={column} onClick={() => toggleColumnVisibility(column)} type="button">
+            <span className="data-table-column-toggle-mark">{visible ? <Check size={12} /> : null}</span>
+            <span className="data-table-column-toggle-text">
+              <span>{displayName(column)}</span>
+              <small>{profile?.typeLabel ?? "Column"}</small>
+            </span>
+          </button>
+        );
+      })
+    ) : (
+      <div className="data-table-columns-empty">No columns match the search.</div>
+    );
+
+  const renderColumnsPanel = (menu = false) => (
+    <>
+      <div className="data-table-columns-header">
+        <div>
+          <div className="data-table-popover-title">Columns</div>
+          <span>{formatInteger(usableColumns.length)} of {formatInteger(resolvedColumns.length)} visible</span>
+        </div>
+        <label className="data-table-columns-search" aria-label="Search columns">
+          <Search size={13} />
+          <input onChange={(event) => setColumnsSearch(event.target.value)} placeholder="Find column" type="search" value={columnsSearch} />
+        </label>
+      </div>
+      <div className={menu ? "data-table-columns-list menu-columns" : "data-table-columns-list"}>{renderColumnToggles()}</div>
+      <div className="data-table-columns-actions">
+        <button className="table-text-button data-table-show-all-button" onClick={() => setHiddenColumns([])} type="button">
+          Show all columns
+        </button>
+      </div>
+    </>
+  );
 
   return (
     <div className="data-table-shell">
@@ -377,7 +420,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
           </div>
           <div className="data-table-action-menu">
             <button
-              className="table-icon-button"
+              className={columnsMenuOpen ? "table-icon-button active" : "table-icon-button"}
               data-table-menu-trigger="true"
               onClick={() => setColumnsMenuOpen((current) => !current)}
               title="Columns"
@@ -387,13 +430,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
             </button>
             {columnsMenuOpen ? (
               <div className="data-table-popover data-table-columns-popover table-popover-divided">
-                <div className="data-table-popover-title">Columns</div>
-                <div className="data-table-columns-list">{renderColumnToggles()}</div>
-                <div className="data-table-columns-actions">
-                  <button className="table-text-button data-table-show-all-button" onClick={() => setHiddenColumns([])} type="button">
-                    Show all columns
-                  </button>
-                </div>
+                {renderColumnsPanel()}
               </div>
             ) : null}
           </div>
@@ -430,11 +467,7 @@ export function DataTable({ columns, empty = "No rows.", rows, title }: DataTabl
                 </div>
               </div>
               <div className="data-table-toolbar-menu-section">
-                <div className="table-popover-section-title">Columns</div>
-                <div className="data-table-columns-list menu-columns">{renderColumnToggles()}</div>
-                <button className="table-text-button data-table-show-all-button" onClick={() => setHiddenColumns([])} type="button">
-                  Show all columns
-                </button>
+                {renderColumnsPanel(true)}
               </div>
               <div className="data-table-toolbar-menu-section actions">
                 <button className="table-text-button" onClick={resetTable} type="button">
