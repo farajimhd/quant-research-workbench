@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { api, query } from "../api/client";
-import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartCatalogItem, type ChartLabelOption, type ChartPayload } from "../app/components/ChartPanel";
 import { DataTable, type BackendTableQuery } from "../app/components/DataTable";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
@@ -56,8 +56,40 @@ type PreviewSample = {
   row_offset: number;
   rows: Record<string, unknown>[];
 };
+type CatalogKnowledge = {
+  shortDescription: string;
+  detailedDescription: string;
+  theory: string;
+  interpretation: string;
+  caveats: string[];
+  equations: Array<{ markdown: string; title: string; variables: Record<string, string> }>;
+};
+type CatalogPresentation = Record<string, string | number | boolean | undefined>;
+type CatalogItem = ChartCatalogItem & {
+  dtype?: string;
+  groups?: string[];
+  knowledge?: CatalogKnowledge;
+  presentation?: CatalogPresentation;
+  semantics?: Record<string, unknown>;
+};
+type CatalogMethod = {
+  id: string;
+  title: string;
+  category: string;
+  method?: string;
+  knowledge?: CatalogKnowledge;
+  presentation?: CatalogPresentation;
+  thesis?: string;
+};
+type CatalogPayload = {
+  catalogVersion: number;
+  columns: CatalogItem[];
+  presentationOptions: Record<string, string[]>;
+  scanners: CatalogMethod[];
+  supervisionMethods: CatalogMethod[];
+};
 
-const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema"];
+const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema", "Catalog"];
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_COLUMNS = ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
@@ -67,6 +99,7 @@ export function MarketDataReviewPage() {
   const [scope, setScope] = useState<Scope | null>(null);
   const [draft, setDraft] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
+  const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
   const [activeTab, setActiveTab] = useState(tabs[0]);
   const [editingScope, setEditingScope] = useState(false);
 
@@ -80,6 +113,7 @@ export function MarketDataReviewPage() {
   useEffect(() => {
     if (!scope) return;
     api<ReviewPayload>(`/api/market-data/review${query({ processed_root: scope.processed_root, start_date: scope.start_date, end_date: scope.end_date })}`).then(setReview);
+    api<CatalogPayload>(`/api/market-data/catalog${query({ processed_root: scope.processed_root })}`).then(setCatalog);
   }, [scope]);
 
   function applyScope() {
@@ -112,10 +146,11 @@ export function MarketDataReviewPage() {
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
       {activeTab === "Overview" ? <Overview review={review} /> : null}
       {activeTab === "Coverage" && scope && review ? <Coverage scope={scope} records={review.records} /> : null}
-      {activeTab === "Chart" && scope && review ? <ChartTab scope={scope} records={review.records} /> : null}
+      {activeTab === "Chart" && scope && review ? <ChartTab catalog={catalog} scope={scope} records={review.records} /> : null}
       {activeTab === "Artifacts" && review ? <Artifacts records={review.records} /> : null}
       {activeTab === "Preview" && scope && review ? <Preview scope={scope} records={review.records} /> : null}
       {activeTab === "Schema" && scope && review ? <Schema scope={scope} records={review.records} /> : null}
+      {activeTab === "Catalog" && scope ? <CatalogTab catalog={catalog} scope={scope} onCatalogChange={setCatalog} /> : null}
       {editingScope && draft ? (
         <Modal title="Update Review Scope" onClose={() => setEditingScope(false)}>
           <div className="form-grid">
@@ -201,7 +236,7 @@ function Coverage({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   );
 }
 
-function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
+function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null; scope: Scope; records: RecordRow[] }) {
   const barRecords = useMemo(() => records.filter((record) => record.group === "bars" && record.exists), [records]);
   const availableSessions = useMemo(() => Array.from(new Set(barRecords.map((record) => record.session_date))).sort(), [barRecords]);
   const defaultRange = useMemo(() => {
@@ -231,6 +266,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [ticker, setTicker] = useState("");
   const [featureGroups, setFeatureGroups] = useState(DEFAULT_CHART_FEATURE_GROUPS);
   const [visibleColumns, setVisibleColumns] = useState(DEFAULT_CHART_COLUMNS);
+  const [visibleSupervisionGroups, setVisibleSupervisionGroups] = useState<string[]>([]);
   const [payload, setPayload] = useState<ChartPayload | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState("");
@@ -246,6 +282,18 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
       if (defaults.feature_groups?.length) setFeatureGroups(defaults.feature_groups);
     });
   }, []);
+
+  useEffect(() => {
+    const defaults = defaultCatalogChartColumns(catalog);
+    if (!defaults.length || !sameList(visibleColumns, DEFAULT_CHART_COLUMNS)) return;
+    setVisibleColumns(defaults);
+  }, [catalog, visibleColumns]);
+
+  useEffect(() => {
+    const defaults = defaultCatalogSupervisionGroups(catalog);
+    if (!defaults.length || visibleSupervisionGroups.length) return;
+    setVisibleSupervisionGroups(defaults);
+  }, [catalog, visibleSupervisionGroups.length]);
 
   useEffect(() => {
     if (!rangeStart || !rangeEnd || !timeframes.length) return;
@@ -283,6 +331,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         ticker: ticker.trim().toUpperCase(),
         feature_groups: featureGroups.join(","),
         columns: visibleColumns.join(","),
+        supervision_groups: visibleSupervisionGroups.join(","),
         min_confidence: DEFAULT_CHART_MIN_CONFIDENCE
       })}`
     ).then((nextPayload) => {
@@ -302,7 +351,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
     return () => {
       active = false;
     };
-  }, [scope.processed_root, rangeEnd, rangeStart, timeframe, ticker, featureGroups, visibleColumns]);
+  }, [scope.processed_root, rangeEnd, rangeStart, timeframe, ticker, featureGroups, visibleColumns, visibleSupervisionGroups]);
 
   function updateChartPeriod(start: string, end: string) {
     if (start <= end) {
@@ -316,20 +365,24 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
 
   const indicatorOptions = payload?.options?.standard_indicators ?? DEFAULT_CHART_COLUMNS;
   const featureOptions = payload?.options?.feature_columns ?? [];
+  const labelOptions = chartLabelOptions(catalog, payload?.options?.supervision_groups ?? []);
 
   if (!barRecords.length) return <div className="empty-state panel">No saved bar artifacts are available for charting.</div>;
   return (
     <section>
       <ChartPanel
+        catalogColumns={catalog?.columns ?? []}
         emptyMessage="No chart data for the selected ticker/date range/timeframe."
         errorMessage={chartError}
         featureOptions={featureOptions}
         indicatorOptions={indicatorOptions}
+        labelOptions={labelOptions}
         loading={chartLoading}
         onPeriodChange={updateChartPeriod}
         onTickerChange={setTicker}
         onTimeframeChange={setTimeframe}
         onVisibleColumnsChange={setVisibleColumns}
+        onVisibleSupervisionGroupsChange={setVisibleSupervisionGroups}
         payload={payload}
         periodEnd={rangeEnd}
         periodMax={availableSessions[availableSessions.length - 1] ?? scope.end_date}
@@ -339,6 +392,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
         timeframe={timeframe}
         timeframes={timeframes}
         visibleColumns={visibleColumns}
+        visibleSupervisionGroups={visibleSupervisionGroups}
       />
     </section>
   );
@@ -523,6 +577,117 @@ function previewBackendQueryIsActive(queryValue: BackendTableQuery): boolean {
   return queryValue.conditions.length > 0 || Boolean(queryValue.sortColumn);
 }
 
+function CatalogTab({ catalog, onCatalogChange, scope }: { catalog: CatalogPayload | null; onCatalogChange: (catalog: CatalogPayload) => void; scope: Scope }) {
+  const [kind, setKind] = useState<"columns" | "methods" | "scanners">("columns");
+  const [search, setSearch] = useState("");
+  const items = useMemo(() => catalogItems(catalog, kind, search), [catalog, kind, search]);
+  const [selectedId, setSelectedId] = useState("");
+  const selected = items.find((item) => item.id === selectedId) ?? items[0];
+  const [draft, setDraft] = useState<CatalogPresentation>({});
+
+  useEffect(() => {
+    if (selected?.id && selected.id !== selectedId) setSelectedId(selected.id);
+  }, [selected?.id, selectedId]);
+
+  useEffect(() => {
+    setDraft({ ...(selected?.presentation ?? {}) });
+  }, [selected?.id]);
+
+  if (!catalog) {
+    return (
+      <section className="panel catalog-panel">
+        <div className="empty-state"><span className="loading-spinner" aria-hidden="true" />Loading catalog...</div>
+      </section>
+    );
+  }
+
+  function updatePresentation(key: string, value: string | number | boolean) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  function savePresentation() {
+    if (!selected) return;
+    api<{ catalog: CatalogPayload }>("/api/market-data/catalog/presentation", {
+      method: "PATCH",
+      body: JSON.stringify({ processed_root: scope.processed_root, item_id: selected.id, presentation: draft })
+    }).then((payload) => onCatalogChange(payload.catalog));
+  }
+
+  return (
+    <section className="panel catalog-panel">
+      <div className="catalog-layout">
+        <aside className="catalog-browser">
+          <div className="catalog-toolbar">
+            <div className="catalog-kind-switch" role="group" aria-label="Catalog type">
+              <button className={kind === "columns" ? "table-segment-button active" : "table-segment-button"} onClick={() => setKind("columns")} type="button">Columns</button>
+              <button className={kind === "methods" ? "table-segment-button active" : "table-segment-button"} onClick={() => setKind("methods")} type="button">Methods</button>
+              <button className={kind === "scanners" ? "table-segment-button active" : "table-segment-button"} onClick={() => setKind("scanners")} type="button">Scanners</button>
+            </div>
+            <input className="catalog-search" placeholder="Search catalog" value={search} onChange={(event) => setSearch(event.target.value)} />
+          </div>
+          <div className="catalog-list">
+            {items.map((item) => (
+              <button className={selected?.id === item.id ? "catalog-list-item selected" : "catalog-list-item"} key={item.id} onClick={() => setSelectedId(item.id)} type="button">
+                <span>{item.title}</span>
+                <small>{item.category} / {item.group ?? "-"}</small>
+              </button>
+            ))}
+          </div>
+        </aside>
+        <article className="catalog-detail">
+          {selected ? (
+            <>
+              <div className="catalog-detail-header">
+                <div>
+                  <h2>{selected.title}</h2>
+                  <span>{selected.id}</span>
+                </div>
+                <button className="button primary" onClick={savePresentation} type="button">Save presentation</button>
+              </div>
+              <div className="catalog-detail-grid">
+                <section className="catalog-section">
+                  <h3>Knowledge</h3>
+                  <p>{selected.knowledge?.shortDescription}</p>
+                  <p>{selected.knowledge?.detailedDescription}</p>
+                  <h4>Theory</h4>
+                  <p>{selected.knowledge?.theory}</p>
+                  <h4>Interpretation</h4>
+                  <p>{selected.knowledge?.interpretation}</p>
+                  {selected.knowledge?.equations?.map((equation) => (
+                    <div className="catalog-equation" key={equation.title}>
+                      <strong>{equation.title}</strong>
+                      <pre>{equation.markdown}</pre>
+                    </div>
+                  ))}
+                </section>
+                <section className="catalog-section presentation-editor">
+                  <h3>Presentation</h3>
+                  <div className="catalog-form-grid">
+                    <CatalogCheckbox checked={Boolean(draft.selectable)} label="Selectable" onChange={(value) => updatePresentation("selectable", value)} />
+                    <CatalogCheckbox checked={Boolean(draft.defaultVisible)} label="Default on" onChange={(value) => updatePresentation("defaultVisible", value)} />
+                    <CatalogCheckbox checked={Boolean(draft.legend)} label="Legend" onChange={(value) => updatePresentation("legend", value)} />
+                    <CatalogSelect label="Chart role" options={catalog.presentationOptions.chartRoles} value={String(draft.chartRole ?? "table_only")} onChange={(value) => updatePresentation("chartRole", value)} />
+                    <CatalogSelect label="Pane" options={catalog.presentationOptions.panes} value={String(draft.pane ?? "price")} onChange={(value) => updatePresentation("pane", value)} />
+                    <CatalogSelect label="Line style" options={catalog.presentationOptions.lineStyles} value={String(draft.lineStyle ?? "solid")} onChange={(value) => updatePresentation("lineStyle", value)} />
+                    <CatalogSelect label="Marker shape" options={catalog.presentationOptions.markerShapes} value={String(draft.markerShape ?? "circle")} onChange={(value) => updatePresentation("markerShape", value)} />
+                    <CatalogSelect label="Marker position" options={catalog.presentationOptions.markerPositions} value={String(draft.markerPosition ?? "belowBar")} onChange={(value) => updatePresentation("markerPosition", value)} />
+                    <CatalogSelect label="Value format" options={catalog.presentationOptions.valueFormats} value={String(draft.valueFormat ?? "number")} onChange={(value) => updatePresentation("valueFormat", value)} />
+                    <CatalogText label="Color" value={String(draft.color ?? "#1E3A5F")} onChange={(value) => updatePresentation("color", value)} />
+                    <CatalogNumber label="Line width" max={6} min={1} value={Number(draft.lineWidth ?? 1)} onChange={(value) => updatePresentation("lineWidth", value)} />
+                    <CatalogNumber label="Precision" max={8} min={0} value={Number(draft.precision ?? 2)} onChange={(value) => updatePresentation("precision", value)} />
+                  </div>
+                </section>
+              </div>
+            </>
+          ) : (
+            <div className="empty-state">No catalog items match the current filters.</div>
+          )}
+        </article>
+      </div>
+    </section>
+  );
+}
+
 function Schema({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   const [recordKey, setRecordKey] = useState(records[0]?.key ?? "");
   const [schema, setSchema] = useState<Record<string, unknown>[]>([]);
@@ -690,6 +855,117 @@ function ScopeItem({ className, label, value }: { className?: string; label: str
       <b title={value}>{value}</b>
     </div>
   );
+}
+
+function CatalogSelect({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: string[]; value: string }) {
+  return (
+    <label className="catalog-field">
+      <span>{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function CatalogText({ label, onChange, value }: { label: string; onChange: (value: string) => void; value: string }) {
+  return (
+    <label className="catalog-field">
+      <span>{label}</span>
+      <input value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
+function CatalogNumber({ label, max, min, onChange, value }: { label: string; max: number; min: number; onChange: (value: number) => void; value: number }) {
+  return (
+    <label className="catalog-field">
+      <span>{label}</span>
+      <input max={max} min={min} type="number" value={String(value)} onChange={(event) => onChange(Number(event.target.value))} />
+    </label>
+  );
+}
+
+function CatalogCheckbox({ checked, label, onChange }: { checked: boolean; label: string; onChange: (value: boolean) => void }) {
+  return (
+    <label className="catalog-checkbox">
+      <input checked={checked} type="checkbox" onChange={(event) => onChange(event.target.checked)} />
+      <span>{label}</span>
+    </label>
+  );
+}
+
+function catalogItems(catalog: CatalogPayload | null, kind: "columns" | "methods" | "scanners", search: string): CatalogItem[] {
+  if (!catalog) return [];
+  const source: CatalogItem[] =
+    kind === "columns"
+      ? catalog.columns
+      : kind === "methods"
+        ? catalog.supervisionMethods.map(catalogMethodToItem)
+        : catalog.scanners.map(catalogMethodToItem);
+  const queryText = search.trim().toLowerCase();
+  if (!queryText) return source;
+  return source.filter((item) =>
+    [item.title, item.id, item.category, item.group, item.column].some((value) => String(value ?? "").toLowerCase().includes(queryText)),
+  );
+}
+
+function catalogMethodToItem(item: CatalogMethod): CatalogItem {
+  return {
+    id: item.id,
+    title: item.title,
+    category: item.category,
+    group: item.method ?? item.category,
+    knowledge: item.knowledge,
+    presentation: item.presentation,
+  };
+}
+
+function defaultCatalogChartColumns(catalog: CatalogPayload | null): string[] {
+  if (!catalog) return [];
+  return catalog.columns
+    .filter((item) => {
+      const role = String(item.presentation?.chartRole ?? "");
+      return Boolean(item.column && item.presentation?.defaultVisible && item.presentation?.selectable && !["marker", "table_only"].includes(role));
+    })
+    .map((item) => String(item.column));
+}
+
+function defaultCatalogSupervisionGroups(catalog: CatalogPayload | null): string[] {
+  if (!catalog) return [];
+  const groups = catalog.columns
+    .filter((item) => item.presentation?.defaultVisible && item.presentation?.chartRole === "marker")
+    .map(supervisionGroupForCatalogItem)
+    .filter(Boolean) as string[];
+  if (catalog.supervisionMethods.some((item) => item.presentation?.defaultVisible)) groups.push("method");
+  if (catalog.scanners.some((item) => item.presentation?.defaultVisible)) groups.push("scanner");
+  return Array.from(new Set(groups));
+}
+
+function chartLabelOptions(catalog: CatalogPayload | null, availableGroups: string[]): ChartLabelOption[] {
+  if (!catalog) return [];
+  const available = new Set(availableGroups);
+  const candidates = [
+    { column: "oracle_long_entry_signal", group: "bar", title: "Bar labels" },
+    { column: "method_entry_signal", group: "method", title: "Method labels" },
+    { column: "is_top_3", group: "scanner", title: "Scanner labels" },
+  ];
+  return candidates
+    .filter((candidate) => available.has(candidate.group))
+    .map((candidate) => {
+      const item = catalog.columns.find((column) => column.column === candidate.column);
+      return { group: candidate.group, id: item?.id ?? candidate.group, title: item?.title ?? candidate.title };
+    });
+}
+
+function supervisionGroupForCatalogItem(item: CatalogItem): string | null {
+  const groups = item.artifactGroups ?? [];
+  if (groups.includes("supervision_bar")) return "bar";
+  if (groups.includes("supervision_method")) return "method";
+  if (groups.includes("supervision_scanner")) return "scanner";
+  return null;
 }
 
 function sameList(left: string[], right: string[]) {

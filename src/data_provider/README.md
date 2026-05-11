@@ -442,6 +442,19 @@ The React frontend has a `Market Data` workspace served by `src.backend.app`:
 
 Charts and run dashboards use `MarketDataProvider` first. If provider artifacts are missing, the chart loader can fall back to older run artifacts/raw paths where that fallback is still supported.
 
+## Catalog Contract
+
+`catalog.py` is the provider-owned contract for generated bars, indicators, feature columns, supervision labels, method labels, and scanner labels. It describes:
+
+- what each column or label is
+- how it is calculated at a high level
+- the theory and interpretation behind it
+- Markdown equations for frontend guidance
+- leakage rules for future-looking supervision
+- default chart/table presentation settings
+
+Frontend chart controls, schema/catalog review pages, and marker rendering should read this catalog through `/api/market-data/catalog` instead of hardcoding indicator names, colors, panes, or label descriptions. Only the `presentation` block is user-editable. Presentation edits are stored as `catalog_presentation_overrides.json` under the selected processed data root and are merged over the provider default catalog at API read time.
+
 ## Performance Notes
 
 - Raw files are scanned lazily where practical.

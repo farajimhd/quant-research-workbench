@@ -36,10 +36,31 @@ type ChartSeries = {
   label: string;
   style: "line" | "histogram";
   color: string;
+  legend?: boolean;
+  lineStyle?: "solid" | "dashed" | "dotted";
   lineWidth: number;
   data: Array<{ color?: string; time: number; value: number }>;
 };
 type Region = { start: number; end: number; color: string; label: string };
+export type ChartCatalogItem = {
+  id: string;
+  column?: string;
+  title: string;
+  category: string;
+  group?: string;
+  artifactGroups?: string[];
+  presentation?: {
+    chartRole?: string;
+    defaultVisible?: boolean;
+    pane?: string;
+    selectable?: boolean;
+  };
+};
+export type ChartLabelOption = {
+  group: string;
+  id: string;
+  title: string;
+};
 type AnySeriesApi = ISeriesApi<SeriesType>;
 type ChartMarker = SeriesMarker<Time>;
 type LegendPane = "price" | "oscillator";
@@ -107,15 +128,18 @@ export type ChartPanelHandle = {
 };
 
 type ChartPanelProps = {
+  catalogColumns?: ChartCatalogItem[];
   emptyMessage?: string;
   errorMessage?: string;
   featureOptions: string[];
   indicatorOptions: string[];
+  labelOptions?: ChartLabelOption[];
   loading?: boolean;
   onPeriodChange?: (start: string, end: string) => void;
   onTickerChange: (value: string) => void;
   onTimeframeChange: (value: string) => void;
   onVisibleColumnsChange: (value: string[]) => void;
+  onVisibleSupervisionGroupsChange?: (value: string[]) => void;
   payload: ChartPayload | null;
   periodEnd?: string;
   periodMax?: string;
@@ -125,6 +149,7 @@ type ChartPanelProps = {
   timeframe: string;
   timeframes: string[];
   visibleColumns: string[];
+  visibleSupervisionGroups?: string[];
 };
 
 const defaultChartAppearanceSettings: ChartAppearanceSettings = {
@@ -157,15 +182,18 @@ type ChartPalette = {
 };
 
 export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
+  catalogColumns = [],
   emptyMessage = "No chart data for the selected ticker/date range/timeframe.",
   errorMessage,
   featureOptions,
   indicatorOptions,
+  labelOptions = [],
   loading = false,
   onPeriodChange,
   onTickerChange,
   onTimeframeChange,
   onVisibleColumnsChange,
+  onVisibleSupervisionGroupsChange,
   periodEnd,
   periodMax,
   periodMin,
@@ -174,7 +202,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   ticker,
   timeframe,
   timeframes,
-  visibleColumns
+  visibleColumns,
+  visibleSupervisionGroups = []
 }, ref) => {
   const priceRef = useRef<HTMLDivElement | null>(null);
   const oscillatorPaneRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -646,9 +675,12 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         </div>
         <span className="toolbar-divider" />
         <IndicatorFeatureSelect
+          catalogColumns={catalogColumns}
           featureOptions={featureOptions}
           indicatorOptions={indicatorOptions}
+          labelOptions={labelOptions}
           onChange={onVisibleColumnsChange}
+          onLabelChange={onVisibleSupervisionGroupsChange}
           onOpenChange={(value) => {
             setColumnMenuOpen(value);
             if (value) {
@@ -658,6 +690,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           }}
           open={columnMenuOpen}
           values={visibleColumns}
+          visibleLabels={visibleSupervisionGroups}
         />
         <div className="toolbar-spacer" />
         <button
@@ -959,25 +992,36 @@ function LegendEditor({
 }
 
 function IndicatorFeatureSelect({
+  catalogColumns,
   featureOptions,
   indicatorOptions,
+  labelOptions,
   onChange,
+  onLabelChange,
   onOpenChange,
   open,
-  values
+  values,
+  visibleLabels
 }: {
+  catalogColumns: ChartCatalogItem[];
   featureOptions: string[];
   indicatorOptions: string[];
+  labelOptions: ChartLabelOption[];
   onChange: (value: string[]) => void;
+  onLabelChange?: (value: string[]) => void;
   onOpenChange: (value: boolean) => void;
   open: boolean;
   values: string[];
+  visibleLabels: string[];
 }) {
   const indicatorSet = new Set(indicatorOptions);
   const visibleFeatures = featureOptions.filter((option) => !indicatorSet.has(option));
   const visibleOptions = [...indicatorOptions, ...visibleFeatures];
+  const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
   const selected = new Set(values);
-  const selectedCount = visibleOptions.filter((option) => selected.has(option)).length;
+  const selectedLabels = new Set(visibleLabels);
+  const selectedCount = visibleOptions.filter((option) => selected.has(option)).length + labelOptions.filter((option) => selectedLabels.has(option.group)).length;
+  const labelForOption = (option: string) => catalogByColumn.get(option)?.title ?? displayName(option);
 
   const toggleValue = (value: string) => {
     const nextSelected = new Set(values);
@@ -989,6 +1033,17 @@ function IndicatorFeatureSelect({
     if (!nextSelected.size) return;
     const ordered = visibleOptions.filter((option) => nextSelected.has(option));
     onChange(ordered);
+  };
+
+  const toggleLabel = (group: string) => {
+    if (!onLabelChange) return;
+    const nextSelected = new Set(visibleLabels);
+    if (nextSelected.has(group)) {
+      nextSelected.delete(group);
+    } else {
+      nextSelected.add(group);
+    }
+    onLabelChange(labelOptions.map((option) => option.group).filter((groupName) => nextSelected.has(groupName)));
   };
 
   return (
@@ -1017,7 +1072,7 @@ function IndicatorFeatureSelect({
                 type="button"
               >
                 <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
-                <span>{displayName(option)}</span>
+                <span>{labelForOption(option)}</span>
               </button>
             ))}
           </div>
@@ -1033,13 +1088,32 @@ function IndicatorFeatureSelect({
                   type="button"
                 >
                   <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
-                  <span>{displayName(option)}</span>
+                  <span>{labelForOption(option)}</span>
                 </button>
               ))
             ) : (
               <div className="chart-column-menu-empty">No feature columns for this session.</div>
             )}
           </div>
+          {labelOptions.length ? (
+            <>
+              <div className="chart-column-menu-divider" />
+              <div className="chart-column-menu-title">Labels</div>
+              <div className="chart-column-menu-list">
+                {labelOptions.map((option) => (
+                  <button
+                    className={selectedLabels.has(option.group) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                    key={option.id}
+                    onClick={() => toggleLabel(option.group)}
+                    type="button"
+                  >
+                    <span className="chart-column-menu-check">{selectedLabels.has(option.group) ? <Check size={13} /> : null}</span>
+                    <span>{option.title}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -1199,7 +1273,7 @@ function ChartSettingsSection({ children, title }: { children: ReactNode; title:
 }
 
 function buildSeriesLegendItems(series: ChartSeries[], pane: LegendPane, settingsMap: LegendSettingsMap): LegendItem[] {
-  return series.map((item) => {
+  return series.filter((item) => item.legend !== false).map((item) => {
     const key = legendSeriesKey(pane, item);
     const settings = resolveLegendSettings(settingsMap, key, item);
     const latest = latestSeriesValue(item.data);
@@ -1364,7 +1438,7 @@ function rgbaFromHex(hex: string, opacity: number) {
 function defaultLegendSettings(series: ChartSeries): Required<LegendSeriesSettings> {
   return {
     color: series.color,
-    lineStyle: "solid",
+    lineStyle: series.lineStyle ?? "solid",
     lineWidth: Math.max(1, Math.min(4, Math.round(series.lineWidth || 1))),
     showValue: true,
     visible: true

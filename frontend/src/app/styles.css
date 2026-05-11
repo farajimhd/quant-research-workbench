@@ -1260,6 +1260,219 @@ button {
   font-weight: 650;
 }
 
+.catalog-panel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.catalog-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 14px;
+  min-height: 0;
+}
+
+.catalog-browser,
+.catalog-detail {
+  min-height: 0;
+  border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.catalog-browser,
+.catalog-detail {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.catalog-toolbar {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  background: color-mix(in oklab, var(--surface-alt) 28%, var(--surface));
+  padding: 10px;
+}
+
+.catalog-kind-switch {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.catalog-search {
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--control-bg, var(--surface));
+  color: var(--foreground);
+  padding: 0 9px;
+}
+
+.catalog-list {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.catalog-list-item {
+  display: grid;
+  gap: 3px;
+  min-height: 48px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  padding: 8px 9px;
+  text-align: left;
+}
+
+.catalog-list-item:hover,
+.catalog-list-item.selected {
+  border-color: color-mix(in oklab, var(--primary) 16%, transparent);
+  background: color-mix(in oklab, var(--primary) 5%, var(--surface));
+}
+
+.catalog-list-item span {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.catalog-list-item small {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-detail-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  background: color-mix(in oklab, var(--surface-alt) 22%, var(--surface));
+  padding: 12px 14px;
+}
+
+.catalog-detail-header h2 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 16px;
+}
+
+.catalog-detail-header span {
+  color: var(--muted-foreground);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+}
+
+.catalog-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+}
+
+.catalog-section {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+}
+
+.catalog-section h3,
+.catalog-section h4 {
+  margin: 0;
+  color: var(--foreground);
+}
+
+.catalog-section h3 {
+  font-size: 14px;
+}
+
+.catalog-section h4 {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.catalog-section p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.48;
+}
+
+.catalog-equation {
+  display: grid;
+  gap: 6px;
+  border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-alt) 26%, var(--surface));
+  padding: 10px;
+}
+
+.catalog-equation strong {
+  color: var(--foreground);
+  font-size: 12px;
+}
+
+.catalog-equation pre {
+  overflow: auto;
+  margin: 0;
+  color: var(--foreground);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.catalog-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.catalog-field {
+  display: grid;
+  gap: 5px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.catalog-field input,
+.catalog-field select {
+  min-height: 32px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--control-bg, var(--surface));
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 0 8px;
+}
+
+.catalog-checkbox {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 7px;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .schema-type-badge {
   border: 1px solid var(--border);
   border-radius: 999px;

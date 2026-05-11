@@ -11,6 +11,11 @@ import polars as pl
 
 from src.backend.json_utils import json_safe
 from src.data_provider.calendar import discover_raw_bounds, market_sessions, scan_market_source
+from src.data_provider.catalog import (
+    catalog_columns_by_column,
+    catalog_item_by_id,
+    provider_catalog,
+)
 from src.data_provider.config import (
     DEFAULT_PROCESSED_ROOT,
     DEFAULT_RAW_ROOT,
@@ -42,25 +47,6 @@ CHART_FEATURE_EXCLUDE_COLUMNS = {
     "transactions",
 }
 
-PRICE_CHART_INDICATORS = ["vwap", "tema9", "tema20"]
-OSCILLATOR_CHART_INDICATORS = ["macd_line", "macd_signal", "macd_hist"]
-CHART_INDICATORS = PRICE_CHART_INDICATORS + OSCILLATOR_CHART_INDICATORS
-INDICATOR_DISPLAY_NAMES = {
-    "vwap": "VWAP",
-    "tema9": "TEMA9",
-    "tema20": "TEMA20",
-    "macd_line": "MACD LINE",
-    "macd_signal": "MACD SIGNAL",
-    "macd_hist": "MACD HIST",
-}
-INDICATOR_COLORS = {
-    "vwap": "#5B21B6",
-    "tema9": "#2563EB",
-    "tema20": "#B7791F",
-    "macd_line": "#1E3A5F",
-    "macd_signal": "#B54708",
-    "macd_hist": "#33E42A",
-}
 DYNAMIC_COLORS = ["#1E3A5F", "#B7791F", "#067647", "#B42318", "#2563EB", "#7C3AED", "#0E7490", "#C2410C"]
 
 
@@ -451,14 +437,24 @@ def is_numeric_dtype(dtype: Any) -> bool:
     return str(dtype).startswith(("Float", "Int", "UInt"))
 
 
-def chart_feature_columns(records: list[dict[str, Any]], timeframe: str, start: date, end: date, groups: list[str]) -> list[str]:
+def chart_feature_columns(records: list[dict[str, Any]], timeframe: str, start: date, end: date, groups: list[str], catalog: dict[str, Any]) -> list[str]:
     columns = []
+    catalog_by_column = catalog_columns_by_column(catalog)
     for group in groups:
         for record in matching_artifacts(records, f"features_{group}", timeframe, start, end):
             for item in artifact_schema(record):
-                if item["column"] not in CHART_FEATURE_EXCLUDE_COLUMNS and is_numeric_dtype(item["dtype"]):
+                column_contract = catalog_by_column.get(item["column"])
+                presentation = column_contract.get("presentation", {}) if column_contract else {}
+                chart_role = str(presentation.get("chartRole") or "")
+                if (
+                    item["column"] not in CHART_FEATURE_EXCLUDE_COLUMNS
+                    and is_numeric_dtype(item["dtype"])
+                    and presentation.get("selectable", True)
+                    and chart_role not in {"", "marker", "table_only"}
+                ):
                     columns.append(item["column"])
-    return sorted(set(columns))
+    order = {str(item.get("column")): index for index, item in enumerate(catalog.get("columns", []))}
+    return sorted(set(columns), key=lambda column: order.get(column, 9999))
 
 
 def chart_pane_for_column(column: str) -> str:
@@ -467,28 +463,27 @@ def chart_pane_for_column(column: str) -> str:
     return "price" if any(term in lower for term in price_terms) else "oscillator"
 
 
-def indicator_settings(selected_columns: list[str]) -> dict[str, dict[str, Any]]:
+def indicator_settings(selected_columns: list[str], catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
     settings = {}
+    catalog_by_column = catalog_columns_by_column(catalog)
     for index, column in enumerate(selected_columns):
-        if column in CHART_INDICATORS:
-            settings[column] = {
-                "color": INDICATOR_COLORS[column],
-                "lineWidth": 2 if column == "vwap" else 1,
-                "opacity": 0.35 if column == "vwap" else 0.75,
-                "pane": "oscillator" if column in OSCILLATOR_CHART_INDICATORS else "price",
-                "style": "histogram" if column == "macd_hist" else "line",
-                "label": INDICATOR_DISPLAY_NAMES.get(column, display_name(column)),
-            }
-        else:
-            pane = chart_pane_for_column(column)
-            settings[column] = {
-                "color": DYNAMIC_COLORS[index % len(DYNAMIC_COLORS)],
-                "lineWidth": 1,
-                "opacity": 0.72 if pane == "price" else 0.82,
-                "pane": pane,
-                "style": "line",
-                "label": display_name(column),
-            }
+        column_contract = catalog_by_column.get(column, {})
+        presentation = column_contract.get("presentation", {}) if column_contract else {}
+        role = str(presentation.get("chartRole") or "")
+        pane_name = str(presentation.get("pane") or chart_pane_for_column(column))
+        pane = "price" if pane_name == "price" or role in {"price_overlay", "band"} else "oscillator"
+        color = str(presentation.get("color") or DYNAMIC_COLORS[index % len(DYNAMIC_COLORS)])
+        settings[column] = {
+            "color": "#33E42A" if color == "inherit_candle_direction" else color,
+            "dynamicColor": color == "inherit_candle_direction",
+            "lineWidth": int(presentation.get("lineWidth") or (2 if column == "vwap" else 1)),
+            "opacity": 0.35 if column == "vwap" else 0.75,
+            "pane": pane,
+            "style": "histogram" if role == "histogram" else "line",
+            "lineStyle": str(presentation.get("lineStyle") or "solid"),
+            "legend": bool(presentation.get("legend", True)),
+            "label": str(column_contract.get("title") or display_name(column)),
+        }
     return settings
 
 
@@ -612,12 +607,8 @@ def supervision_markers(
     supervision_groups: list[str],
     marker_limit: int,
     min_confidence: float,
+    catalog: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    style = {
-        "bar": ("#067647", "circle", "belowBar"),
-        "method": ("#2563EB", "arrowUp", "belowBar"),
-        "scanner": ("#7C3AED", "arrowUp", "aboveBar"),
-    }
     markers: list[dict[str, Any]] = []
     for supervision_group in supervision_groups:
         frame = provider.load_supervision(start_date=start_date, end_date=end_date, timeframe=timeframe, supervision_type=supervision_group, tickers=[ticker])
@@ -626,10 +617,33 @@ def supervision_markers(
             timestamp = chart_timestamp_seconds(row, timeframe)
             if not timestamp:
                 continue
-            color, shape, position = style.get(supervision_group, ("#1E3A5F", "circle", "belowBar"))
+            color, shape, position = supervision_marker_style(catalog, supervision_group, row)
             markers.append({"time": timestamp, "position": position, "color": color, "shape": shape, "text": marker_text(row, supervision_group)})
     markers.sort(key=lambda marker: int(marker.get("time") or 0))
     return markers[:marker_limit]
+
+
+def supervision_marker_style(catalog: dict[str, Any], supervision_group: str, row: dict[str, Any]) -> tuple[str, str, str]:
+    by_id = catalog_item_by_id(catalog)
+    defaults = {
+        "bar": ("#067647", "circle", "belowBar"),
+        "method": ("#2563EB", "arrowUp", "belowBar"),
+        "scanner": ("#7C3AED", "arrowUp", "aboveBar"),
+    }
+    item = None
+    if supervision_group == "method":
+        item = by_id.get(f"method.{row.get('trade_method')}")
+    elif supervision_group == "scanner":
+        item = by_id.get("scanner.method_rank")
+    elif supervision_group == "bar":
+        item = by_id.get("oracle_long_entry_signal")
+    default_color, default_shape, default_position = defaults.get(supervision_group, ("#1E3A5F", "circle", "belowBar"))
+    presentation = item.get("presentation", {}) if item else {}
+    return (
+        str(presentation.get("color") or default_color),
+        str(presentation.get("markerShape") or default_shape),
+        str(presentation.get("markerPosition") or default_position),
+    )
 
 
 def chart_payload(
@@ -646,6 +660,7 @@ def chart_payload(
     min_confidence: float,
 ) -> dict[str, Any]:
     records = artifact_records(processed_root)
+    catalog = provider_catalog(processed_root)
     provider = MarketDataProvider(DataProviderConfig(processed_root=processed_root))
     bars = provider.load_bars(
         start_date=start_date,
@@ -654,10 +669,22 @@ def chart_payload(
         tickers=[ticker.upper()],
         feature_groups=feature_groups_selected,
     )
+    feature_columns = chart_feature_columns(records, timeframe, start_date, end_date, feature_groups_selected, catalog)
+    catalog_by_column = catalog_columns_by_column(catalog)
+    indicator_columns = [
+        column
+        for column in feature_columns
+        if catalog_by_column.get(column, {}).get("category") == "indicator"
+    ]
+    non_indicator_columns = [
+        column
+        for column in feature_columns
+        if column not in set(indicator_columns)
+    ]
     options = {
         "feature_groups": feature_group_options(records, timeframe, start_date, end_date),
-        "feature_columns": chart_feature_columns(records, timeframe, start_date, end_date, feature_groups_selected),
-        "standard_indicators": CHART_INDICATORS,
+        "feature_columns": non_indicator_columns,
+        "standard_indicators": indicator_columns,
         "supervision_groups": [
             group
             for group in SUPERVISION_GROUPS
@@ -692,7 +719,7 @@ def chart_payload(
                 "color": "rgba(51, 228, 42, 0.26)" if close_value >= open_value else "rgba(253, 14, 80, 0.24)",
             }
         )
-    settings = indicator_settings(selected_columns)
+    settings = indicator_settings(selected_columns, catalog)
     overlay_series = []
     oscillator_series = []
     for column, option in settings.items():
@@ -705,11 +732,22 @@ def chart_payload(
             if timestamp and value is not None:
                 numeric_value = float(value)
                 point = {"time": timestamp, "value": numeric_value}
-                if column == "macd_hist":
+                if option.get("dynamicColor"):
                     point["color"] = "#33E42A" if numeric_value >= 0 else "#FD0E50"
                 points.append(point)
         target = oscillator_series if option["pane"] == "oscillator" else overlay_series
-        target.append({"column": column, "label": option["label"], "style": option["style"], "color": option["color"], "lineWidth": option["lineWidth"], "data": points})
+        target.append(
+            {
+                "column": column,
+                "label": option["label"],
+                "style": option["style"],
+                "lineStyle": option["lineStyle"],
+                "color": option["color"],
+                "legend": option["legend"],
+                "lineWidth": option["lineWidth"],
+                "data": points,
+            }
+        )
     markers = (
         []
         if not supervision_groups_selected or marker_limit <= 0
@@ -722,6 +760,7 @@ def chart_payload(
             supervision_groups=supervision_groups_selected,
             marker_limit=marker_limit,
             min_confidence=min_confidence,
+            catalog=catalog,
         )
     )
     return {

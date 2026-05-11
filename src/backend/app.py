@@ -32,6 +32,7 @@ from src.backend.market_data_service import (
 )
 from src.backend.progress_model import build_progress_model
 from src.data_provider.calendar import scan_market_source
+from src.data_provider.catalog import provider_catalog, save_presentation_override
 from src.data_provider.config import (
     DEFAULT_PROCESSED_ROOT,
     DEFAULT_RAW_ROOT,
@@ -85,6 +86,12 @@ class BacktestSubmit(BaseModel):
     slippage_bps: float = 2.0
     save_symbol_bars: bool = True
     strategy_params: dict[str, Any] = Field(default_factory=dict)
+
+
+class CatalogPresentationUpdate(BaseModel):
+    processed_root: str = Field(default=str(DEFAULT_PROCESSED_ROOT))
+    item_id: str
+    presentation: dict[str, Any] = Field(default_factory=dict)
 
 
 def parse_date_param(value: date | None, fallback: str) -> date:
@@ -386,6 +393,27 @@ def market_schema(processed_root: str, group: str, timeframe: str, session_date:
     return {"record": record, "schema": artifact_schema(record)}
 
 
+@app.get("/api/market-data/catalog")
+def market_catalog(processed_root: str = str(DEFAULT_PROCESSED_ROOT)) -> dict[str, Any]:
+    return json_safe(provider_catalog(Path(processed_root)))
+
+
+@app.patch("/api/market-data/catalog/presentation")
+def update_market_catalog_presentation(payload: CatalogPresentationUpdate) -> dict[str, Any]:
+    return {"catalog": json_safe(save_presentation_override(Path(payload.processed_root), payload.item_id, payload.presentation))}
+
+
+def default_catalog_chart_columns(processed_root: Path) -> list[str]:
+    columns = []
+    for item in provider_catalog(processed_root).get("columns", []):
+        presentation = item.get("presentation", {})
+        role = str(presentation.get("chartRole") or "")
+        column = item.get("column")
+        if column and presentation.get("defaultVisible") and presentation.get("selectable") and role not in {"marker", "table_only"}:
+            columns.append(str(column))
+    return columns
+
+
 @app.get("/api/market-data/chart")
 def market_chart(
     processed_root: str,
@@ -400,13 +428,14 @@ def market_chart(
     marker_limit: int = Query(default=100, ge=0, le=500),
     min_confidence: float = Query(default=0.7, ge=0.0, le=1.0),
 ) -> dict[str, Any]:
+    processed_root_path = Path(processed_root)
     selected_feature_groups = parse_csv_list(feature_groups) or ["core", "momentum"]
-    selected_columns = parse_csv_list(columns) if columns is not None else ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"]
+    selected_columns = parse_csv_list(columns) if columns is not None else default_catalog_chart_columns(processed_root_path)
     selected_supervision = parse_csv_list(supervision_groups) if supervision_groups is not None else []
     range_start, range_end = resolve_chart_range(start_date, end_date, session_date)
     return json_safe(
         chart_payload(
-            Path(processed_root),
+            processed_root_path,
             start_date=range_start,
             end_date=range_end,
             timeframe=timeframe,
