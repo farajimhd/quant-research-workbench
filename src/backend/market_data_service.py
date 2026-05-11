@@ -338,7 +338,7 @@ def extended_session_regions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
                 {
                     "start": session_region_timestamp(session, 4 * 60),
                     "end": session_region_timestamp(session, 9 * 60 + 30),
-                    "color": "rgba(191, 219, 254, 0.34)",
+                    "color": "rgba(251, 191, 36, 0.22)",
                     "label": "Premarket",
                 },
                 {
