@@ -1613,7 +1613,8 @@ button {
 
 .catalog-detail-pane {
   min-width: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--card);
   padding: 14px;
 }
@@ -1621,12 +1622,14 @@ button {
 .catalog-detail-stack {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .catalog-detail-card,
 .catalog-presentation-card,
 .catalog-section-card,
 .catalog-metric {
+  min-width: 0;
   border: 1px solid var(--surface-border);
   border-radius: 12px;
   background: color-mix(in oklab, var(--surface-alt) 12%, var(--card));
