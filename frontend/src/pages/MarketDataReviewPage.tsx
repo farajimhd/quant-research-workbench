@@ -50,7 +50,7 @@ type SchemaField = {
   kind: "boolean" | "numeric" | "other" | "temporal" | "text";
 };
 
-const tabs = ["Overview", "Coverage", "Chart", "Artifacts", "Preview", "Schema"];
+const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema"];
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_COLUMNS = ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"];
 const DEFAULT_CHART_SUPERVISION_GROUPS = ["method"];
