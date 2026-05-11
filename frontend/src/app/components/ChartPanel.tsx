@@ -366,7 +366,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
   }
 
-  const priceLegendItems = buildPriceLegendItems(payload, ticker, timeframe, legendSettings, chartSettings);
+  const priceLegendItems = buildPriceLegendItems(payload, ticker, legendSettings, chartSettings);
   const oscillatorLegendItems = buildSeriesLegendItems(payload?.oscillator_series ?? [], "oscillator", legendSettings);
 
   const commitTicker = (event: FormEvent<HTMLFormElement>) => {
@@ -463,7 +463,6 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
               items={priceLegendItems}
               onReset={resetLegendSettings}
               onUpdate={updateLegendSettings}
-              title="Price"
             />
           </div>
           {payload.oscillator_series.length ? (
@@ -474,7 +473,6 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
                 items={oscillatorLegendItems}
                 onReset={resetLegendSettings}
                 onUpdate={updateLegendSettings}
-                title="Pane"
               />
             </div>
           ) : null}
@@ -501,14 +499,12 @@ function ChartLegend({
   indicatorCount,
   items,
   onReset,
-  onUpdate,
-  title
+  onUpdate
 }: {
   indicatorCount: number;
   items: LegendItem[];
   onReset: (key: string) => void;
   onUpdate: (key: string, patch: LegendSeriesSettings) => void;
-  title: string;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [editingKey, setEditingKey] = useState<string | null>(null);
@@ -516,9 +512,13 @@ function ChartLegend({
   const editingItem = items.find((item) => item.key === editingKey && item.configurable);
   return (
     <div className={collapsed ? "chart-legend collapsed" : "chart-legend"}>
-      <button className="chart-legend-header" onClick={() => setCollapsed((value) => !value)} type="button">
+      <button
+        aria-label={collapsed ? "Expand legend" : "Collapse legend"}
+        className="chart-legend-header"
+        onClick={() => setCollapsed((value) => !value)}
+        type="button"
+      >
         {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-        <span>{title}</span>
         <b>{formatIndicatorCount(indicatorCount)}</b>
       </button>
       {!collapsed ? (
@@ -530,7 +530,7 @@ function ChartLegend({
                   <i style={{ background: item.color }} />
                 </span>
                 <span className="legend-label">{item.label}</span>
-                {item.showValue && item.visible ? <b>{item.value}</b> : null}
+                {item.showValue && item.visible ? <span className="legend-value">{item.value}</span> : null}
                 {item.configurable ? (
                   <span className="legend-row-actions">
                     <button
@@ -859,7 +859,6 @@ function ChartSettingsSection({ children, title }: { children: ReactNode; title:
 function buildPriceLegendItems(
   payload: ChartPayload | null,
   ticker: string,
-  timeframe: string,
   settingsMap: LegendSettingsMap,
   chartSettings: ChartAppearanceSettings
 ): LegendItem[] {
@@ -871,7 +870,7 @@ function buildPriceLegendItems(
       color: candleColor,
       configurable: false,
       key: "price:candles",
-      label: `${ticker.toUpperCase()} ${timeframe}`,
+      label: ticker.toUpperCase(),
       lineStyle: "solid",
       lineWidth: 1,
       seriesStyle: "candlestick",
