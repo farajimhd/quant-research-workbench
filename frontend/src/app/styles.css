@@ -4496,7 +4496,7 @@ button {
 .chart-reference-stack-layer {
   position: absolute;
   inset: 8px;
-  z-index: 3;
+  z-index: 5;
   pointer-events: none;
   overflow: hidden;
 }
@@ -4506,8 +4506,38 @@ button {
   top: 0;
   bottom: 0;
   width: 0;
-  border-left: 1px dotted #050505;
+  border-left: 2px dotted #050505;
   pointer-events: none;
+}
+
+.chart-reference-line span {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  max-width: 160px;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface) 90%, transparent);
+  color: #050505;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 4px 7px;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.chart-reference-line.near-left span {
+  left: 4px;
+  transform: none;
+}
+
+.chart-reference-line.near-right span {
+  right: 4px;
+  left: auto;
+  transform: none;
 }
 
 .day-separator {

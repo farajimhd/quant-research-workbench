@@ -1818,6 +1818,16 @@ function drawReferenceLine(chart: IChartApi, layer: HTMLDivElement | null, candl
   node.className = "chart-reference-line";
   node.title = reference.label || "Selected row";
   node.style.left = `${coordinate}px`;
+  if (coordinate < 90) {
+    node.classList.add("near-left");
+  } else if (coordinate > layer.clientWidth - 90) {
+    node.classList.add("near-right");
+  }
+  if (reference.label) {
+    const label = document.createElement("span");
+    label.textContent = reference.label;
+    node.appendChild(label);
+  }
   layer.appendChild(node);
 }
 
