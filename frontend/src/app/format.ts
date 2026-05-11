@@ -53,14 +53,53 @@ export function formatMoney(value: unknown): string {
   return numeric.toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
+const titleAcronyms: Record<string, string> = {
+  atr: "ATR",
+  bb: "BB",
+  bp: "bp",
+  bps: "bps",
+  cci: "CCI",
+  cmf: "CMF",
+  ema: "EMA",
+  fvg: "FVG",
+  fwd: "FWD",
+  hvn: "HVN",
+  id: "ID",
+  lvn: "LVN",
+  macd: "MACD",
+  mae: "MAE",
+  mfe: "MFE",
+  mfi: "MFI",
+  obv: "OBV",
+  orb: "ORB",
+  pct: "pct",
+  roc: "ROC",
+  rsi: "RSI",
+  sma: "SMA",
+  tema: "TEMA",
+  utc: "UTC",
+  vwap: "VWAP",
+};
+const titleLowercaseWords = new Set(["a", "an", "and", "as", "at", "before", "by", "for", "from", "in", "into", "of", "on", "or", "per", "the", "to", "vs", "with", "without"]);
+
 export function displayName(value: string): string {
-  const overrides: Record<string, string> = { macd: "MACD", orb: "ORB", vwap: "VWAP", rsi: "RSI", atr: "ATR" };
-  return value
+  const parts = value
     .replaceAll("-", "_")
     .split("_")
-    .filter(Boolean)
-    .map((part) => overrides[part.toLowerCase()] ?? (part.length <= 3 ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1)))
-    .join(" ");
+    .filter(Boolean);
+  const lastIndex = parts.length - 1;
+  return parts.map((part, index) => displayNamePart(part, index, lastIndex)).join(" ");
+}
+
+function displayNamePart(part: string, index: number, lastIndex: number): string {
+  const lower = part.toLowerCase();
+  const numericUnit = lower.match(/^(\d+)([a-z]+)$/);
+  if (numericUnit && titleAcronyms[numericUnit[2]]) return `${numericUnit[1]} ${titleAcronyms[numericUnit[2]]}`;
+  const trailingNumber = lower.match(/^([a-z]+)(\d+)$/);
+  if (trailingNumber && titleAcronyms[trailingNumber[1]]) return `${titleAcronyms[trailingNumber[1]]}${trailingNumber[2]}`;
+  if (titleAcronyms[lower]) return titleAcronyms[lower];
+  if (index > 0 && index < lastIndex && titleLowercaseWords.has(lower)) return lower;
+  return lower.slice(0, 1).toUpperCase() + lower.slice(1);
 }
 
 export function formatCell(key: string, value: unknown): string {

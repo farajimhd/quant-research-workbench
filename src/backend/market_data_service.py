@@ -15,6 +15,7 @@ from src.data_provider.catalog import (
     catalog_columns_by_column,
     catalog_item_by_id,
     provider_catalog,
+    title_for_column,
 )
 from src.data_provider.config import (
     DEFAULT_PROCESSED_ROOT,
@@ -65,9 +66,7 @@ def format_bytes(value: int | float | None) -> str:
 
 
 def display_name(value: str) -> str:
-    overrides = {"macd": "MACD", "orb": "ORB", "vwap": "VWAP", "rsi": "RSI", "atr": "ATR"}
-    parts = value.replace("-", "_").split("_")
-    return " ".join(overrides.get(part.lower(), part.upper() if len(part) <= 3 else part.title()) for part in parts)
+    return title_for_column(value)
 
 
 def artifact_records(root: Path) -> list[dict[str, Any]]:

@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 1
+CATALOG_VERSION = 2
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -167,6 +167,114 @@ PRICE_OVERLAY_TERMS = ("sma", "ema", "tema", "vwap", "bb_", "donchian", "keltner
 OSCILLATOR_TERMS = ("macd", "rsi", "roc", "cci", "stoch", "z20", "relative_", "score", "ratio", "pct", "confidence", "percentile")
 DEFAULT_VISIBLE_COLUMNS = {"vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"}
 DYNAMIC_COLORS = ["#1E3A5F", "#B7791F", "#067647", "#B42318", "#2563EB", "#7C3AED", "#0E7490", "#C2410C"]
+TITLE_ACRONYMS = {
+    "atr": "ATR",
+    "bb": "BB",
+    "bp": "bp",
+    "bps": "bps",
+    "cci": "CCI",
+    "cmf": "CMF",
+    "ema": "EMA",
+    "fvg": "FVG",
+    "fwd": "FWD",
+    "hvn": "HVN",
+    "id": "ID",
+    "lvn": "LVN",
+    "macd": "MACD",
+    "mae": "MAE",
+    "mfe": "MFE",
+    "mfi": "MFI",
+    "obv": "OBV",
+    "orb": "ORB",
+    "pct": "pct",
+    "roc": "ROC",
+    "rsi": "RSI",
+    "sma": "SMA",
+    "tema": "TEMA",
+    "utc": "UTC",
+    "vwap": "VWAP",
+}
+TITLE_LOWERCASE_WORDS = {"a", "an", "and", "as", "at", "before", "by", "for", "from", "in", "into", "of", "on", "or", "per", "the", "to", "vs", "with", "without"}
+BAR_KNOWLEDGE = {
+    "bar_id": {
+        "short": "Stable provider bar identifier.",
+        "detailed": "Bar ID uniquely identifies a provider bar across ticker, timeframe, and timestamp context.",
+        "equation": "$$bar\\_id=f(Ticker, Timeframe, Time_t)$$",
+        "variables": {"Time_t": "Provider bar timestamp"},
+    },
+    "ticker": {
+        "short": "Security symbol for the bar.",
+        "detailed": "Ticker identifies the listed instrument represented by this provider row.",
+        "equation": "$$Ticker_t=Symbol$$",
+        "variables": {"Symbol": "Security identifier in the processed artifact"},
+    },
+    "timeframe": {
+        "short": "Provider timeframe for the bar.",
+        "detailed": "Timeframe identifies the bar interval, such as 1m, 5m, 1h, or 1d.",
+        "equation": "$$Timeframe \\in \\{1m,5m,15m,30m,1h,2h,4h,1d\\}$$",
+        "variables": {"Timeframe": "Provider aggregation interval"},
+    },
+    "bar_time_utc": {
+        "short": "Bar timestamp in UTC.",
+        "detailed": "UTC bar time gives an exchange-independent timestamp for joining data and comparing markets.",
+        "equation": "$$Time_{UTC}=convert(Time_{NY}, UTC)$$",
+        "variables": {"Time_{NY}": "New York market timestamp"},
+    },
+    "bar_time_market": {
+        "short": "Bar timestamp in New York market time.",
+        "detailed": "Market bar time is the exchange-local timestamp used for intraday session logic and chart display.",
+        "equation": "$$Time_{NY}=convert(Time_{UTC}, America/New\\_York)$$",
+        "variables": {"Time_{UTC}": "UTC bar timestamp"},
+    },
+    "session_date": {
+        "short": "New York trading session date.",
+        "detailed": "Session date assigns each bar to its New York market session, including extended-hours bars that belong to that session.",
+        "equation": "$$SessionDate=date(Time_{NY})$$",
+        "variables": {"Time_{NY}": "New York market timestamp"},
+    },
+    "minute_of_day": {
+        "short": "New York minute of day.",
+        "detailed": "Minute of day is the New York hour multiplied by 60 plus the minute. The provider uses it for intraday bucketing, session alignment, and extended-hours shading.",
+        "equation": "$$MinuteOfDay=60 \\cdot Hour_{NY}+Minute_{NY}$$",
+        "variables": {"Hour_{NY}": "Hour in New York market time", "Minute_{NY}": "Minute in New York market time"},
+    },
+    "open": {
+        "short": "Opening price of the bar.",
+        "detailed": "Open is the first observed or aggregated trade price in the provider bar interval.",
+        "equation": "$$Open_t=P_{first,t}$$",
+        "variables": {"P_{first,t}": "First price in bar t"},
+    },
+    "high": {
+        "short": "Highest price of the bar.",
+        "detailed": "High is the maximum observed or aggregated trade price in the provider bar interval.",
+        "equation": "$$High_t=max(P_t)$$",
+        "variables": {"P_t": "Prices inside bar t"},
+    },
+    "low": {
+        "short": "Lowest price of the bar.",
+        "detailed": "Low is the minimum observed or aggregated trade price in the provider bar interval.",
+        "equation": "$$Low_t=min(P_t)$$",
+        "variables": {"P_t": "Prices inside bar t"},
+    },
+    "close": {
+        "short": "Closing price of the bar.",
+        "detailed": "Close is the final observed or aggregated trade price in the provider bar interval.",
+        "equation": "$$Close_t=P_{last,t}$$",
+        "variables": {"P_{last,t}": "Last price in bar t"},
+    },
+    "volume": {
+        "short": "Share volume in the bar.",
+        "detailed": "Volume is the total traded shares represented by the provider bar interval.",
+        "equation": "$$Volume_t=\\sum_i Shares_{i,t}$$",
+        "variables": {"Shares_{i,t}": "Trade size inside bar t"},
+    },
+    "transactions": {
+        "short": "Transaction count in the bar.",
+        "detailed": "Transactions counts the number of reported trades represented by the provider bar interval.",
+        "equation": "$$Transactions_t=count(Trades_t)$$",
+        "variables": {"Trades_t": "Trades inside bar t"},
+    },
+}
 
 
 def provider_catalog(processed_root: Path | None = None) -> dict[str, Any]:
@@ -496,6 +604,8 @@ def precision_for_column(column: str) -> int:
 
 def knowledge_for_column(column: str, group: str, category: str, title: str) -> dict[str, Any]:
     lower = column.lower()
+    if category == "bar":
+        return bar_knowledge_for_column(column, title)
     if lower == "vwap":
         return knowledge_block(
             short="Volume-weighted average price.",
@@ -640,10 +750,44 @@ def leakage_block() -> dict[str, Any]:
     }
 
 
+def bar_knowledge_for_column(column: str, title: str) -> dict[str, Any]:
+    details = BAR_KNOWLEDGE.get(column.lower())
+    if details is None:
+        details = {
+            "short": f"{title} bar metadata.",
+            "detailed": f"{title} is provider-owned bar context used for indexing, joining, filtering, or interpreting market data artifacts.",
+            "equation": f"$$\\text{{{title}}}_t=f(Bar_t)$$",
+            "variables": {"Bar_t": "Provider bar row"},
+        }
+    return knowledge_block(
+        short=details["short"],
+        detailed=details["detailed"],
+        theory="Bar metadata preserves the canonical time, identity, and OHLCV context that downstream features, labels, charts, and backtests consume.",
+        interpretation="Use this as provider context for filtering, joining, chart display, and session-aware analysis. It is table metadata, not a derived trading indicator.",
+        equation=details["equation"],
+        variables=details["variables"],
+    )
+
+
 def title_for_column(column: str) -> str:
-    overrides = {"macd": "MACD", "vwap": "VWAP", "rsi": "RSI", "atr": "ATR", "mfi": "MFI", "cmf": "CMF", "cci": "CCI", "roc": "ROC", "obv": "OBV", "fvg": "FVG"}
     parts = column.replace("-", "_").split("_")
-    return " ".join(overrides.get(part.lower(), part.upper() if len(part) <= 3 else part.title()) for part in parts)
+    last_index = len(parts) - 1
+    return " ".join(title_part(part, index, last_index) for index, part in enumerate(parts) if part)
+
+
+def title_part(part: str, index: int, last_index: int) -> str:
+    lower = part.lower()
+    numeric_unit = re.fullmatch(r"(\d+)([a-z]+)", lower)
+    if numeric_unit and numeric_unit.group(2) in TITLE_ACRONYMS:
+        return f"{numeric_unit.group(1)} {TITLE_ACRONYMS[numeric_unit.group(2)]}"
+    trailing_number_match = re.fullmatch(r"([a-z]+)(\d+)", lower)
+    if trailing_number_match and trailing_number_match.group(1) in TITLE_ACRONYMS:
+        return f"{TITLE_ACRONYMS[trailing_number_match.group(1)]}{trailing_number_match.group(2)}"
+    if lower in TITLE_ACRONYMS:
+        return TITLE_ACRONYMS[lower]
+    if 0 < index < last_index and lower in TITLE_LOWERCASE_WORDS:
+        return lower
+    return lower[:1].upper() + lower[1:]
 
 
 def short_title_for_column(column: str, title: str) -> str:
