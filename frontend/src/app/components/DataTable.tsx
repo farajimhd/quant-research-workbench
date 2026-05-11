@@ -57,6 +57,8 @@ type ColumnProfile = {
   topValues: ValueCount[];
   total?: number;
   totalRows: number;
+  temporalUnit?: "date" | "datetime";
+  timeZoneName?: string;
   typeLabel: string;
 };
 
@@ -662,58 +664,64 @@ function ColumnFilterPopover({
 function ColumnStatsPopover({ profile }: { profile: ColumnProfile }) {
   const hasBlankValues = profile.blankCount > 0;
   return (
-    <div className="table-popover-panel stats">
+    <div className="table-popover-panel stats table-popover-divided">
       <div className="table-popover-section">
         <div className="table-popover-title-block">
           <div className="table-popover-heading">{displayName(profile.column)}</div>
-          <div className="table-popover-subheading">{profile.kind}</div>
+          <div className="table-popover-subheading">{profile.typeLabel}</div>
         </div>
         <div className="table-stat-pill-grid">
           <StatPill label="Non-null" tone="neutral" value={formatInteger(profile.nonEmpty)} />
           <StatPill label="Null" tone={hasBlankValues ? "warning" : "neutral"} value={formatInteger(profile.blankCount)} />
           <StatPill label="Distinct" tone="neutral" value={formatInteger(profile.distinct)} />
         </div>
-        <div className="table-stat-line-grid">
-          {profile.kind === "numeric" ? (
-            <>
-              <StatLine label="Min" value={formatProfileMetric(profile.min)} />
-              <StatLine label="P25" value={formatProfileMetric(profile.p25)} />
-              <StatLine label="Median" value={formatProfileMetric(profile.median)} />
-              <StatLine label="Average" value={formatProfileMetric(profile.average)} />
-              <StatLine label="P75" value={formatProfileMetric(profile.p75)} />
-              <StatLine label="Max" value={formatProfileMetric(profile.max)} />
-              <StatLine label="Std. dev." value={formatProfileMetric(profile.stddev)} />
-              <StatLine label="Total" value={formatProfileMetric(profile.total)} />
-            </>
-          ) : null}
-          {profile.kind === "datetime" ? (
-            <>
-              <StatLine label="Earliest" value={formatProfileMetric(profile.min)} />
-              <StatLine label="Latest" value={formatProfileMetric(profile.max)} />
-            </>
-          ) : null}
-        </div>
-        {profile.histogramBins.length ? (
-          <HistogramPanel histogramBins={profile.histogramBins} title="Distribution" tone={resolveTableVisualTone(profile)} />
-        ) : null}
-        {profile.topValues.length ? (
-          <div>
-            <div className="table-popover-section-title">Top values</div>
-            <div className="table-overlay-list compact">
-              {profile.topValues.slice(0, 8).map((topValue) => (
-                <OverlayBar
-                  emphasized={false}
-                  key={topValue.value}
-                  label={topValue.value}
-                  tone={resolveTableVisualTone(profile)}
-                  totalValue={profile.topValues.reduce((count, value) => count + value.count, 0)}
-                  value={topValue.count}
-                />
-              ))}
-            </div>
-          </div>
-        ) : null}
       </div>
+      {profile.kind === "numeric" || profile.kind === "datetime" ? (
+        <div className="table-popover-section">
+          <div className="table-stat-line-grid">
+            {profile.kind === "numeric" ? (
+              <>
+                <StatLine label="Min" value={formatProfileMetric(profile.min)} />
+                <StatLine label="P25" value={formatProfileMetric(profile.p25)} />
+                <StatLine label="Median" value={formatProfileMetric(profile.median)} />
+                <StatLine label="Average" value={formatProfileMetric(profile.average)} />
+                <StatLine label="P75" value={formatProfileMetric(profile.p75)} />
+                <StatLine label="Max" value={formatProfileMetric(profile.max)} />
+                <StatLine label="Std. dev." value={formatProfileMetric(profile.stddev)} />
+                <StatLine label="Total" value={formatProfileMetric(profile.total)} />
+              </>
+            ) : null}
+            {profile.kind === "datetime" ? (
+              <>
+                <StatLine label="Earliest" value={formatDateTimeMetric(profile.min, profile.temporalUnit, profile.timeZoneName)} />
+                <StatLine label="Latest" value={formatDateTimeMetric(profile.max, profile.temporalUnit, profile.timeZoneName)} />
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      {profile.histogramBins.length ? (
+        <div className="table-popover-section">
+          <HistogramPanel histogramBins={profile.histogramBins} title="Distribution" tone={resolveTableVisualTone(profile)} />
+        </div>
+      ) : null}
+      {profile.topValues.length ? (
+        <div className="table-popover-section">
+          <div className="table-popover-section-title">Top values</div>
+          <div className="table-overlay-list compact">
+            {profile.topValues.slice(0, 8).map((topValue) => (
+              <OverlayBar
+                emphasized={false}
+                key={topValue.value}
+                label={topValue.value}
+                tone={resolveTableVisualTone(profile)}
+                totalValue={profile.topValues.reduce((count, value) => count + value.count, 0)}
+                value={topValue.count}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -840,8 +848,23 @@ function buildColumnProfile(rows: DataRow[], column: string): ColumnProfile {
   const distinct = values.length ? new Set(values.map(formatFilterValue)).size : 0;
   const numericValues = values.map(coerceNumber).filter((value): value is number => Number.isFinite(value));
   const booleanValues = values.filter((value) => typeof value === "boolean");
-  const dateValues = values.map(coerceDate).filter((value): value is number => Number.isFinite(value));
+  const dateValues = values.map((value) => coerceDate(value, looksLikeTimeColumn(column))).filter((value): value is number => Number.isFinite(value));
   const blankCount = rows.length - values.length;
+
+  if (values.length && isDateTimeProfile(column, values.length, dateValues.length)) {
+    const sorted = [...dateValues].sort((left, right) => left - right);
+    const temporalUnit = inferTemporalUnit(column, values);
+    const timeZoneName = temporalUnit === "datetime" ? inferTimeZoneName(column) : "UTC";
+    return {
+      ...baseProfile({ blankCount, column, distinct, kind: "datetime", rows, topValues, values }),
+      histogramBins: buildDatetimeHistogram(sorted, temporalUnit, timeZoneName),
+      max: new Date(sorted[sorted.length - 1]).toISOString(),
+      min: new Date(sorted[0]).toISOString(),
+      temporalUnit,
+      timeZoneName,
+      typeLabel: temporalUnit === "date" ? "date" : `date/time${formatTimeZoneLabel(timeZoneName)}`,
+    };
+  }
 
   if (values.length && numericValues.length === values.length) {
     const sorted = [...numericValues].sort((left, right) => left - right);
@@ -872,15 +895,6 @@ function buildColumnProfile(rows: DataRow[], column: string): ColumnProfile {
 
   if (values.length && booleanValues.length === values.length) {
     return baseProfile({ blankCount, column, distinct, kind: "boolean", rows, topValues, values });
-  }
-
-  if (values.length && dateValues.length === values.length && looksLikeTimeColumn(column)) {
-    const sorted = [...dateValues].sort((left, right) => left - right);
-    return {
-      ...baseProfile({ blankCount, column, distinct, kind: "datetime", rows, topValues, values }),
-      max: new Date(sorted[sorted.length - 1]).toISOString(),
-      min: new Date(sorted[0]).toISOString(),
-    };
   }
 
   return baseProfile({
@@ -955,12 +969,23 @@ function comparableValue(value: unknown): number | string | null {
   return String(value);
 }
 
-function coerceDate(value: unknown) {
+function coerceDate(value: unknown, allowNumericTimestamp = false) {
   if (value instanceof Date) return value.getTime();
+  if (allowNumericTimestamp && typeof value === "number") return coerceNumericTimestamp(value);
   if (typeof value !== "string") return Number.NaN;
+  if (allowNumericTimestamp && /^-?\d+(?:\.\d+)?$/.test(value.trim())) return coerceNumericTimestamp(Number(value));
   if (!/\d{4}-\d{2}-\d{2}/.test(value)) return Number.NaN;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function coerceNumericTimestamp(value: number) {
+  const magnitude = Math.abs(value);
+  if (!Number.isFinite(value) || magnitude < 1_000_000_000) return Number.NaN;
+  if (magnitude > 100_000_000_000_000_000) return value / 1_000_000;
+  if (magnitude > 100_000_000_000_000) return value / 1_000;
+  if (magnitude > 100_000_000_000) return value;
+  return value * 1_000;
 }
 
 function coerceNumber(value: unknown) {
@@ -980,7 +1005,7 @@ function rowMatchesManualFilter(value: unknown, profile: ColumnProfile | undefin
     return compareManualNumbers(coerceNumber(value), filter);
   }
   if (profile.kind === "datetime") {
-    return compareManualDates(coerceDate(value), filter);
+    return compareManualDates(coerceDate(value, looksLikeTimeColumn(profile.column)), filter);
   }
   return compareManualText(value, filter);
 }
@@ -1028,7 +1053,7 @@ function defaultManualFilter(profile: ColumnProfile): ColumnManualFilterState {
   return {
     caseSensitive: false,
     operator: buildDefaultManualFilterOperator(profile.kind),
-    timeZoneName: "UTC",
+    timeZoneName: profile.timeZoneName ?? "UTC",
     valueText: "",
     valueTextSecondary: "",
   };
@@ -1057,8 +1082,7 @@ function buildManualFilterPlaceholder(kind: ColumnKind) {
 function resolveManualFilterInputType(profile: ColumnProfile): "date" | "datetime-local" | "number" | "text" {
   if (profile.kind === "numeric") return "number";
   if (profile.kind === "datetime") {
-    const minValue = typeof profile.min === "string" ? profile.min : "";
-    return minValue.includes("T") ? "datetime-local" : "date";
+    return profile.temporalUnit === "date" ? "date" : "datetime-local";
   }
   return "text";
 }
@@ -1159,6 +1183,21 @@ function buildNumericHistogram(sortedValues: number[]) {
   }).filter((bin) => bin.count > 0);
 }
 
+function buildDatetimeHistogram(sortedValues: number[], temporalUnit: ColumnProfile["temporalUnit"], timeZoneName?: string) {
+  if (!sortedValues.length) return [];
+  const min = sortedValues[0];
+  const max = sortedValues[sortedValues.length - 1];
+  if (min === max) return [{ count: sortedValues.length, label: formatDateTimeMetric(min, temporalUnit, timeZoneName) }];
+  const binCount = Math.min(8, Math.max(4, Math.ceil(Math.sqrt(sortedValues.length))));
+  const width = (max - min) / binCount;
+  return Array.from({ length: binCount }, (_, index) => {
+    const start = min + width * index;
+    const end = index === binCount - 1 ? max : start + width;
+    const count = sortedValues.filter((value) => (index === binCount - 1 ? value >= start && value <= end : value >= start && value < end)).length;
+    return { count, label: `${formatDateTimeMetric(start, temporalUnit, timeZoneName)} - ${formatDateTimeMetric(end, temporalUnit, timeZoneName)}` };
+  }).filter((bin) => bin.count > 0);
+}
+
 function percentile(sortedValues: number[], p: number) {
   if (!sortedValues.length) return undefined;
   const index = (sortedValues.length - 1) * p;
@@ -1188,7 +1227,30 @@ function isBlank(value: unknown) {
 
 function looksLikeTimeColumn(column: string) {
   const normalized = column.toLowerCase();
-  return normalized.includes("date") || normalized.includes("time") || normalized.endsWith("_at");
+  return normalized.includes("date") || normalized.includes("time") || normalized.includes("timestamp") || normalized === "window_start" || normalized === "window_end" || normalized.endsWith("_at");
+}
+
+function isDateTimeProfile(column: string, valueCount: number, dateValueCount: number) {
+  if (!dateValueCount) return false;
+  if (looksLikeTimeColumn(column)) return dateValueCount >= Math.ceil(valueCount * 0.8);
+  return dateValueCount === valueCount;
+}
+
+function inferTemporalUnit(column: string, values: unknown[]): "date" | "datetime" {
+  return values.some((value) => value instanceof Date || typeof value === "number" || (looksLikeTimeColumn(column) && typeof value === "string" && /^-?\d+(?:\.\d+)?$/.test(value.trim())) || (typeof value === "string" && /(?:T|\s)\d{1,2}:\d{2}/.test(value))) ? "datetime" : "date";
+}
+
+function inferTimeZoneName(column: string) {
+  const normalized = column.toLowerCase();
+  if (normalized.includes("market")) return "America/New_York";
+  if (normalized.includes("utc") || normalized === "window_start" || normalized === "window_end" || normalized.includes("timestamp")) return "UTC";
+  return undefined;
+}
+
+function formatTimeZoneLabel(timeZoneName?: string) {
+  if (timeZoneName === "UTC") return " UTC";
+  if (timeZoneName === "America/New_York") return " ET";
+  return "";
 }
 
 function formatFilterValue(value: unknown) {
@@ -1209,6 +1271,19 @@ function formatProfileMetric(value: unknown) {
       : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
   }
   return String(value);
+}
+
+function formatDateTimeMetric(value: unknown, temporalUnit: ColumnProfile["temporalUnit"] = "datetime", timeZoneName?: string) {
+  const timestamp = typeof value === "number" ? value : coerceDate(value);
+  if (!Number.isFinite(timestamp)) return formatProfileMetric(value);
+  const timeZone = temporalUnit === "date" ? "UTC" : timeZoneName;
+  return new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    month: "short",
+    ...(temporalUnit === "datetime" ? { hour: "2-digit" as const, minute: "2-digit" as const } : {}),
+    ...(timeZone ? { timeZone } : {}),
+    year: "numeric",
+  }).format(new Date(timestamp));
 }
 
 function addDays(value: Date, dayOffset: number) {

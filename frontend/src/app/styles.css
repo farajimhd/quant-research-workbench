@@ -1860,7 +1860,7 @@ button {
   margin-bottom: 8px;
   color: var(--muted-foreground);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   text-transform: uppercase;
 }
 
@@ -1942,8 +1942,8 @@ button {
 
 .table-popover-heading {
   color: var(--foreground);
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .table-popover-subheading {
@@ -1972,7 +1972,7 @@ button {
   color: var(--muted-foreground);
   cursor: pointer;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 500;
   padding: 0 10px;
 }
 
@@ -1995,8 +1995,8 @@ button {
 .table-popover-section-title {
   color: var(--muted-foreground);
   font-size: 11px;
-  font-weight: 750;
-  letter-spacing: 0.14em;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -2014,8 +2014,8 @@ button {
 .table-popover-field > span {
   color: var(--muted-foreground);
   font-size: 11px;
-  font-weight: 750;
-  letter-spacing: 0.14em;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -2050,7 +2050,7 @@ button {
   color: var(--muted-foreground);
   cursor: pointer;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .table-badge-toggle.active {
@@ -2085,7 +2085,7 @@ button {
   color: var(--foreground);
   cursor: pointer;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 500;
   padding: 0 10px;
 }
 
@@ -2131,7 +2131,7 @@ button {
   overflow: hidden;
   color: var(--muted-foreground);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2169,7 +2169,7 @@ button {
   justify-content: flex-end;
   color: var(--foreground);
   font-size: 11px;
-  font-weight: 750;
+  font-weight: 500;
   padding: 0 8px;
 }
 
@@ -2224,8 +2224,8 @@ button {
 .table-stat-line div {
   color: var(--muted-foreground);
   font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.12em;
+  font-weight: 500;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -2233,7 +2233,8 @@ button {
   display: block;
   margin-top: 4px;
   color: var(--foreground);
-  font-size: 14px;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .table-stat-line-grid {
@@ -2247,7 +2248,8 @@ button {
   margin-top: 4px;
   overflow-wrap: anywhere;
   color: var(--foreground);
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .empty-state {
