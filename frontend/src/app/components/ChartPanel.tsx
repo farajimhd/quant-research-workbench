@@ -48,6 +48,10 @@ type OscillatorPaneRuntime = {
   renderer: AnySeriesApi;
   valuesByTime: Map<number, number>;
 };
+type OscillatorPaneGroup = {
+  key: string;
+  series: ChartSeries[];
+};
 type LegendLineStyle = "solid" | "dashed" | "dotted";
 type LegendSeriesSettings = {
   color?: string;
@@ -325,21 +329,30 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
 
     const oscillatorPanes: OscillatorPaneRuntime[] = [];
-    payload.oscillator_series.forEach((series) => {
-      const key = legendSeriesKey("oscillator", series);
-      const pane = oscillatorPaneRefs.current.get(key);
+    buildOscillatorPaneGroups(payload.oscillator_series).forEach((group) => {
+      const pane = oscillatorPaneRefs.current.get(group.key);
       if (!pane) return;
       const oscChart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, true, palette, chartSettings));
-      oscillatorChartRefs.current.set(key, oscChart);
-      const settings = resolveLegendSettings(legendSettings, key, series);
-      const renderer = addChartSeries(oscChart, series, settings);
-      renderer.setData(seriesDataForSettings(series, settings) as never);
-      indicatorSeriesRef.current.set(key, renderer);
-      indicatorSourceRef.current.set(key, series);
+      oscillatorChartRefs.current.set(group.key, oscChart);
+      let primaryRenderer: AnySeriesApi | null = null;
+      let primaryValuesByTime = new Map<number, number>();
+      group.series.forEach((series) => {
+        const key = legendSeriesKey("oscillator", series);
+        const settings = resolveLegendSettings(legendSettings, key, series);
+        const renderer = addChartSeries(oscChart, series, settings);
+        renderer.setData(seriesDataForSettings(series, settings) as never);
+        indicatorSeriesRef.current.set(key, renderer);
+        indicatorSourceRef.current.set(key, series);
+        if (!primaryRenderer) {
+          primaryRenderer = renderer;
+          primaryValuesByTime = new Map(series.data.map((point) => [point.time, point.value]));
+        }
+      });
+      if (!primaryRenderer) return;
       oscillatorPanes.push({
         chart: oscChart,
-        renderer,
-        valuesByTime: new Map(series.data.map((point) => [point.time, point.value]))
+        renderer: primaryRenderer,
+        valuesByTime: primaryValuesByTime
       });
     });
     const rangeCleanups = oscillatorPanes.map((pane) => syncRanges(priceChart, pane.chart));
@@ -485,14 +498,13 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
               onUpdate={updateLegendSettings}
             />
           </div>
-          {payload.oscillator_series.map((series) => {
-            const key = legendSeriesKey("oscillator", series);
+          {buildOscillatorPaneGroups(payload.oscillator_series).map((group) => {
             return (
-              <div className="chart-osc" key={key}>
-                <div className="chart-pane-canvas" ref={(node) => setOscillatorPaneRef(key, node)} />
+              <div className="chart-osc" key={group.key}>
+                <div className="chart-pane-canvas" ref={(node) => setOscillatorPaneRef(group.key, node)} />
                 <ChartLegend
-                  indicatorCount={1}
-                  items={buildSeriesLegendItems([series], "oscillator", legendSettings)}
+                  indicatorCount={group.series.length}
+                  items={buildSeriesLegendItems(group.series, "oscillator", legendSettings)}
                   onReset={resetLegendSettings}
                   onUpdate={updateLegendSettings}
                 />
@@ -935,6 +947,21 @@ function latestSeriesValue(data: Array<{ value: number }>) {
 
 function formatIndicatorCount(count: number) {
   return `${count} indicator${count === 1 ? "" : "s"}`;
+}
+
+function buildOscillatorPaneGroups(series: ChartSeries[]): OscillatorPaneGroup[] {
+  const groups = new Map<string, ChartSeries[]>();
+  series.forEach((item) => {
+    const key = oscillatorPaneKey(item);
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  });
+  return Array.from(groups, ([key, items]) => ({ key, series: items }));
+}
+
+function oscillatorPaneKey(series: ChartSeries) {
+  const column = series.column.toLowerCase();
+  if (column.startsWith("macd_")) return "oscillator:macd";
+  return legendSeriesKey("oscillator", series);
 }
 
 function legendSeriesKey(pane: LegendPane, series: ChartSeries) {
