@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 2
+CATALOG_VERSION = 3
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -397,6 +397,10 @@ def build_method_contracts() -> list[dict[str, Any]]:
                     interpretation="Higher confidence means the future path better matched the method thesis over its horizon window.",
                     equation=details.get("equation", "$$Method_t = f(Path_{t+1:t+h}, Features_t)$$"),
                     variables={"Path": "Future high, low, close, and volume sequence", "h": "Method horizon in bars"},
+                    caveats=[
+                        "Uses future bars by design. Use for research, training labels, and chart review only.",
+                        "Do not use method supervision fields as live signals without a delay-safe model.",
+                    ],
                 ),
                 "leakage": leakage_block(),
                 "presentation": {
@@ -606,14 +610,16 @@ def knowledge_for_column(column: str, group: str, category: str, title: str) -> 
     lower = column.lower()
     if category == "bar":
         return bar_knowledge_for_column(column, title)
+    if group.startswith("supervision_"):
+        return supervision_knowledge_for_column(column, group, title)
     if lower == "vwap":
         return knowledge_block(
             short="Volume-weighted average price.",
-            detailed="VWAP estimates the average execution price weighted by traded volume through the session or available window.",
+            detailed="VWAP is the cumulative dollar-volume divided by cumulative share volume for the same ticker and session. In this provider it resets by ticker and session_date, so the value describes where the session has traded on a volume-weighted basis up to the current bar.",
             theory="VWAP anchors price to participation. Trading above VWAP often indicates demand is paying above the volume-weighted consensus, while trading below VWAP indicates weaker demand.",
             interpretation="Use VWAP as a price-location and mean-reversion/trend anchor. Breaks and reclaims can mark intraday regime changes.",
-            equation="$$VWAP_t=\\frac{\\sum_{i=1}^{t}P_iV_i}{\\sum_{i=1}^{t}V_i}$$",
-            variables={"P_i": "Typical or close price at bar i", "V_i": "Volume at bar i"},
+            equation="$$VWAP_t=\\frac{\\sum_{i=1}^{t}Close_i\\cdot Volume_i}{\\sum_{i=1}^{t}Volume_i}$$",
+            variables={"Close_i": "Close price for earlier bar i in the same ticker/session", "Volume_i": "Share volume for bar i"},
         )
     if lower.startswith("sma"):
         window = trailing_number(lower, 20)
@@ -676,37 +682,725 @@ def knowledge_for_column(column: str, group: str, category: str, title: str) -> 
     if lower.startswith("bb_"):
         return knowledge_block(
             short="Bollinger Band statistic around a moving average.",
-            detailed="Bollinger Bands place upper/lower volatility bands around a moving average using rolling standard deviation.",
+            detailed="Bollinger Bands use the 20-bar close mean as the center line and two rolling standard deviations as the upper/lower envelope. Band width normalizes the full band span by the middle band.",
             theory="Bands widen as volatility expands and tighten as volatility contracts.",
             interpretation="Band expansion can confirm volatility breakouts; band touches can show overextension in ranges.",
-            equation="$$Upper_t=SMA_{20}(C_t)+2\\sigma_{20}(C_t)$$\n\n$$Lower_t=SMA_{20}(C_t)-2\\sigma_{20}(C_t)$$",
+            equation="$$Middle_t=SMA_{20}(Close_t)$$\n\n$$Upper_t=Middle_t+2\\sigma_{20}(Close_t)$$\n\n$$Lower_t=Middle_t-2\\sigma_{20}(Close_t)$$\n\n$$Width_t=\\frac{Upper_t-Lower_t}{Middle_t}$$",
             variables={"C": "Close price", "\\sigma": "Rolling standard deviation"},
         )
-    if lower in {"price_shock_score", "volume_shock_score", "price_volume_shock_score"} or "shock" in lower:
+    feature_knowledge = feature_knowledge_for_column(column, group, category, title)
+    if feature_knowledge is not None:
+        return feature_knowledge
+    return fallback_knowledge_for_column(column, group, category, title)
+
+
+def feature_knowledge_for_column(column: str, group: str, category: str, title: str) -> dict[str, Any] | None:
+    lower = column.lower()
+    direct = {
+        "hlc3": (
+            "Typical price using high, low, and close.",
+            "HLC3 averages the high, low, and close of the current bar. It is less close-biased than close alone and is used by money-flow style features.",
+            "$$HLC3_t=\\frac{High_t+Low_t+Close_t}{3}$$",
+            {"High_t": "Current bar high", "Low_t": "Current bar low", "Close_t": "Current bar close"},
+        ),
+        "ohlc4": (
+            "Four-price average for the current bar.",
+            "OHLC4 averages open, high, low, and close. It gives a compact central price for the complete candle instead of only the last trade.",
+            "$$OHLC4_t=\\frac{Open_t+High_t+Low_t+Close_t}{4}$$",
+            {"Open_t": "Current bar open", "High_t": "Current bar high", "Low_t": "Current bar low", "Close_t": "Current bar close"},
+        ),
+        "dollar_volume": (
+            "Notional traded value for the bar.",
+            "Dollar volume multiplies close by share volume. It is a liquidity proxy that weights activity by price level, making a high-volume low-priced stock comparable to a lower-volume high-priced stock.",
+            "$$DollarVolume_t=Close_t\\cdot Volume_t$$",
+            {"Close_t": "Current bar close", "Volume_t": "Current bar share volume"},
+        ),
+        "return_1": (
+            "One-bar simple close-to-close return.",
+            "Return 1 compares the current close with the prior close for the same ticker. Null first bars are filled with zero.",
+            "$$Return1_t=\\frac{Close_t}{Close_{t-1}}-1$$",
+            {"Close_t": "Current close", "Close_{t-1}": "Previous bar close for the same ticker"},
+        ),
+        "log_return_1": (
+            "One-bar log close-to-close return.",
+            "Log return is the natural log of the current close divided by the prior close. It is additive across bars and useful for volatility statistics.",
+            "$$LogReturn1_t=\\ln\\left(\\frac{Close_t}{Close_{t-1}}\\right)$$",
+            {"Close_t": "Current close", "Close_{t-1}": "Previous bar close for the same ticker"},
+        ),
+        "bar_range": (
+            "Full high-low candle range.",
+            "Bar range measures the full price excursion inside the bar, regardless of where it opened or closed.",
+            "$$Range_t=High_t-Low_t$$",
+            {"High_t": "Current high", "Low_t": "Current low"},
+        ),
+        "body": (
+            "Signed candle body.",
+            "Body is close minus open. Positive values mean the candle closed above its open; negative values mean it closed below its open.",
+            "$$Body_t=Close_t-Open_t$$",
+            {"Close_t": "Current close", "Open_t": "Current open"},
+        ),
+        "body_abs": (
+            "Absolute candle body size.",
+            "Body absolute size removes direction and measures how much net movement occurred from open to close.",
+            "$$BodyAbs_t=|Close_t-Open_t|$$",
+            {"Close_t": "Current close", "Open_t": "Current open"},
+        ),
+        "upper_wick": (
+            "Upper candle wick length.",
+            "Upper wick measures how far price traded above the larger of open and close. Long upper wicks can show rejection or profit taking.",
+            "$$UpperWick_t=High_t-\\max(Open_t,Close_t)$$",
+            {"High_t": "Current high", "Open_t": "Current open", "Close_t": "Current close"},
+        ),
+        "lower_wick": (
+            "Lower candle wick length.",
+            "Lower wick measures how far price traded below the smaller of open and close. Long lower wicks can show absorption or dip buying.",
+            "$$LowerWick_t=\\min(Open_t,Close_t)-Low_t$$",
+            {"Low_t": "Current low", "Open_t": "Current open", "Close_t": "Current close"},
+        ),
+        "close_location": (
+            "Close location inside the candle range.",
+            "Close location maps the close into the high-low range. A value near 1 means the bar closed near its high; near 0 means it closed near its low. Flat bars return 0.",
+            "$$CloseLocation_t=\\frac{Close_t-Low_t}{High_t-Low_t}\\quad \\text{if }High_t>Low_t\\text{ else }0$$",
+            {"Close_t": "Current close", "High_t": "Current high", "Low_t": "Current low"},
+        ),
+        "is_green": (
+            "True when close is above open.",
+            "A green candle closes above its opening price. This is a directional candle-state flag, not a trend signal by itself.",
+            "$$IsGreen_t=I(Close_t>Open_t)$$",
+            {"I": "Indicator function"},
+        ),
+        "is_red": (
+            "True when close is below open.",
+            "A red candle closes below its opening price. This is a directional candle-state flag, not a trend signal by itself.",
+            "$$IsRed_t=I(Close_t<Open_t)$$",
+            {"I": "Indicator function"},
+        ),
+    }
+    if lower in direct:
+        short, detailed, equation, variables = direct[lower]
+        return knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, variables)
+
+    if lower.startswith("day_") or lower.startswith("premarket_") or lower.startswith("or_") or lower.startswith("distance_to_day_") or lower in {"prev_close", "gap_pct"}:
+        return session_feature_knowledge(lower, group, category, title)
+    if lower in {"roc10", "cci20", "stoch_k14", "stoch_d3", "indicator_bar_count", "macd_ready", "tema_ready"}:
+        return momentum_extra_knowledge(lower, group, category, title)
+    if lower.startswith("donchian_") or lower.startswith("keltner_") or lower.endswith("_z20"):
+        return volatility_feature_knowledge(lower, group, category, title)
+    if lower in {"volume_sma20", "dollar_volume_sma20", "transactions_sma20", "relative_volume20", "relative_dollar_volume20", "obv", "mfi14", "cmf20"} or lower.startswith("liquidity_band_") or lower in {"hvn_price_proxy20", "lvn_price_proxy20"}:
+        return volume_feature_knowledge(lower, group, category, title)
+    if lower in {
+        "inside_bar",
+        "outside_bar",
+        "bullish_engulfing",
+        "bearish_engulfing",
+        "nr4",
+        "nr7",
+        "consecutive_green",
+        "consecutive_red",
+        "breaks_high20",
+        "breaks_low20",
+        "pullback_from_high20_pct",
+        "reclaim_vwap",
+        "breakdown_vwap",
+    }:
+        return price_action_knowledge(lower, group, category, title)
+    if lower.endswith("_fvg") or lower.startswith("fvg_"):
+        return fvg_knowledge(lower, group, category, title)
+    if lower in {
+        "swing_high_3",
+        "swing_low_3",
+        "swing_high_5",
+        "swing_low_5",
+        "higher_high",
+        "lower_low",
+        "bos_up",
+        "bos_down",
+        "trend_regime",
+        "bars_since_high20",
+        "bars_since_low20",
+    }:
+        return market_structure_knowledge(lower, group, category, title)
+    if "order_block" in lower or "displacement" in lower or lower in {"distance_to_demand_pct", "distance_to_supply_pct"}:
+        return order_block_knowledge(lower, group, category, title)
+    if group == "shock" or "shock" in lower:
+        return shock_knowledge(lower, group, category, title)
+    return None
+
+
+def session_feature_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
+    details = {
+        "day_open": (
+            "First open for the ticker/session.",
+            "Day open is the first open price observed for the same ticker and session_date. It anchors intraday gap and distance calculations.",
+            "$$DayOpen_t=Open_{first(ticker,session)}$$",
+            {"Open_{first(ticker,session)}": "First open in the same ticker/session"},
+        ),
+        "day_high_so_far": (
+            "Session high up to the current bar.",
+            "Day high so far is a cumulative maximum of high within ticker and session_date. It updates only when the session makes a new high.",
+            "$$DayHighSoFar_t=\\max_{i\\le t, session_i=session_t} High_i$$",
+            {"High_i": "Earlier high in the same ticker/session"},
+        ),
+        "day_low_so_far": (
+            "Session low up to the current bar.",
+            "Day low so far is a cumulative minimum of low within ticker and session_date. It updates only when the session makes a new low.",
+            "$$DayLowSoFar_t=\\min_{i\\le t, session_i=session_t} Low_i$$",
+            {"Low_i": "Earlier low in the same ticker/session"},
+        ),
+        "day_volume_so_far": (
+            "Cumulative session volume.",
+            "Day volume so far sums share volume from the beginning of the ticker/session through the current bar.",
+            "$$DayVolumeSoFar_t=\\sum_{i\\le t, session_i=session_t} Volume_i$$",
+            {"Volume_i": "Earlier volume in the same ticker/session"},
+        ),
+        "prev_close": (
+            "Previous close for the ticker sequence.",
+            "Previous close is the immediately prior close after sorting by ticker and bar time. It is used for close-to-close returns and gap context.",
+            "$$PrevClose_t=Close_{t-1}$$",
+            {"Close_{t-1}": "Previous bar close for the same ticker"},
+        ),
+        "gap_pct": (
+            "Session open gap versus previous close.",
+            "Gap percent compares the session's first open with the previous close. Positive values mean the session opened above the prior close; negative values mean it opened below.",
+            "$$GapPct_t=\\frac{DayOpen_t}{PrevClose_t}-1$$",
+            {"DayOpen_t": "First open for the ticker/session", "PrevClose_t": "Previous close for the ticker"},
+        ),
+        "premarket_high": (
+            "Highest premarket price for the session.",
+            "Premarket high is the maximum high before 09:30 market time for the same ticker/session. It is used as an extended-hours breakout reference.",
+            "$$PremarketHigh_t=\\max_{minute(i)<570}High_i$$",
+            {"minute(i)": "Minute of day for bar i; 570 is 09:30"},
+        ),
+        "premarket_low": (
+            "Lowest premarket price for the session.",
+            "Premarket low is the minimum low before 09:30 market time for the same ticker/session. It provides downside extended-hours structure.",
+            "$$PremarketLow_t=\\min_{minute(i)<570}Low_i$$",
+            {"minute(i)": "Minute of day for bar i; 570 is 09:30"},
+        ),
+        "premarket_volume": (
+            "Total premarket share volume.",
+            "Premarket volume sums all share volume before 09:30 market time for the same ticker/session.",
+            "$$PremarketVolume_t=\\sum_{minute(i)<570}Volume_i$$",
+            {"minute(i)": "Minute of day for bar i; 570 is 09:30"},
+        ),
+        "premarket_range": (
+            "Premarket high-low range.",
+            "Premarket range measures how wide the extended-hours session traded before the regular open.",
+            "$$PremarketRange_t=PremarketHigh_t-PremarketLow_t$$",
+            {"PremarketHigh_t": "Highest premarket high", "PremarketLow_t": "Lowest premarket low"},
+        ),
+    }
+    if lower in details:
+        short, detailed, equation, variables = details[lower]
+        return knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, variables)
+    opening_range = re.fullmatch(r"or_(\d+)m_(high|low|range)", lower)
+    if opening_range:
+        minutes = int(opening_range.group(1))
+        field = opening_range.group(2)
+        if field == "high":
+            equation = f"$$OR{minutes}High_t=\\max_{{570\\le minute(i)<{570 + minutes}}}High_i$$"
+            detailed = f"Opening range {minutes}m high is the maximum high from 09:30 through the first {minutes} regular-session minutes for the same ticker/session."
+        elif field == "low":
+            equation = f"$$OR{minutes}Low_t=\\min_{{570\\le minute(i)<{570 + minutes}}}Low_i$$"
+            detailed = f"Opening range {minutes}m low is the minimum low from 09:30 through the first {minutes} regular-session minutes for the same ticker/session."
+        else:
+            equation = f"$$OR{minutes}Range_t=OR{minutes}High_t-OR{minutes}Low_t$$"
+            detailed = f"Opening range {minutes}m range is the high-low span of the first {minutes} regular-session minutes."
         return knowledge_block(
-            short="Shock context feature or label.",
-            detailed="Shock fields describe abnormal price displacement, abnormal participation, and whether price and volume confirmed each other in sequence.",
-            theory="Strong price moves are more informative when participation confirms them. Sequence matters because price can lead volume or volume can lead price.",
-            interpretation="Higher shock scores identify more unusual and better-confirmed dislocation events.",
-            equation="$$ShockScore_t=w_pS^{price}_t+w_vS^{volume}_t+w_cI(confirmed_t)$$",
-            variables={"S": "Normalized shock score", "I": "Indicator function", "w": "Component weight"},
+            short=f"{minutes}-minute opening-range {field}.",
+            detailed=detailed,
+            theory=theory_for_group(group, category),
+            interpretation="Opening-range levels frame early regular-session structure. Breaks above the high or below the low can mark momentum or failed-open behavior.",
+            equation=equation,
+            variables={"minute(i)": "Minute of day for bar i; 570 is 09:30"},
         )
-    if group.startswith("supervision_"):
+    distance = re.fullmatch(r"distance_to_day_(open|high|low)_pct", lower)
+    if distance:
+        ref = distance.group(1)
+        ref_name = {"open": "DayOpen", "high": "DayHighSoFar", "low": "DayLowSoFar"}[ref]
         return knowledge_block(
-            short=f"{title} future-looking supervision label.",
-            detailed="Supervision labels use future bars to describe realized opportunity quality, path risk, confirmation, ranking, or oracle action.",
-            theory="These fields create supervised-learning and research targets. They intentionally look forward and must not be used as live features.",
-            interpretation="Use for offline diagnostics, training targets, and chart review with explicit leakage awareness.",
-            equation="$$Label_t=f(Bars_{t+1:t+h}, Features_t)$$",
-            variables={"h": "Future horizon in bars", "Features_t": "Information available at the source bar"},
+            short=f"Close distance to session {ref}.",
+            detailed=f"Distance to day {ref} compares the current close with the session {ref} reference. Positive values mean close is above the reference; negative values mean close is below it.",
+            theory=theory_for_group(group, category),
+            interpretation="Use this as normalized price-location context. The day high and low distances show whether price is pressing an extreme or pulling back from it.",
+            equation=f"$$DistanceTo{ref_name}_t=\\frac{{Close_t}}{{{ref_name}_t}}-1$$",
+            variables={"Close_t": "Current close", f"{ref_name}_t": f"Session {ref} reference"},
         )
+    return fallback_knowledge_for_column(lower, group, category, title)
+
+
+def momentum_extra_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
+    details = {
+        "roc10": (
+            "Ten-bar cumulative one-bar return.",
+            "ROC10 is implemented as the rolling 10-bar sum of one-bar simple returns. It measures recent directional persistence in the same units as return, with zero meaning no net summed pressure.",
+            "$$ROC10_t=\\sum_{i=0}^{9}Return1_{t-i}$$",
+            {"Return1": "One-bar simple return"},
+        ),
+        "cci20": (
+            "Commodity Channel Index over 20 bars.",
+            "CCI compares typical price with its 20-bar average and scales the distance by mean absolute deviation. Large positive values mean price is high versus its recent typical range; large negative values mean it is low.",
+            "$$CCI20_t=\\frac{HLC3_t-SMA_{20}(HLC3_t)}{0.015\\cdot MAD_{20}(HLC3_t)}$$",
+            {"HLC3": "Typical price", "MAD_{20}": "20-bar mean absolute deviation"},
+        ),
+        "stoch_k14": (
+            "Stochastic percent K over 14 bars.",
+            "Stochastic K places the close inside the recent 14-bar high-low range. Values near 100 mean close is near the range high; values near 0 mean close is near the range low.",
+            "$$\\%K14_t=100\\cdot\\frac{Close_t-MinLow_{14,t}}{MaxHigh_{14,t}-MinLow_{14,t}}$$",
+            {"MaxHigh_{14,t}": "14-bar rolling high", "MinLow_{14,t}": "14-bar rolling low"},
+        ),
+        "stoch_d3": (
+            "Three-bar smoothing of stochastic percent K.",
+            "Stochastic D smooths percent K with a 3-bar moving average to reduce noise in the oscillator.",
+            "$$\\%D3_t=SMA_3(\\%K14_t)$$",
+            {"\\%K14_t": "14-bar stochastic K"},
+        ),
+        "indicator_bar_count": (
+            "Number of bars available for the ticker.",
+            "Indicator bar count is a cumulative count of close observations for the ticker. It tells the UI and downstream logic how much history is available for rolling indicators.",
+            "$$IndicatorBarCount_t=count(Close_i\\mid i\\le t, ticker_i=ticker_t)$$",
+            {"Close_i": "Historical close for the same ticker"},
+        ),
+        "macd_ready": (
+            "True after enough bars for MACD context.",
+            "MACD ready becomes true once the ticker has at least 35 bars. The threshold gives the 12/26/9 EMA stack enough history to be more stable.",
+            "$$MACDReady_t=I(IndicatorBarCount_t\\ge 35)$$",
+            {"I": "Indicator function"},
+        ),
+        "tema_ready": (
+            "True after enough bars for TEMA context.",
+            "TEMA ready becomes true once the ticker has at least 20 bars. Before that, the triple EMA stack is still warming up.",
+            "$$TEMAReady_t=I(IndicatorBarCount_t\\ge 20)$$",
+            {"I": "Indicator function"},
+        ),
+    }
+    short, detailed, equation, variables = details[lower]
+    return knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, variables)
+
+
+def volatility_feature_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
+    if lower.startswith("donchian_"):
+        field = lower.replace("donchian_", "").replace("20", "")
+        equations = {
+            "high": "$$DonchianHigh20_t=\\max_{i=t-19}^{t}High_i$$",
+            "low": "$$DonchianLow20_t=\\min_{i=t-19}^{t}Low_i$$",
+            "mid": "$$DonchianMid20_t=\\frac{DonchianHigh20_t+DonchianLow20_t}{2}$$",
+        }
+        return knowledge_block(
+            short=f"20-bar Donchian {field}.",
+            detailed=f"Donchian {field} summarizes the rolling 20-bar high-low channel for the ticker. The high and low show breakout boundaries; the mid is the channel center.",
+            theory="Donchian channels expose range boundaries. A new high or low against the channel can mark breakout pressure or exhaustion depending on context.",
+            interpretation="Use Donchian levels with volume and session context. A break without participation can fail quickly.",
+            equation=equations.get(field, "$$Donchian_t=Channel20_t$$"),
+            variables={"High_i": "Historical high", "Low_i": "Historical low"},
+        )
+    if lower.startswith("keltner_"):
+        field = lower.replace("keltner_", "").replace("20", "")
+        equations = {
+            "mid": "$$KeltnerMid20_t=EMA20(Close_t)$$",
+            "upper": "$$KeltnerUpper20_t=EMA20(Close_t)+2\\cdot ATR14_t$$",
+            "lower": "$$KeltnerLower20_t=EMA20(Close_t)-2\\cdot ATR14_t$$",
+        }
+        return knowledge_block(
+            short=f"Keltner channel {field}.",
+            detailed=f"Keltner {field} is part of an ATR-based envelope around EMA20. It adapts to volatility through ATR rather than close standard deviation.",
+            theory="Keltner channels combine trend location and realized range. Expansions beyond the channel can indicate momentum, while returns inside the channel can indicate normalization.",
+            interpretation="Use Keltner channels to compare price stretch against recent true range.",
+            equation=equations.get(field, "$$Keltner_t=EMA20_t\\pm 2ATR14_t$$"),
+            variables={"EMA20": "20-bar exponential moving average of close", "ATR14": "14-bar average true range"},
+        )
+    z_source = {
+        "return_z20": ("Return1", "one-bar return"),
+        "range_z20": ("Range", "bar range"),
+        "volume_z20": ("Volume", "share volume"),
+        "transactions_z20": ("Transactions", "transaction count"),
+    }.get(lower)
+    if z_source:
+        symbol, description = z_source
+        return knowledge_block(
+            short=f"20-bar z-score of {description}.",
+            detailed=f"{title} standardizes current {description} versus its own 20-bar rolling mean and standard deviation for the same ticker. Positive values mean the current bar is above recent normal; negative values mean below recent normal.",
+            theory="Z-scores normalize activity across tickers and regimes. They make abnormal movement or participation easier to compare than raw values.",
+            interpretation="Values above 2 to 3 are unusually high. Confirm whether the abnormality is useful by checking direction, volume, and session context.",
+            equation=f"$$Z20_t=\\frac{{{symbol}_t-Mean20({symbol})_t}}{{Std20({symbol})_t}}$$",
+            variables={f"{symbol}_t": f"Current {description}", "Mean20": "20-bar rolling mean", "Std20": "20-bar rolling standard deviation"},
+        )
+    return fallback_knowledge_for_column(lower, group, category, title)
+
+
+def volume_feature_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
+    rolling = {
+        "volume_sma20": ("Volume", "share volume"),
+        "dollar_volume_sma20": ("DollarVolume", "dollar volume"),
+        "transactions_sma20": ("Transactions", "transaction count"),
+    }
+    if lower in rolling:
+        symbol, description = rolling[lower]
+        return knowledge_block(
+            short=f"20-bar average {description}.",
+            detailed=f"{title} is the 20-bar rolling average of {description} for the same ticker. It defines the local baseline used by relative activity features.",
+            theory=theory_for_group(group, category),
+            interpretation="Use the rolling average as a baseline, not as a signal by itself. Its usefulness increases when paired with current activity and price movement.",
+            equation=f"$$SMA20({symbol})_t=\\frac{{1}}{{20}}\\sum_{{i=0}}^{{19}}{symbol}_{{t-i}}$$",
+            variables={symbol: description},
+        )
+    relative = {
+        "relative_volume20": ("Volume", "VolumeSMA20"),
+        "relative_dollar_volume20": ("DollarVolume", "DollarVolumeSMA20"),
+    }
+    if lower in relative:
+        numerator, denominator = relative[lower]
+        return knowledge_block(
+            short="Current activity divided by its 20-bar baseline.",
+            detailed=f"{title} compares current {numerator.lower()} with its 20-bar moving average. A value of 3 means the current bar is trading at roughly three times its recent average activity.",
+            theory=theory_for_group(group, category),
+            interpretation="High relative activity is more meaningful when price is also moving directionally or breaking structure.",
+            equation=f"$$Relative{numerator}20_t=\\frac{{{numerator}_t}}{{{denominator}_t}}$$",
+            variables={numerator: "Current activity", denominator: "20-bar activity baseline"},
+        )
+    details = {
+        "obv": (
+            "On-balance volume running total.",
+            "OBV adds volume when close is at least the prior close and subtracts volume otherwise. It is a cumulative participation-pressure proxy.",
+            "$$OBV_t=OBV_{t-1}+\\begin{cases}Volume_t,&Close_t\\ge Close_{t-1}\\\\-Volume_t,&Close_t<Close_{t-1}\\end{cases}$$",
+            {"Volume_t": "Current share volume"},
+        ),
+        "mfi14": (
+            "Money Flow Index over 14 bars.",
+            "MFI is a bounded oscillator that compares positive and negative typical-money-flow over 14 bars. It is RSI-like, but volume weighted.",
+            "$$MFI14_t=100-\\frac{100}{1+\\frac{PositiveFlow14_t}{NegativeFlow14_t}}$$",
+            {"PositiveFlow14": "14-bar sum of HLC3*Volume when HLC3 rises", "NegativeFlow14": "14-bar sum when HLC3 falls"},
+        ),
+        "cmf20": (
+            "Chaikin Money Flow over 20 bars.",
+            "CMF weights volume by where the close lands inside the candle range and sums that pressure over 20 bars.",
+            "$$CMF20_t=\\frac{\\sum_{i=t-19}^{t}MFM_i\\cdot Volume_i}{\\sum_{i=t-19}^{t}Volume_i}$$\n\n$$MFM_i=\\frac{(Close_i-Low_i)-(High_i-Close_i)}{High_i-Low_i}$$",
+            {"MFM": "Money flow multiplier"},
+        ),
+        "hvn_price_proxy20": (
+            "High-volume-node price proxy.",
+            "This provider proxy uses the 20-bar rolling mean of close as a lightweight reference for where recent trading has centered.",
+            "$$HVNProxy20_t=SMA20(Close_t)$$",
+            {"Close_t": "Close price"},
+        ),
+        "lvn_price_proxy20": (
+            "Low-volume-node price proxy.",
+            "This provider proxy uses the 20-bar rolling median of close as a robust recent price reference that is less sensitive to outlier bars.",
+            "$$LVNProxy20_t=Median20(Close_t)$$",
+            {"Close_t": "Close price"},
+        ),
+    }
+    if lower in details:
+        short, detailed, equation, variables = details[lower]
+        return knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, variables)
+    liquidity = re.fullmatch(r"liquidity_band_(\d+)bp_volume", lower)
+    if liquidity:
+        window = {"25": 20, "50": 50, "100": 100}.get(liquidity.group(1), int(liquidity.group(1)))
+        return knowledge_block(
+            short=f"Rolling {window}-bar volume capacity proxy.",
+            detailed=f"{title} is named as a liquidity-band proxy and is implemented as rolling share volume over {window} bars. It is meant to approximate available participation depth over a recent window.",
+            theory=theory_for_group(group, category),
+            interpretation="Use as a rough capacity context. It is not order-book depth and should not be treated as exact executable liquidity.",
+            equation=f"$$LiquidityBandVolume_t=\\sum_{{i=0}}^{{{window - 1}}}Volume_{{t-i}}$$",
+            variables={"Volume": "Share volume"},
+        )
+    return fallback_knowledge_for_column(lower, group, category, title)
+
+
+def price_action_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
+    details = {
+        "inside_bar": ("Inside bar.", "Inside bar is true when the current high is below the prior high and the current low is above the prior low. It marks compression inside the previous bar.", "$$Inside_t=I(High_t<High_{t-1}\\land Low_t>Low_{t-1})$$"),
+        "outside_bar": ("Outside bar.", "Outside bar is true when the current high exceeds the prior high and the current low breaks the prior low. It marks expansion beyond the previous bar.", "$$Outside_t=I(High_t>High_{t-1}\\land Low_t<Low_{t-1})$$"),
+        "bullish_engulfing": ("Bullish engulfing candle.", "Bullish engulfing is true when the candle closes green and its body crosses above the prior candle body range.", "$$BullEngulf_t=I(Close_t>Open_t\\land Open_t<Close_{t-1}\\land Close_t>Open_{t-1})$$"),
+        "bearish_engulfing": ("Bearish engulfing candle.", "Bearish engulfing is true when the candle closes red and its body crosses below the prior candle body range.", "$$BearEngulf_t=I(Close_t<Open_t\\land Open_t>Close_{t-1}\\land Close_t<Open_{t-1})$$"),
+        "nr4": ("Narrowest range in four bars.", "NR4 is true when the current high-low range is less than or equal to the rolling 4-bar minimum range. It identifies short compression.", "$$NR4_t=I(Range_t\\le \\min_{i=t-3}^{t}Range_i)$$"),
+        "nr7": ("Narrowest range in seven bars.", "NR7 is true when the current high-low range is less than or equal to the rolling 7-bar minimum range. It identifies stronger compression.", "$$NR7_t=I(Range_t\\le \\min_{i=t-6}^{t}Range_i)$$"),
+        "consecutive_green": ("Running count of green candles.", "This field is implemented as the cumulative count of green candles for the ticker, not a reset-on-red streak. It increases by one whenever close is above open.", "$$ConsecutiveGreen_t=\\sum_{i\\le t}I(Close_i>Open_i)$$"),
+        "consecutive_red": ("Running count of red candles.", "This field is implemented as the cumulative count of red candles for the ticker, not a reset-on-green streak. It increases by one whenever close is below open.", "$$ConsecutiveRed_t=\\sum_{i\\le t}I(Close_i<Open_i)$$"),
+        "breaks_high20": ("Breaks the rolling 20-bar high.", "Breaks high20 is true when the current high reaches or exceeds the highest high in the rolling 20-bar window.", "$$BreaksHigh20_t=I(High_t\\ge \\max_{i=t-19}^{t}High_i)$$"),
+        "breaks_low20": ("Breaks the rolling 20-bar low.", "Breaks low20 is true when the current low reaches or falls below the lowest low in the rolling 20-bar window.", "$$BreaksLow20_t=I(Low_t\\le \\min_{i=t-19}^{t}Low_i)$$"),
+        "pullback_from_high20_pct": ("Percent distance from Donchian high.", "Pullback from high20 compares close with the 20-bar Donchian high. Negative values show how far price has pulled back from the recent high.", "$$PullbackHigh20_t=\\frac{Close_t}{DonchianHigh20_t}-1$$"),
+        "reclaim_vwap": ("VWAP reclaim event.", "Reclaim VWAP is true when close moves from at or below VWAP on the prior bar to above VWAP on the current bar.", "$$ReclaimVWAP_t=I(Close_t>VWAP_t\\land Close_{t-1}\\le VWAP_{t-1})$$"),
+        "breakdown_vwap": ("VWAP breakdown event.", "Breakdown VWAP is true when close moves from at or above VWAP on the prior bar to below VWAP on the current bar.", "$$BreakdownVWAP_t=I(Close_t<VWAP_t\\land Close_{t-1}\\ge VWAP_{t-1})$$"),
+    }
+    short, detailed, equation = details[lower]
+    return knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, {"I": "Indicator function"})
+
+
+def fvg_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
+    details = {
+        "bullish_fvg": ("Bullish fair value gap.", "Bullish FVG is true when the current low is above the high from two bars ago. It marks a three-candle displacement gap where price did not trade back into the earlier high.", "$$BullishFVG_t=I(Low_t>High_{t-2})$$"),
+        "bearish_fvg": ("Bearish fair value gap.", "Bearish FVG is true when the current high is below the low from two bars ago. It marks a three-candle displacement gap to the downside.", "$$BearishFVG_t=I(High_t<Low_{t-2})$$"),
+        "fvg_high": ("Upper boundary of the fair value gap.", "FVG high is the upper price boundary of the detected gap. For bullish gaps it is the current low; for bearish gaps it is the low from two bars ago.", "$$FVGHigh_t=\\begin{cases}Low_t,&BullishFVG_t\\\\Low_{t-2},&BearishFVG_t\\end{cases}$$"),
+        "fvg_low": ("Lower boundary of the fair value gap.", "FVG low is the lower price boundary of the detected gap. For bullish gaps it is the high from two bars ago; for bearish gaps it is the current high.", "$$FVGLow_t=\\begin{cases}High_{t-2},&BullishFVG_t\\\\High_t,&BearishFVG_t\\end{cases}$$"),
+        "fvg_mid": ("Middle of the fair value gap.", "FVG mid is the midpoint between FVG high and FVG low. It is useful as a compact reference for gap mitigation.", "$$FVGMid_t=\\frac{FVGHigh_t+FVGLow_t}{2}$$"),
+        "fvg_size": ("Absolute fair value gap size.", "FVG size is the absolute distance between the gap boundaries.", "$$FVGSize_t=|FVGHigh_t-FVGLow_t|$$"),
+        "fvg_size_pct": ("Fair value gap size normalized by close.", "FVG size percent divides absolute gap size by close so gaps can be compared across price levels.", "$$FVGSizePct_t=\\frac{|FVGHigh_t-FVGLow_t|}{Close_t}$$"),
+    }
+    short, detailed, equation = details[lower]
+    return knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, {"I": "Indicator function"})
+
+
+def market_structure_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
+    details = {
+        "swing_high_3": ("Centered 3-bar swing high.", "True when the current high is at least the maximum high of the centered 3-bar window.", "$$SwingHigh3_t=I(High_t\\ge \\max(High_{t-1},High_t,High_{t+1}))$$"),
+        "swing_low_3": ("Centered 3-bar swing low.", "True when the current low is at most the minimum low of the centered 3-bar window.", "$$SwingLow3_t=I(Low_t\\le \\min(Low_{t-1},Low_t,Low_{t+1}))$$"),
+        "swing_high_5": ("Centered 5-bar swing high.", "True when the current high is at least the maximum high of the centered 5-bar window.", "$$SwingHigh5_t=I(High_t\\ge \\max_{i=t-2}^{t+2}High_i)$$"),
+        "swing_low_5": ("Centered 5-bar swing low.", "True when the current low is at most the minimum low of the centered 5-bar window.", "$$SwingLow5_t=I(Low_t\\le \\min_{i=t-2}^{t+2}Low_i)$$"),
+        "higher_high": ("Higher high versus prior bar.", "True when the current high is above the previous bar high.", "$$HigherHigh_t=I(High_t>High_{t-1})$$"),
+        "lower_low": ("Lower low versus prior bar.", "True when the current low is below the previous bar low.", "$$LowerLow_t=I(Low_t<Low_{t-1})$$"),
+        "bos_up": ("Bullish break of structure.", "True when close breaks above the prior 20-bar high, excluding the current bar from the reference.", "$$BOSUp_t=I(Close_t>\\max_{i=t-20}^{t-1}High_i)$$"),
+        "bos_down": ("Bearish break of structure.", "True when close breaks below the prior 20-bar low, excluding the current bar from the reference.", "$$BOSDown_t=I(Close_t<\\min_{i=t-20}^{t-1}Low_i)$$"),
+        "trend_regime": ("EMA20 versus EMA50 regime label.", "Trend regime is 'up' when EMA20 is above EMA50, 'down' when EMA20 is below EMA50, and 'range' otherwise.", "$$Regime_t=\\begin{cases}up,&EMA20_t>EMA50_t\\\\down,&EMA20_t<EMA50_t\\\\range,&otherwise\\end{cases}$$"),
+        "bars_since_high20": ("Reserved bars-since-high field.", "This field is currently emitted as null in the provider. It is reserved for a future count of bars since the rolling 20-bar high event.", "$$BarsSinceHigh20_t=null\\quad\\text{current implementation}$$"),
+        "bars_since_low20": ("Reserved bars-since-low field.", "This field is currently emitted as null in the provider. It is reserved for a future count of bars since the rolling 20-bar low event.", "$$BarsSinceLow20_t=null\\quad\\text{current implementation}$$"),
+    }
+    short, detailed, equation = details[lower]
+    return knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, {"I": "Indicator function"})
+
+
+def order_block_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
+    details = {
+        "bullish_displacement": ("Bullish displacement candle.", "True when the bar range is greater than 1.5 times ATR14 and close is above open. It marks a large directional expansion bar.", "$$BullDisp_t=I(Range_t>1.5\\cdot ATR14_t\\land Close_t>Open_t)$$"),
+        "bearish_displacement": ("Bearish displacement candle.", "True when the bar range is greater than 1.5 times ATR14 and close is below open. It marks a large downside expansion bar.", "$$BearDisp_t=I(Range_t>1.5\\cdot ATR14_t\\land Close_t<Open_t)$$"),
+        "bullish_order_block_high": ("Prior high after bullish displacement.", "When bullish displacement is true, this stores the prior bar high as the upper boundary of a simple demand-zone proxy.", "$$BullOBHigh_t=High_{t-1}\\quad\\text{if }BullDisp_t$$"),
+        "bullish_order_block_low": ("Prior low after bullish displacement.", "When bullish displacement is true, this stores the prior bar low as the lower boundary of a simple demand-zone proxy.", "$$BullOBLow_t=Low_{t-1}\\quad\\text{if }BullDisp_t$$"),
+        "bearish_order_block_high": ("Prior high after bearish displacement.", "When bearish displacement is true, this stores the prior bar high as the upper boundary of a simple supply-zone proxy.", "$$BearOBHigh_t=High_{t-1}\\quad\\text{if }BearDisp_t$$"),
+        "bearish_order_block_low": ("Prior low after bearish displacement.", "When bearish displacement is true, this stores the prior bar low as the lower boundary of a simple supply-zone proxy.", "$$BearOBLow_t=Low_{t-1}\\quad\\text{if }BearDisp_t$$"),
+        "distance_to_demand_pct": ("Close distance to demand proxy.", "Distance to demand compares close with the bullish order block high. Positive values mean close is above the demand proxy boundary.", "$$DistanceDemand_t=\\frac{Close_t}{BullOBHigh_t}-1$$"),
+        "distance_to_supply_pct": ("Close distance to supply proxy.", "Distance to supply compares close with the bearish order block low. Positive values mean close is above the supply proxy boundary.", "$$DistanceSupply_t=\\frac{Close_t}{BearOBLow_t}-1$$"),
+    }
+    short, detailed, equation = details[lower]
+    return knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, {"I": "Indicator function"})
+
+
+def shock_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
+    details = {
+        "return_shock": ("Positive return z-score shock.", "True when return_z20 is at least 2.5 and the one-bar return is positive. It captures unusually large positive close-to-close movement.", "$$ReturnShock_t=I(ReturnZ20_t\\ge2.5\\land Return1_t>0)$$"),
+        "range_shock": ("Positive range expansion shock.", "True when range_z20 is at least 2.5 and the candle body is positive. It captures unusually large bullish range expansion.", "$$RangeShock_t=I(RangeZ20_t\\ge2.5\\land Body_t>0)$$"),
+        "structure_break_shock": ("Breakout structure shock.", "True when price breaks one of the provider's structure references: rolling high, prior session high proxy, premarket high, 5-minute opening range high, or VWAP reclaim.", "$$StructureBreakShock_t=BreaksHigh20_t\\lor Close_t>PriorDayHigh_t\\lor Close_t>PremarketHigh_t\\lor Close_t>OR5High_t\\lor ReclaimVWAP_t$$"),
+        "price_shock": ("Confirmed price-side shock flag.", "True when return, range, displacement, or structure shock occurs and the close is in the upper part of the bar range.", "$$PriceShock_t=I((ReturnShock_t\\lor RangeShock_t\\lor BullDisp_t\\lor StructureBreakShock_t)\\land CloseLocation_t\\ge0.55)$$"),
+        "relative_volume_shock": ("Relative volume shock.", "True when current volume is at least three times its 20-bar average.", "$$RelativeVolumeShock_t=I(RelativeVolume20_t\\ge3)$$"),
+        "dollar_volume_shock": ("Relative dollar-volume shock.", "True when current dollar volume is at least three times its 20-bar average.", "$$DollarVolumeShock_t=I(RelativeDollarVolume20_t\\ge3)$$"),
+        "transactions_shock": ("Transaction-count shock.", "True when transactions_z20 is at least 2.5.", "$$TransactionsShock_t=I(TransactionsZ20_t\\ge2.5)$$"),
+        "volume_shock": ("Volume-side shock flag.", "True when relative volume, relative dollar volume, transaction count, or volume_z20 shows abnormal participation.", "$$VolumeShock_t=RelativeVolumeShock_t\\lor DollarVolumeShock_t\\lor TransactionsShock_t\\lor I(VolumeZ20_t\\ge2.5)$$"),
+        "price_shock_score": ("Weighted price shock score.", "Score from 0 to 1 combining return abnormality, range abnormality, close location, structure break, and bullish displacement.", "$$PriceShockScore_t=\\min(1,0.30RZ_t^+ +0.25RangeZ_t^+ +0.15CloseLocation_t +0.15I(StructureBreak_t)+0.15I(BullDisp_t))$$"),
+        "volume_shock_score": ("Weighted volume shock score.", "Score from 0 to 1 combining volume z-score, relative volume, relative dollar volume, and transaction z-score.", "$$VolumeShockScore_t=\\min(1,0.30VZ_t^+ +0.25\\min(RelVol20_t,5)/5 +0.25\\min(RelDollarVol20_t,5)/5 +0.20TZ_t^+)$$"),
+        "bars_since_price_shock": ("Bars since last price shock.", "Count of bars since the most recent price_shock for the ticker. Null before the first price shock.", "$$BarsSincePriceShock_t=BarSeq_t-LastPriceShockSeq_t$$"),
+        "bars_since_volume_shock": ("Bars since last volume shock.", "Count of bars since the most recent volume_shock for the ticker. Null before the first volume shock.", "$$BarsSinceVolumeShock_t=BarSeq_t-LastVolumeShockSeq_t$$"),
+        "minutes_since_price_shock": ("Minutes since last price shock.", "Bars since price shock multiplied by the timeframe step in minutes.", "$$MinutesSincePriceShock_t=BarsSincePriceShock_t\\cdot TimeframeStepMinutes_t$$"),
+        "minutes_since_volume_shock": ("Minutes since last volume shock.", "Bars since volume shock multiplied by the timeframe step in minutes.", "$$MinutesSinceVolumeShock_t=BarsSinceVolumeShock_t\\cdot TimeframeStepMinutes_t$$"),
+        "price_shock_recent": ("Price shock recency flag.", "True when the last price shock happened within the current bar through 15 bars ago.", "$$PriceShockRecent_t=I(0\\le BarsSincePriceShock_t\\le15)$$"),
+        "volume_shock_recent": ("Volume shock recency flag.", "True when the last volume shock happened within the current bar through 15 bars ago.", "$$VolumeShockRecent_t=I(0\\le BarsSinceVolumeShock_t\\le15)$$"),
+        "price_shock_before_volume_shock": ("Price-first volume confirmation flag.", "True when the current bar has a volume shock and a price shock happened 1 to 15 bars earlier.", "$$PriceBeforeVolume_t=I(VolumeShock_t\\land 0<BarsSincePriceShock_t\\le15)$$"),
+        "confirmed_price_volume_shock": ("Price and volume shock confirmation.", "True when a volume shock occurs while a price shock is recent. This captures the sequence-aware idea that price displacement can lead and volume can confirm shortly afterward.", "$$ConfirmedPVS_t=I(VolumeShock_t\\land PriceShockRecent_t)$$"),
+        "shock_confirmation_delay_minutes": ("Delay from price shock to confirmation.", "When price-volume shock is confirmed, this stores minutes since the price shock. Null when there is no confirmation.", "$$DelayMinutes_t=MinutesSincePriceShock_t\\quad\\text{if }ConfirmedPVS_t$$"),
+        "shock_confirmation_type": ("Categorical shock sequence label.", "Classifies shock sequence as same-bar, price-first immediate, price-first delayed, volume-first breakout, price-only, volume-only, or none.", "$$Type_t=case(PriceShock_t,VolumeShock_t,BarsSincePriceShock_t,BarsSinceVolumeShock_t)$$"),
+        "price_volume_shock_score": ("Combined price-volume shock score.", "Score from 0 to 1 combining price score, volume score, and a recency bonus when price-volume confirmation occurs quickly.", "$$PVSScore_t=\\min(1,0.45PriceScore_t+0.45VolumeScore_t+0.10ConfirmationRecency_t)$$"),
+    }
+    if lower in details:
+        short, detailed, equation = details[lower]
+        return knowledge_block(short, detailed, theory_for_group(group, category), "Higher values or true flags indicate more unusual movement, stronger participation, or better price-volume confirmation. Sequence fields should be read from left to right: first detect price abnormality, then check whether volume confirmed it soon enough.", equation, {"I": "Indicator function"})
+    return fallback_knowledge_for_column(lower, group, category, title)
+
+
+def supervision_knowledge_for_column(column: str, group: str, title: str) -> dict[str, Any]:
+    lower = column.lower()
+    horizon_details = {
+        "horizon": ("Future horizon label.", "String label for the future bar window used by a bar-level supervision row, such as 3bar or 15bar.", "$$HorizonLabel_t=str(horizon\\_bars)$$"),
+        "horizon_bars": ("Future horizon length in bars.", "Number of future bars included in the bar-level supervision path.", "$$HorizonBars_t=h$$"),
+        "horizon_minutes": ("Future horizon length in minutes.", "Future horizon converted to minutes by multiplying horizon bars by the timeframe step.", "$$HorizonMinutes_t=h\\cdot StepMinutes_t$$"),
+        "future_bar_count": ("Available future bars.", "Actual count of non-null future closes available inside the horizon. It can be smaller near the end of a ticker/session sequence.", "$$FutureBarCount_t=count(Close_{t+1:t+h})$$"),
+        "valid_future_window": ("Whether any future bars exist.", "True when at least one future bar is available for the requested horizon.", "$$ValidFutureWindow_t=I(FutureBarCount_t>0)$$"),
+    }
+    if lower in horizon_details:
+        short, detailed, equation = horizon_details[lower]
+        return supervision_block(short, detailed, equation, {"h": "Horizon in bars", "StepMinutes_t": "Timeframe size in minutes"})
+    path_details = {
+        "fwd_close_return": ("Future close return.", "Return from current close to the last available future close inside the horizon.", "$$FwdCloseReturn_t=\\frac{Close_{t+h}}{Close_t}-1$$"),
+        "fwd_high_return": ("Best future high return.", "Maximum favorable excursion measured from current close to the highest future high in the horizon.", "$$FwdHighReturn_t=\\max_{1\\le i\\le h}\\left(\\frac{High_{t+i}}{Close_t}-1\\right)$$"),
+        "fwd_low_return": ("Worst future low return.", "Maximum adverse excursion measured from current close to the lowest future low in the horizon.", "$$FwdLowReturn_t=\\min_{1\\le i\\le h}\\left(\\frac{Low_{t+i}}{Close_t}-1\\right)$$"),
+        "fwd_mfe": ("Maximum favorable excursion.", "Alias of future high return. It is the best upside reached after the source bar within the horizon.", "$$MFE_t=\\max_{1\\le i\\le h}\\left(\\frac{High_{t+i}}{Close_t}-1\\right)$$"),
+        "fwd_mae": ("Maximum adverse excursion.", "Alias of future low return. It is the worst downside reached after the source bar within the horizon.", "$$MAE_t=\\min_{1\\le i\\le h}\\left(\\frac{Low_{t+i}}{Close_t}-1\\right)$$"),
+        "fwd_mfe_to_mae_ratio": ("Reward-to-adverse-excursion ratio.", "MFE divided by the absolute value of MAE. Higher values mean upside dominated downside inside the future path.", "$$MFEToMAE_t=\\frac{MFE_t}{|MAE_t|}$$"),
+        "time_to_mfe_bars": ("Bars until best future high.", "Position of the future bar that achieved MFE, counted from 1.", "$$TimeToMFEbars_t=argmax(High_{t+1:t+h})+1$$"),
+        "time_to_mae_bars": ("Bars until worst future low.", "Position of the future bar that achieved MAE, counted from 1.", "$$TimeToMAEbars_t=argmin(Low_{t+1:t+h})+1$$"),
+        "time_to_mfe_minutes": ("Minutes until best future high.", "Bars until MFE multiplied by the timeframe step in minutes.", "$$TimeToMFEminutes_t=TimeToMFEbars_t\\cdot StepMinutes_t$$"),
+        "time_to_mae_minutes": ("Minutes until worst future low.", "Bars until MAE multiplied by the timeframe step in minutes.", "$$TimeToMAEminutes_t=TimeToMAEbars_t\\cdot StepMinutes_t$$"),
+        "mfe_before_mae": ("Whether upside arrived before downside.", "True when the best future high occurs before or at the same future index as the worst future low.", "$$MFEBeforeMAE_t=I(TimeToMFEbars_t\\le TimeToMAEbars_t)$$"),
+        "path_efficiency": ("Efficiency of the future path.", "Path efficiency measures how directly the future close path traveled toward the best high. Higher values mean less wasted movement before the best outcome.", "$$PathEfficiency_t=\\frac{BestHigh_t-Close_t}{\\sum |\\Delta Close_{future}|}$$"),
+        "green_bar_ratio": ("Share of future bars closing green.", "Fraction of available future bars where close is greater than open.", "$$GreenBarRatio_t=\\frac{1}{n}\\sum_{i=1}^{n}I(Close_{t+i}>Open_{t+i})$$"),
+    }
+    if lower in path_details:
+        short, detailed, equation = path_details[lower]
+        return supervision_block(short, detailed, equation, {"h": "Horizon in bars", "n": "Available future bar count", "I": "Indicator function"})
+    oracle_details = {
+        "oracle_best_exit_bar_id": ("Bar id of the best future exit.", "Identifier of the future bar where the highest high inside the horizon occurred.", "$$BestExitBarId_t=BarId_{t+argmax(High_{t+1:t+h})}$$"),
+        "oracle_best_exit_time_utc": ("UTC time of the best future exit.", "UTC timestamp of the future bar where the highest high inside the horizon occurred.", "$$BestExitTimeUTC_t=TimeUTC_{t+argmax(High_{t+1:t+h})}$$"),
+        "oracle_best_exit_price": ("Best future exit price.", "Highest future high inside the horizon.", "$$BestExitPrice_t=\\max_{1\\le i\\le h}High_{t+i}$$"),
+        "oracle_best_exit_return": ("Best future exit return.", "Return from current close to the best future exit price.", "$$BestExitReturn_t=\\frac{BestExitPrice_t}{Close_t}-1$$"),
+        "oracle_long_entry_signal": ("Oracle long entry label.", "True when the future path achieved at least 1% MFE, had no worse than 0.5% MAE, and MFE occurred before or with MAE.", "$$Entry_t=I(MFE_t\\ge0.01\\land |MAE_t|\\le0.005\\land MFEBeforeMAE_t)$$"),
+        "oracle_long_entry_confidence": ("Oracle long entry confidence.", "Bounded path-quality score derived from favorable return, adverse excursion, and path efficiency.", "$$EntryConfidence_t=Q(Close_t,MFE_t,MAE_t,PathEfficiency_t)$$"),
+        "oracle_long_exit_signal": ("Oracle long exit label.", "True when the best upside is less than or equal to the absolute downside risk inside the future path.", "$$Exit_t=I(MFE_t\\le |MAE_t|)$$"),
+        "oracle_long_exit_confidence": ("Oracle long exit confidence.", "Bounded quality score for exit pressure using adverse movement, weak favorable movement, and inefficient path behavior.", "$$ExitConfidence_t=Q(Close_t,|MAE_t|,-MFE_t,1-PathEfficiency_t)$$"),
+    }
+    if lower in oracle_details:
+        short, detailed, equation = oracle_details[lower]
+        return supervision_block(short, detailed, equation, {"Q": "Provider bounded quality function", "I": "Indicator function"})
+    if lower.startswith("fwd_"):
+        return forward_liquidity_knowledge(lower, title)
+    if lower.startswith("method_") or lower in {"trade_method", "oracle_action"}:
+        return method_label_knowledge(lower, title)
+    if lower in {
+        "current_price_shock",
+        "current_volume_shock",
+        "current_confirmed_price_volume_shock",
+        "shock_confirmation_type",
+        "shock_confirmation_delay_minutes",
+        "shock_price_score",
+        "shock_volume_score",
+        "shock_score",
+        "shock_drawdown_before_confirmation",
+        "shock_return_after_confirmation",
+        "shock_best_exit_after_confirmation_bar_id",
+        "shock_best_exit_after_confirmation_time_utc",
+    }:
+        return method_shock_label_knowledge(lower, title)
+    if group == "supervision_scanner" or lower in {"universe_size", "oracle_rank", "oracle_percentile", "is_top_1", "is_top_3", "is_top_5", "is_top_10", "is_top_1pct", "is_top_5pct"}:
+        return scanner_label_knowledge(lower, title)
+    return supervision_block(
+        short=f"{title} future-looking supervision field.",
+        detailed=f"{title} is a supervision value derived from the future bar path for research, chart review, and model-target construction. It should be interpreted with the horizon and method columns in the same row.",
+        equation=f"$$\\text{{{title}}}_t=SupervisionValue_t$$",
+        variables={"SupervisionValue_t": "Provider supervision output for the current row"},
+    )
+
+
+def forward_liquidity_knowledge(lower: str, title: str) -> dict[str, Any]:
+    details = {
+        "fwd_volume_sum": ("Future volume sum.", "Total share volume across available future bars in the horizon.", "$$FwdVolumeSum_t=\\sum_{i=1}^{h}Volume_{t+i}$$"),
+        "fwd_dollar_volume_sum": ("Future dollar-volume sum.", "Total close times volume across available future bars in the horizon.", "$$FwdDollarVolumeSum_t=\\sum_{i=1}^{h}Close_{t+i}\\cdot Volume_{t+i}$$"),
+        "fwd_transactions_sum": ("Future transaction-count sum.", "Total transaction count across future bars in the horizon.", "$$FwdTransactionsSum_t=\\sum_{i=1}^{h}Transactions_{t+i}$$"),
+        "fwd_max_volume": ("Maximum future bar volume.", "Largest share volume observed in any future bar inside the horizon.", "$$FwdMaxVolume_t=\\max_{1\\le i\\le h}Volume_{t+i}$$"),
+        "fwd_max_dollar_volume": ("Maximum future dollar volume.", "Largest close times volume observed in any future bar inside the horizon.", "$$FwdMaxDollarVolume_t=\\max_{1\\le i\\le h}(Close_{t+i}\\cdot Volume_{t+i})$$"),
+        "fwd_max_relative_volume20": ("Maximum future relative volume.", "Maximum relative_volume20 observed inside the future horizon.", "$$FwdMaxRelVol20_t=\\max_{1\\le i\\le h}RelativeVolume20_{t+i}$$"),
+        "fwd_max_relative_dollar_volume20": ("Maximum future relative dollar volume.", "Maximum relative_dollar_volume20 observed inside the future horizon.", "$$FwdMaxRelDollarVol20_t=\\max_{1\\le i\\le h}RelativeDollarVolume20_{t+i}$$"),
+        "fwd_max_volume_z20": ("Maximum future volume z-score.", "Maximum volume_z20 observed inside the future horizon.", "$$FwdMaxVolumeZ20_t=\\max_{1\\le i\\le h}VolumeZ20_{t+i}$$"),
+        "fwd_volume_expansion_ratio": ("Future volume expansion ratio.", "Future volume sum divided by current bar volume. Higher values mean participation expanded after the source bar.", "$$FwdVolumeExpansion_t=\\frac{FwdVolumeSum_t}{Volume_t}$$"),
+        "fwd_dollar_volume_expansion_ratio": ("Future dollar-volume expansion ratio.", "Future dollar-volume sum divided by current dollar volume.", "$$FwdDollarVolumeExpansion_t=\\frac{FwdDollarVolumeSum_t}{DollarVolume_t}$$"),
+        "fwd_liquidity_confirmed": ("Future liquidity confirmation flag.", "True when at least one volume shock appears in the future horizon.", "$$FwdLiquidityConfirmed_t=I(\\exists i\\le h:VolumeShock_{t+i})$$"),
+        "fwd_first_volume_shock_bar_id": ("First future volume-shock bar id.", "Bar id of the first future bar in the horizon where volume_shock is true.", "$$FirstVolumeShockBarId_t=BarId_{t+j},\\quad j=\\min\\{i:VolumeShock_{t+i}\\}$$"),
+        "fwd_first_volume_shock_time_utc": ("First future volume-shock UTC time.", "UTC time of the first future volume shock in the horizon.", "$$FirstVolumeShockUTC_t=TimeUTC_{t+j},\\quad j=\\min\\{i:VolumeShock_{t+i}\\}$$"),
+        "fwd_first_volume_shock_time_market": ("First future volume-shock market time.", "Market-local time of the first future volume shock in the horizon.", "$$FirstVolumeShockMarket_t=TimeMarket_{t+j},\\quad j=\\min\\{i:VolumeShock_{t+i}\\}$$"),
+        "fwd_minutes_to_volume_shock": ("Minutes to future volume shock.", "Time from source bar to the first future volume shock.", "$$MinutesToVolumeShock_t=j\\cdot StepMinutes_t$$"),
+        "fwd_volume_shock_before_mfe": ("Whether future volume shock arrives before best high.", "True when the first future volume shock occurs before or at the MFE bar.", "$$VolumeShockBeforeMFE_t=I(j\\le TimeToMFEbars_t)$$"),
+        "fwd_return_at_volume_shock": ("Return at future volume shock.", "Return from current close to the close of the first future volume-shock bar.", "$$ReturnAtVolumeShock_t=\\frac{Close_{t+j}}{Close_t}-1$$"),
+        "fwd_drawdown_before_volume_shock": ("Drawdown before future volume shock.", "Worst low before the first future volume shock, measured from current close.", "$$DrawdownBeforeVolumeShock_t=\\frac{\\min_{1\\le i\\le j}Low_{t+i}}{Close_t}-1$$"),
+        "fwd_estimated_capacity_dollars": ("Estimated future tradable capacity.", "Provider capacity estimate from future dollar volume. It is a research proxy for how much participation existed after the source bar.", "$$CapacityDollars_t=ProviderCapacity(FwdDollarVolume_{t+1:t+h})$$"),
+        "fwd_capacity_score": ("Future capacity score.", "Bounded score summarizing estimated future liquidity capacity.", "$$CapacityScore_t=Bounded(CapacityDollars_t)$$"),
+        "fwd_price_outcome_quality": ("Future price outcome quality.", "Bounded price-path quality score using MFE, MAE, and path efficiency.", "$$PriceQuality_t=Q(Close_t,MFE_t,MAE_t,PathEfficiency_t)$$"),
+        "fwd_liquidity_quality_score": ("Future liquidity quality score.", "Bounded score combining volume expansion, volume z-score, and capacity score.", "$$LiquidityQuality_t=0.40Expansion_t+0.30VolumeZ_t+0.30CapacityScore_t$$"),
+        "fwd_outcome_bucket": ("Combined price/liquidity outcome bucket.", "Categorical label splitting future outcome into good/bad price and good/bad volume buckets using 0.60 quality thresholds.", "$$Bucket_t=case(PriceQuality_t\\ge0.60,LiquidityQuality_t\\ge0.60)$$"),
+    }
+    if lower in details:
+        short, detailed, equation = details[lower]
+        return supervision_block(short, detailed, equation, {"h": "Horizon in bars", "Q": "Provider bounded quality function", "I": "Indicator function"})
+    return supervision_block(f"{title} future liquidity label.", f"{title} describes future participation or liquidity quality over the supervision horizon.", f"$$\\text{{{title}}}_t=FutureLiquidityValue_t$$", {"FutureLiquidityValue_t": "Provider future liquidity output"})
+
+
+def method_label_knowledge(lower: str, title: str) -> dict[str, Any]:
+    details = {
+        "trade_method": ("Trade method name.", "The method thesis used for the row, such as PRICE_VOLUME_SHOCK, SCALP, or MOMENTUM_SCALP.", "$$TradeMethod_t\\in\\{PRICE\\_VOLUME\\_SHOCK,SCALP,MOMENTUM\\_SCALP\\}$$"),
+        "method_min_horizon_bars": ("Minimum method horizon in bars.", "Earliest future bar included by the method window for the current timeframe.", "$$MinHorizonBars_t=minBars(method,timeframe)$$"),
+        "method_max_horizon_bars": ("Maximum method horizon in bars.", "Latest future bar included by the method window for the current timeframe.", "$$MaxHorizonBars_t=maxBars(method,timeframe)$$"),
+        "method_min_horizon_minutes": ("Minimum method horizon in minutes.", "Minimum method horizon converted to minutes using the timeframe step.", "$$MinHorizonMinutes_t=MinHorizonBars_t\\cdot StepMinutes_t$$"),
+        "method_max_horizon_minutes": ("Maximum method horizon in minutes.", "Maximum method horizon converted to minutes using the timeframe step.", "$$MaxHorizonMinutes_t=MaxHorizonBars_t\\cdot StepMinutes_t$$"),
+        "method_best_exit_bar_id": ("Best method exit bar id.", "Bar id of the best future high inside the method window.", "$$BestExitBarId_t=BarId_{t+argmax(High_{methodWindow})}$$"),
+        "method_best_exit_time_utc": ("Best method exit UTC time.", "UTC timestamp of the best future high inside the method window.", "$$BestExitTimeUTC_t=TimeUTC_{best}$$"),
+        "method_best_horizon_bars": ("Bars to best method exit.", "Number of bars from source bar to the best future high in the method window.", "$$BestHorizonBars_t=argmax(High_{methodWindow})+MinHorizonBars_t$$"),
+        "method_best_horizon_minutes": ("Minutes to best method exit.", "Bars to best method exit multiplied by timeframe step minutes.", "$$BestHorizonMinutes_t=BestHorizonBars_t\\cdot StepMinutes_t$$"),
+        "method_best_price": ("Best method exit price.", "Highest future high reached inside the method window.", "$$BestPrice_t=\\max(High_{methodWindow})$$"),
+        "method_best_return": ("Best method return.", "Return from source close to the best method exit price.", "$$BestReturn_t=\\frac{BestPrice_t}{Close_t}-1$$"),
+        "method_mae_before_best": ("Adverse excursion before best exit.", "Worst low from the start of the method window through the best-exit bar, measured from current close.", "$$MAEBeforeBest_t=\\frac{\\min(Low_{windowBeforeBest})}{Close_t}-1$$"),
+        "method_mfe_mae_ratio": ("Method reward-to-risk path ratio.", "Best method return divided by the absolute adverse excursion before the best exit.", "$$MethodMFEtoMAE_t=\\frac{BestReturn_t}{|MAEBeforeBest_t|}$$"),
+        "method_path_efficiency": ("Method path efficiency.", "How directly the future close path traveled toward the best method price.", "$$MethodPathEfficiency_t=\\frac{BestPrice_t-Close_t}{\\sum |\\Delta Close_{methodWindow}|}$$"),
+        "method_entry_signal": ("Method entry label.", "True when the method oracle action is ENTER_NOW.", "$$MethodEntry_t=I(OracleAction_t=ENTER\\_NOW)$$"),
+        "method_exit_signal": ("Method exit label.", "True when the method oracle action is IGNORE.", "$$MethodExit_t=I(OracleAction_t=IGNORE)$$"),
+        "method_confidence": ("Method confidence score.", "Bounded score from 0 to 1. Generic methods use path quality; PRICE_VOLUME_SHOCK blends shock context, path quality, confirmation speed, and confirmation bonus.", "$$Confidence_t=case(method,Q_{path},0.45S_{shock}+0.35Q_{path}+0.12Q_{speed}+B_{confirm})$$"),
+        "oracle_action": ("Method oracle action.", "Categorical supervision action derived from method confidence and future return: ENTER_NOW, WATCH, or IGNORE.", "$$OracleAction_t=case(Confidence_t,BestReturn_t,ShockContext_t)$$"),
+    }
+    if lower in details:
+        short, detailed, equation = details[lower]
+        return supervision_block(short, detailed, equation, {"I": "Indicator function", "Q": "Provider bounded quality function"})
+    return supervision_block(f"{title} method label.", f"{title} describes the future method window, best outcome, adverse path, or oracle decision for the selected trade method.", f"$$\\text{{{title}}}_t=MethodValue_t$$", {"MethodValue_t": "Provider method supervision output"})
+
+
+def method_shock_label_knowledge(lower: str, title: str) -> dict[str, Any]:
+    mapped = {
+        "current_price_shock": ("Current price shock at source bar.", "$$CurrentPriceShock_t=PriceShock_t$$"),
+        "current_volume_shock": ("Current volume shock at source bar.", "$$CurrentVolumeShock_t=VolumeShock_t$$"),
+        "current_confirmed_price_volume_shock": ("Current confirmed price-volume shock.", "$$CurrentConfirmedPVS_t=ConfirmedPVS_t$$"),
+        "shock_confirmation_type": ("Shock sequence type used by method label.", "$$ShockType_t=case(PriceShock_t,VolumeShock_t,FutureConfirm_t)$$"),
+        "shock_confirmation_delay_minutes": ("Minutes from source shock to confirmation.", "$$ShockDelay_t=DelayMinutes_t$$"),
+        "shock_price_score": ("Price-side shock score at source bar.", "$$ShockPriceScore_t=PriceShockScore_t$$"),
+        "shock_volume_score": ("Volume-side shock score at source bar.", "$$ShockVolumeScore_t=VolumeShockScore_t$$"),
+        "shock_score": ("Combined shock context score.", "$$ShockScore_t=\\max(PVSScore_t,0.55PriceScore_t+0.45VolumeScore_t)$$"),
+        "shock_drawdown_before_confirmation": ("Drawdown before shock confirmation.", "$$ShockDrawdownBeforeConfirm_t=\\frac{LowBeforeConfirm_t}{Close_t}-1$$"),
+        "shock_return_after_confirmation": ("Best return after shock confirmation.", "$$ShockReturnAfterConfirm_t=\\frac{PostConfirmBestHigh_t}{ConfirmationPrice_t}-1$$"),
+        "shock_best_exit_after_confirmation_bar_id": ("Best post-confirmation exit bar id.", "$$ShockBestExitBarId_t=BarId_{postConfirmBest}$$"),
+        "shock_best_exit_after_confirmation_time_utc": ("Best post-confirmation exit UTC time.", "$$ShockBestExitTimeUTC_t=TimeUTC_{postConfirmBest}$$"),
+    }
+    short, equation = mapped[lower]
+    return supervision_block(
+        short=short,
+        detailed=f"{title} is the method-level copy of the shock context used to evaluate PRICE_VOLUME_SHOCK and compare shock candidates across methods.",
+        equation=equation,
+        variables={"PriceShockScore": "Provider price shock score", "VolumeShockScore": "Provider volume shock score"},
+    )
+
+
+def scanner_label_knowledge(lower: str, title: str) -> dict[str, Any]:
+    details = {
+        "universe_size": ("Number of candidates in the timestamp/method universe.", "Universe size counts rows for the same bar_time_utc and trade_method before ranking.", "$$UniverseSize_{t,m}=count(candidates_{t,m})$$"),
+        "oracle_rank": ("Dense descending rank by method confidence.", "Oracle rank is 1 for the highest-confidence candidate at the timestamp for the method. Ties share the same dense rank.", "$$OracleRank_{i,t,m}=rank_{dense,desc}(MethodConfidence_{i,t,m})$$"),
+        "oracle_percentile": ("Cross-sectional percentile from oracle rank.", "Oracle percentile maps rank into 0 to 1 where 1 is best in the timestamp/method universe.", "$$OraclePercentile_{i,t,m}=1-\\frac{OracleRank_{i,t,m}-1}{\\max(UniverseSize_{t,m}-1,1)}$$"),
+        "is_top_1": ("Top one candidate flag.", "True when oracle_rank is 1.", "$$IsTop1_t=I(OracleRank_t\\le1)$$"),
+        "is_top_3": ("Top three candidate flag.", "True when oracle_rank is 3 or better.", "$$IsTop3_t=I(OracleRank_t\\le3)$$"),
+        "is_top_5": ("Top five candidate flag.", "True when oracle_rank is 5 or better.", "$$IsTop5_t=I(OracleRank_t\\le5)$$"),
+        "is_top_10": ("Top ten candidate flag.", "True when oracle_rank is 10 or better.", "$$IsTop10_t=I(OracleRank_t\\le10)$$"),
+        "is_top_1pct": ("Top one percent candidate flag.", "True when oracle_percentile is at least 0.99.", "$$IsTop1Pct_t=I(OraclePercentile_t\\ge0.99)$$"),
+        "is_top_5pct": ("Top five percent candidate flag.", "True when oracle_percentile is at least 0.95.", "$$IsTop5Pct_t=I(OraclePercentile_t\\ge0.95)$$"),
+    }
+    if lower in details:
+        short, detailed, equation = details[lower]
+        return supervision_block(short, detailed, equation, {"I": "Indicator function"})
+    return supervision_block(f"{title} scanner label.", f"{title} is part of the cross-sectional scanner supervision output for ranking tickers at the same timestamp and method.", f"$$\\text{{{title}}}_t=ScannerValue_t$$", {"ScannerValue_t": "Provider scanner supervision output"})
+
+
+def supervision_block(short: str, detailed: str, equation: str, variables: dict[str, str]) -> dict[str, Any]:
     return knowledge_block(
-        short=f"{title} from the {group} group.",
-        detailed=f"{title} is a provider-generated {category} column in the {group} artifact group.",
+        short=short,
+        detailed=detailed,
+        theory="Supervision fields intentionally look forward to convert the realized future path into training labels, research diagnostics, and chart-review context. They are not live features.",
+        interpretation="Use only in offline analysis or model training. In charts, read them as what eventually happened after the source bar, not what was knowable at the source bar.",
+        equation=equation,
+        variables=variables,
+        caveats=[
+            "Uses future bars by design. Use for research, training labels, and chart review only.",
+            "Do not use this field as a live feature or entry condition without an explicit prediction delay.",
+        ],
+    )
+
+
+def fallback_knowledge_for_column(column: str, group: str, category: str, title: str) -> dict[str, Any]:
+    unit = semantics_for_column(column)["unit"]
+    return knowledge_block(
+        short=f"{title} provider field.",
+        detailed=f"{title} is a {unit} field in the {group} artifact group. It should be interpreted with the row ticker, timeframe, session, and neighboring provider fields.",
         theory=theory_for_group(group, category),
-        interpretation="Interpret this field together with its units, timeframe, and related provider columns.",
-        equation=f"$$\\text{{{title}}}_t=f(Inputs_t)$$",
-        variables={"Inputs_t": "Provider inputs listed in the implementation reference"},
+        interpretation=interpretation_for_group(group, category),
+        equation=f"$$\\text{{{title}}}_t=ProviderColumn_t$$",
+        variables={"ProviderColumn_t": "Materialized provider value for this column at row t"},
     )
 
 
@@ -728,16 +1422,41 @@ def theory_for_group(group: str, category: str) -> str:
     return "Feature columns transform raw bars into structured context for charts, research, and downstream models."
 
 
-def knowledge_block(short: str, detailed: str, theory: str, interpretation: str, equation: str, variables: dict[str, str]) -> dict[str, Any]:
+def interpretation_for_group(group: str, category: str) -> str:
+    if group == "session":
+        return "Read these values as session anchors and distances. They are most useful when comparing current price against premarket, open, and intraday extreme references."
+    if group == "volume_liquidity":
+        return "Read high values as stronger participation or capacity context, then confirm with price direction and range expansion."
+    if group == "price_action":
+        return "Read true flags as candle or local-structure events. They need volume and session context before they become actionable."
+    if group == "market_structure":
+        return "Read these values as local swing and regime descriptors. Some centered swing fields use future bars and are for review, not live signals."
+    if group == "order_blocks":
+        return "Read these as simple displacement-derived supply/demand proxies, not institutional order-book truth."
+    if group == "fvg":
+        return "Read gap boundaries as displacement zones. A later revisit can be used for mitigation-style review."
+    if group == "shock":
+        return "Read these fields together: price abnormality, participation abnormality, sequence, delay, and combined score."
+    if category == "indicator":
+        return "Use the value as context for trend, momentum, volatility, or participation. Confirm with price and session state rather than treating the indicator alone as a signal."
+    return "Interpret this field together with its units, timeframe, and related provider columns."
+
+
+def knowledge_block(
+    short: str,
+    detailed: str,
+    theory: str,
+    interpretation: str,
+    equation: str,
+    variables: dict[str, str],
+    caveats: list[str] | None = None,
+) -> dict[str, Any]:
     return {
         "shortDescription": short,
         "detailedDescription": detailed,
         "theory": theory,
         "interpretation": interpretation,
-        "caveats": [
-            "Interpret in the context of timeframe and session regime.",
-            "Do not treat future-looking supervision fields as live signals.",
-        ],
+        "caveats": caveats or ["Interpret in the context of ticker, timeframe, session regime, and the related provider fields."],
         "equations": [{"title": "Definition", "markdown": equation, "variables": variables}],
     }
 
