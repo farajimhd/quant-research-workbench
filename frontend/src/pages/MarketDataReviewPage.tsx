@@ -289,7 +289,7 @@ function Artifacts({ records }: { records: RecordRow[] }) {
       (!search || record.path.toLowerCase().includes(search.toLowerCase()))
   );
   return (
-    <section className="panel">
+    <section className="panel table-fill-panel">
       <div className="toolbar">
         <Select label="Group" value={group} options={groups} onChange={setGroup} />
         <Select label="Timeframe" value={timeframe} options={timeframes} onChange={setTimeframe} />

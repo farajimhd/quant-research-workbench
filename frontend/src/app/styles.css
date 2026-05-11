@@ -715,17 +715,20 @@ button {
   font-weight: 650;
 }
 
-.coverage-panel {
+.coverage-panel,
+.table-fill-panel {
   display: flex;
   min-height: max(560px, calc(100vh - 350px));
   flex-direction: column;
 }
 
-.coverage-panel .toolbar {
+.coverage-panel .toolbar,
+.table-fill-panel .toolbar {
   flex: 0 0 auto;
 }
 
-.coverage-panel .data-table-shell {
+.coverage-panel .data-table-shell,
+.table-fill-panel .data-table-shell {
   flex: 1 1 auto;
   height: auto;
   min-height: 430px;
