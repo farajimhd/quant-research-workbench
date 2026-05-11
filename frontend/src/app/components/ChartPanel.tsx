@@ -45,7 +45,9 @@ type ChartMarker = SeriesMarker<Time>;
 type LegendPane = "price" | "oscillator";
 type OscillatorPaneRuntime = {
   chart: IChartApi;
-  renderer: AnySeriesApi;
+  primaryKey: string;
+  renderer: AnySeriesApi | null;
+  seriesKeys: Set<string>;
   valuesByTime: Map<number, number>;
 };
 type OscillatorPaneGroup = {
@@ -181,8 +183,18 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const priceChartRef = useRef<IChartApi | null>(null);
   const oscillatorChartRefs = useRef<Map<string, IChartApi>>(new Map());
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const indicatorSeriesRef = useRef<Map<string, AnySeriesApi>>(new Map());
   const indicatorSourceRef = useRef<Map<string, ChartSeries>>(new Map());
+  const oscillatorPaneRuntimesRef = useRef<Map<string, OscillatorPaneRuntime>>(new Map());
+  const payloadRef = useRef<ChartPayload | null>(payload);
+  const chartSettingsRef = useRef<ChartAppearanceSettings>(defaultChartAppearanceSettings);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const initialFitTimerRef = useRef<number | null>(null);
+  const rangeCleanupRef = useRef<(() => void) | null>(null);
+  const crosshairCleanupRef = useRef<(() => void) | null>(null);
+  const regionDrawRef = useRef<(() => void) | null>(null);
+  const baseDataSignatureRef = useRef("");
   const [draftTicker, setDraftTicker] = useState(ticker.toUpperCase());
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
@@ -191,6 +203,14 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [legendSettings, setLegendSettings] = useState<LegendSettingsMap>(() => loadLegendSettings());
   const [periodMenuOpen, setPeriodMenuOpen] = useState(false);
   const [themeSignature, setThemeSignature] = useState(() => document.documentElement.dataset.shellTheme ?? "");
+  chartSettingsRef.current = chartSettings;
+  const visibleColumnKey = visibleColumns.map((column) => column.toLowerCase()).join("|");
+  const visibleColumnLookup = new Set(visibleColumns.map((column) => column.toLowerCase()));
+  const displayedOverlaySeries = (payload?.overlay_series ?? []).filter((series) => visibleColumnLookup.has(series.column.toLowerCase()));
+  const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) => visibleColumnLookup.has(series.column.toLowerCase()));
+  const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
+  const priceLegendItems = buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings);
+  const hasChartData = Boolean(payload?.candles.length);
 
   const updateChartSettings = <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => {
     setChartSettings((current) => {
@@ -309,104 +329,250 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [legendSettings]);
 
   useEffect(() => {
-    if (!priceRef.current || !payload) return;
-    let disposed = false;
+    chartSettingsRef.current = chartSettings;
+    applyChartAppearance();
+  }, [chartSettings, themeSignature]);
+
+  useEffect(() => {
+    if (!hasChartData) {
+      cleanupChartRuntime();
+      return undefined;
+    }
+    if (!priceRef.current || priceChartRef.current) return undefined;
     const palette = readChartPalette();
-    priceRef.current.innerHTML = "";
-    oscillatorPaneRefs.current.forEach((pane) => {
-      pane.innerHTML = "";
-    });
-    oscillatorChartRefs.current.clear();
-    indicatorSeriesRef.current.clear();
-    indicatorSourceRef.current.clear();
-    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettings));
+    const priceChart = createChart(priceRef.current, chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current));
     priceChartRef.current = priceChart;
     const candleSeries = priceChart.addCandlestickSeries({
-      ...candleSeriesOptions(chartSettings),
+      ...candleSeriesOptions(chartSettingsRef.current),
       priceLineVisible: true
     });
     candleRef.current = candleSeries;
-    candleSeries.setData(payload.candles as never);
     const volume = priceChart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "", base: 0 });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    volume.setData(volumeDataForSettings(payload, chartSettings) as never);
-    payload.overlay_series.forEach((series) => {
-      const key = legendSeriesKey("price", series);
-      const settings = resolveLegendSettings(legendSettings, key, series);
-      const line = priceChart.addLineSeries({
-        color: settings.color,
-        lineStyle: toChartLineStyle(settings.lineStyle),
-        lineWidth: toLineWidth(settings.lineWidth),
-        autoscaleInfoProvider: () => null,
-        priceLineVisible: false,
-        title: series.label,
-        visible: settings.visible
-      });
-      line.setData(seriesDataForSettings(series, settings) as never);
-      indicatorSeriesRef.current.set(key, line);
-      indicatorSourceRef.current.set(key, series);
-    });
-
-    const oscillatorPanes: OscillatorPaneRuntime[] = [];
-    buildOscillatorPaneGroups(payload.oscillator_series).forEach((group) => {
-      const pane = oscillatorPaneRefs.current.get(group.key);
-      if (!pane) return;
-      const oscChart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, true, palette, chartSettings));
-      oscillatorChartRefs.current.set(group.key, oscChart);
-      let primaryRenderer: AnySeriesApi | null = null;
-      let primaryValuesByTime = new Map<number, number>();
-      group.series.forEach((series) => {
-        const key = legendSeriesKey("oscillator", series);
-        const settings = resolveLegendSettings(legendSettings, key, series);
-        const renderer = addChartSeries(oscChart, series, settings);
-        renderer.setData(seriesDataForSettings(series, settings) as never);
-        indicatorSeriesRef.current.set(key, renderer);
-        indicatorSourceRef.current.set(key, series);
-        if (!primaryRenderer) {
-          primaryRenderer = renderer;
-          primaryValuesByTime = new Map(series.data.map((point) => [point.time, point.value]));
-        }
-      });
-      if (!primaryRenderer) return;
-      oscillatorPanes.push({
-        chart: oscChart,
-        renderer: primaryRenderer,
-        valuesByTime: primaryValuesByTime
-      });
-    });
-    const rangeCleanup = syncChartRanges([priceChart, ...oscillatorPanes.map((pane) => pane.chart)]);
-    const closeByTime = new Map(payload.candles.map((candle) => [candle.time, candle.close]));
-    const crosshairCleanup = syncCrosshairs(priceChart, oscillatorPanes, candleSeries, closeByTime);
-    const draw = () => {
-      if (disposed) return;
-      drawRegions(priceChart, priceLayerRef.current, payload.regions, payload.candles, chartSettings);
-    };
+    volumeRef.current = volume;
+    const draw = () => drawCurrentRegions();
+    regionDrawRef.current = draw;
     priceChart.timeScale().subscribeVisibleLogicalRangeChange(draw);
-    const initialFitTimer = window.setTimeout(() => {
-      if (disposed) return;
-      fitInitialRange(priceChart, payload.candles);
-      draw();
-    }, 20);
     const observer = new ResizeObserver(() => {
       resizeCharts();
-      draw();
+      drawCurrentRegions();
     });
     if (shellRef.current) observer.observe(shellRef.current);
-    return () => {
-      disposed = true;
-      window.clearTimeout(initialFitTimer);
-      observer.disconnect();
-      crosshairCleanup();
-      rangeCleanup();
-      priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(draw);
-      priceChart.remove();
-      oscillatorPanes.forEach((pane) => pane.chart.remove());
-      priceChartRef.current = null;
-      oscillatorChartRefs.current.clear();
-      indicatorSeriesRef.current.clear();
-      indicatorSourceRef.current.clear();
-    };
-  }, [payload, themeSignature, chartSettings]);
+    resizeObserverRef.current = observer;
+    return () => cleanupChartRuntime();
+  }, [hasChartData]);
+
+  useEffect(() => {
+    payloadRef.current = payload;
+    if (!payload || !priceChartRef.current || !candleRef.current || !volumeRef.current) return;
+    candleRef.current.setData(payload.candles as never);
+    volumeRef.current.setData(volumeDataForSettings(payload, chartSettingsRef.current) as never);
+    const nextSignature = buildCandleDataSignature(payload.candles);
+    if (nextSignature !== baseDataSignatureRef.current) {
+      baseDataSignatureRef.current = nextSignature;
+      if (initialFitTimerRef.current !== null) {
+        window.clearTimeout(initialFitTimerRef.current);
+      }
+      initialFitTimerRef.current = window.setTimeout(() => {
+        const currentPayload = payloadRef.current;
+        if (!currentPayload || !priceChartRef.current) return;
+        fitInitialRange(priceChartRef.current, currentPayload.candles);
+        drawCurrentRegions();
+        initialFitTimerRef.current = null;
+      }, 20);
+    } else {
+      drawCurrentRegions();
+    }
+    refreshInteractionSync();
+  }, [payload]);
+
+  useEffect(() => {
+    if (!priceChartRef.current) return;
+    updatePriceOverlaySeries(displayedOverlaySeries);
+  }, [payload, visibleColumnKey]);
+
+  useEffect(() => {
+    if (!priceChartRef.current) return;
+    updateOscillatorPanes(oscillatorPaneGroups);
+    refreshInteractionSync();
+  }, [payload, visibleColumnKey]);
+
+  function applyChartAppearance() {
+    const palette = readChartPalette();
+    const priceChart = priceChartRef.current;
+    if (priceChart && priceRef.current) {
+      priceChart.applyOptions(chartOptions(priceRef.current.clientWidth, priceRef.current.clientHeight, false, palette, chartSettingsRef.current));
+      candleRef.current?.applyOptions(candleSeriesOptions(chartSettingsRef.current));
+      if (payloadRef.current && volumeRef.current) {
+        volumeRef.current.setData(volumeDataForSettings(payloadRef.current, chartSettingsRef.current) as never);
+      }
+    }
+    oscillatorChartRefs.current.forEach((chart, key) => {
+      const pane = oscillatorPaneRefs.current.get(key);
+      if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, true, palette, chartSettingsRef.current));
+    });
+    drawCurrentRegions();
+  }
+
+  function updatePriceOverlaySeries(seriesList: ChartSeries[]) {
+    const priceChart = priceChartRef.current;
+    if (!priceChart) return;
+    const nextKeys = new Set(seriesList.map((series) => legendSeriesKey("price", series)));
+    Array.from(indicatorSeriesRef.current.entries()).forEach(([key, renderer]) => {
+      if (!key.startsWith("price:") || nextKeys.has(key)) return;
+      priceChart.removeSeries(renderer);
+      indicatorSeriesRef.current.delete(key);
+      indicatorSourceRef.current.delete(key);
+    });
+    seriesList.forEach((series) => {
+      const key = legendSeriesKey("price", series);
+      const settings = resolveLegendSettings(legendSettings, key, series);
+      const existing = indicatorSeriesRef.current.get(key);
+      if (existing) {
+        applySeriesSettings(existing, series, settings);
+      } else {
+        const renderer = priceChart.addLineSeries({
+          color: settings.color,
+          lineStyle: toChartLineStyle(settings.lineStyle),
+          lineWidth: toLineWidth(settings.lineWidth),
+          autoscaleInfoProvider: () => null,
+          priceLineVisible: false,
+          title: series.label,
+          visible: settings.visible
+        });
+        renderer.setData(seriesDataForSettings(series, settings) as never);
+        indicatorSeriesRef.current.set(key, renderer);
+      }
+      indicatorSourceRef.current.set(key, series);
+    });
+  }
+
+  function updateOscillatorPanes(groups: OscillatorPaneGroup[]) {
+    const nextPaneKeys = new Set(groups.map((group) => group.key));
+    Array.from(oscillatorPaneRuntimesRef.current.keys()).forEach((key) => {
+      if (!nextPaneKeys.has(key)) removeOscillatorPaneRuntime(key);
+    });
+    groups.forEach((group) => {
+      const pane = oscillatorPaneRefs.current.get(group.key);
+      if (!pane) return;
+      let runtime = oscillatorPaneRuntimesRef.current.get(group.key);
+      if (!runtime) {
+        const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, true, readChartPalette(), chartSettingsRef.current));
+        runtime = {
+          chart,
+          primaryKey: "",
+          renderer: null,
+          seriesKeys: new Set<string>(),
+          valuesByTime: new Map<number, number>()
+        };
+        oscillatorPaneRuntimesRef.current.set(group.key, runtime);
+        oscillatorChartRefs.current.set(group.key, chart);
+      }
+      updateOscillatorPaneSeries(runtime, group.series);
+    });
+  }
+
+  function updateOscillatorPaneSeries(runtime: OscillatorPaneRuntime, seriesList: ChartSeries[]) {
+    const nextKeys = new Set(seriesList.map((series) => legendSeriesKey("oscillator", series)));
+    Array.from(runtime.seriesKeys).forEach((key) => {
+      if (nextKeys.has(key)) return;
+      const renderer = indicatorSeriesRef.current.get(key);
+      if (renderer) runtime.chart.removeSeries(renderer);
+      runtime.seriesKeys.delete(key);
+      indicatorSeriesRef.current.delete(key);
+      indicatorSourceRef.current.delete(key);
+    });
+    let primaryRenderer: AnySeriesApi | null = null;
+    let primaryKey = "";
+    let primaryValuesByTime = new Map<number, number>();
+    seriesList.forEach((series) => {
+      const key = legendSeriesKey("oscillator", series);
+      const settings = resolveLegendSettings(legendSettings, key, series);
+      let renderer = indicatorSeriesRef.current.get(key);
+      if (renderer) {
+        applySeriesSettings(renderer, series, settings);
+      } else {
+        renderer = addChartSeries(runtime.chart, series, settings);
+        renderer.setData(seriesDataForSettings(series, settings) as never);
+        indicatorSeriesRef.current.set(key, renderer);
+      }
+      indicatorSourceRef.current.set(key, series);
+      runtime.seriesKeys.add(key);
+      if (!primaryRenderer) {
+        primaryRenderer = renderer;
+        primaryKey = key;
+        primaryValuesByTime = new Map(series.data.map((point) => [point.time, point.value]));
+      }
+    });
+    if (primaryRenderer) {
+      runtime.primaryKey = primaryKey;
+      runtime.renderer = primaryRenderer;
+      runtime.valuesByTime = primaryValuesByTime;
+    }
+  }
+
+  function removeOscillatorPaneRuntime(key: string) {
+    const runtime = oscillatorPaneRuntimesRef.current.get(key);
+    if (!runtime) return;
+    runtime.seriesKeys.forEach((seriesKey) => {
+      indicatorSeriesRef.current.delete(seriesKey);
+      indicatorSourceRef.current.delete(seriesKey);
+    });
+    runtime.chart.remove();
+    oscillatorPaneRuntimesRef.current.delete(key);
+    oscillatorChartRefs.current.delete(key);
+  }
+
+  function refreshInteractionSync() {
+    rangeCleanupRef.current?.();
+    crosshairCleanupRef.current?.();
+    rangeCleanupRef.current = null;
+    crosshairCleanupRef.current = null;
+    const priceChart = priceChartRef.current;
+    const candleSeries = candleRef.current;
+    const currentPayload = payloadRef.current;
+    if (!priceChart || !candleSeries || !currentPayload) return;
+    const panes = Array.from(oscillatorPaneRuntimesRef.current.values());
+    rangeCleanupRef.current = syncChartRanges([priceChart, ...panes.map((pane) => pane.chart)]);
+    const closeByTime = new Map(currentPayload.candles.map((candle) => [candle.time, candle.close]));
+    crosshairCleanupRef.current = syncCrosshairs(priceChart, panes, candleSeries, closeByTime);
+  }
+
+  function drawCurrentRegions() {
+    const chart = priceChartRef.current;
+    const currentPayload = payloadRef.current;
+    if (!chart || !currentPayload) return;
+    drawRegions(chart, priceLayerRef.current, currentPayload.regions, currentPayload.candles, chartSettingsRef.current);
+  }
+
+  function cleanupChartRuntime() {
+    if (initialFitTimerRef.current !== null) {
+      window.clearTimeout(initialFitTimerRef.current);
+      initialFitTimerRef.current = null;
+    }
+    resizeObserverRef.current?.disconnect();
+    resizeObserverRef.current = null;
+    rangeCleanupRef.current?.();
+    crosshairCleanupRef.current?.();
+    rangeCleanupRef.current = null;
+    crosshairCleanupRef.current = null;
+    if (regionDrawRef.current && priceChartRef.current) {
+      priceChartRef.current.timeScale().unsubscribeVisibleLogicalRangeChange(regionDrawRef.current);
+      regionDrawRef.current = null;
+    }
+    oscillatorPaneRuntimesRef.current.forEach((runtime) => runtime.chart.remove());
+    oscillatorPaneRuntimesRef.current.clear();
+    oscillatorChartRefs.current.clear();
+    if (priceChartRef.current) {
+      priceChartRef.current.remove();
+    }
+    priceChartRef.current = null;
+    candleRef.current = null;
+    volumeRef.current = null;
+    indicatorSeriesRef.current.clear();
+    indicatorSourceRef.current.clear();
+    baseDataSignatureRef.current = "";
+  }
 
   function resizeCharts() {
     const price = priceRef.current;
@@ -418,9 +584,6 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       if (pane) chart.applyOptions({ width: pane.clientWidth, height: pane.clientHeight });
     });
   }
-
-  const priceLegendItems = buildSeriesLegendItems(payload?.overlay_series ?? [], "price", legendSettings);
-  const oscillatorPaneGroups = buildOscillatorPaneGroups(payload?.oscillator_series ?? []);
 
   const closeOscillatorPane = (group: OscillatorPaneGroup) => {
     const paneColumns = new Set(group.series.map((series) => series.column.toLowerCase()));
@@ -534,19 +697,21 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           settings={chartSettings}
         />
       ) : null}
-      {loading ? (
+      {loading && !hasChartData ? (
         <div className="empty-state chart-empty-state">Loading chart data...</div>
-      ) : errorMessage ? (
+      ) : errorMessage && !hasChartData ? (
         <div className="empty-state chart-empty-state">Chart data request failed: {errorMessage}</div>
-      ) : !payload || !payload.candles.length ? (
+      ) : !hasChartData ? (
         <div className="empty-state chart-empty-state">{emptyMessage}</div>
       ) : (
         <div className="chart-canvas-stack">
+          {loading ? <div className="chart-update-status">Updating chart...</div> : null}
+          {errorMessage ? <div className="chart-update-status error">Chart update failed</div> : null}
           <div className="chart-price">
             <div className="chart-pane-canvas" ref={priceRef} />
             <div className="session-layer" ref={priceLayerRef} />
             <ChartLegend
-              indicatorCount={payload.overlay_series.length}
+              indicatorCount={displayedOverlaySeries.length}
               items={priceLegendItems}
               onReset={resetLegendSettings}
               onUpdate={updateLegendSettings}
@@ -1354,6 +1519,13 @@ function fitRecent(chart: IChartApi | null, candles: Candle[]) {
   chart.timeScale().setVisibleLogicalRange({ from: Math.max(-1, last - halfSpan), to: last + halfSpan });
 }
 
+function buildCandleDataSignature(candles: Candle[]) {
+  if (!candles.length) return "empty";
+  const first = candles[0];
+  const last = candles[candles.length - 1];
+  return `${candles.length}:${first.time}:${last.time}:${first.open}:${first.close}:${last.close}`;
+}
+
 function hasMultipleMarketDates(candles: Candle[]) {
   if (candles.length < 2) return false;
   const first = marketDate(candles[0].time);
@@ -1395,7 +1567,7 @@ function syncCrosshairs(
     oscillatorPanes.forEach((pane) => {
       if (pane.chart === excludedChart) return;
       const value = pane.valuesByTime.get(Number(time));
-      if (typeof value === "number" && Number.isFinite(value)) {
+      if (pane.renderer && typeof value === "number" && Number.isFinite(value)) {
         pane.chart.setCrosshairPosition(value, time, pane.renderer);
       } else {
         pane.chart.clearCrosshairPosition();

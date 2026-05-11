@@ -2985,11 +2985,33 @@ button {
 }
 
 .chart-canvas-stack {
+  position: relative;
   display: flex;
   min-height: 0;
   flex: 1;
   flex-direction: column;
   padding: 8px;
+}
+
+.chart-update-status {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  z-index: 6;
+  border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface) 88%, transparent);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 9px;
+  pointer-events: none;
+}
+
+.chart-update-status.error {
+  border-color: color-mix(in oklab, var(--danger) 20%, var(--border));
+  background: color-mix(in oklab, var(--danger) 7%, var(--surface));
+  color: var(--danger);
 }
 
 .chart-price {
