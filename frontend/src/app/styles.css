@@ -1675,7 +1675,7 @@ button {
   display: grid;
   gap: 14px;
   border-color: color-mix(in oklab, var(--primary) 20%, var(--surface-border));
-  background: color-mix(in oklab, var(--primary) 4%, var(--card));
+  background: transparent;
   padding: 14px;
 }
 
@@ -1699,7 +1699,7 @@ button {
   gap: 10px;
   border: 1px solid color-mix(in oklab, var(--surface-border) 70%, transparent);
   border-radius: 11px;
-  background: color-mix(in oklab, var(--surface-alt) 22%, var(--card));
+  background: transparent;
   padding: 9px 11px;
 }
 
@@ -1744,7 +1744,7 @@ button {
   min-width: 0;
   border: 1px solid color-mix(in oklab, var(--surface-border) 62%, transparent);
   border-radius: 11px;
-  background: color-mix(in oklab, var(--card) 82%, var(--surface-alt));
+  background: transparent;
   padding: 11px;
 }
 
