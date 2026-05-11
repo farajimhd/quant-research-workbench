@@ -190,7 +190,7 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
     [barRecords, session]
   );
   const [timeframe, setTimeframe] = useState(timeframes[0] ?? "1m");
-  const [ticker, setTicker] = useState("AAPL");
+  const [ticker, setTicker] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [featureGroups, setFeatureGroups] = useState(["core", "momentum"]);
   const [columns, setColumns] = useState(["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"]);
@@ -205,11 +205,11 @@ function ChartTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
   }, [session, timeframes, timeframe]);
 
   useEffect(() => {
-    if (!session || !timeframe) return;
+    if (!session || !timeframe || ticker.trim()) return;
     api<{ ticker: string }>(`/api/market-data/chart/default-ticker${query({ processed_root: scope.processed_root, session_date: session, timeframe })}`).then((result) =>
       setTicker(result.ticker || "AAPL")
     );
-  }, [scope.processed_root, session, timeframe]);
+  }, [scope.processed_root, session, timeframe, ticker]);
 
   useEffect(() => {
     if (!session || !timeframe || !ticker.trim()) return;

@@ -3,10 +3,12 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LogicalRange,
+  type MouseEventParams,
+  type SeriesType,
   type Time
 } from "lightweight-charts";
-import { Maximize2, Minimize2, RotateCw, Settings, Shrink } from "lucide-react";
-import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { CalendarRange, LocateFixed, Maximize2, Minimize2, Settings } from "lucide-react";
+import { forwardRef, type FormEvent, type ReactNode, useEffect, useImperativeHandle, useRef, useState } from "react";
 
 import { buildSegmentButtonClassName } from "../selectionStyles";
 
@@ -20,6 +22,7 @@ type ChartSeries = {
   data: Array<{ color?: string; time: number; value: number }>;
 };
 type Region = { start: number; end: number; color: string; label: string };
+type AnySeriesApi = ISeriesApi<SeriesType>;
 
 export type ChartPayload = {
   candles: Candle[];
@@ -81,6 +84,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const priceChartRef = useRef<IChartApi | null>(null);
   const oscChartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const [draftTicker, setDraftTicker] = useState(ticker.toUpperCase());
   const [fullscreen, setFullscreen] = useState(false);
   const [themeSignature, setThemeSignature] = useState(() => document.documentElement.dataset.shellTheme ?? "");
 
@@ -105,6 +109,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     observer.observe(target, { attributes: true, attributeFilter: ["class", "data-shell-theme", "style"] });
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    setDraftTicker(ticker.toUpperCase());
+  }, [ticker]);
 
   useEffect(() => {
     if (!priceRef.current || !payload) return;
@@ -136,6 +144,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
 
     let oscChart: IChartApi | null = null;
+    let primaryOscillatorSeries: AnySeriesApi | null = null;
     if (oscRef.current && payload.oscillator_series.length) {
       oscChart = createChart(oscRef.current, chartOptions(oscRef.current.clientWidth, oscRef.current.clientHeight, true, palette));
       oscChartRef.current = oscChart;
@@ -144,13 +153,20 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           series.style === "histogram"
             ? oscChart!.addHistogramSeries({ color: series.color, priceLineVisible: false, title: series.label })
             : oscChart!.addLineSeries({ color: series.color, lineWidth: 1, priceLineVisible: false, title: series.label });
+        if (!primaryOscillatorSeries) primaryOscillatorSeries = renderer;
         renderer.setData(series.data as never);
       });
-      syncRanges(priceChart, oscChart);
     } else {
       oscChartRef.current = null;
     }
-    const draw = () => drawRegions(priceChart, priceLayerRef.current, payload.regions);
+    const rangeCleanup = oscChart ? syncRanges(priceChart, oscChart) : () => undefined;
+    const closeByTime = new Map(payload.candles.map((candle) => [candle.time, candle.close]));
+    const oscillatorByTime = new Map((payload.oscillator_series[0]?.data ?? []).map((point) => [point.time, point.value]));
+    const crosshairCleanup =
+      oscChart && primaryOscillatorSeries
+        ? syncCrosshairs(priceChart, oscChart, candleSeries, primaryOscillatorSeries, closeByTime, oscillatorByTime)
+        : () => undefined;
+    const draw = () => drawRegions(priceChart, priceLayerRef.current, payload.regions, payload.candles);
     priceChart.timeScale().subscribeVisibleLogicalRangeChange(draw);
     window.setTimeout(() => {
       fitFirstDay(priceChart, payload.candles);
@@ -163,6 +179,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (shellRef.current) observer.observe(shellRef.current);
     return () => {
       observer.disconnect();
+      crosshairCleanup();
+      rangeCleanup();
+      priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(draw);
       priceChart.remove();
       oscChart?.remove();
       priceChartRef.current = null;
@@ -181,10 +200,35 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
   }
 
+  const priceLegendItems = buildPriceLegendItems(payload, ticker, timeframe);
+  const oscillatorLegendItems = buildSeriesLegendItems(payload?.oscillator_series ?? []);
+
+  const commitTicker = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalized = draftTicker.trim().toUpperCase();
+    if (!normalized) {
+      setDraftTicker(ticker.toUpperCase());
+      return;
+    }
+    setDraftTicker(normalized);
+    if (normalized !== ticker.toUpperCase()) {
+      onTickerChange(normalized);
+    }
+  };
+
   return (
     <div className={fullscreen ? "chart-shell fullscreen" : "chart-shell"} ref={shellRef}>
       <div className="chart-component-toolbar">
-        <input className="chart-ticker-input" value={ticker} maxLength={10} onChange={(event) => onTickerChange(event.target.value.toUpperCase())} aria-label="Ticker" />
+        <form className="chart-ticker-form" onSubmit={commitTicker}>
+          <input
+            aria-label="Ticker"
+            className="chart-ticker-input"
+            maxLength={10}
+            onChange={(event) => setDraftTicker(event.target.value.toUpperCase())}
+            spellCheck={false}
+            value={draftTicker}
+          />
+        </form>
         <div className="chart-timeframe-row">
           {timeframes.map((item) => (
             <button className={buildSegmentButtonClassName(item === timeframe)} key={item} onClick={() => onTimeframeChange(item)} type="button">
@@ -195,10 +239,18 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <div className="toolbar-spacer" />
         <button className="toolbar-button" type="button" title="Settings" onClick={onSettingsToggle}><Settings size={15} /></button>
         <span className="toolbar-divider" />
-        <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, payload?.candles ?? [])}><RotateCw size={15} /></button>
-        <button className="toolbar-button" type="button" title="Fit recent" onClick={() => fitRecent(priceChartRef.current, payload?.candles ?? [])}><Shrink size={15} /></button>
+        <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, payload?.candles ?? [])}><CalendarRange size={15} /></button>
+        <button className="toolbar-button" type="button" title="Fit recent" onClick={() => fitRecent(priceChartRef.current, payload?.candles ?? [])}><LocateFixed size={15} /></button>
         <span className="toolbar-divider" />
-        <button className="toolbar-button" type="button" title={fullscreen ? "Exit fullscreen" : "Fullscreen"} onClick={() => setFullscreen((value) => !value)}>
+        <button
+          className="toolbar-button"
+          type="button"
+          title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+          onClick={() => {
+            setFullscreen((value) => !value);
+            window.setTimeout(() => resizeCharts(), 30);
+          }}
+        >
           {fullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
         </button>
       </div>
@@ -207,15 +259,69 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <div className="empty-state chart-empty-state">No chart data for the selected ticker/session/timeframe.</div>
       ) : (
         <div className="chart-canvas-stack">
-          <div className="chart-price" ref={priceRef}>
+          <div className="chart-price">
+            <div className="chart-pane-canvas" ref={priceRef} />
             <div className="session-layer" ref={priceLayerRef} />
+            <ChartLegend items={priceLegendItems} />
           </div>
-          {payload.oscillator_series.length ? <div className="chart-osc" ref={oscRef} /> : null}
+          {payload.oscillator_series.length ? (
+            <div className="chart-osc">
+              <div className="chart-pane-canvas" ref={oscRef} />
+              <ChartLegend items={oscillatorLegendItems} />
+            </div>
+          ) : null}
         </div>
       )}
     </div>
   );
 });
+
+type LegendItem = { color: string; label: string; value: string };
+
+function ChartLegend({ items }: { items: LegendItem[] }) {
+  if (!items.length) return null;
+  return (
+    <div className="chart-legend">
+      {items.map((item) => (
+        <span className="chart-legend-item" key={`${item.label}-${item.value}`}>
+          <i style={{ background: item.color }} />
+          <span>{item.label}</span>
+          <b>{item.value}</b>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function buildPriceLegendItems(payload: ChartPayload | null, ticker: string, timeframe: string): LegendItem[] {
+  if (!payload?.candles.length) return [];
+  const candle = payload.candles[payload.candles.length - 1];
+  const candleColor = candle.close >= candle.open ? candleSettings.upColor : candleSettings.downColor;
+  return [
+    {
+      color: candleColor,
+      label: `${ticker.toUpperCase()} ${timeframe}`,
+      value: `O ${formatPrice(candle.open)} H ${formatPrice(candle.high)} L ${formatPrice(candle.low)} C ${formatPrice(candle.close)}`
+    },
+    ...buildSeriesLegendItems(payload.overlay_series)
+  ];
+}
+
+function buildSeriesLegendItems(series: ChartSeries[]): LegendItem[] {
+  return series.flatMap((item) => {
+    const latest = latestSeriesValue(item.data);
+    if (latest === null) return [];
+    return [{ color: item.color, label: item.label, value: formatPrice(latest) }];
+  });
+}
+
+function latestSeriesValue(data: Array<{ value: number }>) {
+  for (let index = data.length - 1; index >= 0; index -= 1) {
+    const value = data[index]?.value;
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
 
 function readChartPalette(): ChartPalette {
   const styles = window.getComputedStyle(document.documentElement);
@@ -248,49 +354,114 @@ function chartOptions(width: number, height: number, compact = false, palette: C
   };
 }
 
+const marketDateFormatter = new Intl.DateTimeFormat("en-CA", {
+  day: "2-digit",
+  month: "2-digit",
+  timeZone: "America/New_York",
+  year: "numeric"
+});
+
 function fitFirstDay(chart: IChartApi | null, candles: Candle[]) {
   if (!chart || !candles.length) return;
-  const firstDay = new Date(candles[0].time * 1000).toISOString().slice(0, 10);
+  const firstDay = marketDate(candles[0].time);
   let lastIndex = 0;
   candles.forEach((candle, index) => {
-    if (new Date(candle.time * 1000).toISOString().slice(0, 10) === firstDay) {
+    if (marketDate(candle.time) === firstDay) {
       lastIndex = index;
     }
   });
-  chart.timeScale().setVisibleLogicalRange({ from: 0, to: Math.max(30, lastIndex + 2) });
+  chart.timeScale().setVisibleLogicalRange({ from: -1, to: Math.max(8, lastIndex + 1) });
 }
 
 function fitRecent(chart: IChartApi | null, candles: Candle[]) {
   if (!chart || !candles.length) return;
   const last = candles.length - 1;
-  chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, last - 90), to: last + 4 });
+  const span = Math.min(180, Math.max(60, Math.ceil(candles.length * 0.18)));
+  const halfSpan = Math.ceil(span / 2);
+  chart.timeScale().setVisibleLogicalRange({ from: Math.max(-1, last - halfSpan), to: last + halfSpan });
 }
 
 function syncRanges(source: IChartApi, target: IChartApi) {
   let syncing = false;
-  source.timeScale().subscribeVisibleLogicalRangeChange((range: LogicalRange | null) => {
+  const sourceHandler = (range: LogicalRange | null) => {
     if (syncing || !range) return;
     syncing = true;
     target.timeScale().setVisibleLogicalRange(range);
     syncing = false;
-  });
-  target.timeScale().subscribeVisibleLogicalRangeChange((range: LogicalRange | null) => {
+  };
+  const targetHandler = (range: LogicalRange | null) => {
     if (syncing || !range) return;
     syncing = true;
     source.timeScale().setVisibleLogicalRange(range);
     syncing = false;
-  });
+  };
+  source.timeScale().subscribeVisibleLogicalRangeChange(sourceHandler);
+  target.timeScale().subscribeVisibleLogicalRangeChange(targetHandler);
+  return () => {
+    source.timeScale().unsubscribeVisibleLogicalRangeChange(sourceHandler);
+    target.timeScale().unsubscribeVisibleLogicalRangeChange(targetHandler);
+  };
 }
 
-function drawRegions(chart: IChartApi, layer: HTMLDivElement | null, regions: Region[]) {
+function syncCrosshairs(
+  priceChart: IChartApi,
+  oscillatorChart: IChartApi,
+  candleSeries: AnySeriesApi,
+  oscillatorSeries: AnySeriesApi,
+  closeByTime: Map<number, number>,
+  oscillatorByTime: Map<number, number>
+) {
+  let syncing = false;
+
+  const syncToOscillator = (param: MouseEventParams<Time>) => {
+    if (syncing) return;
+    if (!param.time) {
+      oscillatorChart.clearCrosshairPosition();
+      return;
+    }
+    const value = oscillatorByTime.get(Number(param.time));
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      oscillatorChart.clearCrosshairPosition();
+      return;
+    }
+    syncing = true;
+    oscillatorChart.setCrosshairPosition(value, param.time, oscillatorSeries);
+    syncing = false;
+  };
+
+  const syncToPrice = (param: MouseEventParams<Time>) => {
+    if (syncing) return;
+    if (!param.time) {
+      priceChart.clearCrosshairPosition();
+      return;
+    }
+    const value = closeByTime.get(Number(param.time));
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      priceChart.clearCrosshairPosition();
+      return;
+    }
+    syncing = true;
+    priceChart.setCrosshairPosition(value, param.time, candleSeries);
+    syncing = false;
+  };
+
+  priceChart.subscribeCrosshairMove(syncToOscillator);
+  oscillatorChart.subscribeCrosshairMove(syncToPrice);
+  return () => {
+    priceChart.unsubscribeCrosshairMove(syncToOscillator);
+    oscillatorChart.unsubscribeCrosshairMove(syncToPrice);
+  };
+}
+
+function drawRegions(chart: IChartApi, layer: HTMLDivElement | null, regions: Region[], candles: Candle[]) {
   if (!layer) return;
   layer.innerHTML = "";
+  const barWidth = estimateBarWidth(chart, candles);
   regions.forEach((region) => {
-    const start = chart.timeScale().timeToCoordinate(region.start as Time);
-    const end = chart.timeScale().timeToCoordinate(region.end as Time);
-    if (start === null || end === null) return;
-    const left = Math.min(start, end);
-    const width = Math.abs(end - start);
+    const coordinates = regionCoordinates(chart, region, candles, barWidth);
+    if (!coordinates) return;
+    const left = Math.min(coordinates.start, coordinates.end);
+    const width = Math.abs(coordinates.end - coordinates.start);
     if (width < 1) return;
     const node = document.createElement("div");
     node.className = "session-region";
@@ -300,4 +471,41 @@ function drawRegions(chart: IChartApi, layer: HTMLDivElement | null, regions: Re
     node.style.background = region.color;
     layer.appendChild(node);
   });
+}
+
+function regionCoordinates(chart: IChartApi, region: Region, candles: Candle[], barWidth: number) {
+  const start = chart.timeScale().timeToCoordinate(region.start as Time);
+  const end = chart.timeScale().timeToCoordinate(region.end as Time);
+  if (start !== null && end !== null) return { end, start };
+
+  const regionCandles = candles.filter((candle) => candle.time >= region.start && candle.time <= region.end);
+  if (!regionCandles.length) return null;
+  const first = chart.timeScale().timeToCoordinate(regionCandles[0]?.time as Time);
+  const last = chart.timeScale().timeToCoordinate(regionCandles[regionCandles.length - 1]?.time as Time);
+  if (first === null || last === null) return null;
+  return { end: last + barWidth / 2, start: first - barWidth / 2 };
+}
+
+function estimateBarWidth(chart: IChartApi, candles: Candle[]) {
+  const coordinates = candles
+    .slice(0, 80)
+    .map((candle) => chart.timeScale().timeToCoordinate(candle.time as Time))
+    .filter((value) => value !== null)
+    .map((value) => Number(value))
+    .sort((left, right) => left - right);
+  const deltas = coordinates
+    .slice(1)
+    .map((value, index) => value - coordinates[index])
+    .filter((value) => value > 0);
+  if (!deltas.length) return 4;
+  deltas.sort((left, right) => left - right);
+  return Math.max(2, Math.min(24, deltas[Math.floor(deltas.length / 2)] ?? 4));
+}
+
+function marketDate(time: number) {
+  return marketDateFormatter.format(new Date(time * 1000));
+}
+
+function formatPrice(value: number) {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: Math.abs(value) >= 100 ? 2 : 4 }).format(value);
 }
