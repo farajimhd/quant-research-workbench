@@ -97,6 +97,7 @@ type CatalogKindFilter = "all" | "columns" | "methods" | "scanners";
 type CatalogCardItem = CatalogItem & {
   catalogKind: "columns" | "methods" | "scanners";
   groupLabel: string;
+  presentationType: string;
   sourceLabel: string;
   summary: string;
 };
@@ -110,6 +111,17 @@ const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_COLUMNS = ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
 const PREVIEW_PAGE_SIZE = 1000;
+const PRESENTATION_TYPE_ORDER = ["price_overlay", "lower_pane_line", "histogram_pane", "event_marker", "band_range", "table_only", "other"];
+const PRESENTATION_TYPE_LABELS: Record<string, string> = {
+  all: "All",
+  band_range: "Band / range",
+  event_marker: "Event marker",
+  histogram_pane: "Histogram pane",
+  lower_pane_line: "Lower-pane line",
+  other: "Other",
+  price_overlay: "Price overlay",
+  table_only: "Table only",
+};
 const STYLE_COLOR_OPTIONS = [
   { label: "Black", value: "#030213" },
   { label: "Navy", value: "#1E3A5F" },
@@ -946,6 +958,7 @@ function CatalogTab({
   const [kind, setKind] = useState<CatalogKindFilter>("all");
   const [category, setCategory] = useState("all");
   const [group, setGroup] = useState("all");
+  const [presentationType, setPresentationType] = useState("all");
   const [search, setSearch] = useState("");
   const [catalogWidth, setCatalogWidth] = useState(31);
   const [isResizing, setIsResizing] = useState(false);
@@ -953,9 +966,10 @@ function CatalogTab({
   const allItems = useMemo(() => catalogItems(catalog), [catalog]);
   const categoryOptions = useMemo(() => catalogOptionValues(allItems.map((item) => item.category)), [allItems]);
   const groupOptions = useMemo(() => catalogOptionValues(allItems.map((item) => item.groupLabel)), [allItems]);
+  const presentationTypeOptions = useMemo(() => catalogPresentationTypeOptions(allItems), [allItems]);
   const items = useMemo(
-    () => filterCatalogItems(allItems, { category, group, kind, search }),
-    [allItems, category, group, kind, search],
+    () => filterCatalogItems(allItems, { category, group, kind, presentationType, search }),
+    [allItems, category, group, kind, presentationType, search],
   );
   const groupedItems = useMemo(() => groupCatalogItems(items), [items]);
   const [selectedId, setSelectedId] = useState("");
@@ -1005,6 +1019,7 @@ function CatalogTab({
 
   const presentationRole = String(draft.chartRole ?? selected?.presentation?.chartRole ?? "table_only");
   const presentationPane = String(draft.pane ?? selected?.presentation?.pane ?? "price");
+  const selectedPresentationType = selected ? presentationTypeForItem({ ...selected, presentation: draft }) : "table_only";
   const isTableOnlyPresentation = presentationRole === "table_only";
   const fillPanel = useViewportFillPanel(`${catalogLoading}:${allItems.length}:${items.length}:${selected?.id ?? ""}`);
 
@@ -1038,6 +1053,7 @@ function CatalogTab({
               <CatalogFilter label="Type" value={kind} onChange={(value) => setKind(value as CatalogKindFilter)} options={["all", "columns", "methods", "scanners"]} />
               <CatalogFilter label="Category" value={category} onChange={setCategory} options={categoryOptions} />
               <CatalogFilter label="Group" value={group} onChange={setGroup} options={groupOptions} />
+              <CatalogFilter label="Presentation" value={presentationType} onChange={setPresentationType} options={presentationTypeOptions} labels={PRESENTATION_TYPE_LABELS} />
             </div>
           </div>
           <div className="catalog-list">
@@ -1058,6 +1074,7 @@ function CatalogTab({
                     <div className="catalog-item-meta-row">
                       <span>{item.sourceLabel}</span>
                       <span>{item.category}</span>
+                      <span>{presentationTypeLabel(item.presentationType)}</span>
                       {item.dtype ? <span>{item.dtype}</span> : null}
                     </div>
                   </button>
@@ -1102,7 +1119,7 @@ function CatalogTab({
                 <div className={isTableOnlyPresentation ? "catalog-presentation-preview table-only" : "catalog-presentation-preview"}>
                   {isTableOnlyPresentation ? null : <span className="catalog-preview-swatch" style={{ background: presentationColor(draft.color) }} />}
                   <div>
-                    <strong>{displayName(presentationRole)}</strong>
+                    <strong>{presentationTypeLabel(selectedPresentationType)}</strong>
                     <span>{isTableOnlyPresentation ? "No chart color used" : `${displayName(presentationPane)} pane`}</span>
                   </div>
                 </div>
@@ -1150,7 +1167,7 @@ function CatalogTab({
             <div className="catalog-detail-metrics">
               <CatalogMetric icon={<Tags size={14} />} label="Category" value={selected.category} />
               <CatalogMetric icon={<Filter size={14} />} label="Group" value={selected.groupLabel} />
-              <CatalogMetric icon={<SlidersHorizontal size={14} />} label="Chart role" value={String(draft.chartRole ?? selected.presentation?.chartRole ?? "table_only")} />
+              <CatalogMetric icon={<SlidersHorizontal size={14} />} label="Presentation" value={presentationTypeLabel(selectedPresentationType)} />
               <CatalogMetric icon={<BookOpen size={14} />} label="Value" value={String(draft.valueFormat ?? selected.presentation?.valueFormat ?? "-")} />
             </div>
             <div className="catalog-knowledge-grid">
@@ -1220,13 +1237,25 @@ function CatalogMetric({ icon, label, value }: { icon: ReactNode; label: string;
   );
 }
 
-function CatalogFilter({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: string[]; value: string }) {
+function CatalogFilter({
+  label,
+  labels,
+  onChange,
+  options,
+  value,
+}: {
+  label: string;
+  labels?: Record<string, string>;
+  onChange: (value: string) => void;
+  options: string[];
+  value: string;
+}) {
   return (
     <label className="catalog-filter">
       <span>{label}</span>
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         {options.map((option) => (
-          <option key={option} value={option}>{option === "all" ? "All" : displayName(option)}</option>
+          <option key={option} value={option}>{labels?.[option] ?? (option === "all" ? "All" : displayName(option))}</option>
         ))}
       </select>
     </label>
@@ -1768,6 +1797,7 @@ function catalogColumnToCard(item: CatalogItem): CatalogCardItem {
     ...item,
     catalogKind: "columns",
     groupLabel,
+    presentationType: presentationTypeForItem(item),
     sourceLabel: "Column",
     summary: item.knowledge?.shortDescription ?? `${item.title} provider column.`,
   };
@@ -1784,6 +1814,7 @@ function catalogMethodToItem(item: CatalogMethod, catalogKind: "methods" | "scan
     groupLabel,
     knowledge: item.knowledge,
     presentation: item.presentation,
+    presentationType: presentationTypeForItem(item),
     sourceLabel: catalogKind === "methods" ? "Method" : "Scanner",
     summary: item.knowledge?.shortDescription ?? item.thesis ?? `${item.title} catalog item.`,
   };
@@ -1793,17 +1824,41 @@ function catalogOptionValues(values: string[]): string[] {
   return ["all", ...Array.from(new Set(values.filter(Boolean))).sort((left, right) => displayName(left).localeCompare(displayName(right)))];
 }
 
+function catalogPresentationTypeOptions(items: CatalogCardItem[]): string[] {
+  const available = new Set(items.map((item) => item.presentationType).filter(Boolean));
+  const ordered = PRESENTATION_TYPE_ORDER.filter((type) => available.has(type));
+  const extra = Array.from(available).filter((type) => !PRESENTATION_TYPE_ORDER.includes(type)).sort();
+  return ["all", ...ordered, ...extra];
+}
+
+function presentationTypeForItem(item: Pick<CatalogItem | CatalogMethod, "category" | "presentation">): string {
+  const presentation = item.presentation ?? {};
+  const role = String(presentation.chartRole ?? "table_only");
+  if (role === "price_overlay") return "price_overlay";
+  if (role === "oscillator") return "lower_pane_line";
+  if (role === "histogram") return "histogram_pane";
+  if (role === "marker") return "event_marker";
+  if (role === "band") return "band_range";
+  if (role === "table_only") return "table_only";
+  return item.category === "bar" ? "table_only" : "other";
+}
+
+function presentationTypeLabel(value: string): string {
+  return PRESENTATION_TYPE_LABELS[value] ?? displayName(value);
+}
+
 function filterCatalogItems(
   items: CatalogCardItem[],
-  filters: { category: string; group: string; kind: CatalogKindFilter; search: string },
+  filters: { category: string; group: string; kind: CatalogKindFilter; presentationType: string; search: string },
 ): CatalogCardItem[] {
   const queryText = filters.search.trim().toLowerCase();
   return items.filter((item) =>
     (filters.kind === "all" || item.catalogKind === filters.kind) &&
     (filters.category === "all" || item.category === filters.category) &&
     (filters.group === "all" || item.groupLabel === filters.group) &&
+    (filters.presentationType === "all" || item.presentationType === filters.presentationType) &&
     (!queryText ||
-      [item.title, item.id, item.category, item.groupLabel, item.column, item.summary]
+      [item.title, item.id, item.category, item.groupLabel, item.column, item.summary, presentationTypeLabel(item.presentationType)]
         .some((value) => String(value ?? "").toLowerCase().includes(queryText))),
   );
 }
