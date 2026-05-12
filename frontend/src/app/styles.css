@@ -2025,7 +2025,7 @@ button {
 }
 
 .catalog-contract-reference-line line {
-  stroke: var(--foreground);
+  stroke: color-mix(in oklab, var(--foreground) 38%, transparent);
   stroke-dasharray: 4 4;
   stroke-width: 1.6;
 }
@@ -4825,7 +4825,7 @@ button {
   top: 0;
   bottom: 0;
   width: 0;
-  border-left: 2px dotted #050505;
+  border-left: 2px dotted color-mix(in oklab, #050505 38%, transparent);
   pointer-events: none;
 }
 
