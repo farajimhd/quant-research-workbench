@@ -992,7 +992,7 @@ function CatalogTab({
   const [group, setGroup] = useState("all");
   const [presentationType, setPresentationType] = useState("all");
   const [search, setSearch] = useState("");
-  const [catalogWidth, setCatalogWidth] = useState(31);
+  const [catalogWidth, setCatalogWidth] = useState(25);
   const [isResizing, setIsResizing] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
   const allItems = useMemo(() => catalogItems(catalog), [catalog]);
