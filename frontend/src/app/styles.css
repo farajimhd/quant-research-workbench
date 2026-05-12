@@ -4870,7 +4870,7 @@ button {
   position: absolute;
   top: 8px;
   left: 10px;
-  z-index: 4;
+  z-index: 6;
   width: min(260px, calc(100% - 20px));
   overflow: hidden;
   border: 0;
@@ -4880,6 +4880,12 @@ button {
   color: var(--foreground);
   pointer-events: auto;
   backdrop-filter: none;
+}
+
+.chart-context-modal-panel .chart-legend {
+  top: 12px;
+  left: 14px;
+  width: min(260px, calc(100% - 28px));
 }
 
 .chart-legend.collapsed {

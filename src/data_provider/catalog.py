@@ -281,18 +281,18 @@ INTEGER_COLUMNS = {
     "method_best_horizon_minutes",
 }
 MARKET_STRUCTURE_EVENT_LEVELS = {
-    "swing_high_3": ("high", "#B7791F", 12),
-    "swing_low_3": ("low", "#0E7490", 12),
-    "swing_high_5": ("high", "#C2410C", 20),
-    "swing_low_5": ("low", "#2563EB", 20),
-    "higher_high": ("high", "#067647", 10),
-    "lower_low": ("low", "#B42318", 10),
-    "bos_up": ("high", "#1E3A5F", 24),
-    "bos_down": ("low", "#B42318", 24),
+    "swing_high_3": ("high", "#B7791F", 3),
+    "swing_low_3": ("low", "#0E7490", 3),
+    "swing_high_5": ("high", "#C2410C", 5),
+    "swing_low_5": ("low", "#2563EB", 5),
+    "higher_high": ("high", "#067647", 5),
+    "lower_low": ("low", "#B42318", 5),
+    "bos_up": ("high", "#1E3A5F", 10),
+    "bos_down": ("low", "#B42318", 10),
 }
 PRICE_ACTION_EVENT_LEVELS = {
-    "breaks_high20": ("high", "#067647", 16),
-    "breaks_low20": ("low", "#B42318", 16),
+    "breaks_high20": ("high", "#067647", 8),
+    "breaks_low20": ("low", "#B42318", 8),
 }
 PRICE_ACTION_MARKERS = {
     "inside_bar": ("Inside Bar", "circle", "inBar", "#475467"),
@@ -310,6 +310,19 @@ SHOCK_MARKERS = {
     "confirmed_price_volume_shock": ("Confirmed Price Volume Shock", "arrowUp", "aboveBar", "#030213"),
     "price_shock_before_volume_shock": ("Price Before Volume Shock", "square", "belowBar", "#7C3AED"),
 }
+
+
+def event_zone_padding_bps(column: str) -> float:
+    lower = column.lower()
+    if lower.startswith("swing_"):
+        return 2.0
+    if lower in {"higher_high", "lower_low"}:
+        return 3.0
+    if lower.startswith("bos_") or lower.startswith("breaks_"):
+        return 4.0
+    return 6.0
+
+
 DISPLAY_PRESETS: dict[str, dict[str, Any]] = {
     "price_overlay": {
         "label": "Price Overlay",
@@ -711,6 +724,7 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 level_column,
                 color,
                 extend_bars,
+                zone_padding_bps=event_zone_padding_bps(signal_column),
             )
         )
     add(background_state_display_item(by_column, "feature.market_structure.trend_regime", "Trend Regime", "market_structure", "trend_regime"))
@@ -725,6 +739,7 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 level_column,
                 color,
                 extend_bars,
+                zone_padding_bps=event_zone_padding_bps(signal_column),
             )
         )
     for signal_column, (title, shape, position, color) in PRICE_ACTION_MARKERS.items():
@@ -1503,7 +1518,7 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
                 "lowerColumn": level_column,
                 "maxBars": extend_bars,
                 "extendRule": "fixed_bars",
-                "zonePaddingBps": 8,
+                "zonePaddingBps": event_zone_padding_bps(column),
                 "bandFillColor": zone_color,
                 "bandFillOpacity": 0.10,
                 "borderColor": zone_color,

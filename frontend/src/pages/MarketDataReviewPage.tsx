@@ -489,7 +489,7 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
     setChartLoading(true);
     setChartError("");
     api<ChartPayload>(
-      `/api/market-data/chart${query({
+      `/api/market-data/chart${chartRequestQuery({
         processed_root: scope.processed_root,
         start_date: rangeStart,
         end_date: rangeEnd,
@@ -778,7 +778,7 @@ function PreviewRowChartModal({
     setChartLoading(true);
     setChartError("");
     api<ChartPayload>(
-      `/api/market-data/chart${query({
+      `/api/market-data/chart${chartRequestQuery({
         processed_root: scope.processed_root,
         start_date: rangeStart,
         end_date: rangeEnd,
@@ -983,6 +983,16 @@ function formatReferenceTimeLabel(value: string, minuteOfDay?: number) {
     return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
   }
   return value || "selected row";
+}
+
+function chartRequestQuery(params: Record<string, string | number | boolean | null | undefined>) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === null || value === undefined) return;
+    search.set(key, String(value));
+  });
+  const text = search.toString();
+  return text ? `?${text}` : "";
 }
 
 function previewChartDisplayItems(record: RecordRow, catalog: CatalogPayload | null) {

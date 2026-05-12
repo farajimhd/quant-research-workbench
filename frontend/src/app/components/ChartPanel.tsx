@@ -1078,7 +1078,6 @@ function IndicatorFeatureSelect({
     } else {
       nextSelected.add(value);
     }
-    if (!nextSelected.size) return;
     const ordered = usesDisplayItems ? displayItems.map((option) => option.id).filter((option) => nextSelected.has(option)) : visibleOptions.filter((option) => nextSelected.has(option));
     onChange(ordered);
   };
@@ -1591,6 +1590,7 @@ function seriesColorWithOpacity(series: ChartSeries, color: string) {
 }
 
 function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSeriesSettings>) {
+  if (!settings.visible) return [];
   if (series.style !== "histogram") return series.data;
   if (!settings.color || settings.color === series.color) return series.data;
   return series.data.map((point) => ({ ...point, color: settings.color }));

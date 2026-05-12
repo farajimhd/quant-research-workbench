@@ -552,6 +552,8 @@ def resolve_chart_display_items(
             source_columns = {str(column) for column in item.get("sourceColumns", [])}
             if source_columns & selected_column_set:
                 wanted.add(item_id)
+    if selected_display_item_ids is not None and not wanted:
+        return []
     if not wanted:
         wanted.update(
             str(option.get("id"))
