@@ -136,6 +136,16 @@ type PreviewChartTarget = {
   record: RecordRow;
   row: Record<string, unknown>;
 };
+type PreviewBarContext = {
+  barId: string;
+  minuteOfDay?: number;
+  sessionDate: string;
+  ticker: string;
+  time?: number;
+  timeframe: string;
+  utcText: string;
+};
+type ParsedProviderBarId = Pick<PreviewBarContext, "barId" | "ticker" | "time" | "timeframe" | "utcText">;
 
 const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema", "Catalog"];
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
@@ -870,16 +880,17 @@ function PreviewRowChartModal({
 
 function previewChartInitialState(target: PreviewChartTarget, records: RecordRow[], catalog: CatalogPayload | null) {
   const row = target.row;
-  const timeframe = rowStringValue(row, "timeframe") || target.record.timeframe || "1m";
-  const ticker = rowStringValue(row, "ticker").toUpperCase();
-  const sessionDate = rowStringValue(row, "session_date") || target.record.session_date;
+  const barContext = previewBarContext(row, target.record);
+  const timeframe = barContext.timeframe;
+  const ticker = barContext.ticker.toUpperCase();
+  const sessionDate = barContext.sessionDate;
   const range = surroundingChartRange(records, timeframe, sessionDate);
   const visibleColumns = previewChartDisplayItems(target.record, catalog);
   const visibleSupervisionGroups = previewSupervisionGroups(target.record);
   return {
     featureGroups: previewFeatureGroups(target.record, catalog, visibleColumns),
     range,
-    reference: previewChartReference(row, target.record),
+    reference: previewChartReference(row, target.record, barContext),
     ticker,
     timeframe,
     visibleColumns,
@@ -888,7 +899,8 @@ function previewChartInitialState(target: PreviewChartTarget, records: RecordRow
 }
 
 function rowHasChartContext(row: Record<string, unknown>, record: RecordRow) {
-  return Boolean(rowStringValue(row, "ticker") && (rowStringValue(row, "session_date") || record.session_date));
+  const context = previewBarContext(row, record);
+  return Boolean(context.ticker && context.sessionDate && context.timeframe);
 }
 
 function rowStringValue(row: Record<string, unknown>, column: string) {
@@ -901,13 +913,53 @@ function rowNumberValue(row: Record<string, unknown>, column: string) {
   return Number.isFinite(value) ? value : undefined;
 }
 
-function previewChartReference(row: Record<string, unknown>, record: RecordRow): ChartReference {
-  const sessionDate = rowStringValue(row, "session_date") || record.session_date;
+function previewBarContext(row: Record<string, unknown>, record: RecordRow): PreviewBarContext {
+  const parsed = parseProviderBarId(rowStringValue(row, "bar_id"));
+  const timeframe = rowStringValue(row, "timeframe") || parsed?.timeframe || record.timeframe || "1m";
+  const ticker = rowStringValue(row, "ticker") || parsed?.ticker || "";
+  const sessionDate = rowStringValue(row, "session_date") || record.session_date || "";
   const minuteOfDay = rowNumberValue(row, "minute_of_day");
-  const timestamp = rowUtcTimestamp(row);
-  const marketTime = rowStringValue(row, "bar_time_market") || rowStringValue(row, "bar_time_utc") || sessionDate;
+  const rowTimestamp = rowUtcTimestamp(row);
   return {
-    label: `${rowStringValue(row, "ticker").toUpperCase() || "Row"} ${formatReferenceTimeLabel(marketTime, minuteOfDay)}`,
+    barId: rowStringValue(row, "bar_id") || parsed?.barId || "",
+    minuteOfDay,
+    sessionDate,
+    ticker,
+    time: rowTimestamp ?? parsed?.time,
+    timeframe,
+    utcText: rowStringValue(row, "bar_time_utc") || parsed?.utcText || "",
+  };
+}
+
+function parseProviderBarId(barId: string): ParsedProviderBarId | null {
+  const parts = barId.split("|");
+  if (parts.length < 3) return null;
+  const [timeframe, ticker, rawUtc] = parts;
+  const utcText = normalizeUtcDateText(rawUtc);
+  const parsed = Date.parse(utcText);
+  return {
+    barId,
+    ticker: ticker || "",
+    time: Number.isFinite(parsed) ? Math.floor(parsed / 1000) : undefined,
+    timeframe: timeframe || "1m",
+    utcText,
+  };
+}
+
+function normalizeUtcDateText(value: string) {
+  let normalized = value.trim();
+  normalized = normalized.replace(/\.(\d{3})\d+/, ".$1");
+  normalized = normalized.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  return normalized || value;
+}
+
+function previewChartReference(row: Record<string, unknown>, record: RecordRow, context = previewBarContext(row, record)): ChartReference {
+  const sessionDate = context.sessionDate;
+  const minuteOfDay = context.minuteOfDay;
+  const timestamp = context.time;
+  const marketTime = rowStringValue(row, "bar_time_market") || context.utcText || sessionDate;
+  return {
+    label: `${context.ticker.toUpperCase() || "Row"} ${formatReferenceTimeLabel(marketTime, minuteOfDay)}`,
     minuteOfDay,
     sessionDate,
     time: timestamp,
@@ -917,7 +969,8 @@ function previewChartReference(row: Record<string, unknown>, record: RecordRow):
 function rowUtcTimestamp(row: Record<string, unknown>) {
   const utcValue = rowStringValue(row, "bar_time_utc");
   if (!utcValue) return undefined;
-  const normalized = /z$|[+-]\d\d:?\d\d$/i.test(utcValue) ? utcValue : `${utcValue}Z`;
+  const utcText = normalizeUtcDateText(utcValue);
+  const normalized = /z$|[+-]\d\d:?\d\d$/i.test(utcText) ? utcText : `${utcText}Z`;
   const timestamp = Date.parse(normalized);
   return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : undefined;
 }
