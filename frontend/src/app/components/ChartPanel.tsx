@@ -1982,6 +1982,7 @@ function drawPriceZones(
     node.style.background = rgbaFromHex(fillColor, fillOpacity);
     const label = document.createElement("span");
     label.textContent = zone.label;
+    label.style.color = fillColor;
     node.appendChild(label);
     layer.appendChild(node);
   });
