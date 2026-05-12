@@ -234,7 +234,10 @@ const PRESENTATION_HELP = {
   bandFillColor: "Controls the translucent fill used inside a band. This is separate from the band boundary stroke color.",
   bandFillOpacity: "Controls how visible the band shade is. Lower values keep candles readable; higher values make the band easier to scan.",
   borderOpacity: "Controls how strong the anchored-zone edge is. Keep this low so the boundary clarifies the zone without competing with candles.",
-  zonePaddingBps: "Adds a small vertical thickness around a single price level for event-anchored zones. This prevents a higher-high or lower-low event from becoming an invisible one-pixel line.",
+  zoneHeightMode: "Chooses whether an anchored item uses its true price range or a fixed-pixel level band. Swing lows/highs and similar point events should use fixed pixels; FVGs and order blocks should use price range.",
+  minPixelHeight: "Minimum visual height for fixed-pixel anchored bands. Use small values for swing and break events so they read like thick translucent levels.",
+  maxPixelHeight: "Maximum visual height for fixed-pixel anchored bands. This keeps point events from becoming visually oversized when the chart scale changes.",
+  zonePaddingBps: "Adds price-based vertical padding for price-range zones. Fixed-pixel point events ignore this and use their semantic pixel height instead.",
   precision: "Controls how many decimal places are shown in legends, tooltips, and readouts for numeric values.",
   markerShape: "Chooses the symbol used when the item renders as markers: circle, arrowUp, arrowDown, or square.",
   markerPosition: "Chooses where marker symbols sit relative to the candle: aboveBar, belowBar, or inBar.",
@@ -1451,7 +1454,15 @@ function CatalogTab({
                         <div className="catalog-form-grid compact">
                           <CatalogSelect help="Controls how the event-created zone extends after the source bar." label="Extend rule" options={catalog?.presentationOptions.extendRules ?? []} value={String(activePresentation.extendRule ?? "fixed_bars")} onChange={(value) => updateActivePresentation("extendRule", value)} />
                           <CatalogNumberField help="Maximum number of bars the anchored zone may extend." label="Max bars" max={240} min={1} value={Number(activePresentation.maxBars ?? activePresentation.extendBars ?? 24)} onChange={(value) => updateActivePresentation("maxBars", value)} />
-                          <CatalogNumberField help={PRESENTATION_HELP.zonePaddingBps} label="Padding bps" max={100} min={0} value={Number(activePresentation.zonePaddingBps ?? 0)} onChange={(value) => updateActivePresentation("zonePaddingBps", value)} />
+                          <CatalogSelect help={PRESENTATION_HELP.zoneHeightMode} label="Height mode" options={catalog?.presentationOptions.zoneHeightModes ?? ["price_range", "fixed_px"]} value={String(activePresentation.zoneHeightMode ?? "price_range")} onChange={(value) => updateActivePresentation("zoneHeightMode", value)} />
+                          {String(activePresentation.zoneHeightMode ?? "price_range") === "fixed_px" ? (
+                            <>
+                              <CatalogNumberField help={PRESENTATION_HELP.minPixelHeight} label="Min px" max={32} min={0} value={Number(activePresentation.minPixelHeight ?? 3)} onChange={(value) => updateActivePresentation("minPixelHeight", value)} />
+                              <CatalogNumberField help={PRESENTATION_HELP.maxPixelHeight} label="Max px" max={96} min={0} value={Number(activePresentation.maxPixelHeight ?? 4)} onChange={(value) => updateActivePresentation("maxPixelHeight", value)} />
+                            </>
+                          ) : (
+                            <CatalogNumberField help={PRESENTATION_HELP.zonePaddingBps} label="Padding bps" max={100} min={0} value={Number(activePresentation.zonePaddingBps ?? 0)} onChange={(value) => updateActivePresentation("zonePaddingBps", value)} />
+                          )}
                           <CatalogSelect help="Boundary stroke used around the zone." label="Border style" options={catalog?.presentationOptions.borderStyles ?? []} value={String(activePresentation.borderStyle ?? "solid")} onChange={(value) => updateActivePresentation("borderStyle", value)} />
                           <CatalogNumberField help="Zone boundary width in pixels." label="Border width" max={6} min={1} value={Number(activePresentation.borderWidth ?? 1)} onChange={(value) => updateActivePresentation("borderWidth", value)} />
                           <CatalogNumberField help={PRESENTATION_HELP.borderOpacity} label="Border opacity" max={0.35} min={0} value={Number(activePresentation.borderOpacity ?? 0.14)} onChange={(value) => updateActivePresentation("borderOpacity", value)} />
@@ -2085,6 +2096,7 @@ function CatalogPresentationChartPreview({
   const bandFillOpacity = boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.35, 0.08);
   const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, bandFillOpacity);
   const bandBorder = colorWithOpacity(presentation.borderColor ?? presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.borderOpacity, 0, 0.35, Math.max(bandFillOpacity * 1.8, 0.12)));
+  const fixedZonePreviewHeight = boundedPresentationNumber(presentation.maxPixelHeight ?? presentation.minPixelHeight, 2, 18, 4);
   const dashArray = svgDashArray(lineStyle, lineWidth);
   const displayNameForItem = itemTitle || "Selected item";
   const isBandLike = role === "band" || role === "price_zone" || role === "continuous_band" || role === "anchored_zone";
@@ -2126,9 +2138,15 @@ function CatalogPresentationChartPreview({
         ) : null}
         {isBandLike ? (
           <g className="catalog-contract-selected-layer">
-            <polygon fill={bandFill} points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60 350,100 322,106 290,102 258,109 226,112 194,106 162,114 130,121 98,112 66,106 34,119" />
-            <polyline fill="none" points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60" stroke={bandBorder} strokeDasharray={dashArray} strokeWidth={lineWidth} />
-            <polyline fill="none" points="34,119 66,106 98,112 130,121 162,114 194,106 226,112 258,109 290,102 322,106 350,100" stroke={bandBorder} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+            {role === "anchored_zone" && String(presentation.zoneHeightMode ?? "price_range") === "fixed_px" ? (
+              <rect fill={bandFill} height={fixedZonePreviewHeight} stroke={bandBorder} strokeWidth={lineWidth} width="316" x="34" y={88 - fixedZonePreviewHeight / 2} />
+            ) : (
+              <>
+                <polygon fill={bandFill} points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60 350,100 322,106 290,102 258,109 226,112 194,106 162,114 130,121 98,112 66,106 34,119" />
+                <polyline fill="none" points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60" stroke={bandBorder} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+                <polyline fill="none" points="34,119 66,106 98,112 130,121 162,114 194,106 226,112 258,109 290,102 322,106 350,100" stroke={bandBorder} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+              </>
+            )}
           </g>
         ) : null}
         {isDataOnlyRole(role) ? null : (
@@ -2258,6 +2276,7 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
   const bandFillOpacity = boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.35, 0.08);
   const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, bandFillOpacity);
   const bandBorder = colorWithOpacity(presentation.borderColor ?? presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.borderOpacity, 0, 0.35, Math.max(bandFillOpacity * 1.8, 0.12)));
+  const fixedZonePreviewHeight = boundedPresentationNumber(presentation.maxPixelHeight ?? presentation.minPixelHeight, 2, 18, 4);
   const dashArray = svgDashArray(lineStyle, lineWidth);
   const parts = role === "composite" && Array.isArray(presentation.parts) ? presentation.parts.filter((part): part is Record<string, unknown> => Boolean(part && typeof part === "object")) : [];
   const compositeHasLowerPane = role === "composite" && parts.some((part) => {
@@ -2323,10 +2342,14 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
   const fallbackZoneX = referenceCandle ? (referenceX ?? xForTime(referenceCandle.time)) : null;
   const fallbackZoneRect = isZoneRole && !visibleZones.length && referenceCandle && fallbackZoneX !== null
     ? {
-      height: Math.max(3, Math.abs(priceScale(referenceCandle.low) - priceScale(referenceCandle.high))),
+      height: role === "anchored_zone" && String(presentation.zoneHeightMode ?? "price_range") === "fixed_px"
+        ? fixedZonePreviewHeight
+        : Math.max(3, Math.abs(priceScale(referenceCandle.low) - priceScale(referenceCandle.high))),
       width: Math.max(26, Math.min(92, 356 - fallbackZoneX)),
       x: fallbackZoneX,
-      y: Math.min(priceScale(referenceCandle.high), priceScale(referenceCandle.low)),
+      y: role === "anchored_zone" && String(presentation.zoneHeightMode ?? "price_range") === "fixed_px"
+        ? priceScale((referenceCandle.high + referenceCandle.low) / 2) - fixedZonePreviewHeight / 2
+        : Math.min(priceScale(referenceCandle.high), priceScale(referenceCandle.low)),
     }
     : null;
   const seriesPoints = (series: (typeof visibleDataSeries)[number], scale: (value: number) => number) =>
@@ -2375,17 +2398,35 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
         const right = xForTime(zone.end);
         const top = priceScale(zone.upper);
         const bottom = priceScale(zone.lower);
+        const center = (top + bottom) / 2;
+        const minPixelHeight = boundedPresentationNumber(zone.minPixelHeight, 0, 32, 0);
+        const maxPixelHeight = boundedPresentationNumber(zone.maxPixelHeight, 0, 96, 0);
+        let zoneHeight = Math.max(2, Math.abs(bottom - top));
+        let zoneY = Math.min(top, bottom);
+        if (zone.zoneHeightMode === "fixed_px") {
+          zoneHeight = Math.max(2, minPixelHeight, maxPixelHeight || minPixelHeight || 3);
+          zoneY = center - zoneHeight / 2;
+        } else {
+          if (minPixelHeight > 0 && zoneHeight < minPixelHeight) {
+            zoneHeight = minPixelHeight;
+            zoneY = center - zoneHeight / 2;
+          }
+          if (maxPixelHeight > 0 && zoneHeight > maxPixelHeight) {
+            zoneHeight = maxPixelHeight;
+            zoneY = center - zoneHeight / 2;
+          }
+        }
         return (
           <rect
             className="catalog-contract-real-zone"
             fill={colorWithOpacity(zone.fillColor || zone.color, Math.min(0.35, Math.max(0.02, zone.fillOpacity ?? 0.08)))}
-            height={Math.max(2, Math.abs(bottom - top))}
+            height={zoneHeight}
             key={`zone:${index}`}
             stroke={colorWithOpacity(zone.borderColor || zone.fillColor || zone.color, Math.min(0.35, Math.max(0, zone.borderOpacity ?? Math.max((zone.fillOpacity ?? 0.08) * 1.8, 0.12))))}
             strokeWidth={Math.max(0, Math.min(3, Math.round(zone.borderWidth ?? 1)))}
             width={Math.max(2, right - left)}
             x={left}
-            y={Math.min(top, bottom)}
+            y={zoneY}
           />
         );
       })}

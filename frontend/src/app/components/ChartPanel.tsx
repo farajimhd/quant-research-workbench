@@ -59,8 +59,11 @@ type PriceZone = {
   fillOpacity?: number;
   label: string;
   lower: number;
+  maxPixelHeight?: number;
+  minPixelHeight?: number;
   start: number;
   upper: number;
+  zoneHeightMode?: string;
 };
 export type ChartReference = {
   label?: string;
@@ -1963,8 +1966,24 @@ function drawPriceZones(
     if (upper === null || lower === null) return;
     const left = Math.min(coordinates.start, coordinates.end);
     const width = Math.abs(coordinates.end - coordinates.start);
-    const top = Math.min(upper, lower);
-    const height = Math.max(2, Math.abs(lower - upper));
+    let top = Math.min(upper, lower);
+    let height = Math.max(2, Math.abs(lower - upper));
+    const center = (upper + lower) / 2;
+    const minPixelHeight = clampNumber(zone.minPixelHeight, 0, 32, 0);
+    const maxPixelHeight = clampNumber(zone.maxPixelHeight, 0, 96, 0);
+    if (zone.zoneHeightMode === "fixed_px") {
+      height = Math.max(2, minPixelHeight, maxPixelHeight || minPixelHeight || 3);
+      top = center - height / 2;
+    } else {
+      if (minPixelHeight > 0 && height < minPixelHeight) {
+        height = minPixelHeight;
+        top = center - height / 2;
+      }
+      if (maxPixelHeight > 0 && height > maxPixelHeight) {
+        height = maxPixelHeight;
+        top = center - height / 2;
+      }
+    }
     if (width < 1 || height < 1) return;
     const node = document.createElement("div");
     node.className = "price-zone";
@@ -1983,6 +2002,7 @@ function drawPriceZones(
     const label = document.createElement("span");
     label.textContent = zone.label;
     label.style.color = fillColor;
+    label.style.opacity = "1";
     node.appendChild(label);
     layer.appendChild(node);
   });

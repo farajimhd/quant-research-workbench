@@ -285,14 +285,14 @@ MARKET_STRUCTURE_EVENT_LEVELS = {
     "swing_low_3": ("low", "#0E7490", 3),
     "swing_high_5": ("high", "#C2410C", 5),
     "swing_low_5": ("low", "#2563EB", 5),
-    "higher_high": ("high", "#067647", 5),
-    "lower_low": ("low", "#B42318", 5),
-    "bos_up": ("high", "#1E3A5F", 10),
-    "bos_down": ("low", "#B42318", 10),
+    "higher_high": ("high", "#067647", 4),
+    "lower_low": ("low", "#B42318", 4),
+    "bos_up": ("high", "#1E3A5F", 8),
+    "bos_down": ("low", "#B42318", 8),
 }
 PRICE_ACTION_EVENT_LEVELS = {
-    "breaks_high20": ("high", "#067647", 8),
-    "breaks_low20": ("low", "#B42318", 8),
+    "breaks_high20": ("high", "#067647", 6),
+    "breaks_low20": ("low", "#B42318", 6),
 }
 PRICE_ACTION_MARKERS = {
     "inside_bar": ("Inside Bar", "circle", "inBar", "#475467"),
@@ -315,12 +315,60 @@ SHOCK_MARKERS = {
 def event_zone_padding_bps(column: str) -> float:
     lower = column.lower()
     if lower.startswith("swing_"):
-        return 2.0
+        return 0.0
     if lower in {"higher_high", "lower_low"}:
-        return 3.0
+        return 0.0
     if lower.startswith("bos_") or lower.startswith("breaks_"):
-        return 4.0
+        return 0.0
     return 6.0
+
+
+def event_zone_semantic_style(column: str) -> dict[str, Any]:
+    lower = column.lower()
+    if lower.startswith("swing_"):
+        return {
+            "zoneHeightMode": "fixed_px",
+            "minPixelHeight": 3,
+            "maxPixelHeight": 4,
+            "bandFillOpacity": 0.10,
+            "borderWidth": 2,
+            "borderOpacity": 0.22,
+        }
+    if lower in {"higher_high", "lower_low"}:
+        return {
+            "zoneHeightMode": "fixed_px",
+            "minPixelHeight": 3,
+            "maxPixelHeight": 4,
+            "bandFillOpacity": 0.08,
+            "borderWidth": 1,
+            "borderOpacity": 0.20,
+        }
+    if lower.startswith("bos_"):
+        return {
+            "zoneHeightMode": "fixed_px",
+            "minPixelHeight": 4,
+            "maxPixelHeight": 5,
+            "bandFillOpacity": 0.08,
+            "borderWidth": 1,
+            "borderOpacity": 0.20,
+        }
+    if lower.startswith("breaks_"):
+        return {
+            "zoneHeightMode": "fixed_px",
+            "minPixelHeight": 3,
+            "maxPixelHeight": 4,
+            "bandFillOpacity": 0.07,
+            "borderWidth": 1,
+            "borderOpacity": 0.18,
+        }
+    return {
+        "zoneHeightMode": "fixed_px",
+        "minPixelHeight": 3,
+        "maxPixelHeight": 5,
+        "bandFillOpacity": 0.08,
+        "borderWidth": 1,
+        "borderOpacity": 0.18,
+    }
 
 
 DISPLAY_PRESETS: dict[str, dict[str, Any]] = {
@@ -375,7 +423,7 @@ DISPLAY_PRESETS: dict[str, dict[str, Any]] = {
         "dataShapes": ["anchored_zone"],
         "target": "price",
         "lockedFields": ["pane"],
-        "styleFields": ["color", "bandFillColor", "bandFillOpacity", "borderStyle", "borderWidth", "borderOpacity", "extendRule", "maxBars", "zonePaddingBps", "stopOnMitigation"],
+        "styleFields": ["color", "bandFillColor", "bandFillOpacity", "borderStyle", "borderWidth", "borderOpacity", "extendRule", "maxBars", "zoneHeightMode", "minPixelHeight", "maxPixelHeight", "zonePaddingBps", "stopOnMitigation"],
         "description": "Event-created price/time zone such as an FVG or order-block proxy.",
     },
     "background_state": {
@@ -538,6 +586,7 @@ def base_provider_catalog() -> dict[str, Any]:
             "lineStyles": ["solid", "dashed", "dotted"],
             "borderStyles": ["solid", "dashed", "dotted"],
             "extendRules": ["fixed_bars", "until_mitigated", "session_end"],
+            "zoneHeightModes": ["price_range", "fixed_px"],
             "labelModes": ["none", "short", "value", "full"],
             "markerShapes": ["circle", "arrowUp", "arrowDown", "square"],
             "markerPositions": ["aboveBar", "belowBar", "inBar"],
@@ -709,10 +758,10 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             detailed="Session Range groups the current session anchor and running extremes into one price-structure display.",
         )
     )
-    add(anchored_zone_display_item(by_column, "feature.fvg_bullish", "Bullish FVG", "fvg", "bullish_fvg", "fvg_high", "fvg_low", "#067647", 24))
-    add(anchored_zone_display_item(by_column, "feature.fvg_bearish", "Bearish FVG", "fvg", "bearish_fvg", "fvg_high", "fvg_low", "#B42318", 24))
-    add(anchored_zone_display_item(by_column, "feature.order_block_bullish", "Bullish Order Block", "order_blocks", "bullish_displacement", "bullish_order_block_high", "bullish_order_block_low", "#0E7490", 36))
-    add(anchored_zone_display_item(by_column, "feature.order_block_bearish", "Bearish Order Block", "order_blocks", "bearish_displacement", "bearish_order_block_high", "bearish_order_block_low", "#C2410C", 36))
+    add(anchored_zone_display_item(by_column, "feature.fvg_bullish", "Bullish FVG", "fvg", "bullish_fvg", "fvg_high", "fvg_low", "#067647", 18))
+    add(anchored_zone_display_item(by_column, "feature.fvg_bearish", "Bearish FVG", "fvg", "bearish_fvg", "fvg_high", "fvg_low", "#B42318", 18))
+    add(anchored_zone_display_item(by_column, "feature.order_block_bullish", "Bullish Order Block", "order_blocks", "bullish_displacement", "bullish_order_block_high", "bullish_order_block_low", "#0E7490", 24))
+    add(anchored_zone_display_item(by_column, "feature.order_block_bearish", "Bearish Order Block", "order_blocks", "bearish_displacement", "bearish_order_block_high", "bearish_order_block_low", "#C2410C", 24))
     for signal_column, (level_column, color, extend_bars) in MARKET_STRUCTURE_EVENT_LEVELS.items():
         add(
             anchored_event_level_display_item(
@@ -943,6 +992,12 @@ def anchored_zone_display_item(
 ) -> dict[str, Any] | None:
     source_columns = [signal_column, upper_column, lower_column]
     direction = "bullish" if "bullish" in item_id else "bearish" if "bearish" in item_id else "neutral"
+    semantic_style = {
+        "bandFillOpacity": 0.07 if group == "fvg" else 0.06,
+        "borderWidth": 1,
+        "borderOpacity": 0.16 if group == "fvg" else 0.14,
+        "zoneHeightMode": "price_range",
+    }
     return display_item_contract(
         by_column,
         item_id=item_id,
@@ -959,11 +1014,11 @@ def anchored_zone_display_item(
             "legend": True,
             "color": color,
             "bandFillColor": color,
-            "bandFillOpacity": 0.08,
+            "bandFillOpacity": semantic_style["bandFillOpacity"],
             "borderColor": color,
             "borderStyle": "solid",
-            "borderWidth": 1,
-            "borderOpacity": 0.18,
+            "borderWidth": semantic_style["borderWidth"],
+            "borderOpacity": semantic_style["borderOpacity"],
             "direction": direction,
             "signalColumn": signal_column,
             "upperColumn": upper_column,
@@ -971,6 +1026,7 @@ def anchored_zone_display_item(
             "extendBars": extend_bars,
             "maxBars": extend_bars,
             "extendRule": "fixed_bars",
+            "zoneHeightMode": semantic_style["zoneHeightMode"],
             "zonePaddingBps": 0,
             "stopOnMitigation": False,
             "valueFormat": "price",
@@ -994,6 +1050,7 @@ def anchored_event_level_display_item(
     *,
     zone_padding_bps: float = 8.0,
 ) -> dict[str, Any] | None:
+    semantic_style = event_zone_semantic_style(signal_column)
     return display_item_contract(
         by_column,
         item_id=item_id,
@@ -1010,16 +1067,19 @@ def anchored_event_level_display_item(
             "legend": True,
             "color": color,
             "bandFillColor": color,
-            "bandFillOpacity": 0.06,
+            "bandFillOpacity": semantic_style["bandFillOpacity"],
             "borderColor": color,
             "borderStyle": "solid",
-            "borderWidth": 1,
-            "borderOpacity": 0.14,
+            "borderWidth": semantic_style["borderWidth"],
+            "borderOpacity": semantic_style["borderOpacity"],
             "signalColumn": signal_column,
             "upperColumn": level_column,
             "lowerColumn": level_column,
             "maxBars": extend_bars,
             "extendRule": "fixed_bars",
+            "zoneHeightMode": semantic_style["zoneHeightMode"],
+            "minPixelHeight": semantic_style["minPixelHeight"],
+            "maxPixelHeight": semantic_style["maxPixelHeight"],
             "zonePaddingBps": zone_padding_bps,
             "stopOnMitigation": False,
             "valueFormat": "price",
@@ -1513,6 +1573,7 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
             presentation.update({"markerShape": "circle", "markerPosition": "belowBar", "color": "#067647"})
     if role == "anchored_zone":
         level_column, zone_color, extend_bars = {**MARKET_STRUCTURE_EVENT_LEVELS, **PRICE_ACTION_EVENT_LEVELS}.get(lower, ("close", color_for_column(column), 12))
+        semantic_style = event_zone_semantic_style(column)
         presentation.update(
             {
                 "signalColumn": column,
@@ -1520,13 +1581,16 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
                 "lowerColumn": level_column,
                 "maxBars": extend_bars,
                 "extendRule": "fixed_bars",
+                "zoneHeightMode": semantic_style["zoneHeightMode"],
+                "minPixelHeight": semantic_style["minPixelHeight"],
+                "maxPixelHeight": semantic_style["maxPixelHeight"],
                 "zonePaddingBps": event_zone_padding_bps(column),
                 "bandFillColor": zone_color,
-                "bandFillOpacity": 0.06,
+                "bandFillOpacity": semantic_style["bandFillOpacity"],
                 "borderColor": zone_color,
                 "borderStyle": "solid",
-                "borderWidth": 1,
-                "borderOpacity": 0.14,
+                "borderWidth": semantic_style["borderWidth"],
+                "borderOpacity": semantic_style["borderOpacity"],
                 "color": zone_color,
             }
         )

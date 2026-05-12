@@ -679,8 +679,9 @@ def display_price_zones(rows: list[dict[str, Any]], timeframe: str, items: list[
                 end += candle_duration
             high = max(upper, lower)
             low = min(upper, lower)
+            zone_height_mode = str(presentation.get("zoneHeightMode") or "price_range")
             padding_bps = bounded_float(presentation.get("zonePaddingBps"), default=0.0, lower=0.0, upper=100.0)
-            if padding_bps > 0:
+            if zone_height_mode != "fixed_px" and padding_bps > 0:
                 midpoint = (high + low) / 2.0
                 padding = max(abs(midpoint) * padding_bps / 10_000.0, 0.000001)
                 high += padding
@@ -702,6 +703,9 @@ def display_price_zones(rows: list[dict[str, Any]], timeframe: str, items: list[
                     "fillColor": fill_color,
                     "fillOpacity": fill_opacity,
                     "label": str(item.get("title") or signal_column),
+                    "maxPixelHeight": bounded_float(presentation.get("maxPixelHeight"), default=0.0, lower=0.0, upper=96.0),
+                    "minPixelHeight": bounded_float(presentation.get("minPixelHeight"), default=0.0, lower=0.0, upper=32.0),
+                    "zoneHeightMode": zone_height_mode,
                 }
             )
     return zones
