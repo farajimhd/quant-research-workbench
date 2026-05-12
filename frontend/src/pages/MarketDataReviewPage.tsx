@@ -5,7 +5,7 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 
 import { api, query } from "../api/client";
-import { ChartPanel, type ChartCatalogItem, type ChartLabelOption, type ChartPayload, type ChartReference } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartLabelOption, type ChartPayload, type ChartReference } from "../app/components/ChartPanel";
 import { DataTable, type BackendTableQuery } from "../app/components/DataTable";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
@@ -68,7 +68,7 @@ type CatalogKnowledge = {
   caveats: string[];
   equations: Array<{ markdown: string; title: string; variables: Record<string, string> }>;
 };
-type CatalogPresentation = Record<string, string | number | boolean | undefined>;
+type CatalogPresentation = Record<string, unknown>;
 type CatalogItem = ChartCatalogItem & {
   dtype?: string;
   groups?: string[];
@@ -86,16 +86,22 @@ type CatalogMethod = {
   presentation?: CatalogPresentation;
   thesis?: string;
 };
+type CatalogDisplayItem = ChartDisplayItem & {
+  groups?: string[];
+  knowledge?: CatalogKnowledge;
+  presentation?: CatalogPresentation;
+};
 type CatalogPayload = {
   catalogVersion: number;
   columns: CatalogItem[];
+  displayItems: CatalogDisplayItem[];
   presentationOptions: Record<string, string[]>;
   scanners: CatalogMethod[];
   supervisionMethods: CatalogMethod[];
 };
-type CatalogKindFilter = "all" | "columns" | "methods" | "scanners";
+type CatalogKindFilter = "all" | "display" | "columns" | "methods" | "scanners";
 type CatalogCardItem = CatalogItem & {
-  catalogKind: "columns" | "methods" | "scanners";
+  catalogKind: "display" | "columns" | "methods" | "scanners";
   groupLabel: string;
   presentationType: string;
   sourceLabel: string;
@@ -108,13 +114,14 @@ type PreviewChartTarget = {
 
 const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema", "Catalog"];
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
-const DEFAULT_CHART_COLUMNS = ["vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"];
+const DEFAULT_CHART_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
 const PREVIEW_PAGE_SIZE = 1000;
-const PRESENTATION_TYPE_ORDER = ["price_overlay", "lower_pane_line", "histogram_pane", "event_marker", "band_range", "table_only", "other"];
+const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "band_range", "table_only", "other"];
 const PRESENTATION_TYPE_LABELS: Record<string, string> = {
   all: "All",
   band_range: "Band / range",
+  composite_group: "Grouped display",
   event_marker: "Event marker",
   histogram_pane: "Histogram pane",
   lower_pane_line: "Lower-pane line",
@@ -372,7 +379,7 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
   const [timeframe, setTimeframe] = useState(timeframes[0] ?? "1m");
   const [ticker, setTicker] = useState("");
   const [featureGroups, setFeatureGroups] = useState(DEFAULT_CHART_FEATURE_GROUPS);
-  const [visibleColumns, setVisibleColumns] = useState(DEFAULT_CHART_COLUMNS);
+  const [visibleColumns, setVisibleColumns] = useState(DEFAULT_CHART_DISPLAY_ITEMS);
   const [visibleSupervisionGroups, setVisibleSupervisionGroups] = useState<string[]>([]);
   const [payload, setPayload] = useState<ChartPayload | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
@@ -391,8 +398,8 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
   }, []);
 
   useEffect(() => {
-    const defaults = defaultCatalogChartColumns(catalog);
-    if (!defaults.length || !sameList(visibleColumns, DEFAULT_CHART_COLUMNS)) return;
+    const defaults = defaultCatalogDisplayItems(catalog);
+    if (!defaults.length || !sameList(visibleColumns, DEFAULT_CHART_DISPLAY_ITEMS)) return;
     setVisibleColumns(defaults);
   }, [catalog, visibleColumns]);
 
@@ -437,7 +444,7 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
         timeframe,
         ticker: ticker.trim().toUpperCase(),
         feature_groups: featureGroups.join(","),
-        columns: visibleColumns.join(","),
+        display_items: visibleColumns.join(","),
         supervision_groups: visibleSupervisionGroups.join(","),
         min_confidence: DEFAULT_CHART_MIN_CONFIDENCE
       })}`
@@ -470,7 +477,8 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
     }
   }
 
-  const indicatorOptions = payload?.options?.standard_indicators ?? DEFAULT_CHART_COLUMNS;
+  const displayItemOptions = payload?.options?.display_items ?? defaultCatalogDisplayItemOptions(catalog);
+  const indicatorOptions = payload?.options?.standard_indicators ?? DEFAULT_CHART_DISPLAY_ITEMS;
   const featureOptions = payload?.options?.feature_columns ?? [];
   const labelOptions = chartLabelOptions(catalog, payload?.options?.supervision_groups ?? []);
 
@@ -479,6 +487,7 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
     <section>
       <ChartPanel
         catalogColumns={catalog?.columns ?? []}
+        displayItemOptions={displayItemOptions}
         emptyMessage="No chart data for the selected ticker/date range/timeframe."
         errorMessage={chartError}
         featureOptions={featureOptions}
@@ -724,7 +733,7 @@ function PreviewRowChartModal({
         timeframe,
         ticker,
         feature_groups: featureGroups.join(","),
-        columns: visibleColumns.join(","),
+        display_items: visibleColumns.join(","),
         supervision_groups: visibleSupervisionGroups.join(","),
         min_confidence: DEFAULT_CHART_MIN_CONFIDENCE,
       })}`
@@ -761,6 +770,7 @@ function PreviewRowChartModal({
     }
   }
 
+  const displayItemOptions = payload?.options?.display_items ?? defaultCatalogDisplayItemOptions(catalog);
   const indicatorOptions = payload?.options?.standard_indicators ?? initial.visibleColumns;
   const featureOptions = payload?.options?.feature_columns ?? [];
   const labelOptions = chartLabelOptions(catalog, payload?.options?.supervision_groups ?? []);
@@ -785,6 +795,7 @@ function PreviewRowChartModal({
       {ticker ? (
         <ChartPanel
           catalogColumns={catalog?.columns ?? []}
+          displayItemOptions={displayItemOptions}
           emptyMessage="No chart data around the selected row."
           errorMessage={chartError}
           featureOptions={featureOptions}
@@ -821,7 +832,7 @@ function previewChartInitialState(target: PreviewChartTarget, records: RecordRow
   const ticker = rowStringValue(row, "ticker").toUpperCase();
   const sessionDate = rowStringValue(row, "session_date") || target.record.session_date;
   const range = surroundingChartRange(records, timeframe, sessionDate);
-  const visibleColumns = previewChartColumns(target.record, catalog);
+  const visibleColumns = previewChartDisplayItems(target.record, catalog);
   const visibleSupervisionGroups = previewSupervisionGroups(target.record);
   return {
     featureGroups: previewFeatureGroups(target.record, catalog, visibleColumns),
@@ -879,28 +890,30 @@ function formatReferenceTimeLabel(value: string, minuteOfDay?: number) {
   return value || "selected row";
 }
 
-function previewChartColumns(record: RecordRow, catalog: CatalogPayload | null) {
-  const catalogByColumn = new Map((catalog?.columns ?? []).map((item) => [item.column ?? item.id, item]));
-  const chartable = record.columns.filter((column) => {
-    const item = catalogByColumn.get(column);
-    const role = String(item?.presentation?.chartRole ?? "");
-    return item?.presentation?.selectable !== false && role && role !== "table_only" && role !== "marker";
+function previewChartDisplayItems(record: RecordRow, catalog: CatalogPayload | null) {
+  const recordFeatureGroup = artifactFeatureGroup(record.group);
+  const matching = (catalog?.displayItems ?? []).filter((item) => {
+    const featureGroups = item.featureGroups ?? [];
+    const sourceColumns = item.sourceColumns ?? [];
+    return (
+      item.presentation?.selectable !== false &&
+      ((recordFeatureGroup && featureGroups.includes(recordFeatureGroup)) || sourceColumns.some((column) => record.columns.includes(column)))
+    );
   });
-  if (chartable.length) return chartable;
-  const defaults = defaultCatalogChartColumns(catalog);
-  return defaults.length ? defaults : DEFAULT_CHART_COLUMNS;
+  if (matching.length) return matching.map((item) => item.id);
+  const defaults = defaultCatalogDisplayItems(catalog);
+  return defaults.length ? defaults : DEFAULT_CHART_DISPLAY_ITEMS;
 }
 
 function previewFeatureGroups(record: RecordRow, catalog: CatalogPayload | null, columns: string[]) {
   const groups = new Set<string>();
   const recordGroup = artifactFeatureGroup(record.group);
   if (recordGroup) groups.add(recordGroup);
-  const catalogByColumn = new Map((catalog?.columns ?? []).map((item) => [item.column ?? item.id, item]));
-  columns.forEach((column) => {
-    const item = catalogByColumn.get(column);
-    (item?.artifactGroups ?? []).forEach((group) => {
-      const featureGroup = artifactFeatureGroup(group);
-      if (featureGroup) groups.add(featureGroup);
+  const catalogByDisplayItem = new Map((catalog?.displayItems ?? []).map((item) => [item.id, item]));
+  columns.forEach((itemId) => {
+    const item = catalogByDisplayItem.get(itemId);
+    (item?.featureGroups ?? []).forEach((group) => {
+      if (group) groups.add(group);
     });
   });
   if (!groups.size) {
@@ -1082,7 +1095,7 @@ function CatalogTab({
               <input placeholder="Search names, groups, or descriptions" value={search} onChange={(event) => setSearch(event.target.value)} />
             </label>
             <div className="catalog-filter-grid">
-              <CatalogFilter label="Type" value={kind} onChange={(value) => setKind(value as CatalogKindFilter)} options={["all", "columns", "methods", "scanners"]} />
+              <CatalogFilter label="Type" value={kind} onChange={(value) => setKind(value as CatalogKindFilter)} options={["all", "display", "columns", "methods", "scanners"]} />
               <CatalogFilter label="Category" value={category} onChange={setCategory} options={categoryOptions} />
               <CatalogFilter label="Group" value={group} onChange={setGroup} options={groupOptions} />
               <CatalogFilter label="Presentation" value={presentationType} onChange={setPresentationType} options={presentationTypeOptions} labels={PRESENTATION_TYPE_LABELS} />
@@ -1610,6 +1623,8 @@ function CatalogPresentationChartPreview({
   const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.6, 0.16));
   const dashArray = svgDashArray(lineStyle, lineWidth);
   const displayNameForItem = itemTitle || "Selected item";
+  const isBandLike = role === "band" || role === "price_zone";
+  const parts = role === "composite" && Array.isArray(presentation.parts) ? presentation.parts.filter((part): part is Record<string, unknown> => Boolean(part && typeof part === "object")) : [];
   return (
     <aside className="catalog-preview-chart-card" aria-label={`Chart preview for ${displayNameForItem}`}>
       <div className="catalog-preview-chart-header">
@@ -1628,7 +1643,7 @@ function CatalogPresentationChartPreview({
           <line x1="20" x2="356" y1="205" y2="205" />
           {[58, 116, 174, 232, 290, 348].map((x) => <line key={`ox:${x}`} x1={x} x2={x} y1="164" y2="218" />)}
         </g>
-        {role === "band" ? (
+        {isBandLike ? (
           <g className="catalog-contract-selected-layer">
             <polygon fill={bandFill} points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60 350,100 322,106 290,102 258,109 226,112 194,106 162,114 130,121 98,112 66,106 34,119" />
             <polyline fill="none" points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60" stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
@@ -1655,9 +1670,59 @@ function CatalogPresentationChartPreview({
         {role === "price_overlay" ? (
           <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_PRICE_LINE_POINTS} stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
         ) : null}
+        {role === "composite" && pane === "price" ? (
+          <g className="catalog-contract-selected-layer">
+            {(parts.length ? parts : [{ color: strokeColor }, { color: "#B7791F" }]).slice(0, 4).map((part, index) => (
+              <polyline
+                fill="none"
+                key={`composite-price:${index}`}
+                points={CATALOG_PRICE_LINE_POINTS}
+                stroke={presentationColor(part.color ?? strokeColor)}
+                strokeDasharray={svgDashArray(String(part.lineStyle ?? (index % 2 ? "dashed" : "solid")), boundedPresentationNumber(part.lineWidth, 1, 6, lineWidth))}
+                strokeWidth={boundedPresentationNumber(part.lineWidth, 1, 6, lineWidth)}
+                transform={`translate(0 ${index * 7})`}
+              />
+            ))}
+          </g>
+        ) : null}
         {role === "marker" ? renderCatalogPreviewMarker(String(presentation.markerShape ?? "circle"), String(presentation.markerPosition ?? "belowBar"), strokeColor) : null}
         {role === "oscillator" ? (
           <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_OSCILLATOR_LINE_POINTS} stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+        ) : null}
+        {role === "composite" && pane !== "price" ? (
+          <g className="catalog-contract-selected-layer">
+            {(parts.length ? parts : [{ color: strokeColor }, { color: "#B7791F" }]).slice(0, 4).map((part, index) => {
+              const partRole = String(part.chartRole ?? part.style ?? "");
+              if (partRole === "histogram") {
+                return (
+                  <g className="catalog-contract-histogram" key={`composite-hist:${index}`}>
+                    {CATALOG_HISTOGRAM_BARS.map((bar) => (
+                      <rect
+                        fill={String(part.color) === "inherit_candle_direction" ? (bar.value >= 0 ? "#33E42A" : "#FD0E50") : presentationColor(part.color ?? strokeColor)}
+                        height={Math.abs(bar.value)}
+                        key={`${index}:${bar.x}`}
+                        width="12"
+                        x={bar.x - 6}
+                        y={bar.value >= 0 ? 194 - bar.value : 194}
+                      />
+                    ))}
+                  </g>
+                );
+              }
+              return (
+                <polyline
+                  className="catalog-contract-selected-line"
+                  fill="none"
+                  key={`composite-line:${index}`}
+                  points={CATALOG_OSCILLATOR_LINE_POINTS}
+                  stroke={presentationColor(part.color ?? strokeColor)}
+                  strokeDasharray={svgDashArray(String(part.lineStyle ?? (index % 2 ? "dashed" : "solid")), boundedPresentationNumber(part.lineWidth, 1, 6, lineWidth))}
+                  strokeWidth={boundedPresentationNumber(part.lineWidth, 1, 6, lineWidth)}
+                  transform={`translate(0 ${index * 8 - 6})`}
+                />
+              );
+            })}
+          </g>
         ) : null}
         {role === "histogram" ? (
           <g className="catalog-contract-histogram">
@@ -1732,7 +1797,7 @@ function CatalogStylePopover({
   const [panelPosition, setPanelPosition] = useState<{ left: number; maxHeight: number; top: number } | null>(null);
   const resolvedLineStyles = lineStyleOptions.length ? lineStyleOptions : ["solid", "dashed", "dotted"];
   const colorLabel = STYLE_COLOR_OPTIONS.find((option) => option.value === color)?.label ?? color;
-  const isBand = chartRole === "band";
+  const isBand = chartRole === "band" || chartRole === "price_zone";
   const resolvedBandFillOpacity = Math.max(0, Math.min(0.6, Number.isFinite(bandFillOpacity) ? bandFillOpacity : 0.16));
   const resolvedLineWidth = Math.max(1, Math.min(6, Number.isFinite(lineWidth) ? lineWidth : 1));
   const previewLineStyle = resolvedLineStyles.includes(lineStyle) ? lineStyle : "solid";
@@ -1944,14 +2009,19 @@ function boundedNumber(value: string, min: number, max: number): number {
 function catalogItems(catalog: CatalogPayload | null): CatalogCardItem[] {
   if (!catalog) return [];
   return [
+    ...(catalog.displayItems ?? []).map((item) => catalogDisplayItemToCard(item)),
     ...catalog.columns.map((item) => catalogColumnToCard(item)),
     ...catalog.supervisionMethods.map((item) => catalogMethodToItem(item, "methods")),
     ...catalog.scanners.map((item) => catalogMethodToItem(item, "scanners")),
   ].sort((left, right) =>
-    left.catalogKind.localeCompare(right.catalogKind) ||
+    catalogKindOrder(left.catalogKind) - catalogKindOrder(right.catalogKind) ||
     left.groupLabel.localeCompare(right.groupLabel) ||
     left.title.localeCompare(right.title),
   );
+}
+
+function catalogKindOrder(kind: CatalogCardItem["catalogKind"]) {
+  return { display: 0, columns: 1, methods: 2, scanners: 3 }[kind] ?? 9;
 }
 
 function catalogColumnToCard(item: CatalogItem): CatalogCardItem {
@@ -1963,6 +2033,18 @@ function catalogColumnToCard(item: CatalogItem): CatalogCardItem {
     presentationType: presentationTypeForItem(item),
     sourceLabel: "Column",
     summary: item.knowledge?.shortDescription ?? `${item.title} provider column.`,
+  };
+}
+
+function catalogDisplayItemToCard(item: CatalogDisplayItem): CatalogCardItem {
+  const groupLabel = item.group ?? item.groups?.[0] ?? item.category;
+  return {
+    ...item,
+    catalogKind: "display",
+    groupLabel,
+    presentationType: presentationTypeForItem(item),
+    sourceLabel: "Display item",
+    summary: item.knowledge?.shortDescription ?? `${item.title} grouped chart display.`,
   };
 }
 
@@ -1994,9 +2076,11 @@ function catalogPresentationTypeOptions(items: CatalogCardItem[]): string[] {
   return ["all", ...ordered, ...extra];
 }
 
-function presentationTypeForItem(item: Pick<CatalogItem | CatalogMethod, "category" | "presentation">): string {
+function presentationTypeForItem(item: Pick<CatalogItem | CatalogMethod | CatalogDisplayItem, "category" | "presentation">): string {
   const presentation = item.presentation ?? {};
   const role = String(presentation.chartRole ?? "table_only");
+  if (role === "composite") return "composite_group";
+  if (role === "price_zone") return "band_range";
   if (role === "price_overlay") return "price_overlay";
   if (role === "oscillator") return "lower_pane_line";
   if (role === "histogram") return "histogram_pane";
@@ -2035,14 +2119,15 @@ function groupCatalogItems(items: CatalogCardItem[]): Array<{ label: string; ite
   return Array.from(sections.entries()).map(([label, sectionItems]) => ({ label, items: sectionItems }));
 }
 
-function defaultCatalogChartColumns(catalog: CatalogPayload | null): string[] {
+function defaultCatalogDisplayItems(catalog: CatalogPayload | null): string[] {
   if (!catalog) return [];
-  return catalog.columns
-    .filter((item) => {
-      const role = String(item.presentation?.chartRole ?? "");
-      return Boolean(item.column && item.presentation?.defaultVisible && item.presentation?.selectable && !["marker", "table_only"].includes(role));
-    })
-    .map((item) => String(item.column));
+  return catalog.displayItems
+    .filter((item) => item.presentation?.defaultVisible && item.presentation?.selectable !== false)
+    .map((item) => item.id);
+}
+
+function defaultCatalogDisplayItemOptions(catalog: CatalogPayload | null): ChartDisplayItem[] {
+  return (catalog?.displayItems ?? []).filter((item) => item.presentation?.selectable !== false);
 }
 
 function defaultCatalogSupervisionGroups(catalog: CatalogPayload | null): string[] {

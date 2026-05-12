@@ -414,6 +414,15 @@ def default_catalog_chart_columns(processed_root: Path) -> list[str]:
     return columns
 
 
+def default_catalog_display_items(processed_root: Path) -> list[str]:
+    item_ids = []
+    for item in provider_catalog(processed_root).get("displayItems", []):
+        presentation = item.get("presentation", {})
+        if item.get("id") and presentation.get("defaultVisible") and presentation.get("selectable", True):
+            item_ids.append(str(item["id"]))
+    return item_ids
+
+
 @app.get("/api/market-data/chart")
 def market_chart(
     processed_root: str,
@@ -424,13 +433,17 @@ def market_chart(
     session_date: date | None = None,
     feature_groups: str | None = None,
     columns: str | None = None,
+    display_items: str | None = None,
     supervision_groups: str | None = None,
     marker_limit: int = Query(default=100, ge=0, le=500),
     min_confidence: float = Query(default=0.7, ge=0.0, le=1.0),
 ) -> dict[str, Any]:
     processed_root_path = Path(processed_root)
-    selected_feature_groups = parse_csv_list(feature_groups) or ["core", "momentum"]
-    selected_columns = parse_csv_list(columns) if columns is not None else default_catalog_chart_columns(processed_root_path)
+    selected_display_items = parse_csv_list(display_items) if display_items is not None else None
+    selected_feature_groups = parse_csv_list(feature_groups) or []
+    selected_columns = parse_csv_list(columns) if columns is not None else []
+    if selected_display_items is None and not selected_columns:
+        selected_display_items = default_catalog_display_items(processed_root_path)
     selected_supervision = parse_csv_list(supervision_groups) if supervision_groups is not None else []
     range_start, range_end = resolve_chart_range(start_date, end_date, session_date)
     return json_safe(
@@ -442,6 +455,7 @@ def market_chart(
             ticker=ticker,
             feature_groups_selected=selected_feature_groups,
             selected_columns=selected_columns,
+            selected_display_items=selected_display_items,
             supervision_groups_selected=selected_supervision,
             marker_limit=marker_limit,
             min_confidence=min_confidence,

@@ -13,6 +13,7 @@ from src.backend.json_utils import json_safe
 from src.data_provider.calendar import discover_raw_bounds, market_sessions, scan_market_source
 from src.data_provider.catalog import (
     catalog_columns_by_column,
+    catalog_display_items,
     catalog_item_by_id,
     provider_catalog,
     title_for_column,
@@ -490,6 +491,249 @@ def indicator_settings(selected_columns: list[str], catalog: dict[str, Any]) -> 
     return settings
 
 
+def chart_display_item_options(records: list[dict[str, Any]], timeframe: str, start: date, end: date, catalog: dict[str, Any]) -> list[dict[str, Any]]:
+    available_groups = {
+        str(record.get("group"))
+        for record in records
+        if record.get("timeframe") == timeframe
+        and start.isoformat() <= str(record.get("session_date") or "") <= end.isoformat()
+        and record.get("exists")
+    }
+    items = []
+    for item in catalog.get("displayItems", []):
+        artifact_groups = [str(group) for group in item.get("artifactGroups", [])]
+        if artifact_groups and not all(group in available_groups for group in artifact_groups):
+            continue
+        presentation = item.get("presentation", {})
+        if presentation.get("selectable", True) is False:
+            continue
+        items.append(chart_display_item_summary(item))
+    return items
+
+
+def chart_display_item_summary(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": item.get("id"),
+        "title": item.get("title"),
+        "category": item.get("category"),
+        "group": item.get("group"),
+        "sourceColumns": item.get("sourceColumns", []),
+        "artifactGroups": item.get("artifactGroups", []),
+        "featureGroups": item.get("featureGroups", []),
+        "presentation": item.get("presentation", {}),
+    }
+
+
+def resolve_chart_display_items(
+    catalog: dict[str, Any],
+    available_options: list[dict[str, Any]],
+    selected_display_item_ids: list[str] | None,
+    selected_columns: list[str],
+) -> list[dict[str, Any]]:
+    catalog_items = catalog_display_items(catalog)
+    available_ids = [str(option.get("id")) for option in available_options if option.get("id")]
+    available_set = set(available_ids)
+    wanted: set[str] = set()
+    if selected_display_item_ids is not None:
+        wanted.update(item_id for item_id in selected_display_item_ids if item_id in available_set)
+    elif selected_columns:
+        selected_column_set = set(selected_columns)
+        for item_id in available_ids:
+            item = catalog_items.get(item_id, {})
+            source_columns = {str(column) for column in item.get("sourceColumns", [])}
+            if source_columns & selected_column_set:
+                wanted.add(item_id)
+    if not wanted:
+        wanted.update(
+            str(option.get("id"))
+            for option in available_options
+            if option.get("id") and option.get("presentation", {}).get("defaultVisible")
+        )
+    return [catalog_items[item_id] for item_id in available_ids if item_id in wanted and item_id in catalog_items]
+
+
+def feature_groups_for_display_items(items: list[dict[str, Any]]) -> list[str]:
+    groups: set[str] = set()
+    for item in items:
+        for group in item.get("featureGroups", []):
+            if group:
+                groups.add(str(group))
+    return sorted(groups, key=lambda group: FEATURE_GROUPS.index(group) if group in FEATURE_GROUPS else 999)
+
+
+def display_item_settings(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    settings: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(items):
+        presentation = item.get("presentation", {})
+        role = str(presentation.get("chartRole") or "")
+        if role in {"marker", "price_zone", "table_only"}:
+            continue
+        parts = presentation.get("parts") if role == "composite" and isinstance(presentation.get("parts"), list) else []
+        if parts:
+            for part in parts:
+                if isinstance(part, dict):
+                    option = display_part_settings(item, part, index)
+                    if option:
+                        settings[option["key"]] = option
+        else:
+            source_columns = [str(column) for column in item.get("sourceColumns", [])]
+            if not source_columns:
+                continue
+            option = display_part_settings(
+                item,
+                {
+                    "column": str(presentation.get("sourceColumn") or source_columns[0]),
+                    "label": item.get("title"),
+                    "chartRole": role,
+                    "pane": presentation.get("pane"),
+                    "style": "histogram" if role == "histogram" else "line",
+                    "color": presentation.get("color"),
+                    "lineStyle": presentation.get("lineStyle"),
+                    "lineWidth": presentation.get("lineWidth"),
+                    "legend": presentation.get("legend"),
+                    "bandFillColor": presentation.get("bandFillColor"),
+                    "bandFillOpacity": presentation.get("bandFillOpacity"),
+                },
+                index,
+            )
+            if option:
+                settings[option["key"]] = option
+    return settings
+
+
+def display_part_settings(item: dict[str, Any], part: dict[str, Any], index: int) -> dict[str, Any] | None:
+    column = str(part.get("column") or "")
+    if not column:
+        return None
+    presentation = item.get("presentation", {})
+    role = str(part.get("chartRole") or presentation.get("chartRole") or "")
+    pane_name = str(part.get("pane") or presentation.get("pane") or chart_pane_for_column(column))
+    pane = "price" if pane_name == "price" or role in {"price_overlay", "band"} else "oscillator"
+    color = str(part.get("color") or presentation.get("color") or DYNAMIC_COLORS[index % len(DYNAMIC_COLORS)])
+    line_width = int(part.get("lineWidth") or presentation.get("lineWidth") or (2 if column == "vwap" else 1))
+    band_fill_opacity = bounded_float(part.get("bandFillOpacity", presentation.get("bandFillOpacity")), default=0.16, lower=0.0, upper=0.6)
+    return {
+        "key": f"{item.get('id')}:{column}",
+        "displayItemId": str(item.get("id") or ""),
+        "bandFillColor": str(part.get("bandFillColor") or presentation.get("bandFillColor") or color),
+        "bandFillOpacity": band_fill_opacity,
+        "chartRole": role,
+        "color": "#33E42A" if color == "inherit_candle_direction" else color,
+        "column": column,
+        "dynamicColor": color == "inherit_candle_direction",
+        "lineWidth": max(1, min(6, line_width)),
+        "pane": pane,
+        "paneKey": pane_name,
+        "style": "histogram" if str(part.get("style") or "").lower() == "histogram" or role == "histogram" else "line",
+        "lineStyle": str(part.get("lineStyle") or presentation.get("lineStyle") or "solid"),
+        "legend": bool(part.get("legend", presentation.get("legend", True))),
+        "label": str(part.get("label") or item.get("title") or display_name(column)),
+    }
+
+
+def display_price_zones(rows: list[dict[str, Any]], timeframe: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    zones: list[dict[str, Any]] = []
+    if not rows:
+        return zones
+    candle_duration = chart_candle_duration_seconds(rows, timeframe)
+    for item in items:
+        presentation = item.get("presentation", {})
+        if presentation.get("chartRole") != "price_zone":
+            continue
+        signal_column = str(presentation.get("signalColumn") or "")
+        upper_column = str(presentation.get("upperColumn") or "")
+        lower_column = str(presentation.get("lowerColumn") or "")
+        if not signal_column or not upper_column or not lower_column:
+            continue
+        extend_bars = max(1, min(240, int(presentation.get("extendBars") or 20)))
+        for index, row in enumerate(rows):
+            if not truthy(row.get(signal_column)):
+                continue
+            try:
+                upper = float(row.get(upper_column))
+                lower = float(row.get(lower_column))
+            except (TypeError, ValueError):
+                continue
+            if not (upper > 0 and lower > 0):
+                continue
+            start = chart_timestamp_seconds(row, timeframe)
+            if not start:
+                continue
+            end_index = min(len(rows) - 1, index + extend_bars)
+            end = chart_timestamp_seconds(rows[end_index], timeframe) if end_index > index else None
+            if not end or end <= start:
+                end = start + candle_duration * extend_bars
+            else:
+                end += candle_duration
+            high = max(upper, lower)
+            low = min(upper, lower)
+            color = str(presentation.get("color") or "#1E3A5F")
+            zones.append(
+                {
+                    "displayItemId": str(item.get("id") or ""),
+                    "start": start,
+                    "end": end,
+                    "upper": high,
+                    "lower": low,
+                    "color": color,
+                    "fillColor": str(presentation.get("bandFillColor") or color),
+                    "fillOpacity": bounded_float(presentation.get("bandFillOpacity"), default=0.14, lower=0.02, upper=0.5),
+                    "label": str(item.get("title") or signal_column),
+                }
+            )
+    return zones
+
+
+def display_item_markers(rows: list[dict[str, Any]], timeframe: str, items: list[dict[str, Any]], marker_limit: int) -> list[dict[str, Any]]:
+    markers: list[dict[str, Any]] = []
+    if marker_limit <= 0:
+        return markers
+    for item in items:
+        presentation = item.get("presentation", {})
+        if presentation.get("chartRole") != "marker":
+            continue
+        signal_columns = presentation.get("signalColumns")
+        if not isinstance(signal_columns, list):
+            signal_columns = [presentation.get("signalColumn")] if presentation.get("signalColumn") else item.get("sourceColumns", [])
+        for row in rows:
+            if not any(truthy(row.get(str(column))) for column in signal_columns):
+                continue
+            timestamp = chart_timestamp_seconds(row, timeframe)
+            if not timestamp:
+                continue
+            markers.append(
+                {
+                    "time": timestamp,
+                    "position": str(presentation.get("markerPosition") or "belowBar"),
+                    "color": str(presentation.get("color") or "#1E3A5F"),
+                    "shape": str(presentation.get("markerShape") or "circle"),
+                    "text": str(item.get("title") or "Feature"),
+                }
+            )
+            if len(markers) >= marker_limit:
+                return markers
+    return markers
+
+
+def chart_candle_duration_seconds(rows: list[dict[str, Any]], timeframe: str) -> int:
+    minutes = timeframe_minutes(timeframe)
+    if minutes:
+        return max(60, minutes * 60)
+    timestamps = [timestamp for timestamp in (chart_timestamp_seconds(row, timeframe) for row in rows[:80]) if timestamp]
+    deltas = sorted({right - left for left, right in zip(timestamps, timestamps[1:]) if right > left})
+    return deltas[len(deltas) // 2] if deltas else 24 * 60 * 60
+
+
+def truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
 def bounded_float(value: Any, default: float, lower: float, upper: float) -> float:
     try:
         numeric = float(value)
@@ -666,6 +910,7 @@ def chart_payload(
     ticker: str,
     feature_groups_selected: list[str],
     selected_columns: list[str],
+    selected_display_items: list[str] | None,
     supervision_groups_selected: list[str],
     marker_limit: int,
     min_confidence: float,
@@ -673,14 +918,18 @@ def chart_payload(
     records = artifact_records(processed_root)
     catalog = provider_catalog(processed_root)
     provider = MarketDataProvider(DataProviderConfig(processed_root=processed_root))
+    display_options = chart_display_item_options(records, timeframe, start_date, end_date, catalog)
+    selected_display_contracts = resolve_chart_display_items(catalog, display_options, selected_display_items, selected_columns)
+    display_feature_groups = feature_groups_for_display_items(selected_display_contracts)
+    requested_feature_groups = display_feature_groups or feature_groups_selected
     bars = provider.load_bars(
         start_date=start_date,
         end_date=end_date,
         timeframe=timeframe,
         tickers=[ticker.upper()],
-        feature_groups=feature_groups_selected,
+        feature_groups=requested_feature_groups,
     )
-    feature_columns = chart_feature_columns(records, timeframe, start_date, end_date, feature_groups_selected, catalog)
+    feature_columns = chart_feature_columns(records, timeframe, start_date, end_date, requested_feature_groups, catalog)
     catalog_by_column = catalog_columns_by_column(catalog)
     indicator_columns = [
         column
@@ -701,9 +950,19 @@ def chart_payload(
             for group in SUPERVISION_GROUPS
             if matching_artifacts(records, f"supervision_{group}", timeframe, start_date, end_date)
         ],
+        "display_items": display_options,
     }
     if bars.is_empty():
-        return {"candles": [], "volume": [], "overlay_series": [], "oscillator_series": [], "markers": [], "regions": [], "options": options}
+        return {
+            "candles": [],
+            "volume": [],
+            "overlay_series": [],
+            "oscillator_series": [],
+            "markers": [],
+            "regions": [],
+            "price_zones": [],
+            "options": options,
+        }
     bars = bars.sort("bar_time_market")
     rows = bars.to_dicts()
     candles = []
@@ -730,16 +989,17 @@ def chart_payload(
                 "color": "rgba(51, 228, 42, 0.26)" if close_value >= open_value else "rgba(253, 14, 80, 0.24)",
             }
         )
-    settings = indicator_settings(selected_columns, catalog)
+    settings = display_item_settings(selected_display_contracts) if selected_display_contracts else indicator_settings(selected_columns, catalog)
     overlay_series = []
     oscillator_series = []
     for column, option in settings.items():
-        if column not in bars.columns:
+        source_column = str(option.get("column") or column)
+        if source_column not in bars.columns:
             continue
         points = []
         for row in rows:
             timestamp = chart_timestamp_seconds(row, timeframe)
-            value = row.get(column)
+            value = row.get(source_column)
             if timestamp and value is not None:
                 numeric_value = float(value)
                 point = {"time": timestamp, "value": numeric_value}
@@ -749,10 +1009,12 @@ def chart_payload(
         target = oscillator_series if option["pane"] == "oscillator" else overlay_series
         target.append(
             {
-                "column": column,
+                "column": source_column,
+                "displayItemId": option.get("displayItemId"),
                 "label": option["label"],
                 "style": option["style"],
                 "chartRole": option["chartRole"],
+                "paneKey": option.get("paneKey"),
                 "lineStyle": option["lineStyle"],
                 "color": option["color"],
                 "bandFillColor": option["bandFillColor"],
@@ -762,9 +1024,11 @@ def chart_payload(
                 "data": points,
             }
         )
-    markers = (
+    feature_markers = display_item_markers(rows, timeframe, selected_display_contracts, marker_limit)
+    supervision_marker_limit = max(0, marker_limit - len(feature_markers))
+    supervision = (
         []
-        if not supervision_groups_selected or marker_limit <= 0
+        if not supervision_groups_selected or supervision_marker_limit <= 0
         else supervision_markers(
             provider,
             start_date=start_date,
@@ -772,11 +1036,12 @@ def chart_payload(
             timeframe=timeframe,
             ticker=ticker.upper(),
             supervision_groups=supervision_groups_selected,
-            marker_limit=marker_limit,
+            marker_limit=supervision_marker_limit,
             min_confidence=min_confidence,
             catalog=catalog,
         )
     )
+    markers = sorted([*feature_markers, *supervision], key=lambda marker: int(marker.get("time") or 0))[:marker_limit]
     return {
         "candles": candles,
         "volume": volume,
@@ -784,6 +1049,7 @@ def chart_payload(
         "oscillator_series": oscillator_series,
         "markers": markers,
         "regions": extended_session_regions(rows, timeframe),
+        "price_zones": display_price_zones(rows, timeframe, selected_display_contracts),
         "options": options,
     }
 

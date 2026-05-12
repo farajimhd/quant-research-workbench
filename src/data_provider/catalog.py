@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 3
+CATALOG_VERSION = 4
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -166,6 +166,7 @@ INDICATOR_COLUMNS = {"vwap", "obv", "mfi14", "cmf20"}
 PRICE_OVERLAY_TERMS = ("sma", "ema", "tema", "vwap", "bb_", "donchian", "keltner", "hvn", "lvn", "price_proxy", "open", "high", "low")
 OSCILLATOR_TERMS = ("macd", "rsi", "roc", "cci", "stoch", "z20", "relative_", "score", "ratio", "pct", "confidence", "percentile")
 DEFAULT_VISIBLE_COLUMNS = {"vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"}
+DEFAULT_VISIBLE_DISPLAY_ITEMS = {"indicator.vwap", "indicator.tema_trend", "indicator.macd"}
 DYNAMIC_COLORS = ["#1E3A5F", "#B7791F", "#067647", "#B42318", "#2563EB", "#7C3AED", "#0E7490", "#C2410C"]
 TITLE_ACRONYMS = {
     "atr": "ATR",
@@ -292,10 +293,11 @@ def base_provider_catalog() -> dict[str, Any]:
         "featureVersion": FEATURE_VERSION,
         "supervisionVersion": SUPERVISION_VERSION,
         "columns": columns,
+        "displayItems": build_display_items(columns),
         "supervisionMethods": build_method_contracts(),
         "scanners": build_scanner_contracts(),
         "presentationOptions": {
-            "chartRoles": ["price_overlay", "oscillator", "histogram", "marker", "band", "table_only"],
+            "chartRoles": ["price_overlay", "oscillator", "histogram", "marker", "band", "price_zone", "composite", "table_only"],
             "panes": ["price", "macd", "oscillator", "new", "supervision"],
             "lineStyles": ["solid", "dashed", "dotted"],
             "markerShapes": ["circle", "arrowUp", "arrowDown", "square"],
@@ -319,6 +321,410 @@ def build_column_contracts() -> list[dict[str, Any]]:
     for column in SCANNER_SUPERVISION_COLUMNS:
         add_column(entries, column, group="supervision_scanner", artifact_group="supervision_scanner")
     return sorted(entries.values(), key=lambda item: (category_order(item["category"]), item["group"], item["title"], item["id"]))
+
+
+def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_column = {str(item.get("column")): item for item in columns if item.get("column")}
+    items: list[dict[str, Any]] = []
+    grouped_columns: set[str] = set()
+
+    def add(item: dict[str, Any] | None) -> None:
+        if item is None:
+            return
+        source_columns = [str(column) for column in item.get("sourceColumns", [])]
+        if not source_columns or any(column not in by_column for column in source_columns):
+            return
+        items.append(item)
+        grouped_columns.update(source_columns)
+
+    add(single_display_item(by_column, "indicator.vwap", "VWAP", ["vwap"], "core", default_visible=True))
+    add(
+        composite_display_item(
+            by_column,
+            item_id="indicator.tema_trend",
+            title="TEMA Trend",
+            source_columns=["tema9", "tema20"],
+            group="momentum",
+            pane="price",
+            parts=[
+                display_part(by_column, "tema9", label="TEMA9", line_width=2, color="#2563EB"),
+                display_part(by_column, "tema20", label="TEMA20", line_width=2, color="#B7791F"),
+            ],
+            default_visible=True,
+            short="Fast and slower TEMA overlays for trend responsiveness.",
+            detailed="TEMA Trend groups TEMA9 and TEMA20 so the chart treats their relationship as one display choice instead of two unrelated raw columns.",
+        )
+    )
+    add(
+        composite_display_item(
+            by_column,
+            item_id="indicator.macd",
+            title="MACD",
+            source_columns=["macd_line", "macd_signal", "macd_hist"],
+            group="momentum",
+            pane="macd",
+            parts=[
+                display_part(by_column, "macd_line", label="MACD", pane="macd", color="#1E3A5F"),
+                display_part(by_column, "macd_signal", label="Signal", pane="macd", color="#B54708"),
+                display_part(by_column, "macd_hist", label="Hist", pane="macd", role="histogram", style="histogram", color="inherit_candle_direction"),
+            ],
+            default_visible=True,
+            short="MACD line, signal line, and histogram in one oscillator pane.",
+            detailed="MACD is a three-part indicator. Grouping the line, signal, and histogram keeps the pane, legend, and selection behavior faithful to the indicator.",
+            value_format="number",
+        )
+    )
+    add(
+        composite_display_item(
+            by_column,
+            item_id="indicator.sma_stack",
+            title="SMA Stack",
+            source_columns=["sma9", "sma20", "sma50", "sma200"],
+            group="momentum",
+            pane="price",
+            parts=[display_part(by_column, column, label=column.upper(), line_width=1) for column in ["sma9", "sma20", "sma50", "sma200"]],
+            short="Simple moving average stack on the price pane.",
+            detailed="SMA Stack groups the short, medium, and long simple moving averages so trend compression and separation can be reviewed together.",
+        )
+    )
+    add(
+        composite_display_item(
+            by_column,
+            item_id="indicator.ema_stack",
+            title="EMA Stack",
+            source_columns=["ema9", "ema20", "ema50", "ema200"],
+            group="momentum",
+            pane="price",
+            parts=[display_part(by_column, column, label=column.upper(), line_width=1) for column in ["ema9", "ema20", "ema50", "ema200"]],
+            short="Exponential moving average stack on the price pane.",
+            detailed="EMA Stack groups the short, medium, and long exponential moving averages as one trend display.",
+        )
+    )
+    add(channel_display_item(by_column, "indicator.bollinger20", "Bollinger Bands 20", ["bb_upper20", "bb_mid20", "bb_lower20"], "volatility", "#475467"))
+    add(channel_display_item(by_column, "indicator.donchian20", "Donchian Channel 20", ["donchian_high20", "donchian_mid20", "donchian_low20"], "volatility", "#0E7490"))
+    add(channel_display_item(by_column, "indicator.keltner20", "Keltner Channel 20", ["keltner_upper20", "keltner_mid20", "keltner_lower20"], "volatility", "#B7791F"))
+    add(
+        composite_display_item(
+            by_column,
+            item_id="indicator.stochastic",
+            title="Stochastic 14/3",
+            source_columns=["stoch_k14", "stoch_d3"],
+            group="momentum",
+            pane="stochastic",
+            parts=[
+                display_part(by_column, "stoch_k14", label="%K", pane="stochastic", color="#2563EB"),
+                display_part(by_column, "stoch_d3", label="%D", pane="stochastic", color="#B7791F"),
+            ],
+            short="Stochastic %K and %D in one lower pane.",
+            detailed="Stochastic should be interpreted as a pair, so the catalog exposes it as one grouped oscillator display.",
+            value_format="number",
+        )
+    )
+    add(
+        composite_display_item(
+            by_column,
+            item_id="feature.premarket_range",
+            title="Premarket Range",
+            source_columns=["premarket_high", "premarket_low"],
+            group="session",
+            pane="price",
+            parts=[
+                display_part(by_column, "premarket_high", label="Premarket High", color="#B7791F", line_style="dashed"),
+                display_part(by_column, "premarket_low", label="Premarket Low", color="#B7791F", line_style="dashed"),
+            ],
+            short="Premarket high and low range on the price pane.",
+            detailed="Premarket range is a two-boundary structure. Grouping the high and low makes it clear that both lines define the same extended-hours reference.",
+        )
+    )
+    for minutes in (5, 10, 15, 30):
+        add(
+            composite_display_item(
+                by_column,
+                item_id=f"feature.opening_range_{minutes}m",
+                title=f"Opening Range {minutes}m",
+                source_columns=[f"or_{minutes}m_high", f"or_{minutes}m_low"],
+                group="session",
+                pane="price",
+                parts=[
+                    display_part(by_column, f"or_{minutes}m_high", label=f"OR {minutes}m High", color="#1E3A5F", line_style="dotted"),
+                    display_part(by_column, f"or_{minutes}m_low", label=f"OR {minutes}m Low", color="#1E3A5F", line_style="dotted"),
+                ],
+                short=f"Opening range {minutes}-minute high and low.",
+                detailed=f"Opening Range {minutes}m groups the high and low that frame the first {minutes} regular-session minutes.",
+            )
+        )
+    add(
+        composite_display_item(
+            by_column,
+            item_id="feature.session_range",
+            title="Session Range",
+            source_columns=["day_open", "day_high_so_far", "day_low_so_far"],
+            group="session",
+            pane="price",
+            parts=[
+                display_part(by_column, "day_open", label="Open", color="#475467", line_style="dashed"),
+                display_part(by_column, "day_high_so_far", label="High", color="#067647"),
+                display_part(by_column, "day_low_so_far", label="Low", color="#B42318"),
+            ],
+            short="Session open, high-so-far, and low-so-far.",
+            detailed="Session Range groups the current session anchor and running extremes into one price-structure display.",
+        )
+    )
+    add(price_zone_display_item(by_column, "feature.fvg_bullish", "Bullish FVG", "fvg", "bullish_fvg", "fvg_high", "fvg_low", "#067647", 24))
+    add(price_zone_display_item(by_column, "feature.fvg_bearish", "Bearish FVG", "fvg", "bearish_fvg", "fvg_high", "fvg_low", "#B42318", 24))
+    add(price_zone_display_item(by_column, "feature.order_block_bullish", "Bullish Order Block", "order_blocks", "bullish_displacement", "bullish_order_block_high", "bullish_order_block_low", "#0E7490", 36))
+    add(price_zone_display_item(by_column, "feature.order_block_bearish", "Bearish Order Block", "order_blocks", "bearish_displacement", "bearish_order_block_high", "bearish_order_block_low", "#C2410C", 36))
+    add(
+        composite_display_item(
+            by_column,
+            item_id="feature.price_volume_shock",
+            title="Price Volume Shock",
+            source_columns=["price_shock_score", "volume_shock_score", "price_volume_shock_score"],
+            group="shock",
+            pane="shock",
+            parts=[
+                display_part(by_column, "price_shock_score", label="Price", pane="shock", color="#2563EB"),
+                display_part(by_column, "volume_shock_score", label="Volume", pane="shock", color="#B7791F"),
+                display_part(by_column, "price_volume_shock_score", label="Combined", pane="shock", color="#030213", line_width=2),
+            ],
+            short="Price, volume, and combined shock scores in one pane.",
+            detailed="Price Volume Shock is sequence-aware. The grouped display keeps price abnormality, volume abnormality, and combined confirmation score together.",
+            value_format="number",
+        )
+    )
+    add(
+        composite_display_item(
+            by_column,
+            item_id="feature.volume_participation",
+            title="Volume Participation",
+            source_columns=["relative_volume20", "relative_dollar_volume20", "volume_z20", "transactions_z20"],
+            group="volume_liquidity",
+            pane="participation",
+            parts=[
+                display_part(by_column, "relative_volume20", label="Rel Vol", pane="participation", color="#067647"),
+                display_part(by_column, "relative_dollar_volume20", label="Rel Dollar", pane="participation", color="#0E7490"),
+                display_part(by_column, "volume_z20", label="Vol Z", pane="participation", color="#B7791F"),
+                display_part(by_column, "transactions_z20", label="Txn Z", pane="participation", color="#7C3AED"),
+            ],
+            short="Relative volume, dollar volume, and activity z-scores.",
+            detailed="Volume Participation groups the provider participation metrics so abnormal activity can be reviewed as one lower-pane context.",
+            value_format="number",
+        )
+    )
+
+    for column, contract in by_column.items():
+        presentation = contract.get("presentation", {})
+        role = str(presentation.get("chartRole") or "")
+        if (
+            column not in grouped_columns
+            and contract.get("category") in {"indicator", "feature"}
+            and presentation.get("selectable", True)
+            and role not in {"", "marker", "table_only"}
+        ):
+            add(single_display_item(by_column, f"column.{column}", str(contract.get("title") or title_for_column(column)), [column], str(contract.get("group") or ""), default_visible=False))
+
+    return sorted(items, key=lambda item: (category_order(str(item.get("category"))), str(item.get("group")), str(item.get("title")), str(item.get("id"))))
+
+
+def display_item_contract(
+    by_column: dict[str, dict[str, Any]],
+    *,
+    item_id: str,
+    title: str,
+    source_columns: list[str],
+    group: str,
+    category: str,
+    presentation: dict[str, Any],
+    short: str,
+    detailed: str,
+) -> dict[str, Any] | None:
+    if any(column not in by_column for column in source_columns):
+        return None
+    artifact_groups = sorted({artifact for column in source_columns for artifact in by_column[column].get("artifactGroups", [])})
+    feature_groups = sorted({artifact.replace("features_", "", 1) for artifact in artifact_groups if artifact.startswith("features_")})
+    return {
+        "id": item_id,
+        "title": title,
+        "shortTitle": title,
+        "category": category,
+        "group": group,
+        "groups": [group],
+        "sourceColumns": source_columns,
+        "artifactGroups": artifact_groups,
+        "featureGroups": feature_groups,
+        "knowledge": knowledge_block(
+            short=short,
+            detailed=detailed,
+            theory=theory_for_group(group, category),
+            interpretation=interpretation_for_group(group, category),
+            equation=display_item_equation(title, source_columns),
+            variables={"SourceColumns": ", ".join(source_columns)},
+        ),
+        "presentation": presentation,
+    }
+
+
+def single_display_item(
+    by_column: dict[str, dict[str, Any]],
+    item_id: str,
+    title: str,
+    source_columns: list[str],
+    group: str,
+    *,
+    default_visible: bool,
+) -> dict[str, Any] | None:
+    column = source_columns[0]
+    contract = by_column.get(column)
+    if not contract:
+        return None
+    base_presentation = deepcopy(contract.get("presentation") or {})
+    base_presentation.update(
+        {
+            "defaultVisible": default_visible or item_id in DEFAULT_VISIBLE_DISPLAY_ITEMS,
+            "displayItem": True,
+            "sourceColumn": column,
+        }
+    )
+    return display_item_contract(
+        by_column,
+        item_id=item_id,
+        title=title,
+        source_columns=source_columns,
+        group=group or str(contract.get("group") or ""),
+        category=str(contract.get("category") or "feature"),
+        presentation=base_presentation,
+        short=str(contract.get("knowledge", {}).get("shortDescription") or f"{title} chart display."),
+        detailed=str(contract.get("knowledge", {}).get("detailedDescription") or f"{title} displays the provider column {column}."),
+    )
+
+
+def composite_display_item(
+    by_column: dict[str, dict[str, Any]],
+    *,
+    item_id: str,
+    title: str,
+    source_columns: list[str],
+    group: str,
+    pane: str,
+    parts: list[dict[str, Any]],
+    short: str,
+    detailed: str,
+    default_visible: bool = False,
+    value_format: str = "price",
+) -> dict[str, Any] | None:
+    return display_item_contract(
+        by_column,
+        item_id=item_id,
+        title=title,
+        source_columns=source_columns,
+        group=group,
+        category="indicator" if item_id.startswith("indicator.") else "feature",
+        presentation={
+            "selectable": True,
+            "defaultVisible": default_visible or item_id in DEFAULT_VISIBLE_DISPLAY_ITEMS,
+            "chartRole": "composite",
+            "pane": pane,
+            "legend": True,
+            "valueFormat": value_format,
+            "parts": parts,
+        },
+        short=short,
+        detailed=detailed,
+    )
+
+
+def channel_display_item(by_column: dict[str, dict[str, Any]], item_id: str, title: str, source_columns: list[str], group: str, color: str) -> dict[str, Any] | None:
+    labels = ["Upper", "Middle", "Lower"] if "bb_" in source_columns[0] or "keltner" in source_columns[0] else ["High", "Middle", "Low"]
+    return composite_display_item(
+        by_column,
+        item_id=item_id,
+        title=title,
+        source_columns=source_columns,
+        group=group,
+        pane="price",
+        parts=[
+            display_part(by_column, source_columns[0], label=labels[0], color=color, line_width=1),
+            display_part(by_column, source_columns[1], label=labels[1], color=color, line_style="dashed", line_width=1),
+            display_part(by_column, source_columns[2], label=labels[2], color=color, line_width=1),
+        ],
+        short=f"{title} channel boundaries.",
+        detailed=f"{title} is a multi-column channel and is therefore exposed as one grouped chart display with its boundaries kept together.",
+    )
+
+
+def price_zone_display_item(
+    by_column: dict[str, dict[str, Any]],
+    item_id: str,
+    title: str,
+    group: str,
+    signal_column: str,
+    upper_column: str,
+    lower_column: str,
+    color: str,
+    extend_bars: int,
+) -> dict[str, Any] | None:
+    source_columns = [signal_column, upper_column, lower_column]
+    direction = "bullish" if "bullish" in item_id else "bearish" if "bearish" in item_id else "neutral"
+    return display_item_contract(
+        by_column,
+        item_id=item_id,
+        title=title,
+        source_columns=source_columns,
+        group=group,
+        category="feature",
+        presentation={
+            "selectable": True,
+            "defaultVisible": False,
+            "chartRole": "price_zone",
+            "pane": "price",
+            "legend": True,
+            "color": color,
+            "bandFillColor": color,
+            "bandFillOpacity": 0.14,
+            "direction": direction,
+            "signalColumn": signal_column,
+            "upperColumn": upper_column,
+            "lowerColumn": lower_column,
+            "extendBars": extend_bars,
+            "valueFormat": "price",
+        },
+        short=f"{title} zone on the candle pane.",
+        detailed=f"{title} is a candle-structure display, not an oscillator. It uses {signal_column} to find events and draws the {lower_column}-{upper_column} price zone forward for review.",
+    )
+
+
+def display_part(
+    by_column: dict[str, dict[str, Any]],
+    column: str,
+    *,
+    label: str | None = None,
+    pane: str = "price",
+    role: str = "price_overlay",
+    style: str = "line",
+    color: str | None = None,
+    line_style: str = "solid",
+    line_width: int = 1,
+) -> dict[str, Any]:
+    contract = by_column.get(column, {})
+    presentation = contract.get("presentation", {}) if contract else {}
+    resolved_role = role if role != "price_overlay" or pane == "price" else "oscillator"
+    return {
+        "id": column,
+        "column": column,
+        "label": label or str(contract.get("shortTitle") or contract.get("title") or title_for_column(column)),
+        "chartRole": resolved_role,
+        "pane": pane,
+        "style": style,
+        "color": color or str(presentation.get("color") or color_for_column(column)),
+        "lineStyle": line_style,
+        "lineWidth": line_width,
+        "legend": True,
+    }
+
+
+def display_item_equation(title: str, source_columns: list[str]) -> str:
+    source_text = ", ".join(source_columns)
+    return f"$$\\text{{{title}}}_t=Display({source_text})$$"
 
 
 def add_column(entries: dict[str, dict[str, Any]], column: str, *, group: str, artifact_group: str) -> None:
@@ -541,8 +947,14 @@ def chart_role_for_column(column: str, group: str, category: str) -> str:
     lower = column.lower()
     if category == "bar" or column in KEY_COLUMNS:
         return "table_only"
+    if lower in {"indicator_bar_count", "macd_ready", "tema_ready"}:
+        return "table_only"
     if group.startswith("supervision_"):
         return "marker" if lower in {"oracle_long_entry_signal", "method_entry_signal", "is_top_1", "is_top_3", "is_top_5"} else "table_only"
+    if group == "fvg":
+        return "table_only"
+    if group == "order_blocks" and ("order_block" in lower or "displacement" in lower):
+        return "table_only"
     if lower == "macd_hist":
         return "histogram"
     if any(term in lower for term in PRICE_OVERLAY_TERMS):
@@ -1556,7 +1968,7 @@ def save_presentation_override(processed_root: Path, item_id: str, presentation:
 def apply_presentation_overrides(catalog: dict[str, Any], overrides: dict[str, dict[str, Any]]) -> None:
     if not overrides:
         return
-    for section in ("columns", "supervisionMethods", "scanners"):
+    for section in ("columns", "displayItems", "supervisionMethods", "scanners"):
         for item in catalog.get(section, []):
             item_id = str(item.get("id") or "")
             presentation = overrides.get(item_id)
@@ -1570,9 +1982,13 @@ def catalog_columns_by_column(catalog: dict[str, Any]) -> dict[str, dict[str, An
     return {str(item.get("column")): item for item in catalog.get("columns", []) if item.get("column")}
 
 
+def catalog_display_items(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {str(item.get("id")): item for item in catalog.get("displayItems", []) if item.get("id")}
+
+
 def catalog_item_by_id(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
     items: dict[str, dict[str, Any]] = {}
-    for section in ("columns", "supervisionMethods", "scanners"):
+    for section in ("columns", "displayItems", "supervisionMethods", "scanners"):
         for item in catalog.get(section, []):
             if item.get("id"):
                 items[str(item["id"])] = item

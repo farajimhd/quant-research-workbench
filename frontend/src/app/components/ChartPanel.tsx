@@ -36,7 +36,9 @@ type ChartSeries = {
   bandFillOpacity?: number;
   chartRole?: string;
   column: string;
+  displayItemId?: string;
   label: string;
+  paneKey?: string;
   style: "line" | "histogram";
   color: string;
   legend?: boolean;
@@ -45,6 +47,7 @@ type ChartSeries = {
   data: Array<{ color?: string; time: number; value: number }>;
 };
 type Region = { start: number; end: number; color: string; label: string };
+type PriceZone = { color: string; displayItemId?: string; end: number; fillColor?: string; fillOpacity?: number; label: string; lower: number; start: number; upper: number };
 export type ChartReference = {
   label?: string;
   minuteOfDay?: number;
@@ -64,6 +67,11 @@ export type ChartCatalogItem = {
     pane?: string;
     selectable?: boolean;
   };
+};
+export type ChartDisplayItem = ChartCatalogItem & {
+  artifactGroups?: string[];
+  featureGroups?: string[];
+  sourceColumns?: string[];
 };
 export type ChartLabelOption = {
   group: string;
@@ -120,12 +128,14 @@ export type ChartPayload = {
   oscillator_series: ChartSeries[];
   markers: ChartMarker[];
   regions: Region[];
+  price_zones?: PriceZone[];
   options?: ChartOptions;
 };
 
 export type ChartOptions = {
   feature_columns: string[];
   feature_groups: string[];
+  display_items?: ChartDisplayItem[];
   standard_indicators: string[];
   supervision_groups: string[];
 };
@@ -138,6 +148,7 @@ export type ChartPanelHandle = {
 
 type ChartPanelProps = {
   catalogColumns?: ChartCatalogItem[];
+  displayItemOptions?: ChartDisplayItem[];
   emptyMessage?: string;
   errorMessage?: string;
   featureOptions: string[];
@@ -193,6 +204,7 @@ type ChartPalette = {
 
 export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   catalogColumns = [],
+  displayItemOptions = [],
   emptyMessage = "No chart data for the selected ticker/date range/timeframe.",
   errorMessage,
   featureOptions,
@@ -229,6 +241,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const indicatorSourceRef = useRef<Map<string, ChartSeries>>(new Map());
   const oscillatorPaneRuntimesRef = useRef<Map<string, OscillatorPaneRuntime>>(new Map());
   const payloadRef = useRef<ChartPayload | null>(payload);
+  const visibleSelectionRef = useRef<Set<string>>(new Set());
   const chartSettingsRef = useRef<ChartAppearanceSettings>(defaultChartAppearanceSettings);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const initialFitTimerRef = useRef<number | null>(null);
@@ -247,8 +260,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   chartSettingsRef.current = chartSettings;
   const visibleColumnKey = visibleColumns.map((column) => column.toLowerCase()).join("|");
   const visibleColumnLookup = new Set(visibleColumns.map((column) => column.toLowerCase()));
-  const displayedOverlaySeries = (payload?.overlay_series ?? []).filter((series) => visibleColumnLookup.has(series.column.toLowerCase()));
-  const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) => visibleColumnLookup.has(series.column.toLowerCase()));
+  visibleSelectionRef.current = visibleColumnLookup;
+  const displayedOverlaySeries = (payload?.overlay_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
+  const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
   const priceLegendItems = buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings);
   const hasChartData = Boolean(payload?.candles.length);
@@ -441,6 +455,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     if (!priceChartRef.current) return;
     updatePriceOverlaySeries(displayedOverlaySeries);
+    drawCurrentRegions();
   }, [payload, visibleColumnKey]);
 
   useEffect(() => {
@@ -594,7 +609,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const chart = priceChartRef.current;
     const currentPayload = payloadRef.current;
     if (!chart || !currentPayload) return;
-    drawRegions(chart, priceLayerRef.current, currentPayload.regions, currentPayload.candles, chartSettingsRef.current);
+    const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
+    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.candles, chartSettingsRef.current);
     drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, reference);
   }
 
@@ -639,8 +655,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }
 
   const closeOscillatorPane = (group: OscillatorPaneGroup) => {
-    const paneColumns = new Set(group.series.map((series) => series.column.toLowerCase()));
-    const nextColumns = visibleColumns.filter((column) => !paneColumns.has(column.toLowerCase()));
+    const paneItems = new Set(group.series.map((series) => seriesSelectionKey(series)));
+    const nextColumns = visibleColumns.filter((column) => !paneItems.has(column.toLowerCase()));
     if (nextColumns.length !== visibleColumns.length) {
       onVisibleColumnsChange(nextColumns);
     }
@@ -700,6 +716,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <span className="toolbar-divider" />
         <IndicatorFeatureSelect
           catalogColumns={catalogColumns}
+          displayItemOptions={displayItemOptions}
           featureOptions={featureOptions}
           indicatorOptions={indicatorOptions}
           labelOptions={labelOptions}
@@ -1018,6 +1035,7 @@ function LegendEditor({
 
 function IndicatorFeatureSelect({
   catalogColumns,
+  displayItemOptions,
   featureOptions,
   indicatorOptions,
   labelOptions,
@@ -1029,6 +1047,7 @@ function IndicatorFeatureSelect({
   visibleLabels
 }: {
   catalogColumns: ChartCatalogItem[];
+  displayItemOptions: ChartDisplayItem[];
   featureOptions: string[];
   indicatorOptions: string[];
   labelOptions: ChartLabelOption[];
@@ -1039,13 +1058,16 @@ function IndicatorFeatureSelect({
   values: string[];
   visibleLabels: string[];
 }) {
+  const usesDisplayItems = displayItemOptions.length > 0;
   const indicatorSet = new Set(indicatorOptions);
   const visibleFeatures = featureOptions.filter((option) => !indicatorSet.has(option));
   const visibleOptions = [...indicatorOptions, ...visibleFeatures];
   const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
+  const displayItems = displayItemOptions.filter((item) => item.presentation?.selectable !== false);
+  const groupedDisplayItems = groupChartDisplayItems(displayItems);
   const selected = new Set(values);
   const selectedLabels = new Set(visibleLabels);
-  const selectedCount = visibleOptions.filter((option) => selected.has(option)).length + labelOptions.filter((option) => selectedLabels.has(option.group)).length;
+  const selectedCount = (usesDisplayItems ? displayItems.filter((option) => selected.has(option.id)).length : visibleOptions.filter((option) => selected.has(option)).length) + labelOptions.filter((option) => selectedLabels.has(option.group)).length;
   const labelForOption = (option: string) => catalogByColumn.get(option)?.title ?? displayName(option);
 
   const toggleValue = (value: string) => {
@@ -1056,7 +1078,7 @@ function IndicatorFeatureSelect({
       nextSelected.add(value);
     }
     if (!nextSelected.size) return;
-    const ordered = visibleOptions.filter((option) => nextSelected.has(option));
+    const ordered = usesDisplayItems ? displayItems.map((option) => option.id).filter((option) => nextSelected.has(option)) : visibleOptions.filter((option) => nextSelected.has(option));
     onChange(ordered);
   };
 
@@ -1087,39 +1109,64 @@ function IndicatorFeatureSelect({
       </button>
       {open ? (
         <div className="chart-column-menu">
-          <div className="chart-column-menu-title">Indicators</div>
-          <div className="chart-column-menu-list">
-            {indicatorOptions.map((option) => (
-              <button
-                className={selected.has(option) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
-                key={option}
-                onClick={() => toggleValue(option)}
-                type="button"
-              >
-                <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
-                <span>{labelForOption(option)}</span>
-              </button>
-            ))}
-          </div>
-          <div className="chart-column-menu-divider" />
-          <div className="chart-column-menu-title">Features</div>
-          <div className="chart-column-menu-list feature-list">
-            {visibleFeatures.length ? (
-              visibleFeatures.map((option) => (
-                <button
-                  className={selected.has(option) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
-                  key={option}
-                  onClick={() => toggleValue(option)}
-                  type="button"
-                >
-                  <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
-                  <span>{labelForOption(option)}</span>
-                </button>
-              ))
-            ) : (
-              <div className="chart-column-menu-empty">No feature columns for this session.</div>
-            )}
-          </div>
+          {usesDisplayItems ? (
+            groupedDisplayItems.map((section, index) => (
+              <div key={section.label}>
+                {index > 0 ? <div className="chart-column-menu-divider" /> : null}
+                <div className="chart-column-menu-title">{section.label}</div>
+                <div className="chart-column-menu-list feature-list">
+                  {section.items.map((option) => (
+                    <button
+                      className={selected.has(option.id) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                      key={option.id}
+                      onClick={() => toggleValue(option.id)}
+                      type="button"
+                    >
+                      <span className="chart-column-menu-check">{selected.has(option.id) ? <Check size={13} /> : null}</span>
+                      <span>{option.title}</span>
+                      {option.group ? <small>{displayName(option.group)}</small> : null}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))
+          ) : (
+            <>
+              <div className="chart-column-menu-title">Indicators</div>
+              <div className="chart-column-menu-list">
+                {indicatorOptions.map((option) => (
+                  <button
+                    className={selected.has(option) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                    key={option}
+                    onClick={() => toggleValue(option)}
+                    type="button"
+                  >
+                    <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
+                    <span>{labelForOption(option)}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="chart-column-menu-divider" />
+              <div className="chart-column-menu-title">Features</div>
+              <div className="chart-column-menu-list feature-list">
+                {visibleFeatures.length ? (
+                  visibleFeatures.map((option) => (
+                    <button
+                      className={selected.has(option) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                      key={option}
+                      onClick={() => toggleValue(option)}
+                      type="button"
+                    >
+                      <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
+                      <span>{labelForOption(option)}</span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="chart-column-menu-empty">No feature columns for this session.</div>
+                )}
+              </div>
+            </>
+          )}
           {labelOptions.length ? (
             <>
               <div className="chart-column-menu-divider" />
@@ -1143,6 +1190,25 @@ function IndicatorFeatureSelect({
       ) : null}
     </div>
   );
+}
+
+function groupChartDisplayItems(items: ChartDisplayItem[]): Array<{ label: string; items: ChartDisplayItem[] }> {
+  const sections = new Map<string, ChartDisplayItem[]>();
+  items.forEach((item) => {
+    const label = displayItemSectionLabel(item);
+    sections.set(label, [...(sections.get(label) ?? []), item]);
+  });
+  return Array.from(sections.entries()).map(([label, sectionItems]) => ({
+    label,
+    items: sectionItems.sort((left, right) => left.title.localeCompare(right.title)),
+  }));
+}
+
+function displayItemSectionLabel(item: ChartDisplayItem) {
+  if (item.category === "indicator") return "Indicators";
+  if (item.category === "feature") return "Features";
+  if (item.category === "label") return "Labels";
+  return displayName(item.category || "Other");
 }
 
 function ChartSettingsPopover({
@@ -1351,13 +1417,19 @@ function formatOscillatorPaneLabel(group: OscillatorPaneGroup) {
 }
 
 function oscillatorPaneKey(series: ChartSeries) {
+  if (series.paneKey && series.paneKey !== "price") return `oscillator:${series.paneKey}`;
+  if (series.displayItemId) return `oscillator:${series.displayItemId}`;
   const column = series.column.toLowerCase();
   if (column.startsWith("macd_")) return "oscillator:macd";
   return legendSeriesKey("oscillator", series);
 }
 
 function legendSeriesKey(pane: LegendPane, series: ChartSeries) {
-  return `${pane}:${series.column || series.label}`;
+  return `${pane}:${series.displayItemId || "column"}:${series.column || series.label}`;
+}
+
+function seriesSelectionKey(series: ChartSeries) {
+  return String(series.displayItemId || series.column || series.label).toLowerCase();
 }
 
 function loadLegendSettings(): LegendSettingsMap {
@@ -1755,8 +1827,10 @@ function syncCrosshairs(
 
 function drawRegions(
   chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick"> | null,
   layer: HTMLDivElement | null,
   regions: Region[],
+  priceZones: PriceZone[],
   candles: Candle[],
   settings: ChartAppearanceSettings
 ) {
@@ -1778,7 +1852,45 @@ function drawRegions(
     node.style.background = sessionRegionColor(region, settings);
     layer.appendChild(node);
   });
+  drawPriceZones(chart, priceSeries, layer, priceZones, candles, barWidth, candleDuration);
   drawDaySeparators(chart, layer, candles, settings, barWidth);
+}
+
+function drawPriceZones(
+  chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick"> | null,
+  layer: HTMLDivElement,
+  zones: PriceZone[],
+  candles: Candle[],
+  barWidth: number,
+  candleDuration: number
+) {
+  if (!priceSeries || !zones.length) return;
+  zones.forEach((zone) => {
+    const coordinates = regionCoordinates(chart, { start: zone.start, end: zone.end, color: zone.color, label: zone.label }, candles, barWidth, candleDuration);
+    if (!coordinates) return;
+    const upper = priceSeries.priceToCoordinate(zone.upper);
+    const lower = priceSeries.priceToCoordinate(zone.lower);
+    if (upper === null || lower === null) return;
+    const left = Math.min(coordinates.start, coordinates.end);
+    const width = Math.abs(coordinates.end - coordinates.start);
+    const top = Math.min(upper, lower);
+    const height = Math.max(2, Math.abs(lower - upper));
+    if (width < 1 || height < 1) return;
+    const node = document.createElement("div");
+    node.className = "price-zone";
+    node.title = zone.label;
+    node.style.left = `${left}px`;
+    node.style.top = `${top}px`;
+    node.style.width = `${width}px`;
+    node.style.height = `${height}px`;
+    node.style.borderColor = zone.color;
+    node.style.background = rgbaFromHex(validHexColor(zone.fillColor, validHexColor(zone.color, "#1E3A5F")), clampNumber(zone.fillOpacity, 0.02, 0.5, 0.14));
+    const label = document.createElement("span");
+    label.textContent = zone.label;
+    node.appendChild(label);
+    layer.appendChild(node);
+  });
 }
 
 function sessionRegionColor(region: Region, settings: ChartAppearanceSettings) {

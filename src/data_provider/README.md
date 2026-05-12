@@ -453,6 +453,8 @@ Charts and run dashboards use `MarketDataProvider` first. If provider artifacts 
 - leakage rules for future-looking supervision
 - default chart/table presentation settings
 
+The catalog has two related layers. `columns` describes the physical provider schema. `displayItems` describes chart-facing presentation units that may reference one column, several columns, or candle properties. Use display items for grouped visual concepts such as MACD, channel bands, bullish FVG zones, bearish FVG zones, order blocks, and score stacks so the frontend does not decide how provider fields should be combined.
+
 Frontend chart controls, schema/catalog review pages, and marker rendering should read this catalog through `/api/market-data/catalog` instead of hardcoding indicator names, colors, panes, or label descriptions. Only the `presentation` block is user-editable. Presentation edits are stored as `catalog_presentation_overrides.json` under the selected processed data root and are merged over the provider default catalog at API read time.
 
 ## Performance Notes
