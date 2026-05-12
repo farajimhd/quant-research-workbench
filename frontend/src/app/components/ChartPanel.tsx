@@ -248,6 +248,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const initialFitTimerRef = useRef<number | null>(null);
   const rangeCleanupRef = useRef<(() => void) | null>(null);
   const crosshairCleanupRef = useRef<(() => void) | null>(null);
+  const overlayInteractionCleanupRef = useRef<(() => void) | null>(null);
+  const overlayRedrawFrameRef = useRef<number | null>(null);
+  const overlayRedrawTimerRef = useRef<number | null>(null);
   const regionDrawRef = useRef<(() => void) | null>(null);
   const baseDataSignatureRef = useRef("");
   const [draftTicker, setDraftTicker] = useState(ticker.toUpperCase());
@@ -416,6 +419,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     });
     if (shellRef.current) observer.observe(shellRef.current);
     resizeObserverRef.current = observer;
+    overlayInteractionCleanupRef.current = attachOverlayRedrawListeners(priceRef.current, scheduleOverlayRedraw, scheduleOverlayRedrawBurst);
     return () => cleanupChartRuntime();
   }, [hasChartData]);
 
@@ -615,11 +619,43 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, reference);
   }
 
+  function scheduleOverlayRedraw() {
+    if (overlayRedrawFrameRef.current !== null) return;
+    overlayRedrawFrameRef.current = window.requestAnimationFrame(() => {
+      overlayRedrawFrameRef.current = null;
+      drawCurrentRegions();
+    });
+  }
+
+  function scheduleOverlayRedrawBurst() {
+    scheduleOverlayRedraw();
+    if (overlayRedrawTimerRef.current !== null) {
+      window.clearTimeout(overlayRedrawTimerRef.current);
+    }
+    let remainingTicks = 8;
+    const tick = () => {
+      scheduleOverlayRedraw();
+      remainingTicks -= 1;
+      overlayRedrawTimerRef.current = remainingTicks > 0 ? window.setTimeout(tick, 45) : null;
+    };
+    overlayRedrawTimerRef.current = window.setTimeout(tick, 45);
+  }
+
   function cleanupChartRuntime() {
     if (initialFitTimerRef.current !== null) {
       window.clearTimeout(initialFitTimerRef.current);
       initialFitTimerRef.current = null;
     }
+    if (overlayRedrawFrameRef.current !== null) {
+      window.cancelAnimationFrame(overlayRedrawFrameRef.current);
+      overlayRedrawFrameRef.current = null;
+    }
+    if (overlayRedrawTimerRef.current !== null) {
+      window.clearTimeout(overlayRedrawTimerRef.current);
+      overlayRedrawTimerRef.current = null;
+    }
+    overlayInteractionCleanupRef.current?.();
+    overlayInteractionCleanupRef.current = null;
     resizeObserverRef.current?.disconnect();
     resizeObserverRef.current = null;
     rangeCleanupRef.current?.();
@@ -823,6 +859,38 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     </div>
   );
 });
+
+function attachOverlayRedrawListeners(target: HTMLElement | null, redraw: () => void, redrawBurst: () => void) {
+  if (!target) return () => undefined;
+  let pointerInterval: number | null = null;
+  const stopPointerRedraw = (redrawAfter = true) => {
+    if (pointerInterval !== null) {
+      window.clearInterval(pointerInterval);
+      pointerInterval = null;
+    }
+    window.removeEventListener("pointerup", endPointerRedraw);
+    window.removeEventListener("pointercancel", endPointerRedraw);
+    if (redrawAfter) redrawBurst();
+  };
+  const endPointerRedraw = () => stopPointerRedraw(true);
+  const startPointerRedraw = () => {
+    redraw();
+    if (pointerInterval === null) {
+      pointerInterval = window.setInterval(redraw, 40);
+      window.addEventListener("pointerup", endPointerRedraw);
+      window.addEventListener("pointercancel", endPointerRedraw);
+    }
+  };
+  target.addEventListener("pointerdown", startPointerRedraw);
+  target.addEventListener("wheel", redrawBurst, { passive: true });
+  target.addEventListener("dblclick", redrawBurst);
+  return () => {
+    target.removeEventListener("pointerdown", startPointerRedraw);
+    target.removeEventListener("wheel", redrawBurst);
+    target.removeEventListener("dblclick", redrawBurst);
+    stopPointerRedraw(false);
+  };
+}
 
 function ChartPeriodSelect({
   end,
