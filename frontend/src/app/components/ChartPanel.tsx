@@ -1959,7 +1959,7 @@ function drawPriceZones(
 ) {
   if (!priceSeries || !zones.length) return;
   zones.forEach((zone) => {
-    const coordinates = regionCoordinates(chart, { start: zone.start, end: zone.end, color: zone.color, label: zone.label }, candles, barWidth, candleDuration);
+    const coordinates = priceZoneCoordinates(chart, zone, candles, barWidth, candleDuration);
     if (!coordinates) return;
     const upper = priceSeries.priceToCoordinate(zone.upper);
     const lower = priceSeries.priceToCoordinate(zone.lower);
@@ -2006,6 +2006,14 @@ function drawPriceZones(
     node.appendChild(label);
     layer.appendChild(node);
   });
+}
+
+function priceZoneCoordinates(chart: IChartApi, zone: PriceZone, candles: Candle[], barWidth: number, candleDuration: number) {
+  const coordinates = regionCoordinates(chart, { start: zone.start, end: zone.end, color: zone.color, label: zone.label }, candles, barWidth, candleDuration);
+  if (!coordinates) return null;
+  const exactStart = chart.timeScale().timeToCoordinate(zone.start as Time);
+  if (exactStart === null) return coordinates;
+  return { ...coordinates, start: exactStart };
 }
 
 function sessionRegionColor(region: Region, settings: ChartAppearanceSettings) {
