@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 4
+CATALOG_VERSION = 5
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -168,6 +168,90 @@ OSCILLATOR_TERMS = ("macd", "rsi", "roc", "cci", "stoch", "z20", "relative_", "s
 DEFAULT_VISIBLE_COLUMNS = {"vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"}
 DEFAULT_VISIBLE_DISPLAY_ITEMS = {"indicator.vwap", "indicator.tema_trend", "indicator.macd"}
 DYNAMIC_COLORS = ["#1E3A5F", "#B7791F", "#067647", "#B42318", "#2563EB", "#7C3AED", "#0E7490", "#C2410C"]
+DATA_SHAPES = ["continuous_series", "bar_event", "anchored_zone", "regime_state", "data_only"]
+DATA_ONLY_ROLES = {"data_only", "table_only"}
+ANCHOR_ZONE_ROLES = {"anchored_zone", "price_zone"}
+PRICE_TARGET_ROLES = {"price_overlay", "marker", "continuous_band", "anchored_zone", "price_zone"}
+LOWER_PANE_ROLES = {"oscillator", "histogram"}
+DISPLAY_PRESETS: dict[str, dict[str, Any]] = {
+    "price_overlay": {
+        "label": "Price Overlay",
+        "dataShapes": ["continuous_series"],
+        "target": "price",
+        "lockedFields": ["pane"],
+        "styleFields": ["color", "opacity", "lineStyle", "lineWidth", "valueFormat", "precision"],
+        "description": "Continuous numeric series drawn as a line on the candle price pane.",
+    },
+    "oscillator": {
+        "label": "Oscillator",
+        "dataShapes": ["continuous_series"],
+        "target": "lower_pane",
+        "styleFields": ["pane", "color", "opacity", "lineStyle", "lineWidth", "valueFormat", "precision"],
+        "description": "Continuous numeric series drawn as a line in a lower pane.",
+    },
+    "histogram": {
+        "label": "Histogram",
+        "dataShapes": ["continuous_series"],
+        "target": "lower_pane",
+        "styleFields": ["pane", "color", "opacity", "baseline", "valueFormat", "precision"],
+        "description": "Continuous numeric series drawn as vertical bars around a baseline.",
+    },
+    "marker": {
+        "label": "Marker",
+        "dataShapes": ["bar_event"],
+        "target": "price",
+        "lockedFields": ["pane"],
+        "styleFields": ["color", "markerShape", "markerPosition", "markerSize", "labelMode"],
+        "description": "Discrete event rendered as a symbol on the source bar.",
+    },
+    "text_label": {
+        "label": "Text Label",
+        "dataShapes": ["bar_event"],
+        "target": "price",
+        "lockedFields": ["pane"],
+        "styleFields": ["color", "markerPosition", "fontSize", "labelMode"],
+        "description": "Discrete event rendered as a compact text annotation at the source bar.",
+    },
+    "continuous_band": {
+        "label": "Continuous Band",
+        "dataShapes": ["continuous_series"],
+        "target": "price",
+        "lockedFields": ["pane"],
+        "styleFields": ["color", "lineStyle", "lineWidth", "bandFillColor", "bandFillOpacity", "valueFormat", "precision"],
+        "description": "Price-following envelope around one or more continuous boundary series.",
+    },
+    "anchored_zone": {
+        "label": "Anchored Zone",
+        "dataShapes": ["anchored_zone"],
+        "target": "price",
+        "lockedFields": ["pane"],
+        "styleFields": ["color", "bandFillColor", "bandFillOpacity", "borderStyle", "borderWidth", "extendRule", "maxBars", "stopOnMitigation"],
+        "description": "Event-created price/time zone such as an FVG or order-block proxy.",
+    },
+    "background_state": {
+        "label": "Background State",
+        "dataShapes": ["regime_state"],
+        "target": "chart_background",
+        "lockedFields": ["pane"],
+        "styleFields": ["color", "opacity", "priority"],
+        "description": "Regime or session state rendered as chart background shading.",
+    },
+    "composite": {
+        "label": "Grouped Display",
+        "dataShapes": ["continuous_series", "anchored_zone", "bar_event"],
+        "target": "mixed",
+        "styleFields": ["valueFormat", "precision"],
+        "description": "Group-level contract whose child display items carry their own display types.",
+    },
+    "data_only": {
+        "label": "Data Only",
+        "dataShapes": ["any"],
+        "target": "none",
+        "lockedFields": ["pane"],
+        "styleFields": ["valueFormat", "precision"],
+        "description": "Available in tables and catalog, but not rendered on the chart.",
+    },
+}
 TITLE_ACRONYMS = {
     "atr": "ATR",
     "bb": "BB",
@@ -296,10 +380,15 @@ def base_provider_catalog() -> dict[str, Any]:
         "displayItems": build_display_items(columns),
         "supervisionMethods": build_method_contracts(),
         "scanners": build_scanner_contracts(),
+        "presentationPresets": DISPLAY_PRESETS,
         "presentationOptions": {
-            "chartRoles": ["price_overlay", "oscillator", "histogram", "marker", "band", "price_zone", "composite", "table_only"],
-            "panes": ["price", "macd", "oscillator", "new", "supervision"],
+            "chartRoles": list(DISPLAY_PRESETS.keys()),
+            "dataShapes": DATA_SHAPES,
+            "panes": ["price", "macd", "oscillator", "new", "supervision", "stochastic", "shock", "participation"],
             "lineStyles": ["solid", "dashed", "dotted"],
+            "borderStyles": ["solid", "dashed", "dotted"],
+            "extendRules": ["fixed_bars", "until_mitigated", "session_end"],
+            "labelModes": ["none", "short", "value", "full"],
             "markerShapes": ["circle", "arrowUp", "arrowDown", "square"],
             "markerPositions": ["aboveBar", "belowBar", "inBar"],
             "valueFormats": ["price", "percent", "number", "integer", "boolean", "datetime", "text"],
@@ -347,8 +436,8 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             group="momentum",
             pane="price",
             parts=[
-                display_part(by_column, "tema9", label="TEMA9", line_width=2, color="#2563EB"),
-                display_part(by_column, "tema20", label="TEMA20", line_width=2, color="#B7791F"),
+                display_part(by_column, "tema9", label="TEMA9", color="#2563EB"),
+                display_part(by_column, "tema20", label="TEMA20", color="#B7791F"),
             ],
             default_visible=True,
             short="Fast and slower TEMA overlays for trend responsiveness.",
@@ -470,10 +559,10 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             detailed="Session Range groups the current session anchor and running extremes into one price-structure display.",
         )
     )
-    add(price_zone_display_item(by_column, "feature.fvg_bullish", "Bullish FVG", "fvg", "bullish_fvg", "fvg_high", "fvg_low", "#067647", 24))
-    add(price_zone_display_item(by_column, "feature.fvg_bearish", "Bearish FVG", "fvg", "bearish_fvg", "fvg_high", "fvg_low", "#B42318", 24))
-    add(price_zone_display_item(by_column, "feature.order_block_bullish", "Bullish Order Block", "order_blocks", "bullish_displacement", "bullish_order_block_high", "bullish_order_block_low", "#0E7490", 36))
-    add(price_zone_display_item(by_column, "feature.order_block_bearish", "Bearish Order Block", "order_blocks", "bearish_displacement", "bearish_order_block_high", "bearish_order_block_low", "#C2410C", 36))
+    add(anchored_zone_display_item(by_column, "feature.fvg_bullish", "Bullish FVG", "fvg", "bullish_fvg", "fvg_high", "fvg_low", "#067647", 24))
+    add(anchored_zone_display_item(by_column, "feature.fvg_bearish", "Bearish FVG", "fvg", "bearish_fvg", "fvg_high", "fvg_low", "#B42318", 24))
+    add(anchored_zone_display_item(by_column, "feature.order_block_bullish", "Bullish Order Block", "order_blocks", "bullish_displacement", "bullish_order_block_high", "bullish_order_block_low", "#0E7490", 36))
+    add(anchored_zone_display_item(by_column, "feature.order_block_bearish", "Bearish Order Block", "order_blocks", "bearish_displacement", "bearish_order_block_high", "bearish_order_block_low", "#C2410C", 36))
     add(
         composite_display_item(
             by_column,
@@ -519,7 +608,7 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             column not in grouped_columns
             and contract.get("category") in {"indicator", "feature"}
             and presentation.get("selectable", True)
-            and role not in {"", "marker", "table_only"}
+            and role not in {"", "marker", "data_only", "table_only"}
         ):
             add(single_display_item(by_column, f"column.{column}", str(contract.get("title") or title_for_column(column)), [column], str(contract.get("group") or ""), default_visible=False))
 
@@ -542,6 +631,8 @@ def display_item_contract(
         return None
     artifact_groups = sorted({artifact for column in source_columns for artifact in by_column[column].get("artifactGroups", [])})
     feature_groups = sorted({artifact.replace("features_", "", 1) for artifact in artifact_groups if artifact.startswith("features_")})
+    normalized_presentation = normalize_presentation(presentation)
+    data_shape = str(normalized_presentation.get("dataShape") or common_data_shape(by_column, source_columns))
     return {
         "id": item_id,
         "title": title,
@@ -549,6 +640,7 @@ def display_item_contract(
         "category": category,
         "group": group,
         "groups": [group],
+        "dataShape": data_shape,
         "sourceColumns": source_columns,
         "artifactGroups": artifact_groups,
         "featureGroups": feature_groups,
@@ -560,7 +652,7 @@ def display_item_contract(
             equation=display_item_equation(title, source_columns),
             variables={"SourceColumns": ", ".join(source_columns)},
         ),
-        "presentation": presentation,
+        "presentation": normalized_presentation,
     }
 
 
@@ -623,10 +715,13 @@ def composite_display_item(
             "selectable": True,
             "defaultVisible": default_visible or item_id in DEFAULT_VISIBLE_DISPLAY_ITEMS,
             "chartRole": "composite",
+            "dataShape": "continuous_series",
             "pane": pane,
             "legend": True,
             "valueFormat": value_format,
             "parts": parts,
+            "presentationSource": "auto",
+            "presentationConfidence": 0.92,
         },
         short=short,
         detailed=detailed,
@@ -652,7 +747,7 @@ def channel_display_item(by_column: dict[str, dict[str, Any]], item_id: str, tit
     )
 
 
-def price_zone_display_item(
+def anchored_zone_display_item(
     by_column: dict[str, dict[str, Any]],
     item_id: str,
     title: str,
@@ -675,18 +770,27 @@ def price_zone_display_item(
         presentation={
             "selectable": True,
             "defaultVisible": False,
-            "chartRole": "price_zone",
+            "chartRole": "anchored_zone",
+            "dataShape": "anchored_zone",
             "pane": "price",
             "legend": True,
             "color": color,
             "bandFillColor": color,
             "bandFillOpacity": 0.14,
+            "borderColor": color,
+            "borderStyle": "solid",
+            "borderWidth": 1,
             "direction": direction,
             "signalColumn": signal_column,
             "upperColumn": upper_column,
             "lowerColumn": lower_column,
             "extendBars": extend_bars,
+            "maxBars": extend_bars,
+            "extendRule": "fixed_bars",
+            "stopOnMitigation": False,
             "valueFormat": "price",
+            "presentationSource": "auto",
+            "presentationConfidence": 0.95,
         },
         short=f"{title} zone on the candle pane.",
         detailed=f"{title} is a candle-structure display, not an oscillator. It uses {signal_column} to find events and draws the {lower_column}-{upper_column} price zone forward for review.",
@@ -703,21 +807,25 @@ def display_part(
     style: str = "line",
     color: str | None = None,
     line_style: str = "solid",
-    line_width: int = 1,
+    line_width: int | None = None,
+    opacity: float | None = None,
 ) -> dict[str, Any]:
     contract = by_column.get(column, {})
     presentation = contract.get("presentation", {}) if contract else {}
     resolved_role = role if role != "price_overlay" or pane == "price" else "oscillator"
+    resolved_line_width = line_width if line_width is not None else int(presentation.get("lineWidth") or line_width_for_column(column, resolved_role))
     return {
         "id": column,
         "column": column,
         "label": label or str(contract.get("shortTitle") or contract.get("title") or title_for_column(column)),
         "chartRole": resolved_role,
+        "dataShape": str(presentation.get("dataShape") or data_shape_for_column(column, str(contract.get("group") or ""), str(contract.get("category") or ""))),
         "pane": pane,
         "style": style,
         "color": color or str(presentation.get("color") or color_for_column(column)),
         "lineStyle": line_style,
-        "lineWidth": line_width,
+        "lineWidth": resolved_line_width,
+        "opacity": opacity if opacity is not None else float(presentation.get("opacity") or opacity_for_column(column, resolved_role)),
         "legend": True,
     }
 
@@ -725,6 +833,54 @@ def display_part(
 def display_item_equation(title: str, source_columns: list[str]) -> str:
     source_text = ", ".join(source_columns)
     return f"$$\\text{{{title}}}_t=Display({source_text})$$"
+
+
+def common_data_shape(by_column: dict[str, dict[str, Any]], source_columns: list[str]) -> str:
+    shapes = [str(by_column.get(column, {}).get("dataShape") or by_column.get(column, {}).get("presentation", {}).get("dataShape") or "data_only") for column in source_columns]
+    if not shapes:
+        return "data_only"
+    if all(shape == shapes[0] for shape in shapes):
+        return shapes[0]
+    if "anchored_zone" in shapes:
+        return "anchored_zone"
+    if "bar_event" in shapes:
+        return "bar_event"
+    if "regime_state" in shapes:
+        return "regime_state"
+    if "continuous_series" in shapes:
+        return "continuous_series"
+    return "data_only"
+
+
+def normalize_chart_role(role: Any) -> str:
+    value = str(role or "data_only")
+    if value == "table_only":
+        return "data_only"
+    if value == "price_zone":
+        return "anchored_zone"
+    if value == "band":
+        return "continuous_band"
+    return value if value in DISPLAY_PRESETS else "data_only"
+
+
+def normalize_presentation(presentation: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(presentation)
+    role = normalize_chart_role(normalized.get("chartRole"))
+    normalized["chartRole"] = role
+    normalized["styleFields"] = list(DISPLAY_PRESETS.get(role, DISPLAY_PRESETS["data_only"]).get("styleFields", []))
+    normalized["presentationSource"] = normalized.get("presentationSource") or "auto"
+    normalized["presentationConfidence"] = float(normalized.get("presentationConfidence") or 0.85)
+    if role == "data_only":
+        normalized["legend"] = False
+        normalized.pop("pane", None)
+    elif role in PRICE_TARGET_ROLES:
+        normalized["pane"] = "price"
+    elif role in LOWER_PANE_ROLES and not normalized.get("pane"):
+        normalized["pane"] = "oscillator"
+    parts = normalized.get("parts")
+    if isinstance(parts, list):
+        normalized["parts"] = [normalize_presentation(part) if isinstance(part, dict) else part for part in parts]
+    return {key: value for key, value in normalized.items() if value is not None}
 
 
 def add_column(entries: dict[str, dict[str, Any]], column: str, *, group: str, artifact_group: str) -> None:
@@ -744,11 +900,12 @@ def add_column(entries: dict[str, dict[str, Any]], column: str, *, group: str, a
         "category": category,
         "group": group,
         "groups": [group],
+        "dataShape": data_shape_for_column(column, group, category),
         "artifactGroups": [artifact_group],
         "dtype": dtype_for_column(column),
         "knowledge": knowledge_for_column(column, group, category, title),
         "semantics": semantics_for_column(column),
-        "presentation": presentation_for_column(column, group, category),
+        "presentation": normalize_presentation(presentation_for_column(column, group, category)),
     }
     if group.startswith("supervision_"):
         contract["leakage"] = leakage_block()
@@ -785,6 +942,7 @@ def build_method_contracts() -> list[dict[str, Any]]:
                 "method": method,
                 "title": details.get("title", title_for_column(method)),
                 "category": "supervision_method",
+                "dataShape": "bar_event",
                 "direction": "long",
                 "validTimeframes": "all",
                 "horizonBars": [min_bars, max_bars],
@@ -813,12 +971,15 @@ def build_method_contracts() -> list[dict[str, Any]]:
                     "selectable": True,
                     "defaultVisible": False,
                     "chartRole": "marker",
+                    "dataShape": "bar_event",
                     "pane": "price",
                     "markerShape": "arrowUp",
                     "markerPosition": "belowBar",
                     "color": "#2563EB",
                     "valueFormat": "boolean",
                     "legend": True,
+                    "presentationSource": "auto",
+                    "presentationConfidence": 0.9,
                 },
             }
         )
@@ -831,6 +992,7 @@ def build_scanner_contracts() -> list[dict[str, Any]]:
             "id": "scanner.method_rank",
             "title": "Method Scanner Rank",
             "category": "supervision_scanner",
+            "dataShape": "bar_event",
             "purpose": "Ranks tickers at the same timestamp for each method using method confidence.",
             "candidateConditions": ["valid_future_window", "method_confidence is available"],
             "rankingColumns": ["oracle_rank", "oracle_percentile", "method_confidence"],
@@ -849,12 +1011,15 @@ def build_scanner_contracts() -> list[dict[str, Any]]:
                 "selectable": True,
                 "defaultVisible": False,
                 "chartRole": "marker",
+                "dataShape": "bar_event",
                 "pane": "price",
                 "markerShape": "arrowUp",
                 "markerPosition": "aboveBar",
                 "color": "#7C3AED",
                 "valueFormat": "integer",
                 "legend": True,
+                "presentationSource": "auto",
+                "presentationConfidence": 0.9,
             },
         }
     ]
@@ -918,20 +1083,25 @@ def semantics_for_column(column: str) -> dict[str, Any]:
 
 def presentation_for_column(column: str, group: str, category: str) -> dict[str, Any]:
     lower = column.lower()
+    data_shape = data_shape_for_column(column, group, category)
     role = chart_role_for_column(column, group, category)
     pane = pane_for_role(column, role)
     presentation: dict[str, Any] = {
         "selectable": category in {"indicator", "feature", "label"},
         "defaultVisible": column in DEFAULT_VISIBLE_COLUMNS,
         "chartRole": role,
+        "dataShape": data_shape,
         "pane": pane,
         "groupKey": "macd" if lower.startswith("macd_") else None,
         "color": color_for_column(column),
         "lineStyle": "solid",
-        "lineWidth": 2 if column in {"vwap", "tema9", "tema20"} else 1,
+        "lineWidth": line_width_for_column(column, role),
+        "opacity": opacity_for_column(column, role),
         "valueFormat": value_format_for_column(column),
         "precision": precision_for_column(column),
-        "legend": role not in {"table_only"},
+        "legend": role not in DATA_ONLY_ROLES,
+        "presentationSource": "auto",
+        "presentationConfidence": presentation_confidence_for_column(column, group, category, role, data_shape),
     }
     if role == "marker":
         if group == "supervision_scanner":
@@ -943,18 +1113,39 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
     return {key: value for key, value in presentation.items() if value is not None}
 
 
+def data_shape_for_column(column: str, group: str, category: str) -> str:
+    lower = column.lower()
+    if category == "bar" or column in KEY_COLUMNS:
+        return "data_only"
+    if group.startswith("supervision_"):
+        if lower in {"oracle_long_entry_signal", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5", "is_top_10", "is_top_1pct", "is_top_5pct"}:
+            return "bar_event"
+        return "data_only"
+    if group == "fvg":
+        return "bar_event" if lower in {"bullish_fvg", "bearish_fvg"} else "data_only"
+    if group == "order_blocks":
+        return "bar_event" if lower in {"bullish_displacement", "bearish_displacement"} else "data_only"
+    if lower == "trend_regime" or lower.endswith("_regime"):
+        return "regime_state"
+    if dtype_for_column(column) == "bool":
+        return "bar_event"
+    if category in {"indicator", "feature"}:
+        return "continuous_series"
+    return "data_only"
+
+
 def chart_role_for_column(column: str, group: str, category: str) -> str:
     lower = column.lower()
     if category == "bar" or column in KEY_COLUMNS:
-        return "table_only"
+        return "data_only"
     if lower in {"indicator_bar_count", "macd_ready", "tema_ready"}:
-        return "table_only"
+        return "data_only"
     if group.startswith("supervision_"):
-        return "marker" if lower in {"oracle_long_entry_signal", "method_entry_signal", "is_top_1", "is_top_3", "is_top_5"} else "table_only"
+        return "marker" if lower in {"oracle_long_entry_signal", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5"} else "data_only"
     if group == "fvg":
-        return "table_only"
+        return "data_only"
     if group == "order_blocks" and ("order_block" in lower or "displacement" in lower):
-        return "table_only"
+        return "data_only"
     if lower == "macd_hist":
         return "histogram"
     if any(term in lower for term in PRICE_OVERLAY_TERMS):
@@ -967,13 +1158,50 @@ def chart_role_for_column(column: str, group: str, category: str) -> str:
 
 
 def pane_for_role(column: str, role: str) -> str:
-    if role in {"price_overlay", "band", "marker"}:
+    if role in PRICE_TARGET_ROLES:
         return "price"
     if column.lower().startswith("macd_"):
         return "macd"
     if role in {"oscillator", "histogram"}:
         return "oscillator"
     return "price"
+
+
+def line_width_for_column(column: str, role: str) -> int:
+    lower = column.lower()
+    if role in DATA_ONLY_ROLES or role == "marker":
+        return 1
+    if role == "histogram":
+        return 1
+    if role == "price_overlay" and lower in {"vwap", "ema200", "sma200"}:
+        return 3
+    return 1
+
+
+def opacity_for_column(column: str, role: str) -> float:
+    lower = column.lower()
+    if role == "price_overlay" and lower in {"vwap", "ema200", "sma200"}:
+        return 0.46
+    if role == "price_overlay":
+        return 0.82
+    if role in {"oscillator", "histogram"}:
+        return 0.9
+    if role in ANCHOR_ZONE_ROLES or role == "continuous_band":
+        return 0.72
+    return 1.0
+
+
+def presentation_confidence_for_column(column: str, group: str, category: str, role: str, data_shape: str) -> float:
+    lower = column.lower()
+    if column in DEFAULT_VISIBLE_COLUMNS or lower in {"vwap", "ema200", "sma200", "macd_line", "macd_signal", "macd_hist", "rsi14", "atr14"}:
+        return 0.96
+    if group in {"fvg", "order_blocks", "shock", "session", "volume_liquidity", "momentum"}:
+        return 0.9
+    if role == "data_only" and data_shape == "data_only":
+        return 0.88
+    if category in {"indicator", "feature", "label"}:
+        return 0.82
+    return 0.75
 
 
 def color_for_column(column: str) -> str:
@@ -1028,77 +1256,117 @@ def knowledge_for_column(column: str, group: str, category: str, title: str) -> 
         return knowledge_block(
             short="Volume-weighted average price.",
             detailed="VWAP is the cumulative dollar-volume divided by cumulative share volume for the same ticker and session. In this provider it resets by ticker and session_date, so the value describes where the session has traded on a volume-weighted basis up to the current bar.",
-            theory="VWAP anchors price to participation. Trading above VWAP often indicates demand is paying above the volume-weighted consensus, while trading below VWAP indicates weaker demand.",
-            interpretation="Use VWAP as a price-location and mean-reversion/trend anchor. Breaks and reclaims can mark intraday regime changes.",
+            theory="VWAP is a participation-weighted estimator of the session's traded consensus price. Unlike a time-weighted moving average, every bar contributes in proportion to traded shares, so high-participation intervals move the anchor more than quiet intervals. In microstructure terms it is a practical benchmark for whether new trades are occurring above or below the volume-weighted cost basis of the session.",
+            interpretation="Read price above a rising VWAP as evidence that buyers are accepting prices above the session's volume-weighted consensus. A reclaim after trading below VWAP can indicate a change in intraday control, while repeated failures near VWAP often mark mean-reversion pressure. Its usefulness increases when combined with relative volume, range expansion, and session context.",
             equation="$$VWAP_t=\\frac{\\sum_{i=1}^{t}Close_i\\cdot Volume_i}{\\sum_{i=1}^{t}Volume_i}$$",
             variables={"Close_i": "Close price for earlier bar i in the same ticker/session", "Volume_i": "Share volume for bar i"},
+            caveats=[
+                "VWAP is path-dependent and session-reset; do not compare one session's VWAP directly with another without controlling for session structure.",
+                "A price crossing VWAP is not a signal by itself. Low-volume crosses and noisy midday rotation can produce false regime changes.",
+                "Provider VWAP uses bar close times volume, so it is an aggregate approximation rather than trade-level VWAP.",
+            ],
         )
     if lower.startswith("sma"):
         window = trailing_number(lower, 20)
         return knowledge_block(
             short=f"Simple moving average over {window} bars.",
             detailed="SMA smooths price by averaging the last N closes with equal weight.",
-            theory="Moving averages reduce noise and provide a lagging estimate of trend direction and dynamic support/resistance.",
-            interpretation="Price above a rising SMA suggests trend strength; compression across SMAs suggests congestion.",
+            theory="SMA is a finite impulse response smoother: each close in the lookback window receives identical weight and all older observations receive zero weight. That makes it transparent and stable, but it also introduces lag roughly proportional to the window length. The slope and relative ordering of multiple SMAs summarize low-frequency trend information after filtering high-frequency candle noise.",
+            interpretation="Use SMA as a slow trend and location reference. Price above a rising long SMA suggests persistent upward drift; stacked short-over-long averages show trend alignment; compressed averages show reduced directional separation. Treat the level as a reference zone rather than a precise support or resistance line.",
             equation=f"$$SMA_{{{window},t}}=\\frac{{1}}{{{window}}}\\sum_{{i=0}}^{{{window - 1}}}C_{{t-i}}$$",
             variables={"C": "Close price"},
+            caveats=[
+                "SMA is lagging by construction and reacts slowly to regime changes.",
+                "Equal weighting can make the estimate jump when an old extreme leaves the window.",
+                "Moving-average support and resistance are empirical conventions, not structural market laws.",
+            ],
         )
     if lower.startswith("ema"):
         window = trailing_number(lower, 20)
         return knowledge_block(
             short=f"Exponential moving average over {window} bars.",
             detailed="EMA smooths price while weighting recent bars more heavily than older bars.",
-            theory="EMA reacts faster than SMA and is useful when the latest price action should carry more information.",
-            interpretation="A fast EMA crossing above a slow EMA can indicate momentum expansion.",
+            theory="EMA is an infinite impulse response smoother with exponentially decaying weights. The smoothing constant gives recent closes more influence while retaining a memory of older prices. Compared with SMA, EMA reduces window-exit discontinuities and responds faster to new information, which makes it useful for trend-following and momentum-state estimation.",
+            interpretation="Use fast EMAs to track short-horizon pressure and slow EMAs to define the broader drift. Crossovers indicate that recent prices have shifted enough to overcome the slower baseline, but the quality of that shift depends on range, volume, and session context. EMA200 is treated as a major long-horizon reference, so the catalog displays it with a thicker but more transparent line.",
             equation=f"$$EMA_t=\\alpha C_t+(1-\\alpha)EMA_{{t-1}},\\quad \\alpha=\\frac{{2}}{{{window}+1}}$$",
             variables={"C_t": "Close price at bar t"},
+            caveats=[
+                "EMA reacts faster than SMA but still lags turning points.",
+                "Crossover systems can whipsaw in range-bound markets.",
+                "The effective meaning of a window depends on timeframe; EMA200 on 1m bars is not the same market horizon as EMA200 on daily bars.",
+            ],
         )
     if lower.startswith("tema"):
         window = trailing_number(lower, 20)
         return knowledge_block(
             short=f"Triple exponential moving average over {window} bars.",
             detailed="TEMA combines three EMA layers to reduce lag while retaining smoothing.",
-            theory="TEMA attempts to preserve trend responsiveness without giving up the noise reduction of moving averages.",
-            interpretation="TEMA slope and price crosses can show faster momentum changes than SMA/EMA.",
+            theory="TEMA combines first-, second-, and third-order EMA smoothers using a lag-correction identity. The construction attempts to keep the smoothing benefit of exponential averages while subtracting part of the delay introduced by repeated smoothing. It is therefore more responsive than a single EMA of the same nominal window, but also more sensitive to short-lived bursts.",
+            interpretation="Use TEMA slope and TEMA9/TEMA20 separation as a fast momentum-state overlay. Expanding separation indicates acceleration; flattening or crossing indicates loss of short-term trend pressure. It should be confirmed with participation because fast smoothers can react strongly to isolated candles.",
             equation="$$TEMA_t=3EMA_1-3EMA_2+EMA_3$$",
             variables={"EMA_1": f"EMA(close, {window})", "EMA_2": f"EMA(EMA_1, {window})", "EMA_3": f"EMA(EMA_2, {window})"},
+            caveats=[
+                "Lower lag comes with higher sensitivity to noise.",
+                "TEMA can overstate the importance of isolated high-range bars.",
+                "Use warm-up readiness fields before trusting early-session values.",
+            ],
         )
     if lower.startswith("macd"):
         return knowledge_block(
             short="Momentum oscillator based on fast and slow EMAs.",
             detailed="MACD compares a fast EMA to a slow EMA, then smooths the difference with a signal line. The histogram measures the distance between the two.",
-            theory="MACD is a trend-momentum tool. Expanding separation indicates accelerating momentum; contraction indicates weakening momentum.",
-            interpretation="Line/signal crosses and histogram expansion can help identify momentum shifts, but can whipsaw in ranges.",
+            theory="MACD is a two-scale trend-momentum decomposition. The MACD line measures the spread between short and longer exponential trend estimates; the signal line smooths that spread; the histogram approximates the first difference between the spread and its smoother. This makes MACD most informative when trend acceleration or deceleration is more important than absolute price level.",
+            interpretation="Read MACD above signal with a rising histogram as improving positive momentum. A falling histogram while both lines remain positive can warn that acceleration is fading before price has reversed. Because all three components describe one model, the catalog groups them into a single pane rather than separate independent indicators.",
             equation="$$MACD_t=EMA_{12}(C_t)-EMA_{26}(C_t)$$\n\n$$Signal_t=EMA_9(MACD_t)$$\n\n$$Hist_t=MACD_t-Signal_t$$",
             variables={"C_t": "Close price at bar t"},
+            caveats=[
+                "MACD is derived from moving averages, so it lags sudden reversals.",
+                "Zero-line and signal-line crosses are less reliable in low-volatility ranges.",
+                "Histogram color follows candle direction by default for visual consistency, but the value itself is MACD minus signal.",
+            ],
         )
     if lower.startswith("rsi"):
         window = trailing_number(lower, 14)
         return knowledge_block(
             short=f"Relative Strength Index over {window} bars.",
             detailed="RSI compares average gains and losses to measure momentum pressure on a bounded 0-100 scale.",
-            theory="RSI captures persistence of directional closes. Extremes can indicate trend strength or exhaustion depending on context.",
-            interpretation="High RSI can signal strong momentum in breakouts but overextension in ranges.",
+            theory="RSI is a bounded transform of the ratio between smoothed positive and negative close-to-close movement. Because it normalizes directional pressure into a 0-100 oscillator, it is comparable across price levels and tickers, but the bounded scale also compresses information during persistent trends.",
+            interpretation="Use RSI as a regime-dependent momentum-pressure measure. In a strong breakout, RSI holding above 60 can indicate persistent demand; in a range, RSI above 70 can mark overextension. Divergence between price making a new high and RSI failing to confirm can indicate weaker marginal momentum.",
             equation=f"$$RSI_t=100-\\frac{{100}}{{1+RS_t}},\\quad RS_t=\\frac{{AvgGain_{{{window}}}}}{{AvgLoss_{{{window}}}}}$$",
             variables={"AvgGain": "Average positive close-to-close change", "AvgLoss": "Average negative close-to-close change"},
+            caveats=[
+                "RSI thresholds are regime-dependent; fixed 70/30 rules are too crude for all markets.",
+                "Strong trends can remain overbought or oversold for long periods.",
+                "RSI ignores volume and intrabar path, so confirm with participation and structure.",
+            ],
         )
     if lower.startswith("atr") or lower == "true_range":
         return knowledge_block(
             short="Volatility measure based on true range.",
             detailed="ATR smooths true range to estimate recent realized volatility.",
-            theory="True range accounts for gaps by considering high-low, high-prior-close, and low-prior-close movement.",
-            interpretation="Use ATR for volatility normalization, stop sizing, and range expansion detection.",
+            theory="ATR estimates realized range volatility with a gap-aware range definition. By comparing high-low movement with high/prior-close and low/prior-close displacement, true range captures both intrabar movement and discontinuities between bars. ATR is therefore a scale variable: it helps compare movement magnitude across tickers, prices, and volatility regimes.",
+            interpretation="Use ATR to normalize candle range, shock thresholds, and stop distance. A move of one dollar is not meaningful without volatility context; a move of several ATR units is more comparable across names. Rising ATR indicates expanding realized movement but does not determine direction.",
             equation="$$TR_t=max(H_t-L_t, |H_t-C_{t-1}|, |L_t-C_{t-1}|)$$\n\n$$ATR_t=SMA(TR_t,14)$$",
             variables={"H": "High", "L": "Low", "C": "Close"},
+            caveats=[
+                "ATR measures magnitude, not direction.",
+                "Large opening gaps can dominate short-window ATR.",
+                "ATR-based thresholds should be recalibrated when changing timeframe.",
+            ],
         )
     if lower.startswith("bb_"):
         return knowledge_block(
             short="Bollinger Band statistic around a moving average.",
             detailed="Bollinger Bands use the 20-bar close mean as the center line and two rolling standard deviations as the upper/lower envelope. Band width normalizes the full band span by the middle band.",
-            theory="Bands widen as volatility expands and tighten as volatility contracts.",
-            interpretation="Band expansion can confirm volatility breakouts; band touches can show overextension in ranges.",
+            theory="Bollinger Bands combine a location estimator with a rolling dispersion estimator. The envelope expands when recent closes become more variable and contracts when price distribution narrows. The construction assumes recent variance is informative, not that prices are normally distributed; the two-standard-deviation convention is a visual volatility envelope rather than a probability guarantee.",
+            interpretation="Use band width to read volatility compression and expansion. A close riding the upper band during high participation can indicate trend pressure; repeated upper-band rejection in a range can indicate exhaustion. The middle band is the local mean reference, while upper and lower bands contextualize stretch.",
             equation="$$Middle_t=SMA_{20}(Close_t)$$\n\n$$Upper_t=Middle_t+2\\sigma_{20}(Close_t)$$\n\n$$Lower_t=Middle_t-2\\sigma_{20}(Close_t)$$\n\n$$Width_t=\\frac{Upper_t-Lower_t}{Middle_t}$$",
             variables={"C": "Close price", "\\sigma": "Rolling standard deviation"},
+            caveats=[
+                "Band touches are not automatically reversal signals.",
+                "Rolling standard deviation is sensitive to recent outliers.",
+                "The envelope should be interpreted with trend state and volume confirmation.",
+            ],
         )
     feature_knowledge = feature_knowledge_for_column(column, group, category, title)
     if feature_knowledge is not None:
@@ -1818,40 +2086,42 @@ def fallback_knowledge_for_column(column: str, group: str, category: str, title:
 
 def theory_for_group(group: str, category: str) -> str:
     if group == "session":
-        return "Session features anchor intraday state to market structure such as the open, premarket range, and opening range."
+        return "Session features encode where the current bar sits relative to time-segmented market structure. Intraday behavior is not stationary across premarket, open auction aftermath, midday liquidity, and close; anchoring to premarket range, opening range, session open, and running extremes makes price location comparable inside those regimes."
     if group == "volume_liquidity":
-        return "Volume and liquidity features measure participation, relative activity, and estimated trading capacity."
+        return "Volume and liquidity features model participation as a constraint on signal quality and execution capacity. Abnormal price movement without abnormal participation is more likely to be fragile; high dollar volume and transaction activity improve cross-sectional comparability and indicate whether a move had enough traded interest to matter."
     if group == "price_action":
-        return "Price-action features translate candle geometry and local breakouts into structured signals."
+        return "Price-action features convert candle geometry and local breakout events into deterministic state variables. They summarize how price traveled inside recent bars, whether new local extremes were reached, and whether buyers or sellers controlled the close relative to the range."
     if group == "market_structure":
-        return "Market-structure features describe local swings, breaks of structure, and trend regime."
+        return "Market-structure features approximate the sequence of local pivots and structural breaks. They are designed to separate random candle movement from a change in the market's accepted high-low structure, while keeping centered swing fields clearly marked as review-only where future bars are needed."
     if group == "order_blocks":
-        return "Order-block features approximate supply and demand zones after displacement."
+        return "Order-block features are deterministic proxies for displacement-derived supply and demand zones. They do not observe hidden institutional orders; they identify large directional expansion candles and use adjacent prices as reproducible chart-review zones where later reaction can be studied."
     if group == "fvg":
-        return "Fair value gap features identify displacement gaps between adjacent candles."
+        return "Fair value gap features identify three-candle displacement gaps where the current candle leaves a price interval untraded relative to the candle two bars earlier. The academic value is not the name of the pattern, but the measurable imbalance: price moved fast enough that an interval was skipped in the bar sequence."
+    if group == "shock":
+        return "Shock features combine abnormal price movement, abnormal participation, and event ordering. They are designed for sequence-aware momentum research where a price displacement can lead and volume can confirm shortly afterward, rather than requiring all evidence on the same bar."
     if category == "indicator":
-        return "Technical indicators compress historical price, volume, or volatility behavior into a lower-dimensional signal."
-    return "Feature columns transform raw bars into structured context for charts, research, and downstream models."
+        return "Technical indicators are deterministic transformations that compress a recent path of price, volume, or volatility into a lower-dimensional state variable. They reduce raw-bar dimensionality, but the compression discards information and should be evaluated as context rather than a standalone truth source."
+    return "Feature columns transform raw bars into structured state variables with explicit formulas. Their purpose is to make chart review, model training, and backtest diagnostics reproducible across tickers, sessions, and timeframes."
 
 
 def interpretation_for_group(group: str, category: str) -> str:
     if group == "session":
-        return "Read these values as session anchors and distances. They are most useful when comparing current price against premarket, open, and intraday extreme references."
+        return "Read session values as anchors and distances. A breakout above premarket high, a reclaim of day open, or a press into day high has different meaning depending on time of day, current volume, and whether the move is extending or mean-reverting from earlier structure."
     if group == "volume_liquidity":
-        return "Read high values as stronger participation or capacity context, then confirm with price direction and range expansion."
+        return "Read high values as evidence of stronger participation or tradable capacity, then check whether price direction and range expansion agree. Relative measures are usually more informative than raw volume because they compare current activity with the ticker's own recent baseline."
     if group == "price_action":
-        return "Read true flags as candle or local-structure events. They need volume and session context before they become actionable."
+        return "Read true flags as local events, not complete trade decisions. Their value comes from clustering: a reclaim, breakout, strong close location, and expanding participation together are more informative than any single candle flag."
     if group == "market_structure":
-        return "Read these values as local swing and regime descriptors. Some centered swing fields use future bars and are for review, not live signals."
+        return "Read these values as local swing and regime descriptors. Break-of-structure fields point to a change in accepted highs or lows; centered swing fields are useful for retrospective chart labeling but should not be treated as live features."
     if group == "order_blocks":
-        return "Read these as simple displacement-derived supply/demand proxies, not institutional order-book truth."
+        return "Read these zones as reproducible displacement-derived supply or demand proxies. Their usefulness should be tested by later reaction, mitigation, and failure behavior, not by assuming they reveal hidden order flow."
     if group == "fvg":
-        return "Read gap boundaries as displacement zones. A later revisit can be used for mitigation-style review."
+        return "Read FVG boundaries as event-anchored zones created by fast directional movement. Later revisits can be studied as mitigation, continuation, or failure events; the zone is point-originated and should not be confused with a price-following indicator band."
     if group == "shock":
-        return "Read these fields together: price abnormality, participation abnormality, sequence, delay, and combined score."
+        return "Read shock fields as a sequence: price abnormality, participation abnormality, confirmation delay, and combined score. The order matters because a price shock followed by volume confirmation has a different research meaning from volume appearing first without price displacement."
     if category == "indicator":
-        return "Use the value as context for trend, momentum, volatility, or participation. Confirm with price and session state rather than treating the indicator alone as a signal."
-    return "Interpret this field together with its units, timeframe, and related provider columns."
+        return "Use the value as context for trend, momentum, volatility, or participation. Confirm with price action, volume, and session state; indicators summarize historical data and should not be interpreted as causal predictors by themselves."
+    return "Interpret this field together with its units, timeframe, source artifact, and related provider columns. The same numeric value can carry different meaning on 1m versus daily bars."
 
 
 def knowledge_block(
@@ -1868,7 +2138,11 @@ def knowledge_block(
         "detailedDescription": detailed,
         "theory": theory,
         "interpretation": interpretation,
-        "caveats": caveats or ["Interpret in the context of ticker, timeframe, session regime, and the related provider fields."],
+        "caveats": caveats or [
+            "This is a deterministic provider field, not an independent trading rule.",
+            "Interpret it with ticker liquidity, timeframe, session regime, and related provider fields.",
+            "Validate usefulness empirically before using it as a model feature or chart decision input.",
+        ],
         "equations": [{"title": "Definition", "markdown": equation, "variables": variables}],
     }
 
@@ -1958,7 +2232,7 @@ def load_presentation_overrides(processed_root: Path) -> dict[str, dict[str, Any
 def save_presentation_override(processed_root: Path, item_id: str, presentation: dict[str, Any]) -> dict[str, Any]:
     processed_root.mkdir(parents=True, exist_ok=True)
     overrides = load_presentation_overrides(processed_root)
-    clean = {str(key): value for key, value in presentation.items() if value is not None}
+    clean = normalize_presentation({str(key): value for key, value in presentation.items() if value is not None})
     overrides[item_id] = clean
     payload = {"catalogVersion": CATALOG_VERSION, "presentation": overrides}
     override_path(processed_root).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -1974,8 +2248,8 @@ def apply_presentation_overrides(catalog: dict[str, Any], overrides: dict[str, d
             presentation = overrides.get(item_id)
             if isinstance(presentation, dict):
                 merged = deepcopy(item.get("presentation") or {})
-                merged.update(presentation)
-                item["presentation"] = merged
+                merged.update(normalize_presentation(presentation))
+                item["presentation"] = normalize_presentation(merged)
 
 
 def catalog_columns_by_column(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:

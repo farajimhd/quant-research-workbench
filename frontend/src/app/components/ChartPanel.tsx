@@ -44,6 +44,7 @@ type ChartSeries = {
   legend?: boolean;
   lineStyle?: "solid" | "dashed" | "dotted";
   lineWidth: number;
+  opacity?: number;
   data: Array<{ color?: string; time: number; value: number }>;
 };
 type Region = { start: number; end: number; color: string; label: string };
@@ -499,7 +500,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         applySeriesSettings(existing, series, settings);
       } else {
         const renderer = priceChart.addLineSeries({
-          color: settings.color,
+          color: seriesColorWithOpacity(series, settings.color),
           lineStyle: toChartLineStyle(settings.lineStyle),
           lineWidth: toLineWidth(settings.lineWidth),
           autoscaleInfoProvider: () => null,
@@ -1559,7 +1560,7 @@ function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settin
     renderer.applyOptions({ color: settings.color, visible: settings.visible } as never);
   } else {
     renderer.applyOptions({
-      color: settings.color,
+      color: seriesColorWithOpacity(source, settings.color),
       lineStyle: toChartLineStyle(settings.lineStyle),
       lineWidth: toLineWidth(settings.lineWidth),
       visible: settings.visible
@@ -1573,13 +1574,18 @@ function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Require
     return chart.addHistogramSeries({ color: settings.color, priceLineVisible: false, title: series.label, visible: settings.visible });
   }
   return chart.addLineSeries({
-    color: settings.color,
+    color: seriesColorWithOpacity(series, settings.color),
     lineStyle: toChartLineStyle(settings.lineStyle),
     lineWidth: toLineWidth(settings.lineWidth),
     priceLineVisible: false,
     title: series.label,
     visible: settings.visible
   });
+}
+
+function seriesColorWithOpacity(series: ChartSeries, color: string) {
+  if (series.style === "histogram" || series.opacity === undefined || series.opacity >= 0.99 || !validHexColor(color, "")) return color;
+  return rgbaFromHex(color, series.opacity);
 }
 
 function seriesDataForSettings(series: ChartSeries, settings: Required<LegendSeriesSettings>) {

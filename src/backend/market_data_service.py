@@ -450,7 +450,7 @@ def chart_feature_columns(records: list[dict[str, Any]], timeframe: str, start: 
                     item["column"] not in CHART_FEATURE_EXCLUDE_COLUMNS
                     and is_numeric_dtype(item["dtype"])
                     and presentation.get("selectable", True)
-                    and chart_role not in {"", "marker", "table_only"}
+                    and chart_role not in {"", "marker", "data_only", "table_only"}
                 ):
                     columns.append(item["column"])
     order = {str(item.get("column")): index for index, item in enumerate(catalog.get("columns", []))}
@@ -471,7 +471,7 @@ def indicator_settings(selected_columns: list[str], catalog: dict[str, Any]) -> 
         presentation = column_contract.get("presentation", {}) if column_contract else {}
         role = str(presentation.get("chartRole") or "")
         pane_name = str(presentation.get("pane") or chart_pane_for_column(column))
-        pane = "price" if pane_name == "price" or role in {"price_overlay", "band"} else "oscillator"
+        pane = "price" if pane_name == "price" or role in {"price_overlay", "band", "continuous_band", "anchored_zone", "price_zone"} else "oscillator"
         color = str(presentation.get("color") or DYNAMIC_COLORS[index % len(DYNAMIC_COLORS)])
         band_fill_opacity = bounded_float(presentation.get("bandFillOpacity"), default=0.16, lower=0.0, upper=0.6)
         settings[column] = {
@@ -480,8 +480,8 @@ def indicator_settings(selected_columns: list[str], catalog: dict[str, Any]) -> 
             "chartRole": role,
             "color": "#33E42A" if color == "inherit_candle_direction" else color,
             "dynamicColor": color == "inherit_candle_direction",
-            "lineWidth": int(presentation.get("lineWidth") or (2 if column == "vwap" else 1)),
-            "opacity": 0.35 if column == "vwap" else 0.75,
+            "lineWidth": int(presentation.get("lineWidth") or (3 if column in {"vwap", "ema200", "sma200"} else 1)),
+            "opacity": bounded_float(presentation.get("opacity"), default=0.46 if column in {"vwap", "ema200", "sma200"} else 0.82, lower=0.05, upper=1.0),
             "pane": pane,
             "style": "histogram" if role == "histogram" else "line",
             "lineStyle": str(presentation.get("lineStyle") or "solid"),
@@ -566,7 +566,7 @@ def display_item_settings(items: list[dict[str, Any]]) -> dict[str, dict[str, An
     for index, item in enumerate(items):
         presentation = item.get("presentation", {})
         role = str(presentation.get("chartRole") or "")
-        if role in {"marker", "price_zone", "table_only"}:
+        if role in {"marker", "price_zone", "anchored_zone", "data_only", "table_only"}:
             continue
         parts = presentation.get("parts") if role == "composite" and isinstance(presentation.get("parts"), list) else []
         if parts:
@@ -608,9 +608,9 @@ def display_part_settings(item: dict[str, Any], part: dict[str, Any], index: int
     presentation = item.get("presentation", {})
     role = str(part.get("chartRole") or presentation.get("chartRole") or "")
     pane_name = str(part.get("pane") or presentation.get("pane") or chart_pane_for_column(column))
-    pane = "price" if pane_name == "price" or role in {"price_overlay", "band"} else "oscillator"
+    pane = "price" if pane_name == "price" or role in {"price_overlay", "band", "continuous_band", "anchored_zone", "price_zone"} else "oscillator"
     color = str(part.get("color") or presentation.get("color") or DYNAMIC_COLORS[index % len(DYNAMIC_COLORS)])
-    line_width = int(part.get("lineWidth") or presentation.get("lineWidth") or (2 if column == "vwap" else 1))
+    line_width = int(part.get("lineWidth") or presentation.get("lineWidth") or (3 if column in {"vwap", "ema200", "sma200"} else 1))
     band_fill_opacity = bounded_float(part.get("bandFillOpacity", presentation.get("bandFillOpacity")), default=0.16, lower=0.0, upper=0.6)
     return {
         "key": f"{item.get('id')}:{column}",
@@ -622,6 +622,7 @@ def display_part_settings(item: dict[str, Any], part: dict[str, Any], index: int
         "column": column,
         "dynamicColor": color == "inherit_candle_direction",
         "lineWidth": max(1, min(6, line_width)),
+        "opacity": bounded_float(part.get("opacity", presentation.get("opacity")), default=0.46 if column in {"vwap", "ema200", "sma200"} else 0.82, lower=0.05, upper=1.0),
         "pane": pane,
         "paneKey": pane_name,
         "style": "histogram" if str(part.get("style") or "").lower() == "histogram" or role == "histogram" else "line",
@@ -638,14 +639,14 @@ def display_price_zones(rows: list[dict[str, Any]], timeframe: str, items: list[
     candle_duration = chart_candle_duration_seconds(rows, timeframe)
     for item in items:
         presentation = item.get("presentation", {})
-        if presentation.get("chartRole") != "price_zone":
+        if presentation.get("chartRole") not in {"price_zone", "anchored_zone"}:
             continue
         signal_column = str(presentation.get("signalColumn") or "")
         upper_column = str(presentation.get("upperColumn") or "")
         lower_column = str(presentation.get("lowerColumn") or "")
         if not signal_column or not upper_column or not lower_column:
             continue
-        extend_bars = max(1, min(240, int(presentation.get("extendBars") or 20)))
+        extend_bars = max(1, min(240, int(presentation.get("maxBars") or presentation.get("extendBars") or 20)))
         for index, row in enumerate(rows):
             if not truthy(row.get(signal_column)):
                 continue
@@ -1017,6 +1018,7 @@ def chart_payload(
                 "paneKey": option.get("paneKey"),
                 "lineStyle": option["lineStyle"],
                 "color": option["color"],
+                "opacity": option.get("opacity", 1.0),
                 "bandFillColor": option["bandFillColor"],
                 "bandFillOpacity": option["bandFillOpacity"],
                 "legend": option["legend"],

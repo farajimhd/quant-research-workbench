@@ -1815,12 +1815,25 @@ button {
 }
 
 .catalog-check-grid {
-  display: grid;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+.catalog-visibility-section {
+  grid-column: 1 / -1;
 }
 
 .catalog-form-grid.compact {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.catalog-preset-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .catalog-presentation-section .catalog-field:nth-child(3):last-child {
@@ -1833,7 +1846,7 @@ button {
 
 .catalog-grouped-parts-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.42fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: end;
   gap: 12px;
 }
@@ -1898,6 +1911,16 @@ button {
 .catalog-grouped-part-title small {
   color: var(--muted-foreground);
   font-size: 10px;
+}
+
+.catalog-part-role {
+  justify-self: start;
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 7px;
 }
 
 .catalog-preview-chart-card {

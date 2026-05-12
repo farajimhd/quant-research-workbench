@@ -70,6 +70,7 @@ type CatalogKnowledge = {
 };
 type CatalogPresentation = Record<string, unknown>;
 type CatalogItem = ChartCatalogItem & {
+  dataShape?: string;
   dtype?: string;
   groups?: string[];
   knowledge?: CatalogKnowledge;
@@ -87,15 +88,25 @@ type CatalogMethod = {
   thesis?: string;
 };
 type CatalogDisplayItem = ChartDisplayItem & {
+  dataShape?: string;
   groups?: string[];
   knowledge?: CatalogKnowledge;
   presentation?: CatalogPresentation;
+};
+type PresentationPreset = {
+  dataShapes?: string[];
+  description?: string;
+  label?: string;
+  lockedFields?: string[];
+  styleFields?: string[];
+  target?: string;
 };
 type CatalogPayload = {
   catalogVersion: number;
   columns: CatalogItem[];
   displayItems: CatalogDisplayItem[];
   presentationOptions: Record<string, string[]>;
+  presentationPresets?: Record<string, PresentationPreset>;
   scanners: CatalogMethod[];
   supervisionMethods: CatalogMethod[];
 };
@@ -117,17 +128,20 @@ const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
 const PREVIEW_PAGE_SIZE = 1000;
-const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "band_range", "table_only", "other"];
+const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "anchored_zone", "continuous_band", "background_state", "data_only", "other"];
 const PRESENTATION_TYPE_LABELS: Record<string, string> = {
   all: "All",
-  band_range: "Band / range",
+  anchored_zone: "Anchored zone",
+  background_state: "Background state",
   composite_group: "Grouped display",
+  continuous_band: "Continuous band",
+  data_only: "Data only",
   event_marker: "Event marker",
   histogram_pane: "Histogram pane",
   lower_pane_line: "Lower-pane line",
   other: "Other",
   price_overlay: "Price overlay",
-  table_only: "Table only",
+  table_only: "Data only",
 };
 const STYLE_COLOR_OPTIONS = [
   { label: "Black", value: "#030213" },
@@ -176,11 +190,12 @@ const PRESENTATION_HELP = {
   selectable: "Controls whether this item appears in the chart Indicators & Features picker. Off keeps the catalog contract but hides it from chart selection.",
   defaultVisible: "Adds this item to charts automatically when the selected artifact contains the required column or label group.",
   legend: "Shows a legend row and live value for this item when it is drawn on the chart or in a lower pane.",
-  chartRole: "Chooses the display type. Price Overlay draws a line on the candle price pane, oscillator and histogram use lower panes, marker draws event symbols, band draws ranges, and table only keeps the item out of the chart.",
+  chartRole: "Chooses the display type. The provider preset controls which style fields are valid, such as line controls for Price Overlay, zone controls for Anchored Zone, and value formatting for Data Only.",
   pane: "Chooses the target pane: price overlays candles, macd groups MACD lines and histogram together, oscillator uses a lower pane, new creates a dedicated pane, and supervision groups labels.",
   lineStyle: "Chooses the stroke pattern for line-like items. Solid is the default; dashed or dotted are for separating related overlays.",
   color: "Default display color. Use a hex color for a fixed line or marker color; inherit_candle_direction follows the candle up/down color where supported.",
   lineWidth: "Controls line or band stroke thickness in pixels. Larger values make the item visually heavier.",
+  opacity: "Controls visual strength without changing the value. Important long-horizon overlays can be thicker but more transparent so they remain visible without dominating candles.",
   bandFillColor: "Controls the translucent fill used inside a band. This is separate from the band boundary stroke color.",
   bandFillOpacity: "Controls how visible the band shade is. Lower values keep candles readable; higher values make the band easier to scan.",
   precision: "Controls how many decimal places are shown in legends, tooltips, and readouts for numeric values.",
@@ -1022,6 +1037,7 @@ function CatalogTab({
   const [selectedId, setSelectedId] = useState("");
   const selected = items.find((item) => item.id === selectedId) ?? items[0];
   const [draft, setDraft] = useState<CatalogPresentation>({});
+  const [styleTarget, setStyleTarget] = useState("group");
 
   useEffect(() => {
     if (selected?.id && selected.id !== selectedId) setSelectedId(selected.id);
@@ -1029,6 +1045,7 @@ function CatalogTab({
 
   useEffect(() => {
     setDraft({ ...(selected?.presentation ?? {}) });
+    setStyleTarget("group");
     setSaveState("idle");
   }, [selected?.id]);
 
@@ -1047,22 +1064,28 @@ function CatalogTab({
     setSaveState("idle");
   }
 
-  function updateAllPresentationParts(key: string, value: CatalogPresentationPatchValue) {
-    setDraft((current) => {
-      const parts = clonePresentationParts(current.parts);
-      if (!parts.length) return { ...current, [key]: value };
-      return {
-        ...current,
-        [key]: value,
-        parts: parts.map((part) => ({ ...part, [key]: value })),
-      };
-    });
+  function updateDisplayType(value: string) {
+    if (styleTarget !== "group") {
+      const partIndex = Number(styleTarget.replace("part:", ""));
+      setDraft((current) => {
+        const parts = clonePresentationParts(current.parts);
+        if (!parts[partIndex]) return current;
+        parts[partIndex] = { ...parts[partIndex], chartRole: value, pane: defaultPaneForDisplayType(value, String(parts[partIndex].pane ?? current.pane ?? "price")) };
+        return { ...current, parts };
+      });
+    } else {
+      setDraft((current) => ({ ...current, chartRole: value, pane: defaultPaneForDisplayType(value, String(current.pane ?? "price")) }));
+    }
     setSaveState("idle");
   }
 
-  function updateDisplayType(value: string) {
-    setDraft((current) => ({ ...current, chartRole: value, pane: defaultPaneForDisplayType(value, String(current.pane ?? "price")) }));
-    setSaveState("idle");
+  function updateActivePresentation(key: string, value: CatalogPresentationPatchValue) {
+    if (styleTarget !== "group") {
+      const partIndex = Number(styleTarget.replace("part:", ""));
+      updatePresentationPart(partIndex, key, value);
+      return;
+    }
+    updatePresentation(key, value);
   }
 
   function savePresentation() {
@@ -1092,13 +1115,27 @@ function CatalogTab({
     setCatalogWidth(Math.max(24, Math.min(46, next)));
   }
 
-  const presentationRole = String(draft.chartRole ?? selected?.presentation?.chartRole ?? "table_only");
+  const presentationRole = normalizeDisplayType(String(draft.chartRole ?? selected?.presentation?.chartRole ?? "data_only"));
   const presentationPane = String(draft.pane ?? selected?.presentation?.pane ?? "price");
-  const selectedPresentationType = selected ? presentationTypeForItem({ ...selected, presentation: draft }) : "table_only";
-  const isTableOnlyPresentation = presentationRole === "table_only";
-  const isMarkerPresentation = presentationRole === "marker";
-  const showVisualStyle = !isTableOnlyPresentation;
+  const selectedPresentationType = selected ? presentationTypeForItem({ ...selected, presentation: draft }) : "data_only";
+  const isTableOnlyPresentation = isDataOnlyRole(presentationRole);
   const groupedPresentationParts = presentationRole === "composite" ? clonePresentationParts(draft.parts) : [];
+  const activePartIndex = styleTarget.startsWith("part:") ? Number(styleTarget.replace("part:", "")) : -1;
+  const activePresentation = activePartIndex >= 0 ? groupedPresentationParts[activePartIndex] ?? draft : draft;
+  const activeRole = normalizeDisplayType(String(activePresentation.chartRole ?? activePresentation.style ?? presentationRole));
+  const activeDataShape = String(activePresentation.dataShape ?? draft.dataShape ?? selected?.dataShape ?? selected?.presentation?.dataShape ?? "continuous_series");
+  const activePreset = presentationPreset(catalog, activeRole);
+  const activeStyleFields = new Set(activePreset.styleFields ?? []);
+  const displayTypeOptions = displayTypeOptionsForTarget(catalog, activeDataShape, styleTarget === "group" && groupedPresentationParts.length > 0);
+  const styleTargetOptions = groupedPresentationParts.length
+    ? ["group", ...groupedPresentationParts.map((part, index) => `part:${index}`)]
+    : ["group"];
+  const styleTargetLabels = Object.fromEntries(styleTargetOptions.map((value) => [value, styleTargetLabel(value, groupedPresentationParts)]));
+  const isMarkerPresentation = activeRole === "marker" || activeRole === "text_label";
+  const isDataOnlyPresentation = isDataOnlyRole(activeRole);
+  const showVisualStyle = !isDataOnlyPresentation && activeStyleFields.has("color");
+  const showPaneField = activeStyleFields.has("pane") && !["price", "none", "chart_background"].includes(String(activePreset.target ?? ""));
+  const showValueFormat = isDataOnlyPresentation || activeStyleFields.has("valueFormat") || activeStyleFields.has("precision");
   const fillPanel = useViewportFillPanel(`${catalogLoading}:${allItems.length}:${items.length}:${selected?.id ?? ""}`);
 
   return (
@@ -1195,7 +1232,7 @@ function CatalogTab({
                   <h3>Chart Display Contract</h3>
                 </div>
                 <div className={isTableOnlyPresentation ? "catalog-presentation-preview table-only" : "catalog-presentation-preview"}>
-                  {isTableOnlyPresentation ? null : <span className="catalog-preview-swatch" style={{ background: presentationColor(draft.color) }} />}
+                  {isTableOnlyPresentation ? null : <span className="catalog-preview-swatch" style={{ background: presentationColor(activePresentation.color ?? draft.color) }} />}
                   <div>
                     <strong>{presentationTypeLabel(selectedPresentationType)}</strong>
                     <span>{isTableOnlyPresentation ? "No chart color used" : `${displayName(presentationPane)} pane`}</span>
@@ -1205,7 +1242,7 @@ function CatalogTab({
               <div className="catalog-presentation-layout">
                 <div className="catalog-presentation-controls">
                   <div className="catalog-presentation-grid">
-                    <div className="catalog-presentation-section">
+                    <div className="catalog-presentation-section catalog-visibility-section">
                       <h4>Visibility</h4>
                       <div className="catalog-check-grid">
                         <CatalogCheckbox checked={Boolean(draft.selectable)} help={PRESENTATION_HELP.selectable} label="Selectable" onChange={(value) => updatePresentation("selectable", value)} />
@@ -1216,24 +1253,32 @@ function CatalogTab({
                     <div className="catalog-presentation-section">
                       <h4>Display Target</h4>
                       <div className="catalog-form-grid compact">
-                        <CatalogSelect help={PRESENTATION_HELP.chartRole} label="Display type" options={catalog?.presentationOptions.chartRoles ?? []} value={String(draft.chartRole ?? "table_only")} onChange={updateDisplayType} />
-                        <CatalogSelect help={PRESENTATION_HELP.pane} label="Pane" options={catalog?.presentationOptions.panes ?? []} value={String(draft.pane ?? "price")} onChange={(value) => updatePresentation("pane", value)} />
+                        {styleTargetOptions.length > 1 ? (
+                          <CatalogSelect help="Choose whether to edit the group-level defaults or a specific child item." labels={styleTargetLabels} label="Item" options={styleTargetOptions} value={styleTarget} onChange={setStyleTarget} />
+                        ) : null}
+                        <CatalogSelect help={PRESENTATION_HELP.chartRole} label="Display type" options={displayTypeOptions} value={activeRole} onChange={updateDisplayType} />
+                        {showPaneField ? (
+                          <CatalogSelect help={PRESENTATION_HELP.pane} label="Pane" options={catalog?.presentationOptions.panes ?? []} value={String(activePresentation.pane ?? draft.pane ?? "oscillator")} onChange={(value) => updateActivePresentation("pane", value)} />
+                        ) : null}
                       </div>
+                      <p className="catalog-preset-note">{activePreset.description ?? "The selected display type controls the available style fields."}</p>
                     </div>
                     {showVisualStyle ? (
                       <div className="catalog-presentation-section">
-                        <h4>{styleSectionTitle(presentationRole)}</h4>
+                        <h4>{styleSectionTitle(activeRole)}</h4>
                         <CatalogStylePopover
-                          bandFillColor={String(draft.bandFillColor ?? draft.color ?? "#1E3A5F")}
-                          bandFillOpacity={Number(draft.bandFillOpacity ?? 0.16)}
-                          chartRole={presentationRole}
-                          color={String(draft.color ?? "#1E3A5F")}
-                          label={styleEditorLabel(presentationRole)}
-                          lineStyle={String(draft.lineStyle ?? "solid")}
+                          bandFillColor={String(activePresentation.bandFillColor ?? activePresentation.color ?? "#1E3A5F")}
+                          bandFillOpacity={Number(activePresentation.bandFillOpacity ?? 0.16)}
+                          chartRole={activeRole}
+                          color={String(activePresentation.color ?? "#1E3A5F")}
+                          label={styleEditorLabel(activeRole)}
+                          lineStyle={String(activePresentation.lineStyle ?? "solid")}
                           lineStyleOptions={catalog?.presentationOptions.lineStyles ?? []}
-                          lineWidth={Number(draft.lineWidth ?? 1)}
-                          precision={Number(draft.precision ?? 2)}
-                          onChange={updatePresentation}
+                          lineWidth={Number(activePresentation.lineWidth ?? 1)}
+                          opacity={Number(activePresentation.opacity ?? 1)}
+                          precision={Number(activePresentation.precision ?? draft.precision ?? 2)}
+                          styleFields={activeStyleFields}
+                          onChange={updateActivePresentation}
                         />
                       </div>
                     ) : null}
@@ -1241,25 +1286,39 @@ function CatalogTab({
                       <div className="catalog-presentation-section">
                         <h4>Marker Shape</h4>
                         <div className="catalog-form-grid compact">
-                          <CatalogSelect help={PRESENTATION_HELP.markerShape} label="Shape" options={catalog?.presentationOptions.markerShapes ?? []} value={String(draft.markerShape ?? "circle")} onChange={(value) => updatePresentation("markerShape", value)} />
-                          <CatalogSelect help={PRESENTATION_HELP.markerPosition} label="Position" options={catalog?.presentationOptions.markerPositions ?? []} value={String(draft.markerPosition ?? "belowBar")} onChange={(value) => updatePresentation("markerPosition", value)} />
+                          <CatalogSelect help={PRESENTATION_HELP.markerShape} label="Shape" options={catalog?.presentationOptions.markerShapes ?? []} value={String(activePresentation.markerShape ?? "circle")} onChange={(value) => updateActivePresentation("markerShape", value)} />
+                          <CatalogSelect help={PRESENTATION_HELP.markerPosition} label="Position" options={catalog?.presentationOptions.markerPositions ?? []} value={String(activePresentation.markerPosition ?? "belowBar")} onChange={(value) => updateActivePresentation("markerPosition", value)} />
                         </div>
                       </div>
                     ) : null}
-                    <div className="catalog-presentation-section">
-                      <h4>Value Format</h4>
-                      <div className="catalog-form-grid compact">
-                        <CatalogSelect help={PRESENTATION_HELP.valueFormat} label="Value format" options={catalog?.presentationOptions.valueFormats ?? []} value={String(draft.valueFormat ?? "number")} onChange={(value) => updatePresentation("valueFormat", value)} />
-                        <CatalogNumberField help={PRESENTATION_HELP.precision} label="Precision" max={8} min={0} value={Number(draft.precision ?? 2)} onChange={(value) => updatePresentation("precision", value)} />
+                    {activeRole === "anchored_zone" ? (
+                      <div className="catalog-presentation-section">
+                        <h4>Zone Behavior</h4>
+                        <div className="catalog-form-grid compact">
+                          <CatalogSelect help="Controls how the event-created zone extends after the source bar." label="Extend rule" options={catalog?.presentationOptions.extendRules ?? []} value={String(activePresentation.extendRule ?? "fixed_bars")} onChange={(value) => updateActivePresentation("extendRule", value)} />
+                          <CatalogNumberField help="Maximum number of bars the anchored zone may extend." label="Max bars" max={240} min={1} value={Number(activePresentation.maxBars ?? activePresentation.extendBars ?? 24)} onChange={(value) => updateActivePresentation("maxBars", value)} />
+                          <CatalogSelect help="Boundary stroke used around the zone." label="Border style" options={catalog?.presentationOptions.borderStyles ?? []} value={String(activePresentation.borderStyle ?? "solid")} onChange={(value) => updateActivePresentation("borderStyle", value)} />
+                          <CatalogNumberField help="Zone boundary width in pixels." label="Border width" max={6} min={1} value={Number(activePresentation.borderWidth ?? 1)} onChange={(value) => updateActivePresentation("borderWidth", value)} />
+                          <CatalogCheckbox checked={Boolean(activePresentation.stopOnMitigation)} help="Stops the zone when price revisits or mitigates the event range, where supported by the renderer." label="Stop on mitigation" onChange={(value) => updateActivePresentation("stopOnMitigation", value)} />
+                        </div>
                       </div>
-                    </div>
+                    ) : null}
+                    {showValueFormat ? (
+                      <div className="catalog-presentation-section">
+                        <h4>Value Format</h4>
+                        <div className="catalog-form-grid compact">
+                          {activeStyleFields.has("valueFormat") || isDataOnlyPresentation ? (
+                            <CatalogSelect help={PRESENTATION_HELP.valueFormat} label="Value format" options={catalog?.presentationOptions.valueFormats ?? []} value={String(activePresentation.valueFormat ?? draft.valueFormat ?? "number")} onChange={(value) => updateActivePresentation("valueFormat", value)} />
+                          ) : null}
+                          {activeStyleFields.has("precision") || isDataOnlyPresentation ? (
+                            <CatalogNumberField help={PRESENTATION_HELP.precision} label="Precision" max={8} min={0} value={Number(activePresentation.precision ?? draft.precision ?? 2)} onChange={(value) => updateActivePresentation("precision", value)} />
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
                     {groupedPresentationParts.length ? (
                       <CatalogGroupedPartsEditor
-                        lineStyleOptions={catalog?.presentationOptions.lineStyles ?? []}
-                        onAllChange={updateAllPresentationParts}
-                        onPartChange={updatePresentationPart}
                         parts={groupedPresentationParts}
-                        precision={Number(draft.precision ?? 2)}
                       />
                     ) : null}
                   </div>
@@ -1639,13 +1698,27 @@ function CatalogFieldLabel({ help, label }: { help: string; label: string }) {
   );
 }
 
-function CatalogSelect({ help, label, onChange, options, value }: { help: string; label: string; onChange: (value: string) => void; options: string[]; value: string }) {
+function CatalogSelect({
+  help,
+  label,
+  labels = {},
+  onChange,
+  options,
+  value,
+}: {
+  help: string;
+  label: string;
+  labels?: Record<string, string>;
+  onChange: (value: string) => void;
+  options: string[];
+  value: string;
+}) {
   return (
     <div className="catalog-field">
       <CatalogFieldLabel help={help} label={label} />
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         {options.map((option) => (
-          <option key={option} value={option}>{displayName(option)}</option>
+          <option key={option} value={option}>{labels[option] ?? displayName(option)}</option>
         ))}
       </select>
     </div>
@@ -1687,39 +1760,14 @@ function CatalogCheckbox({ checked, help, label, onChange }: { checked: boolean;
   );
 }
 
-function CatalogGroupedPartsEditor({
-  lineStyleOptions,
-  onAllChange,
-  onPartChange,
-  parts,
-  precision,
-}: {
-  lineStyleOptions: string[];
-  onAllChange: (key: string, value: CatalogPresentationPatchValue) => void;
-  onPartChange: (index: number, key: string, value: CatalogPresentationPatchValue) => void;
-  parts: Array<Record<string, unknown>>;
-  precision: number;
-}) {
-  const firstPart = parts[0] ?? {};
+function CatalogGroupedPartsEditor({ parts }: { parts: Array<Record<string, unknown>> }) {
   return (
     <div className="catalog-presentation-section catalog-grouped-parts-section">
       <div className="catalog-grouped-parts-header">
         <div>
-          <h4>Grouped Parts</h4>
-          <p>Style every element together or adjust each element independently.</p>
+          <h4>Grouped Items</h4>
+          <p>Select an item above to edit its valid display preset and style fields.</p>
         </div>
-        <CatalogStylePopover
-          bandFillColor={String(firstPart.bandFillColor ?? firstPart.color ?? "#1E3A5F")}
-          bandFillOpacity={Number(firstPart.bandFillOpacity ?? 0.16)}
-          chartRole={String(firstPart.chartRole ?? firstPart.style ?? "price_overlay")}
-          color={String(firstPart.color ?? "#1E3A5F")}
-          label="Apply to all"
-          lineStyle={String(firstPart.lineStyle ?? "solid")}
-          lineStyleOptions={lineStyleOptions}
-          lineWidth={Number(firstPart.lineWidth ?? 1)}
-          precision={precision}
-          onChange={onAllChange}
-        />
       </div>
       <div className="catalog-grouped-parts-grid">
         {parts.map((part, index) => (
@@ -1731,18 +1779,7 @@ function CatalogGroupedPartsEditor({
                 <small>{part.column ? String(part.column) : displayName(String(part.chartRole ?? "part"))}</small>
               </div>
             </div>
-            <CatalogStylePopover
-              bandFillColor={String(part.bandFillColor ?? part.color ?? "#1E3A5F")}
-              bandFillOpacity={Number(part.bandFillOpacity ?? 0.16)}
-              chartRole={String(part.chartRole ?? part.style ?? "price_overlay")}
-              color={String(part.color ?? "#1E3A5F")}
-              label="Part style"
-              lineStyle={String(part.lineStyle ?? "solid")}
-              lineStyleOptions={lineStyleOptions}
-              lineWidth={Number(part.lineWidth ?? 1)}
-              precision={precision}
-              onChange={(key, value) => onPartChange(index, key, value)}
-            />
+            <span className="catalog-part-role">{displayName(normalizeDisplayType(String(part.chartRole ?? part.style ?? "price_overlay")))}</span>
           </div>
         ))}
       </div>
@@ -1751,9 +1788,50 @@ function CatalogGroupedPartsEditor({
 }
 
 function defaultPaneForDisplayType(displayType: string, currentPane: string): string {
-  if (displayType === "price_overlay" || displayType === "marker" || displayType === "band" || displayType === "price_zone") return "price";
+  if (["price_overlay", "marker", "text_label", "continuous_band", "anchored_zone", "background_state", "band", "price_zone"].includes(displayType)) return "price";
   if (displayType === "oscillator" || displayType === "histogram") return currentPane === "price" ? "oscillator" : currentPane;
   return currentPane;
+}
+
+function normalizeDisplayType(value: string): string {
+  if (value === "table_only") return "data_only";
+  if (value === "price_zone") return "anchored_zone";
+  if (value === "band") return "continuous_band";
+  return value || "data_only";
+}
+
+function isDataOnlyRole(value: string): boolean {
+  return normalizeDisplayType(value) === "data_only";
+}
+
+function presentationPreset(catalog: CatalogPayload | null, displayType: string): PresentationPreset {
+  const normalized = normalizeDisplayType(displayType);
+  return catalog?.presentationPresets?.[normalized] ?? {
+    dataShapes: ["any"],
+    description: normalized === "data_only" ? "Available in tables and catalog, but not rendered on the chart." : "The selected display type controls the available style fields.",
+    label: displayName(normalized),
+    styleFields: normalized === "data_only" ? ["valueFormat", "precision"] : ["color", "lineStyle", "lineWidth", "valueFormat", "precision"],
+    target: normalized === "data_only" ? "none" : "price",
+  };
+}
+
+function displayTypeOptionsForTarget(catalog: CatalogPayload | null, dataShape: string, isGroup: boolean): string[] {
+  if (isGroup) return ["composite"];
+  const presets = catalog?.presentationPresets ?? {};
+  const options = Object.keys(presets).filter((key) => {
+    if (key === "composite") return isGroup;
+    const shapes = presets[key]?.dataShapes ?? [];
+    return shapes.includes("any") || shapes.includes(dataShape);
+  });
+  if (options.length) return options;
+  return catalog?.presentationOptions.chartRoles?.map(normalizeDisplayType).filter((value, index, values) => values.indexOf(value) === index) ?? ["data_only"];
+}
+
+function styleTargetLabel(value: string, parts: Array<Record<string, unknown>>): string {
+  if (value === "group") return "Group";
+  const index = Number(value.replace("part:", ""));
+  const part = parts[index] ?? {};
+  return String(part.label ?? part.column ?? part.id ?? `Item ${index + 1}`);
 }
 
 function styleSectionTitle(displayType: string): string {
@@ -1761,6 +1839,9 @@ function styleSectionTitle(displayType: string): string {
   if (displayType === "oscillator") return "Oscillator Line Style";
   if (displayType === "histogram") return "Histogram Style";
   if (displayType === "marker") return "Marker Color";
+  if (displayType === "text_label") return "Text Label Style";
+  if (displayType === "continuous_band") return "Continuous Band Style";
+  if (displayType === "anchored_zone") return "Anchored Zone Style";
   if (displayType === "band" || displayType === "price_zone") return "Band Style";
   if (displayType === "composite") return "Base Style";
   return "Visual Style";
@@ -1771,6 +1852,9 @@ function styleEditorLabel(displayType: string): string {
   if (displayType === "oscillator") return "Oscillator line";
   if (displayType === "histogram") return "Histogram bars";
   if (displayType === "marker") return "Marker color";
+  if (displayType === "text_label") return "Text label";
+  if (displayType === "continuous_band") return "Continuous band";
+  if (displayType === "anchored_zone") return "Anchored zone";
   if (displayType === "band" || displayType === "price_zone") return "Band and boundary";
   return "Base style";
 }
@@ -1784,15 +1868,17 @@ function CatalogPresentationChartPreview({
   presentation: CatalogPresentation;
   presentationType: string;
 }) {
-  const role = String(presentation.chartRole ?? "table_only");
+  const role = normalizeDisplayType(String(presentation.chartRole ?? "data_only"));
   const pane = String(presentation.pane ?? "price");
   const lineStyle = String(presentation.lineStyle ?? "solid");
   const lineWidth = boundedPresentationNumber(presentation.lineWidth, 1, 6, 2);
   const strokeColor = presentationColor(presentation.color);
+  const strokeOpacity = boundedPresentationNumber(presentation.opacity, 0.05, 1, 1);
+  const selectedStroke = typeof presentation.color === "string" && presentation.color.startsWith("#") ? colorWithOpacity(presentation.color, strokeOpacity) : strokeColor;
   const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.6, 0.16));
   const dashArray = svgDashArray(lineStyle, lineWidth);
   const displayNameForItem = itemTitle || "Selected item";
-  const isBandLike = role === "band" || role === "price_zone";
+  const isBandLike = role === "band" || role === "price_zone" || role === "continuous_band" || role === "anchored_zone";
   const parts = role === "composite" && Array.isArray(presentation.parts) ? presentation.parts.filter((part): part is Record<string, unknown> => Boolean(part && typeof part === "object")) : [];
   return (
     <aside className="catalog-preview-chart-card" aria-label={`Chart preview for ${displayNameForItem}`}>
@@ -1815,11 +1901,11 @@ function CatalogPresentationChartPreview({
         {isBandLike ? (
           <g className="catalog-contract-selected-layer">
             <polygon fill={bandFill} points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60 350,100 322,106 290,102 258,109 226,112 194,106 162,114 130,121 98,112 66,106 34,119" />
-            <polyline fill="none" points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60" stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
-            <polyline fill="none" points="34,119 66,106 98,112 130,121 162,114 194,106 226,112 258,109 290,102 322,106 350,100" stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+            <polyline fill="none" points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60" stroke={selectedStroke} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+            <polyline fill="none" points="34,119 66,106 98,112 130,121 162,114 194,106 226,112 258,109 290,102 322,106 350,100" stroke={selectedStroke} strokeDasharray={dashArray} strokeWidth={lineWidth} />
           </g>
         ) : null}
-        {role === "table_only" ? null : (
+        {isDataOnlyRole(role) ? null : (
           <g className="catalog-contract-candles">
             {CATALOG_PREVIEW_CANDLES.map((candle) => {
               const bullish = candle.close < candle.open;
@@ -1837,7 +1923,7 @@ function CatalogPresentationChartPreview({
           </g>
         )}
         {role === "price_overlay" ? (
-          <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_PRICE_LINE_POINTS} stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+          <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_PRICE_LINE_POINTS} stroke={selectedStroke} strokeDasharray={dashArray} strokeWidth={lineWidth} />
         ) : null}
         {role === "composite" && pane === "price" ? (
           <g className="catalog-contract-selected-layer">
@@ -1854,9 +1940,9 @@ function CatalogPresentationChartPreview({
             ))}
           </g>
         ) : null}
-        {role === "marker" ? renderCatalogPreviewMarker(String(presentation.markerShape ?? "circle"), String(presentation.markerPosition ?? "belowBar"), strokeColor) : null}
+        {role === "marker" ? renderCatalogPreviewMarker(String(presentation.markerShape ?? "circle"), String(presentation.markerPosition ?? "belowBar"), selectedStroke) : null}
         {role === "oscillator" ? (
-          <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_OSCILLATOR_LINE_POINTS} stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+          <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_OSCILLATOR_LINE_POINTS} stroke={selectedStroke} strokeDasharray={dashArray} strokeWidth={lineWidth} />
         ) : null}
         {role === "composite" && pane !== "price" ? (
           <g className="catalog-contract-selected-layer">
@@ -1911,10 +1997,10 @@ function CatalogPresentationChartPreview({
             })}
           </g>
         ) : null}
-        {role === "table_only" ? (
+        {isDataOnlyRole(role) ? (
           <g className="catalog-contract-table-only">
             <rect x="108" y="76" width="164" height="34" rx="8" />
-            <text x="190" y="97">Table-only field</text>
+            <text x="190" y="97">Data only</text>
           </g>
         ) : null}
         <g className="catalog-contract-axis-labels">
@@ -1923,7 +2009,7 @@ function CatalogPresentationChartPreview({
           <text x="326" y="24">11:30</text>
         </g>
       </svg>
-      <p>{role === "table_only" ? "This field stays in tables and is not drawn on the chart." : "Dummy candles are fixed; only this selected catalog item is drawn."}</p>
+      <p>{isDataOnlyRole(role) ? "This field stays available in tables and catalog, but is not drawn on the chart." : "Dummy candles are fixed; only this selected catalog item is drawn."}</p>
     </aside>
   );
 }
@@ -1946,7 +2032,9 @@ function CatalogStylePopover({
   lineStyle,
   lineStyleOptions,
   lineWidth,
+  opacity,
   precision,
+  styleFields,
   onChange
 }: {
   bandFillColor: string;
@@ -1957,7 +2045,9 @@ function CatalogStylePopover({
   lineStyle: string;
   lineStyleOptions: string[];
   lineWidth: number;
+  opacity: number;
   precision: number;
+  styleFields: Set<string>;
   onChange: (key: string, value: CatalogPresentationPatchValue) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1968,15 +2058,21 @@ function CatalogStylePopover({
   const [panelPosition, setPanelPosition] = useState<{ left: number; maxHeight: number; top: number } | null>(null);
   const resolvedLineStyles = lineStyleOptions.length ? lineStyleOptions : ["solid", "dashed", "dotted"];
   const colorLabel = STYLE_COLOR_OPTIONS.find((option) => option.value === color)?.label ?? color;
-  const isBand = chartRole === "band" || chartRole === "price_zone";
-  const isLineLike = ["price_overlay", "oscillator", "band", "price_zone", "composite"].includes(chartRole);
+  const isBand = chartRole === "continuous_band" || chartRole === "anchored_zone" || chartRole === "band" || chartRole === "price_zone";
+  const isLineLike = ["price_overlay", "oscillator", "continuous_band", "anchored_zone", "band", "price_zone", "composite"].includes(chartRole);
   const isHistogram = chartRole === "histogram";
   const isMarker = chartRole === "marker";
-  const showLineControls = isLineLike;
+  const showLineControls = isLineLike && (styleFields.has("lineStyle") || styleFields.has("lineWidth"));
+  const showLineWidth = styleFields.has("lineWidth");
+  const showBandControls = styleFields.has("bandFillColor") || styleFields.has("bandFillOpacity");
+  const showOpacity = styleFields.has("opacity");
+  const showPrecision = styleFields.has("precision");
   const resolvedBandFillOpacity = Math.max(0, Math.min(0.6, Number.isFinite(bandFillOpacity) ? bandFillOpacity : 0.16));
   const resolvedLineWidth = Math.max(1, Math.min(6, Number.isFinite(lineWidth) ? lineWidth : 1));
+  const resolvedOpacity = Math.max(0.05, Math.min(1, Number.isFinite(opacity) ? opacity : 1));
   const previewLineStyle = resolvedLineStyles.includes(lineStyle) ? lineStyle : "solid";
   const strokeColor = presentationColor(color);
+  const displayStrokeColor = color.startsWith("#") ? colorWithOpacity(color, resolvedOpacity) : strokeColor;
   const shadeColor = colorWithOpacity(bandFillColor, resolvedBandFillOpacity);
   const previewClassName = ["catalog-style-preview", isBand ? "is-band" : "", isHistogram ? "is-histogram" : "", isMarker ? "is-marker" : ""].filter(Boolean).join(" ");
 
@@ -2037,16 +2133,16 @@ function CatalogStylePopover({
             {isHistogram ? (
               <span className="catalog-style-preview-bars">
                 {[18, 34, 25, 44, 30, 39].map((height, index) => (
-                  <span key={`style-preview-bar:${index}`} style={{ background: strokeColor, height }} />
+                  <span key={`style-preview-bar:${index}`} style={{ background: displayStrokeColor, height }} />
                 ))}
               </span>
             ) : isMarker ? (
-              <span className="catalog-style-preview-marker" style={{ background: strokeColor, borderColor: strokeColor }} />
+              <span className="catalog-style-preview-marker" style={{ background: displayStrokeColor, borderColor: displayStrokeColor }} />
             ) : (
               <span
                 className={`catalog-style-preview-line ${previewLineStyle}`}
                 style={{
-                  borderColor: strokeColor,
+                  borderColor: displayStrokeColor,
                   borderTopWidth: resolvedLineWidth
                 }}
               />
@@ -2087,7 +2183,7 @@ function CatalogStylePopover({
           <input maxLength={7} placeholder="#1E3A5F" value={customColor} onChange={(event) => setCustomHex(event.target.value)} />
         </label>
       </section>
-      {isBand ? (
+      {isBand && showBandControls ? (
         <section className="catalog-style-popover-section">
           <h5>Band Shade</h5>
           <div className="catalog-band-style-grid">
@@ -2121,7 +2217,7 @@ function CatalogStylePopover({
           </div>
         </section>
       ) : null}
-      {showLineControls ? (
+      {showLineControls && styleFields.has("lineStyle") ? (
         <section className="catalog-style-popover-section">
           <h5>Line Style</h5>
           <div className="catalog-line-style-grid">
@@ -2134,21 +2230,35 @@ function CatalogStylePopover({
           </div>
         </section>
       ) : null}
+      {showLineWidth || showOpacity || showPrecision ? (
       <section className="catalog-style-popover-section">
         <h5>Readout</h5>
         <div className="catalog-style-number-grid">
-          {showLineControls ? (
+          {showLineWidth ? (
             <label className="catalog-style-inline-field">
               <span>Line width</span>
               <input max={6} min={1} type="number" value={String(resolvedLineWidth)} onChange={(event) => onChange("lineWidth", boundedNumber(event.target.value, 1, 6))} />
             </label>
           ) : null}
-          <label className="catalog-style-inline-field">
-            <span>Precision</span>
-            <input max={8} min={0} type="number" value={String(precision)} onChange={(event) => onChange("precision", boundedNumber(event.target.value, 0, 8))} />
-          </label>
+          {showOpacity ? (
+            <label className="catalog-style-range-field compact">
+              <span>
+                Opacity
+                <CatalogHelpButton help={PRESENTATION_HELP.opacity} label="Opacity" />
+                <b>{opacityLabel(resolvedOpacity)}</b>
+              </span>
+              <input max={1} min={0.05} step={0.01} type="range" value={String(resolvedOpacity)} onChange={(event) => onChange("opacity", boundedNumber(event.target.value, 0.05, 1))} />
+            </label>
+          ) : null}
+          {showPrecision ? (
+            <label className="catalog-style-inline-field">
+              <span>Precision</span>
+              <input max={8} min={0} type="number" value={String(precision)} onChange={(event) => onChange("precision", boundedNumber(event.target.value, 0, 8))} />
+            </label>
+          ) : null}
         </div>
       </section>
+      ) : null}
     </div>,
     document.body,
   ) : null;
@@ -2157,10 +2267,10 @@ function CatalogStylePopover({
     <div className="catalog-style-popover" ref={popoverRef}>
       <CatalogFieldLabel help={`${PRESENTATION_HELP.color} ${PRESENTATION_HELP.lineStyle} ${PRESENTATION_HELP.lineWidth}`} label={label} />
       <button aria-expanded={open} className="catalog-style-trigger" onClick={toggleOpen} ref={triggerRef} type="button">
-        <span className="catalog-style-trigger-swatch" style={{ background: strokeColor }} />
+        <span className="catalog-style-trigger-swatch" style={{ background: displayStrokeColor }} />
         <span>
           <strong>{colorLabel}</strong>
-          <small>{styleTriggerSummary({ chartRole, isBand, isHistogram, lineStyle, precision, resolvedBandFillOpacity, resolvedLineWidth })}</small>
+          <small>{styleTriggerSummary({ chartRole, isBand, isHistogram, lineStyle, precision, resolvedBandFillOpacity, resolvedLineWidth, resolvedOpacity, showOpacity })}</small>
         </span>
       </button>
       {panel}
@@ -2191,9 +2301,10 @@ function stylePanelPosition(trigger: HTMLButtonElement | null, isBand: boolean):
 }
 
 function stylePreviewDescription(chartRole: string, lineStyle: string, bandFillOpacity: number): string {
-  if (chartRole === "band" || chartRole === "price_zone") return `${opacityLabel(bandFillOpacity)} band shade`;
+  if (["band", "price_zone", "continuous_band", "anchored_zone"].includes(chartRole)) return `${opacityLabel(bandFillOpacity)} band shade`;
   if (chartRole === "histogram") return "Histogram bar color";
   if (chartRole === "marker") return "Marker color";
+  if (chartRole === "text_label") return "Text label color";
   return `${displayName(lineStyle)} stroke`;
 }
 
@@ -2205,6 +2316,8 @@ function styleTriggerSummary({
   precision,
   resolvedBandFillOpacity,
   resolvedLineWidth,
+  resolvedOpacity,
+  showOpacity,
 }: {
   chartRole: string;
   isBand: boolean;
@@ -2213,10 +2326,14 @@ function styleTriggerSummary({
   precision: number;
   resolvedBandFillOpacity: number;
   resolvedLineWidth: number;
+  resolvedOpacity: number;
+  showOpacity: boolean;
 }): string {
-  if (isHistogram) return `Histogram bars | ${precision} dp`;
+  const opacity = showOpacity ? ` | ${opacityLabel(resolvedOpacity)}` : "";
+  if (isHistogram) return `Histogram bars | ${precision} dp${opacity}`;
   if (chartRole === "marker") return `Marker | ${precision} dp`;
-  return `${displayName(lineStyle)} | ${resolvedLineWidth}px | ${precision} dp${isBand ? ` | ${opacityLabel(resolvedBandFillOpacity)} shade` : ""}`;
+  if (chartRole === "text_label") return `Text label | ${precision} dp`;
+  return `${displayName(lineStyle)} | ${resolvedLineWidth}px | ${precision} dp${opacity}${isBand ? ` | ${opacityLabel(resolvedBandFillOpacity)} shade` : ""}`;
 }
 
 function boundedNumber(value: string, min: number, max: number): number {
@@ -2297,16 +2414,17 @@ function catalogPresentationTypeOptions(items: CatalogCardItem[]): string[] {
 
 function presentationTypeForItem(item: Pick<CatalogItem | CatalogMethod | CatalogDisplayItem, "category" | "presentation">): string {
   const presentation = item.presentation ?? {};
-  const role = String(presentation.chartRole ?? "table_only");
+  const role = normalizeDisplayType(String(presentation.chartRole ?? "data_only"));
   if (role === "composite") return "composite_group";
-  if (role === "price_zone") return "band_range";
+  if (role === "anchored_zone") return "anchored_zone";
+  if (role === "continuous_band") return "continuous_band";
+  if (role === "background_state") return "background_state";
   if (role === "price_overlay") return "price_overlay";
   if (role === "oscillator") return "lower_pane_line";
   if (role === "histogram") return "histogram_pane";
-  if (role === "marker") return "event_marker";
-  if (role === "band") return "band_range";
-  if (role === "table_only") return "table_only";
-  return item.category === "bar" ? "table_only" : "other";
+  if (role === "marker" || role === "text_label") return "event_marker";
+  if (role === "data_only") return "data_only";
+  return item.category === "bar" ? "data_only" : "other";
 }
 
 function presentationTypeLabel(value: string): string {
