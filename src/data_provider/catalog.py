@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 7
+CATALOG_VERSION = 8
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -169,6 +169,7 @@ OSCILLATOR_TERMS = ("macd", "rsi", "roc", "cci", "stoch", "z20", "relative_", "s
 DEFAULT_VISIBLE_COLUMNS = {"vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"}
 DEFAULT_VISIBLE_DISPLAY_ITEMS = {"indicator.vwap", "indicator.tema_trend", "indicator.macd"}
 DYNAMIC_COLORS = ["#1E3A5F", "#B7791F", "#067647", "#B42318", "#2563EB", "#7C3AED", "#0E7490", "#C2410C"]
+OPERATIONAL_HELPER_COLUMNS = {"indicator_bar_count", "macd_ready", "tema_ready"}
 DATA_SHAPES = ["continuous_series", "bar_event", "anchored_zone", "regime_state", "data_only"]
 DATA_ONLY_ROLES = {"data_only", "table_only"}
 ANCHOR_ZONE_ROLES = {"anchored_zone", "price_zone"}
@@ -262,8 +263,6 @@ INTEGER_COLUMNS = {
     "time_to_mfe_minutes",
     "time_to_mae_minutes",
     "indicator_bar_count",
-    "bars_since_high20",
-    "bars_since_low20",
     "bars_since_price_shock",
     "bars_since_volume_shock",
     "minutes_since_price_shock",
@@ -691,23 +690,6 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
     add(channel_display_item(by_column, "indicator.bollinger20", "Bollinger Bands 20", ["bb_upper20", "bb_mid20", "bb_lower20"], "volatility", "#475467"))
     add(channel_display_item(by_column, "indicator.donchian20", "Donchian Channel 20", ["donchian_high20", "donchian_mid20", "donchian_low20"], "volatility", "#0E7490"))
     add(channel_display_item(by_column, "indicator.keltner20", "Keltner Channel 20", ["keltner_upper20", "keltner_mid20", "keltner_lower20"], "volatility", "#B7791F"))
-    add(
-        composite_display_item(
-            by_column,
-            item_id="indicator.stochastic",
-            title="Stochastic 14/3",
-            source_columns=["stoch_k14", "stoch_d3"],
-            group="momentum",
-            pane=DEFAULT_LOWER_PANE,
-            parts=[
-                display_part(by_column, "stoch_k14", label="%K", pane=DEFAULT_LOWER_PANE, color="#2563EB"),
-                display_part(by_column, "stoch_d3", label="%D", pane=DEFAULT_LOWER_PANE, color="#B7791F"),
-            ],
-            short="Stochastic %K and %D in one lower pane.",
-            detailed="Stochastic should be interpreted as a pair, so the catalog exposes it as one grouped oscillator display.",
-            value_format="number",
-        )
-    )
     add(
         composite_display_item(
             by_column,
@@ -1472,6 +1454,8 @@ def category_for_column(column: str, group: str) -> str:
         return "label"
     if group == "bars" or column in KEY_COLUMNS:
         return "bar"
+    if column.lower() in OPERATIONAL_HELPER_COLUMNS:
+        return "feature"
     if is_indicator_column(column):
         return "indicator"
     return "feature"
@@ -1539,7 +1523,8 @@ def semantics_for_column(column: str) -> dict[str, Any]:
     else:
         unit = "number"
     direction = "higher_better" if any(term in lower for term in ("confidence", "score", "quality", "return", "percentile")) else "neutral"
-    return {"unit": unit, "direction": direction, "nullable": column not in KEY_COLUMNS}
+    role = "operational_helper" if lower in OPERATIONAL_HELPER_COLUMNS else "analysis_field"
+    return {"unit": unit, "direction": direction, "nullable": column not in KEY_COLUMNS, "role": role}
 
 
 def presentation_for_column(column: str, group: str, category: str) -> dict[str, Any]:
@@ -1548,7 +1533,7 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
     role = chart_role_for_column(column, group, category)
     pane = pane_for_role(column, role)
     presentation: dict[str, Any] = {
-        "selectable": category in {"indicator", "feature", "label"},
+        "selectable": category in {"indicator", "feature", "label"} and lower not in OPERATIONAL_HELPER_COLUMNS,
         "defaultVisible": column in DEFAULT_VISIBLE_COLUMNS,
         "chartRole": role,
         "dataShape": data_shape,
@@ -1599,6 +1584,8 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
 
 def data_shape_for_column(column: str, group: str, category: str) -> str:
     lower = column.lower()
+    if lower in OPERATIONAL_HELPER_COLUMNS:
+        return "data_only"
     if category == "bar" or column in KEY_COLUMNS:
         return "data_only"
     if group.startswith("supervision_"):
@@ -1632,7 +1619,7 @@ def chart_role_for_column(column: str, group: str, category: str) -> str:
     lower = column.lower()
     if category == "bar" or column in KEY_COLUMNS:
         return "data_only"
-    if lower in {"indicator_bar_count", "macd_ready", "tema_ready"}:
+    if lower in OPERATIONAL_HELPER_COLUMNS:
         return "data_only"
     if group.startswith("supervision_"):
         return "marker" if lower in {"oracle_long_entry_signal", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5"} else "data_only"
@@ -1831,13 +1818,14 @@ def knowledge_for_column(column: str, group: str, category: str, title: str) -> 
         window = trailing_number(lower, 14)
         return knowledge_block(
             short=f"Relative Strength Index over {window} bars.",
-            detailed="RSI compares average gains and losses to measure momentum pressure on a bounded 0-100 scale.",
-            theory="RSI is a bounded transform of the ratio between smoothed positive and negative close-to-close movement. Because it normalizes directional pressure into a 0-100 oscillator, it is comparable across price levels and tickers, but the bounded scale also compresses information during persistent trends.",
+            detailed="RSI compares rolling average positive and negative candle-body movement on a bounded 0-100 scale. In this provider the Polars expression uses `body = close - open`, then averages `max(body, 0)` and `max(-body, 0)` over 14 bars by ticker. It is therefore an open-to-close body-pressure RSI, not the textbook close-to-close-delta RSI.",
+            theory="RSI is a bounded transform of the ratio between smoothed positive and negative movement. This implementation focuses on candle body pressure, so it emphasizes whether bars are closing above or below their own opens rather than whether each close is above or below the prior close. The bounded scale is useful for comparing pressure across tickers, but it compresses information during persistent trends.",
             interpretation="Use RSI as a regime-dependent momentum-pressure measure. In a strong breakout, RSI holding above 60 can indicate persistent demand; in a range, RSI above 70 can mark overextension. Divergence between price making a new high and RSI failing to confirm can indicate weaker marginal momentum.",
-            equation=f"$$RSI_t=100-\\frac{{100}}{{1+RS_t}},\\quad RS_t=\\frac{{AvgGain_{{{window}}}}}{{AvgLoss_{{{window}}}}}$$",
-            variables={"AvgGain": "Average positive close-to-close change", "AvgLoss": "Average negative close-to-close change"},
+            equation=f"$$Body_t=Close_t-Open_t$$\n\n$$AvgGain_t=SMA_{{{window}}}(\\max(Body_t,0))$$\n\n$$AvgLoss_t=SMA_{{{window}}}(\\max(-Body_t,0))$$\n\n$$RSI_t=\\begin{{cases}}100-\\frac{{100}}{{1+AvgGain_t/AvgLoss_t}},&AvgLoss_t>0\\\\100,&otherwise\\end{{cases}}$$",
+            variables={"Body_t": "Provider candle body, close minus open", "AvgGain_t": "14-bar rolling mean of positive body values by ticker", "AvgLoss_t": "14-bar rolling mean of negative body magnitudes by ticker"},
             caveats=[
                 "RSI thresholds are regime-dependent; fixed 70/30 rules are too crude for all markets.",
+                "This provider uses candle body movement, not close-to-close delta, so values can differ from many charting packages.",
                 "Strong trends can remain overbought or oversold for long periods.",
                 "RSI ignores volume and intrabar path, so confirm with participation and structure.",
             ],
@@ -1964,7 +1952,7 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
 
     if lower.startswith("day_") or lower.startswith("premarket_") or lower.startswith("or_") or lower.startswith("distance_to_day_") or lower in {"prev_close", "gap_pct"}:
         return session_feature_knowledge(lower, group, category, title)
-    if lower in {"roc10", "cci20", "stoch_k14", "stoch_d3", "indicator_bar_count", "macd_ready", "tema_ready"}:
+    if lower in {"roc10", "indicator_bar_count", "macd_ready", "tema_ready"}:
         return momentum_extra_knowledge(lower, group, category, title)
     if lower.startswith("donchian_") or lower.startswith("keltner_") or lower.endswith("_z20"):
         return volatility_feature_knowledge(lower, group, category, title)
@@ -1998,8 +1986,6 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
         "bos_up",
         "bos_down",
         "trend_regime",
-        "bars_since_high20",
-        "bars_since_low20",
     }:
         return market_structure_knowledge(lower, group, category, title)
     if "order_block" in lower or "displacement" in lower or lower in {"distance_to_demand_pct", "distance_to_supply_pct"}:
@@ -2042,8 +2028,8 @@ def session_feature_knowledge(lower: str, group: str, category: str, title: str)
             {"Close_{t-1}": "Previous bar close for the same ticker"},
         ),
         "gap_pct": (
-            "Session open gap versus previous close.",
-            "Gap percent compares the session's first open with the previous close. Positive values mean the session opened above the prior close; negative values mean it opened below.",
+            "Session open compared with the previous bar close.",
+            "Gap percent is implemented as `day_open / prev_close - 1`, where `prev_close` is the immediately prior bar close for the ticker at the current row. On the first row of a session this behaves like an open gap versus the prior bar; on later rows it is a moving comparison between the fixed day open and the prior bar close.",
             "$$GapPct_t=\\frac{DayOpen_t}{PrevClose_t}-1$$",
             {"DayOpen_t": "First open for the ticker/session", "PrevClose_t": "Previous close for the ticker"},
         ),
@@ -2119,45 +2105,34 @@ def momentum_extra_knowledge(lower: str, group: str, category: str, title: str) 
             "$$ROC10_t=\\sum_{i=0}^{9}Return1_{t-i}$$",
             {"Return1": "One-bar simple return"},
         ),
-        "cci20": (
-            "Commodity Channel Index over 20 bars.",
-            "CCI compares typical price with its 20-bar average and scales the distance by mean absolute deviation. Large positive values mean price is high versus its recent typical range; large negative values mean it is low.",
-            "$$CCI20_t=\\frac{HLC3_t-SMA_{20}(HLC3_t)}{0.015\\cdot MAD_{20}(HLC3_t)}$$",
-            {"HLC3": "Typical price", "MAD_{20}": "20-bar mean absolute deviation"},
-        ),
-        "stoch_k14": (
-            "Stochastic percent K over 14 bars.",
-            "Stochastic K places the close inside the recent 14-bar high-low range. Values near 100 mean close is near the range high; values near 0 mean close is near the range low.",
-            "$$\\%K14_t=100\\cdot\\frac{Close_t-MinLow_{14,t}}{MaxHigh_{14,t}-MinLow_{14,t}}$$",
-            {"MaxHigh_{14,t}": "14-bar rolling high", "MinLow_{14,t}": "14-bar rolling low"},
-        ),
-        "stoch_d3": (
-            "Three-bar smoothing of stochastic percent K.",
-            "Stochastic D smooths percent K with a 3-bar moving average to reduce noise in the oscillator.",
-            "$$\\%D3_t=SMA_3(\\%K14_t)$$",
-            {"\\%K14_t": "14-bar stochastic K"},
-        ),
         "indicator_bar_count": (
-            "Number of bars available for the ticker.",
-            "Indicator bar count is a cumulative count of close observations for the ticker. It tells the UI and downstream logic how much history is available for rolling indicators.",
-            "$$IndicatorBarCount_t=count(Close_i\\mid i\\le t, ticker_i=ticker_t)$$",
-            {"Close_i": "Historical close for the same ticker"},
+            "Operational helper: bars available for indicator warm-up.",
+            "Indicator bar count is an operational metadata field, not a trading indicator. The Polars pipeline computes it with `pl.cum_count(\"close\").over(\"ticker\")` after sorting by ticker and bar_time_utc. It tells the catalog and downstream review code how much history exists before trusting warm-up-sensitive indicators.",
+            "$$IndicatorBarCount_t=\\operatorname{cum\\_count}_{ticker}(Close_t)$$",
+            {"cum_count": "Polars cumulative count over the ticker partition after time sorting"},
         ),
         "macd_ready": (
-            "True after enough bars for MACD context.",
-            "MACD ready becomes true once the ticker has at least 35 bars. The threshold gives the 12/26/9 EMA stack enough history to be more stable.",
-            "$$MACDReady_t=I(IndicatorBarCount_t\\ge 35)$$",
+            "Operational helper: MACD warm-up readiness flag.",
+            "MACD ready is not the MACD signal and should not be interpreted as bullish or bearish. It is a data-only helper calculated in Polars as `pl.cum_count(\"close\").over(\"ticker\") >= 35`, marking rows where the EMA12, EMA26, and EMA9 signal stack has enough bars to be more stable.",
+            "$$MACDReady_t=I(\\operatorname{cum\\_count}_{ticker}(Close_t)\\ge35)$$",
             {"I": "Indicator function"},
         ),
         "tema_ready": (
-            "True after enough bars for TEMA context.",
-            "TEMA ready becomes true once the ticker has at least 20 bars. Before that, the triple EMA stack is still warming up.",
-            "$$TEMAReady_t=I(IndicatorBarCount_t\\ge 20)$$",
+            "Operational helper: TEMA warm-up readiness flag.",
+            "TEMA ready is not a trend signal. It is a data-only helper calculated in Polars as `pl.cum_count(\"close\").over(\"ticker\") >= 20`, marking rows where the TEMA9/TEMA20 stack has enough prior closes to avoid the earliest warm-up region.",
+            "$$TEMAReady_t=I(\\operatorname{cum\\_count}_{ticker}(Close_t)\\ge20)$$",
             {"I": "Indicator function"},
         ),
     }
     short, detailed, equation, variables = details[lower]
-    return knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, variables)
+    block = knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, variables)
+    if lower in OPERATIONAL_HELPER_COLUMNS:
+        block["caveats"] = [
+            "Operational helper metadata, not a tradable signal.",
+            "The catalog marks this field data-only and non-selectable for chart display.",
+            "Use it to understand indicator warm-up and data availability, not market direction.",
+        ]
+    return block
 
 
 def volatility_feature_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
@@ -2201,10 +2176,10 @@ def volatility_feature_knowledge(lower: str, group: str, category: str, title: s
         symbol, description = z_source
         return knowledge_block(
             short=f"20-bar z-score of {description}.",
-            detailed=f"{title} standardizes current {description} versus its own 20-bar rolling mean and standard deviation for the same ticker. Positive values mean the current bar is above recent normal; negative values mean below recent normal.",
+            detailed=f"{title} standardizes current {description} versus its own 20-bar rolling mean and standard deviation for the same ticker. The Polars helper returns 0 when the rolling standard deviation is not positive. Positive values mean the current bar is above recent normal; negative values mean below recent normal.",
             theory="Z-scores normalize activity across tickers and regimes. They make abnormal movement or participation easier to compare than raw values.",
             interpretation="Values above 2 to 3 are unusually high. Confirm whether the abnormality is useful by checking direction, volume, and session context.",
-            equation=f"$$Z20_t=\\frac{{{symbol}_t-Mean20({symbol})_t}}{{Std20({symbol})_t}}$$",
+            equation=f"$$Z20_t=\\begin{{cases}}\\frac{{{symbol}_t-Mean20({symbol})_t}}{{Std20({symbol})_t}},&Std20({symbol})_t>0\\\\0,&otherwise\\end{{cases}}$$",
             variables={f"{symbol}_t": f"Current {description}", "Mean20": "20-bar rolling mean", "Std20": "20-bar rolling standard deviation"},
         )
     return fallback_knowledge_for_column(lower, group, category, title)
@@ -2234,10 +2209,10 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
         numerator, denominator = relative[lower]
         return knowledge_block(
             short="Current activity divided by its 20-bar baseline.",
-            detailed=f"{title} compares current {numerator.lower()} with its 20-bar moving average. A value of 3 means the current bar is trading at roughly three times its recent average activity.",
+            detailed=f"{title} compares current {numerator.lower()} with its 20-bar moving average. The Polars expression returns 0 when the denominator baseline is not positive. A value of 3 means the current bar is trading at roughly three times its recent average activity.",
             theory=theory_for_group(group, category),
             interpretation="High relative activity is more meaningful when price is also moving directionally or breaking structure.",
-            equation=f"$$Relative{numerator}20_t=\\frac{{{numerator}_t}}{{{denominator}_t}}$$",
+            equation=f"$$Relative{numerator}20_t=\\begin{{cases}}\\frac{{{numerator}_t}}{{{denominator}_t}},&{denominator}_t>0\\\\0,&otherwise\\end{{cases}}$$",
             variables={numerator: "Current activity", denominator: "20-bar activity baseline"},
         )
     details = {
@@ -2334,8 +2309,6 @@ def market_structure_knowledge(lower: str, group: str, category: str, title: str
         "bos_up": ("Bullish break of structure.", "True when close breaks above the prior 20-bar high, excluding the current bar from the reference.", "$$BOSUp_t=I(Close_t>\\max_{i=t-20}^{t-1}High_i)$$"),
         "bos_down": ("Bearish break of structure.", "True when close breaks below the prior 20-bar low, excluding the current bar from the reference.", "$$BOSDown_t=I(Close_t<\\min_{i=t-20}^{t-1}Low_i)$$"),
         "trend_regime": ("EMA20 versus EMA50 regime label.", "Trend regime is 'up' when EMA20 is above EMA50, 'down' when EMA20 is below EMA50, and 'range' otherwise.", "$$Regime_t=\\begin{cases}up,&EMA20_t>EMA50_t\\\\down,&EMA20_t<EMA50_t\\\\range,&otherwise\\end{cases}$$"),
-        "bars_since_high20": ("Reserved bars-since-high field.", "This field is currently emitted as null in the provider. It is reserved for a future count of bars since the rolling 20-bar high event.", "$$BarsSinceHigh20_t=null\\quad\\text{current implementation}$$"),
-        "bars_since_low20": ("Reserved bars-since-low field.", "This field is currently emitted as null in the provider. It is reserved for a future count of bars since the rolling 20-bar low event.", "$$BarsSinceLow20_t=null\\quad\\text{current implementation}$$"),
     }
     short, detailed, equation = details[lower]
     return knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, {"I": "Indicator function"})
@@ -2360,14 +2333,14 @@ def shock_knowledge(lower: str, group: str, category: str, title: str) -> dict[s
     details = {
         "return_shock": ("Positive return z-score shock.", "True when return_z20 is at least 2.5 and the one-bar return is positive. It captures unusually large positive close-to-close movement.", "$$ReturnShock_t=I(ReturnZ20_t\\ge2.5\\land Return1_t>0)$$"),
         "range_shock": ("Positive range expansion shock.", "True when range_z20 is at least 2.5 and the candle body is positive. It captures unusually large bullish range expansion.", "$$RangeShock_t=I(RangeZ20_t\\ge2.5\\land Body_t>0)$$"),
-        "structure_break_shock": ("Breakout structure shock.", "True when price breaks one of the provider's structure references: rolling high, prior session high proxy, premarket high, 5-minute opening range high, or VWAP reclaim.", "$$StructureBreakShock_t=BreaksHigh20_t\\lor Close_t>PriorDayHigh_t\\lor Close_t>PremarketHigh_t\\lor Close_t>OR5High_t\\lor ReclaimVWAP_t$$"),
+        "structure_break_shock": ("Breakout structure shock.", "True when price breaks one of the provider's structure references: the rolling 20-bar high, the previous bar's session-high-so-far, premarket high, 5-minute opening range high, or VWAP reclaim. The Polars code names the previous running session high `prior_day_high`, but it is computed as `day_high_so_far.shift(1).over([ticker, session_date])`, not yesterday's completed high.", "$$StructureBreakShock_t=BreaksHigh20_t\\lor (Close_t>DayHighSoFar_{t-1,session})\\lor (Close_t>PremarketHigh_t)\\lor (Close_t>OR5High_t)\\lor ReclaimVWAP_t$$"),
         "price_shock": ("Confirmed price-side shock flag.", "True when return, range, displacement, or structure shock occurs and the close is in the upper part of the bar range.", "$$PriceShock_t=I((ReturnShock_t\\lor RangeShock_t\\lor BullDisp_t\\lor StructureBreakShock_t)\\land CloseLocation_t\\ge0.55)$$"),
         "relative_volume_shock": ("Relative volume shock.", "True when current volume is at least three times its 20-bar average.", "$$RelativeVolumeShock_t=I(RelativeVolume20_t\\ge3)$$"),
         "dollar_volume_shock": ("Relative dollar-volume shock.", "True when current dollar volume is at least three times its 20-bar average.", "$$DollarVolumeShock_t=I(RelativeDollarVolume20_t\\ge3)$$"),
         "transactions_shock": ("Transaction-count shock.", "True when transactions_z20 is at least 2.5.", "$$TransactionsShock_t=I(TransactionsZ20_t\\ge2.5)$$"),
         "volume_shock": ("Volume-side shock flag.", "True when relative volume, relative dollar volume, transaction count, or volume_z20 shows abnormal participation.", "$$VolumeShock_t=RelativeVolumeShock_t\\lor DollarVolumeShock_t\\lor TransactionsShock_t\\lor I(VolumeZ20_t\\ge2.5)$$"),
-        "price_shock_score": ("Weighted price shock score.", "Score from 0 to 1 combining return abnormality, range abnormality, close location, structure break, and bullish displacement.", "$$PriceShockScore_t=\\min(1,0.30RZ_t^+ +0.25RangeZ_t^+ +0.15CloseLocation_t +0.15I(StructureBreak_t)+0.15I(BullDisp_t))$$"),
-        "volume_shock_score": ("Weighted volume shock score.", "Score from 0 to 1 combining volume z-score, relative volume, relative dollar volume, and transaction z-score.", "$$VolumeShockScore_t=\\min(1,0.30VZ_t^+ +0.25\\min(RelVol20_t,5)/5 +0.25\\min(RelDollarVol20_t,5)/5 +0.20TZ_t^+)$$"),
+        "price_shock_score": ("Weighted price shock score.", "Score from 0 to 1 combining clipped return abnormality, clipped range abnormality, close location, structure break, and bullish displacement. The Polars code divides positive z-scores by 5 before applying weights.", "$$PriceShockScore_t=\\min\\left(1,0.30\\frac{\\max(ReturnZ20_t,0)}{5}+0.25\\frac{\\max(RangeZ20_t,0)}{5}+0.15clip(CloseLocation_t,0,1)+0.15I(StructureBreakShock_t)+0.15I(BullishDisplacement_t)\\right)$$"),
+        "volume_shock_score": ("Weighted volume shock score.", "Score from 0 to 1 combining clipped volume z-score, capped relative volume, capped relative dollar volume, and clipped transaction z-score. The Polars code caps relative ratios at 5 and scales z-scores by 5.", "$$VolumeShockScore_t=\\min\\left(1,0.30\\frac{\\max(VolumeZ20_t,0)}{5}+0.25\\frac{\\min(RelativeVolume20_t,5)}{5}+0.25\\frac{\\min(RelativeDollarVolume20_t,5)}{5}+0.20\\frac{\\max(TransactionsZ20_t,0)}{5}\\right)$$"),
         "bars_since_price_shock": ("Bars since last price shock.", "Count of bars since the most recent price_shock for the ticker. Null before the first price shock.", "$$BarsSincePriceShock_t=BarSeq_t-LastPriceShockSeq_t$$"),
         "bars_since_volume_shock": ("Bars since last volume shock.", "Count of bars since the most recent volume_shock for the ticker. Null before the first volume shock.", "$$BarsSinceVolumeShock_t=BarSeq_t-LastVolumeShockSeq_t$$"),
         "minutes_since_price_shock": ("Minutes since last price shock.", "Bars since price shock multiplied by the timeframe step in minutes.", "$$MinutesSincePriceShock_t=BarsSincePriceShock_t\\cdot TimeframeStepMinutes_t$$"),
@@ -2422,9 +2395,9 @@ def supervision_knowledge_for_column(column: str, group: str, title: str) -> dic
         "oracle_best_exit_price": ("Best future exit price.", "Highest future high inside the horizon.", "$$BestExitPrice_t=\\max_{1\\le i\\le h}High_{t+i}$$"),
         "oracle_best_exit_return": ("Best future exit return.", "Return from current close to the best future exit price.", "$$BestExitReturn_t=\\frac{BestExitPrice_t}{Close_t}-1$$"),
         "oracle_long_entry_signal": ("Oracle long entry label.", "True when the future path achieved at least 1% MFE, had no worse than 0.5% MAE, and MFE occurred before or with MAE.", "$$Entry_t=I(MFE_t\\ge0.01\\land |MAE_t|\\le0.005\\land MFEBeforeMAE_t)$$"),
-        "oracle_long_entry_confidence": ("Oracle long entry confidence.", "Bounded path-quality score derived from favorable return, adverse excursion, and path efficiency.", "$$EntryConfidence_t=Q(Close_t,MFE_t,MAE_t,PathEfficiency_t)$$"),
+        "oracle_long_entry_confidence": ("Oracle long entry confidence.", "Bounded path-quality score derived from favorable return, adverse excursion, and path efficiency. In code, `Q` is `_bounded(best_return * 20 * 0.45 + efficiency * 0.35 + (1 - min(abs(mae) * 20, 1)) * 0.20)`.", "$$EntryConfidence_t=clip\\left(20MFE_t\\cdot0.45+PathEfficiency_t\\cdot0.35+(1-\\min(20|MAE_t|,1))\\cdot0.20,0,1\\right)$$"),
         "oracle_long_exit_signal": ("Oracle long exit label.", "True when the best upside is less than or equal to the absolute downside risk inside the future path.", "$$Exit_t=I(MFE_t\\le |MAE_t|)$$"),
-        "oracle_long_exit_confidence": ("Oracle long exit confidence.", "Bounded quality score for exit pressure using adverse movement, weak favorable movement, and inefficient path behavior.", "$$ExitConfidence_t=Q(Close_t,|MAE_t|,-MFE_t,1-PathEfficiency_t)$$"),
+        "oracle_long_exit_confidence": ("Oracle long exit confidence.", "Bounded inverse-path score calculated with the same quality function but using adverse movement as the reward term, negative MFE as the risk term, and `1 - path_efficiency`.", "$$ExitConfidence_t=clip\\left(20|MAE_t|\\cdot0.45+(1-PathEfficiency_t)\\cdot0.35+(1-\\min(20|MFE_t|,1))\\cdot0.20,0,1\\right)$$"),
     }
     if lower in oracle_details:
         short, detailed, equation = oracle_details[lower]
@@ -2468,8 +2441,8 @@ def forward_liquidity_knowledge(lower: str, title: str) -> dict[str, Any]:
         "fwd_max_relative_volume20": ("Maximum future relative volume.", "Maximum relative_volume20 observed inside the future horizon.", "$$FwdMaxRelVol20_t=\\max_{1\\le i\\le h}RelativeVolume20_{t+i}$$"),
         "fwd_max_relative_dollar_volume20": ("Maximum future relative dollar volume.", "Maximum relative_dollar_volume20 observed inside the future horizon.", "$$FwdMaxRelDollarVol20_t=\\max_{1\\le i\\le h}RelativeDollarVolume20_{t+i}$$"),
         "fwd_max_volume_z20": ("Maximum future volume z-score.", "Maximum volume_z20 observed inside the future horizon.", "$$FwdMaxVolumeZ20_t=\\max_{1\\le i\\le h}VolumeZ20_{t+i}$$"),
-        "fwd_volume_expansion_ratio": ("Future volume expansion ratio.", "Future volume sum divided by current bar volume. Higher values mean participation expanded after the source bar.", "$$FwdVolumeExpansion_t=\\frac{FwdVolumeSum_t}{Volume_t}$$"),
-        "fwd_dollar_volume_expansion_ratio": ("Future dollar-volume expansion ratio.", "Future dollar-volume sum divided by current dollar volume.", "$$FwdDollarVolumeExpansion_t=\\frac{FwdDollarVolumeSum_t}{DollarVolume_t}$$"),
+        "fwd_volume_expansion_ratio": ("Future max-volume expansion ratio.", "Largest single future-bar volume divided by current bar volume. The Polars code uses `_safe_ratio(_max_volume, volume)`, so this is a peak future participation ratio, not the future volume sum divided by current volume.", "$$FwdVolumeExpansion_t=\\frac{\\max_{1\\le i\\le h}Volume_{t+i}}{Volume_t}$$"),
+        "fwd_dollar_volume_expansion_ratio": ("Future max-dollar-volume expansion ratio.", "Largest single future-bar dollar volume divided by current dollar volume. The Polars code uses `_safe_ratio(_max_dollar_volume, dollar_volume)`, so this is a peak future notional participation ratio.", "$$FwdDollarVolumeExpansion_t=\\frac{\\max_{1\\le i\\le h}(Close_{t+i}\\cdot Volume_{t+i})}{DollarVolume_t}$$"),
         "fwd_liquidity_confirmed": ("Future liquidity confirmation flag.", "True when at least one volume shock appears in the future horizon.", "$$FwdLiquidityConfirmed_t=I(\\exists i\\le h:VolumeShock_{t+i})$$"),
         "fwd_first_volume_shock_bar_id": ("First future volume-shock bar id.", "Bar id of the first future bar in the horizon where volume_shock is true.", "$$FirstVolumeShockBarId_t=BarId_{t+j},\\quad j=\\min\\{i:VolumeShock_{t+i}\\}$$"),
         "fwd_first_volume_shock_time_utc": ("First future volume-shock UTC time.", "UTC time of the first future volume shock in the horizon.", "$$FirstVolumeShockUTC_t=TimeUTC_{t+j},\\quad j=\\min\\{i:VolumeShock_{t+i}\\}$$"),
@@ -2478,10 +2451,10 @@ def forward_liquidity_knowledge(lower: str, title: str) -> dict[str, Any]:
         "fwd_volume_shock_before_mfe": ("Whether future volume shock arrives before best high.", "True when the first future volume shock occurs before or at the MFE bar.", "$$VolumeShockBeforeMFE_t=I(j\\le TimeToMFEbars_t)$$"),
         "fwd_return_at_volume_shock": ("Return at future volume shock.", "Return from current close to the close of the first future volume-shock bar.", "$$ReturnAtVolumeShock_t=\\frac{Close_{t+j}}{Close_t}-1$$"),
         "fwd_drawdown_before_volume_shock": ("Drawdown before future volume shock.", "Worst low before the first future volume shock, measured from current close.", "$$DrawdownBeforeVolumeShock_t=\\frac{\\min_{1\\le i\\le j}Low_{t+i}}{Close_t}-1$$"),
-        "fwd_estimated_capacity_dollars": ("Estimated future tradable capacity.", "Provider capacity estimate from future dollar volume. It is a research proxy for how much participation existed after the source bar.", "$$CapacityDollars_t=ProviderCapacity(FwdDollarVolume_{t+1:t+h})$$"),
-        "fwd_capacity_score": ("Future capacity score.", "Bounded score summarizing estimated future liquidity capacity.", "$$CapacityScore_t=Bounded(CapacityDollars_t)$$"),
+        "fwd_estimated_capacity_dollars": ("Estimated future tradable capacity.", "Provider capacity estimate equal to 1 percent of the maximum single-bar future dollar volume inside the horizon. It is a simple research proxy for available participation after the source bar.", "$$CapacityDollars_t=0.01\\cdot\\max_{1\\le i\\le h}(Close_{t+i}\\cdot Volume_{t+i})$$"),
+        "fwd_capacity_score": ("Future capacity score.", "Bounded capacity score scaled against 25,000 dollars exactly as `min(capacity_dollars / 25000, 1)` in the Polars code.", "$$CapacityScore_t=\\min\\left(\\frac{CapacityDollars_t}{25000},1\\right)$$"),
         "fwd_price_outcome_quality": ("Future price outcome quality.", "Bounded price-path quality score using MFE, MAE, and path efficiency.", "$$PriceQuality_t=Q(Close_t,MFE_t,MAE_t,PathEfficiency_t)$$"),
-        "fwd_liquidity_quality_score": ("Future liquidity quality score.", "Bounded score combining volume expansion, volume z-score, and capacity score.", "$$LiquidityQuality_t=0.40Expansion_t+0.30VolumeZ_t+0.30CapacityScore_t$$"),
+        "fwd_liquidity_quality_score": ("Future liquidity quality score.", "Bounded score combining the maximum future relative volume, maximum future volume z-score, and the capacity score. The Polars code clips relative volume at 5x and positive volume z-score at 4 before applying weights.", "$$LiquidityQuality_t=0.40\\min\\left(\\frac{MaxRelVol20_t}{5},1\\right)+0.30\\min\\left(\\frac{\\max(MaxVolumeZ20_t,0)}{4},1\\right)+0.30CapacityScore_t$$"),
         "fwd_outcome_bucket": ("Combined price/liquidity outcome bucket.", "Categorical label splitting future outcome into good/bad price and good/bad volume buckets using 0.60 quality thresholds.", "$$Bucket_t=case(PriceQuality_t\\ge0.60,LiquidityQuality_t\\ge0.60)$$"),
     }
     if lower in details:
@@ -2508,8 +2481,8 @@ def method_label_knowledge(lower: str, title: str) -> dict[str, Any]:
         "method_path_efficiency": ("Method path efficiency.", "How directly the future close path traveled toward the best method price.", "$$MethodPathEfficiency_t=\\frac{BestPrice_t-Close_t}{\\sum |\\Delta Close_{methodWindow}|}$$"),
         "method_entry_signal": ("Method entry label.", "True when the method oracle action is ENTER_NOW.", "$$MethodEntry_t=I(OracleAction_t=ENTER\\_NOW)$$"),
         "method_exit_signal": ("Method exit label.", "True when the method oracle action is IGNORE.", "$$MethodExit_t=I(OracleAction_t=IGNORE)$$"),
-        "method_confidence": ("Method confidence score.", "Bounded score from 0 to 1. Generic methods use path quality; PRICE_VOLUME_SHOCK blends shock context, path quality, confirmation speed, and confirmation bonus.", "$$Confidence_t=case(method,Q_{path},0.45S_{shock}+0.35Q_{path}+0.12Q_{speed}+B_{confirm})$$"),
-        "oracle_action": ("Method oracle action.", "Categorical supervision action derived from method confidence and future return: ENTER_NOW, WATCH, or IGNORE.", "$$OracleAction_t=case(Confidence_t,BestReturn_t,ShockContext_t)$$"),
+        "method_confidence": ("Method confidence score.", "Bounded score from 0 to 1. Generic methods use the path-quality score. PRICE_VOLUME_SHOCK uses the code path `clip(0.45 * shock_context + 0.35 * base_confidence + 0.12 * confirmation_speed + confirmation_bonus, 0, 1)`.", "$$MethodConfidence_t=\\begin{cases}BaseConfidence_t,&method\\ne PRICE\\_VOLUME\\_SHOCK\\\\clip(0.45ShockContext_t+0.35BaseConfidence_t+0.12ConfirmationSpeed_t+ConfirmationBonus_t,0,1),&method=PRICE\\_VOLUME\\_SHOCK\\end{cases}$$"),
+        "oracle_action": ("Method oracle action.", "Categorical supervision action derived from method confidence, best return, and shock context. Generic methods enter when base confidence is at least 0.65 and best return is above 0.5 percent; PRICE_VOLUME_SHOCK ignores weak/no confirmation, enters at confidence at least 0.68 with best return above 0.4 percent, watches at confidence at least 0.45, and otherwise ignores.", "$$OracleAction_t=case(MethodConfidence_t,BestReturn_t,ShockContext_t,ShockType_t)$$"),
     }
     if lower in details:
         short, detailed, equation = details[lower]
@@ -2526,7 +2499,7 @@ def method_shock_label_knowledge(lower: str, title: str) -> dict[str, Any]:
         "shock_confirmation_delay_minutes": ("Minutes from source shock to confirmation.", "$$ShockDelay_t=DelayMinutes_t$$"),
         "shock_price_score": ("Price-side shock score at source bar.", "$$ShockPriceScore_t=PriceShockScore_t$$"),
         "shock_volume_score": ("Volume-side shock score at source bar.", "$$ShockVolumeScore_t=VolumeShockScore_t$$"),
-        "shock_score": ("Combined shock context score.", "$$ShockScore_t=\\max(PVSScore_t,0.55PriceScore_t+0.45VolumeScore_t)$$"),
+        "shock_score": ("Current combined price-volume shock score copied from the feature table.", "$$ShockScore_t=PriceVolumeShockScore_t$$"),
         "shock_drawdown_before_confirmation": ("Drawdown before shock confirmation.", "$$ShockDrawdownBeforeConfirm_t=\\frac{LowBeforeConfirm_t}{Close_t}-1$$"),
         "shock_return_after_confirmation": ("Best return after shock confirmation.", "$$ShockReturnAfterConfirm_t=\\frac{PostConfirmBestHigh_t}{ConfirmationPrice_t}-1$$"),
         "shock_best_exit_after_confirmation_bar_id": ("Best post-confirmation exit bar id.", "$$ShockBestExitBarId_t=BarId_{postConfirmBest}$$"),

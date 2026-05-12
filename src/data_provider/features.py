@@ -73,9 +73,6 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "macd_hist",
         "rsi14",
         "roc10",
-        "cci20",
-        "stoch_k14",
-        "stoch_d3",
         "indicator_bar_count",
         "macd_ready",
         "tema_ready",
@@ -176,8 +173,6 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "bos_up",
         "bos_down",
         "trend_regime",
-        "bars_since_high20",
-        "bars_since_low20",
     ],
     "order_blocks": [
         "bar_id",
@@ -419,8 +414,6 @@ def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
             (pl.col("close") > pl.col("high").shift(1).rolling_max(20).over("ticker")).alias("bos_up"),
             (pl.col("close") < pl.col("low").shift(1).rolling_min(20).over("ticker")).alias("bos_down"),
             pl.when(pl.col("ema20") > pl.col("ema50")).then(pl.lit("up")).when(pl.col("ema20") < pl.col("ema50")).then(pl.lit("down")).otherwise(pl.lit("range")).alias("trend_regime"),
-            pl.lit(None).cast(pl.Int32).alias("bars_since_high20"),
-            pl.lit(None).cast(pl.Int32).alias("bars_since_low20"),
             ((pl.col("bar_range") > pl.col("atr14") * 1.5) & (pl.col("close") > pl.col("open"))).alias("bullish_displacement"),
             ((pl.col("bar_range") > pl.col("atr14") * 1.5) & (pl.col("close") < pl.col("open"))).alias("bearish_displacement"),
         )

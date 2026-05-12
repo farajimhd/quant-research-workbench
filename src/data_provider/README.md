@@ -162,11 +162,9 @@ Feature artifacts are split by group so consumers can load only what they need. 
 - `macd_hist`: `macd_line - macd_signal`.
 - `rsi14`: RSI from 14-period average up/down body movement.
 - `roc10`: 10-bar rolling sum of `return_1`.
-- `cci20`: reserved in the feature contract; not currently emitted unless added to the calculation.
-- `stoch_k14`, `stoch_d3`: reserved in the feature contract; not currently emitted unless added to the calculation.
-- `indicator_bar_count`: cumulative count per ticker.
-- `macd_ready`: `indicator_bar_count >= 35`.
-- `tema_ready`: `indicator_bar_count >= 20`.
+- `indicator_bar_count`: operational helper; cumulative count per ticker used for indicator warm-up context.
+- `macd_ready`: operational helper; `indicator_bar_count >= 35`.
+- `tema_ready`: operational helper; `indicator_bar_count >= 20`.
 
 ### Volatility
 
@@ -268,8 +266,6 @@ These are deterministic three-bar gap approximations:
 - `bos_up`: close breaks above the prior 20-bar high.
 - `bos_down`: close breaks below the prior 20-bar low.
 - `trend_regime`: `up` when EMA20 > EMA50, `down` when EMA20 < EMA50, otherwise `range`.
-- `bars_since_high20`: reserved column for future exact distance-to-high implementation.
-- `bars_since_low20`: reserved column for future exact distance-to-low implementation.
 
 ### Order Blocks
 
