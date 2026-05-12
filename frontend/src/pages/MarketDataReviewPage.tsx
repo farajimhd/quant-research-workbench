@@ -133,6 +133,38 @@ const STYLE_COLOR_OPTIONS = [
   { label: "Red", value: "#B42318" },
   { label: "Candle direction", value: "inherit_candle_direction" },
 ];
+const CATALOG_PREVIEW_CANDLES = [
+  { close: 118, high: 91, low: 123, open: 103, volume: 18, x: 38 },
+  { close: 78, high: 72, low: 108, open: 102, volume: 38, x: 64 },
+  { close: 69, high: 60, low: 84, open: 80, volume: 54, x: 90 },
+  { close: 82, high: 74, low: 94, open: 72, volume: 31, x: 116 },
+  { close: 88, high: 78, low: 96, open: 82, volume: 20, x: 142 },
+  { close: 96, high: 86, low: 105, open: 90, volume: 16, x: 168 },
+  { close: 90, high: 83, low: 102, open: 98, volume: 22, x: 194 },
+  { close: 78, high: 72, low: 92, open: 90, volume: 27, x: 220 },
+  { close: 84, high: 76, low: 93, open: 80, volume: 19, x: 246 },
+  { close: 76, high: 70, low: 88, open: 84, volume: 17, x: 272 },
+  { close: 68, high: 62, low: 78, open: 77, volume: 24, x: 298 },
+  { close: 60, high: 54, low: 70, open: 69, volume: 29, x: 324 },
+  { close: 62, high: 55, low: 72, open: 58, volume: 22, x: 350 },
+];
+const CATALOG_PRICE_LINE_POINTS = "34,112 64,87 90,70 116,76 142,84 168,91 194,88 220,80 246,83 272,78 298,70 324,64 350,66";
+const CATALOG_OSCILLATOR_LINE_POINTS = "34,199 64,184 90,176 116,181 142,190 168,202 194,207 220,200 246,189 272,182 298,180 324,174 350,178";
+const CATALOG_HISTOGRAM_BARS = [
+  { value: 9, x: 38 },
+  { value: 17, x: 64 },
+  { value: 28, x: 90 },
+  { value: 20, x: 116 },
+  { value: 8, x: 142 },
+  { value: -9, x: 168 },
+  { value: -17, x: 194 },
+  { value: -12, x: 220 },
+  { value: 7, x: 246 },
+  { value: 12, x: 272 },
+  { value: 18, x: 298 },
+  { value: 25, x: 324 },
+  { value: 15, x: 350 },
+];
 const PRESENTATION_HELP = {
   selectable: "Controls whether this item appears in the chart Indicators & Features picker. Off keeps the catalog contract but hides it from chart selection.",
   defaultVisible: "Adds this item to charts automatically when the selected artifact contains the required column or label group.",
@@ -1124,44 +1156,53 @@ function CatalogTab({
                   </div>
                 </div>
               </div>
-              <div className="catalog-presentation-grid">
-                <div className="catalog-presentation-section">
-                  <h4>Visibility</h4>
-                  <div className="catalog-check-grid">
-                    <CatalogCheckbox checked={Boolean(draft.selectable)} help={PRESENTATION_HELP.selectable} label="Selectable" onChange={(value) => updatePresentation("selectable", value)} />
-                    <CatalogCheckbox checked={Boolean(draft.defaultVisible)} help={PRESENTATION_HELP.defaultVisible} label="Default on" onChange={(value) => updatePresentation("defaultVisible", value)} />
-                    <CatalogCheckbox checked={Boolean(draft.legend)} help={PRESENTATION_HELP.legend} label="Legend" onChange={(value) => updatePresentation("legend", value)} />
+              <div className="catalog-presentation-layout">
+                <div className="catalog-presentation-controls">
+                  <div className="catalog-presentation-grid">
+                    <div className="catalog-presentation-section">
+                      <h4>Visibility</h4>
+                      <div className="catalog-check-grid">
+                        <CatalogCheckbox checked={Boolean(draft.selectable)} help={PRESENTATION_HELP.selectable} label="Selectable" onChange={(value) => updatePresentation("selectable", value)} />
+                        <CatalogCheckbox checked={Boolean(draft.defaultVisible)} help={PRESENTATION_HELP.defaultVisible} label="Default on" onChange={(value) => updatePresentation("defaultVisible", value)} />
+                        <CatalogCheckbox checked={Boolean(draft.legend)} help={PRESENTATION_HELP.legend} label="Legend" onChange={(value) => updatePresentation("legend", value)} />
+                      </div>
+                    </div>
+                    <div className="catalog-presentation-section">
+                      <h4>Placement</h4>
+                      <div className="catalog-form-grid compact">
+                        <CatalogSelect help={PRESENTATION_HELP.chartRole} label="Chart role" options={catalog?.presentationOptions.chartRoles ?? []} value={String(draft.chartRole ?? "table_only")} onChange={(value) => updatePresentation("chartRole", value)} />
+                        <CatalogSelect help={PRESENTATION_HELP.pane} label="Pane" options={catalog?.presentationOptions.panes ?? []} value={String(draft.pane ?? "price")} onChange={(value) => updatePresentation("pane", value)} />
+                      </div>
+                    </div>
+                    <div className="catalog-presentation-section">
+                      <h4>Visual Style</h4>
+                      <CatalogStylePopover
+                        bandFillColor={String(draft.bandFillColor ?? draft.color ?? "#1E3A5F")}
+                        bandFillOpacity={Number(draft.bandFillOpacity ?? 0.16)}
+                        chartRole={presentationRole}
+                        color={String(draft.color ?? "#1E3A5F")}
+                        lineStyle={String(draft.lineStyle ?? "solid")}
+                        lineStyleOptions={catalog?.presentationOptions.lineStyles ?? []}
+                        lineWidth={Number(draft.lineWidth ?? 1)}
+                        precision={Number(draft.precision ?? 2)}
+                        onChange={updatePresentation}
+                      />
+                    </div>
+                    <div className="catalog-presentation-section">
+                      <h4>Markers & Format</h4>
+                      <div className="catalog-form-grid compact">
+                        <CatalogSelect help={PRESENTATION_HELP.markerShape} label="Marker shape" options={catalog?.presentationOptions.markerShapes ?? []} value={String(draft.markerShape ?? "circle")} onChange={(value) => updatePresentation("markerShape", value)} />
+                        <CatalogSelect help={PRESENTATION_HELP.markerPosition} label="Marker position" options={catalog?.presentationOptions.markerPositions ?? []} value={String(draft.markerPosition ?? "belowBar")} onChange={(value) => updatePresentation("markerPosition", value)} />
+                        <CatalogSelect help={PRESENTATION_HELP.valueFormat} label="Value format" options={catalog?.presentationOptions.valueFormats ?? []} value={String(draft.valueFormat ?? "number")} onChange={(value) => updatePresentation("valueFormat", value)} />
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <div className="catalog-presentation-section">
-                  <h4>Placement</h4>
-                  <div className="catalog-form-grid compact">
-                    <CatalogSelect help={PRESENTATION_HELP.chartRole} label="Chart role" options={catalog?.presentationOptions.chartRoles ?? []} value={String(draft.chartRole ?? "table_only")} onChange={(value) => updatePresentation("chartRole", value)} />
-                    <CatalogSelect help={PRESENTATION_HELP.pane} label="Pane" options={catalog?.presentationOptions.panes ?? []} value={String(draft.pane ?? "price")} onChange={(value) => updatePresentation("pane", value)} />
-                  </div>
-                </div>
-                <div className="catalog-presentation-section">
-                  <h4>Visual Style</h4>
-                  <CatalogStylePopover
-                    bandFillColor={String(draft.bandFillColor ?? draft.color ?? "#1E3A5F")}
-                    bandFillOpacity={Number(draft.bandFillOpacity ?? 0.16)}
-                    chartRole={presentationRole}
-                    color={String(draft.color ?? "#1E3A5F")}
-                    lineStyle={String(draft.lineStyle ?? "solid")}
-                    lineStyleOptions={catalog?.presentationOptions.lineStyles ?? []}
-                    lineWidth={Number(draft.lineWidth ?? 1)}
-                    precision={Number(draft.precision ?? 2)}
-                    onChange={updatePresentation}
-                  />
-                </div>
-                <div className="catalog-presentation-section">
-                  <h4>Markers & Format</h4>
-                  <div className="catalog-form-grid compact">
-                    <CatalogSelect help={PRESENTATION_HELP.markerShape} label="Marker shape" options={catalog?.presentationOptions.markerShapes ?? []} value={String(draft.markerShape ?? "circle")} onChange={(value) => updatePresentation("markerShape", value)} />
-                    <CatalogSelect help={PRESENTATION_HELP.markerPosition} label="Marker position" options={catalog?.presentationOptions.markerPositions ?? []} value={String(draft.markerPosition ?? "belowBar")} onChange={(value) => updatePresentation("markerPosition", value)} />
-                    <CatalogSelect help={PRESENTATION_HELP.valueFormat} label="Value format" options={catalog?.presentationOptions.valueFormats ?? []} value={String(draft.valueFormat ?? "number")} onChange={(value) => updatePresentation("valueFormat", value)} />
-                  </div>
-                </div>
+                <CatalogPresentationChartPreview
+                  itemTitle={selected.title}
+                  presentation={draft}
+                  presentationType={selectedPresentationType}
+                />
               </div>
             </section>
             <div className="catalog-detail-metrics">
@@ -1280,6 +1321,18 @@ function colorWithOpacity(value: unknown, opacity: number): string {
   const green = parseInt(color.slice(3, 5), 16);
   const blue = parseInt(color.slice(5, 7), 16);
   return `rgba(${red}, ${green}, ${blue}, ${alpha.toFixed(2)})`;
+}
+
+function boundedPresentationNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(min, Math.min(max, numeric));
+}
+
+function svgDashArray(lineStyle: string, lineWidth: number): string | undefined {
+  if (lineStyle === "dashed") return `${Math.max(5, lineWidth * 4)} ${Math.max(4, lineWidth * 3)}`;
+  if (lineStyle === "dotted") return `1 ${Math.max(3, lineWidth * 2.5)}`;
+  return undefined;
 }
 
 function opacityLabel(value: number): string {
@@ -1538,6 +1591,114 @@ function CatalogCheckbox({ checked, help, label, onChange }: { checked: boolean;
       <CatalogHelpButton help={help} label={label} />
     </div>
   );
+}
+
+function CatalogPresentationChartPreview({
+  itemTitle,
+  presentation,
+  presentationType,
+}: {
+  itemTitle: string;
+  presentation: CatalogPresentation;
+  presentationType: string;
+}) {
+  const role = String(presentation.chartRole ?? "table_only");
+  const pane = String(presentation.pane ?? "price");
+  const lineStyle = String(presentation.lineStyle ?? "solid");
+  const lineWidth = boundedPresentationNumber(presentation.lineWidth, 1, 6, 2);
+  const strokeColor = presentationColor(presentation.color);
+  const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.6, 0.16));
+  const dashArray = svgDashArray(lineStyle, lineWidth);
+  const displayNameForItem = itemTitle || "Selected item";
+  return (
+    <aside className="catalog-preview-chart-card" aria-label={`Chart preview for ${displayNameForItem}`}>
+      <div className="catalog-preview-chart-header">
+        <div>
+          <span>Preview</span>
+          <strong>{displayNameForItem}</strong>
+        </div>
+        <small>{presentationTypeLabel(presentationType)}</small>
+      </div>
+      <svg className="catalog-contract-chart" viewBox="0 0 380 238" role="img" aria-label={`${displayNameForItem} presentation preview`}>
+        <rect className="catalog-contract-chart-bg" x="0" y="0" width="380" height="238" rx="8" />
+        <g className="catalog-contract-chart-grid">
+          {[44, 74, 104, 134].map((y) => <line key={`py:${y}`} x1="20" x2="356" y1={y} y2={y} />)}
+          {[58, 116, 174, 232, 290, 348].map((x) => <line key={`px:${x}`} x1={x} x2={x} y1="26" y2="151" />)}
+          <line x1="20" x2="356" y1="170" y2="170" />
+          <line x1="20" x2="356" y1="205" y2="205" />
+          {[58, 116, 174, 232, 290, 348].map((x) => <line key={`ox:${x}`} x1={x} x2={x} y1="164" y2="218" />)}
+        </g>
+        {role === "band" ? (
+          <g className="catalog-contract-selected-layer">
+            <polygon fill={bandFill} points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60 350,100 322,106 290,102 258,109 226,112 194,106 162,114 130,121 98,112 66,106 34,119" />
+            <polyline fill="none" points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60" stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+            <polyline fill="none" points="34,119 66,106 98,112 130,121 162,114 194,106 226,112 258,109 290,102 322,106 350,100" stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+          </g>
+        ) : null}
+        <g className="catalog-contract-candles">
+          {CATALOG_PREVIEW_CANDLES.map((candle) => {
+            const bullish = candle.close < candle.open;
+            const color = bullish ? "#33E42A" : "#FD0E50";
+            const top = Math.min(candle.open, candle.close);
+            const height = Math.max(3, Math.abs(candle.close - candle.open));
+            return (
+              <g key={candle.x}>
+                <line className="catalog-contract-wick" x1={candle.x} x2={candle.x} y1={candle.high} y2={candle.low} stroke={color} />
+                <rect className="catalog-contract-candle-body" fill={color} height={height} rx="1" width="9" x={candle.x - 4.5} y={top} />
+                <rect className="catalog-contract-volume" fill={color} height={candle.volume} opacity="0.28" width="9" x={candle.x - 4.5} y={151 - candle.volume} />
+              </g>
+            );
+          })}
+        </g>
+        {role === "price_overlay" ? (
+          <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_PRICE_LINE_POINTS} stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+        ) : null}
+        {role === "marker" ? renderCatalogPreviewMarker(String(presentation.markerShape ?? "circle"), String(presentation.markerPosition ?? "belowBar"), strokeColor) : null}
+        {role === "oscillator" ? (
+          <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_OSCILLATOR_LINE_POINTS} stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+        ) : null}
+        {role === "histogram" ? (
+          <g className="catalog-contract-histogram">
+            {CATALOG_HISTOGRAM_BARS.map((bar) => {
+              const positive = bar.value >= 0;
+              const fill = String(presentation.color) === "inherit_candle_direction" ? (positive ? "#33E42A" : "#FD0E50") : strokeColor;
+              return (
+                <rect
+                  fill={fill}
+                  height={Math.abs(bar.value)}
+                  key={bar.x}
+                  width="13"
+                  x={bar.x - 6.5}
+                  y={positive ? 194 - bar.value : 194}
+                />
+              );
+            })}
+          </g>
+        ) : null}
+        {role === "table_only" ? (
+          <g className="catalog-contract-table-only">
+            <rect x="108" y="76" width="164" height="34" rx="8" />
+            <text x="190" y="97">Table-only field</text>
+          </g>
+        ) : null}
+        <g className="catalog-contract-axis-labels">
+          <text x="26" y="24">09:30</text>
+          <text x="182" y="24">{pane === "price" ? "Price" : displayName(pane)}</text>
+          <text x="326" y="24">11:30</text>
+        </g>
+      </svg>
+      <p>{role === "table_only" ? "This field stays in tables and is not drawn on the chart." : "Dummy candles are fixed; only this selected catalog item is drawn."}</p>
+    </aside>
+  );
+}
+
+function renderCatalogPreviewMarker(shape: string, position: string, color: string): ReactNode {
+  const x = 222;
+  const y = position === "aboveBar" ? 66 : position === "inBar" ? 104 : 138;
+  if (shape === "arrowDown") return <polygon className="catalog-contract-marker" fill={color} points={`${x - 7},${y - 6} ${x + 7},${y - 6} ${x},${y + 8}`} />;
+  if (shape === "arrowUp") return <polygon className="catalog-contract-marker" fill={color} points={`${x},${y - 8} ${x - 7},${y + 6} ${x + 7},${y + 6}`} />;
+  if (shape === "square") return <rect className="catalog-contract-marker" fill={color} height="14" width="14" x={x - 7} y={y - 7} />;
+  return <circle className="catalog-contract-marker" cx={x} cy={y} fill={color} r="7" />;
 }
 
 function CatalogStylePopover({
