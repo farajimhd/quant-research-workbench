@@ -1921,7 +1921,11 @@ function CatalogPresentationChartPreview({
   const displayNameForItem = itemTitle || "Selected item";
   const isBandLike = role === "band" || role === "price_zone" || role === "continuous_band" || role === "anchored_zone";
   const parts = role === "composite" && Array.isArray(presentation.parts) ? presentation.parts.filter((part): part is Record<string, unknown> => Boolean(part && typeof part === "object")) : [];
-  const hasPreviewPane = role === "oscillator" || role === "histogram" || (role === "composite" && pane !== "price");
+  const compositeHasLowerPane = role === "composite" && parts.some((part) => {
+    const partRole = normalizeDisplayType(String(part.chartRole ?? part.style ?? ""));
+    return String(part.pane ?? pane) !== "price" || partRole === "oscillator" || partRole === "histogram";
+  });
+  const hasPreviewPane = role === "oscillator" || role === "histogram" || compositeHasLowerPane || (role === "composite" && pane !== "price");
   const showRealPreview = !isDataOnlyRole(role) && Boolean(realPreview?.sampled && realPreview.payload?.candles?.length);
   return (
     <aside className="catalog-preview-chart-card" aria-label={`Chart preview for ${displayNameForItem}`}>
@@ -1933,7 +1937,7 @@ function CatalogPresentationChartPreview({
         <small>{presentationTypeLabel(presentationType)}</small>
       </div>
       {showRealPreview ? (
-        <CatalogRealSampleChart itemTitle={displayNameForItem} preview={realPreview as CatalogPreviewPayload} />
+        <CatalogRealSampleChart itemTitle={displayNameForItem} presentation={presentation} preview={realPreview as CatalogPreviewPayload} />
       ) : (
       <svg className="catalog-contract-chart" viewBox="0 0 380 238" role="img" aria-label={`${displayNameForItem} presentation preview`}>
         <rect className="catalog-contract-chart-bg" x="0" y="0" width="380" height="238" rx="8" />
@@ -1979,7 +1983,7 @@ function CatalogPresentationChartPreview({
         {role === "price_overlay" ? (
           <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_PRICE_LINE_POINTS} stroke={selectedStroke} strokeDasharray={dashArray} strokeWidth={lineWidth} />
         ) : null}
-        {role === "composite" && pane === "price" ? (
+        {role === "composite" && !hasPreviewPane && pane === "price" ? (
           <g className="catalog-contract-selected-layer">
             {(parts.length ? parts : [{ color: strokeColor }, { color: "#B7791F" }]).slice(0, 4).map((part, index) => (
               <polyline
@@ -1998,7 +2002,7 @@ function CatalogPresentationChartPreview({
         {role === "oscillator" ? (
           <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_OSCILLATOR_LINE_POINTS} stroke={selectedStroke} strokeDasharray={dashArray} strokeWidth={lineWidth} />
         ) : null}
-        {role === "composite" && pane !== "price" ? (
+        {role === "composite" && hasPreviewPane ? (
           <g className="catalog-contract-selected-layer">
             {(parts.length ? parts : [{ color: strokeColor }, { color: "#B7791F" }]).slice(0, 4).map((part, index) => {
               const partRole = String(part.chartRole ?? part.style ?? "");
@@ -2059,7 +2063,7 @@ function CatalogPresentationChartPreview({
         ) : null}
         <g className="catalog-contract-axis-labels">
           <text x="26" y="24">09:30</text>
-          <text x="182" y="24">{pane === "price" ? "Price" : displayName(pane)}</text>
+          <text x="182" y="24">{hasPreviewPane ? displayName(pane === "price" ? "oscillator" : pane) : "Price"}</text>
           <text x="326" y="24">11:30</text>
         </g>
       </svg>
@@ -2074,8 +2078,26 @@ function CatalogPresentationChartPreview({
   );
 }
 
-function CatalogRealSampleChart({ itemTitle, preview }: { itemTitle: string; preview: CatalogPreviewPayload }) {
+function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitle: string; presentation: CatalogPresentation; preview: CatalogPreviewPayload }) {
   const payload = preview.payload;
+  const role = normalizeDisplayType(String(presentation.chartRole ?? "data_only"));
+  const pane = String(presentation.pane ?? "price");
+  const lineStyle = String(presentation.lineStyle ?? "solid");
+  const lineWidth = boundedPresentationNumber(presentation.lineWidth, 1, 6, 2);
+  const strokeColor = presentationColor(presentation.color);
+  const strokeOpacity = boundedPresentationNumber(presentation.opacity, 0.05, 1, 1);
+  const selectedStroke = typeof presentation.color === "string" && presentation.color.startsWith("#") ? colorWithOpacity(presentation.color, strokeOpacity) : strokeColor;
+  const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.6, 0.16));
+  const dashArray = svgDashArray(lineStyle, lineWidth);
+  const parts = role === "composite" && Array.isArray(presentation.parts) ? presentation.parts.filter((part): part is Record<string, unknown> => Boolean(part && typeof part === "object")) : [];
+  const compositeHasLowerPane = role === "composite" && parts.some((part) => {
+    const partRole = normalizeDisplayType(String(part.chartRole ?? part.style ?? ""));
+    return String(part.pane ?? pane) !== "price" || partRole === "oscillator" || partRole === "histogram";
+  });
+  const isZoneRole = role === "band" || role === "price_zone" || role === "continuous_band" || role === "anchored_zone";
+  const isLowerPaneRole = role === "oscillator" || role === "histogram" || compositeHasLowerPane || (role === "composite" && pane !== "price");
+  const isPriceSeriesRole = role === "price_overlay" || (role === "composite" && !isLowerPaneRole && pane === "price");
+  const isMarkerRole = role === "marker" || role === "text_label";
   const allCandles = payload?.candles ?? [];
   const referenceTime = Number(preview.sample?.time ?? 0);
   const referenceIndex = referenceTime ? Math.max(0, allCandles.findIndex((candle) => candle.time >= referenceTime)) : 0;
@@ -2084,11 +2106,17 @@ function CatalogRealSampleChart({ itemTitle, preview }: { itemTitle: string; pre
   const times = candles.map((candle) => candle.time);
   const minTime = times[0] ?? 0;
   const maxTime = times[times.length - 1] ?? 0;
-  const visibleZones = (payload?.price_zones ?? []).filter((zone) => zone.end >= minTime && zone.start <= maxTime);
+  const realDataSeries = [...(payload?.overlay_series ?? []), ...(payload?.oscillator_series ?? [])];
+  const visibleDataSeries = realDataSeries
+    .map((series) => ({ ...series, data: series.data.filter((point) => point.time >= minTime && point.time <= maxTime && Number.isFinite(point.value)) }))
+    .filter((series) => series.data.length);
+  const visibleZones = isZoneRole ? (payload?.price_zones ?? []).filter((zone) => zone.end >= minTime && zone.start <= maxTime) : [];
+  const visibleMarkers = isMarkerRole ? (payload?.markers ?? []).filter((marker) => times.includes(Number(marker.time))).slice(0, 40) : [];
+  const referenceCandle = candles.find((candle) => candle.time === referenceTime) ?? candles[Math.max(0, Math.min(candles.length - 1, referenceIndex - startIndex))] ?? candles[Math.floor(candles.length / 2)];
   const priceValues = [
     ...candles.flatMap((candle) => [candle.high, candle.low]),
     ...visibleZones.flatMap((zone) => [zone.upper, zone.lower]),
-    ...(payload?.overlay_series ?? []).flatMap((series) => series.data.map((point) => point.value)),
+    ...(isPriceSeriesRole ? visibleDataSeries.flatMap((series) => series.data.map((point) => point.value)) : []),
   ].filter((value) => Number.isFinite(value));
   const priceMin = Math.min(...priceValues);
   const priceMax = Math.max(...priceValues);
@@ -2106,8 +2134,8 @@ function CatalogRealSampleChart({ itemTitle, preview }: { itemTitle: string; pre
     const span = Math.max(1, times[rightIndex] - times[leftIndex]);
     return 24 + (leftIndex + (time - times[leftIndex]) / span) * (332 / Math.max(1, times.length - 1));
   };
-  const oscillatorPoints = (payload?.oscillator_series ?? []).flatMap((series) => series.data);
-  const hasPreviewPane = oscillatorPoints.length > 0;
+  const oscillatorPoints = visibleDataSeries.flatMap((series) => series.data);
+  const hasPreviewPane = isLowerPaneRole;
   const oscValues = oscillatorPoints.map((point) => point.value).filter((value) => Number.isFinite(value));
   const oscMin = oscValues.length ? Math.min(...oscValues) : -1;
   const oscMax = oscValues.length ? Math.max(...oscValues) : 1;
@@ -2116,6 +2144,21 @@ function CatalogRealSampleChart({ itemTitle, preview }: { itemTitle: string; pre
   const zeroY = boundedPresentationNumber(oscScale(0), 168, 216, 194);
   const candleWidth = Math.max(3, Math.min(8, 240 / Math.max(1, candles.length)));
   const referenceX = referenceTime ? xForTime(referenceTime) : null;
+  const fallbackZoneX = referenceCandle ? (referenceX ?? xForTime(referenceCandle.time)) : null;
+  const fallbackZoneRect = isZoneRole && !visibleZones.length && referenceCandle && fallbackZoneX !== null
+    ? {
+      height: Math.max(3, Math.abs(priceScale(referenceCandle.low) - priceScale(referenceCandle.high))),
+      width: Math.max(26, Math.min(92, 356 - fallbackZoneX)),
+      x: fallbackZoneX,
+      y: Math.min(priceScale(referenceCandle.high), priceScale(referenceCandle.low)),
+    }
+    : null;
+  const seriesPoints = (series: (typeof visibleDataSeries)[number], scale: (value: number) => number) =>
+    series.data.map((point) => `${xForTime(point.time)},${scale(point.value)}`).join(" ");
+  const partForIndex = (index: number) => parts[index] ?? {};
+  const seriesStroke = (index: number) => presentationColor(partForIndex(index).color ?? selectedStroke);
+  const seriesLineWidth = (index: number) => boundedPresentationNumber(partForIndex(index).lineWidth, 1, 6, lineWidth);
+  const seriesDashArray = (index: number) => svgDashArray(String(partForIndex(index).lineStyle ?? lineStyle), seriesLineWidth(index));
 
   return (
     <svg className="catalog-contract-chart" viewBox="0 0 380 238" role="img" aria-label={`${itemTitle} real provider preview`}>
@@ -2139,6 +2182,17 @@ function CatalogRealSampleChart({ itemTitle, preview }: { itemTitle: string; pre
           </g>
           <line className="catalog-contract-zero-line" x1="20" x2="356" y1={zeroY} y2={zeroY} />
         </g>
+      ) : null}
+      {fallbackZoneRect ? (
+        <rect
+          className="catalog-contract-real-zone"
+          fill={bandFill}
+          height={fallbackZoneRect.height}
+          stroke={selectedStroke}
+          width={fallbackZoneRect.width}
+          x={fallbackZoneRect.x}
+          y={fallbackZoneRect.y}
+        />
       ) : null}
       {visibleZones.map((zone, index) => {
         const left = xForTime(zone.start);
@@ -2173,27 +2227,89 @@ function CatalogRealSampleChart({ itemTitle, preview }: { itemTitle: string; pre
           );
         })}
       </g>
-      {(payload?.overlay_series ?? []).slice(0, 4).map((series, index) => (
-        <polyline
-          fill="none"
-          key={`overlay:${series.column}:${index}`}
-          points={series.data.filter((point) => times.includes(point.time)).map((point) => `${xForTime(point.time)},${priceScale(point.value)}`).join(" ")}
-          stroke={series.color}
-          strokeWidth={Math.max(1, Math.min(3, series.lineWidth ?? 1))}
-        />
-      ))}
-      {(payload?.oscillator_series ?? []).slice(0, 4).map((series, index) => (
-        <polyline
-          fill="none"
-          key={`osc:${series.column}:${index}`}
-          points={series.data.filter((point) => times.includes(point.time)).map((point) => `${xForTime(point.time)},${oscScale(point.value)}`).join(" ")}
-          stroke={series.color}
-          strokeWidth={Math.max(1, Math.min(3, series.lineWidth ?? 1))}
-        />
-      ))}
-      {(payload?.markers ?? []).filter((marker) => times.includes(Number(marker.time))).slice(0, 40).map((marker, index) => (
-        <circle cx={xForTime(Number(marker.time))} cy={marker.position === "aboveBar" ? 44 : marker.position === "inBar" ? 94 : 146} fill={String(marker.color)} key={`marker:${index}`} r="4" />
-      ))}
+      {isPriceSeriesRole ? (
+        visibleDataSeries.length ? visibleDataSeries.slice(0, 4).map((series, index) => (
+          <polyline
+            fill="none"
+            key={`overlay:${series.column}:${index}`}
+            points={seriesPoints(series, priceScale)}
+            stroke={role === "composite" ? seriesStroke(index) : selectedStroke}
+            strokeDasharray={role === "composite" ? seriesDashArray(index) : dashArray}
+            strokeWidth={role === "composite" ? seriesLineWidth(index) : lineWidth}
+          />
+        )) : <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_PRICE_LINE_POINTS} stroke={selectedStroke} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+      ) : null}
+      {isLowerPaneRole ? (
+        visibleDataSeries.length ? visibleDataSeries.slice(0, 4).map((series, index) => {
+          const part = partForIndex(index);
+          const lowerRole = role === "histogram" ? "histogram" : normalizeDisplayType(String(part.chartRole ?? series.chartRole ?? "oscillator"));
+          if (lowerRole === "histogram" || series.style === "histogram") {
+            const width = Math.max(3, Math.min(9, candleWidth));
+            return (
+              <g className="catalog-contract-histogram" key={`osc-hist:${series.column}:${index}`}>
+                {series.data.map((point) => {
+                  const positive = point.value >= 0;
+                  const y = oscScale(point.value);
+                  return (
+                    <rect
+                      fill={String(presentation.color) === "inherit_candle_direction" ? (positive ? "#33E42A" : "#FD0E50") : seriesStroke(index)}
+                      height={Math.max(1, Math.abs(zeroY - y))}
+                      key={`${series.column}:${point.time}`}
+                      width={width}
+                      x={xForTime(point.time) - width / 2}
+                      y={positive ? y : zeroY}
+                    />
+                  );
+                })}
+              </g>
+            );
+          }
+          return (
+            <polyline
+              fill="none"
+              key={`osc:${series.column}:${index}`}
+              points={seriesPoints(series, oscScale)}
+              stroke={role === "composite" ? seriesStroke(index) : selectedStroke}
+              strokeDasharray={role === "composite" ? seriesDashArray(index) : dashArray}
+              strokeWidth={role === "composite" ? seriesLineWidth(index) : lineWidth}
+            />
+          );
+        }) : role === "histogram" ? (
+          <g className="catalog-contract-histogram">
+            {CATALOG_HISTOGRAM_BARS.map((bar) => {
+              const positive = bar.value >= 0;
+              return (
+                <rect
+                  fill={String(presentation.color) === "inherit_candle_direction" ? (positive ? "#33E42A" : "#FD0E50") : selectedStroke}
+                  height={Math.abs(bar.value)}
+                  key={`fallback-real-hist:${bar.x}`}
+                  width="13"
+                  x={bar.x - 6.5}
+                  y={positive ? 194 - bar.value : 194}
+                />
+              );
+            })}
+          </g>
+        ) : <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_OSCILLATOR_LINE_POINTS} stroke={selectedStroke} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+      ) : null}
+      {isMarkerRole ? (
+        visibleMarkers.length ? visibleMarkers.map((marker, index) => (
+          <g key={`marker:${index}`}>
+            {renderCatalogRealMarker(
+              String(presentation.markerShape ?? marker.shape ?? "circle"),
+              xForTime(Number(marker.time)),
+              marker.position === "aboveBar" ? 44 : marker.position === "inBar" ? 94 : 146,
+              selectedStroke,
+            )}
+            {role === "text_label" ? <text className="catalog-contract-marker-text" x={xForTime(Number(marker.time)) + 7} y={marker.position === "aboveBar" ? 39 : marker.position === "inBar" ? 89 : 141}>{itemTitle}</text> : null}
+          </g>
+        )) : referenceX !== null ? (
+          <g>
+            {renderCatalogRealMarker(String(presentation.markerShape ?? "circle"), referenceX, String(presentation.markerPosition ?? "belowBar") === "aboveBar" ? 44 : String(presentation.markerPosition ?? "belowBar") === "inBar" ? 94 : 146, selectedStroke)}
+            {role === "text_label" ? <text className="catalog-contract-marker-text" x={referenceX + 7} y="141">{itemTitle}</text> : null}
+          </g>
+        ) : null
+      ) : null}
       {referenceX !== null ? (
         <g className="catalog-contract-reference-line">
           <line x1={referenceX} x2={referenceX} y1="30" y2="218" />
@@ -2227,6 +2343,13 @@ function renderCatalogPreviewMarker(shape: string, position: string, color: stri
   if (shape === "arrowUp") return <polygon className="catalog-contract-marker" fill={color} points={`${x},${y - 8} ${x - 7},${y + 6} ${x + 7},${y + 6}`} />;
   if (shape === "square") return <rect className="catalog-contract-marker" fill={color} height="14" width="14" x={x - 7} y={y - 7} />;
   return <circle className="catalog-contract-marker" cx={x} cy={y} fill={color} r="7" />;
+}
+
+function renderCatalogRealMarker(shape: string, x: number, y: number, color: string): ReactNode {
+  if (shape === "arrowDown") return <polygon className="catalog-contract-marker" fill={color} points={`${x - 6},${y - 5} ${x + 6},${y - 5} ${x},${y + 7}`} />;
+  if (shape === "arrowUp") return <polygon className="catalog-contract-marker" fill={color} points={`${x},${y - 7} ${x - 6},${y + 5} ${x + 6},${y + 5}`} />;
+  if (shape === "square") return <rect className="catalog-contract-marker" fill={color} height="11" width="11" x={x - 5.5} y={y - 5.5} />;
+  return <circle className="catalog-contract-marker" cx={x} cy={y} fill={color} r="5.5" />;
 }
 
 function CatalogStylePopover({

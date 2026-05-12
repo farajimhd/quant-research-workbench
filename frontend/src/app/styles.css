@@ -2014,6 +2014,12 @@ button {
   stroke-width: 1;
 }
 
+.catalog-contract-marker-text {
+  fill: var(--foreground);
+  font-size: 8px;
+  font-weight: 500;
+}
+
 .catalog-contract-real-zone {
   stroke-width: 1;
 }
