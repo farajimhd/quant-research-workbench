@@ -3130,7 +3130,14 @@ function chartLabelOptions(catalog: CatalogPayload | null, availableGroups: stri
     .filter((candidate) => available.has(candidate.group))
     .map((candidate) => {
       const item = catalog.columns.find((column) => column.column === candidate.column);
-      return { group: candidate.group, id: item?.id ?? candidate.group, title: item?.title ?? candidate.title };
+      return {
+        group: candidate.group,
+        id: item?.id ?? candidate.group,
+        knowledge: item?.knowledge,
+        leakage: item?.leakage,
+        lookahead: true,
+        title: candidate.title,
+      };
     });
 }
 

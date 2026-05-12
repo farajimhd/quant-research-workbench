@@ -16,6 +16,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CircleHelp,
   Eye,
   EyeOff,
   LocateFixed,
@@ -66,6 +67,14 @@ type PriceZone = {
   upper: number;
   zoneHeightMode?: string;
 };
+export type ChartCatalogKnowledge = {
+  shortDescription?: string;
+  detailedDescription?: string;
+  theory?: string;
+  interpretation?: string;
+  caveats?: string[];
+  equations?: Array<{ markdown: string; title: string; variables: Record<string, string> }>;
+};
 export type ChartReference = {
   label?: string;
   minuteOfDay?: number;
@@ -79,6 +88,8 @@ export type ChartCatalogItem = {
   category: string;
   group?: string;
   artifactGroups?: string[];
+  knowledge?: ChartCatalogKnowledge;
+  leakage?: Record<string, unknown>;
   presentation?: {
     chartRole?: string;
     defaultVisible?: boolean;
@@ -94,6 +105,9 @@ export type ChartDisplayItem = ChartCatalogItem & {
 export type ChartLabelOption = {
   group: string;
   id: string;
+  knowledge?: ChartCatalogKnowledge;
+  leakage?: Record<string, unknown>;
+  lookahead?: boolean;
   title: string;
 };
 type AnySeriesApi = ISeriesApi<SeriesType>;
@@ -1163,13 +1177,21 @@ function IndicatorFeatureSelect({
   const visibleOptions = [...indicatorOptions, ...visibleFeatures];
   const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
   const displayItems = mergeSessionEquivalentDisplayItems(displayItemOptions.filter((item) => item.presentation?.selectable !== false));
-  const groupedDisplayItems = groupChartDisplayItems(displayItems);
+  const standardDisplayItems = displayItems.filter((item) => !chartMenuItemUsesLookahead(item));
+  const lookaheadDisplayItems = displayItems.filter((item) => chartMenuItemUsesLookahead(item));
+  const groupedDisplayItems = groupChartDisplayItems(standardDisplayItems);
+  const groupedLookaheadDisplayItems = groupChartDisplayItems(lookaheadDisplayItems);
   const groupedIndicatorOptions = groupColumnOptions(indicatorOptions, catalogByColumn, "Indicators");
   const groupedFeatureOptions = groupColumnOptions(visibleFeatures, catalogByColumn, "Features");
   const selected = new Set(values);
   const selectedLabels = new Set(visibleLabels);
   const selectedCount = (usesDisplayItems ? displayItems.filter((option) => selected.has(option.id)).length : visibleOptions.filter((option) => selected.has(option)).length) + labelOptions.filter((option) => selectedLabels.has(option.group)).length;
   const labelForOption = (option: string) => catalogByColumn.get(option)?.title ?? displayName(option);
+  const [helpKey, setHelpKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) setHelpKey(null);
+  }, [open]);
 
   const toggleValue = (value: string) => {
     const nextSelected = new Set(values);
@@ -1191,6 +1213,67 @@ function IndicatorFeatureSelect({
       nextSelected.add(group);
     }
     onLabelChange(labelOptions.map((option) => option.group).filter((groupName) => nextSelected.has(groupName)));
+  };
+
+  const toggleHelp = (key: string) => setHelpKey((current) => (current === key ? null : key));
+  const helpForColumn = (column: string) => chartColumnHelp(catalogByColumn.get(column), labelForOption(column));
+  const helpForDisplayItem = (item: ChartDisplayItem) => {
+    const sourceColumn = item.sourceColumns?.map((column) => catalogByColumn.get(column)).find((column) => column?.knowledge);
+    return chartColumnHelp({
+      ...item,
+      knowledge: item.knowledge ?? sourceColumn?.knowledge,
+      leakage: item.leakage ?? sourceColumn?.leakage,
+    }, item.title, chartMenuItemUsesLookahead(item) || chartMenuItemUsesLookahead(sourceColumn));
+  };
+  const helpForLabel = (option: ChartLabelOption) => chartColumnHelp(option, option.title, true);
+
+  const renderLookaheadColumn = () => {
+    if (!groupedLookaheadDisplayItems.length && !labelOptions.length) return null;
+    return (
+      <div className="chart-column-menu-column lookahead" key="lookahead">
+        <div className="chart-column-menu-title">Lookahead / Supervision</div>
+        <div className="chart-column-menu-note">Future-bar labels and supervision outputs. Use them for review, training, and validation, not as live indicators.</div>
+        {groupedLookaheadDisplayItems.map((section) => (
+          <div className="chart-column-menu-block" key={section.key}>
+            <div className="chart-column-menu-subtitle">{section.label}</div>
+            <div className="chart-column-menu-list feature-list">
+              {section.items.map((option) => (
+                <ChartColumnMenuItem
+                  help={helpForDisplayItem(option)}
+                  helpOpen={helpKey === `display:${option.id}`}
+                  key={option.id}
+                  onHelpToggle={() => toggleHelp(`display:${option.id}`)}
+                  onToggle={() => toggleValue(option.id)}
+                  selected={selected.has(option.id)}
+                  subtitle={option.category ? displayName(option.category) : undefined}
+                  title={option.title}
+                  tone="lookahead"
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+        {labelOptions.length ? (
+          <div className="chart-column-menu-block">
+            <div className="chart-column-menu-subtitle">Labels</div>
+            <div className="chart-column-menu-list">
+              {labelOptions.map((option) => (
+                <ChartColumnMenuItem
+                  help={helpForLabel(option)}
+                  helpOpen={helpKey === `label:${option.group}`}
+                  key={option.id}
+                  onHelpToggle={() => toggleHelp(`label:${option.group}`)}
+                  onToggle={() => toggleLabel(option.group)}
+                  selected={selectedLabels.has(option.group)}
+                  title={option.title}
+                  tone="lookahead"
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
   };
 
   return (
@@ -1216,38 +1299,21 @@ function IndicatorFeatureSelect({
                   <div className="chart-column-menu-title">{section.label}</div>
                   <div className="chart-column-menu-list feature-list">
                     {section.items.map((option) => (
-                      <button
-                        className={selected.has(option.id) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                      <ChartColumnMenuItem
+                        help={helpForDisplayItem(option)}
+                        helpOpen={helpKey === `display:${option.id}`}
                         key={option.id}
-                        onClick={() => toggleValue(option.id)}
-                        type="button"
-                      >
-                        <span className="chart-column-menu-check">{selected.has(option.id) ? <Check size={13} /> : null}</span>
-                        <span>{option.title}</span>
-                        {option.category ? <small>{displayName(option.category)}</small> : null}
-                      </button>
+                        onHelpToggle={() => toggleHelp(`display:${option.id}`)}
+                        onToggle={() => toggleValue(option.id)}
+                        selected={selected.has(option.id)}
+                        subtitle={option.category ? displayName(option.category) : undefined}
+                        title={option.title}
+                      />
                     ))}
                   </div>
                 </div>
               ))}
-              {labelOptions.length ? (
-                <div className="chart-column-menu-column" key="labels">
-                  <div className="chart-column-menu-title">Labels</div>
-                  <div className="chart-column-menu-list">
-                    {labelOptions.map((option) => (
-                      <button
-                        className={selectedLabels.has(option.group) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
-                        key={option.id}
-                        onClick={() => toggleLabel(option.group)}
-                        type="button"
-                      >
-                        <span className="chart-column-menu-check">{selectedLabels.has(option.group) ? <Check size={13} /> : null}</span>
-                        <span>{option.title}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
+              {renderLookaheadColumn()}
             </div>
           ) : (
             <div className="chart-column-menu-grid">
@@ -1256,44 +1322,118 @@ function IndicatorFeatureSelect({
                   <div className="chart-column-menu-title">{section.label}</div>
                   <div className="chart-column-menu-list feature-list">
                     {section.items.map((option) => (
-                      <button
-                        className={selected.has(option) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                      <ChartColumnMenuItem
+                        help={helpForColumn(option)}
+                        helpOpen={helpKey === `column:${option}`}
                         key={option}
-                        onClick={() => toggleValue(option)}
-                        type="button"
-                      >
-                        <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
-                        <span>{labelForOption(option)}</span>
-                      </button>
+                        onHelpToggle={() => toggleHelp(`column:${option}`)}
+                        onToggle={() => toggleValue(option)}
+                        selected={selected.has(option)}
+                        title={labelForOption(option)}
+                      />
                     ))}
                   </div>
                 </div>
               ))}
               {visibleFeatures.length ? null : <div className="chart-column-menu-empty">No feature columns for this session.</div>}
-              {labelOptions.length ? (
-                <div className="chart-column-menu-column" key="labels">
-                  <div className="chart-column-menu-title">Labels</div>
-                  <div className="chart-column-menu-list">
-                    {labelOptions.map((option) => (
-                      <button
-                        className={selectedLabels.has(option.group) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
-                        key={option.id}
-                        onClick={() => toggleLabel(option.group)}
-                        type="button"
-                      >
-                        <span className="chart-column-menu-check">{selectedLabels.has(option.group) ? <Check size={13} /> : null}</span>
-                        <span>{option.title}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
+              {renderLookaheadColumn()}
             </div>
           )}
         </div>
       ) : null}
     </div>
   );
+}
+
+type ChartColumnHelp = {
+  caveats: string[];
+  detail?: string;
+  futureLooking: boolean;
+  summary: string;
+};
+
+function ChartColumnMenuItem({
+  help,
+  helpOpen,
+  onHelpToggle,
+  onToggle,
+  selected,
+  subtitle,
+  title,
+  tone
+}: {
+  help: ChartColumnHelp;
+  helpOpen: boolean;
+  onHelpToggle: () => void;
+  onToggle: () => void;
+  selected: boolean;
+  subtitle?: string;
+  title: string;
+  tone?: "lookahead";
+}) {
+  return (
+    <div className={`chart-column-menu-item${selected ? " selected" : ""}${tone === "lookahead" ? " lookahead" : ""}`}>
+      <button className="chart-column-menu-toggle" onClick={onToggle} type="button">
+        <span className="chart-column-menu-check">{selected ? <Check size={13} /> : null}</span>
+        <span className="chart-column-menu-label">
+          <span>{title}</span>
+          {subtitle ? <small>{subtitle}</small> : null}
+        </span>
+      </button>
+      <button aria-expanded={helpOpen} aria-label={`Explain ${title}`} className="chart-column-help-button" onClick={onHelpToggle} type="button">
+        <CircleHelp size={13} />
+      </button>
+      {helpOpen ? (
+        <div className="chart-column-help-panel">
+          {help.futureLooking ? <b>Uses lookahead. This is derived from future bars and should not be used as a live tradable signal.</b> : null}
+          <p>{help.summary}</p>
+          {help.detail ? <p>{help.detail}</p> : null}
+          {help.caveats.length ? (
+            <ul>
+              {help.caveats.map((caveat) => <li key={caveat}>{caveat}</li>)}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+type ChartMenuHelpSource = {
+  artifactGroups?: string[];
+  category?: string;
+  group?: string;
+  id?: string;
+  knowledge?: ChartCatalogKnowledge;
+  leakage?: Record<string, unknown>;
+};
+
+function chartColumnHelp(source: ChartMenuHelpSource | undefined, title: string, futureLooking = false): ChartColumnHelp {
+  const knowledge = source?.knowledge;
+  const summary = compactHelpText(knowledge?.shortDescription) || `${title} is available from the provider catalog for chart review.`;
+  const detailed = compactHelpText(knowledge?.detailedDescription || knowledge?.theory || knowledge?.interpretation);
+  return {
+    caveats: (knowledge?.caveats ?? []).map(compactHelpText).filter(Boolean).slice(0, 2),
+    detail: detailed && detailed !== summary ? detailed : undefined,
+    futureLooking: futureLooking || chartMenuItemUsesLookahead(source),
+    summary,
+  };
+}
+
+function compactHelpText(value: string | undefined) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function chartMenuItemUsesLookahead(item: ChartMenuHelpSource | undefined) {
+  if (!item) return false;
+  if (item.leakage && Object.keys(item.leakage).length) return true;
+  const values = [
+    item.category,
+    item.group,
+    item.id,
+    ...(item.artifactGroups ?? []),
+  ].filter(Boolean).map((value) => String(value).toLowerCase());
+  return values.some((value) => value.includes("supervision") || value.includes("oracle") || value.includes("label") || value.includes("scanner"));
 }
 
 type ChartColumnMenuSection<T> = { key: string; label: string; items: T[] };

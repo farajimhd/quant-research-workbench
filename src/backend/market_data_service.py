@@ -529,6 +529,8 @@ def chart_display_item_summary(item: dict[str, Any]) -> dict[str, Any]:
         "sourceColumns": item.get("sourceColumns", []),
         "artifactGroups": item.get("artifactGroups", []),
         "featureGroups": item.get("featureGroups", []),
+        "knowledge": item.get("knowledge", {}),
+        "leakage": item.get("leakage", {}),
         "presentation": item.get("presentation", {}),
     }
 

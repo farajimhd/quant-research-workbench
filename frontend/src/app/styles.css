@@ -4653,6 +4653,11 @@ button {
   border-left: 1px solid color-mix(in oklab, var(--surface-border) 62%, transparent);
 }
 
+.chart-column-menu-column.lookahead {
+  background: color-mix(in oklab, #f59e0b 5%, transparent);
+  border-left-color: color-mix(in oklab, #d97706 26%, var(--surface-border));
+}
+
 .chart-column-menu-column:last-child {
   padding-right: 0;
 }
@@ -4670,6 +4675,26 @@ button {
   text-transform: uppercase;
 }
 
+.chart-column-menu-subtitle {
+  padding: 7px 6px 4px;
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.chart-column-menu-note {
+  margin: 0 6px 6px;
+  color: color-mix(in oklab, #92400e 74%, var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.chart-column-menu-block + .chart-column-menu-block {
+  border-top: 1px solid color-mix(in oklab, var(--surface-border) 58%, transparent);
+  margin-top: 6px;
+  padding-top: 3px;
+}
+
 .chart-column-menu-list {
   display: grid;
   gap: 1px;
@@ -4682,10 +4707,20 @@ button {
 }
 
 .chart-column-menu-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  align-items: start;
+  min-height: 30px;
+  border-radius: 6px;
+  color: var(--foreground);
+}
+
+.chart-column-menu-toggle {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
   align-items: start;
-  min-height: 30px;
+  min-width: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -4696,23 +4731,28 @@ button {
   text-align: left;
 }
 
-.chart-column-menu-item span:nth-child(2) {
+.chart-column-menu-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chart-column-menu-label > span {
   overflow: visible;
   text-overflow: clip;
   white-space: normal;
   word-break: normal;
 }
 
-.chart-column-menu-item small {
-  grid-column: 2;
+.chart-column-menu-label small {
   color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 400;
   white-space: nowrap;
 }
 
-.chart-column-menu-item:hover,
-.chart-column-menu-item.selected {
+.chart-column-menu-toggle:hover,
+.chart-column-menu-item.selected .chart-column-menu-toggle {
   background: color-mix(in oklab, var(--primary) 5%, transparent);
 }
 
@@ -4720,6 +4760,56 @@ button {
   display: inline-flex;
   align-items: center;
   color: var(--primary);
+}
+
+.chart-column-help-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.chart-column-help-button:hover,
+.chart-column-help-button[aria-expanded="true"] {
+  background: color-mix(in oklab, var(--foreground) 7%, transparent);
+  color: var(--foreground);
+}
+
+.chart-column-help-panel {
+  grid-column: 1 / -1;
+  margin: 0 7px 7px 25px;
+  border-left: 2px solid color-mix(in oklab, var(--foreground) 18%, transparent);
+  padding: 5px 7px 6px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.chart-column-help-panel b {
+  display: block;
+  margin-bottom: 4px;
+  color: color-mix(in oklab, #9a3412 76%, var(--foreground));
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.chart-column-help-panel p {
+  margin: 0;
+}
+
+.chart-column-help-panel p + p {
+  margin-top: 4px;
+}
+
+.chart-column-help-panel ul {
+  margin: 5px 0 0;
+  padding-left: 14px;
 }
 
 .chart-column-menu-divider {
