@@ -4618,7 +4618,7 @@ button {
   top: calc(100% + 8px);
   left: 0;
   z-index: 24;
-  width: min(1040px, calc(100vw - 36px));
+  width: min(1240px, calc(100vw - 36px));
   max-height: min(560px, calc(100vh - 150px));
   overflow: hidden;
   border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
@@ -4630,7 +4630,7 @@ button {
 
 .chart-column-menu-grid {
   display: grid;
-  grid-auto-columns: minmax(176px, 220px);
+  grid-auto-columns: minmax(248px, 312px);
   grid-auto-flow: column;
   gap: 0;
   max-height: min(536px, calc(100vh - 174px));
@@ -4683,25 +4683,28 @@ button {
 
 .chart-column-menu-item {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  align-items: center;
-  min-height: 28px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  min-height: 30px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--foreground);
-  padding: 0 7px;
+  padding: 5px 7px;
   font-size: 12px;
+  line-height: 1.25;
   text-align: left;
 }
 
 .chart-column-menu-item span:nth-child(2) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: normal;
 }
 
 .chart-column-menu-item small {
+  grid-column: 2;
   color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 400;
