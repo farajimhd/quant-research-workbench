@@ -1635,21 +1635,23 @@ function CatalogPresentationChartPreview({
             <polyline fill="none" points="34,119 66,106 98,112 130,121 162,114 194,106 226,112 258,109 290,102 322,106 350,100" stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
           </g>
         ) : null}
-        <g className="catalog-contract-candles">
-          {CATALOG_PREVIEW_CANDLES.map((candle) => {
-            const bullish = candle.close < candle.open;
-            const color = bullish ? "#33E42A" : "#FD0E50";
-            const top = Math.min(candle.open, candle.close);
-            const height = Math.max(3, Math.abs(candle.close - candle.open));
-            return (
-              <g key={candle.x}>
-                <line className="catalog-contract-wick" x1={candle.x} x2={candle.x} y1={candle.high} y2={candle.low} stroke={color} />
-                <rect className="catalog-contract-candle-body" fill={color} height={height} rx="1" width="9" x={candle.x - 4.5} y={top} />
-                <rect className="catalog-contract-volume" fill={color} height={candle.volume} opacity="0.28" width="9" x={candle.x - 4.5} y={151 - candle.volume} />
-              </g>
-            );
-          })}
-        </g>
+        {role === "table_only" ? null : (
+          <g className="catalog-contract-candles">
+            {CATALOG_PREVIEW_CANDLES.map((candle) => {
+              const bullish = candle.close < candle.open;
+              const color = bullish ? "#33E42A" : "#FD0E50";
+              const top = Math.min(candle.open, candle.close);
+              const height = Math.max(3, Math.abs(candle.close - candle.open));
+              return (
+                <g key={candle.x}>
+                  <line className="catalog-contract-wick" x1={candle.x} x2={candle.x} y1={candle.high} y2={candle.low} stroke={color} />
+                  <rect className="catalog-contract-candle-body" fill={color} height={height} rx="1" width="9" x={candle.x - 4.5} y={top} />
+                  <rect className="catalog-contract-volume" fill={color} height={candle.volume} opacity="0.28" width="9" x={candle.x - 4.5} y={151 - candle.volume} />
+                </g>
+              );
+            })}
+          </g>
+        )}
         {role === "price_overlay" ? (
           <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_PRICE_LINE_POINTS} stroke={strokeColor} strokeDasharray={dashArray} strokeWidth={lineWidth} />
         ) : null}
