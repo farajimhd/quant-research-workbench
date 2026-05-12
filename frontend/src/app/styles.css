@@ -4617,34 +4617,68 @@ button {
   position: absolute;
   top: calc(100% + 8px);
   left: 0;
-  z-index: 8;
-  display: grid;
-  width: 292px;
-  max-height: min(520px, calc(100vh - 150px));
-  overflow: auto;
+  z-index: 24;
+  width: min(1040px, calc(100vw - 36px));
+  max-height: min(560px, calc(100vh - 150px));
+  overflow: hidden;
   border: 1px solid color-mix(in oklab, var(--surface-border) 72%, transparent);
   border-radius: 9px;
   background: color-mix(in oklab, var(--surface) 96%, transparent);
   box-shadow: 0 16px 42px rgba(16, 24, 40, 0.15);
-  padding: 8px;
+  padding: 10px;
+}
+
+.chart-column-menu-grid {
+  display: grid;
+  grid-auto-columns: minmax(176px, 220px);
+  grid-auto-flow: column;
+  gap: 0;
+  max-height: min(536px, calc(100vh - 174px));
+  overflow: auto;
+}
+
+.chart-column-menu-column {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  padding: 0 10px;
+}
+
+.chart-column-menu-column:first-child {
+  padding-left: 0;
+}
+
+.chart-column-menu-column + .chart-column-menu-column {
+  border-left: 1px solid color-mix(in oklab, var(--surface-border) 62%, transparent);
+}
+
+.chart-column-menu-column:last-child {
+  padding-right: 0;
 }
 
 .chart-column-menu-title {
-  padding: 5px 7px 6px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: color-mix(in oklab, var(--surface) 96%, transparent);
+  padding: 3px 6px 7px;
   color: var(--muted-foreground);
   font-size: 11px;
   font-weight: 750;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .chart-column-menu-list {
   display: grid;
   gap: 1px;
+  min-width: 0;
+  overflow: auto;
 }
 
 .chart-column-menu-list.feature-list {
-  max-height: 280px;
-  overflow: auto;
+  max-height: none;
 }
 
 .chart-column-menu-item {
@@ -4695,6 +4729,12 @@ button {
   padding: 7px;
   color: var(--muted-foreground);
   font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .chart-column-menu {
+    width: min(680px, calc(100vw - 24px));
+  }
 }
 
 .chart-canvas-stack {

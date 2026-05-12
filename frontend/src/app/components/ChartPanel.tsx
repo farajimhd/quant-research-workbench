@@ -1164,6 +1164,8 @@ function IndicatorFeatureSelect({
   const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
   const displayItems = displayItemOptions.filter((item) => item.presentation?.selectable !== false);
   const groupedDisplayItems = groupChartDisplayItems(displayItems);
+  const groupedIndicatorOptions = groupColumnOptions(indicatorOptions, catalogByColumn, "Indicators");
+  const groupedFeatureOptions = groupColumnOptions(visibleFeatures, catalogByColumn, "Features");
   const selected = new Set(values);
   const selectedLabels = new Set(visibleLabels);
   const selectedCount = (usesDisplayItems ? displayItems.filter((option) => selected.has(option.id)).length : visibleOptions.filter((option) => selected.has(option)).length) + labelOptions.filter((option) => selectedLabels.has(option.group)).length;
@@ -1208,105 +1210,151 @@ function IndicatorFeatureSelect({
       {open ? (
         <div className="chart-column-menu">
           {usesDisplayItems ? (
-            groupedDisplayItems.map((section, index) => (
-              <div key={section.label}>
-                {index > 0 ? <div className="chart-column-menu-divider" /> : null}
-                <div className="chart-column-menu-title">{section.label}</div>
-                <div className="chart-column-menu-list feature-list">
-                  {section.items.map((option) => (
-                    <button
-                      className={selected.has(option.id) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
-                      key={option.id}
-                      onClick={() => toggleValue(option.id)}
-                      type="button"
-                    >
-                      <span className="chart-column-menu-check">{selected.has(option.id) ? <Check size={13} /> : null}</span>
-                      <span>{option.title}</span>
-                      {option.group ? <small>{displayName(option.group)}</small> : null}
-                    </button>
-                  ))}
+            <div className="chart-column-menu-grid">
+              {groupedDisplayItems.map((section) => (
+                <div className="chart-column-menu-column" key={section.key}>
+                  <div className="chart-column-menu-title">{section.label}</div>
+                  <div className="chart-column-menu-list feature-list">
+                    {section.items.map((option) => (
+                      <button
+                        className={selected.has(option.id) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                        key={option.id}
+                        onClick={() => toggleValue(option.id)}
+                        type="button"
+                      >
+                        <span className="chart-column-menu-check">{selected.has(option.id) ? <Check size={13} /> : null}</span>
+                        <span>{option.title}</span>
+                        {option.category ? <small>{displayName(option.category)}</small> : null}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))
+              ))}
+              {labelOptions.length ? (
+                <div className="chart-column-menu-column" key="labels">
+                  <div className="chart-column-menu-title">Labels</div>
+                  <div className="chart-column-menu-list">
+                    {labelOptions.map((option) => (
+                      <button
+                        className={selectedLabels.has(option.group) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                        key={option.id}
+                        onClick={() => toggleLabel(option.group)}
+                        type="button"
+                      >
+                        <span className="chart-column-menu-check">{selectedLabels.has(option.group) ? <Check size={13} /> : null}</span>
+                        <span>{option.title}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
           ) : (
-            <>
-              <div className="chart-column-menu-title">Indicators</div>
-              <div className="chart-column-menu-list">
-                {indicatorOptions.map((option) => (
-                  <button
-                    className={selected.has(option) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
-                    key={option}
-                    onClick={() => toggleValue(option)}
-                    type="button"
-                  >
-                    <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
-                    <span>{labelForOption(option)}</span>
-                  </button>
-                ))}
-              </div>
-              <div className="chart-column-menu-divider" />
-              <div className="chart-column-menu-title">Features</div>
-              <div className="chart-column-menu-list feature-list">
-                {visibleFeatures.length ? (
-                  visibleFeatures.map((option) => (
-                    <button
-                      className={selected.has(option) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
-                      key={option}
-                      onClick={() => toggleValue(option)}
-                      type="button"
-                    >
-                      <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
-                      <span>{labelForOption(option)}</span>
-                    </button>
-                  ))
-                ) : (
-                  <div className="chart-column-menu-empty">No feature columns for this session.</div>
-                )}
-              </div>
-            </>
+            <div className="chart-column-menu-grid">
+              {[...groupedIndicatorOptions, ...groupedFeatureOptions].map((section) => (
+                <div className="chart-column-menu-column" key={section.key}>
+                  <div className="chart-column-menu-title">{section.label}</div>
+                  <div className="chart-column-menu-list feature-list">
+                    {section.items.map((option) => (
+                      <button
+                        className={selected.has(option) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                        key={option}
+                        onClick={() => toggleValue(option)}
+                        type="button"
+                      >
+                        <span className="chart-column-menu-check">{selected.has(option) ? <Check size={13} /> : null}</span>
+                        <span>{labelForOption(option)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {visibleFeatures.length ? null : <div className="chart-column-menu-empty">No feature columns for this session.</div>}
+              {labelOptions.length ? (
+                <div className="chart-column-menu-column" key="labels">
+                  <div className="chart-column-menu-title">Labels</div>
+                  <div className="chart-column-menu-list">
+                    {labelOptions.map((option) => (
+                      <button
+                        className={selectedLabels.has(option.group) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
+                        key={option.id}
+                        onClick={() => toggleLabel(option.group)}
+                        type="button"
+                      >
+                        <span className="chart-column-menu-check">{selectedLabels.has(option.group) ? <Check size={13} /> : null}</span>
+                        <span>{option.title}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
           )}
-          {labelOptions.length ? (
-            <>
-              <div className="chart-column-menu-divider" />
-              <div className="chart-column-menu-title">Labels</div>
-              <div className="chart-column-menu-list">
-                {labelOptions.map((option) => (
-                  <button
-                    className={selectedLabels.has(option.group) ? "chart-column-menu-item selected" : "chart-column-menu-item"}
-                    key={option.id}
-                    onClick={() => toggleLabel(option.group)}
-                    type="button"
-                  >
-                    <span className="chart-column-menu-check">{selectedLabels.has(option.group) ? <Check size={13} /> : null}</span>
-                    <span>{option.title}</span>
-                  </button>
-                ))}
-              </div>
-            </>
-          ) : null}
         </div>
       ) : null}
     </div>
   );
 }
 
-function groupChartDisplayItems(items: ChartDisplayItem[]): Array<{ label: string; items: ChartDisplayItem[] }> {
+type ChartColumnMenuSection<T> = { key: string; label: string; items: T[] };
+
+const chartColumnGroupOrder = [
+  "core",
+  "session",
+  "momentum",
+  "volatility",
+  "volume_liquidity",
+  "price_action",
+  "shock",
+  "fvg",
+  "market_structure",
+  "order_blocks",
+  "supervision_bar",
+  "supervision_method",
+  "supervision_scanner",
+  "labels",
+  "other",
+];
+
+function groupChartDisplayItems(items: ChartDisplayItem[]): Array<ChartColumnMenuSection<ChartDisplayItem>> {
   const sections = new Map<string, ChartDisplayItem[]>();
   items.forEach((item) => {
-    const label = displayItemSectionLabel(item);
-    sections.set(label, [...(sections.get(label) ?? []), item]);
+    const key = chartDisplayGroupKey(item);
+    sections.set(key, [...(sections.get(key) ?? []), item]);
   });
-  return Array.from(sections.entries()).map(([label, sectionItems]) => ({
-    label,
+  return Array.from(sections.entries()).map(([key, sectionItems]) => ({
+    key,
+    label: chartDisplayGroupLabel(key),
     items: sectionItems.sort((left, right) => left.title.localeCompare(right.title)),
-  }));
+  })).sort((left, right) => chartColumnGroupRank(left.key) - chartColumnGroupRank(right.key) || left.label.localeCompare(right.label));
 }
 
-function displayItemSectionLabel(item: ChartDisplayItem) {
-  if (item.category === "indicator") return "Indicators";
-  if (item.category === "feature") return "Features";
-  if (item.category === "label") return "Labels";
-  return displayName(item.category || "Other");
+function groupColumnOptions(options: string[], catalogByColumn: Map<string | undefined, ChartCatalogItem>, fallbackLabel: string): Array<ChartColumnMenuSection<string>> {
+  const sections = new Map<string, string[]>();
+  options.forEach((option) => {
+    const key = catalogByColumn.get(option)?.group || fallbackLabel.toLowerCase();
+    sections.set(key, [...(sections.get(key) ?? []), option]);
+  });
+  return Array.from(sections.entries()).map(([key, sectionItems]) => ({
+    key,
+    label: chartDisplayGroupLabel(key, fallbackLabel),
+    items: sectionItems.sort((left, right) => displayName(left).localeCompare(displayName(right))),
+  })).sort((left, right) => chartColumnGroupRank(left.key) - chartColumnGroupRank(right.key) || left.label.localeCompare(right.label));
+}
+
+function chartDisplayGroupKey(item: ChartDisplayItem) {
+  return item.group || item.category || "other";
+}
+
+function chartDisplayGroupLabel(key: string, fallback = "Other") {
+  if (!key) return fallback;
+  if (key === "labels") return "Labels";
+  return displayName(key);
+}
+
+function chartColumnGroupRank(key: string) {
+  const index = chartColumnGroupOrder.indexOf(key);
+  return index === -1 ? chartColumnGroupOrder.length : index;
 }
 
 function ChartSettingsPopover({
