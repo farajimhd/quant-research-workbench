@@ -291,6 +291,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const baseDataSignatureRef = useRef("");
   const [draftTicker, setDraftTicker] = useState(ticker.toUpperCase());
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
+  const [supervisionMenuOpen, setSupervisionMenuOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
   const [chartSettings, setChartSettings] = useState<ChartAppearanceSettings>(() => loadChartAppearanceSettings());
@@ -400,16 +401,18 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [chartSettingsOpen]);
 
   useEffect(() => {
-    if (!columnMenuOpen && !periodMenuOpen) return;
+    if (!columnMenuOpen && !supervisionMenuOpen && !periodMenuOpen) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.closest(".chart-column-select") || target?.closest(".chart-period-select")) return;
       setColumnMenuOpen(false);
+      setSupervisionMenuOpen(false);
       setPeriodMenuOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setColumnMenuOpen(false);
+        setSupervisionMenuOpen(false);
         setPeriodMenuOpen(false);
       }
     };
@@ -419,7 +422,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       document.removeEventListener("pointerdown", closeOnOutsidePointer);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [columnMenuOpen, periodMenuOpen]);
+  }, [columnMenuOpen, supervisionMenuOpen, periodMenuOpen]);
 
   useEffect(() => {
     indicatorSeriesRef.current.forEach((renderer, key) => {
@@ -837,6 +840,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
               setPeriodMenuOpen(value);
               if (value) {
                 setColumnMenuOpen(false);
+                setSupervisionMenuOpen(false);
                 setChartSettingsOpen(false);
               }
             }}
@@ -858,17 +862,33 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           displayItemOptions={displayItemOptions}
           featureOptions={featureOptions}
           indicatorOptions={indicatorOptions}
-          labelOptions={labelOptions}
           onChange={onVisibleColumnsChange}
-          onLabelChange={onVisibleSupervisionGroupsChange}
           onOpenChange={(value) => {
             setColumnMenuOpen(value);
             if (value) {
+              setSupervisionMenuOpen(false);
               setChartSettingsOpen(false);
               setPeriodMenuOpen(false);
             }
           }}
           open={columnMenuOpen}
+          values={visibleColumns}
+        />
+        <SupervisionSelect
+          catalogColumns={catalogColumns}
+          displayItemOptions={displayItemOptions}
+          labelOptions={labelOptions}
+          onChange={onVisibleColumnsChange}
+          onLabelChange={onVisibleSupervisionGroupsChange}
+          onOpenChange={(value) => {
+            setSupervisionMenuOpen(value);
+            if (value) {
+              setColumnMenuOpen(false);
+              setChartSettingsOpen(false);
+              setPeriodMenuOpen(false);
+            }
+          }}
+          open={supervisionMenuOpen}
           values={visibleColumns}
           visibleLabels={visibleSupervisionGroups}
         />
@@ -880,6 +900,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           title="Chart settings"
           onClick={() => {
             setColumnMenuOpen(false);
+            setSupervisionMenuOpen(false);
             setPeriodMenuOpen(false);
             setChartSettingsOpen((value) => !value);
           }}
@@ -1209,25 +1230,19 @@ function IndicatorFeatureSelect({
   displayItemOptions,
   featureOptions,
   indicatorOptions,
-  labelOptions,
   onChange,
-  onLabelChange,
   onOpenChange,
   open,
-  values,
-  visibleLabels
+  values
 }: {
   catalogColumns: ChartCatalogItem[];
   displayItemOptions: ChartDisplayItem[];
   featureOptions: string[];
   indicatorOptions: string[];
-  labelOptions: ChartLabelOption[];
   onChange: (value: string[]) => void;
-  onLabelChange?: (value: string[]) => void;
   onOpenChange: (value: boolean) => void;
   open: boolean;
   values: string[];
-  visibleLabels: string[];
 }) {
   const usesDisplayItems = displayItemOptions.length > 0;
   const indicatorSet = new Set(indicatorOptions);
@@ -1236,14 +1251,11 @@ function IndicatorFeatureSelect({
   const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
   const displayItems = mergeSessionEquivalentDisplayItems(displayItemOptions.filter((item) => item.presentation?.selectable !== false));
   const standardDisplayItems = displayItems.filter((item) => !chartMenuItemUsesLookahead(item));
-  const lookaheadDisplayItems = displayItems.filter((item) => chartMenuItemUsesLookahead(item));
   const groupedDisplayItems = groupChartDisplayItems(standardDisplayItems);
-  const groupedLookaheadDisplayItems = groupChartDisplayItems(lookaheadDisplayItems);
   const groupedIndicatorOptions = groupColumnOptions(indicatorOptions, catalogByColumn, "Indicators");
   const groupedFeatureOptions = groupColumnOptions(visibleFeatures, catalogByColumn, "Features");
   const selected = new Set(values);
-  const selectedLabels = new Set(visibleLabels);
-  const selectedCount = (usesDisplayItems ? displayItems.filter((option) => selected.has(option.id)).length : visibleOptions.filter((option) => selected.has(option)).length) + labelOptions.filter((option) => selectedLabels.has(option.group)).length;
+  const selectedCount = usesDisplayItems ? standardDisplayItems.filter((option) => selected.has(option.id)).length : visibleOptions.filter((option) => selected.has(option)).length;
   const labelForOption = (option: string) => catalogByColumn.get(option)?.title ?? displayName(option);
   const [helpKey, setHelpKey] = useState<string | null>(null);
 
@@ -1262,17 +1274,6 @@ function IndicatorFeatureSelect({
     onChange(ordered);
   };
 
-  const toggleLabel = (group: string) => {
-    if (!onLabelChange) return;
-    const nextSelected = new Set(visibleLabels);
-    if (nextSelected.has(group)) {
-      nextSelected.delete(group);
-    } else {
-      nextSelected.add(group);
-    }
-    onLabelChange(labelOptions.map((option) => option.group).filter((groupName) => nextSelected.has(groupName)));
-  };
-
   const toggleHelp = (key: string) => setHelpKey((current) => (current === key ? null : key));
   const helpForColumn = (column: string) => chartColumnHelp(catalogByColumn.get(column), labelForOption(column));
   const helpForDisplayItem = (item: ChartDisplayItem) => {
@@ -1282,56 +1283,6 @@ function IndicatorFeatureSelect({
       knowledge: item.knowledge ?? sourceColumn?.knowledge,
       leakage: item.leakage ?? sourceColumn?.leakage,
     }, item.title, chartMenuItemUsesLookahead(item) || chartMenuItemUsesLookahead(sourceColumn));
-  };
-  const helpForLabel = (option: ChartLabelOption) => chartColumnHelp(option, option.title, true);
-
-  const renderLookaheadColumn = () => {
-    if (!groupedLookaheadDisplayItems.length && !labelOptions.length) return null;
-    return (
-      <div className="chart-column-menu-column lookahead" key="lookahead">
-        <div className="chart-column-menu-title">Lookahead / Supervision</div>
-        <div className="chart-column-menu-note">Future-bar labels and supervision outputs. Use them for review, training, and validation, not as live indicators.</div>
-        {groupedLookaheadDisplayItems.map((section) => (
-          <div className="chart-column-menu-block" key={section.key}>
-            <div className="chart-column-menu-subtitle">{section.label}</div>
-            <div className="chart-column-menu-list feature-list">
-              {section.items.map((option) => (
-                <ChartColumnMenuItem
-                  help={helpForDisplayItem(option)}
-                  helpOpen={helpKey === `display:${option.id}`}
-                  key={option.id}
-                  onHelpToggle={() => toggleHelp(`display:${option.id}`)}
-                  onToggle={() => toggleValue(option.id)}
-                  selected={selected.has(option.id)}
-                  subtitle={option.category ? displayName(option.category) : undefined}
-                  title={option.title}
-                  tone="lookahead"
-                />
-              ))}
-            </div>
-          </div>
-        ))}
-        {labelOptions.length ? (
-          <div className="chart-column-menu-block">
-            <div className="chart-column-menu-subtitle">Labels</div>
-            <div className="chart-column-menu-list">
-              {labelOptions.map((option) => (
-                <ChartColumnMenuItem
-                  help={helpForLabel(option)}
-                  helpOpen={helpKey === `label:${option.group}`}
-                  key={option.id}
-                  onHelpToggle={() => toggleHelp(`label:${option.group}`)}
-                  onToggle={() => toggleLabel(option.group)}
-                  selected={selectedLabels.has(option.group)}
-                  title={option.title}
-                  tone="lookahead"
-                />
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
-    );
   };
 
   return (
@@ -1371,7 +1322,6 @@ function IndicatorFeatureSelect({
                   </div>
                 </div>
               ))}
-              {renderLookaheadColumn()}
             </div>
           ) : (
             <div className="chart-column-menu-grid">
@@ -1394,9 +1344,144 @@ function IndicatorFeatureSelect({
                 </div>
               ))}
               {visibleFeatures.length ? null : <div className="chart-column-menu-empty">No feature columns for this session.</div>}
-              {renderLookaheadColumn()}
             </div>
           )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SupervisionSelect({
+  catalogColumns,
+  displayItemOptions,
+  labelOptions,
+  onChange,
+  onLabelChange,
+  onOpenChange,
+  open,
+  values,
+  visibleLabels
+}: {
+  catalogColumns: ChartCatalogItem[];
+  displayItemOptions: ChartDisplayItem[];
+  labelOptions: ChartLabelOption[];
+  onChange: (value: string[]) => void;
+  onLabelChange?: (value: string[]) => void;
+  onOpenChange: (value: boolean) => void;
+  open: boolean;
+  values: string[];
+  visibleLabels: string[];
+}) {
+  const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
+  const displayItems = mergeSessionEquivalentDisplayItems(displayItemOptions.filter((item) => item.presentation?.selectable !== false));
+  const lookaheadDisplayItems = displayItems.filter((item) => chartMenuItemUsesLookahead(item));
+  const groupedLookaheadDisplayItems = groupChartDisplayItems(lookaheadDisplayItems);
+  const selected = new Set(values);
+  const selectedLabels = new Set(visibleLabels);
+  const selectedCount = lookaheadDisplayItems.filter((option) => selected.has(option.id)).length + labelOptions.filter((option) => selectedLabels.has(option.group)).length;
+  const [helpKey, setHelpKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) setHelpKey(null);
+  }, [open]);
+
+  const toggleValue = (value: string) => {
+    const nextSelected = new Set(values);
+    if (nextSelected.has(value)) {
+      nextSelected.delete(value);
+    } else {
+      nextSelected.add(value);
+    }
+    onChange(displayItems.map((option) => option.id).filter((option) => nextSelected.has(option)));
+  };
+
+  const toggleLabel = (group: string) => {
+    if (!onLabelChange) return;
+    const nextSelected = new Set(visibleLabels);
+    if (nextSelected.has(group)) {
+      nextSelected.delete(group);
+    } else {
+      nextSelected.add(group);
+    }
+    onLabelChange(labelOptions.map((option) => option.group).filter((groupName) => nextSelected.has(groupName)));
+  };
+
+  const toggleHelp = (key: string) => setHelpKey((current) => (current === key ? null : key));
+  const helpForDisplayItem = (item: ChartDisplayItem) => {
+    const sourceColumn = item.sourceColumns?.map((column) => catalogByColumn.get(column)).find((column) => column?.knowledge);
+    return chartColumnHelp({
+      ...item,
+      knowledge: item.knowledge ?? sourceColumn?.knowledge,
+      leakage: item.leakage ?? sourceColumn?.leakage,
+    }, item.title, true);
+  };
+  const helpForLabel = (option: ChartLabelOption) => chartColumnHelp(option, option.title, true);
+
+  return (
+    <div className="chart-column-select">
+      <button
+        aria-expanded={open}
+        className="chart-column-select-button"
+        onClick={() => onOpenChange(!open)}
+        title="Lookahead & Supervision"
+        type="button"
+      >
+        <Eye size={18} />
+        <span>Supervision</span>
+        {selectedCount ? <b>{selectedCount}</b> : null}
+        <ChevronDown size={14} />
+      </button>
+      {open ? (
+        <div className="chart-column-menu">
+          <div className="chart-column-menu-grid">
+            <div className="chart-column-menu-column lookahead" key="lookahead">
+              <div className="chart-column-menu-title">Lookahead / Supervision</div>
+              <div className="chart-column-menu-note">Future-bar labels and supervision outputs. Use them for review, training, and validation, not as live indicators.</div>
+              {groupedLookaheadDisplayItems.map((section) => (
+                <div className="chart-column-menu-block" key={section.key}>
+                  <div className="chart-column-menu-subtitle">{section.label}</div>
+                  <div className="chart-column-menu-list feature-list">
+                    {section.items.map((option) => (
+                      <ChartColumnMenuItem
+                        help={helpForDisplayItem(option)}
+                        helpOpen={helpKey === `display:${option.id}`}
+                        key={option.id}
+                        onHelpToggle={() => toggleHelp(`display:${option.id}`)}
+                        onToggle={() => toggleValue(option.id)}
+                        selected={selected.has(option.id)}
+                        subtitle={option.category ? displayName(option.category) : undefined}
+                        title={option.title}
+                        tone="lookahead"
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {labelOptions.length ? (
+                <div className="chart-column-menu-block">
+                  <div className="chart-column-menu-subtitle">Labels</div>
+                  <div className="chart-column-menu-list">
+                    {labelOptions.map((option) => (
+                      <ChartColumnMenuItem
+                        help={helpForLabel(option)}
+                        helpOpen={helpKey === `label:${option.group}`}
+                        key={option.id}
+                        onHelpToggle={() => toggleHelp(`label:${option.group}`)}
+                        onToggle={() => toggleLabel(option.group)}
+                        selected={selectedLabels.has(option.group)}
+                        title={option.title}
+                        tone="lookahead"
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {!groupedLookaheadDisplayItems.length && !labelOptions.length ? (
+                <div className="chart-column-menu-empty">No supervision labels are available for this chart.</div>
+              ) : null}
+            </div>
+          </div>
         </div>
       ) : null}
     </div>
