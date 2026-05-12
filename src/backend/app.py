@@ -52,6 +52,7 @@ from src.strategies.registry import available_strategies
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+CHART_DISPLAY_ITEMS_NONE = "__none__"
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
 app.add_middleware(
@@ -429,6 +430,15 @@ def default_catalog_display_items(processed_root: Path) -> list[str]:
     return item_ids
 
 
+def parse_chart_display_items(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    items = parse_csv_list(value)
+    if not items or CHART_DISPLAY_ITEMS_NONE in items:
+        return []
+    return items
+
+
 @app.get("/api/market-data/chart")
 def market_chart(
     processed_root: str,
@@ -445,7 +455,7 @@ def market_chart(
     min_confidence: float = Query(default=0.7, ge=0.0, le=1.0),
 ) -> dict[str, Any]:
     processed_root_path = Path(processed_root)
-    selected_display_items = parse_csv_list(display_items) if display_items is not None else None
+    selected_display_items = parse_chart_display_items(display_items)
     selected_feature_groups = parse_csv_list(feature_groups) or []
     selected_columns = parse_csv_list(columns) if columns is not None else []
     if selected_display_items is None and not selected_columns:

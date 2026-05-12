@@ -93,7 +93,7 @@ export type ChartLabelOption = {
   title: string;
 };
 type AnySeriesApi = ISeriesApi<SeriesType>;
-type ChartMarker = SeriesMarker<Time>;
+type ChartMarker = SeriesMarker<Time> & { displayItemId?: string };
 type LegendPane = "price" | "oscillator";
 type OscillatorPaneRuntime = {
   chart: IChartApi;

@@ -151,6 +151,7 @@ const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema",
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
+const CHART_DISPLAY_ITEMS_NONE = "__none__";
 const PREVIEW_PAGE_SIZE = 1000;
 const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "anchored_zone", "continuous_band", "background_state", "data_only", "other"];
 const PRESENTATION_TYPE_LABELS: Record<string, string> = {
@@ -497,7 +498,7 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
         timeframe,
         ticker: ticker.trim().toUpperCase(),
         feature_groups: featureGroups.join(","),
-        display_items: visibleColumns.join(","),
+        display_items: chartDisplayItemsRequestValue(visibleColumns),
         supervision_groups: visibleSupervisionGroups.join(","),
         min_confidence: DEFAULT_CHART_MIN_CONFIDENCE
       })}`
@@ -550,7 +551,7 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
         onPeriodChange={updateChartPeriod}
         onTickerChange={setTicker}
         onTimeframeChange={setTimeframe}
-        onVisibleColumnsChange={setVisibleColumns}
+        onVisibleColumnsChange={(nextColumns) => updateChartVisibleColumns(nextColumns, setVisibleColumns, setPayload)}
         onVisibleSupervisionGroupsChange={setVisibleSupervisionGroups}
         payload={payload}
         periodEnd={rangeEnd}
@@ -786,7 +787,7 @@ function PreviewRowChartModal({
         timeframe,
         ticker,
         feature_groups: featureGroups.join(","),
-        display_items: visibleColumns.join(","),
+        display_items: chartDisplayItemsRequestValue(visibleColumns),
         supervision_groups: visibleSupervisionGroups.join(","),
         min_confidence: DEFAULT_CHART_MIN_CONFIDENCE,
       })}`
@@ -858,7 +859,7 @@ function PreviewRowChartModal({
           onPeriodChange={updateChartPeriod}
           onTickerChange={setTicker}
           onTimeframeChange={setTimeframe}
-          onVisibleColumnsChange={setVisibleColumns}
+          onVisibleColumnsChange={(nextColumns) => updateChartVisibleColumns(nextColumns, setVisibleColumns, setPayload)}
           onVisibleSupervisionGroupsChange={setVisibleSupervisionGroups}
           payload={payload}
           periodEnd={rangeEnd}
@@ -994,6 +995,40 @@ function chartRequestQuery(params: Record<string, string | number | boolean | nu
   });
   const text = search.toString();
   return text ? `?${text}` : "";
+}
+
+function chartDisplayItemsRequestValue(items: string[]) {
+  return items.length ? items.join(",") : CHART_DISPLAY_ITEMS_NONE;
+}
+
+function updateChartVisibleColumns(
+  nextColumns: string[],
+  setVisibleColumns: (value: string[]) => void,
+  setPayload: (updater: (payload: ChartPayload | null) => ChartPayload | null) => void,
+) {
+  const normalized = Array.from(new Set(nextColumns));
+  setVisibleColumns(normalized);
+  setPayload((current) => (current ? filterChartPayloadForDisplayItems(current, normalized) : current));
+}
+
+function filterChartPayloadForDisplayItems(payload: ChartPayload, selectedItems: string[]): ChartPayload {
+  const selected = new Set(selectedItems.map((item) => item.toLowerCase()));
+  return {
+    ...payload,
+    markers: payload.markers.filter((marker) => markerBelongsToSelection(marker, selected)),
+    oscillator_series: payload.oscillator_series.filter((series) => selected.has(chartPayloadSeriesSelectionKey(series))),
+    overlay_series: payload.overlay_series.filter((series) => selected.has(chartPayloadSeriesSelectionKey(series))),
+    price_zones: (payload.price_zones ?? []).filter((zone) => !zone.displayItemId || selected.has(String(zone.displayItemId).toLowerCase())),
+  };
+}
+
+function chartPayloadSeriesSelectionKey(series: ChartPayload["overlay_series"][number]) {
+  return String(series.displayItemId || series.column || series.label).toLowerCase();
+}
+
+function markerBelongsToSelection(marker: ChartPayload["markers"][number], selectedItems: Set<string>) {
+  const displayItemId = "displayItemId" in marker ? String(marker.displayItemId ?? "") : "";
+  return !displayItemId || selectedItems.has(displayItemId.toLowerCase());
 }
 
 function previewChartDisplayItems(record: RecordRow, catalog: CatalogPayload | null) {

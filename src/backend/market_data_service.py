@@ -790,6 +790,7 @@ def display_item_markers(rows: list[dict[str, Any]], timeframe: str, items: list
                 continue
             markers.append(
                 {
+                    "displayItemId": str(item.get("id") or ""),
                     "time": timestamp,
                     "position": str(presentation.get("markerPosition") or "belowBar"),
                     "color": str(presentation.get("color") or "#1E3A5F"),
