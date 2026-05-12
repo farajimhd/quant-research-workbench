@@ -1827,6 +1827,79 @@ button {
   grid-column: 1 / -1;
 }
 
+.catalog-grouped-parts-section {
+  grid-column: 1 / -1;
+}
+
+.catalog-grouped-parts-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.42fr);
+  align-items: end;
+  gap: 12px;
+}
+
+.catalog-grouped-parts-header p {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.catalog-grouped-parts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.catalog-grouped-part-card {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  border: 1px solid color-mix(in oklab, var(--surface-border) 58%, transparent);
+  border-radius: 9px;
+  background: transparent;
+  padding: 9px;
+}
+
+.catalog-grouped-part-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.catalog-part-swatch {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in oklab, var(--foreground) 14%, transparent);
+  border-radius: 999px;
+}
+
+.catalog-grouped-part-title div {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.catalog-grouped-part-title strong,
+.catalog-grouped-part-title small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-grouped-part-title strong {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.catalog-grouped-part-title small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
 .catalog-preview-chart-card {
   display: grid;
   min-width: 0;

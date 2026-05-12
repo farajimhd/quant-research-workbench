@@ -189,6 +189,8 @@ const PRESENTATION_HELP = {
   valueFormat: "Chooses how values are formatted for the user: price, percent, number, integer, boolean, datetime, or text.",
 };
 
+type CatalogPresentationPatchValue = string | number | boolean;
+
 export function MarketDataReviewPage() {
   const [scope, setScope] = useState<Scope | null>(null);
   const [draft, setDraft] = useState<Scope | null>(null);
@@ -1030,8 +1032,31 @@ function CatalogTab({
     setSaveState("idle");
   }, [selected?.id]);
 
-  function updatePresentation(key: string, value: string | number | boolean) {
+  function updatePresentation(key: string, value: CatalogPresentationPatchValue) {
     setDraft((current) => ({ ...current, [key]: value }));
+    setSaveState("idle");
+  }
+
+  function updatePresentationPart(index: number, key: string, value: CatalogPresentationPatchValue) {
+    setDraft((current) => {
+      const parts = clonePresentationParts(current.parts);
+      if (!parts[index]) return current;
+      parts[index] = { ...parts[index], [key]: value };
+      return { ...current, parts };
+    });
+    setSaveState("idle");
+  }
+
+  function updateAllPresentationParts(key: string, value: CatalogPresentationPatchValue) {
+    setDraft((current) => {
+      const parts = clonePresentationParts(current.parts);
+      if (!parts.length) return { ...current, [key]: value };
+      return {
+        ...current,
+        [key]: value,
+        parts: parts.map((part) => ({ ...part, [key]: value })),
+      };
+    });
     setSaveState("idle");
   }
 
@@ -1066,6 +1091,7 @@ function CatalogTab({
   const presentationPane = String(draft.pane ?? selected?.presentation?.pane ?? "price");
   const selectedPresentationType = selected ? presentationTypeForItem({ ...selected, presentation: draft }) : "table_only";
   const isTableOnlyPresentation = presentationRole === "table_only";
+  const groupedPresentationParts = presentationRole === "composite" ? clonePresentationParts(draft.parts) : [];
   const fillPanel = useViewportFillPanel(`${catalogLoading}:${allItems.length}:${items.length}:${selected?.id ?? ""}`);
 
   return (
@@ -1194,6 +1220,7 @@ function CatalogTab({
                         bandFillOpacity={Number(draft.bandFillOpacity ?? 0.16)}
                         chartRole={presentationRole}
                         color={String(draft.color ?? "#1E3A5F")}
+                        label="Base style"
                         lineStyle={String(draft.lineStyle ?? "solid")}
                         lineStyleOptions={catalog?.presentationOptions.lineStyles ?? []}
                         lineWidth={Number(draft.lineWidth ?? 1)}
@@ -1209,6 +1236,15 @@ function CatalogTab({
                         <CatalogSelect help={PRESENTATION_HELP.valueFormat} label="Value format" options={catalog?.presentationOptions.valueFormats ?? []} value={String(draft.valueFormat ?? "number")} onChange={(value) => updatePresentation("valueFormat", value)} />
                       </div>
                     </div>
+                    {groupedPresentationParts.length ? (
+                      <CatalogGroupedPartsEditor
+                        lineStyleOptions={catalog?.presentationOptions.lineStyles ?? []}
+                        onAllChange={updateAllPresentationParts}
+                        onPartChange={updatePresentationPart}
+                        parts={groupedPresentationParts}
+                        precision={Number(draft.precision ?? 2)}
+                      />
+                    ) : null}
                   </div>
                 </div>
                 <CatalogPresentationChartPreview
@@ -1334,6 +1370,11 @@ function colorWithOpacity(value: unknown, opacity: number): string {
   const green = parseInt(color.slice(3, 5), 16);
   const blue = parseInt(color.slice(5, 7), 16);
   return `rgba(${red}, ${green}, ${blue}, ${alpha.toFixed(2)})`;
+}
+
+function clonePresentationParts(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.filter((part): part is Record<string, unknown> => Boolean(part && typeof part === "object")).map((part) => ({ ...part }));
 }
 
 function boundedPresentationNumber(value: unknown, min: number, max: number, fallback: number): number {
@@ -1606,6 +1647,69 @@ function CatalogCheckbox({ checked, help, label, onChange }: { checked: boolean;
   );
 }
 
+function CatalogGroupedPartsEditor({
+  lineStyleOptions,
+  onAllChange,
+  onPartChange,
+  parts,
+  precision,
+}: {
+  lineStyleOptions: string[];
+  onAllChange: (key: string, value: CatalogPresentationPatchValue) => void;
+  onPartChange: (index: number, key: string, value: CatalogPresentationPatchValue) => void;
+  parts: Array<Record<string, unknown>>;
+  precision: number;
+}) {
+  const firstPart = parts[0] ?? {};
+  return (
+    <div className="catalog-presentation-section catalog-grouped-parts-section">
+      <div className="catalog-grouped-parts-header">
+        <div>
+          <h4>Grouped Parts</h4>
+          <p>Style every element together or adjust each element independently.</p>
+        </div>
+        <CatalogStylePopover
+          bandFillColor={String(firstPart.bandFillColor ?? firstPart.color ?? "#1E3A5F")}
+          bandFillOpacity={Number(firstPart.bandFillOpacity ?? 0.16)}
+          chartRole={String(firstPart.chartRole ?? firstPart.style ?? "price_overlay")}
+          color={String(firstPart.color ?? "#1E3A5F")}
+          label="Apply to all"
+          lineStyle={String(firstPart.lineStyle ?? "solid")}
+          lineStyleOptions={lineStyleOptions}
+          lineWidth={Number(firstPart.lineWidth ?? 1)}
+          precision={precision}
+          onChange={onAllChange}
+        />
+      </div>
+      <div className="catalog-grouped-parts-grid">
+        {parts.map((part, index) => (
+          <div className="catalog-grouped-part-card" key={`${String(part.column ?? part.id ?? index)}:${index}`}>
+            <div className="catalog-grouped-part-title">
+              <span className="catalog-part-swatch" style={{ background: presentationColor(part.color) }} />
+              <div>
+                <strong>{String(part.label ?? part.column ?? part.id ?? `Part ${index + 1}`)}</strong>
+                <small>{part.column ? String(part.column) : displayName(String(part.chartRole ?? "part"))}</small>
+              </div>
+            </div>
+            <CatalogStylePopover
+              bandFillColor={String(part.bandFillColor ?? part.color ?? "#1E3A5F")}
+              bandFillOpacity={Number(part.bandFillOpacity ?? 0.16)}
+              chartRole={String(part.chartRole ?? part.style ?? "price_overlay")}
+              color={String(part.color ?? "#1E3A5F")}
+              label="Part style"
+              lineStyle={String(part.lineStyle ?? "solid")}
+              lineStyleOptions={lineStyleOptions}
+              lineWidth={Number(part.lineWidth ?? 1)}
+              precision={precision}
+              onChange={(key, value) => onPartChange(index, key, value)}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CatalogPresentationChartPreview({
   itemTitle,
   presentation,
@@ -1773,6 +1877,7 @@ function CatalogStylePopover({
   bandFillOpacity,
   chartRole,
   color,
+  label = "Style editor",
   lineStyle,
   lineStyleOptions,
   lineWidth,
@@ -1783,11 +1888,12 @@ function CatalogStylePopover({
   bandFillOpacity: number;
   chartRole: string;
   color: string;
+  label?: string;
   lineStyle: string;
   lineStyleOptions: string[];
   lineWidth: number;
   precision: number;
-  onChange: (key: string, value: string | number | boolean) => void;
+  onChange: (key: string, value: CatalogPresentationPatchValue) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [customColor, setCustomColor] = useState(color.startsWith("#") ? color : "");
@@ -1965,7 +2071,7 @@ function CatalogStylePopover({
 
   return (
     <div className="catalog-style-popover" ref={popoverRef}>
-      <CatalogFieldLabel help={`${PRESENTATION_HELP.color} ${PRESENTATION_HELP.lineStyle} ${PRESENTATION_HELP.lineWidth}`} label="Style editor" />
+      <CatalogFieldLabel help={`${PRESENTATION_HELP.color} ${PRESENTATION_HELP.lineStyle} ${PRESENTATION_HELP.lineWidth}`} label={label} />
       <button aria-expanded={open} className="catalog-style-trigger" onClick={toggleOpen} ref={triggerRef} type="button">
         <span className="catalog-style-trigger-swatch" style={{ background: strokeColor }} />
         <span>
