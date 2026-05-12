@@ -1119,7 +1119,7 @@ function ChartLegend({
   onReset: (key: string) => void;
   onUpdate: (key: string, patch: LegendSeriesSettings) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   if (!items.length) return null;
   const editingItem = items.find((item) => item.key === editingKey && item.configurable);
