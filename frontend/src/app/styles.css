@@ -2167,6 +2167,39 @@ button {
   border-top-style: dotted;
 }
 
+.catalog-style-preview-bars {
+  position: absolute;
+  right: 16px;
+  bottom: 18px;
+  left: 28px;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  align-items: end;
+  gap: 5px;
+  height: 42px;
+}
+
+.catalog-style-preview-bars span {
+  display: block;
+  border-radius: 3px 3px 0 0;
+}
+
+.catalog-style-preview-marker {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--card) 88%, transparent);
+  transform: translateX(-50%);
+}
+
+.catalog-style-preview.is-marker .catalog-style-preview-axis.horizontal {
+  bottom: 23px;
+}
+
 .catalog-style-preview-copy {
   display: flex;
   align-items: baseline;
