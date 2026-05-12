@@ -192,6 +192,9 @@ const CATALOG_PREVIEW_CANDLES = [
 ];
 const CATALOG_PRICE_LINE_POINTS = "34,112 64,87 90,70 116,76 142,84 168,91 194,88 220,80 246,83 272,78 298,70 324,64 350,66";
 const CATALOG_OSCILLATOR_LINE_POINTS = "34,199 64,184 90,176 116,181 142,190 168,202 194,207 220,200 246,189 272,182 298,180 324,174 350,178";
+const CATALOG_PREVIEW_PANE_ZERO_Y = 194;
+const CATALOG_PREVIEW_PANE_RANGE_TOP = 170;
+const CATALOG_PREVIEW_PANE_RANGE_BOTTOM = 218;
 const CATALOG_HISTOGRAM_BARS = [
   { value: 9, x: 38 },
   { value: 17, x: 64 },
@@ -2010,13 +2013,13 @@ function CatalogPresentationChartPreview({
         </g>
         {hasPreviewPane ? (
           <g className="catalog-contract-pane">
-            <rect x="20" y="164" width="336" height="58" rx="5" />
+            <rect x="20" y="164" width="336" height="60" rx="5" />
             <g className="catalog-contract-chart-grid">
               <line x1="20" x2="356" y1="178" y2="178" />
               <line x1="20" x2="356" y1="210" y2="210" />
               {[58, 116, 174, 232, 290, 348].map((x) => <line key={`ox:${x}`} x1={x} x2={x} y1="164" y2="222" />)}
             </g>
-            <line className="catalog-contract-zero-line" x1="20" x2="356" y1="194" y2="194" />
+            <line className="catalog-contract-zero-line" x1="20" x2="356" y1={CATALOG_PREVIEW_PANE_ZERO_Y} y2={CATALOG_PREVIEW_PANE_ZERO_Y} />
           </g>
         ) : null}
         {isBandLike ? (
@@ -2079,7 +2082,7 @@ function CatalogPresentationChartPreview({
                         key={`${index}:${bar.x}`}
                         width="12"
                         x={bar.x - 6}
-                        y={bar.value >= 0 ? 194 - bar.value : 194}
+                        y={bar.value >= 0 ? CATALOG_PREVIEW_PANE_ZERO_Y - bar.value : CATALOG_PREVIEW_PANE_ZERO_Y}
                       />
                     ))}
                   </g>
@@ -2112,7 +2115,7 @@ function CatalogPresentationChartPreview({
                   key={bar.x}
                   width="13"
                   x={bar.x - 6.5}
-                  y={positive ? 194 - bar.value : 194}
+                  y={positive ? CATALOG_PREVIEW_PANE_ZERO_Y - bar.value : CATALOG_PREVIEW_PANE_ZERO_Y}
                 />
               );
             })}
@@ -2200,11 +2203,17 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
   const oscillatorPoints = visibleDataSeries.flatMap((series) => series.data);
   const hasPreviewPane = isLowerPaneRole;
   const oscValues = oscillatorPoints.map((point) => point.value).filter((value) => Number.isFinite(value));
-  const oscMin = oscValues.length ? Math.min(...oscValues) : -1;
-  const oscMax = oscValues.length ? Math.max(...oscValues) : 1;
-  const oscPad = Math.max((oscMax - oscMin) * 0.12, 0.01);
-  const oscScale = (value: number) => scaleLinear(value, oscMin - oscPad, oscMax + oscPad, 216, 168);
-  const zeroY = boundedPresentationNumber(oscScale(0), 168, 216, 194);
+  const oscAbsMax = oscValues.length ? Math.max(...oscValues.map((value) => Math.abs(value)), 0.01) : 1;
+  const oscPad = Math.max(oscAbsMax * 0.12, 0.01);
+  const oscScale = (value: number) =>
+    scaleLinear(
+      value,
+      -(oscAbsMax + oscPad),
+      oscAbsMax + oscPad,
+      CATALOG_PREVIEW_PANE_RANGE_BOTTOM,
+      CATALOG_PREVIEW_PANE_RANGE_TOP,
+    );
+  const zeroY = CATALOG_PREVIEW_PANE_ZERO_Y;
   const candleWidth = Math.max(3, Math.min(8, 240 / Math.max(1, candles.length)));
   const referenceX = referenceTime ? xForTime(referenceTime) : null;
   const fallbackZoneX = referenceCandle ? (referenceX ?? xForTime(referenceCandle.time)) : null;
@@ -2237,7 +2246,7 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
       </g>
       {hasPreviewPane ? (
         <g className="catalog-contract-pane">
-          <rect x="20" y="164" width="336" height="58" rx="5" />
+          <rect x="20" y="164" width="336" height="60" rx="5" />
           <g className="catalog-contract-chart-grid">
             <line x1="20" x2="356" y1="178" y2="178" />
             <line x1="20" x2="356" y1="210" y2="210" />
@@ -2348,7 +2357,7 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
                   key={`fallback-real-hist:${bar.x}`}
                   width="13"
                   x={bar.x - 6.5}
-                  y={positive ? 194 - bar.value : 194}
+                  y={positive ? CATALOG_PREVIEW_PANE_ZERO_Y - bar.value : CATALOG_PREVIEW_PANE_ZERO_Y}
                 />
               );
             })}
