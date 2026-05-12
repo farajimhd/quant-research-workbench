@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 8
+CATALOG_VERSION = 9
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -170,6 +170,13 @@ DEFAULT_VISIBLE_COLUMNS = {"vwap", "tema9", "tema20", "macd_line", "macd_signal"
 DEFAULT_VISIBLE_DISPLAY_ITEMS = {"indicator.vwap", "indicator.tema_trend", "indicator.macd"}
 DYNAMIC_COLORS = ["#1E3A5F", "#B7791F", "#067647", "#B42318", "#2563EB", "#7C3AED", "#0E7490", "#C2410C"]
 OPERATIONAL_HELPER_COLUMNS = {"indicator_bar_count", "macd_ready", "tema_ready"}
+SESSION_STRUCTURE_SCALAR_COLUMNS = {
+    "premarket_range",
+    "or_5m_range",
+    "or_10m_range",
+    "or_15m_range",
+    "or_30m_range",
+}
 DATA_SHAPES = ["continuous_series", "bar_event", "anchored_zone", "regime_state", "data_only"]
 DATA_ONLY_ROLES = {"data_only", "table_only"}
 ANCHOR_ZONE_ROLES = {"anchored_zone", "price_zone"}
@@ -822,6 +829,7 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             column not in grouped_columns
             and contract.get("category") in {"indicator", "feature"}
             and presentation.get("selectable", True)
+            and column not in SESSION_STRUCTURE_SCALAR_COLUMNS
             and role not in {"", "marker", "text_label", "data_only", "table_only"}
         ):
             add(single_display_item(by_column, f"column.{column}", str(contract.get("title") or title_for_column(column)), [column], str(contract.get("group") or ""), default_visible=False))

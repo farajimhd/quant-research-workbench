@@ -1162,7 +1162,7 @@ function IndicatorFeatureSelect({
   const visibleFeatures = featureOptions.filter((option) => !indicatorSet.has(option));
   const visibleOptions = [...indicatorOptions, ...visibleFeatures];
   const catalogByColumn = new Map(catalogColumns.map((item) => [item.column, item]));
-  const displayItems = displayItemOptions.filter((item) => item.presentation?.selectable !== false);
+  const displayItems = mergeSessionEquivalentDisplayItems(displayItemOptions.filter((item) => item.presentation?.selectable !== false));
   const groupedDisplayItems = groupChartDisplayItems(displayItems);
   const groupedIndicatorOptions = groupColumnOptions(indicatorOptions, catalogByColumn, "Indicators");
   const groupedFeatureOptions = groupColumnOptions(visibleFeatures, catalogByColumn, "Features");
@@ -1355,6 +1355,73 @@ function chartDisplayGroupLabel(key: string, fallback = "Other") {
 function chartColumnGroupRank(key: string) {
   const index = chartColumnGroupOrder.indexOf(key);
   return index === -1 ? chartColumnGroupOrder.length : index;
+}
+
+function mergeSessionEquivalentDisplayItems(items: ChartDisplayItem[]): ChartDisplayItem[] {
+  const merged = new Map<string, ChartDisplayItem>();
+  items.forEach((item) => {
+    const key = chartDisplaySemanticKey(item);
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, item);
+      return;
+    }
+    merged.set(key, mergeChartDisplayItem(existing, item));
+  });
+  return Array.from(merged.values());
+}
+
+function mergeChartDisplayItem(left: ChartDisplayItem, right: ChartDisplayItem): ChartDisplayItem {
+  const preferred = chartDisplayItemScore(right) > chartDisplayItemScore(left) ? right : left;
+  const secondary = preferred === right ? left : right;
+  return {
+    ...preferred,
+    artifactGroups: uniqueStrings([...(preferred.artifactGroups ?? []), ...(secondary.artifactGroups ?? [])]),
+    featureGroups: uniqueStrings([...(preferred.featureGroups ?? []), ...(secondary.featureGroups ?? [])]),
+    sourceColumns: uniqueStrings([...(preferred.sourceColumns ?? []), ...(secondary.sourceColumns ?? [])]),
+  };
+}
+
+function chartDisplaySemanticKey(item: ChartDisplayItem) {
+  if (item.group === "session") {
+    const sessionTitle = canonicalSessionDisplayTitle(item);
+    if (sessionTitle) return `session:${sessionTitle.toLowerCase()}`;
+  }
+  return String(item.id || item.title).toLowerCase();
+}
+
+function canonicalSessionDisplayTitle(item: ChartDisplayItem) {
+  const sourceColumns = item.sourceColumns ?? [];
+  const title = stripSessionDate(String(item.title || ""));
+  const openingRangeColumn = sourceColumns.find((column) => /^or_\d+m_(high|low|range)$/.test(column));
+  const openingRange = openingRangeColumn?.match(/^or_(\d+)m_/) || title.match(/\b(?:OR|Opening Range)\s*(\d+)\s*m\b/i);
+  if (openingRange) return `Opening Range ${openingRange[1]}m`;
+  if (sourceColumns.some((column) => column.startsWith("premarket_")) || /\bpremarket range\b/i.test(title)) return "Premarket Range";
+  if (sourceColumns.some((column) => ["day_open", "day_high_so_far", "day_low_so_far"].includes(column)) || /\bsession range\b/i.test(title)) {
+    return "Session Range";
+  }
+  return title;
+}
+
+function stripSessionDate(value: string) {
+  return value
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, "")
+    .replace(/\b\d{8}\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function chartDisplayItemScore(item: ChartDisplayItem) {
+  const role = item.presentation?.chartRole || "";
+  let score = item.sourceColumns?.length ?? 0;
+  if (role === "composite" || role === "anchored_zone" || role === "price_zone") score += 10;
+  if (String(item.id || "").startsWith("feature.")) score += 5;
+  if (String(item.id || "").startsWith("column.")) score -= 5;
+  return score;
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)));
 }
 
 function ChartSettingsPopover({
