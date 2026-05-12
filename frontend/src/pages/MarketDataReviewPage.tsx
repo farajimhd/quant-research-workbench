@@ -110,6 +110,19 @@ type CatalogPayload = {
   scanners: CatalogMethod[];
   supervisionMethods: CatalogMethod[];
 };
+type CatalogPreviewSample = {
+  bar_id?: string;
+  session_date?: string;
+  ticker?: string;
+  timeframe?: string;
+  time?: number | null;
+};
+type CatalogPreviewPayload = {
+  payload?: ChartPayload | null;
+  reason?: string;
+  sample?: CatalogPreviewSample;
+  sampled: boolean;
+};
 type CatalogKindFilter = "all" | "display" | "columns" | "methods" | "scanners";
 type CatalogCardItem = CatalogItem & {
   catalogKind: "display" | "columns" | "methods" | "scanners";
@@ -198,6 +211,7 @@ const PRESENTATION_HELP = {
   opacity: "Controls visual strength without changing the value. Important long-horizon overlays can be thicker but more transparent so they remain visible without dominating candles.",
   bandFillColor: "Controls the translucent fill used inside a band. This is separate from the band boundary stroke color.",
   bandFillOpacity: "Controls how visible the band shade is. Lower values keep candles readable; higher values make the band easier to scan.",
+  zonePaddingBps: "Adds a small vertical thickness around a single price level for event-anchored zones. This prevents a higher-high or lower-low event from becoming an invisible one-pixel line.",
   precision: "Controls how many decimal places are shown in legends, tooltips, and readouts for numeric values.",
   markerShape: "Chooses the symbol used when the item renders as markers: circle, arrowUp, arrowDown, or square.",
   markerPosition: "Chooses where marker symbols sit relative to the candle: aboveBar, belowBar, or inBar.",
@@ -1038,6 +1052,8 @@ function CatalogTab({
   const selected = items.find((item) => item.id === selectedId) ?? items[0];
   const [draft, setDraft] = useState<CatalogPresentation>({});
   const [styleTarget, setStyleTarget] = useState("group");
+  const [catalogPreview, setCatalogPreview] = useState<CatalogPreviewPayload | null>(null);
+  const [catalogPreviewLoading, setCatalogPreviewLoading] = useState(false);
 
   useEffect(() => {
     if (selected?.id && selected.id !== selectedId) setSelectedId(selected.id);
@@ -1046,8 +1062,28 @@ function CatalogTab({
   useEffect(() => {
     setDraft({ ...(selected?.presentation ?? {}) });
     setStyleTarget("group");
+    setCatalogPreview(null);
     setSaveState("idle");
   }, [selected?.id]);
+
+  useEffect(() => {
+    if (!selected?.id) return;
+    let cancelled = false;
+    setCatalogPreviewLoading(true);
+    api<CatalogPreviewPayload>(`/api/market-data/catalog/preview${query({ processed_root: scope.processed_root, item_id: selected.id })}`)
+      .then((payload) => {
+        if (!cancelled) setCatalogPreview(payload);
+      })
+      .catch((error: Error) => {
+        if (!cancelled) setCatalogPreview({ sampled: false, reason: error.message, payload: null });
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogPreviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scope.processed_root, selected?.id]);
 
   function updatePresentation(key: string, value: CatalogPresentationPatchValue) {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -1297,6 +1333,7 @@ function CatalogTab({
                         <div className="catalog-form-grid compact">
                           <CatalogSelect help="Controls how the event-created zone extends after the source bar." label="Extend rule" options={catalog?.presentationOptions.extendRules ?? []} value={String(activePresentation.extendRule ?? "fixed_bars")} onChange={(value) => updateActivePresentation("extendRule", value)} />
                           <CatalogNumberField help="Maximum number of bars the anchored zone may extend." label="Max bars" max={240} min={1} value={Number(activePresentation.maxBars ?? activePresentation.extendBars ?? 24)} onChange={(value) => updateActivePresentation("maxBars", value)} />
+                          <CatalogNumberField help={PRESENTATION_HELP.zonePaddingBps} label="Padding bps" max={100} min={0} value={Number(activePresentation.zonePaddingBps ?? 0)} onChange={(value) => updateActivePresentation("zonePaddingBps", value)} />
                           <CatalogSelect help="Boundary stroke used around the zone." label="Border style" options={catalog?.presentationOptions.borderStyles ?? []} value={String(activePresentation.borderStyle ?? "solid")} onChange={(value) => updateActivePresentation("borderStyle", value)} />
                           <CatalogNumberField help="Zone boundary width in pixels." label="Border width" max={6} min={1} value={Number(activePresentation.borderWidth ?? 1)} onChange={(value) => updateActivePresentation("borderWidth", value)} />
                           <CatalogCheckbox checked={Boolean(activePresentation.stopOnMitigation)} help="Stops the zone when price revisits or mitigates the event range, where supported by the renderer." label="Stop on mitigation" onChange={(value) => updateActivePresentation("stopOnMitigation", value)} />
@@ -1327,6 +1364,8 @@ function CatalogTab({
                   itemTitle={selected.title}
                   presentation={draft}
                   presentationType={selectedPresentationType}
+                  realPreview={catalogPreview}
+                  realPreviewLoading={catalogPreviewLoading}
                 />
               </div>
             </section>
@@ -1861,10 +1900,14 @@ function CatalogPresentationChartPreview({
   itemTitle,
   presentation,
   presentationType,
+  realPreview,
+  realPreviewLoading,
 }: {
   itemTitle: string;
   presentation: CatalogPresentation;
   presentationType: string;
+  realPreview: CatalogPreviewPayload | null;
+  realPreviewLoading: boolean;
 }) {
   const role = normalizeDisplayType(String(presentation.chartRole ?? "data_only"));
   const pane = String(presentation.pane ?? "price");
@@ -1878,6 +1921,7 @@ function CatalogPresentationChartPreview({
   const displayNameForItem = itemTitle || "Selected item";
   const isBandLike = role === "band" || role === "price_zone" || role === "continuous_band" || role === "anchored_zone";
   const parts = role === "composite" && Array.isArray(presentation.parts) ? presentation.parts.filter((part): part is Record<string, unknown> => Boolean(part && typeof part === "object")) : [];
+  const showRealPreview = !isDataOnlyRole(role) && Boolean(realPreview?.sampled && realPreview.payload?.candles?.length);
   return (
     <aside className="catalog-preview-chart-card" aria-label={`Chart preview for ${displayNameForItem}`}>
       <div className="catalog-preview-chart-header">
@@ -1887,6 +1931,9 @@ function CatalogPresentationChartPreview({
         </div>
         <small>{presentationTypeLabel(presentationType)}</small>
       </div>
+      {showRealPreview ? (
+        <CatalogRealSampleChart itemTitle={displayNameForItem} preview={realPreview as CatalogPreviewPayload} />
+      ) : (
       <svg className="catalog-contract-chart" viewBox="0 0 380 238" role="img" aria-label={`${displayNameForItem} presentation preview`}>
         <rect className="catalog-contract-chart-bg" x="0" y="0" width="380" height="238" rx="8" />
         <g className="catalog-contract-chart-grid">
@@ -2007,9 +2054,151 @@ function CatalogPresentationChartPreview({
           <text x="326" y="24">11:30</text>
         </g>
       </svg>
-      <p>{isDataOnlyRole(role) ? "This field stays available in tables and catalog, but is not drawn on the chart." : "Dummy candles are fixed; only this selected catalog item is drawn."}</p>
+      )}
+      <p>
+        {realPreviewLoading ? "Finding a saved provider sample for this contract..." :
+          showRealPreview ? realPreviewDescription(realPreview as CatalogPreviewPayload) :
+          isDataOnlyRole(role) ? "This field stays available in tables and catalog, but is not drawn on the chart." :
+          realPreview?.reason ? `Synthetic fallback: ${realPreview.reason}` : "Synthetic fallback; only this selected catalog item is drawn."}
+      </p>
     </aside>
   );
+}
+
+function CatalogRealSampleChart({ itemTitle, preview }: { itemTitle: string; preview: CatalogPreviewPayload }) {
+  const payload = preview.payload;
+  const allCandles = payload?.candles ?? [];
+  const referenceTime = Number(preview.sample?.time ?? 0);
+  const referenceIndex = referenceTime ? Math.max(0, allCandles.findIndex((candle) => candle.time >= referenceTime)) : 0;
+  const startIndex = Math.max(0, referenceIndex - 28);
+  const candles = allCandles.slice(startIndex, Math.min(allCandles.length, startIndex + 72));
+  const times = candles.map((candle) => candle.time);
+  const minTime = times[0] ?? 0;
+  const maxTime = times[times.length - 1] ?? 0;
+  const visibleZones = (payload?.price_zones ?? []).filter((zone) => zone.end >= minTime && zone.start <= maxTime);
+  const priceValues = [
+    ...candles.flatMap((candle) => [candle.high, candle.low]),
+    ...visibleZones.flatMap((zone) => [zone.upper, zone.lower]),
+    ...(payload?.overlay_series ?? []).flatMap((series) => series.data.map((point) => point.value)),
+  ].filter((value) => Number.isFinite(value));
+  const priceMin = Math.min(...priceValues);
+  const priceMax = Math.max(...priceValues);
+  const pricePad = Math.max((priceMax - priceMin) * 0.08, Math.abs(priceMax) * 0.0004, 0.01);
+  const priceScale = (value: number) => scaleLinear(value, priceMin - pricePad, priceMax + pricePad, 151, 34);
+  const xForTime = (time: number) => {
+    if (!times.length) return 24;
+    if (time <= times[0]) return 24;
+    if (time >= times[times.length - 1]) return 356;
+    const exact = times.indexOf(time);
+    if (exact >= 0) return 24 + exact * (332 / Math.max(1, times.length - 1));
+    const index = times.findIndex((candidate) => candidate > time);
+    const leftIndex = Math.max(0, index - 1);
+    const rightIndex = Math.max(leftIndex + 1, index);
+    const span = Math.max(1, times[rightIndex] - times[leftIndex]);
+    return 24 + (leftIndex + (time - times[leftIndex]) / span) * (332 / Math.max(1, times.length - 1));
+  };
+  const oscillatorPoints = (payload?.oscillator_series ?? []).flatMap((series) => series.data);
+  const oscValues = oscillatorPoints.map((point) => point.value).filter((value) => Number.isFinite(value));
+  const oscMin = oscValues.length ? Math.min(...oscValues) : -1;
+  const oscMax = oscValues.length ? Math.max(...oscValues) : 1;
+  const oscPad = Math.max((oscMax - oscMin) * 0.12, 0.01);
+  const oscScale = (value: number) => scaleLinear(value, oscMin - oscPad, oscMax + oscPad, 216, 168);
+  const candleWidth = Math.max(3, Math.min(8, 240 / Math.max(1, candles.length)));
+  const referenceX = referenceTime ? xForTime(referenceTime) : null;
+
+  return (
+    <svg className="catalog-contract-chart" viewBox="0 0 380 238" role="img" aria-label={`${itemTitle} real provider sample`}>
+      <rect className="catalog-contract-chart-bg" x="0" y="0" width="380" height="238" rx="8" />
+      {(payload?.regions ?? []).filter((region) => region.end >= minTime && region.start <= maxTime).map((region, index) => {
+        const start = xForTime(region.start);
+        const end = xForTime(region.end);
+        const width = Math.max(0, end - start);
+        return width > 0 ? <rect fill={region.color} key={`region:${index}`} opacity="0.65" x={start} y="31" width={width} height="123" /> : null;
+      })}
+      <g className="catalog-contract-chart-grid">
+        {[54, 84, 114, 144].map((y) => <line key={`real-py:${y}`} x1="20" x2="356" y1={y} y2={y} />)}
+        <line x1="20" x2="356" y1="170" y2="170" />
+        <line x1="20" x2="356" y1="205" y2="205" />
+      </g>
+      {visibleZones.map((zone, index) => {
+        const left = xForTime(zone.start);
+        const right = xForTime(zone.end);
+        const top = priceScale(zone.upper);
+        const bottom = priceScale(zone.lower);
+        return (
+          <rect
+            className="catalog-contract-real-zone"
+            fill={colorWithOpacity(zone.fillColor || zone.color, Math.min(0.5, Math.max(0.04, zone.fillOpacity ?? 0.14)))}
+            height={Math.max(2, Math.abs(bottom - top))}
+            key={`zone:${index}`}
+            stroke={zone.color}
+            width={Math.max(2, right - left)}
+            x={left}
+            y={Math.min(top, bottom)}
+          />
+        );
+      })}
+      <g className="catalog-contract-candles">
+        {candles.map((candle, index) => {
+          const x = xForTime(candle.time);
+          const bullish = candle.close >= candle.open;
+          const color = bullish ? "#33E42A" : "#FD0E50";
+          const openY = priceScale(candle.open);
+          const closeY = priceScale(candle.close);
+          return (
+            <g key={`${candle.time}:${index}`}>
+              <line className="catalog-contract-wick" x1={x} x2={x} y1={priceScale(candle.high)} y2={priceScale(candle.low)} stroke={color} />
+              <rect fill={color} height={Math.max(2, Math.abs(closeY - openY))} rx="1" width={candleWidth} x={x - candleWidth / 2} y={Math.min(openY, closeY)} />
+            </g>
+          );
+        })}
+      </g>
+      {(payload?.overlay_series ?? []).slice(0, 4).map((series, index) => (
+        <polyline
+          fill="none"
+          key={`overlay:${series.column}:${index}`}
+          points={series.data.filter((point) => times.includes(point.time)).map((point) => `${xForTime(point.time)},${priceScale(point.value)}`).join(" ")}
+          stroke={series.color}
+          strokeWidth={Math.max(1, Math.min(3, series.lineWidth ?? 1))}
+        />
+      ))}
+      {(payload?.oscillator_series ?? []).slice(0, 4).map((series, index) => (
+        <polyline
+          fill="none"
+          key={`osc:${series.column}:${index}`}
+          points={series.data.filter((point) => times.includes(point.time)).map((point) => `${xForTime(point.time)},${oscScale(point.value)}`).join(" ")}
+          stroke={series.color}
+          strokeWidth={Math.max(1, Math.min(3, series.lineWidth ?? 1))}
+        />
+      ))}
+      {(payload?.markers ?? []).filter((marker) => times.includes(Number(marker.time))).slice(0, 40).map((marker, index) => (
+        <circle cx={xForTime(Number(marker.time))} cy={marker.position === "aboveBar" ? 44 : marker.position === "inBar" ? 94 : 146} fill={String(marker.color)} key={`marker:${index}`} r="4" />
+      ))}
+      {referenceX !== null ? (
+        <g className="catalog-contract-reference-line">
+          <line x1={referenceX} x2={referenceX} y1="30" y2="218" />
+          <text x={Math.min(326, referenceX + 5)} y="29">Sample</text>
+        </g>
+      ) : null}
+      <g className="catalog-contract-axis-labels">
+        <text x="26" y="24">{preview.sample?.ticker}</text>
+        <text x="182" y="24">{preview.sample?.timeframe}</text>
+        <text x="326" y="24">{preview.sample?.session_date}</text>
+      </g>
+    </svg>
+  );
+}
+
+function scaleLinear(value: number, domainMin: number, domainMax: number, rangeMin: number, rangeMax: number) {
+  if (!Number.isFinite(value) || domainMax === domainMin) return (rangeMin + rangeMax) / 2;
+  return rangeMin + ((value - domainMin) / (domainMax - domainMin)) * (rangeMax - rangeMin);
+}
+
+function realPreviewDescription(preview: CatalogPreviewPayload) {
+  const sample = preview.sample;
+  return sample?.ticker && sample.session_date && sample.timeframe
+    ? `Real provider sample: ${sample.ticker}, ${sample.timeframe}, ${sample.session_date}.`
+    : "Real provider sample from the saved tables.";
 }
 
 function renderCatalogPreviewMarker(shape: string, position: string, color: string): ReactNode {

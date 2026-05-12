@@ -2002,6 +2002,22 @@ button {
   stroke-width: 1;
 }
 
+.catalog-contract-real-zone {
+  stroke-width: 1;
+}
+
+.catalog-contract-reference-line line {
+  stroke: var(--foreground);
+  stroke-dasharray: 4 4;
+  stroke-width: 1.6;
+}
+
+.catalog-contract-reference-line text {
+  fill: var(--foreground);
+  font-size: 10px;
+  font-weight: 600;
+}
+
 .catalog-contract-table-only rect {
   fill: color-mix(in oklab, var(--muted) 22%, transparent);
   stroke: color-mix(in oklab, var(--surface-border) 70%, transparent);

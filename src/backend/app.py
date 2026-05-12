@@ -21,6 +21,7 @@ from src.backend.json_utils import json_safe, parse_csv_list
 from src.backend.market_data_service import (
     artifact_records,
     artifact_schema,
+    catalog_preview_payload,
     chart_payload,
     coverage_rows,
     first_matching_artifact,
@@ -398,6 +399,11 @@ def market_catalog(processed_root: str = str(DEFAULT_PROCESSED_ROOT)) -> dict[st
     return json_safe(provider_catalog(Path(processed_root)))
 
 
+@app.get("/api/market-data/catalog/preview")
+def market_catalog_preview(processed_root: str, item_id: str, timeframe: str | None = None) -> dict[str, Any]:
+    return json_safe(catalog_preview_payload(Path(processed_root), item_id, timeframe))
+
+
 @app.patch("/api/market-data/catalog/presentation")
 def update_market_catalog_presentation(payload: CatalogPresentationUpdate) -> dict[str, Any]:
     return {"catalog": json_safe(save_presentation_override(Path(payload.processed_root), payload.item_id, payload.presentation))}
@@ -409,7 +415,7 @@ def default_catalog_chart_columns(processed_root: Path) -> list[str]:
         presentation = item.get("presentation", {})
         role = str(presentation.get("chartRole") or "")
         column = item.get("column")
-        if column and presentation.get("defaultVisible") and presentation.get("selectable") and role not in {"marker", "data_only", "table_only"}:
+        if column and presentation.get("defaultVisible") and presentation.get("selectable") and role not in {"marker", "background_state", "anchored_zone", "data_only", "table_only"}:
             columns.append(str(column))
     return columns
 

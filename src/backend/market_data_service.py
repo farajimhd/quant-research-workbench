@@ -200,6 +200,10 @@ def artifact_schema(record: dict[str, Any]) -> list[dict[str, str]]:
     return [{"column": column, "dtype": str(dtype)} for column, dtype in schema.items()]
 
 
+def record_path(record: dict[str, Any]) -> Path:
+    return Path(str(record.get("path") or ""))
+
+
 def load_artifact_sample(
     record: dict[str, Any],
     columns: list[str],
@@ -450,7 +454,7 @@ def chart_feature_columns(records: list[dict[str, Any]], timeframe: str, start: 
                     item["column"] not in CHART_FEATURE_EXCLUDE_COLUMNS
                     and is_numeric_dtype(item["dtype"])
                     and presentation.get("selectable", True)
-                    and chart_role not in {"", "marker", "data_only", "table_only"}
+                    and chart_role not in {"", "marker", "background_state", "anchored_zone", "data_only", "table_only"}
                 ):
                     columns.append(item["column"])
     order = {str(item.get("column")): index for index, item in enumerate(catalog.get("columns", []))}
@@ -566,7 +570,7 @@ def display_item_settings(items: list[dict[str, Any]]) -> dict[str, dict[str, An
     for index, item in enumerate(items):
         presentation = item.get("presentation", {})
         role = str(presentation.get("chartRole") or "")
-        if role in {"marker", "price_zone", "anchored_zone", "data_only", "table_only"}:
+        if role in {"marker", "price_zone", "anchored_zone", "background_state", "data_only", "table_only"}:
             continue
         parts = presentation.get("parts") if role == "composite" and isinstance(presentation.get("parts"), list) else []
         if parts:
@@ -668,6 +672,12 @@ def display_price_zones(rows: list[dict[str, Any]], timeframe: str, items: list[
                 end += candle_duration
             high = max(upper, lower)
             low = min(upper, lower)
+            padding_bps = bounded_float(presentation.get("zonePaddingBps"), default=0.0, lower=0.0, upper=100.0)
+            if padding_bps > 0:
+                midpoint = (high + low) / 2.0
+                padding = max(abs(midpoint) * padding_bps / 10_000.0, 0.000001)
+                high += padding
+                low -= padding
             color = str(presentation.get("color") or "#1E3A5F")
             zones.append(
                 {
@@ -683,6 +693,70 @@ def display_price_zones(rows: list[dict[str, Any]], timeframe: str, items: list[
                 }
             )
     return zones
+
+
+def display_background_regions(rows: list[dict[str, Any]], timeframe: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    regions: list[dict[str, Any]] = []
+    if not rows:
+        return regions
+    candle_duration = chart_candle_duration_seconds(rows, timeframe)
+    for item in items:
+        presentation = item.get("presentation", {})
+        if presentation.get("chartRole") != "background_state":
+            continue
+        state_column = str(presentation.get("stateColumn") or "")
+        if not state_column:
+            continue
+        state_colors = presentation.get("stateColors") if isinstance(presentation.get("stateColors"), dict) else {}
+        opacity = bounded_float(presentation.get("opacity"), default=0.08, lower=0.01, upper=0.35)
+        current_state: str | None = None
+        start_time: int | None = None
+        previous_time: int | None = None
+        for row in rows:
+            timestamp = chart_timestamp_seconds(row, timeframe)
+            if not timestamp:
+                continue
+            state = str(row.get(state_column) or "").strip()
+            if not state:
+                if current_state is not None and start_time is not None and previous_time is not None:
+                    regions.append(background_region(item, current_state, start_time, previous_time + candle_duration, state_colors, opacity))
+                current_state = None
+                start_time = None
+                previous_time = timestamp
+                continue
+            if current_state is None:
+                current_state = state
+                start_time = timestamp
+            elif state != current_state:
+                if start_time is not None and previous_time is not None:
+                    regions.append(background_region(item, current_state, start_time, previous_time + candle_duration, state_colors, opacity))
+                current_state = state
+                start_time = timestamp
+            previous_time = timestamp
+        if current_state is not None and start_time is not None and previous_time is not None:
+            regions.append(background_region(item, current_state, start_time, previous_time + candle_duration, state_colors, opacity))
+    return regions
+
+
+def background_region(item: dict[str, Any], state: str, start: int, end: int, state_colors: dict[str, Any], opacity: float) -> dict[str, Any]:
+    color = str(state_colors.get(state) or state_colors.get(state.lower()) or "#667085")
+    return {
+        "start": start,
+        "end": end,
+        "color": rgba_css(color, opacity),
+        "label": f"{item.get('title') or 'State'}: {display_name(state)}",
+    }
+
+
+def rgba_css(color: str, opacity: float) -> str:
+    match = re.fullmatch(r"#?([0-9a-fA-F]{6})", color.strip())
+    if not match:
+        return color
+    raw = match.group(1)
+    red = int(raw[0:2], 16)
+    green = int(raw[2:4], 16)
+    blue = int(raw[4:6], 16)
+    return f"rgba({red}, {green}, {blue}, {opacity:.3f})"
 
 
 def display_item_markers(rows: list[dict[str, Any]], timeframe: str, items: list[dict[str, Any]], marker_limit: int) -> list[dict[str, Any]]:
@@ -1044,15 +1118,166 @@ def chart_payload(
         )
     )
     markers = sorted([*feature_markers, *supervision], key=lambda marker: int(marker.get("time") or 0))[:marker_limit]
+    regions = [*extended_session_regions(rows, timeframe), *display_background_regions(rows, timeframe, selected_display_contracts)]
     return {
         "candles": candles,
         "volume": volume,
         "overlay_series": overlay_series,
         "oscillator_series": oscillator_series,
         "markers": markers,
-        "regions": extended_session_regions(rows, timeframe),
+        "regions": regions,
         "price_zones": display_price_zones(rows, timeframe, selected_display_contracts),
         "options": options,
+    }
+
+
+def catalog_preview_payload(processed_root: Path, item_id: str, preferred_timeframe: str | None = None) -> dict[str, Any]:
+    catalog = provider_catalog(processed_root)
+    item = catalog_item_by_id(catalog).get(item_id)
+    if not item:
+        return {"sampled": False, "reason": "Catalog item was not found.", "payload": None}
+    display_items = catalog_display_items(catalog)
+    display_item_id = item_id if item_id in display_items else related_display_item_id(catalog, item)
+    source_columns = [str(column) for column in item.get("sourceColumns", []) or ([item.get("column")] if item.get("column") else [])]
+    signal_columns = preview_signal_columns(item)
+    records = artifact_records(processed_root)
+    sample = find_catalog_preview_sample(records, item, signal_columns, source_columns, preferred_timeframe)
+    if not sample:
+        return {"sampled": False, "reason": "No saved row demonstrated this catalog item in the current processed store.", "payload": None}
+    selected_display_items = [display_item_id] if display_item_id else None
+    selected_columns = [] if display_item_id else [str(item.get("column"))] if item.get("column") else []
+    payload = chart_payload(
+        processed_root,
+        start_date=date.fromisoformat(sample["session_date"]),
+        end_date=date.fromisoformat(sample["session_date"]),
+        timeframe=sample["timeframe"],
+        ticker=sample["ticker"],
+        feature_groups_selected=[],
+        selected_columns=selected_columns,
+        selected_display_items=selected_display_items,
+        supervision_groups_selected=[],
+        marker_limit=180,
+        min_confidence=0.0,
+    )
+    return {"sampled": True, "reason": "", "sample": sample, "payload": payload}
+
+
+def related_display_item_id(catalog: dict[str, Any], item: dict[str, Any]) -> str | None:
+    column = str(item.get("column") or "")
+    if not column:
+        return None
+    for display_item in catalog.get("displayItems", []):
+        if column in {str(source) for source in display_item.get("sourceColumns", [])}:
+            return str(display_item.get("id"))
+    return None
+
+
+def preview_signal_columns(item: dict[str, Any]) -> list[str]:
+    presentation = item.get("presentation", {})
+    signals = presentation.get("signalColumns")
+    if isinstance(signals, list):
+        return [str(column) for column in signals if column]
+    signal = presentation.get("signalColumn")
+    if signal:
+        return [str(signal)]
+    source_columns = [str(column) for column in item.get("sourceColumns", []) if column]
+    return [column for column in source_columns if "signal" in column or column.startswith(("is_", "bullish_", "bearish_"))]
+
+
+def find_catalog_preview_sample(
+    records: list[dict[str, Any]],
+    item: dict[str, Any],
+    signal_columns: list[str],
+    source_columns: list[str],
+    preferred_timeframe: str | None,
+) -> dict[str, Any] | None:
+    artifact_groups = [str(group) for group in item.get("artifactGroups", [])]
+    candidate_records = [
+        record for record in records
+        if record.get("exists") and (not artifact_groups or str(record.get("group")) in artifact_groups)
+    ]
+    if preferred_timeframe:
+        candidate_records = sorted(candidate_records, key=lambda record: (str(record.get("timeframe")) != preferred_timeframe, artifact_group_sample_order(str(record.get("group"))), str(record.get("session_date"))))
+    else:
+        candidate_records = sorted(candidate_records, key=lambda record: (timeframe_sort_key(str(record.get("timeframe") or "")), artifact_group_sample_order(str(record.get("group"))), str(record.get("session_date"))))
+    filter_columns = signal_columns or source_columns
+    for record in candidate_records:
+        path = record_path(record)
+        if not path.exists():
+            continue
+        scan = pl.scan_parquet(path)
+        schema = scan.collect_schema()
+        schema_names = schema.names()
+        available_filter_columns = [column for column in filter_columns if column in schema_names]
+        if not available_filter_columns and "bar_id" not in schema_names:
+            continue
+        expression = preview_filter_expression(schema, available_filter_columns)
+        if expression is not None:
+            scan = scan.filter(expression)
+        selected = [column for column in ["bar_id", "ticker", "bar_time_market"] if column in schema_names]
+        if not selected:
+            continue
+        frame = scan.select(selected).limit(1).collect()
+        if frame.is_empty():
+            continue
+        row = frame.to_dicts()[0]
+        sample = sample_from_preview_row(records, record, row)
+        if sample:
+            return sample
+    return None
+
+
+def artifact_group_sample_order(group: str) -> int:
+    return 1 if group == "bars" else 0
+
+
+def preview_filter_expression(schema: pl.Schema, columns: list[str]) -> pl.Expr | None:
+    expressions: list[pl.Expr] = []
+    for column in columns:
+        dtype = schema[column]
+        if dtype == pl.Boolean:
+            expressions.append(pl.col(column).fill_null(False))
+        elif dtype.is_numeric():
+            expressions.append(pl.col(column).is_not_null() & (pl.col(column) != 0))
+        else:
+            expressions.append(pl.col(column).is_not_null() & (pl.col(column).cast(pl.Utf8).str.len_chars() > 0))
+    if not expressions:
+        return None
+    expression = expressions[0]
+    for item in expressions[1:]:
+        expression = expression | item
+    return expression
+
+
+def sample_from_preview_row(records: list[dict[str, Any]], record: dict[str, Any], row: dict[str, Any]) -> dict[str, Any] | None:
+    timeframe = str(record.get("timeframe") or "")
+    session_date = str(record.get("session_date") or "")
+    ticker = str(row.get("ticker") or "")
+    timestamp = chart_timestamp_seconds(row, timeframe)
+    if not ticker and row.get("bar_id"):
+        bars_record = first_matching_artifact(records, "bars", timeframe, session_date)
+        if bars_record:
+            bars_path = record_path(bars_record)
+            if bars_path.exists():
+                bars = (
+                    pl.scan_parquet(bars_path)
+                    .filter(pl.col("bar_id") == str(row["bar_id"]))
+                    .select([column for column in ["ticker", "bar_time_market", "bar_time_utc"] if column])
+                    .limit(1)
+                    .collect()
+                )
+                if not bars.is_empty():
+                    bar_row = bars.to_dicts()[0]
+                    ticker = str(bar_row.get("ticker") or "")
+                    timestamp = chart_timestamp_seconds(bar_row, timeframe)
+    if not ticker or not timeframe or not session_date:
+        return None
+    return {
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "session_date": session_date,
+        "bar_id": str(row.get("bar_id") or ""),
+        "time": timestamp,
     }
 
 

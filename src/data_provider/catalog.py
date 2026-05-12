@@ -11,16 +11,18 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 5
+CATALOG_VERSION = 6
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
     "bar_id",
     "ticker",
     "timeframe",
+    "window_start",
     "bar_time_utc",
     "bar_time_market",
     "session_date",
+    "session_month",
     "minute_of_day",
     "open",
     "high",
@@ -160,10 +162,9 @@ SCANNER_SUPERVISION_COLUMNS = [
     "is_top_5pct",
 ]
 
-KEY_COLUMNS = {"bar_id", "ticker", "timeframe", "bar_time_utc", "bar_time_market", "session_date", "session_month", "minute_of_day"}
+KEY_COLUMNS = {"bar_id", "ticker", "timeframe", "window_start", "bar_time_utc", "bar_time_market", "session_date", "session_month", "minute_of_day"}
 INDICATOR_PREFIXES = ("sma", "ema", "tema", "macd", "rsi", "roc", "cci", "stoch", "atr", "bb_", "donchian", "keltner")
 INDICATOR_COLUMNS = {"vwap", "obv", "mfi14", "cmf20"}
-PRICE_OVERLAY_TERMS = ("sma", "ema", "tema", "vwap", "bb_", "donchian", "keltner", "hvn", "lvn", "price_proxy", "open", "high", "low")
 OSCILLATOR_TERMS = ("macd", "rsi", "roc", "cci", "stoch", "z20", "relative_", "score", "ratio", "pct", "confidence", "percentile")
 DEFAULT_VISIBLE_COLUMNS = {"vwap", "tema9", "tema20", "macd_line", "macd_signal", "macd_hist"}
 DEFAULT_VISIBLE_DISPLAY_ITEMS = {"indicator.vwap", "indicator.tema_trend", "indicator.macd"}
@@ -173,6 +174,139 @@ DATA_ONLY_ROLES = {"data_only", "table_only"}
 ANCHOR_ZONE_ROLES = {"anchored_zone", "price_zone"}
 PRICE_TARGET_ROLES = {"price_overlay", "marker", "continuous_band", "anchored_zone", "price_zone"}
 LOWER_PANE_ROLES = {"oscillator", "histogram"}
+BOOLEAN_COLUMNS = {
+    "is_green",
+    "is_red",
+    "bullish_fvg",
+    "bearish_fvg",
+    "swing_high_3",
+    "swing_low_3",
+    "swing_high_5",
+    "swing_low_5",
+    "higher_high",
+    "lower_low",
+    "bos_up",
+    "bos_down",
+    "bullish_displacement",
+    "bearish_displacement",
+    "inside_bar",
+    "outside_bar",
+    "bullish_engulfing",
+    "bearish_engulfing",
+    "nr4",
+    "nr7",
+    "breaks_high20",
+    "breaks_low20",
+    "reclaim_vwap",
+    "breakdown_vwap",
+    "return_shock",
+    "range_shock",
+    "structure_break_shock",
+    "price_shock",
+    "relative_volume_shock",
+    "dollar_volume_shock",
+    "transactions_shock",
+    "volume_shock",
+    "price_shock_recent",
+    "volume_shock_recent",
+    "price_shock_before_volume_shock",
+    "confirmed_price_volume_shock",
+    "macd_ready",
+    "tema_ready",
+    "valid_future_window",
+    "mfe_before_mae",
+    "oracle_long_entry_signal",
+    "oracle_long_exit_signal",
+    "method_entry_signal",
+    "method_exit_signal",
+    "fwd_liquidity_confirmed",
+    "fwd_volume_shock_before_mfe",
+    "current_price_shock",
+    "current_volume_shock",
+    "current_confirmed_price_volume_shock",
+    "is_top_1",
+    "is_top_3",
+    "is_top_5",
+    "is_top_10",
+    "is_top_1pct",
+    "is_top_5pct",
+}
+STRING_COLUMNS = {
+    "bar_id",
+    "ticker",
+    "timeframe",
+    "session_date",
+    "session_month",
+    "horizon",
+    "trade_method",
+    "oracle_action",
+    "fwd_outcome_bucket",
+    "shock_confirmation_type",
+    "oracle_best_exit_bar_id",
+    "method_best_exit_bar_id",
+    "shock_best_exit_after_confirmation_bar_id",
+    "fwd_first_volume_shock_bar_id",
+    "trend_regime",
+}
+INTEGER_COLUMNS = {
+    "window_start",
+    "minute_of_day",
+    "horizon_bars",
+    "horizon_minutes",
+    "future_bar_count",
+    "time_to_mfe_bars",
+    "time_to_mae_bars",
+    "time_to_mfe_minutes",
+    "time_to_mae_minutes",
+    "indicator_bar_count",
+    "bars_since_high20",
+    "bars_since_low20",
+    "bars_since_price_shock",
+    "bars_since_volume_shock",
+    "minutes_since_price_shock",
+    "minutes_since_volume_shock",
+    "shock_confirmation_delay_minutes",
+    "fwd_minutes_to_volume_shock",
+    "method_min_horizon_bars",
+    "method_max_horizon_bars",
+    "method_min_horizon_minutes",
+    "method_max_horizon_minutes",
+    "method_best_horizon_bars",
+    "method_best_horizon_minutes",
+    "universe_size",
+    "oracle_rank",
+    "method_best_horizon_minutes",
+}
+MARKET_STRUCTURE_EVENT_LEVELS = {
+    "swing_high_3": ("high", "#B7791F", 12),
+    "swing_low_3": ("low", "#0E7490", 12),
+    "swing_high_5": ("high", "#C2410C", 20),
+    "swing_low_5": ("low", "#2563EB", 20),
+    "higher_high": ("high", "#067647", 10),
+    "lower_low": ("low", "#B42318", 10),
+    "bos_up": ("high", "#1E3A5F", 24),
+    "bos_down": ("low", "#B42318", 24),
+}
+PRICE_ACTION_EVENT_LEVELS = {
+    "breaks_high20": ("high", "#067647", 16),
+    "breaks_low20": ("low", "#B42318", 16),
+}
+PRICE_ACTION_MARKERS = {
+    "inside_bar": ("Inside Bar", "circle", "inBar", "#475467"),
+    "outside_bar": ("Outside Bar", "square", "inBar", "#7C3AED"),
+    "bullish_engulfing": ("Bullish Engulfing", "arrowUp", "belowBar", "#067647"),
+    "bearish_engulfing": ("Bearish Engulfing", "arrowDown", "aboveBar", "#B42318"),
+    "nr4": ("NR4", "circle", "belowBar", "#0E7490"),
+    "nr7": ("NR7", "circle", "belowBar", "#2563EB"),
+    "reclaim_vwap": ("VWAP Reclaim", "arrowUp", "belowBar", "#067647"),
+    "breakdown_vwap": ("VWAP Breakdown", "arrowDown", "aboveBar", "#B42318"),
+}
+SHOCK_MARKERS = {
+    "price_shock": ("Price Shock", "arrowUp", "aboveBar", "#2563EB"),
+    "volume_shock": ("Volume Shock", "circle", "belowBar", "#B7791F"),
+    "confirmed_price_volume_shock": ("Confirmed Price Volume Shock", "arrowUp", "aboveBar", "#030213"),
+    "price_shock_before_volume_shock": ("Price Before Volume Shock", "square", "belowBar", "#7C3AED"),
+}
 DISPLAY_PRESETS: dict[str, dict[str, Any]] = {
     "price_overlay": {
         "label": "Price Overlay",
@@ -225,7 +359,7 @@ DISPLAY_PRESETS: dict[str, dict[str, Any]] = {
         "dataShapes": ["anchored_zone"],
         "target": "price",
         "lockedFields": ["pane"],
-        "styleFields": ["color", "bandFillColor", "bandFillOpacity", "borderStyle", "borderWidth", "extendRule", "maxBars", "stopOnMitigation"],
+        "styleFields": ["color", "bandFillColor", "bandFillOpacity", "borderStyle", "borderWidth", "extendRule", "maxBars", "zonePaddingBps", "stopOnMitigation"],
         "description": "Event-created price/time zone such as an FVG or order-block proxy.",
     },
     "background_state": {
@@ -563,6 +697,37 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
     add(anchored_zone_display_item(by_column, "feature.fvg_bearish", "Bearish FVG", "fvg", "bearish_fvg", "fvg_high", "fvg_low", "#B42318", 24))
     add(anchored_zone_display_item(by_column, "feature.order_block_bullish", "Bullish Order Block", "order_blocks", "bullish_displacement", "bullish_order_block_high", "bullish_order_block_low", "#0E7490", 36))
     add(anchored_zone_display_item(by_column, "feature.order_block_bearish", "Bearish Order Block", "order_blocks", "bearish_displacement", "bearish_order_block_high", "bearish_order_block_low", "#C2410C", 36))
+    for signal_column, (level_column, color, extend_bars) in MARKET_STRUCTURE_EVENT_LEVELS.items():
+        add(
+            anchored_event_level_display_item(
+                by_column,
+                f"feature.market_structure.{signal_column}",
+                str(by_column.get(signal_column, {}).get("title") or title_for_column(signal_column)),
+                "market_structure",
+                signal_column,
+                level_column,
+                color,
+                extend_bars,
+            )
+        )
+    add(background_state_display_item(by_column, "feature.market_structure.trend_regime", "Trend Regime", "market_structure", "trend_regime"))
+    for signal_column, (level_column, color, extend_bars) in PRICE_ACTION_EVENT_LEVELS.items():
+        add(
+            anchored_event_level_display_item(
+                by_column,
+                f"feature.price_action.{signal_column}",
+                str(by_column.get(signal_column, {}).get("title") or title_for_column(signal_column)),
+                "price_action",
+                signal_column,
+                level_column,
+                color,
+                extend_bars,
+            )
+        )
+    for signal_column, (title, shape, position, color) in PRICE_ACTION_MARKERS.items():
+        add(marker_display_item(by_column, f"feature.price_action.{signal_column}", title, "price_action", signal_column, color, marker_shape=shape, marker_position=position))
+    for signal_column, (title, shape, position, color) in SHOCK_MARKERS.items():
+        add(marker_display_item(by_column, f"feature.shock.{signal_column}", title, "shock", signal_column, color, marker_shape=shape, marker_position=position))
     add(
         composite_display_item(
             by_column,
@@ -787,6 +952,7 @@ def anchored_zone_display_item(
             "extendBars": extend_bars,
             "maxBars": extend_bars,
             "extendRule": "fixed_bars",
+            "zonePaddingBps": 0,
             "stopOnMitigation": False,
             "valueFormat": "price",
             "presentationSource": "auto",
@@ -794,6 +960,126 @@ def anchored_zone_display_item(
         },
         short=f"{title} zone on the candle pane.",
         detailed=f"{title} is a candle-structure display, not an oscillator. It uses {signal_column} to find events and draws the {lower_column}-{upper_column} price zone forward for review.",
+    )
+
+
+def anchored_event_level_display_item(
+    by_column: dict[str, dict[str, Any]],
+    item_id: str,
+    title: str,
+    group: str,
+    signal_column: str,
+    level_column: str,
+    color: str,
+    extend_bars: int,
+    *,
+    zone_padding_bps: float = 8.0,
+) -> dict[str, Any] | None:
+    return display_item_contract(
+        by_column,
+        item_id=item_id,
+        title=title,
+        category="feature",
+        group=group,
+        source_columns=[signal_column, level_column],
+        presentation={
+            "selectable": True,
+            "defaultVisible": False,
+            "chartRole": "anchored_zone",
+            "dataShape": "anchored_zone",
+            "pane": "price",
+            "legend": True,
+            "color": color,
+            "bandFillColor": color,
+            "bandFillOpacity": 0.10,
+            "borderColor": color,
+            "borderStyle": "solid",
+            "borderWidth": 1,
+            "signalColumn": signal_column,
+            "upperColumn": level_column,
+            "lowerColumn": level_column,
+            "maxBars": extend_bars,
+            "extendRule": "fixed_bars",
+            "zonePaddingBps": zone_padding_bps,
+            "stopOnMitigation": False,
+            "valueFormat": "price",
+            "presentationSource": "auto",
+            "presentationConfidence": 0.93,
+        },
+        short=f"{title} event zone anchored to the source bar's {level_column}.",
+        detailed=f"{title} is a discrete structural event, so it is not drawn as a continuous line. The chart highlights a narrow price band at the event {level_column} and extends it forward for a configurable number of bars.",
+    )
+
+
+def marker_display_item(
+    by_column: dict[str, dict[str, Any]],
+    item_id: str,
+    title: str,
+    group: str,
+    signal_column: str,
+    color: str,
+    *,
+    marker_shape: str = "circle",
+    marker_position: str = "belowBar",
+) -> dict[str, Any] | None:
+    return display_item_contract(
+        by_column,
+        item_id=item_id,
+        title=title,
+        category="feature",
+        group=group,
+        source_columns=[signal_column],
+        presentation={
+            "selectable": True,
+            "defaultVisible": False,
+            "chartRole": "marker",
+            "dataShape": "bar_event",
+            "pane": "price",
+            "legend": True,
+            "color": color,
+            "markerShape": marker_shape,
+            "markerPosition": marker_position,
+            "signalColumn": signal_column,
+            "labelMode": "short",
+            "valueFormat": "boolean",
+            "presentationSource": "auto",
+            "presentationConfidence": 0.9,
+        },
+        short=f"{title} marker on the event bar.",
+        detailed=f"{title} is a boolean event. The chart renders it as a marker at the source bar instead of converting True/False values into a misleading numeric line.",
+    )
+
+
+def background_state_display_item(
+    by_column: dict[str, dict[str, Any]],
+    item_id: str,
+    title: str,
+    group: str,
+    state_column: str,
+) -> dict[str, Any] | None:
+    return display_item_contract(
+        by_column,
+        item_id=item_id,
+        title=title,
+        category="feature",
+        group=group,
+        source_columns=[state_column],
+        presentation={
+            "selectable": True,
+            "defaultVisible": False,
+            "chartRole": "background_state",
+            "dataShape": "regime_state",
+            "pane": "price",
+            "legend": True,
+            "stateColumn": state_column,
+            "color": "#667085",
+            "stateColors": {"up": "#067647", "down": "#B42318", "range": "#667085"},
+            "opacity": 0.08,
+            "presentationSource": "auto",
+            "presentationConfidence": 0.9,
+        },
+        short=f"{title} as light chart-background regime shading.",
+        detailed=f"{title} is a categorical state, not a numeric series. The chart displays contiguous state intervals as subtle background shading so the regime context is visible without creating a false y-axis value.",
     )
 
 
@@ -881,6 +1167,23 @@ def normalize_presentation(presentation: dict[str, Any]) -> dict[str, Any]:
     if isinstance(parts, list):
         normalized["parts"] = [normalize_presentation(part) if isinstance(part, dict) else part for part in parts]
     return {key: value for key, value in normalized.items() if value is not None}
+
+
+def chart_role_supports_shape(role: str, data_shape: str) -> bool:
+    shapes = DISPLAY_PRESETS.get(role, DISPLAY_PRESETS["data_only"]).get("dataShapes", [])
+    return "any" in shapes or data_shape in shapes
+
+
+def merge_presentation_override(item: dict[str, Any], presentation: dict[str, Any]) -> dict[str, Any]:
+    base = normalize_presentation(deepcopy(item.get("presentation") or {}))
+    override = normalize_presentation(presentation)
+    requested_role = str(override.get("chartRole") or base.get("chartRole") or "data_only")
+    data_shape = str(item.get("dataShape") or base.get("dataShape") or "data_only")
+    if not chart_role_supports_shape(requested_role, data_shape):
+        override = {key: value for key, value in override.items() if key in {"selectable", "defaultVisible"}}
+    merged = deepcopy(base)
+    merged.update(override)
+    return normalize_presentation(merged)
 
 
 def add_column(entries: dict[str, dict[str, Any]], column: str, *, group: str, artifact_group: str) -> None:
@@ -1042,19 +1345,38 @@ def is_indicator_column(column: str) -> bool:
 
 def dtype_for_column(column: str) -> str:
     lower = column.lower()
+    if lower in BOOLEAN_COLUMNS or lower.startswith("is_") or lower.endswith("_signal") or lower.endswith("_confirmed") or "shock_before" in lower:
+        return "bool"
+    if lower in STRING_COLUMNS or lower.endswith("_bar_id"):
+        return "string"
     if lower in {"macd_line", "macd_signal", "macd_hist"}:
         return "float"
     if lower.endswith("_utc") or lower.endswith("_market") or lower.endswith("_time"):
         return "datetime"
     if lower.endswith("_date"):
         return "date"
-    if lower.startswith("is_") or lower.endswith("_signal") or lower.endswith("_confirmed") or lower in {"valid_future_window", "mfe_before_mae"} or "shock_before" in lower:
-        return "bool"
-    if lower in {"ticker", "timeframe", "horizon", "trade_method", "oracle_action", "fwd_outcome_bucket", "shock_confirmation_type"}:
-        return "string"
-    if lower.endswith("_bars") or lower.endswith("_minutes") or lower.endswith("_count") or lower.endswith("_rank") or lower.endswith("_size") or lower in {"minute_of_day", "transactions", "volume"}:
+    if lower in INTEGER_COLUMNS or lower.endswith("_bars") or lower.endswith("_minutes") or lower.endswith("_count") or lower.endswith("_rank"):
         return "int"
     return "float"
+
+
+def is_price_level_column(column: str) -> bool:
+    lower = column.lower()
+    if lower in {"open", "high", "low", "close", "vwap", "prev_close", "day_open", "day_high_so_far", "day_low_so_far"}:
+        return True
+    if re.match(r"^(sma|ema|tema)\d+$", lower):
+        return True
+    if re.match(r"^or_\d+m_(high|low)$", lower):
+        return True
+    if lower in {"premarket_high", "premarket_low", "hvn_price_proxy20", "lvn_price_proxy20"}:
+        return True
+    if lower.startswith(("bb_upper", "bb_mid", "bb_lower", "donchian_high", "donchian_mid", "donchian_low", "keltner_upper", "keltner_mid", "keltner_lower")):
+        return True
+    if lower.endswith("_price") or lower.endswith("_price_proxy"):
+        return True
+    if lower.endswith("_high") or lower.endswith("_low"):
+        return lower.startswith(("fvg_", "bullish_order_block_", "bearish_order_block_"))
+    return False
 
 
 def semantics_for_column(column: str) -> dict[str, Any]:
@@ -1065,15 +1387,15 @@ def semantics_for_column(column: str) -> dict[str, Any]:
         unit = dtype_for_column(column)
     elif lower.endswith("_return") or lower.endswith("_pct") or "percentile" in lower:
         unit = "percent"
-    elif lower.endswith("_minutes"):
+    elif lower.endswith("_minutes") or lower.startswith("minutes_since"):
         unit = "minutes"
-    elif lower.endswith("_bars"):
+    elif lower.endswith("_bars") or lower.startswith("bars_since"):
         unit = "bars"
     elif "score" in lower or "confidence" in lower or "quality" in lower:
         unit = "score"
     elif "volume" in lower:
         unit = "shares" if "dollar" not in lower else "currency"
-    elif any(term in lower for term in ("price", "open", "high", "low", "close", "vwap", "sma", "ema", "tema", "bb_", "donchian", "keltner")):
+    elif is_price_level_column(column):
         unit = "price"
     else:
         unit = "number"
@@ -1110,6 +1432,24 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
             presentation.update({"markerShape": "arrowUp", "markerPosition": "belowBar", "color": "#2563EB"})
         else:
             presentation.update({"markerShape": "circle", "markerPosition": "belowBar", "color": "#067647"})
+    if role == "anchored_zone":
+        level_column, zone_color, extend_bars = {**MARKET_STRUCTURE_EVENT_LEVELS, **PRICE_ACTION_EVENT_LEVELS}.get(lower, ("close", color_for_column(column), 12))
+        presentation.update(
+            {
+                "signalColumn": column,
+                "upperColumn": level_column,
+                "lowerColumn": level_column,
+                "maxBars": extend_bars,
+                "extendRule": "fixed_bars",
+                "zonePaddingBps": 8,
+                "bandFillColor": zone_color,
+                "bandFillOpacity": 0.10,
+                "borderColor": zone_color,
+                "borderStyle": "solid",
+                "borderWidth": 1,
+                "color": zone_color,
+            }
+        )
     return {key: value for key, value in presentation.items() if value is not None}
 
 
@@ -1123,12 +1463,22 @@ def data_shape_for_column(column: str, group: str, category: str) -> str:
         return "data_only"
     if group == "fvg":
         return "bar_event" if lower in {"bullish_fvg", "bearish_fvg"} else "data_only"
+    if group == "market_structure" and lower in MARKET_STRUCTURE_EVENT_LEVELS:
+        return "anchored_zone"
+    if group == "price_action" and lower in PRICE_ACTION_EVENT_LEVELS:
+        return "anchored_zone"
     if group == "order_blocks":
-        return "bar_event" if lower in {"bullish_displacement", "bearish_displacement"} else "data_only"
+        if lower in {"bullish_displacement", "bearish_displacement"}:
+            return "bar_event"
+        if lower in {"distance_to_demand_pct", "distance_to_supply_pct"}:
+            return "continuous_series"
+        return "data_only"
     if lower == "trend_regime" or lower.endswith("_regime"):
         return "regime_state"
     if dtype_for_column(column) == "bool":
         return "bar_event"
+    if dtype_for_column(column) == "string":
+        return "data_only"
     if category in {"indicator", "feature"}:
         return "continuous_series"
     return "data_only"
@@ -1144,16 +1494,24 @@ def chart_role_for_column(column: str, group: str, category: str) -> str:
         return "marker" if lower in {"oracle_long_entry_signal", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5"} else "data_only"
     if group == "fvg":
         return "data_only"
+    if group == "market_structure" and lower in MARKET_STRUCTURE_EVENT_LEVELS:
+        return "anchored_zone"
+    if group == "price_action" and lower in PRICE_ACTION_EVENT_LEVELS:
+        return "anchored_zone"
     if group == "order_blocks" and ("order_block" in lower or "displacement" in lower):
+        return "data_only"
+    if lower == "trend_regime" or lower.endswith("_regime"):
+        return "background_state"
+    if dtype_for_column(column) == "bool":
+        return "marker"
+    if dtype_for_column(column) == "string":
         return "data_only"
     if lower == "macd_hist":
         return "histogram"
-    if any(term in lower for term in PRICE_OVERLAY_TERMS):
+    if is_price_level_column(column):
         return "price_overlay"
     if any(term in lower for term in OSCILLATOR_TERMS):
         return "oscillator"
-    if dtype_for_column(column) == "bool":
-        return "marker"
     return "oscillator"
 
 
@@ -2247,9 +2605,7 @@ def apply_presentation_overrides(catalog: dict[str, Any], overrides: dict[str, d
             item_id = str(item.get("id") or "")
             presentation = overrides.get(item_id)
             if isinstance(presentation, dict):
-                merged = deepcopy(item.get("presentation") or {})
-                merged.update(normalize_presentation(presentation))
-                item["presentation"] = normalize_presentation(merged)
+                item["presentation"] = merge_presentation_override(item, presentation)
 
 
 def catalog_columns_by_column(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
