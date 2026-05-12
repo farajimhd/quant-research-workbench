@@ -1988,6 +1988,18 @@ button {
   stroke-width: 1;
 }
 
+.catalog-contract-pane rect {
+  fill: color-mix(in oklab, var(--surface) 94%, var(--surface-alt));
+  stroke: color-mix(in oklab, var(--surface-border) 72%, transparent);
+  stroke-width: 1;
+}
+
+.catalog-contract-zero-line {
+  stroke: #0f0f0f;
+  stroke-width: 0.8;
+  vector-effect: non-scaling-stroke;
+}
+
 .catalog-contract-wick {
   stroke-width: 1.5;
 }

@@ -1921,6 +1921,7 @@ function CatalogPresentationChartPreview({
   const displayNameForItem = itemTitle || "Selected item";
   const isBandLike = role === "band" || role === "price_zone" || role === "continuous_band" || role === "anchored_zone";
   const parts = role === "composite" && Array.isArray(presentation.parts) ? presentation.parts.filter((part): part is Record<string, unknown> => Boolean(part && typeof part === "object")) : [];
+  const hasPreviewPane = role === "oscillator" || role === "histogram" || (role === "composite" && pane !== "price");
   const showRealPreview = !isDataOnlyRole(role) && Boolean(realPreview?.sampled && realPreview.payload?.candles?.length);
   return (
     <aside className="catalog-preview-chart-card" aria-label={`Chart preview for ${displayNameForItem}`}>
@@ -1939,10 +1940,18 @@ function CatalogPresentationChartPreview({
         <g className="catalog-contract-chart-grid">
           {[44, 74, 104, 134].map((y) => <line key={`py:${y}`} x1="20" x2="356" y1={y} y2={y} />)}
           {[58, 116, 174, 232, 290, 348].map((x) => <line key={`px:${x}`} x1={x} x2={x} y1="26" y2="151" />)}
-          <line x1="20" x2="356" y1="170" y2="170" />
-          <line x1="20" x2="356" y1="205" y2="205" />
-          {[58, 116, 174, 232, 290, 348].map((x) => <line key={`ox:${x}`} x1={x} x2={x} y1="164" y2="218" />)}
         </g>
+        {hasPreviewPane ? (
+          <g className="catalog-contract-pane">
+            <rect x="20" y="164" width="336" height="58" rx="5" />
+            <g className="catalog-contract-chart-grid">
+              <line x1="20" x2="356" y1="178" y2="178" />
+              <line x1="20" x2="356" y1="210" y2="210" />
+              {[58, 116, 174, 232, 290, 348].map((x) => <line key={`ox:${x}`} x1={x} x2={x} y1="164" y2="222" />)}
+            </g>
+            <line className="catalog-contract-zero-line" x1="20" x2="356" y1="194" y2="194" />
+          </g>
+        ) : null}
         {isBandLike ? (
           <g className="catalog-contract-selected-layer">
             <polygon fill={bandFill} points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60 350,100 322,106 290,102 258,109 226,112 194,106 162,114 130,121 98,112 66,106 34,119" />
@@ -2098,11 +2107,13 @@ function CatalogRealSampleChart({ itemTitle, preview }: { itemTitle: string; pre
     return 24 + (leftIndex + (time - times[leftIndex]) / span) * (332 / Math.max(1, times.length - 1));
   };
   const oscillatorPoints = (payload?.oscillator_series ?? []).flatMap((series) => series.data);
+  const hasPreviewPane = oscillatorPoints.length > 0;
   const oscValues = oscillatorPoints.map((point) => point.value).filter((value) => Number.isFinite(value));
   const oscMin = oscValues.length ? Math.min(...oscValues) : -1;
   const oscMax = oscValues.length ? Math.max(...oscValues) : 1;
   const oscPad = Math.max((oscMax - oscMin) * 0.12, 0.01);
   const oscScale = (value: number) => scaleLinear(value, oscMin - oscPad, oscMax + oscPad, 216, 168);
+  const zeroY = boundedPresentationNumber(oscScale(0), 168, 216, 194);
   const candleWidth = Math.max(3, Math.min(8, 240 / Math.max(1, candles.length)));
   const referenceX = referenceTime ? xForTime(referenceTime) : null;
 
@@ -2117,9 +2128,18 @@ function CatalogRealSampleChart({ itemTitle, preview }: { itemTitle: string; pre
       })}
       <g className="catalog-contract-chart-grid">
         {[54, 84, 114, 144].map((y) => <line key={`real-py:${y}`} x1="20" x2="356" y1={y} y2={y} />)}
-        <line x1="20" x2="356" y1="170" y2="170" />
-        <line x1="20" x2="356" y1="205" y2="205" />
       </g>
+      {hasPreviewPane ? (
+        <g className="catalog-contract-pane">
+          <rect x="20" y="164" width="336" height="58" rx="5" />
+          <g className="catalog-contract-chart-grid">
+            <line x1="20" x2="356" y1="178" y2="178" />
+            <line x1="20" x2="356" y1="210" y2="210" />
+            {[58, 116, 174, 232, 290, 348].map((x) => <line key={`real-ox:${x}`} x1={x} x2={x} y1="164" y2="222" />)}
+          </g>
+          <line className="catalog-contract-zero-line" x1="20" x2="356" y1={zeroY} y2={zeroY} />
+        </g>
+      ) : null}
       {visibleZones.map((zone, index) => {
         const left = xForTime(zone.start);
         const right = xForTime(zone.end);
