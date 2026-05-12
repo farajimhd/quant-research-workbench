@@ -1408,6 +1408,9 @@ def build_method_contracts() -> list[dict[str, Any]]:
                     "markerShape": "arrowUp",
                     "markerPosition": "belowBar",
                     "color": "#2563EB",
+                    "labelMode": "short",
+                    "labelText": "ENTRY",
+                    "markerSize": 1.15,
                     "valueFormat": "boolean",
                     "legend": True,
                     "presentationSource": "auto",
@@ -1445,9 +1448,12 @@ def build_scanner_contracts() -> list[dict[str, Any]]:
                 "chartRole": "marker",
                 "dataShape": "bar_event",
                 "pane": "price",
-                "markerShape": "arrowUp",
+                "markerShape": "square",
                 "markerPosition": "aboveBar",
                 "color": "#7C3AED",
+                "labelMode": "short",
+                "labelText": "RANK",
+                "markerSize": 1.2,
                 "valueFormat": "integer",
                 "legend": True,
                 "presentationSource": "auto",
@@ -1559,9 +1565,17 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
     }
     if role == "marker":
         if group == "supervision_scanner":
-            presentation.update({"markerShape": "arrowUp", "markerPosition": "aboveBar", "color": "#7C3AED"})
+            presentation.update({"markerShape": "square", "markerPosition": "aboveBar", "color": "#7C3AED", "labelMode": "short", "labelText": "TOP", "markerSize": 1.2})
         elif group == "supervision_method":
-            presentation.update({"markerShape": "arrowUp", "markerPosition": "belowBar", "color": "#2563EB"})
+            if lower == "method_exit_signal":
+                presentation.update({"markerShape": "arrowDown", "markerPosition": "aboveBar", "color": "#B42318", "labelMode": "short", "labelText": "IGNORE", "markerSize": 1.1})
+            else:
+                presentation.update({"markerShape": "arrowUp", "markerPosition": "belowBar", "color": "#2563EB", "labelMode": "short", "labelText": "ENTRY", "markerSize": 1.15})
+        elif group == "supervision_bar":
+            if lower == "oracle_long_exit_signal":
+                presentation.update({"markerShape": "arrowDown", "markerPosition": "aboveBar", "color": "#B42318", "labelMode": "short", "labelText": "EXIT", "markerSize": 1.1})
+            else:
+                presentation.update({"markerShape": "arrowUp", "markerPosition": "belowBar", "color": "#067647", "labelMode": "short", "labelText": "BAR", "markerSize": 1.15})
         else:
             presentation.update({"markerShape": "circle", "markerPosition": "belowBar", "color": "#067647"})
     if role == "anchored_zone":
@@ -1597,7 +1611,7 @@ def data_shape_for_column(column: str, group: str, category: str) -> str:
     if category == "bar" or column in KEY_COLUMNS:
         return "data_only"
     if group.startswith("supervision_"):
-        if lower in {"oracle_long_entry_signal", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5", "is_top_10", "is_top_1pct", "is_top_5pct"}:
+        if lower in {"oracle_long_entry_signal", "oracle_long_exit_signal", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5", "is_top_10", "is_top_1pct", "is_top_5pct"}:
             return "bar_event"
         return "data_only"
     if group == "fvg":
@@ -1630,7 +1644,7 @@ def chart_role_for_column(column: str, group: str, category: str) -> str:
     if lower in OPERATIONAL_HELPER_COLUMNS:
         return "data_only"
     if group.startswith("supervision_"):
-        return "marker" if lower in {"oracle_long_entry_signal", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5"} else "data_only"
+        return "marker" if lower in {"oracle_long_entry_signal", "oracle_long_exit_signal", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5"} else "data_only"
     if group == "fvg":
         return "data_only"
     if group == "market_structure" and lower in MARKET_STRUCTURE_EVENT_LEVELS:

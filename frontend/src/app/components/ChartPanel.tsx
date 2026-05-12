@@ -299,8 +299,14 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [themeSignature, setThemeSignature] = useState(() => document.documentElement.dataset.shellTheme ?? "");
   chartSettingsRef.current = chartSettings;
   const visibleColumnKey = visibleColumns.map((column) => column.toLowerCase()).join("|");
+  const visibleSupervisionKey = visibleSupervisionGroups.map((group) => group.toLowerCase()).join("|");
   const visibleColumnLookup = new Set(visibleColumns.map((column) => column.toLowerCase()));
-  visibleSelectionRef.current = visibleColumnLookup;
+  const visibleSelectionLookup = new Set(visibleColumnLookup);
+  visibleSupervisionGroups.forEach((group) => {
+    visibleSelectionLookup.add(group.toLowerCase());
+    visibleSelectionLookup.add(`supervision:${group.toLowerCase()}`);
+  });
+  visibleSelectionRef.current = visibleSelectionLookup;
   const displayedOverlaySeries = (payload?.overlay_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
   const displayedOscillatorSeries = (payload?.oscillator_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
@@ -499,7 +505,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     updatePriceOverlaySeries(displayedOverlaySeries);
     updateCandleMarkers();
     drawCurrentRegions();
-  }, [payload, visibleColumnKey]);
+  }, [payload, visibleColumnKey, visibleSupervisionKey]);
 
   useEffect(() => {
     if (!priceChartRef.current) return;

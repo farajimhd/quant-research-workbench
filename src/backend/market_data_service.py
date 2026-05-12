@@ -976,21 +976,82 @@ def supervision_candidates(frame: pl.DataFrame, supervision_group: str, min_conf
     return frame.sort(sort_column) if sort_column else frame
 
 
+def supervision_display_id(supervision_group: str) -> str:
+    return f"supervision:{supervision_group}"
+
+
+def method_short_name(method: Any) -> str:
+    value = str(method or "method").upper()
+    aliases = {
+        "PRICE_VOLUME_SHOCK": "PVS",
+        "MOMENTUM_SCALP": "MOM",
+    }
+    return aliases.get(value, display_name(value).replace(" ", "")[:8].upper() or "METHOD")
+
+
+def percent_label(value: Any, default: str = "-") -> str:
+    numeric = numeric_or_none(value)
+    if numeric is None:
+        return default
+    return f"{numeric * 100:.2f}%"
+
+
+def confidence_label(value: Any) -> str:
+    numeric = numeric_or_none(value)
+    if numeric is None:
+        return ""
+    return f" c{numeric:.2f}"
+
+
+def numeric_or_none(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if numeric == numeric else None
+
+
+def int_or_default(value: Any, default: int = 1) -> int:
+    numeric = numeric_or_none(value)
+    if numeric is None:
+        return default
+    return int(numeric)
+
+
+def integer_label(value: Any, default: str = "-") -> str:
+    numeric = numeric_or_none(value)
+    if numeric is None:
+        return default
+    return str(int(numeric))
+
+
 def marker_text(row: dict[str, Any], supervision_group: str) -> str:
     if supervision_group == "scanner":
-        rank = row.get("oracle_rank")
-        method = display_name(str(row.get("trade_method") or "scan"))
-        return f"SCAN #{int(rank) if rank is not None else '-'} {method}"
+        method = method_short_name(row.get("trade_method"))
+        return f"#{integer_label(row.get('oracle_rank'))} {method} {percent_label(row.get('method_best_return'))}"
     if supervision_group == "method":
-        method = display_name(str(row.get("trade_method") or "method"))
-        value = row.get("method_best_return")
-        return f"{method} {float(value or 0) * 100:.2f}%"
-    horizon = row.get("horizon_bars") or row.get("horizon")
-    return f"BAR h{horizon or '-'}"
+        method = method_short_name(row.get("trade_method"))
+        return f"{method} {percent_label(row.get('method_best_return'))}{confidence_label(row.get('method_confidence'))}"
+    return f"BAR h{integer_label(row.get('horizon_bars') or row.get('horizon'))} {percent_label(row.get('oracle_best_exit_return') or row.get('fwd_mfe'))}{confidence_label(row.get('oracle_long_entry_confidence'))}"
 
 
-def supervision_markers(
+def supervision_marker_size(supervision_group: str, row: dict[str, Any]) -> float:
+    if supervision_group == "scanner":
+        rank = numeric_or_none(row.get("oracle_rank"))
+        if rank == 1:
+            return 1.45
+        if rank is not None and rank <= 3:
+            return 1.25
+        return 1.0
+    confidence = numeric_or_none(row.get("method_confidence") if supervision_group == "method" else row.get("oracle_long_entry_confidence"))
+    if confidence is not None and confidence >= 0.85:
+        return 1.35
+    return 1.1
+
+
+def supervision_annotations(
     provider: MarketDataProvider,
+    rows: list[dict[str, Any]],
     *,
     start_date: date,
     end_date: date,
@@ -1000,27 +1061,152 @@ def supervision_markers(
     marker_limit: int,
     min_confidence: float,
     catalog: dict[str, Any],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     markers: list[dict[str, Any]] = []
+    zones: list[dict[str, Any]] = []
+    if marker_limit <= 0:
+        return markers, zones
+    bars_by_id = {str(row.get("bar_id")): row for row in rows if row.get("bar_id") is not None}
+    candle_duration = chart_candle_duration_seconds(rows, timeframe)
+    group_limit = max(1, marker_limit // max(1, len(supervision_groups)))
     for supervision_group in supervision_groups:
         frame = provider.load_supervision(start_date=start_date, end_date=end_date, timeframe=timeframe, supervision_type=supervision_group, tickers=[ticker])
         candidates = supervision_candidates(frame, supervision_group, min_confidence)
-        for row in candidates.head(marker_limit).to_dicts():
+        for row in candidates.head(group_limit).to_dicts():
             timestamp = chart_timestamp_seconds(row, timeframe)
             if not timestamp:
                 continue
             color, shape, position = supervision_marker_style(catalog, supervision_group, row)
-            markers.append({"time": timestamp, "position": position, "color": color, "shape": shape, "text": marker_text(row, supervision_group)})
+            markers.append(
+                {
+                    "displayItemId": supervision_display_id(supervision_group),
+                    "time": timestamp,
+                    "position": position,
+                    "color": color,
+                    "shape": shape,
+                    "size": supervision_marker_size(supervision_group, row),
+                    "text": marker_text(row, supervision_group),
+                }
+            )
+            source_bar = bars_by_id.get(str(row.get("bar_id")), {})
+            zones.extend(supervision_price_zones(row, supervision_group, source_bar, timestamp, candle_duration))
+            if len(markers) >= marker_limit:
+                return sorted(markers, key=lambda marker: int(marker.get("time") or 0)), zones
     markers.sort(key=lambda marker: int(marker.get("time") or 0))
-    return markers[:marker_limit]
+    zones.sort(key=lambda zone: int(zone.get("start") or 0))
+    return markers[:marker_limit], zones
+
+
+def supervision_price_zones(
+    row: dict[str, Any],
+    supervision_group: str,
+    source_bar: dict[str, Any],
+    start: int,
+    candle_duration: int,
+) -> list[dict[str, Any]]:
+    close = numeric_or_none(source_bar.get("close"))
+    if close is None or close <= 0:
+        return []
+    if supervision_group == "bar":
+        target_price = numeric_or_none(row.get("oracle_best_exit_price"))
+        target_return = numeric_or_none(row.get("oracle_best_exit_return") or row.get("fwd_mfe"))
+        horizon_bars = int_or_default(row.get("horizon_bars"), 1)
+        target_end = timestamp_seconds(row.get("oracle_best_exit_time_utc")) or start + horizon_bars * candle_duration
+        target_label = f"BAR h{integer_label(row.get('horizon_bars'))} target {percent_label(target_return)}"
+        risk_return = numeric_or_none(row.get("fwd_mae"))
+        risk_end = start + max(1, int_or_default(row.get("time_to_mae_bars") or row.get("horizon_bars"), 1)) * candle_duration
+        target_color = "#067647"
+    elif supervision_group == "method":
+        target_return = numeric_or_none(row.get("method_best_return"))
+        target_price = numeric_or_none(row.get("method_best_price"))
+        if target_price is None and target_return is not None:
+            target_price = close * (1.0 + target_return)
+        target_end = timestamp_seconds(row.get("method_best_exit_time_utc")) or start + int_or_default(row.get("method_best_horizon_minutes"), 1) * 60
+        target_label = f"{method_short_name(row.get('trade_method'))} target {percent_label(target_return)}"
+        risk_return = numeric_or_none(row.get("method_mae_before_best"))
+        target_color = "#2563EB"
+        risk_end = target_end
+    elif supervision_group == "scanner":
+        target_return = numeric_or_none(row.get("method_best_return"))
+        target_price = close * (1.0 + target_return) if target_return is not None else None
+        target_end = start + int_or_default(row.get("method_best_horizon_minutes"), 1) * 60
+        target_label = f"SCAN #{integer_label(row.get('oracle_rank'))} target {percent_label(target_return)}"
+        risk_return = numeric_or_none(row.get("method_mae_before_best"))
+        target_color = "#7C3AED"
+        risk_end = target_end
+    else:
+        return []
+    zones: list[dict[str, Any]] = []
+    if target_price is not None and target_price > close:
+        zones.append(
+            supervision_zone(
+                supervision_group,
+                start=start,
+                end=max(start + candle_duration, int(target_end)),
+                lower=close,
+                upper=target_price,
+                color=target_color,
+                label=target_label,
+                fill_opacity=0.055,
+                border_opacity=0.20,
+            )
+        )
+    if risk_return is not None and risk_return < 0:
+        risk_price = close * (1.0 + risk_return)
+        zones.append(
+            supervision_zone(
+                supervision_group,
+                start=start,
+                end=max(start + candle_duration, int(risk_end)),
+                lower=risk_price,
+                upper=close,
+                color="#B42318",
+                label=f"Risk {percent_label(risk_return)}",
+                fill_opacity=0.045,
+                border_opacity=0.16,
+            )
+        )
+    return zones
+
+
+def supervision_zone(
+    supervision_group: str,
+    *,
+    start: int,
+    end: int,
+    lower: float,
+    upper: float,
+    color: str,
+    label: str,
+    fill_opacity: float,
+    border_opacity: float,
+) -> dict[str, Any]:
+    return {
+        "displayItemId": supervision_display_id(supervision_group),
+        "start": start,
+        "end": end,
+        "upper": max(upper, lower),
+        "lower": min(upper, lower),
+        "color": color,
+        "borderColor": color,
+        "borderOpacity": border_opacity,
+        "borderStyle": "dashed",
+        "borderWidth": 1,
+        "fillColor": color,
+        "fillOpacity": fill_opacity,
+        "label": label,
+        "minPixelHeight": 3.0,
+        "maxPixelHeight": 0.0,
+        "zoneHeightMode": "price_range",
+    }
 
 
 def supervision_marker_style(catalog: dict[str, Any], supervision_group: str, row: dict[str, Any]) -> tuple[str, str, str]:
     by_id = catalog_item_by_id(catalog)
     defaults = {
-        "bar": ("#067647", "circle", "belowBar"),
+        "bar": ("#067647", "arrowUp", "belowBar"),
         "method": ("#2563EB", "arrowUp", "belowBar"),
-        "scanner": ("#7C3AED", "arrowUp", "aboveBar"),
+        "scanner": ("#7C3AED", "square", "aboveBar"),
     }
     item = None
     if supervision_group == "method":
@@ -1164,11 +1350,12 @@ def chart_payload(
         )
     feature_markers = display_item_markers(rows, timeframe, selected_display_contracts, marker_limit)
     supervision_marker_limit = max(0, marker_limit - len(feature_markers))
-    supervision = (
-        []
+    supervision, supervision_zones = (
+        ([], [])
         if not supervision_groups_selected or supervision_marker_limit <= 0
-        else supervision_markers(
+        else supervision_annotations(
             provider,
+            rows,
             start_date=start_date,
             end_date=end_date,
             timeframe=timeframe,
@@ -1181,6 +1368,7 @@ def chart_payload(
     )
     markers = sorted([*feature_markers, *supervision], key=lambda marker: int(marker.get("time") or 0))[:marker_limit]
     regions = [*extended_session_regions(rows, timeframe), *display_background_regions(rows, timeframe, selected_display_contracts)]
+    price_zones = [*display_price_zones(rows, timeframe, selected_display_contracts), *supervision_zones]
     return {
         "candles": candles,
         "volume": volume,
@@ -1188,7 +1376,7 @@ def chart_payload(
         "oscillator_series": oscillator_series,
         "markers": markers,
         "regions": regions,
-        "price_zones": display_price_zones(rows, timeframe, selected_display_contracts),
+        "price_zones": price_zones,
         "options": options,
     }
 
