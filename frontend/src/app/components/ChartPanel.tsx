@@ -1,7 +1,9 @@
 import {
+  type AutoscaleInfo,
   createChart,
   LineStyle,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
   type LineWidth,
   type LogicalRange,
@@ -119,6 +121,9 @@ type OscillatorPaneRuntime = {
   renderer: AnySeriesApi | null;
   seriesKeys: Set<string>;
   valuesByTime: Map<number, number>;
+  zeroLine: IPriceLine | null;
+  zeroLineRenderer: AnySeriesApi | null;
+  zeroLineSeriesKey: string;
 };
 type OscillatorPaneGroup = {
   key: string;
@@ -579,7 +584,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           primaryKey: "",
           renderer: null,
           seriesKeys: new Set<string>(),
-          valuesByTime: new Map<number, number>()
+          valuesByTime: new Map<number, number>(),
+          zeroLine: null,
+          zeroLineRenderer: null,
+          zeroLineSeriesKey: ""
         };
         oscillatorPaneRuntimesRef.current.set(group.key, runtime);
         oscillatorChartRefs.current.set(group.key, chart);
@@ -593,7 +601,15 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     Array.from(runtime.seriesKeys).forEach((key) => {
       if (nextKeys.has(key)) return;
       const renderer = indicatorSeriesRef.current.get(key);
-      if (renderer) runtime.chart.removeSeries(renderer);
+      if (renderer) {
+        if (runtime.zeroLine && runtime.zeroLineSeriesKey === key) {
+          renderer.removePriceLine(runtime.zeroLine);
+          runtime.zeroLine = null;
+          runtime.zeroLineRenderer = null;
+          runtime.zeroLineSeriesKey = "";
+        }
+        runtime.chart.removeSeries(renderer);
+      }
       runtime.seriesKeys.delete(key);
       indicatorSeriesRef.current.delete(key);
       indicatorSourceRef.current.delete(key);
@@ -624,12 +640,48 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       runtime.primaryKey = primaryKey;
       runtime.renderer = primaryRenderer;
       runtime.valuesByTime = primaryValuesByTime;
+      syncOscillatorZeroLine(runtime, primaryRenderer, primaryKey);
+    }
+  }
+
+  function syncOscillatorZeroLine(runtime: OscillatorPaneRuntime, renderer: AnySeriesApi, seriesKey: string) {
+    if (runtime.zeroLine && runtime.zeroLineSeriesKey !== seriesKey && runtime.zeroLineRenderer) {
+      runtime.zeroLineRenderer.removePriceLine(runtime.zeroLine);
+      runtime.zeroLine = null;
+      runtime.zeroLineRenderer = null;
+      runtime.zeroLineSeriesKey = "";
+    }
+    if (!runtime.zeroLine) {
+      runtime.zeroLine = renderer.createPriceLine({
+        axisLabelVisible: false,
+        color: "#000000",
+        lineStyle: LineStyle.Solid,
+        lineVisible: true,
+        lineWidth: 1 as LineWidth,
+        price: 0,
+        title: ""
+      });
+      runtime.zeroLineRenderer = renderer;
+      runtime.zeroLineSeriesKey = seriesKey;
+    } else {
+      runtime.zeroLine.applyOptions({
+        axisLabelVisible: false,
+        color: "#000000",
+        lineStyle: LineStyle.Solid,
+        lineVisible: true,
+        lineWidth: 1 as LineWidth,
+        price: 0,
+        title: ""
+      });
     }
   }
 
   function removeOscillatorPaneRuntime(key: string) {
     const runtime = oscillatorPaneRuntimesRef.current.get(key);
     if (!runtime) return;
+    if (runtime.zeroLine && runtime.zeroLineRenderer) {
+      runtime.zeroLineRenderer.removePriceLine(runtime.zeroLine);
+    }
     runtime.seriesKeys.forEach((seriesKey) => {
       indicatorSeriesRef.current.delete(seriesKey);
       indicatorSourceRef.current.delete(seriesKey);
@@ -1951,9 +2003,16 @@ function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settin
 
 function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Required<LegendSeriesSettings>): AnySeriesApi {
   if (series.style === "histogram") {
-    return chart.addHistogramSeries({ color: settings.color, priceLineVisible: false, title: series.label, visible: settings.visible });
+    return chart.addHistogramSeries({
+      autoscaleInfoProvider: includeZeroInAutoscale,
+      color: settings.color,
+      priceLineVisible: false,
+      title: series.label,
+      visible: settings.visible
+    });
   }
   return chart.addLineSeries({
+    autoscaleInfoProvider: includeZeroInAutoscale,
     color: seriesColorWithOpacity(series, settings.color),
     lineStyle: toChartLineStyle(settings.lineStyle),
     lineWidth: toLineWidth(settings.lineWidth),
@@ -1961,6 +2020,18 @@ function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Require
     title: series.label,
     visible: settings.visible
   });
+}
+
+function includeZeroInAutoscale(baseImplementation: () => AutoscaleInfo | null): AutoscaleInfo | null {
+  const autoscale = baseImplementation();
+  if (!autoscale) return autoscale;
+  return {
+    ...autoscale,
+    priceRange: {
+      minValue: Math.min(autoscale.priceRange.minValue, 0),
+      maxValue: Math.max(autoscale.priceRange.maxValue, 0)
+    }
+  };
 }
 
 function seriesColorWithOpacity(series: ChartSeries, color: string) {
