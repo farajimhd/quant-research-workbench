@@ -2056,7 +2056,7 @@ function CatalogPresentationChartPreview({
       </svg>
       )}
       <p>
-        {realPreviewLoading ? "Finding a saved provider sample for this contract..." :
+        {realPreviewLoading ? "Finding saved provider data for this contract..." :
           showRealPreview ? realPreviewDescription(realPreview as CatalogPreviewPayload) :
           isDataOnlyRole(role) ? "This field stays available in tables and catalog, but is not drawn on the chart." :
           realPreview?.reason ? `Synthetic fallback: ${realPreview.reason}` : "Synthetic fallback; only this selected catalog item is drawn."}
@@ -2107,7 +2107,7 @@ function CatalogRealSampleChart({ itemTitle, preview }: { itemTitle: string; pre
   const referenceX = referenceTime ? xForTime(referenceTime) : null;
 
   return (
-    <svg className="catalog-contract-chart" viewBox="0 0 380 238" role="img" aria-label={`${itemTitle} real provider sample`}>
+    <svg className="catalog-contract-chart" viewBox="0 0 380 238" role="img" aria-label={`${itemTitle} real provider preview`}>
       <rect className="catalog-contract-chart-bg" x="0" y="0" width="380" height="238" rx="8" />
       {(payload?.regions ?? []).filter((region) => region.end >= minTime && region.start <= maxTime).map((region, index) => {
         const start = xForTime(region.start);
@@ -2177,7 +2177,6 @@ function CatalogRealSampleChart({ itemTitle, preview }: { itemTitle: string; pre
       {referenceX !== null ? (
         <g className="catalog-contract-reference-line">
           <line x1={referenceX} x2={referenceX} y1="30" y2="218" />
-          <text x={Math.min(326, referenceX + 5)} y="29">Sample</text>
         </g>
       ) : null}
       <g className="catalog-contract-axis-labels">
@@ -2197,8 +2196,8 @@ function scaleLinear(value: number, domainMin: number, domainMax: number, rangeM
 function realPreviewDescription(preview: CatalogPreviewPayload) {
   const sample = preview.sample;
   return sample?.ticker && sample.session_date && sample.timeframe
-    ? `Real provider sample: ${sample.ticker}, ${sample.timeframe}, ${sample.session_date}.`
-    : "Real provider sample from the saved tables.";
+    ? `Real provider data: ${sample.ticker}, ${sample.timeframe}, ${sample.session_date}.`
+    : "Real provider data from the saved tables.";
 }
 
 function renderCatalogPreviewMarker(shape: string, position: string, color: string): ReactNode {
