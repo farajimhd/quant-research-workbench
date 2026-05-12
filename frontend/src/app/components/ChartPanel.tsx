@@ -1433,7 +1433,7 @@ function SupervisionSelect({
         <ChevronDown size={14} />
       </button>
       {open ? (
-        <div className="chart-column-menu">
+        <div className="chart-column-menu chart-supervision-menu">
           <div className="chart-column-menu-grid">
             <div className="chart-column-menu-column lookahead" key="lookahead">
               <div className="chart-column-menu-title">Lookahead / Supervision</div>

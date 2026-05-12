@@ -4628,6 +4628,28 @@ button {
   padding: 10px;
 }
 
+.chart-supervision-menu {
+  width: fit-content;
+  min-width: 300px;
+  max-width: min(560px, calc(100vw - 36px));
+}
+
+.chart-supervision-menu .chart-column-menu-grid {
+  width: fit-content;
+  max-width: 100%;
+  grid-auto-columns: minmax(280px, max-content);
+}
+
+.chart-supervision-menu .chart-column-menu-column {
+  width: max-content;
+  min-width: 280px;
+  max-width: 100%;
+}
+
+.chart-supervision-menu .chart-column-menu-note {
+  max-width: 420px;
+}
+
 .chart-column-menu-grid {
   display: grid;
   grid-auto-columns: minmax(248px, 312px);
