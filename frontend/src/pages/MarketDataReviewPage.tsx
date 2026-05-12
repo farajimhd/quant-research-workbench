@@ -1835,8 +1835,7 @@ function styleTargetLabel(value: string, parts: Array<Record<string, unknown>>):
 }
 
 function styleSectionTitle(displayType: string): string {
-  if (displayType === "price_overlay") return "Line Style";
-  if (displayType === "oscillator") return "Oscillator Line Style";
+  if (displayType === "price_overlay" || displayType === "oscillator") return "Visual Style";
   if (displayType === "histogram") return "Histogram Style";
   if (displayType === "marker") return "Marker Color";
   if (displayType === "text_label") return "Text Label Style";
@@ -1848,8 +1847,7 @@ function styleSectionTitle(displayType: string): string {
 }
 
 function styleEditorLabel(displayType: string): string {
-  if (displayType === "price_overlay") return "Price overlay line";
-  if (displayType === "oscillator") return "Oscillator line";
+  if (displayType === "price_overlay" || displayType === "oscillator") return "Style";
   if (displayType === "histogram") return "Histogram bars";
   if (displayType === "marker") return "Marker color";
   if (displayType === "text_label") return "Text label";

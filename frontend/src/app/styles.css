@@ -2035,19 +2035,22 @@ button {
   display: grid;
   gap: 5px;
   min-width: 0;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 650;
 }
 
 .catalog-style-trigger {
   display: flex;
-  min-height: 40px;
+  min-height: 32px;
   width: 100%;
   align-items: center;
-  gap: 9px;
+  gap: 7px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--control-bg, var(--surface));
   color: var(--foreground);
-  padding: 6px 8px;
+  padding: 0 8px;
   text-align: left;
 }
 
@@ -2058,8 +2061,8 @@ button {
 
 .catalog-style-trigger-swatch,
 .catalog-style-swatch {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   flex: 0 0 auto;
   border: 1px solid color-mix(in oklab, var(--foreground) 14%, transparent);
   border-radius: 999px;
@@ -2080,7 +2083,7 @@ button {
 
 .catalog-style-trigger strong {
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .catalog-style-trigger small {
