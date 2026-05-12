@@ -1075,7 +1075,11 @@ function artifactFeatureGroup(group: string) {
 
 function previewSupervisionGroups(record: RecordRow) {
   if (!record.group.startsWith("supervision_")) return [];
-  return [record.group.replace("supervision_", "")];
+  const group = record.group.replace("supervision_", "");
+  if (group === "bar") return ["bar:oracle_long_entry_signal", "bar:oracle_long_exit_signal"];
+  if (group === "method") return ["method:method_entry_signal", "method:method_exit_signal"];
+  if (group === "scanner") return ["scanner:is_top_1", "scanner:is_top_3", "scanner:is_top_5"];
+  return [group];
 }
 
 function surroundingChartRange(records: RecordRow[], timeframe: string, sessionDate: string) {
@@ -3122,12 +3126,22 @@ function chartLabelOptions(catalog: CatalogPayload | null, availableGroups: stri
   if (!catalog) return [];
   const available = new Set(availableGroups);
   const candidates = [
-    { column: "oracle_long_entry_signal", group: "bar", title: "Bar labels" },
-    { column: "method_entry_signal", group: "method", title: "Method labels" },
-    { column: "is_top_3", group: "scanner", title: "Scanner labels" },
+    { column: "oracle_long_entry_signal", group: "bar:oracle_long_entry_signal", source: "bar", title: "Bar entry" },
+    { column: "oracle_long_exit_signal", group: "bar:oracle_long_exit_signal", source: "bar", title: "Bar exit" },
+    { column: "mfe_before_mae", group: "bar:mfe_before_mae", source: "bar", title: "MFE before MAE" },
+    { column: "fwd_liquidity_confirmed", group: "bar:fwd_liquidity_confirmed", source: "bar", title: "Future liquidity" },
+    { column: "fwd_volume_shock_before_mfe", group: "bar:fwd_volume_shock_before_mfe", source: "bar", title: "Volume before MFE" },
+    { column: "method_entry_signal", group: "method:method_entry_signal", source: "method", title: "Method entry" },
+    { column: "method_exit_signal", group: "method:method_exit_signal", source: "method", title: "Method ignore" },
+    { column: "is_top_1", group: "scanner:is_top_1", source: "scanner", title: "Scanner top 1" },
+    { column: "is_top_3", group: "scanner:is_top_3", source: "scanner", title: "Scanner top 3" },
+    { column: "is_top_5", group: "scanner:is_top_5", source: "scanner", title: "Scanner top 5" },
+    { column: "is_top_10", group: "scanner:is_top_10", source: "scanner", title: "Scanner top 10" },
+    { column: "is_top_1pct", group: "scanner:is_top_1pct", source: "scanner", title: "Scanner top 1%" },
+    { column: "is_top_5pct", group: "scanner:is_top_5pct", source: "scanner", title: "Scanner top 5%" },
   ];
   return candidates
-    .filter((candidate) => available.has(candidate.group))
+    .filter((candidate) => available.has(candidate.source) && catalog.columns.some((column) => column.column === candidate.column))
     .map((candidate) => {
       const item = catalog.columns.find((column) => column.column === candidate.column);
       return {

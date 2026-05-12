@@ -1546,8 +1546,11 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
     data_shape = data_shape_for_column(column, group, category)
     role = chart_role_for_column(column, group, category)
     pane = pane_for_role(column, role)
+    selectable = lower not in OPERATIONAL_HELPER_COLUMNS and (
+        category in {"indicator", "feature"} or (category == "label" and role not in DATA_ONLY_ROLES)
+    )
     presentation: dict[str, Any] = {
-        "selectable": category in {"indicator", "feature", "label"} and lower not in OPERATIONAL_HELPER_COLUMNS,
+        "selectable": selectable,
         "defaultVisible": column in DEFAULT_VISIBLE_COLUMNS,
         "chartRole": role,
         "dataShape": data_shape,
@@ -1565,7 +1568,8 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
     }
     if role == "marker":
         if group == "supervision_scanner":
-            presentation.update({"markerShape": "square", "markerPosition": "aboveBar", "color": "#7C3AED", "labelMode": "short", "labelText": "TOP", "markerSize": 1.2})
+            label = {"is_top_1": "TOP1", "is_top_3": "TOP3", "is_top_5": "TOP5", "is_top_10": "TOP10", "is_top_1pct": "TOP1%", "is_top_5pct": "TOP5%"}.get(lower, "TOP")
+            presentation.update({"markerShape": "square", "markerPosition": "aboveBar", "color": "#7C3AED", "labelMode": "short", "labelText": label, "markerSize": 1.2})
         elif group == "supervision_method":
             if lower == "method_exit_signal":
                 presentation.update({"markerShape": "arrowDown", "markerPosition": "aboveBar", "color": "#B42318", "labelMode": "short", "labelText": "IGNORE", "markerSize": 1.1})
@@ -1574,6 +1578,12 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
         elif group == "supervision_bar":
             if lower == "oracle_long_exit_signal":
                 presentation.update({"markerShape": "arrowDown", "markerPosition": "aboveBar", "color": "#B42318", "labelMode": "short", "labelText": "EXIT", "markerSize": 1.1})
+            elif lower == "fwd_liquidity_confirmed":
+                presentation.update({"markerShape": "circle", "markerPosition": "belowBar", "color": "#0E7490", "labelMode": "short", "labelText": "LIQ", "markerSize": 1.0})
+            elif lower == "fwd_volume_shock_before_mfe":
+                presentation.update({"markerShape": "square", "markerPosition": "belowBar", "color": "#0891B2", "labelMode": "short", "labelText": "VOL", "markerSize": 1.0})
+            elif lower == "mfe_before_mae":
+                presentation.update({"markerShape": "circle", "markerPosition": "belowBar", "color": "#15803D", "labelMode": "short", "labelText": "MFE", "markerSize": 1.0})
             else:
                 presentation.update({"markerShape": "arrowUp", "markerPosition": "belowBar", "color": "#067647", "labelMode": "short", "labelText": "BAR", "markerSize": 1.15})
         else:
@@ -1611,7 +1621,7 @@ def data_shape_for_column(column: str, group: str, category: str) -> str:
     if category == "bar" or column in KEY_COLUMNS:
         return "data_only"
     if group.startswith("supervision_"):
-        if lower in {"oracle_long_entry_signal", "oracle_long_exit_signal", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5", "is_top_10", "is_top_1pct", "is_top_5pct"}:
+        if lower in {"oracle_long_entry_signal", "oracle_long_exit_signal", "mfe_before_mae", "fwd_liquidity_confirmed", "fwd_volume_shock_before_mfe", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5", "is_top_10", "is_top_1pct", "is_top_5pct"}:
             return "bar_event"
         return "data_only"
     if group == "fvg":
@@ -1644,7 +1654,7 @@ def chart_role_for_column(column: str, group: str, category: str) -> str:
     if lower in OPERATIONAL_HELPER_COLUMNS:
         return "data_only"
     if group.startswith("supervision_"):
-        return "marker" if lower in {"oracle_long_entry_signal", "oracle_long_exit_signal", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5"} else "data_only"
+        return "marker" if lower in {"oracle_long_entry_signal", "oracle_long_exit_signal", "mfe_before_mae", "fwd_liquidity_confirmed", "fwd_volume_shock_before_mfe", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5", "is_top_10", "is_top_1pct", "is_top_5pct"} else "data_only"
     if group == "fvg":
         return "data_only"
     if group == "market_structure" and lower in MARKET_STRUCTURE_EVENT_LEVELS:

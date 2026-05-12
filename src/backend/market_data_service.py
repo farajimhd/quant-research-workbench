@@ -948,6 +948,9 @@ def extended_session_regions(rows: list[dict[str, Any]], timeframe: str) -> list
 def supervision_candidates(frame: pl.DataFrame, supervision_group: str, min_confidence: float) -> pl.DataFrame:
     if frame.is_empty():
         return frame
+    spec = supervision_label_spec(supervision_group)
+    if spec:
+        return supervision_label_candidates(frame, spec, min_confidence)
     columns = set(frame.columns)
     if supervision_group == "method":
         if "method_entry_signal" not in columns:
@@ -974,6 +977,67 @@ def supervision_candidates(frame: pl.DataFrame, supervision_group: str, min_conf
         frame = frame.unique(subset=["bar_id"], keep="first")
     sort_column = "bar_time_utc" if "bar_time_utc" in frame.columns else "bar_time_market" if "bar_time_market" in frame.columns else None
     return frame.sort(sort_column) if sort_column else frame
+
+
+SUPERVISION_LABEL_SPECS: dict[str, dict[str, str]] = {
+    "bar:oracle_long_entry_signal": {"source": "bar", "signal": "oracle_long_entry_signal", "confidence": "oracle_long_entry_confidence", "kind": "bar_entry"},
+    "bar:oracle_long_exit_signal": {"source": "bar", "signal": "oracle_long_exit_signal", "confidence": "oracle_long_exit_confidence", "kind": "bar_exit"},
+    "bar:mfe_before_mae": {"source": "bar", "signal": "mfe_before_mae", "confidence": "path_efficiency", "kind": "bar_path"},
+    "bar:fwd_liquidity_confirmed": {"source": "bar", "signal": "fwd_liquidity_confirmed", "confidence": "fwd_liquidity_quality_score", "kind": "bar_liquidity"},
+    "bar:fwd_volume_shock_before_mfe": {"source": "bar", "signal": "fwd_volume_shock_before_mfe", "confidence": "fwd_liquidity_quality_score", "kind": "bar_volume_sequence"},
+    "method:method_entry_signal": {"source": "method", "signal": "method_entry_signal", "confidence": "method_confidence", "kind": "method_entry"},
+    "method:method_exit_signal": {"source": "method", "signal": "method_exit_signal", "confidence": "method_confidence", "kind": "method_exit"},
+    "scanner:is_top_1": {"source": "scanner", "signal": "is_top_1", "confidence": "method_confidence", "kind": "scanner_rank"},
+    "scanner:is_top_3": {"source": "scanner", "signal": "is_top_3", "confidence": "method_confidence", "kind": "scanner_rank"},
+    "scanner:is_top_5": {"source": "scanner", "signal": "is_top_5", "confidence": "method_confidence", "kind": "scanner_rank"},
+    "scanner:is_top_10": {"source": "scanner", "signal": "is_top_10", "confidence": "method_confidence", "kind": "scanner_rank"},
+    "scanner:is_top_1pct": {"source": "scanner", "signal": "is_top_1pct", "confidence": "method_confidence", "kind": "scanner_rank"},
+    "scanner:is_top_5pct": {"source": "scanner", "signal": "is_top_5pct", "confidence": "method_confidence", "kind": "scanner_rank"},
+}
+
+DEFAULT_SUPERVISION_LABELS: dict[str, list[str]] = {
+    "bar": ["bar:oracle_long_entry_signal", "bar:oracle_long_exit_signal"],
+    "method": ["method:method_entry_signal", "method:method_exit_signal"],
+    "scanner": ["scanner:is_top_3"],
+}
+
+
+def supervision_label_spec(value: str) -> dict[str, str] | None:
+    return SUPERVISION_LABEL_SPECS.get(str(value).lower())
+
+
+def selected_supervision_label_specs(values: list[str]) -> list[tuple[str, dict[str, str]]]:
+    specs: list[tuple[str, dict[str, str]]] = []
+    seen: set[str] = set()
+    for value in values:
+        key = str(value).lower()
+        expanded = DEFAULT_SUPERVISION_LABELS.get(key, [key])
+        for item_key in expanded:
+            spec = supervision_label_spec(item_key)
+            if not spec or item_key in seen:
+                continue
+            seen.add(item_key)
+            specs.append((item_key, spec))
+    return specs
+
+
+def supervision_label_candidates(frame: pl.DataFrame, spec: dict[str, str], min_confidence: float) -> pl.DataFrame:
+    signal = spec["signal"]
+    if signal not in frame.columns:
+        return pl.DataFrame()
+    candidates = frame.filter(pl.col(signal) == True)
+    confidence_column = spec.get("confidence", "")
+    if confidence_column and confidence_column in candidates.columns:
+        scored = candidates.filter(pl.col(confidence_column) >= min_confidence)
+        if not scored.is_empty():
+            candidates = scored
+        candidates = candidates.sort(confidence_column, descending=True)
+    elif "oracle_rank" in candidates.columns:
+        candidates = candidates.sort("oracle_rank")
+    if "bar_id" in candidates.columns:
+        candidates = candidates.unique(subset=["bar_id"], keep="first", maintain_order=True)
+    sort_column = "bar_time_utc" if "bar_time_utc" in candidates.columns else "bar_time_market" if "bar_time_market" in candidates.columns else None
+    return candidates.sort(sort_column) if sort_column else candidates
 
 
 def supervision_display_id(supervision_group: str) -> str:
@@ -1026,27 +1090,50 @@ def integer_label(value: Any, default: str = "-") -> str:
 
 
 def marker_text(row: dict[str, Any], supervision_group: str) -> str:
-    if supervision_group == "scanner":
+    spec = supervision_label_spec(supervision_group)
+    source = spec["source"] if spec else supervision_group
+    kind = spec.get("kind") if spec else ""
+    if source == "scanner":
         method = method_short_name(row.get("trade_method"))
         return f"#{integer_label(row.get('oracle_rank'))} {method} {percent_label(row.get('method_best_return'))}"
-    if supervision_group == "method":
+    if source == "method":
         method = method_short_name(row.get("trade_method"))
+        if kind == "method_exit":
+            return f"IGNORE {method} {confidence_label(row.get('method_confidence')).strip()}"
         return f"{method} {percent_label(row.get('method_best_return'))}{confidence_label(row.get('method_confidence'))}"
+    if kind == "bar_exit":
+        return f"EXIT h{integer_label(row.get('horizon_bars') or row.get('horizon'))} risk {percent_label(row.get('fwd_mae'))}{confidence_label(row.get('oracle_long_exit_confidence'))}"
+    if kind == "bar_liquidity":
+        return f"LIQ h{integer_label(row.get('horizon_bars') or row.get('horizon'))} q{confidence_value(row.get('fwd_liquidity_quality_score'))}"
+    if kind == "bar_volume_sequence":
+        return f"VOL<MFE h{integer_label(row.get('horizon_bars') or row.get('horizon'))}"
+    if kind == "bar_path":
+        return f"MFE<MAE h{integer_label(row.get('horizon_bars') or row.get('horizon'))}"
     return f"BAR h{integer_label(row.get('horizon_bars') or row.get('horizon'))} {percent_label(row.get('oracle_best_exit_return') or row.get('fwd_mfe'))}{confidence_label(row.get('oracle_long_entry_confidence'))}"
 
 
 def supervision_marker_size(supervision_group: str, row: dict[str, Any]) -> float:
-    if supervision_group == "scanner":
+    spec = supervision_label_spec(supervision_group)
+    source = spec["source"] if spec else supervision_group
+    if source == "scanner":
         rank = numeric_or_none(row.get("oracle_rank"))
         if rank == 1:
             return 1.45
         if rank is not None and rank <= 3:
             return 1.25
         return 1.0
-    confidence = numeric_or_none(row.get("method_confidence") if supervision_group == "method" else row.get("oracle_long_entry_confidence"))
+    confidence_column = spec.get("confidence") if spec else ("method_confidence" if source == "method" else "oracle_long_entry_confidence")
+    confidence = numeric_or_none(row.get(confidence_column))
     if confidence is not None and confidence >= 0.85:
         return 1.35
     return 1.1
+
+
+def confidence_value(value: Any) -> str:
+    numeric = numeric_or_none(value)
+    if numeric is None:
+        return "-"
+    return f"{numeric:.2f}"
 
 
 def supervision_annotations(
@@ -1068,10 +1155,16 @@ def supervision_annotations(
         return markers, zones
     bars_by_id = {str(row.get("bar_id")): row for row in rows if row.get("bar_id") is not None}
     candle_duration = chart_candle_duration_seconds(rows, timeframe)
-    group_limit = max(1, marker_limit // max(1, len(supervision_groups)))
-    for supervision_group in supervision_groups:
-        frame = provider.load_supervision(start_date=start_date, end_date=end_date, timeframe=timeframe, supervision_type=supervision_group, tickers=[ticker])
-        candidates = supervision_candidates(frame, supervision_group, min_confidence)
+    specs = selected_supervision_label_specs(supervision_groups)
+    if not specs:
+        return markers, zones
+    group_limit = max(1, marker_limit // max(1, len(specs)))
+    frames: dict[str, pl.DataFrame] = {}
+    for supervision_group, spec in specs:
+        source = spec["source"]
+        if source not in frames:
+            frames[source] = provider.load_supervision(start_date=start_date, end_date=end_date, timeframe=timeframe, supervision_type=source, tickers=[ticker])
+        candidates = supervision_candidates(frames[source], supervision_group, min_confidence)
         for row in candidates.head(group_limit).to_dicts():
             timestamp = chart_timestamp_seconds(row, timeframe)
             if not timestamp:
@@ -1104,10 +1197,13 @@ def supervision_price_zones(
     start: int,
     candle_duration: int,
 ) -> list[dict[str, Any]]:
+    spec = supervision_label_spec(supervision_group)
+    source = spec["source"] if spec else supervision_group
+    kind = spec.get("kind") if spec else ""
     close = numeric_or_none(source_bar.get("close"))
     if close is None or close <= 0:
         return []
-    if supervision_group == "bar":
+    if source == "bar":
         target_price = numeric_or_none(row.get("oracle_best_exit_price"))
         target_return = numeric_or_none(row.get("oracle_best_exit_return") or row.get("fwd_mfe"))
         horizon_bars = int_or_default(row.get("horizon_bars"), 1)
@@ -1116,7 +1212,7 @@ def supervision_price_zones(
         risk_return = numeric_or_none(row.get("fwd_mae"))
         risk_end = start + max(1, int_or_default(row.get("time_to_mae_bars") or row.get("horizon_bars"), 1)) * candle_duration
         target_color = "#067647"
-    elif supervision_group == "method":
+    elif source == "method":
         target_return = numeric_or_none(row.get("method_best_return"))
         target_price = numeric_or_none(row.get("method_best_price"))
         if target_price is None and target_return is not None:
@@ -1126,7 +1222,7 @@ def supervision_price_zones(
         risk_return = numeric_or_none(row.get("method_mae_before_best"))
         target_color = "#2563EB"
         risk_end = target_end
-    elif supervision_group == "scanner":
+    elif source == "scanner":
         target_return = numeric_or_none(row.get("method_best_return"))
         target_price = close * (1.0 + target_return) if target_return is not None else None
         target_end = start + int_or_default(row.get("method_best_horizon_minutes"), 1) * 60
@@ -1137,7 +1233,8 @@ def supervision_price_zones(
     else:
         return []
     zones: list[dict[str, Any]] = []
-    if target_price is not None and target_price > close:
+    show_target = kind not in {"bar_exit", "method_exit", "bar_liquidity", "bar_volume_sequence"}
+    if show_target and target_price is not None and target_price > close:
         zones.append(
             supervision_zone(
                 supervision_group,
@@ -1203,19 +1300,24 @@ def supervision_zone(
 
 def supervision_marker_style(catalog: dict[str, Any], supervision_group: str, row: dict[str, Any]) -> tuple[str, str, str]:
     by_id = catalog_item_by_id(catalog)
+    spec = supervision_label_spec(supervision_group)
+    source = spec["source"] if spec else supervision_group
+    signal = spec.get("signal") if spec else ""
     defaults = {
         "bar": ("#067647", "arrowUp", "belowBar"),
         "method": ("#2563EB", "arrowUp", "belowBar"),
         "scanner": ("#7C3AED", "square", "aboveBar"),
     }
     item = None
-    if supervision_group == "method":
+    if signal:
+        item = by_id.get(signal)
+    elif source == "method":
         item = by_id.get(f"method.{row.get('trade_method')}")
-    elif supervision_group == "scanner":
+    elif source == "scanner":
         item = by_id.get("scanner.method_rank")
-    elif supervision_group == "bar":
+    elif source == "bar":
         item = by_id.get("oracle_long_entry_signal")
-    default_color, default_shape, default_position = defaults.get(supervision_group, ("#1E3A5F", "circle", "belowBar"))
+    default_color, default_shape, default_position = defaults.get(source, ("#1E3A5F", "circle", "belowBar"))
     presentation = item.get("presentation", {}) if item else {}
     return (
         str(presentation.get("color") or default_color),

@@ -306,6 +306,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   visibleSupervisionGroups.forEach((group) => {
     visibleSelectionLookup.add(group.toLowerCase());
     visibleSelectionLookup.add(`supervision:${group.toLowerCase()}`);
+    defaultSupervisionSelectionIds(group).forEach((selection) => {
+      visibleSelectionLookup.add(selection);
+      visibleSelectionLookup.add(`supervision:${selection}`);
+    });
   });
   visibleSelectionRef.current = visibleSelectionLookup;
   const displayedOverlaySeries = (payload?.overlay_series ?? []).filter((series) => visibleColumnLookup.has(seriesSelectionKey(series)));
@@ -1701,6 +1705,14 @@ function chartDisplayItemScore(item: ChartDisplayItem) {
   if (String(item.id || "").startsWith("feature.")) score += 5;
   if (String(item.id || "").startsWith("column.")) score -= 5;
   return score;
+}
+
+function defaultSupervisionSelectionIds(group: string) {
+  const key = group.toLowerCase();
+  if (key === "bar") return ["bar:oracle_long_entry_signal", "bar:oracle_long_exit_signal"];
+  if (key === "method") return ["method:method_entry_signal", "method:method_exit_signal"];
+  if (key === "scanner") return ["scanner:is_top_3"];
+  return [];
 }
 
 function uniqueStrings(values: string[]) {
