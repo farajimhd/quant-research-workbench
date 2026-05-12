@@ -464,7 +464,11 @@ def chart_feature_columns(records: list[dict[str, Any]], timeframe: str, start: 
 def chart_pane_for_column(column: str) -> str:
     lower = column.lower()
     price_terms = ("sma", "ema", "tema", "vwap", "bb_", "donchian", "keltner", "hvn", "lvn", "price_proxy")
-    return "price" if any(term in lower for term in price_terms) else "oscillator"
+    if any(term in lower for term in price_terms):
+        return "price"
+    if lower.startswith("macd_"):
+        return "macd"
+    return "pane_2"
 
 
 def indicator_settings(selected_columns: list[str], catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -487,6 +491,7 @@ def indicator_settings(selected_columns: list[str], catalog: dict[str, Any]) -> 
             "lineWidth": int(presentation.get("lineWidth") or (3 if column in {"vwap", "ema200", "sma200"} else 1)),
             "opacity": bounded_float(presentation.get("opacity"), default=0.46 if column in {"vwap", "ema200", "sma200"} else 0.82, lower=0.05, upper=1.0),
             "pane": pane,
+            "paneKey": pane_name,
             "style": "histogram" if role == "histogram" else "line",
             "lineStyle": str(presentation.get("lineStyle") or "solid"),
             "legend": bool(presentation.get("legend", True)),

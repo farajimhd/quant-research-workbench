@@ -128,6 +128,7 @@ type CatalogCardItem = CatalogItem & {
   catalogKind: "display" | "columns" | "methods" | "scanners";
   groupLabel: string;
   presentationType: string;
+  sourceColumns?: string[];
   sourceLabel: string;
   summary: string;
 };
@@ -155,6 +156,13 @@ const PRESENTATION_TYPE_LABELS: Record<string, string> = {
   other: "Other",
   price_overlay: "Price overlay",
   table_only: "Data only",
+};
+const FIXED_LOWER_PANES = ["macd", "pane_2", "pane_3"];
+const NON_MACD_LOWER_PANES = ["pane_2", "pane_3"];
+const PANE_LABELS: Record<string, string> = {
+  macd: "MACD Pane",
+  pane_2: "Pane 2",
+  pane_3: "Pane 3",
 };
 const STYLE_COLOR_OPTIONS = [
   { label: "Black", value: "#030213" },
@@ -204,7 +212,7 @@ const PRESENTATION_HELP = {
   defaultVisible: "Adds this item to charts automatically when the selected artifact contains the required column or label group.",
   legend: "Shows a legend row and live value for this item when it is drawn on the chart or in a lower pane.",
   chartRole: "Chooses the display type. The provider preset controls which style fields are valid, such as line controls for Price Overlay, zone controls for Anchored Zone, and value formatting for Data Only.",
-  pane: "Chooses the target pane: price overlays candles, macd groups MACD lines and histogram together, oscillator uses a lower pane, new creates a dedicated pane, and supervision groups labels.",
+  pane: "Chooses one of the fixed lower panes. MACD Pane is reserved for MACD only; other oscillators can use Pane 2 or Pane 3.",
   lineStyle: "Chooses the stroke pattern for line-like items. Solid is the default; dashed or dotted are for separating related overlays.",
   color: "Default display color. Use a hex color for a fixed line or marker color; inherit_candle_direction follows the candle up/down color where supported.",
   lineWidth: "Controls line or band stroke thickness in pixels. Larger values make the item visually heavier.",
@@ -1106,11 +1114,12 @@ function CatalogTab({
       setDraft((current) => {
         const parts = clonePresentationParts(current.parts);
         if (!parts[partIndex]) return current;
-        parts[partIndex] = { ...parts[partIndex], chartRole: value, pane: defaultPaneForDisplayType(value, String(parts[partIndex].pane ?? current.pane ?? "price")) };
+        const isMacdTarget = presentationIsMacdTarget(selected, parts[partIndex]);
+        parts[partIndex] = { ...parts[partIndex], chartRole: value, pane: defaultPaneForDisplayType(value, String(parts[partIndex].pane ?? current.pane ?? "price"), isMacdTarget) };
         return { ...current, parts };
       });
     } else {
-      setDraft((current) => ({ ...current, chartRole: value, pane: defaultPaneForDisplayType(value, String(current.pane ?? "price")) }));
+      setDraft((current) => ({ ...current, chartRole: value, pane: defaultPaneForDisplayType(value, String(current.pane ?? "price"), presentationIsMacdTarget(selected, current)) }));
     }
     setSaveState("idle");
   }
@@ -1172,6 +1181,13 @@ function CatalogTab({
   const showVisualStyle = !isDataOnlyPresentation && activeStyleFields.has("color");
   const showPaneField = activeStyleFields.has("pane") && !["price", "none", "chart_background"].includes(String(activePreset.target ?? ""));
   const showValueFormat = isDataOnlyPresentation || activeStyleFields.has("valueFormat") || activeStyleFields.has("precision");
+  const activeIsMacdTarget = presentationIsMacdTarget(selected, activePresentation);
+  const contractPaneOptions = (catalog?.presentationOptions.panes ?? FIXED_LOWER_PANES).filter((pane) => FIXED_LOWER_PANES.includes(pane));
+  const allowedPaneOptions = lowerPaneOptionsForTarget(activeIsMacdTarget);
+  const activePaneOptions = allowedPaneOptions.filter((pane) => contractPaneOptions.includes(pane)).length
+    ? allowedPaneOptions.filter((pane) => contractPaneOptions.includes(pane))
+    : allowedPaneOptions;
+  const activePaneValue = normalizedLowerPane(activePresentation.pane ?? draft.pane, activeIsMacdTarget);
   const fillPanel = useViewportFillPanel(`${catalogLoading}:${allItems.length}:${items.length}:${selected?.id ?? ""}`);
 
   return (
@@ -1271,7 +1287,7 @@ function CatalogTab({
                   {isTableOnlyPresentation ? null : <span className="catalog-preview-swatch" style={{ background: presentationColor(activePresentation.color ?? draft.color) }} />}
                   <div>
                     <strong>{presentationTypeLabel(selectedPresentationType)}</strong>
-                    <span>{isTableOnlyPresentation ? "No chart color used" : `${displayName(presentationPane)} pane`}</span>
+                    <span>{isTableOnlyPresentation ? "No chart color used" : paneDisplayLabel(presentationPane)}</span>
                   </div>
                 </div>
               </div>
@@ -1294,7 +1310,7 @@ function CatalogTab({
                         ) : null}
                         <CatalogSelect help={PRESENTATION_HELP.chartRole} label="Display type" options={displayTypeOptions} value={activeRole} onChange={updateDisplayType} />
                         {showPaneField ? (
-                          <CatalogSelect help={PRESENTATION_HELP.pane} label="Pane" options={catalog?.presentationOptions.panes ?? []} value={String(activePresentation.pane ?? draft.pane ?? "oscillator")} onChange={(value) => updateActivePresentation("pane", value)} />
+                          <CatalogSelect help={PRESENTATION_HELP.pane} label="Pane" labels={PANE_LABELS} options={activePaneOptions} value={activePaneValue} onChange={(value) => updateActivePresentation("pane", normalizedLowerPane(value, activeIsMacdTarget))} />
                         ) : null}
                       </div>
                       <p className="catalog-preset-note">{activePreset.description ?? "The selected display type controls the available style fields."}</p>
@@ -1826,9 +1842,56 @@ function CatalogGroupedPartsEditor({ parts }: { parts: Array<Record<string, unkn
   );
 }
 
-function defaultPaneForDisplayType(displayType: string, currentPane: string): string {
+function presentationIsMacdTarget(selected: CatalogCardItem | undefined, presentation: Record<string, unknown>): boolean {
+  const candidates = [
+    selected?.id,
+    selected?.column,
+    presentation.id,
+    presentation.column,
+    presentation.groupKey,
+    selected?.presentation?.groupKey,
+    ...(Array.isArray(selected?.sourceColumns) ? selected.sourceColumns : []),
+    ...(Array.isArray(presentation.sourceColumns) ? presentation.sourceColumns : []),
+  ].filter(Boolean).map(String);
+  return candidates.some((candidate) => {
+    const value = candidate.toLowerCase();
+    return value === "macd" || value.startsWith("macd_") || value.startsWith("indicator.macd");
+  });
+}
+
+function lowerPaneOptionsForTarget(isMacdTarget: boolean): string[] {
+  return isMacdTarget ? ["macd"] : NON_MACD_LOWER_PANES;
+}
+
+function paneDisplayLabel(value: string): string {
+  return PANE_LABELS[value] ?? displayName(value);
+}
+
+function normalizedLowerPane(value: unknown, isMacdTarget: boolean): string {
+  const current = String(value ?? "").toLowerCase();
+  const aliases: Record<string, string> = {
+    "": "pane_2",
+    macd_pane: "macd",
+    "macd pane": "macd",
+    new: "pane_2",
+    oscillator: "pane_2",
+    participation: "pane_2",
+    pane2: "pane_2",
+    "pane 2": "pane_2",
+    pane3: "pane_3",
+    "pane 3": "pane_3",
+    shock: "pane_2",
+    stochastic: "pane_2",
+    supervision: "pane_2",
+  };
+  const normalized = aliases[current] ?? current;
+  const options = lowerPaneOptionsForTarget(isMacdTarget);
+  return options.includes(normalized) ? normalized : options[0] ?? "pane_2";
+}
+
+function defaultPaneForDisplayType(displayType: string, currentPane: string, isMacdTarget: boolean): string {
   if (["price_overlay", "marker", "text_label", "continuous_band", "anchored_zone", "background_state", "band", "price_zone"].includes(displayType)) return "price";
-  if (displayType === "oscillator" || displayType === "histogram") return currentPane === "price" ? "oscillator" : currentPane;
+  if (displayType === "oscillator" || displayType === "histogram") return normalizedLowerPane(currentPane, isMacdTarget);
   return currentPane;
 }
 
@@ -2063,7 +2126,7 @@ function CatalogPresentationChartPreview({
         ) : null}
         <g className="catalog-contract-axis-labels">
           <text x="26" y="24">09:30</text>
-          <text x="182" y="24">{hasPreviewPane ? displayName(pane === "price" ? "oscillator" : pane) : "Price"}</text>
+          <text x="182" y="24">{hasPreviewPane ? paneDisplayLabel(pane === "price" ? "pane_2" : pane) : "Price"}</text>
           <text x="326" y="24">11:30</text>
         </g>
       </svg>

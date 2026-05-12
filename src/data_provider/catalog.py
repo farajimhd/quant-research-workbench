@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 6
+CATALOG_VERSION = 7
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -174,6 +174,9 @@ DATA_ONLY_ROLES = {"data_only", "table_only"}
 ANCHOR_ZONE_ROLES = {"anchored_zone", "price_zone"}
 PRICE_TARGET_ROLES = {"price_overlay", "marker", "continuous_band", "anchored_zone", "price_zone"}
 LOWER_PANE_ROLES = {"oscillator", "histogram"}
+LOWER_PANE_OPTIONS = ("macd", "pane_2", "pane_3")
+DEFAULT_LOWER_PANE = "pane_2"
+MACD_PANE = "macd"
 BOOLEAN_COLUMNS = {
     "is_green",
     "is_red",
@@ -518,7 +521,7 @@ def base_provider_catalog() -> dict[str, Any]:
         "presentationOptions": {
             "chartRoles": list(DISPLAY_PRESETS.keys()),
             "dataShapes": DATA_SHAPES,
-            "panes": ["price", "macd", "oscillator", "new", "supervision", "stochastic", "shock", "participation"],
+            "panes": list(LOWER_PANE_OPTIONS),
             "lineStyles": ["solid", "dashed", "dotted"],
             "borderStyles": ["solid", "dashed", "dotted"],
             "extendRules": ["fixed_bars", "until_mitigated", "session_end"],
@@ -633,10 +636,10 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             title="Stochastic 14/3",
             source_columns=["stoch_k14", "stoch_d3"],
             group="momentum",
-            pane="stochastic",
+            pane=DEFAULT_LOWER_PANE,
             parts=[
-                display_part(by_column, "stoch_k14", label="%K", pane="stochastic", color="#2563EB"),
-                display_part(by_column, "stoch_d3", label="%D", pane="stochastic", color="#B7791F"),
+                display_part(by_column, "stoch_k14", label="%K", pane=DEFAULT_LOWER_PANE, color="#2563EB"),
+                display_part(by_column, "stoch_d3", label="%D", pane=DEFAULT_LOWER_PANE, color="#B7791F"),
             ],
             short="Stochastic %K and %D in one lower pane.",
             detailed="Stochastic should be interpreted as a pair, so the catalog exposes it as one grouped oscillator display.",
@@ -1149,6 +1152,63 @@ def normalize_chart_role(role: Any) -> str:
     return value if value in DISPLAY_PRESETS else "data_only"
 
 
+def normalize_lower_pane(pane: Any) -> str:
+    value = str(pane or DEFAULT_LOWER_PANE).strip().lower()
+    aliases = {
+        "": DEFAULT_LOWER_PANE,
+        "new": DEFAULT_LOWER_PANE,
+        "oscillator": DEFAULT_LOWER_PANE,
+        "participation": DEFAULT_LOWER_PANE,
+        "shock": DEFAULT_LOWER_PANE,
+        "stochastic": DEFAULT_LOWER_PANE,
+        "supervision": DEFAULT_LOWER_PANE,
+        "pane2": "pane_2",
+        "pane 2": "pane_2",
+        "pane3": "pane_3",
+        "pane 3": "pane_3",
+        "macd_pane": MACD_PANE,
+        "macd pane": MACD_PANE,
+    }
+    value = aliases.get(value, value)
+    return value if value in LOWER_PANE_OPTIONS else DEFAULT_LOWER_PANE
+
+
+def presentation_allows_macd_pane(item: dict[str, Any], presentation: dict[str, Any]) -> bool:
+    candidates = [
+        str(item.get("id") or ""),
+        str(item.get("column") or ""),
+        str(presentation.get("id") or ""),
+        str(presentation.get("column") or ""),
+        str(item.get("presentation", {}).get("groupKey") or ""),
+        str(presentation.get("groupKey") or ""),
+    ]
+    candidates.extend(str(column) for column in item.get("sourceColumns", []) if column)
+    candidates.extend(str(column) for column in presentation.get("sourceColumns", []) if column)
+    return any(candidate.lower() == "macd" or candidate.lower().startswith(("macd_", "indicator.macd")) for candidate in candidates)
+
+
+def enforce_pane_contract(item: dict[str, Any], presentation: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(presentation)
+    role = normalize_chart_role(normalized.get("chartRole"))
+    if role in LOWER_PANE_ROLES:
+        pane = normalize_lower_pane(normalized.get("pane"))
+        if pane == MACD_PANE and not presentation_allows_macd_pane(item, normalized):
+            pane = DEFAULT_LOWER_PANE
+        normalized["pane"] = pane
+    elif role == "composite" and normalized.get("pane") and normalized.get("pane") != "price":
+        pane = normalize_lower_pane(normalized.get("pane"))
+        if pane == MACD_PANE and not presentation_allows_macd_pane(item, normalized):
+            pane = DEFAULT_LOWER_PANE
+        normalized["pane"] = pane
+    parts = normalized.get("parts")
+    if isinstance(parts, list):
+        normalized["parts"] = [
+            enforce_pane_contract(item, part) if isinstance(part, dict) else part
+            for part in parts
+        ]
+    return normalized
+
+
 def normalize_presentation(presentation: dict[str, Any]) -> dict[str, Any]:
     normalized = deepcopy(presentation)
     role = normalize_chart_role(normalized.get("chartRole"))
@@ -1161,8 +1221,10 @@ def normalize_presentation(presentation: dict[str, Any]) -> dict[str, Any]:
         normalized.pop("pane", None)
     elif role in PRICE_TARGET_ROLES:
         normalized["pane"] = "price"
-    elif role in LOWER_PANE_ROLES and not normalized.get("pane"):
-        normalized["pane"] = "oscillator"
+    elif role in LOWER_PANE_ROLES:
+        normalized["pane"] = normalize_lower_pane(normalized.get("pane"))
+    elif role == "composite" and normalized.get("pane") and normalized.get("pane") != "price":
+        normalized["pane"] = normalize_lower_pane(normalized.get("pane"))
     parts = normalized.get("parts")
     if isinstance(parts, list):
         normalized["parts"] = [normalize_presentation(part) if isinstance(part, dict) else part for part in parts]
@@ -1183,7 +1245,7 @@ def merge_presentation_override(item: dict[str, Any], presentation: dict[str, An
         override = {key: value for key, value in override.items() if key in {"selectable", "defaultVisible"}}
     merged = deepcopy(base)
     merged.update(override)
-    return normalize_presentation(merged)
+    return enforce_pane_contract(item, normalize_presentation(merged))
 
 
 def add_column(entries: dict[str, dict[str, Any]], column: str, *, group: str, artifact_group: str) -> None:
@@ -1519,9 +1581,9 @@ def pane_for_role(column: str, role: str) -> str:
     if role in PRICE_TARGET_ROLES:
         return "price"
     if column.lower().startswith("macd_"):
-        return "macd"
+        return MACD_PANE
     if role in {"oscillator", "histogram"}:
-        return "oscillator"
+        return DEFAULT_LOWER_PANE
     return "price"
 
 
@@ -2590,7 +2652,8 @@ def load_presentation_overrides(processed_root: Path) -> dict[str, dict[str, Any
 def save_presentation_override(processed_root: Path, item_id: str, presentation: dict[str, Any]) -> dict[str, Any]:
     processed_root.mkdir(parents=True, exist_ok=True)
     overrides = load_presentation_overrides(processed_root)
-    clean = normalize_presentation({str(key): value for key, value in presentation.items() if value is not None})
+    base_item = catalog_item_by_id(base_provider_catalog()).get(item_id, {})
+    clean = enforce_pane_contract(base_item, normalize_presentation({str(key): value for key, value in presentation.items() if value is not None}))
     overrides[item_id] = clean
     payload = {"catalogVersion": CATALOG_VERSION, "presentation": overrides}
     override_path(processed_root).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
