@@ -396,18 +396,18 @@ DISPLAY_PRESETS: dict[str, dict[str, Any]] = {
     },
     "marker": {
         "label": "Marker",
-        "dataShapes": ["bar_event"],
+        "dataShapes": ["bar_event", "anchored_zone"],
         "target": "price",
         "lockedFields": ["pane"],
-        "styleFields": ["color", "markerShape", "markerPosition", "markerSize", "labelMode"],
+        "styleFields": ["color", "markerShape", "markerPosition", "markerSize", "labelMode", "labelText"],
         "description": "Discrete event rendered as a symbol on the source bar.",
     },
     "text_label": {
         "label": "Text Label",
-        "dataShapes": ["bar_event"],
+        "dataShapes": ["bar_event", "anchored_zone"],
         "target": "price",
         "lockedFields": ["pane"],
-        "styleFields": ["color", "markerPosition", "fontSize", "labelMode"],
+        "styleFields": ["color", "markerPosition", "fontSize", "labelMode", "labelText"],
         "description": "Discrete event rendered as a compact text annotation at the source bar.",
     },
     "continuous_band": {
@@ -840,7 +840,7 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             column not in grouped_columns
             and contract.get("category") in {"indicator", "feature"}
             and presentation.get("selectable", True)
-            and role not in {"", "marker", "data_only", "table_only"}
+            and role not in {"", "marker", "text_label", "data_only", "table_only"}
         ):
             add(single_display_item(by_column, f"column.{column}", str(contract.get("title") or title_for_column(column)), [column], str(contract.get("group") or ""), default_visible=False))
 

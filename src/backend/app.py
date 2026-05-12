@@ -416,7 +416,7 @@ def default_catalog_chart_columns(processed_root: Path) -> list[str]:
         presentation = item.get("presentation", {})
         role = str(presentation.get("chartRole") or "")
         column = item.get("column")
-        if column and presentation.get("defaultVisible") and presentation.get("selectable") and role not in {"marker", "background_state", "anchored_zone", "data_only", "table_only"}:
+        if column and presentation.get("defaultVisible") and presentation.get("selectable") and role not in {"marker", "text_label", "background_state", "anchored_zone", "data_only", "table_only"}:
             columns.append(str(column))
     return columns
 

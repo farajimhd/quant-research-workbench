@@ -238,6 +238,9 @@ const PRESENTATION_HELP = {
   minPixelHeight: "Minimum visual height for fixed-pixel anchored bands. Use small values for swing and break events so they read like thick translucent levels.",
   maxPixelHeight: "Maximum visual height for fixed-pixel anchored bands. This keeps point events from becoming visually oversized when the chart scale changes.",
   zonePaddingBps: "Adds price-based vertical padding for price-range zones. Fixed-pixel point events ignore this and use their semantic pixel height instead.",
+  labelMode: "Controls whether event markers show no label, a short semantic label such as HH, the value, or the full catalog title.",
+  labelText: "Optional custom label for marker and text-label displays. Leave blank to use the semantic default for the event.",
+  markerSize: "Controls the marker symbol size on the candle chart.",
   precision: "Controls how many decimal places are shown in legends, tooltips, and readouts for numeric values.",
   markerShape: "Chooses the symbol used when the item renders as markers: circle, arrowUp, arrowDown, or square.",
   markerPosition: "Chooses where marker symbols sit relative to the candle: aboveBar, belowBar, or inBar.",
@@ -1441,10 +1444,17 @@ function CatalogTab({
                     ) : null}
                     {isMarkerPresentation ? (
                       <div className="catalog-presentation-section">
-                        <h4>Marker Shape</h4>
+                        <h4>Event Annotation</h4>
                         <div className="catalog-form-grid compact">
-                          <CatalogSelect help={PRESENTATION_HELP.markerShape} label="Shape" options={catalog?.presentationOptions.markerShapes ?? []} value={String(activePresentation.markerShape ?? "circle")} onChange={(value) => updateActivePresentation("markerShape", value)} />
+                          {activeRole === "marker" ? (
+                            <CatalogSelect help={PRESENTATION_HELP.markerShape} label="Shape" options={catalog?.presentationOptions.markerShapes ?? []} value={String(activePresentation.markerShape ?? "circle")} onChange={(value) => updateActivePresentation("markerShape", value)} />
+                          ) : null}
                           <CatalogSelect help={PRESENTATION_HELP.markerPosition} label="Position" options={catalog?.presentationOptions.markerPositions ?? []} value={String(activePresentation.markerPosition ?? "belowBar")} onChange={(value) => updateActivePresentation("markerPosition", value)} />
+                          <CatalogSelect help={PRESENTATION_HELP.labelMode} label="Label mode" options={catalog?.presentationOptions.labelModes ?? ["none", "short", "value", "full"]} value={String(activePresentation.labelMode ?? (activeRole === "text_label" ? "short" : "none"))} onChange={(value) => updateActivePresentation("labelMode", value)} />
+                          <CatalogTextField help={PRESENTATION_HELP.labelText} label="Label text" value={String(activePresentation.labelText ?? "")} onChange={(value) => updateActivePresentation("labelText", value)} />
+                          {activeRole === "marker" ? (
+                            <CatalogNumberField help={PRESENTATION_HELP.markerSize} label="Size" max={4} min={0.1} value={Number(activePresentation.markerSize ?? 1)} onChange={(value) => updateActivePresentation("markerSize", value)} />
+                          ) : null}
                         </div>
                       </div>
                     ) : null}
@@ -1917,6 +1927,15 @@ function CatalogNumberField({
   );
 }
 
+function CatalogTextField({ help, label, onChange, value }: { help: string; label: string; onChange: (value: string) => void; value: string }) {
+  return (
+    <div className="catalog-field">
+      <CatalogFieldLabel help={help} label={label} />
+      <input maxLength={24} type="text" value={value} onChange={(event) => onChange(event.target.value)} />
+    </div>
+  );
+}
+
 function CatalogCheckbox({ checked, help, label, onChange }: { checked: boolean; help: string; label: string; onChange: (value: boolean) => void }) {
   return (
     <div className="catalog-checkbox">
@@ -2096,10 +2115,15 @@ function CatalogPresentationChartPreview({
   const bandFillOpacity = boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.35, 0.08);
   const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, bandFillOpacity);
   const bandBorder = colorWithOpacity(presentation.borderColor ?? presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.borderOpacity, 0, 0.35, Math.max(bandFillOpacity * 1.8, 0.12)));
+  const borderStyle = String(presentation.borderStyle ?? lineStyle);
+  const borderWidth = boundedPresentationNumber(presentation.borderWidth, 0, 6, lineWidth);
   const fixedZonePreviewHeight = boundedPresentationNumber(presentation.maxPixelHeight ?? presentation.minPixelHeight, 2, 18, 4);
   const dashArray = svgDashArray(lineStyle, lineWidth);
+  const zoneDashArray = svgDashArray(borderStyle, borderWidth);
   const displayNameForItem = itemTitle || "Selected item";
   const isBandLike = role === "band" || role === "price_zone" || role === "continuous_band" || role === "anchored_zone";
+  const markerText = markerPreviewText(displayNameForItem, presentation);
+  const showMarkerText = role === "text_label" || String(presentation.labelMode ?? "none") !== "none";
   const parts = role === "composite" && Array.isArray(presentation.parts) ? presentation.parts.filter((part): part is Record<string, unknown> => Boolean(part && typeof part === "object")) : [];
   const compositeHasLowerPane = role === "composite" && parts.some((part) => {
     const partRole = normalizeDisplayType(String(part.chartRole ?? part.style ?? ""));
@@ -2139,12 +2163,12 @@ function CatalogPresentationChartPreview({
         {isBandLike ? (
           <g className="catalog-contract-selected-layer">
             {role === "anchored_zone" && String(presentation.zoneHeightMode ?? "price_range") === "fixed_px" ? (
-              <rect fill={bandFill} height={fixedZonePreviewHeight} stroke={bandBorder} strokeWidth={lineWidth} width="316" x="34" y={88 - fixedZonePreviewHeight / 2} />
+              <rect fill={bandFill} height={fixedZonePreviewHeight} stroke={bandBorder} strokeDasharray={zoneDashArray} strokeWidth={borderWidth} width="316" x="34" y={88 - fixedZonePreviewHeight / 2} />
             ) : (
               <>
                 <polygon fill={bandFill} points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60 350,100 322,106 290,102 258,109 226,112 194,106 162,114 130,121 98,112 66,106 34,119" />
-                <polyline fill="none" points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60" stroke={bandBorder} strokeDasharray={dashArray} strokeWidth={lineWidth} />
-                <polyline fill="none" points="34,119 66,106 98,112 130,121 162,114 194,106 226,112 258,109 290,102 322,106 350,100" stroke={bandBorder} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+                <polyline fill="none" points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60" stroke={bandBorder} strokeDasharray={role === "anchored_zone" ? zoneDashArray : dashArray} strokeWidth={role === "anchored_zone" ? borderWidth : lineWidth} />
+                <polyline fill="none" points="34,119 66,106 98,112 130,121 162,114 194,106 226,112 258,109 290,102 322,106 350,100" stroke={bandBorder} strokeDasharray={role === "anchored_zone" ? zoneDashArray : dashArray} strokeWidth={role === "anchored_zone" ? borderWidth : lineWidth} />
               </>
             )}
           </g>
@@ -2184,7 +2208,7 @@ function CatalogPresentationChartPreview({
             ))}
           </g>
         ) : null}
-        {role === "marker" ? renderCatalogPreviewMarker(String(presentation.markerShape ?? "circle"), String(presentation.markerPosition ?? "belowBar"), selectedStroke) : null}
+        {role === "marker" || role === "text_label" ? renderCatalogPreviewMarker(String(presentation.markerShape ?? "circle"), String(presentation.markerPosition ?? "belowBar"), selectedStroke, showMarkerText ? markerText : "") : null}
         {role === "oscillator" ? (
           <polyline className="catalog-contract-selected-line" fill="none" points={CATALOG_OSCILLATOR_LINE_POINTS} stroke={selectedStroke} strokeDasharray={dashArray} strokeWidth={lineWidth} />
         ) : null}
@@ -2276,8 +2300,11 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
   const bandFillOpacity = boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.35, 0.08);
   const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, bandFillOpacity);
   const bandBorder = colorWithOpacity(presentation.borderColor ?? presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.borderOpacity, 0, 0.35, Math.max(bandFillOpacity * 1.8, 0.12)));
+  const borderStyle = String(presentation.borderStyle ?? lineStyle);
+  const borderWidth = boundedPresentationNumber(presentation.borderWidth, 0, 6, lineWidth);
   const fixedZonePreviewHeight = boundedPresentationNumber(presentation.maxPixelHeight ?? presentation.minPixelHeight, 2, 18, 4);
   const dashArray = svgDashArray(lineStyle, lineWidth);
+  const zoneDashArray = svgDashArray(borderStyle, borderWidth);
   const parts = role === "composite" && Array.isArray(presentation.parts) ? presentation.parts.filter((part): part is Record<string, unknown> => Boolean(part && typeof part === "object")) : [];
   const compositeHasLowerPane = role === "composite" && parts.some((part) => {
     const partRole = normalizeDisplayType(String(part.chartRole ?? part.style ?? ""));
@@ -2287,6 +2314,8 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
   const isLowerPaneRole = role === "oscillator" || role === "histogram" || compositeHasLowerPane || (role === "composite" && pane !== "price");
   const isPriceSeriesRole = role === "price_overlay" || (role === "composite" && !isLowerPaneRole && pane === "price");
   const isMarkerRole = role === "marker" || role === "text_label";
+  const markerText = markerPreviewText(itemTitle, presentation);
+  const showMarkerText = role === "text_label" || String(presentation.labelMode ?? "none") !== "none";
   const allCandles = payload?.candles ?? [];
   const referenceTime = Number(preview.sample?.time ?? 0);
   const referenceIndex = referenceTime ? Math.max(0, allCandles.findIndex((candle) => candle.time >= referenceTime)) : 0;
@@ -2388,6 +2417,8 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
           fill={bandFill}
           height={fallbackZoneRect.height}
           stroke={bandBorder}
+          strokeDasharray={zoneDashArray}
+          strokeWidth={borderWidth}
           width={fallbackZoneRect.width}
           x={fallbackZoneRect.x}
           y={fallbackZoneRect.y}
@@ -2399,11 +2430,14 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
         const top = priceScale(zone.upper);
         const bottom = priceScale(zone.lower);
         const center = (top + bottom) / 2;
-        const minPixelHeight = boundedPresentationNumber(zone.minPixelHeight, 0, 32, 0);
-        const maxPixelHeight = boundedPresentationNumber(zone.maxPixelHeight, 0, 96, 0);
+        const zoneHeightMode = String(presentation.zoneHeightMode ?? zone.zoneHeightMode ?? "price_range");
+        const minPixelHeight = boundedPresentationNumber(presentation.minPixelHeight ?? zone.minPixelHeight, 0, 32, 0);
+        const maxPixelHeight = boundedPresentationNumber(presentation.maxPixelHeight ?? zone.maxPixelHeight, 0, 96, 0);
+        const zoneFillOpacity = boundedPresentationNumber(presentation.bandFillOpacity ?? zone.fillOpacity, 0.02, 0.35, 0.08);
+        const zoneBorderOpacity = boundedPresentationNumber(presentation.borderOpacity ?? zone.borderOpacity, 0, 0.35, Math.max(zoneFillOpacity * 1.8, 0.12));
         let zoneHeight = Math.max(2, Math.abs(bottom - top));
         let zoneY = Math.min(top, bottom);
-        if (zone.zoneHeightMode === "fixed_px") {
+        if (zoneHeightMode === "fixed_px") {
           zoneHeight = Math.max(2, minPixelHeight, maxPixelHeight || minPixelHeight || 3);
           zoneY = center - zoneHeight / 2;
         } else {
@@ -2419,11 +2453,12 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
         return (
           <rect
             className="catalog-contract-real-zone"
-            fill={colorWithOpacity(zone.fillColor || zone.color, Math.min(0.35, Math.max(0.02, zone.fillOpacity ?? 0.08)))}
+            fill={colorWithOpacity(presentation.bandFillColor ?? presentation.color ?? zone.fillColor ?? zone.color, zoneFillOpacity)}
             height={zoneHeight}
             key={`zone:${index}`}
-            stroke={colorWithOpacity(zone.borderColor || zone.fillColor || zone.color, Math.min(0.35, Math.max(0, zone.borderOpacity ?? Math.max((zone.fillOpacity ?? 0.08) * 1.8, 0.12))))}
-            strokeWidth={Math.max(0, Math.min(3, Math.round(zone.borderWidth ?? 1)))}
+            stroke={colorWithOpacity(presentation.borderColor ?? presentation.bandFillColor ?? presentation.color ?? zone.borderColor ?? zone.fillColor ?? zone.color, zoneBorderOpacity)}
+            strokeDasharray={svgDashArray(String(presentation.borderStyle ?? zone.borderStyle ?? "solid"), boundedPresentationNumber(presentation.borderWidth ?? zone.borderWidth, 0, 6, 1))}
+            strokeWidth={boundedPresentationNumber(presentation.borderWidth ?? zone.borderWidth, 0, 6, 1)}
             width={Math.max(2, right - left)}
             x={left}
             y={zoneY}
@@ -2513,18 +2548,35 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
       {isMarkerRole ? (
         visibleMarkers.length ? visibleMarkers.map((marker, index) => (
           <g key={`marker:${index}`}>
-            {renderCatalogRealMarker(
-              String(presentation.markerShape ?? marker.shape ?? "circle"),
-              xForTime(Number(marker.time)),
-              marker.position === "aboveBar" ? 44 : marker.position === "inBar" ? 94 : 146,
-              selectedStroke,
-            )}
-            {role === "text_label" ? <text className="catalog-contract-marker-text" x={xForTime(Number(marker.time)) + 7} y={marker.position === "aboveBar" ? 39 : marker.position === "inBar" ? 89 : 141}>{itemTitle}</text> : null}
+            {(() => {
+              const markerPosition = String(presentation.markerPosition ?? marker.position ?? "belowBar");
+              const markerY = markerPosition === "aboveBar" ? 44 : markerPosition === "inBar" ? 94 : 146;
+              const markerX = xForTime(Number(marker.time));
+              return (
+                <>
+                  {renderCatalogRealMarker(
+                    String(presentation.markerShape ?? marker.shape ?? "circle"),
+                    markerX,
+                    markerY,
+                    selectedStroke,
+                  )}
+                  {showMarkerText ? <text className="catalog-contract-marker-text" fill={selectedStroke} x={markerX + 7} y={markerY - 5}>{markerText}</text> : null}
+                </>
+              );
+            })()}
           </g>
         )) : referenceX !== null ? (
           <g>
-            {renderCatalogRealMarker(String(presentation.markerShape ?? "circle"), referenceX, String(presentation.markerPosition ?? "belowBar") === "aboveBar" ? 44 : String(presentation.markerPosition ?? "belowBar") === "inBar" ? 94 : 146, selectedStroke)}
-            {role === "text_label" ? <text className="catalog-contract-marker-text" x={referenceX + 7} y="141">{itemTitle}</text> : null}
+            {(() => {
+              const markerPosition = String(presentation.markerPosition ?? "belowBar");
+              const markerY = markerPosition === "aboveBar" ? 44 : markerPosition === "inBar" ? 94 : 146;
+              return (
+                <>
+                  {renderCatalogRealMarker(String(presentation.markerShape ?? "circle"), referenceX, markerY, selectedStroke)}
+                  {showMarkerText ? <text className="catalog-contract-marker-text" fill={selectedStroke} x={referenceX + 7} y={markerY - 5}>{markerText}</text> : null}
+                </>
+              );
+            })()}
           </g>
         ) : null
       ) : null}
@@ -2554,13 +2606,54 @@ function realPreviewDescription(preview: CatalogPreviewPayload) {
     : "Real provider data from the saved tables.";
 }
 
-function renderCatalogPreviewMarker(shape: string, position: string, color: string): ReactNode {
+function markerPreviewText(itemTitle: string, presentation: CatalogPresentation): string {
+  const explicit = String(presentation.labelText ?? "").trim();
+  if (explicit) return explicit.slice(0, 24);
+  const mode = String(presentation.labelMode ?? (presentation.chartRole === "text_label" ? "short" : "none"));
+  if (mode === "full") return itemTitle.slice(0, 32);
+  const signal = String(presentation.signalColumn ?? presentation.column ?? itemTitle);
+  return shortEventLabel(signal);
+}
+
+function shortEventLabel(value: string): string {
+  const key = value.toLowerCase().split(".").pop() ?? "";
+  const labels: Record<string, string> = {
+    bearish_displacement: "OB-",
+    bearish_fvg: "FVG-",
+    bos_down: "BOS-",
+    bos_up: "BOS+",
+    breaks_high20: "BH20",
+    breaks_low20: "BL20",
+    bullish_displacement: "OB+",
+    bullish_fvg: "FVG+",
+    higher_high: "HH",
+    lower_low: "LL",
+    swing_high_3: "SH3",
+    swing_high_5: "SH5",
+    swing_low_3: "SL3",
+    swing_low_5: "SL5",
+  };
+  if (labels[key]) return labels[key];
+  const words = key.split(/[^a-z0-9]+/).filter(Boolean);
+  return words.length ? words.slice(0, 4).map((word) => word[0]).join("").toUpperCase() : "EV";
+}
+
+function renderCatalogPreviewMarker(shape: string, position: string, color: string, label = ""): ReactNode {
   const x = 222;
   const y = position === "aboveBar" ? 66 : position === "inBar" ? 104 : 138;
-  if (shape === "arrowDown") return <polygon className="catalog-contract-marker" fill={color} points={`${x - 7},${y - 6} ${x + 7},${y - 6} ${x},${y + 8}`} />;
-  if (shape === "arrowUp") return <polygon className="catalog-contract-marker" fill={color} points={`${x},${y - 8} ${x - 7},${y + 6} ${x + 7},${y + 6}`} />;
-  if (shape === "square") return <rect className="catalog-contract-marker" fill={color} height="14" width="14" x={x - 7} y={y - 7} />;
-  return <circle className="catalog-contract-marker" cx={x} cy={y} fill={color} r="7" />;
+  const marker = shape === "arrowDown"
+    ? <polygon className="catalog-contract-marker" fill={color} points={`${x - 7},${y - 6} ${x + 7},${y - 6} ${x},${y + 8}`} />
+    : shape === "arrowUp"
+      ? <polygon className="catalog-contract-marker" fill={color} points={`${x},${y - 8} ${x - 7},${y + 6} ${x + 7},${y + 6}`} />
+      : shape === "square"
+        ? <rect className="catalog-contract-marker" fill={color} height="14" width="14" x={x - 7} y={y - 7} />
+        : <circle className="catalog-contract-marker" cx={x} cy={y} fill={color} r="7" />;
+  return (
+    <g>
+      {marker}
+      {label ? <text className="catalog-contract-marker-text" fill={color} x={x + 9} y={y - 5}>{label}</text> : null}
+    </g>
+  );
 }
 
 function renderCatalogRealMarker(shape: string, x: number, y: number, color: string): ReactNode {
@@ -2608,7 +2701,7 @@ function CatalogStylePopover({
   const isBand = chartRole === "continuous_band" || chartRole === "anchored_zone" || chartRole === "band" || chartRole === "price_zone";
   const isLineLike = ["price_overlay", "oscillator", "continuous_band", "anchored_zone", "band", "price_zone", "composite"].includes(chartRole);
   const isHistogram = chartRole === "histogram";
-  const isMarker = chartRole === "marker";
+  const isMarker = chartRole === "marker" || chartRole === "text_label";
   const showLineControls = isLineLike && (styleFields.has("lineStyle") || styleFields.has("lineWidth"));
   const showLineWidth = styleFields.has("lineWidth");
   const showBandControls = styleFields.has("bandFillColor") || styleFields.has("bandFillOpacity");

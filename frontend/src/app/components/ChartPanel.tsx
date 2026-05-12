@@ -51,6 +51,7 @@ type Region = { start: number; end: number; color: string; label: string };
 type PriceZone = {
   borderColor?: string;
   borderOpacity?: number;
+  borderStyle?: string;
   borderWidth?: number;
   color: string;
   displayItemId?: string;
@@ -444,6 +445,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (!payload || !priceChartRef.current || !candleRef.current || !volumeRef.current) return;
     candleRef.current.setData(payload.candles as never);
     volumeRef.current.setData(volumeDataForSettings(payload, chartSettingsRef.current) as never);
+    updateCandleMarkers();
     const nextSignature = buildCandleDataSignature(payload.candles);
     if (nextSignature !== baseDataSignatureRef.current) {
       baseDataSignatureRef.current = nextSignature;
@@ -476,6 +478,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     if (!priceChartRef.current) return;
     updatePriceOverlaySeries(displayedOverlaySeries);
+    updateCandleMarkers();
     drawCurrentRegions();
   }, [payload, visibleColumnKey]);
 
@@ -500,6 +503,17 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, true, palette, chartSettingsRef.current));
     });
     drawCurrentRegions();
+  }
+
+  function updateCandleMarkers() {
+    const candleSeries = candleRef.current;
+    const currentPayload = payloadRef.current;
+    if (!candleSeries) return;
+    if (!currentPayload) {
+      candleSeries.setMarkers([]);
+      return;
+    }
+    candleSeries.setMarkers(markersForSelection(currentPayload.markers, visibleSelectionRef.current));
   }
 
   function updatePriceOverlaySeries(seriesList: ChartSeries[]) {
@@ -1610,6 +1624,32 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   return Math.max(min, Math.min(max, value));
 }
 
+function markersForSelection(markers: ChartMarker[], selected: Set<string>): SeriesMarker<Time>[] {
+  return markers
+    .filter((marker) => !marker.displayItemId || selected.has(marker.displayItemId.toLowerCase()))
+    .map((marker, index) => ({
+      color: typeof marker.color === "string" ? marker.color : "#1E3A5F",
+      id: marker.id ?? `${marker.displayItemId ?? "marker"}:${marker.time}:${index}`,
+      position: markerPosition(marker.position),
+      shape: markerShape(marker.shape),
+      size: clampNumber(marker.size, 0.1, 4, 1),
+      text: typeof marker.text === "string" && marker.text.trim() ? marker.text : undefined,
+      time: marker.time as Time
+    }));
+}
+
+function markerPosition(value: unknown): SeriesMarker<Time>["position"] {
+  return value === "aboveBar" || value === "belowBar" || value === "inBar" ? value : "belowBar";
+}
+
+function markerShape(value: unknown): SeriesMarker<Time>["shape"] {
+  return value === "arrowDown" || value === "arrowUp" || value === "square" || value === "circle" ? value : "circle";
+}
+
+function zoneBorderStyle(value: unknown): "solid" | "dashed" | "dotted" {
+  return value === "dashed" || value === "dotted" ? value : "solid";
+}
+
 function rgbaFromHex(hex: string, opacity: number) {
   const normalized = validHexColor(hex, "#000000").replace("#", "");
   const red = parseInt(normalized.slice(0, 2), 16);
@@ -1997,6 +2037,7 @@ function drawPriceZones(
     const borderColor = validHexColor(zone.borderColor, fillColor);
     const borderOpacity = clampNumber(zone.borderOpacity, 0, 0.35, Math.max(fillOpacity * 1.8, 0.12));
     node.style.borderColor = rgbaFromHex(borderColor, borderOpacity);
+    node.style.borderStyle = zoneBorderStyle(zone.borderStyle);
     node.style.borderWidth = `${Math.max(0, Math.min(3, Math.round(zone.borderWidth ?? 1)))}px`;
     node.style.background = rgbaFromHex(fillColor, fillOpacity);
     const label = document.createElement("span");

@@ -454,7 +454,7 @@ def chart_feature_columns(records: list[dict[str, Any]], timeframe: str, start: 
                     item["column"] not in CHART_FEATURE_EXCLUDE_COLUMNS
                     and is_numeric_dtype(item["dtype"])
                     and presentation.get("selectable", True)
-                    and chart_role not in {"", "marker", "background_state", "anchored_zone", "data_only", "table_only"}
+                    and chart_role not in {"", "marker", "text_label", "background_state", "anchored_zone", "data_only", "table_only"}
                 ):
                     columns.append(item["column"])
     order = {str(item.get("column")): index for index, item in enumerate(catalog.get("columns", []))}
@@ -577,7 +577,7 @@ def display_item_settings(items: list[dict[str, Any]]) -> dict[str, dict[str, An
     for index, item in enumerate(items):
         presentation = item.get("presentation", {})
         role = str(presentation.get("chartRole") or "")
-        if role in {"marker", "price_zone", "anchored_zone", "background_state", "data_only", "table_only"}:
+        if role in {"marker", "text_label", "price_zone", "anchored_zone", "background_state", "data_only", "table_only"}:
             continue
         parts = presentation.get("parts") if role == "composite" and isinstance(presentation.get("parts"), list) else []
         if parts:
@@ -699,6 +699,7 @@ def display_price_zones(rows: list[dict[str, Any]], timeframe: str, items: list[
                     "color": color,
                     "borderColor": str(presentation.get("borderColor") or fill_color),
                     "borderOpacity": bounded_float(presentation.get("borderOpacity"), default=max(fill_opacity * 1.8, 0.12), lower=0.0, upper=0.35),
+                    "borderStyle": str(presentation.get("borderStyle") or "solid"),
                     "borderWidth": max(0, min(3, int(presentation.get("borderWidth") or 1))),
                     "fillColor": fill_color,
                     "fillOpacity": fill_opacity,
@@ -781,7 +782,8 @@ def display_item_markers(rows: list[dict[str, Any]], timeframe: str, items: list
         return markers
     for item in items:
         presentation = item.get("presentation", {})
-        if presentation.get("chartRole") != "marker":
+        role = str(presentation.get("chartRole") or "")
+        if role not in {"marker", "text_label"}:
             continue
         signal_columns = presentation.get("signalColumns")
         if not isinstance(signal_columns, list):
@@ -792,19 +794,60 @@ def display_item_markers(rows: list[dict[str, Any]], timeframe: str, items: list
             timestamp = chart_timestamp_seconds(row, timeframe)
             if not timestamp:
                 continue
-            markers.append(
-                {
-                    "displayItemId": str(item.get("id") or ""),
-                    "time": timestamp,
-                    "position": str(presentation.get("markerPosition") or "belowBar"),
-                    "color": str(presentation.get("color") or "#1E3A5F"),
-                    "shape": str(presentation.get("markerShape") or "circle"),
-                    "text": str(item.get("title") or "Feature"),
-                }
-            )
+            marker = {
+                "displayItemId": str(item.get("id") or ""),
+                "time": timestamp,
+                "position": str(presentation.get("markerPosition") or "belowBar"),
+                "color": str(presentation.get("color") or "#1E3A5F"),
+                "shape": str(presentation.get("markerShape") or "circle"),
+                "size": bounded_float(presentation.get("markerSize"), default=0.1 if role == "text_label" else 1.0, lower=0.1, upper=4.0),
+            }
+            label = display_marker_text(item, presentation, role)
+            if label:
+                marker["text"] = label
+            markers.append(marker)
             if len(markers) >= marker_limit:
                 return markers
     return markers
+
+
+def display_marker_text(item: dict[str, Any], presentation: dict[str, Any], role: str) -> str:
+    explicit = str(presentation.get("labelText") or "").strip()
+    label_mode = str(presentation.get("labelMode") or ("short" if role == "text_label" else "none"))
+    if label_mode == "none" and role != "text_label" and not explicit:
+        return ""
+    if explicit:
+        return explicit[:24]
+    if label_mode == "full":
+        return str(item.get("title") or "Feature")[:32]
+    signal = str(presentation.get("signalColumn") or "")
+    return short_event_label(signal or str(item.get("id") or item.get("title") or "Feature"))
+
+
+def short_event_label(value: str) -> str:
+    key = value.lower().split(".")[-1]
+    labels = {
+        "higher_high": "HH",
+        "lower_low": "LL",
+        "swing_high_3": "SH3",
+        "swing_low_3": "SL3",
+        "swing_high_5": "SH5",
+        "swing_low_5": "SL5",
+        "bos_up": "BOS+",
+        "bos_down": "BOS-",
+        "breaks_high20": "BH20",
+        "breaks_low20": "BL20",
+        "bullish_fvg": "FVG+",
+        "bearish_fvg": "FVG-",
+        "bullish_displacement": "OB+",
+        "bearish_displacement": "OB-",
+    }
+    if key in labels:
+        return labels[key]
+    words = [part for part in re.split(r"[^A-Za-z0-9]+", key) if part]
+    if not words:
+        return "EV"
+    return "".join(word[0] for word in words[:4]).upper()
 
 
 def chart_candle_duration_seconds(rows: list[dict[str, Any]], timeframe: str) -> int:
