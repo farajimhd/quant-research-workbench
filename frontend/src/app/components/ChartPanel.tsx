@@ -48,7 +48,20 @@ type ChartSeries = {
   data: Array<{ color?: string; time: number; value: number }>;
 };
 type Region = { start: number; end: number; color: string; label: string };
-type PriceZone = { color: string; displayItemId?: string; end: number; fillColor?: string; fillOpacity?: number; label: string; lower: number; start: number; upper: number };
+type PriceZone = {
+  borderColor?: string;
+  borderOpacity?: number;
+  borderWidth?: number;
+  color: string;
+  displayItemId?: string;
+  end: number;
+  fillColor?: string;
+  fillOpacity?: number;
+  label: string;
+  lower: number;
+  start: number;
+  upper: number;
+};
 export type ChartReference = {
   label?: string;
   minuteOfDay?: number;
@@ -1960,8 +1973,13 @@ function drawPriceZones(
     node.style.top = `${top}px`;
     node.style.width = `${width}px`;
     node.style.height = `${height}px`;
-    node.style.borderColor = zone.color;
-    node.style.background = rgbaFromHex(validHexColor(zone.fillColor, validHexColor(zone.color, "#1E3A5F")), clampNumber(zone.fillOpacity, 0.02, 0.5, 0.14));
+    const fillColor = validHexColor(zone.fillColor, validHexColor(zone.color, "#1E3A5F"));
+    const fillOpacity = clampNumber(zone.fillOpacity, 0.02, 0.35, 0.08);
+    const borderColor = validHexColor(zone.borderColor, fillColor);
+    const borderOpacity = clampNumber(zone.borderOpacity, 0, 0.35, Math.max(fillOpacity * 1.8, 0.12));
+    node.style.borderColor = rgbaFromHex(borderColor, borderOpacity);
+    node.style.borderWidth = `${Math.max(0, Math.min(3, Math.round(zone.borderWidth ?? 1)))}px`;
+    node.style.background = rgbaFromHex(fillColor, fillOpacity);
     const label = document.createElement("span");
     label.textContent = zone.label;
     node.appendChild(label);

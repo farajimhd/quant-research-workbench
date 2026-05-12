@@ -686,6 +686,8 @@ def display_price_zones(rows: list[dict[str, Any]], timeframe: str, items: list[
                 high += padding
                 low -= padding
             color = str(presentation.get("color") or "#1E3A5F")
+            fill_color = str(presentation.get("bandFillColor") or color)
+            fill_opacity = bounded_float(presentation.get("bandFillOpacity"), default=0.08, lower=0.02, upper=0.35)
             zones.append(
                 {
                     "displayItemId": str(item.get("id") or ""),
@@ -694,8 +696,11 @@ def display_price_zones(rows: list[dict[str, Any]], timeframe: str, items: list[
                     "upper": high,
                     "lower": low,
                     "color": color,
-                    "fillColor": str(presentation.get("bandFillColor") or color),
-                    "fillOpacity": bounded_float(presentation.get("bandFillOpacity"), default=0.14, lower=0.02, upper=0.5),
+                    "borderColor": str(presentation.get("borderColor") or fill_color),
+                    "borderOpacity": bounded_float(presentation.get("borderOpacity"), default=max(fill_opacity * 1.8, 0.12), lower=0.0, upper=0.35),
+                    "borderWidth": max(0, min(3, int(presentation.get("borderWidth") or 1))),
+                    "fillColor": fill_color,
+                    "fillOpacity": fill_opacity,
                     "label": str(item.get("title") or signal_column),
                 }
             )

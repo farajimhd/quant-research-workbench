@@ -232,6 +232,7 @@ const PRESENTATION_HELP = {
   opacity: "Controls visual strength without changing the value. Important long-horizon overlays can be thicker but more transparent so they remain visible without dominating candles.",
   bandFillColor: "Controls the translucent fill used inside a band. This is separate from the band boundary stroke color.",
   bandFillOpacity: "Controls how visible the band shade is. Lower values keep candles readable; higher values make the band easier to scan.",
+  borderOpacity: "Controls how strong the anchored-zone edge is. Keep this low so the boundary clarifies the zone without competing with candles.",
   zonePaddingBps: "Adds a small vertical thickness around a single price level for event-anchored zones. This prevents a higher-high or lower-low event from becoming an invisible one-pixel line.",
   precision: "Controls how many decimal places are shown in legends, tooltips, and readouts for numeric values.",
   markerShape: "Chooses the symbol used when the item renders as markers: circle, arrowUp, arrowDown, or square.",
@@ -1418,6 +1419,7 @@ function CatalogTab({
                           <CatalogNumberField help={PRESENTATION_HELP.zonePaddingBps} label="Padding bps" max={100} min={0} value={Number(activePresentation.zonePaddingBps ?? 0)} onChange={(value) => updateActivePresentation("zonePaddingBps", value)} />
                           <CatalogSelect help="Boundary stroke used around the zone." label="Border style" options={catalog?.presentationOptions.borderStyles ?? []} value={String(activePresentation.borderStyle ?? "solid")} onChange={(value) => updateActivePresentation("borderStyle", value)} />
                           <CatalogNumberField help="Zone boundary width in pixels." label="Border width" max={6} min={1} value={Number(activePresentation.borderWidth ?? 1)} onChange={(value) => updateActivePresentation("borderWidth", value)} />
+                          <CatalogNumberField help={PRESENTATION_HELP.borderOpacity} label="Border opacity" max={0.35} min={0} value={Number(activePresentation.borderOpacity ?? 0.14)} onChange={(value) => updateActivePresentation("borderOpacity", value)} />
                           <CatalogCheckbox checked={Boolean(activePresentation.stopOnMitigation)} help="Stops the zone when price revisits or mitigates the event range, where supported by the renderer." label="Stop on mitigation" onChange={(value) => updateActivePresentation("stopOnMitigation", value)} />
                         </div>
                       </div>
@@ -2045,7 +2047,9 @@ function CatalogPresentationChartPreview({
   const strokeColor = presentationColor(presentation.color);
   const strokeOpacity = boundedPresentationNumber(presentation.opacity, 0.05, 1, 1);
   const selectedStroke = typeof presentation.color === "string" && presentation.color.startsWith("#") ? colorWithOpacity(presentation.color, strokeOpacity) : strokeColor;
-  const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.6, 0.16));
+  const bandFillOpacity = boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.35, 0.08);
+  const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, bandFillOpacity);
+  const bandBorder = colorWithOpacity(presentation.borderColor ?? presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.borderOpacity, 0, 0.35, Math.max(bandFillOpacity * 1.8, 0.12)));
   const dashArray = svgDashArray(lineStyle, lineWidth);
   const displayNameForItem = itemTitle || "Selected item";
   const isBandLike = role === "band" || role === "price_zone" || role === "continuous_band" || role === "anchored_zone";
@@ -2088,8 +2092,8 @@ function CatalogPresentationChartPreview({
         {isBandLike ? (
           <g className="catalog-contract-selected-layer">
             <polygon fill={bandFill} points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60 350,100 322,106 290,102 258,109 226,112 194,106 162,114 130,121 98,112 66,106 34,119" />
-            <polyline fill="none" points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60" stroke={selectedStroke} strokeDasharray={dashArray} strokeWidth={lineWidth} />
-            <polyline fill="none" points="34,119 66,106 98,112 130,121 162,114 194,106 226,112 258,109 290,102 322,106 350,100" stroke={selectedStroke} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+            <polyline fill="none" points="34,88 66,75 98,79 130,92 162,86 194,72 226,76 258,68 290,63 322,66 350,60" stroke={bandBorder} strokeDasharray={dashArray} strokeWidth={lineWidth} />
+            <polyline fill="none" points="34,119 66,106 98,112 130,121 162,114 194,106 226,112 258,109 290,102 322,106 350,100" stroke={bandBorder} strokeDasharray={dashArray} strokeWidth={lineWidth} />
           </g>
         ) : null}
         {isDataOnlyRole(role) ? null : (
@@ -2216,7 +2220,9 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
   const strokeColor = presentationColor(presentation.color);
   const strokeOpacity = boundedPresentationNumber(presentation.opacity, 0.05, 1, 1);
   const selectedStroke = typeof presentation.color === "string" && presentation.color.startsWith("#") ? colorWithOpacity(presentation.color, strokeOpacity) : strokeColor;
-  const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.6, 0.16));
+  const bandFillOpacity = boundedPresentationNumber(presentation.bandFillOpacity, 0, 0.35, 0.08);
+  const bandFill = colorWithOpacity(presentation.bandFillColor ?? presentation.color, bandFillOpacity);
+  const bandBorder = colorWithOpacity(presentation.borderColor ?? presentation.bandFillColor ?? presentation.color, boundedPresentationNumber(presentation.borderOpacity, 0, 0.35, Math.max(bandFillOpacity * 1.8, 0.12)));
   const dashArray = svgDashArray(lineStyle, lineWidth);
   const parts = role === "composite" && Array.isArray(presentation.parts) ? presentation.parts.filter((part): part is Record<string, unknown> => Boolean(part && typeof part === "object")) : [];
   const compositeHasLowerPane = role === "composite" && parts.some((part) => {
@@ -2323,7 +2329,7 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
           className="catalog-contract-real-zone"
           fill={bandFill}
           height={fallbackZoneRect.height}
-          stroke={selectedStroke}
+          stroke={bandBorder}
           width={fallbackZoneRect.width}
           x={fallbackZoneRect.x}
           y={fallbackZoneRect.y}
@@ -2337,10 +2343,11 @@ function CatalogRealSampleChart({ itemTitle, presentation, preview }: { itemTitl
         return (
           <rect
             className="catalog-contract-real-zone"
-            fill={colorWithOpacity(zone.fillColor || zone.color, Math.min(0.5, Math.max(0.04, zone.fillOpacity ?? 0.14)))}
+            fill={colorWithOpacity(zone.fillColor || zone.color, Math.min(0.35, Math.max(0.02, zone.fillOpacity ?? 0.08)))}
             height={Math.max(2, Math.abs(bottom - top))}
             key={`zone:${index}`}
-            stroke={zone.color}
+            stroke={colorWithOpacity(zone.borderColor || zone.fillColor || zone.color, Math.min(0.35, Math.max(0, zone.borderOpacity ?? Math.max((zone.fillOpacity ?? 0.08) * 1.8, 0.12))))}
+            strokeWidth={Math.max(0, Math.min(3, Math.round(zone.borderWidth ?? 1)))}
             width={Math.max(2, right - left)}
             x={left}
             y={Math.min(top, bottom)}
@@ -2531,7 +2538,7 @@ function CatalogStylePopover({
   const showBandControls = styleFields.has("bandFillColor") || styleFields.has("bandFillOpacity");
   const showOpacity = styleFields.has("opacity");
   const showPrecision = styleFields.has("precision");
-  const resolvedBandFillOpacity = Math.max(0, Math.min(0.6, Number.isFinite(bandFillOpacity) ? bandFillOpacity : 0.16));
+  const resolvedBandFillOpacity = Math.max(0, Math.min(0.35, Number.isFinite(bandFillOpacity) ? bandFillOpacity : 0.08));
   const resolvedLineWidth = Math.max(1, Math.min(6, Number.isFinite(lineWidth) ? lineWidth : 1));
   const resolvedOpacity = Math.max(0.05, Math.min(1, Number.isFinite(opacity) ? opacity : 1));
   const previewLineStyle = resolvedLineStyles.includes(lineStyle) ? lineStyle : "solid";
@@ -2670,12 +2677,12 @@ function CatalogStylePopover({
                 <b>{opacityLabel(resolvedBandFillOpacity)}</b>
               </span>
               <input
-                max={0.6}
+                max={0.35}
                 min={0}
                 step={0.01}
                 type="range"
                 value={String(resolvedBandFillOpacity)}
-                onChange={(event) => onChange("bandFillOpacity", boundedNumber(event.target.value, 0, 0.6))}
+                onChange={(event) => onChange("bandFillOpacity", boundedNumber(event.target.value, 0, 0.35))}
               />
             </label>
           </div>
