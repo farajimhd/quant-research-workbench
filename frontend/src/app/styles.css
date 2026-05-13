@@ -799,16 +799,50 @@ button {
 }
 
 .new-run-page {
-  display: grid;
+  display: flex;
+  height: calc(100vh - 236px);
+  min-height: 0;
+  flex-direction: column;
   gap: 16px;
+  overflow: hidden;
 }
 
 .new-run-action-row {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-start;
   margin: 12px 0 0;
+}
+
+.backtest-results-panel {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.backtest-results-panel > .toolbar,
+.backtest-results-panel > .tabs {
+  flex: 0 0 auto;
+}
+
+.backtest-results-tab-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.backtest-results-tab-content > .data-table-shell {
+  height: 100%;
+}
+
+.backtest-results-log {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
 }
 
 .new-run-metric-strip {

@@ -598,7 +598,7 @@ function BacktestJobPanel({
   const latestRunDir = resultRunDir || [...events].reverse().map((event) => String(event.run_dir ?? "")).find(Boolean) || "";
   const latestRunId = latestRunDir ? latestRunDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "" : "";
   const [detail, setDetail] = useState<RunDetailPayload | null>(null);
-  const [tab, setTab] = useState("P/L Chart");
+  const [tab, setTab] = useState("Backtest Results");
 
   useEffect(() => {
     if (!latestRunId) {
@@ -611,36 +611,42 @@ function BacktestJobPanel({
   const progress = buildBacktestProgress(job, detail, config);
 
   return (
-    <section className="panel" style={{ marginTop: 16 }}>
+    <section className="panel backtest-results-panel" style={{ marginTop: 16 }}>
       <div className="toolbar" style={{ justifyContent: "space-between" }}>
         <h2 style={{ margin: 0 }}>Backtest Results</h2>
         <SemanticBadge tone={toneForStatus(progress.status)}>{progress.status}</SemanticBadge>
       </div>
-      <ProgressMeter
-        done={progress.done}
-        elapsed_sec={0}
-        label="Backtest progress"
-        progress={progress.percent}
-        status={progress.meterStatus}
-        total={progress.total}
-      />
-      <NewRunMetricStrip metrics={metrics} />
-      <div className="toolbar">
-        <span className="meta-tag">{progress.done}/{progress.total} sessions</span>
-        {latestRunDir ? <span className="meta-tag">{latestRunDir}</span> : null}
+      <Tabs tabs={["Backtest Results", "Daily", "Trades", "Orders", "Fills", "Positions", "Scanner", "Rejected", "Progress Events", "Logs"]} active={tab} onChange={setTab} />
+      <div className="backtest-results-tab-content">
+        {tab === "Backtest Results" ? (
+          <>
+            <ProgressMeter
+              done={progress.done}
+              elapsed_sec={0}
+              label="Backtest progress"
+              progress={progress.percent}
+              status={progress.meterStatus}
+              total={progress.total}
+            />
+            <NewRunMetricStrip metrics={metrics} />
+            <div className="toolbar">
+              <span className="meta-tag">{progress.done}/{progress.total} sessions</span>
+              {latestRunDir ? <span className="meta-tag">{latestRunDir}</span> : null}
+            </div>
+            <PnlCandleChart payload={detail?.portfolio_candles} runName={config.run_name} title="Portfolio P/L Candles" />
+          </>
+        ) : null}
+        {tab === "Daily" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
+        {tab === "Trades" ? <DataTable rows={detail?.tables.trades.rows ?? []} /> : null}
+        {tab === "Orders" ? <DataTable rows={detail?.tables.orders.rows ?? []} /> : null}
+        {tab === "Fills" ? <DataTable rows={detail?.tables.fills.rows ?? []} /> : null}
+        {tab === "Positions" ? <DataTable rows={detail?.tables.positions.rows ?? []} /> : null}
+        {tab === "Scanner" ? <DataTable rows={detail?.tables.scanner.rows ?? []} /> : null}
+        {tab === "Rejected" ? <DataTable rows={detail?.tables.rejections.rows ?? []} /> : null}
+        {tab === "Progress Events" ? <DataTable rows={events.map((event) => ({ session_date: event.session_date, status: event.status, run_dir: event.run_dir, ...((event.daily_summary as Record<string, unknown>) ?? {}) }))} /> : null}
+        {tab === "Logs" ? <pre className="markdown-panel backtest-results-log">{detail?.logs || "No logs yet."}</pre> : null}
+        {job?.error ? <div className="error-panel">{String(job.error)}</div> : null}
       </div>
-      <PnlCandleChart payload={detail?.portfolio_candles} runName={config.run_name} title="Portfolio P/L Candles" />
-      <Tabs tabs={["Daily", "Trades", "Orders", "Fills", "Positions", "Scanner", "Rejected", "Progress Events", "Logs"]} active={tab} onChange={setTab} />
-      {tab === "Daily" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
-      {tab === "Trades" ? <DataTable rows={detail?.tables.trades.rows ?? []} /> : null}
-      {tab === "Orders" ? <DataTable rows={detail?.tables.orders.rows ?? []} /> : null}
-      {tab === "Fills" ? <DataTable rows={detail?.tables.fills.rows ?? []} /> : null}
-      {tab === "Positions" ? <DataTable rows={detail?.tables.positions.rows ?? []} /> : null}
-      {tab === "Scanner" ? <DataTable rows={detail?.tables.scanner.rows ?? []} /> : null}
-      {tab === "Rejected" ? <DataTable rows={detail?.tables.rejections.rows ?? []} /> : null}
-      {tab === "Progress Events" ? <DataTable rows={events.map((event) => ({ session_date: event.session_date, status: event.status, run_dir: event.run_dir, ...((event.daily_summary as Record<string, unknown>) ?? {}) }))} /> : null}
-      {tab === "Logs" ? <pre className="markdown-panel">{detail?.logs || "No logs yet."}</pre> : null}
-      {job?.error ? <div className="error-panel">{String(job.error)}</div> : null}
     </section>
   );
 }
