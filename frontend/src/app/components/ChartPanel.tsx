@@ -51,13 +51,16 @@ type ChartSeries = {
   data: Array<{ color?: string; time: number; value: number }>;
 };
 type Region = { start: number; end: number; color: string; label: string };
+type TradeLabelPart = { text: string; tone?: "label" | "price" | "pnlLoss" | "pnlWin" | "reason" | "separator" | "size" };
 type TradeAnnotation = {
   color: string;
   entryLabel?: string;
+  entryLabelParts?: TradeLabelPart[];
   entryLabelSide?: "left" | "right";
   entryPrice: number;
   entryTime: number;
   exitLabel?: string;
+  exitLabelParts?: TradeLabelPart[];
   exitLabelSide?: "left" | "right";
   exitPrice: number;
   exitTime: number;
@@ -2593,8 +2596,8 @@ function drawTradeAnnotations(
     region.style.borderColor = rgbaFromHex(color, selected ? 0.28 : 0.12);
     layer.appendChild(region);
 
-    drawTradePriceLine(layer, left, width, entryY, color, annotation.entryLabel ?? "Entry", "entry", selected, annotation.entryLabelSide ?? "left");
-    drawTradePriceLine(layer, left, width, exitY, color, annotation.exitLabel ?? "Exit", "exit", selected, annotation.exitLabelSide ?? "right");
+    drawTradePriceLine(layer, left, width, entryY, color, annotation.entryLabel ?? "Entry", annotation.entryLabelParts, "entry", selected, annotation.entryLabelSide ?? "left");
+    drawTradePriceLine(layer, left, width, exitY, color, annotation.exitLabel ?? "Exit", annotation.exitLabelParts, "exit", selected, annotation.exitLabelSide ?? "right");
     drawTradeArrow(layer, entryX, entryY, color, "entry", selected);
     drawTradeArrow(layer, exitX, exitY, color, "exit", selected);
     if (typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
@@ -2608,7 +2611,7 @@ function drawTradeAnnotations(
   });
 }
 
-function drawTradePriceLine(layer: HTMLDivElement, left: number, width: number, y: number, color: string, label: string, kind: "entry" | "exit", selected: boolean, labelSide: "left" | "right") {
+function drawTradePriceLine(layer: HTMLDivElement, left: number, width: number, y: number, color: string, label: string, parts: TradeLabelPart[] | undefined, kind: "entry" | "exit", selected: boolean, labelSide: "left" | "right") {
   const line = document.createElement("div");
   line.className = `trade-price-line ${kind} label-${labelSide}${selected ? " selected" : ""}`;
   line.style.left = `${left}px`;
@@ -2616,7 +2619,16 @@ function drawTradePriceLine(layer: HTMLDivElement, left: number, width: number, 
   line.style.width = `${width}px`;
   line.style.borderColor = color;
   const text = document.createElement("span");
-  text.textContent = label;
+  if (parts?.length) {
+    parts.forEach((part) => {
+      const piece = document.createElement("b");
+      piece.className = `trade-label-part ${part.tone ?? "label"}`;
+      piece.textContent = part.text;
+      text.appendChild(piece);
+    });
+  } else {
+    text.textContent = label;
+  }
   text.style.color = color;
   text.style.borderColor = rgbaFromHex(color, 0.32);
   line.appendChild(text);

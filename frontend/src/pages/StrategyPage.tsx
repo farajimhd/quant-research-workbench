@@ -1606,10 +1606,12 @@ function tradeAnnotations(trades: DataRow[], selectedKey: string, candleTimes: S
     return [{
       color,
       entryLabel: tradeEntryLabel(trade, quantity, entryPrice),
+      entryLabelParts: tradeEntryLabelParts(trade, quantity, entryPrice),
       entryLabelSide: "left",
       entryPrice,
       entryTime,
       exitLabel: tradeExitLabel(trade, exitPrice, pnl),
+      exitLabelParts: tradeExitLabelParts(trade, exitPrice, pnl),
       exitLabelSide: "right",
       exitPrice,
       exitTime,
@@ -1653,9 +1655,31 @@ function tradeEntryLabel(trade: DataRow, quantity: number | null, entryPrice: nu
   return `${reason} ${size}@${formatMoney(entryPrice)}`.replace(/\s+/g, " ").trim();
 }
 
+function tradeEntryLabelParts(trade: DataRow, quantity: number | null, entryPrice: number) {
+  const reason = String(trade.entry_reason ?? trade.reason ?? "Entry").trim();
+  return [
+    { text: reason, tone: "reason" as const },
+    { text: " ", tone: "separator" as const },
+    ...(quantity ? [{ text: formatNumber(quantity), tone: "size" as const }] : []),
+    { text: "@", tone: "label" as const },
+    { text: formatMoney(entryPrice), tone: "price" as const }
+  ];
+}
+
 function tradeExitLabel(trade: DataRow, exitPrice: number, pnl: number) {
   const reason = String(trade.exit_reason ?? "Exit").trim();
   return `${reason}@${formatMoney(exitPrice)}, P/L=${formatMoney(pnl)}`;
+}
+
+function tradeExitLabelParts(trade: DataRow, exitPrice: number, pnl: number) {
+  const reason = String(trade.exit_reason ?? "Exit").trim();
+  return [
+    { text: reason, tone: "reason" as const },
+    { text: "@", tone: "label" as const },
+    { text: formatMoney(exitPrice), tone: "price" as const },
+    { text: ", P/L=", tone: "label" as const },
+    { text: formatMoney(pnl), tone: pnl >= 0 ? "pnlWin" as const : "pnlLoss" as const }
+  ];
 }
 
 function selectedTradeReference(trade: DataRow) {

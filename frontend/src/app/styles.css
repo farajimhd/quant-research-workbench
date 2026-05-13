@@ -927,7 +927,7 @@ button {
 
 .trade-chart-modal-panel {
   display: flex;
-  width: min(3000px, calc(100vw - 16px));
+  width: min(4000px, calc(100vw - 4px));
   height: min(940px, calc(100vh - 40px));
   max-height: calc(100vh - 40px);
   flex-direction: column;
@@ -5442,18 +5442,50 @@ button {
 .trade-guide-line span {
   position: absolute;
   right: 0;
-  max-width: 220px;
+  max-width: 320px;
   overflow: hidden;
   border: 1px solid;
   border-radius: 999px;
-  background: color-mix(in oklab, var(--surface) 92%, transparent);
-  font-size: 10px;
+  background: color-mix(in oklab, var(--surface) 96%, transparent);
+  box-shadow: 0 2px 8px color-mix(in oklab, #000 12%, transparent);
+  font-size: 11px;
   font-weight: 600;
   line-height: 1;
-  padding: 3px 6px;
+  padding: 4px 7px;
   text-overflow: ellipsis;
   transform: translateY(-50%);
   white-space: nowrap;
+}
+
+.trade-label-part {
+  font-style: normal;
+}
+
+.trade-label-part.reason,
+.trade-label-part.label,
+.trade-label-part.separator {
+  color: var(--muted-foreground);
+  font-weight: 600;
+}
+
+.trade-label-part.size {
+  color: #050505;
+  font-weight: 700;
+}
+
+.trade-label-part.price {
+  color: var(--foreground);
+  font-weight: 650;
+}
+
+.trade-label-part.pnlWin {
+  color: var(--success);
+  font-weight: 700;
+}
+
+.trade-label-part.pnlLoss {
+  color: var(--danger);
+  font-weight: 700;
 }
 
 .trade-price-line.label-left span {
