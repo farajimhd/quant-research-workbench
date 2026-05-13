@@ -90,6 +90,7 @@ class BacktestEngine:
                         "total_event_bars": self._expected_event_bar_count(sessions, requirements),
                     }
                 )
+                metadata["summary"] = self._summary(run_dir)
                 self._write_metadata(run_dir, metadata, artifact_writer)
                 self._emit_progress(
                     progress_callback,
@@ -104,6 +105,7 @@ class BacktestEngine:
                         "total_event_bars": metadata["total_event_bars"],
                         "completed_sessions": 0,
                         "total_sessions": len(sessions),
+                        "summary": metadata["summary"],
                     },
                 )
                 logging.info("Running %s sessions", len(sessions))
@@ -181,6 +183,7 @@ class BacktestEngine:
                         if self._should_write_live_chart(session_processed_bars, session_total_bars, live_chart_bar_interval):
                             self._write_chart_artifacts(run_dir, artifact_writer)
                         if self._should_emit_bar_progress(session_processed_bars, session_total_bars):
+                            summary = self._summary(run_dir)
                             self._emit_progress(
                                 progress_callback,
                                 {
@@ -198,6 +201,7 @@ class BacktestEngine:
                                     "current_bar_time": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
                                     "current_session_processed_bars": session_processed_bars,
                                     "current_session_total_bars": session_total_bars,
+                                    "summary": summary,
                                 },
                             )
 
@@ -260,6 +264,7 @@ class BacktestEngine:
                                 "current_session_total_bars": session_total_bars,
                                 "session_date": session_date.isoformat(),
                                 "daily_summary": dict(self.daily_rows[-1]),
+                                "summary": metadata["summary"],
                             },
                         )
 

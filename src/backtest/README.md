@@ -177,6 +177,11 @@ directory through the backtest cancel endpoint. The worker and engine check that
 file between bar events, mark the job `cancelled`, and flush the partial run
 artifacts so the visible result can still be reviewed.
 
+Live progress events also publish a summary snapshot with mark-to-market P/L,
+return, Sharpe, drawdown, trade counts, win rate, profit factor, and unrealized
+P/L. The result page should use that live summary for metric cards during the
+run instead of repeating submitted run or strategy parameters.
+
 As execution modeling becomes more realistic, the backtest should also write or
 extend:
 

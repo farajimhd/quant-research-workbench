@@ -1,4 +1,4 @@
-import { Activity, Banknote, CalendarRange, CircleHelp, Database, Gauge, ListChecks, Play, Shield, SlidersHorizontal, StopCircle, Trash2 } from "lucide-react";
+import { Activity, Banknote, CircleHelp, Database, Gauge, ListChecks, Percent, Play, Shield, SlidersHorizontal, StopCircle, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
@@ -445,8 +445,6 @@ function NewRunPanel({
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditTarget | null>(null);
   const [draftConfig, setDraftConfig] = useState(config);
-  const params = config.strategy_params;
-
   useEffect(() => {
     if (!jobId || !["running", "queued", "canceling"].includes(String(job?.status ?? "running"))) return;
     const timer = window.setInterval(() => {
@@ -500,7 +498,6 @@ function NewRunPanel({
     setEditing(null);
   }
 
-  const topMetrics = buildNewRunMetrics(config, params, job);
   const jobStatus = String(job?.status ?? "").toLowerCase();
   const running = ["running", "queued", "canceling"].includes(jobStatus);
   const canStop = ["running", "queued"].includes(jobStatus);
@@ -523,7 +520,7 @@ function NewRunPanel({
       </div>
 
       {error ? <div className="error-panel" style={{ marginTop: 12 }}>{error}</div> : null}
-      <BacktestJobPanel config={config} job={job} metrics={topMetrics} outputRoot={config.output_root} />
+      <BacktestJobPanel config={config} job={job} outputRoot={config.output_root} />
       {editing === "run" ? (
         <Modal className="parameter-modal-panel" title="Update Backtest Parameters" onClose={() => setEditing(null)}>
           <BacktestParameterEditor config={draftConfig} onChange={setDraftConfig} versions={versions} />
@@ -886,90 +883,6 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function buildNewRunMetrics(config: StrategyConfig, params: Record<string, StrategyParamValue>, job: Record<string, unknown> | null): NewRunMetric[] {
-  const status = String(job?.status ?? "draft");
-  const eventCount = Array.isArray(job?.events) ? job.events.length : 0;
-  return [
-    {
-      detail: eventCount ? `${formatNumber(eventCount)} sessions reported` : "Ready to submit",
-      icon: <Activity size={15} />,
-      label: "Status",
-      tone: statusMetricTone(status),
-      value: status
-    },
-    {
-      detail: dateRangeDetail(config.start_date, config.end_date),
-      icon: <CalendarRange size={15} />,
-      label: "Range",
-      value: compactDateRange(config.start_date, config.end_date)
-    },
-    {
-      detail: "Starting portfolio cash",
-      icon: <Banknote size={15} />,
-      label: "Capital",
-      value: formatMoney(config.initial_cash)
-    },
-    {
-      detail: "Candidate watchlist",
-      icon: <ListChecks size={15} />,
-      label: "Universe",
-      value: formatNumber(numberParam(params.watchlist_size))
-    },
-    {
-      detail: "Max concurrent positions",
-      icon: <Gauge size={15} />,
-      label: "Capacity",
-      value: formatNumber(numberParam(params.max_active_positions))
-    },
-    {
-      detail: "Setup / live score",
-      icon: <SlidersHorizontal size={15} />,
-      label: "Entry Gate",
-      value: `${formatNumber(numberParam(params.min_setup_score))} / ${formatNumber(numberParam(params.min_live_score))}`
-    },
-    {
-      detail: "Max capital per trade",
-      icon: <Shield size={15} />,
-      label: "Risk Cap",
-      value: formatPct(numberParam(params.max_capital_per_trade_pct))
-    }
-  ];
-}
-
-function numberParam(value: StrategyParamValue | undefined): number {
-  const numeric = Number(value ?? 0);
-  return Number.isFinite(numeric) ? numeric : 0;
-}
-
-function statusMetricTone(status: string): NewRunMetricTone {
-  const normalized = status.toLowerCase();
-  if (normalized === "complete" || normalized === "ready") return "success";
-  if (normalized === "running" || normalized === "queued") return "info";
-  if (normalized === "failed" || normalized === "error") return "warning";
-  return "neutral";
-}
-
-function compactDateRange(start: string, end: string): string {
-  const startParts = parseIsoDate(start);
-  const endParts = parseIsoDate(end);
-  if (!startParts || !endParts) return `${start} to ${end}`;
-  const monthDay = new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", timeZone: "UTC" });
-  const dayOnly = new Intl.DateTimeFormat("en-US", { day: "numeric", timeZone: "UTC" });
-  if (startParts.year === endParts.year && startParts.month === endParts.month) {
-    return `${monthDay.format(startParts.date)}-${dayOnly.format(endParts.date)}`;
-  }
-  return `${monthDay.format(startParts.date)}-${monthDay.format(endParts.date)}`;
-}
-
-function dateRangeDetail(start: string, end: string): string {
-  const startParts = parseIsoDate(start);
-  const endParts = parseIsoDate(end);
-  if (!startParts || !endParts) return "Selected backtest dates";
-  const days = Math.max(1, Math.round((endParts.date.getTime() - startParts.date.getTime()) / 86_400_000) + 1);
-  const yearLabel = startParts.year === endParts.year ? String(startParts.year) : `${startParts.year}-${endParts.year}`;
-  return `${yearLabel}, ${formatNumber(days)} calendar days`;
-}
-
 function parseIsoDate(value: string): { date: Date; month: number; year: number } | null {
   const [yearText, monthText, dayText] = value.split("-");
   const year = Number(yearText);
@@ -982,12 +895,10 @@ function parseIsoDate(value: string): { date: Date; month: number; year: number 
 function BacktestJobPanel({
   config,
   job,
-  metrics,
   outputRoot
 }: {
   config: StrategyConfig;
   job: Record<string, unknown> | null;
-  metrics: NewRunMetric[];
   outputRoot: string;
 }) {
   const events = Array.isArray(job?.events) ? (job?.events as Record<string, unknown>[]) : [];
@@ -1036,6 +947,7 @@ function BacktestJobPanel({
 
   const progress = buildBacktestProgress(job, detail, config);
   const activeRunName = String(detail?.metadata.run_name ?? jobConfig?.run_name ?? config.run_name ?? "Backtest Results");
+  const metrics = buildLiveBacktestMetrics(job, detail);
 
   return (
     <section className="panel backtest-results-panel" style={{ marginTop: 16 }}>
@@ -1078,6 +990,91 @@ function BacktestJobPanel({
       </div>
     </section>
   );
+}
+
+function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: RunDetailPayload | null): NewRunMetric[] {
+  const summary = liveSummary(job, detail);
+  const totalPnl = finiteNumber(summary.total_pnl);
+  const returnPct = finiteNumber(summary.return_pct);
+  const sharpe = finiteNumber(summary.sharpe_ratio);
+  const maxDrawdownPct = finiteNumber(summary.max_drawdown_pct);
+  const maxDrawdown = finiteNumber(summary.max_drawdown);
+  const tradeCount = finiteNumber(summary.trade_count);
+  const winRate = finiteNumber(summary.win_rate);
+  const profitFactor = finiteNumber(summary.profit_factor);
+  const unrealized = finiteNumber(summary.open_unrealized_pnl);
+
+  return [
+    {
+      detail: "Mark-to-market net P/L",
+      icon: <Banknote size={15} />,
+      label: "P/L",
+      tone: signedTone(totalPnl),
+      value: formatMoney(totalPnl)
+    },
+    {
+      detail: "Total return on equity",
+      icon: <Percent size={15} />,
+      label: "Return",
+      tone: signedTone(returnPct),
+      value: formatPct(returnPct)
+    },
+    {
+      detail: "Annualized from live equity returns",
+      icon: <Activity size={15} />,
+      label: "Sharpe",
+      value: formatNumber(sharpe, 2)
+    },
+    {
+      detail: `${formatMoney(maxDrawdown)} peak-to-trough`,
+      icon: <Gauge size={15} />,
+      label: "Max DD",
+      tone: maxDrawdownPct > 0 ? "warning" : "neutral",
+      value: formatPct(maxDrawdownPct)
+    },
+    {
+      detail: "Closed trades",
+      icon: <ListChecks size={15} />,
+      label: "Trades",
+      value: formatNumber(tradeCount)
+    },
+    {
+      detail: "Winning closed trades",
+      icon: <Percent size={15} />,
+      label: "Win Rate",
+      value: formatPct(winRate)
+    },
+    {
+      detail: "Gross profit / gross loss",
+      icon: <Shield size={15} />,
+      label: "Profit Factor",
+      value: formatNumber(profitFactor, 2)
+    },
+    {
+      detail: "Open mark-to-market P/L",
+      icon: <Banknote size={15} />,
+      label: "Unrealized",
+      tone: signedTone(unrealized),
+      value: formatMoney(unrealized)
+    }
+  ];
+}
+
+function liveSummary(job: Record<string, unknown> | null, detail: RunDetailPayload | null): Record<string, unknown> {
+  const isLiveRun = ["running", "queued", "canceling"].includes(String(job?.status ?? "").toLowerCase());
+  const jobSummary = job?.summary && typeof job.summary === "object" ? job.summary as Record<string, unknown> : null;
+  if (isLiveRun && jobSummary) return jobSummary;
+  if (detail?.summary && Object.keys(detail.summary).length > 0) return detail.summary;
+  const metadataSummary = detail?.metadata?.summary;
+  if (metadataSummary && typeof metadataSummary === "object") return metadataSummary as Record<string, unknown>;
+  if (jobSummary) return jobSummary;
+  return {};
+}
+
+function signedTone(value: number): NewRunMetricTone {
+  if (value > 0) return "success";
+  if (value < 0) return "warning";
+  return "neutral";
 }
 
 function buildBacktestProgress(job: Record<string, unknown> | null, detail: RunDetailPayload | null, config: StrategyConfig) {

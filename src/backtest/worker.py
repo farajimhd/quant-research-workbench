@@ -81,6 +81,7 @@ def update_progress_job(path: Path, payload: dict) -> None:
             "current_bar_time",
             "current_session_processed_bars",
             "current_session_total_bars",
+            "summary",
         )
         if key in payload
     }

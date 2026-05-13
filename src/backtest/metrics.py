@@ -148,12 +148,19 @@ def compute_summary(
     is_win_flags = [float(trade.get("pnl") or 0.0) > 0 for trade in trades]
 
     equity_values = [float(row.get("equity") or 0.0) for row in portfolio_rows]
+    last_portfolio = portfolio_rows[-1] if portfolio_rows else {}
+    open_unrealized_pnl = float(last_portfolio.get("open_unrealized_pnl") or 0.0)
+    realized_pnl = float(last_portfolio.get("realized_pnl") or (total_pnl - open_unrealized_pnl))
+    gross_exposure = float(last_portfolio.get("gross_exposure") or 0.0)
+    open_positions = int(last_portfolio.get("open_positions") or 0)
     drawdown_pct, drawdown_abs = max_drawdown(equity_values)
     daily_returns = daily_return_series(daily_rows)
     minute_returns = return_series(portfolio_rows)
-    daily_std = safe_std(daily_returns)
-    daily_downside = safe_std([value for value in daily_returns if value < 0])
-    daily_mean = safe_mean(daily_returns)
+    risk_returns = daily_returns if len(daily_returns) > 1 else minute_returns
+    periods_per_year = 252.0 if len(daily_returns) > 1 else 252.0 * 390.0
+    risk_std = safe_std(risk_returns)
+    risk_downside = safe_std([value for value in risk_returns if value < 0])
+    risk_mean = safe_mean(risk_returns)
 
     total_profit = sum(win_pnls)
     total_loss = sum(loss_pnls)
@@ -167,10 +174,10 @@ def compute_summary(
     trade_sharpe = safe_mean(pnl_values) / safe_std(pnl_values) if safe_std(pnl_values) else 0.0
     downside_pnls = [value for value in pnl_values if value < 0]
     trade_sortino = safe_mean(pnl_values) / safe_std(downside_pnls) if safe_std(downside_pnls) else 0.0
-    annual_std = daily_std * math.sqrt(252.0)
+    annual_std = risk_std * math.sqrt(periods_per_year)
     annual_variance = annual_std * annual_std
-    annual_sharpe = (daily_mean / daily_std) * math.sqrt(252.0) if daily_std else 0.0
-    annual_sortino = (daily_mean / daily_downside) * math.sqrt(252.0) if daily_downside else 0.0
+    annual_sharpe = (risk_mean / risk_std) * math.sqrt(periods_per_year) if risk_std else 0.0
+    annual_sortino = (risk_mean / risk_downside) * math.sqrt(periods_per_year) if risk_downside else 0.0
     fills = fills or []
     filled_orders = [order for order in orders if order.get("status") == "FILLED"]
     traded_value = (
@@ -260,10 +267,10 @@ def compute_summary(
     runtime_statistics = {
         "Equity": final_equity,
         "Fees": 0.0,
-        "Holdings": 0.0,
+        "Holdings": gross_exposure,
         "Net Profit": total_pnl,
         "Return": total_return,
-        "Unrealized": 0.0,
+        "Unrealized": open_unrealized_pnl,
         "Volume": traded_value,
     }
 
@@ -274,6 +281,8 @@ def compute_summary(
         "initial_cash": initial_cash,
         "final_equity": final_equity,
         "total_pnl": total_pnl,
+        "realized_pnl": realized_pnl,
+        "open_unrealized_pnl": open_unrealized_pnl,
         "return_pct": total_return,
         "trade_count": len(trades),
         "win_count": len(wins),
@@ -287,6 +296,8 @@ def compute_summary(
         "sharpe_ratio": annual_sharpe,
         "sortino_ratio": annual_sortino,
         "portfolio_turnover": turnover,
+        "gross_exposure": gross_exposure,
+        "open_positions": open_positions,
         "total_orders": len(orders),
         "total_fills": len(fills),
     }
