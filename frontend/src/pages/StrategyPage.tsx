@@ -17,6 +17,8 @@ type Strategy = {
   name: string;
   display_name: string;
   description: string;
+  versions?: string[];
+  default_version?: string;
 };
 
 type RunRow = {
@@ -104,14 +106,33 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_orb_range_atr_fraction: "Minimum opening-range size compared with ATR.",
   max_orb_range_atr_fraction: "Maximum opening-range size compared with ATR.",
   tema_entry_atr_buffer: "TEMA entry buffer expressed relative to ATR.",
-  tema_exit_atr_buffer: "TEMA exit buffer expressed relative to ATR."
+  tema_exit_atr_buffer: "TEMA exit buffer expressed relative to ATR.",
+  min_opening_volume: "Minimum opening-box share volume required before a ticker can be considered.",
+  min_opening_dollar_volume: "Minimum opening-box dollar volume required before a ticker can be considered.",
+  opening_volume_score_full: "Opening-box volume level that earns the full volume score.",
+  min_box_range_pct: "Minimum opening-box range as a fraction of the opening price.",
+  max_box_range_pct: "Maximum opening-box range as a fraction of the opening price.",
+  min_box_dollar_range: "Minimum opening-box dollar range required for setup eligibility.",
+  max_entry_extension_pct: "Maximum allowed close extension beyond the entry trigger.",
+  tema_entry_buffer_pct: "TEMA entry buffer as a fraction of opening-box close.",
+  tema_exit_buffer_pct: "TEMA exit buffer as a fraction of opening-box close."
 };
 
 const STRATEGY_PARAMETER_GROUPS = [
   {
     title: "Universe & Liquidity",
     description: "Filters that decide which symbols are allowed into the setup scan.",
-    keys: ["min_price", "max_price", "min_avg_daily_volume", "min_atr", "relative_volume_daily_share", "min_opening_relative_volume"]
+    keys: [
+      "min_price",
+      "max_price",
+      "min_avg_daily_volume",
+      "min_atr",
+      "relative_volume_daily_share",
+      "min_opening_relative_volume",
+      "min_opening_volume",
+      "min_opening_dollar_volume",
+      "opening_volume_score_full"
+    ]
   },
   {
     title: "Scoring & Capacity",
@@ -126,16 +147,38 @@ const STRATEGY_PARAMETER_GROUPS = [
   {
     title: "Entry & Risk",
     description: "Position sizing, entry buffers, stops, and portfolio capital constraints.",
-    keys: ["entry_buffer_pct", "entry_stage_proximity_pct", "stop_box_pullback_fraction", "min_risk_pct", "max_risk_pct", "max_capital_per_trade_pct", "cash_reserve_pct"]
+    keys: [
+      "entry_buffer_pct",
+      "entry_stage_proximity_pct",
+      "max_entry_extension_pct",
+      "stop_box_pullback_fraction",
+      "min_risk_pct",
+      "max_risk_pct",
+      "max_capital_per_trade_pct",
+      "cash_reserve_pct"
+    ]
   },
   {
     title: "Pattern Quality",
     description: "Gap, candle quality, opening-range size, and trend buffer requirements.",
-    keys: ["min_gap_up_pct", "min_close_location", "min_body_to_range", "min_orb_range_atr_fraction", "max_orb_range_atr_fraction", "tema_entry_atr_buffer", "tema_exit_atr_buffer"]
+    keys: [
+      "min_gap_up_pct",
+      "min_close_location",
+      "min_body_to_range",
+      "min_orb_range_atr_fraction",
+      "max_orb_range_atr_fraction",
+      "min_box_range_pct",
+      "max_box_range_pct",
+      "min_box_dollar_range",
+      "tema_entry_atr_buffer",
+      "tema_exit_atr_buffer",
+      "tema_entry_buffer_pct",
+      "tema_exit_buffer_pct"
+    ]
   }
 ] satisfies Array<{ title: string; description: string; keys: string[] }>;
 
-export function StrategyPage() {
+export function StrategyPage({ selectedVersion, versions }: { selectedVersion: string; versions: string[] }) {
   const [strategy, setStrategy] = useState<Strategy | null>(null);
   const [activeTab, setActiveTab] = useState(tabs[0]);
   const [runs, setRuns] = useState<RunRow[]>([]);
@@ -145,21 +188,20 @@ export function StrategyPage() {
 
   useEffect(() => {
     api<{ strategies: Strategy[] }>("/api/strategies").then((payload) => setStrategy(payload.strategies.find((item) => item.name === strategyName) ?? payload.strategies[0]));
-    api<StrategyConfig>(`/api/strategies/${strategyName}/default-config`).then(setConfig);
   }, []);
 
   useEffect(() => {
-    if (!config) return;
-    api<{ content: string }>(`/api/strategies/${strategyName}/readme${query({ version: config.strategy_version || "v1" })}`).then((payload) => setReadme(payload.content));
-  }, [config?.strategy_version]);
+    api<StrategyConfig>(`/api/strategies/${strategyName}/default-config${query({ version: selectedVersion })}`).then(setConfig);
+    api<{ content: string }>(`/api/strategies/${strategyName}/readme${query({ version: selectedVersion })}`).then((payload) => setReadme(payload.content));
+  }, [selectedVersion]);
 
   useEffect(() => {
     if (!config) return;
-    loadRuns(config.output_root);
-  }, [config?.output_root]);
+    loadRuns(config.output_root, selectedVersion);
+  }, [config?.output_root, selectedVersion]);
 
-  async function loadRuns(outputRoot: string) {
-    const payload = await api<{ runs: RunRow[] }>(`/api/backtests/runs${query({ output_root: outputRoot, strategy_name: strategyName })}`);
+  async function loadRuns(outputRoot: string, version: string) {
+    const payload = await api<{ runs: RunRow[] }>(`/api/backtests/runs${query({ output_root: outputRoot, strategy_name: strategyName, strategy_version: version })}`);
     setRuns(payload.runs);
   }
 
@@ -171,8 +213,18 @@ export function StrategyPage() {
         description={strategy?.description ?? "Opening range momentum research strategy."}
       />
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
-      {activeTab === "Backtest" && config ? <NewRunPanel config={config} onConfigChange={setConfig} onComplete={() => loadRuns(config.output_root)} /> : null}
-      {activeTab === "Runs" && config ? <RunsPanel runs={runs} outputRoot={config.output_root} onOpen={setSelectedRun} onDeleted={() => loadRuns(config.output_root)} /> : null}
+      {activeTab === "Backtest" && config ? (
+        <NewRunPanel
+          config={config}
+          key={config.strategy_version}
+          onConfigChange={setConfig}
+          onComplete={() => loadRuns(config.output_root, selectedVersion)}
+          versions={versions}
+        />
+      ) : null}
+      {activeTab === "Runs" && config ? (
+        <RunsPanel runs={runs} outputRoot={config.output_root} onOpen={setSelectedRun} onDeleted={() => loadRuns(config.output_root, selectedVersion)} />
+      ) : null}
       {activeTab === "Strategy README" ? (
         <div className="markdown-panel">
           <ReactMarkdown>{readme}</ReactMarkdown>
@@ -227,11 +279,13 @@ function RunsPanel({
 function NewRunPanel({
   config,
   onConfigChange,
-  onComplete
+  onComplete,
+  versions
 }: {
   config: StrategyConfig;
   onConfigChange: (config: StrategyConfig) => void;
   onComplete: () => void;
+  versions: string[];
 }) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<Record<string, unknown> | null>(null);
@@ -292,7 +346,7 @@ function NewRunPanel({
       <BacktestJobPanel config={config} job={job} metrics={topMetrics} outputRoot={config.output_root} />
       {editing === "run" ? (
         <Modal title="Update Backtest Parameters" onClose={() => setEditing(null)}>
-          <BacktestParameterEditor config={draftConfig} onChange={setDraftConfig} />
+          <BacktestParameterEditor config={draftConfig} onChange={setDraftConfig} versions={versions} />
           <div className="modal-actions">
             <button className="button" onClick={() => setEditing(null)} type="button">Cancel</button>
             <button className="button primary" onClick={applyDraft} type="button">Update Parameters</button>
@@ -327,12 +381,24 @@ function NewRunMetricStrip({ metrics }: { metrics: NewRunMetric[] }) {
   );
 }
 
-function BacktestParameterEditor({ config, onChange }: { config: StrategyConfig; onChange: (config: StrategyConfig) => void }) {
+function BacktestParameterEditor({
+  config,
+  onChange,
+  versions
+}: {
+  config: StrategyConfig;
+  onChange: (config: StrategyConfig) => void;
+  versions: string[];
+}) {
   return (
     <div className="parameter-edit-stack">
       <EditSection description="These values identify the run and choose the inclusive backtest date range." title="Identity & Range">
         <EditField help={RUN_PARAMETER_HELP.run_name} label="Run name" value={config.run_name} onChange={(value) => onChange({ ...config, run_name: value })} />
-        <EditField help={RUN_PARAMETER_HELP.strategy_version} label="Strategy version" value={config.strategy_version || "v1"} onChange={(value) => onChange({ ...config, strategy_version: value })} />
+        <EditReadonlyField
+          help={RUN_PARAMETER_HELP.strategy_version}
+          label="Strategy version"
+          value={versions.includes(config.strategy_version) ? config.strategy_version : config.strategy_version || "v1"}
+        />
         <EditField help={RUN_PARAMETER_HELP.start_date} label="Start" type="date" value={config.start_date} onChange={(value) => onChange({ ...config, start_date: value })} />
         <EditField help={RUN_PARAMETER_HELP.end_date} label="End" type="date" value={config.end_date} onChange={(value) => onChange({ ...config, end_date: value })} />
         <EditBooleanField help={RUN_PARAMETER_HELP.save_symbol_bars} label="Save symbol bars" value={config.save_symbol_bars} onChange={(value) => onChange({ ...config, save_symbol_bars: value })} />
@@ -346,6 +412,15 @@ function BacktestParameterEditor({ config, onChange }: { config: StrategyConfig;
         <EditNumberField help={RUN_PARAMETER_HELP.initial_cash} label="Initial cash" value={config.initial_cash} onChange={(value) => onChange({ ...config, initial_cash: value })} />
         <EditNumberField help={RUN_PARAMETER_HELP.slippage_bps} label="Slippage bps" value={config.slippage_bps} onChange={(value) => onChange({ ...config, slippage_bps: value })} />
       </EditSection>
+    </div>
+  );
+}
+
+function EditReadonlyField({ help, label, value }: { help: string; label: string; value: string }) {
+  return (
+    <div className="field config-field">
+      <FieldLabel help={help} label={label} />
+      <input readOnly value={value} />
     </div>
   );
 }

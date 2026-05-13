@@ -7,3 +7,4 @@ The root folder describes the shared idea only. Exact rules, indicators, data re
 ## Versions
 
 - `v1`: First provider-backed ORB momentum implementation.
+- `v2`: Same-session ORB momentum implementation that removes prior daily context and trades on `1m` bar closes with `5m` momentum confirmation.

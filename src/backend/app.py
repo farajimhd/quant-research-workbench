@@ -47,6 +47,7 @@ from src.data_provider.jobs import cancel_build_job, get_build_status, list_buil
 from src.data_provider.manifest import read_manifest
 from src.strategies.registry import (
     available_strategies,
+    available_strategy_versions,
     create_strategy,
     default_strategy_params,
     default_strategy_version,
@@ -82,7 +83,7 @@ class BuildSubmit(ScopeUpdate):
 
 class BacktestSubmit(BaseModel):
     strategy_name: str
-    strategy_version: str = "v1"
+    strategy_version: str = "v2"
     run_name: str = "React app run"
     start_date: date
     end_date: date
@@ -224,6 +225,8 @@ def strategies() -> dict[str, Any]:
                 "name": name,
                 "display_name": name.replace("_", " ").title(),
                 "description": "Opening-range momentum strategy using a 09:30-09:35 setup ranking, live ranking, and 5-minute confirmation.",
+                "versions": available_strategy_versions(name),
+                "default_version": default_strategy_version(name),
             }
             for name in available_strategies()
         ]
@@ -242,12 +245,17 @@ def strategy_readme(strategy_name: str, version: str | None = None) -> dict[str,
 
 
 @app.get("/api/strategies/{strategy_name}/default-config")
-def strategy_default_config(strategy_name: str) -> dict[str, Any]:
+def strategy_default_config(strategy_name: str, version: str | None = None) -> dict[str, Any]:
     if strategy_name not in available_strategies():
         raise HTTPException(status_code=404, detail="Unknown strategy")
+    selected_version = version or default_strategy_version(strategy_name)
+    try:
+        strategy_params = default_strategy_params(strategy_name, selected_version)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {
         "strategy_name": strategy_name,
-        "strategy_version": default_strategy_version(strategy_name),
+        "strategy_version": selected_version,
         "run_name": "React app run",
         "start_date": "2024-05-01",
         "end_date": "2024-05-02",
@@ -257,24 +265,31 @@ def strategy_default_config(strategy_name: str) -> dict[str, Any]:
         "initial_cash": 10_000.0,
         "slippage_bps": 2.0,
         "save_symbol_bars": True,
-        "strategy_params": default_strategy_params(strategy_name),
+        "strategy_params": strategy_params,
     }
 
 
 @app.get("/api/backtests/runs")
-def backtest_runs(output_root: str = str(DEFAULT_OUTPUT_ROOT), strategy_name: str | None = None) -> dict[str, Any]:
+def backtest_runs(
+    output_root: str = str(DEFAULT_OUTPUT_ROOT),
+    strategy_name: str | None = None,
+    strategy_version: str | None = None,
+) -> dict[str, Any]:
     rows = []
     for path in list_runs(Path(output_root), strategy_name):
         metadata = read_run_metadata(path) or {}
         summary = metadata.get("summary") or {}
         config = metadata.get("config") or {}
+        run_strategy_version = metadata.get("strategy_version", config.get("strategy_version", "v1"))
+        if strategy_version and run_strategy_version != strategy_version:
+            continue
         rows.append(
             {
                 "run_id": path.name,
                 "run_dir": str(path),
                 "run_name": metadata.get("run_name", path.name),
                 "strategy_name": metadata.get("strategy_name", config.get("strategy_name")),
-                "strategy_version": metadata.get("strategy_version", config.get("strategy_version", "v1")),
+                "strategy_version": run_strategy_version,
                 "status": metadata.get("status", "unknown"),
                 "created_at": metadata.get("created_at"),
                 "date_range": f"{config.get('start_date', '')} to {config.get('end_date', '')}",

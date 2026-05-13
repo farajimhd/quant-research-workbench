@@ -3,30 +3,42 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from src.strategies.orb_5m_momentum.v1.config import OrbMomentumConfig
+from src.strategies.orb_5m_momentum.v1.config import OrbMomentumConfig as OrbMomentumV1Config
 from src.strategies.orb_5m_momentum.v1.strategy import OrbFiveMinuteMomentumStrategy
+from src.strategies.orb_5m_momentum.v2.config import OrbMomentumConfig as OrbMomentumV2Config
+from src.strategies.orb_5m_momentum.v2.strategy import OrbFiveMinuteMomentumV2Strategy
 
 STRATEGIES_ROOT = Path(__file__).resolve().parent
 
 
 def create_orb_5m_momentum_v1(params: dict | None = None) -> OrbFiveMinuteMomentumStrategy:
-    return OrbFiveMinuteMomentumStrategy(OrbMomentumConfig.from_dict(params))
+    return OrbFiveMinuteMomentumStrategy(OrbMomentumV1Config.from_dict(params))
 
 
 def default_orb_5m_momentum_v1_params() -> dict:
-    return OrbMomentumConfig().to_dict()
+    return OrbMomentumV1Config().to_dict()
+
+
+def create_orb_5m_momentum_v2(params: dict | None = None) -> OrbFiveMinuteMomentumV2Strategy:
+    return OrbFiveMinuteMomentumV2Strategy(OrbMomentumV2Config.from_dict(params))
+
+
+def default_orb_5m_momentum_v2_params() -> dict:
+    return OrbMomentumV2Config().to_dict()
 
 
 STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("orb_5m_momentum", "v1"): create_orb_5m_momentum_v1,
+    ("orb_5m_momentum", "v2"): create_orb_5m_momentum_v2,
 }
 
 STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("orb_5m_momentum", "v1"): default_orb_5m_momentum_v1_params,
+    ("orb_5m_momentum", "v2"): default_orb_5m_momentum_v2_params,
 }
 
 DEFAULT_STRATEGY_VERSIONS: dict[str, str] = {
-    "orb_5m_momentum": "v1",
+    "orb_5m_momentum": "v2",
 }
 
 

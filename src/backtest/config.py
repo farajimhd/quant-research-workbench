@@ -23,7 +23,7 @@ class BacktestConfig:
     strategy_name: str
     start_date: date
     end_date: date
-    strategy_version: str = "v1"
+    strategy_version: str = "v2"
     run_name: str = "Untitled run"
     data_root: Path = DEFAULT_DATA_ROOT
     processed_data_root: Path = DEFAULT_PROCESSED_DATA_ROOT
@@ -46,7 +46,7 @@ class BacktestConfig:
         data["processed_data_root"] = Path(data.get("processed_data_root", DEFAULT_PROCESSED_DATA_ROOT))
         data["output_root"] = Path(data.get("output_root", DEFAULT_OUTPUT_ROOT))
         data["strategy_params"] = dict(data.get("strategy_params", {}))
-        data["strategy_version"] = str(data.get("strategy_version") or "v1").strip()
+        data["strategy_version"] = str(data.get("strategy_version") or "v2").strip()
         data["run_name"] = str(data.get("run_name") or "Untitled run").strip()
         data["created_by_app"] = bool(data.get("created_by_app", False))
         return cls(**data)

@@ -290,6 +290,11 @@ button {
   gap: 4px;
 }
 
+.nav-item-wrap {
+  display: grid;
+  gap: 6px;
+}
+
 .nav-item {
   display: flex;
   width: 100%;
@@ -321,6 +326,38 @@ button {
   border-color: var(--sidebar-primary);
   background: var(--sidebar-primary);
   color: var(--sidebar-primary-foreground);
+}
+
+.strategy-version-list {
+  display: grid;
+  gap: 4px;
+  padding-left: 31px;
+}
+
+.strategy-version-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-foreground);
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.strategy-version-item:hover {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+
+.strategy-version-item.active {
+  border-color: color-mix(in oklab, var(--sidebar-primary) 20%, transparent);
+  background: color-mix(in oklab, var(--sidebar-primary) 10%, transparent);
+  color: var(--sidebar-foreground);
 }
 
 .main {
