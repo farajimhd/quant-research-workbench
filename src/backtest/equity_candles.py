@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
 
 PORTFOLIO_CANDLE_TIMEFRAMES = ("1h", "2h", "4h", "1d")
+EXCHANGE_TIME_ZONE = "America/New_York"
 
 
 def default_portfolio_candle_timeframe(start_date: date, end_date: date) -> str:
@@ -28,9 +30,8 @@ def build_portfolio_candles(
     if not portfolio_rows:
         return []
     frame = (
-        pl.DataFrame(portfolio_rows, infer_schema_length=None)
+        pl.DataFrame(normalize_portfolio_timestamps(portfolio_rows), infer_schema_length=None)
         .with_columns(
-            pl.col("timestamp").cast(pl.Datetime).alias("timestamp"),
             pl.col("equity").cast(pl.Float64),
         )
         .sort("timestamp")
@@ -44,6 +45,29 @@ def build_portfolio_candles(
             candles = aggregate_candles(frame, timeframe)
         rows.extend(candles.with_columns(pl.lit(timeframe).alias("timeframe")).to_dicts())
     return rows
+
+
+def normalize_portfolio_timestamps(portfolio_rows: list[dict]) -> list[dict]:
+    timezone = ZoneInfo(EXCHANGE_TIME_ZONE)
+    normalized_rows = []
+    for row in portfolio_rows:
+        timestamp = row.get("timestamp")
+        if isinstance(timestamp, datetime):
+            dt = timestamp
+        elif timestamp is None:
+            dt = None
+        else:
+            try:
+                dt = datetime.fromisoformat(str(timestamp))
+            except ValueError:
+                dt = None
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone)
+            else:
+                dt = dt.astimezone(timezone)
+        normalized_rows.append({**row, "timestamp": dt})
+    return normalized_rows
 
 
 def ensure_portfolio_metric_columns(frame: pl.DataFrame, initial_cash: float) -> pl.DataFrame:

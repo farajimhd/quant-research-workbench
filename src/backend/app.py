@@ -216,7 +216,7 @@ def portfolio_candle_payload(run_dir: Path, metadata: dict[str, Any]) -> dict[st
             rows = frame.filter(pl.col("timeframe") == timeframe).sort("timestamp").to_dicts()
         candles[str(timeframe)] = [
             {
-                "time": timestamp_seconds(row.get("timestamp")),
+                "time": timestamp_seconds(row.get("timestamp"), timezone_name="UTC"),
                 "open": row.get("open"),
                 "high": row.get("high"),
                 "low": row.get("low"),
@@ -243,7 +243,7 @@ def portfolio_candle_payload(run_dir: Path, metadata: dict[str, Any]) -> dict[st
                 "open_positions": row.get("open_positions"),
             }
             for row in rows
-            if timestamp_seconds(row.get("timestamp")) is not None
+            if timestamp_seconds(row.get("timestamp"), timezone_name="UTC") is not None
         ]
     return {"timeframes": available_timeframes, "default_timeframe": default_timeframe, "candles": candles}
 
