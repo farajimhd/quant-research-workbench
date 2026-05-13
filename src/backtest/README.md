@@ -158,7 +158,9 @@ Core artifacts:
   unrealized P/L, gross exposure, peak equity, and drawdown snapshots
 - `portfolio_candles.parquet`: mark-to-market P/L and equity OHLC candles plus
   open-unrealized and drawdown OHLC fields for `1m`, `1h`, `2h`, `4h`, and
-  `1d`
+  `1d`. Candle timestamps are market-clock timestamps and API payloads must
+  convert naive values as `America/New_York` so the chart x-axis remains in
+  exchange time.
 - `signal_events.parquet`: strategy signal events
 - `rejection_events.parquet`: rejected strategy candidates or invalid signals
 - `candidate_rankings.parquet`: setup rankings

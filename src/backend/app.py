@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import polars as pl
 from fastapi import FastAPI, HTTPException, Query
@@ -58,6 +59,7 @@ from src.strategies.registry import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 CHART_DISPLAY_ITEMS_NONE = "__none__"
+EXCHANGE_TIME_ZONE = "America/New_York"
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
 app.add_middleware(
@@ -150,15 +152,19 @@ def read_json_file(path: Path) -> dict[str, Any]:
         return {}
 
 
-def timestamp_seconds(value: Any) -> int | None:
+def timestamp_seconds(value: Any, timezone_name: str = EXCHANGE_TIME_ZONE) -> int | None:
     if isinstance(value, datetime):
-        return int(value.timestamp())
-    if value is None:
+        dt = value
+    elif value is None:
         return None
-    try:
-        return int(datetime.fromisoformat(str(value)).timestamp())
-    except ValueError:
-        return None
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo(timezone_name))
+    return int(dt.timestamp())
 
 
 def portfolio_candle_payload(run_dir: Path, metadata: dict[str, Any]) -> dict[str, Any]:
