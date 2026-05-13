@@ -5,7 +5,6 @@ import ReactMarkdown from "react-markdown";
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
 import { DataTable } from "../app/components/DataTable";
-import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { ProgressMeter } from "../app/components/Progress";
@@ -256,6 +255,11 @@ export function StrategyPage() {
     setActiveSelection(draftSelection);
   }
 
+  function openSavedRun(runId: string) {
+    setSelectedRun(runId);
+    setActiveTab(tabs[0]);
+  }
+
   function changeSelection() {
     if (activeSelection) setDraftSelection(activeSelection);
     setActiveSelection(null);
@@ -300,19 +304,32 @@ export function StrategyPage() {
       />
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
       {activeTab === "Backtest" && config ? (
-        <NewRunPanel
-          config={config}
-          key={config.strategy_version}
-          onConfigChange={setConfig}
-          onComplete={() => loadRuns(config.output_root, activeSelection.strategyName, activeSelection.version)}
-          versions={activeStrategy?.versions ?? [activeSelection.version]}
-        />
+        selectedRun ? (
+          <SavedRunPanel
+            config={config}
+            onBack={() => {
+              setSelectedRun(null);
+              setActiveTab("Runs");
+            }}
+            onNewBacktest={() => setSelectedRun(null)}
+            outputRoot={config.output_root}
+            runId={selectedRun}
+          />
+        ) : (
+          <NewRunPanel
+            config={config}
+            key={config.strategy_version}
+            onConfigChange={setConfig}
+            onComplete={() => loadRuns(config.output_root, activeSelection.strategyName, activeSelection.version)}
+            versions={activeStrategy?.versions ?? [activeSelection.version]}
+          />
+        )
       ) : null}
       {activeTab === "Runs" && config ? (
         <RunsPanel
           runs={runs}
           outputRoot={config.output_root}
-          onOpen={setSelectedRun}
+          onOpen={openSavedRun}
           onDeleted={() => loadRuns(config.output_root, activeSelection.strategyName, activeSelection.version)}
         />
       ) : null}
@@ -321,7 +338,6 @@ export function StrategyPage() {
           <ReactMarkdown>{readme}</ReactMarkdown>
         </div>
       ) : null}
-      {selectedRun && config ? <RunDetail runId={selectedRun} outputRoot={config.output_root} onClose={() => setSelectedRun(null)} /> : null}
     </>
   );
 }
@@ -539,6 +555,34 @@ function NewRunPanel({
           </div>
         </Modal>
       ) : null}
+    </section>
+  );
+}
+
+function SavedRunPanel({
+  config,
+  onBack,
+  onNewBacktest,
+  outputRoot,
+  runId
+}: {
+  config: StrategyConfig;
+  onBack: () => void;
+  onNewBacktest: () => void;
+  outputRoot: string;
+  runId: string;
+}) {
+  return (
+    <section className="new-run-page">
+      <div className="new-run-action-row">
+        <button className="button secondary" onClick={onBack} type="button">
+          Back to Runs
+        </button>
+        <button className="button primary" onClick={onNewBacktest} type="button">
+          <Play size={15} /> New Backtest
+        </button>
+      </div>
+      <BacktestJobPanel config={config} job={null} outputRoot={outputRoot} runId={runId} />
     </section>
   );
 }
@@ -895,24 +939,33 @@ function parseIsoDate(value: string): { date: Date; month: number; year: number 
 function BacktestJobPanel({
   config,
   job,
-  outputRoot
+  outputRoot,
+  runId
 }: {
   config: StrategyConfig;
   job: Record<string, unknown> | null;
   outputRoot: string;
+  runId?: string;
 }) {
   const events = Array.isArray(job?.events) ? (job?.events as Record<string, unknown>[]) : [];
   const result = job?.result && typeof job.result === "object" ? job.result as Record<string, unknown> : null;
   const resultRunDir = String(result?.run_dir ?? "");
   const jobRunDir = String(job?.run_dir ?? "");
-  const latestRunDir = resultRunDir || jobRunDir || [...events].reverse().map((event) => String(event.run_dir ?? "")).find(Boolean) || "";
-  const latestRunId = latestRunDir ? latestRunDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "" : "";
   const jobConfig = job?.config && typeof job.config === "object" ? job.config as Record<string, unknown> : null;
   const [detail, setDetail] = useState<RunDetailPayload | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [tab, setTab] = useState("Backtest Results");
   const shouldLoadTables = tab !== "Backtest Results";
-  const isLiveRun = ["running", "queued"].includes(String(job?.status ?? "").toLowerCase());
+  const isLiveRun = !runId && ["running", "queued"].includes(String(job?.status ?? "").toLowerCase());
+  const metadataRunDir = String(detail?.metadata.run_dir ?? "");
+  const latestRunDir = resultRunDir || jobRunDir || metadataRunDir || [...events].reverse().map((event) => String(event.run_dir ?? "")).find(Boolean) || "";
+  const latestRunId = runId || (latestRunDir ? latestRunDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "" : "");
+
+  useEffect(() => {
+    setDetail(null);
+    setDetailError(null);
+    setTab("Backtest Results");
+  }, [latestRunId]);
 
   useEffect(() => {
     if (!latestRunId) {
@@ -1138,43 +1191,6 @@ function mergeLiveRunDetail(current: RunDetailPayload | null, next: RunDetailPay
     logs: next.logs || current.logs,
     tables: current.tables
   };
-}
-
-function RunDetail({ runId, outputRoot, onClose }: { runId: string; outputRoot: string; onClose: () => void }) {
-  const [detail, setDetail] = useState<RunDetailPayload | null>(null);
-  const [tab, setTab] = useState("Overview");
-  useEffect(() => {
-    fetchRunDetail(runId, outputRoot).then(setDetail);
-  }, [runId, outputRoot]);
-  const summary = detail?.summary ?? {};
-  return (
-    <Modal title={runId} onClose={onClose}>
-      <MetricStrip
-        items={[
-          { label: "Return", value: Number(summary.return_pct ?? 0) * 100, kind: "number" },
-          { label: "Net P/L", value: Number(summary.total_pnl ?? 0), kind: "number" },
-          { label: "Trades", value: Number(summary.trade_count ?? 0), kind: "number" },
-          { label: "Status", value: String(detail?.metadata.status ?? "-"), kind: "status" }
-        ]}
-      />
-      <Tabs tabs={["Overview", "P/L Chart", "Trades", "Orders", "Fills", "Scanner", "Rejected", "Positions", "Logs"]} active={tab} onChange={setTab} />
-      {tab === "Overview" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
-      {tab === "P/L Chart" ? (
-        <PnlCandleChart
-          payload={detail?.portfolio_candles}
-          runName={String(detail?.metadata.run_name ?? detail?.metadata.run_id ?? runId)}
-          title="Portfolio P/L Candles"
-        />
-      ) : null}
-      {tab === "Trades" ? <DataTable rows={detail?.tables.trades.rows ?? []} /> : null}
-      {tab === "Orders" ? <DataTable rows={detail?.tables.orders.rows ?? []} /> : null}
-      {tab === "Fills" ? <DataTable rows={detail?.tables.fills.rows ?? []} /> : null}
-      {tab === "Scanner" ? <DataTable rows={detail?.tables.scanner.rows ?? []} /> : null}
-      {tab === "Rejected" ? <DataTable rows={detail?.tables.rejections.rows ?? []} /> : null}
-      {tab === "Positions" ? <DataTable rows={detail?.tables.positions.rows ?? []} /> : null}
-      {tab === "Logs" ? <pre className="markdown-panel">{detail?.logs || "No logs."}</pre> : null}
-    </Modal>
-  );
 }
 
 function PnlCandleChart({ payload, runName, title }: { payload?: PortfolioCandlePayload | null; runName: string; title: string }) {
