@@ -747,10 +747,10 @@ class OrbFiveMinuteMomentumV2Strategy:
             timestamp=timestamp,
             ticker=ticker,
             stage="entry_evaluation",
-            event_type="candidate_rejected",
+            event_type="candidate_skipped",
             decision="skip",
             reason_code=reason,
-            reason=f"Candidate rejected by {reason}",
+            reason=f"Candidate skipped by {reason}",
             values={
                 "setup_rank": setup.get("rank"),
                 "setup_score": setup.get("setup_score"),

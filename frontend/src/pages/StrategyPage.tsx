@@ -1187,7 +1187,7 @@ function ObservabilityPanel({
         <ObservabilitySummaryMetric label="Actions" value={actions.length} />
         <ObservabilitySummaryMetric label="Scanner Context" value={scannerContextRows.length} />
         <ObservabilitySummaryMetric label="State Rows" value={stateRows.length} />
-        <ObservabilitySummaryMetric label="Rejected" value={rejectedRows.length} />
+        <ObservabilitySummaryMetric label="Skipped" value={rejectedRows.length} />
       </div>
       <div className="observability-filter-bar">
         {OBSERVABILITY_ACTION_FILTERS.map((filter) => (
@@ -1244,7 +1244,7 @@ function ObservabilityActionCard({ action, onOpenChart, sources }: { action: Obs
     <article className={open ? "observability-action-card open" : "observability-action-card"} data-tone={action.tone}>
       <button aria-expanded={open} className="observability-action-header" onClick={() => setOpen((value) => !value)} type="button">
         <span className="observability-card-corner">
-          <span>{action.timestamp || action.sessionDate || "No timestamp"}</span>
+          <span>{formatObservationTimestamp(action.timestamp || action.sessionDate) || "No timestamp"}</span>
           <strong>#{formatNumber(action.step)}</strong>
         </span>
         <span className="observability-action-symbol">
@@ -1286,13 +1286,13 @@ function ObservabilityActionCard({ action, onOpenChart, sources }: { action: Obs
           </div>
           {stateFields.length ? <ObservationFieldGroup fields={stateFields} title="Strategy State" /> : null}
           <ObservationEvidenceTable
-            description="Strategy-level skip or rejection rows for the same ticker and session."
+            description="Strategy-level skip rows captured at this exact action time."
             presentation="cards"
             rows={evidence.rejectionRows}
-            title="Strategy Rejections"
+            title="Strategy Skips"
           />
           <ObservationEvidenceTable
-            description="Order records submitted, canceled, filled, or rejected for the same ticker and session."
+            description="Order records created by this exact action."
             presentation="cards"
             rows={evidence.orderRows}
             title="Execution Orders"
@@ -1304,7 +1304,7 @@ function ObservabilityActionCard({ action, onOpenChart, sources }: { action: Obs
             title="Execution Fills"
           />
           <ObservationEvidenceTable
-            description="Closed trade records connected to the same ticker and session."
+            description="Closed trade records finalized by this exact action."
             presentation="cards"
             rows={evidence.tradeRows}
             title="Closed Trades"
@@ -1502,7 +1502,7 @@ function ObservationEvidenceCard({ index, row, title }: { index: number; row: Da
       <div className="observability-evidence-card-header">
         <span className="observability-evidence-card-title">
           <strong>{label}</strong>
-          {time ? <small>{time}</small> : null}
+          {time ? <small>{formatObservationTimestamp(time)}</small> : null}
         </span>
         {badge ? <SemanticBadge tone={observabilitySemanticTone(badge, title)}>{badge}</SemanticBadge> : null}
       </div>
@@ -1642,7 +1642,7 @@ function ObservationStateSnapshots({ rows }: { rows: DataRow[] }) {
             <article className="observability-state-card" key={`${rowText(row, "timestamp")}:${rowText(row, "ticker")}:${index}`}>
               <div className="observability-state-card-header">
                 <span>{rowText(row, "scope") || "state"}</span>
-                <small>{rowText(row, "timestamp") || rowText(row, "session_date")}</small>
+                <small>{formatObservationTimestamp(rowText(row, "timestamp") || rowText(row, "session_date"))}</small>
               </div>
               {fields.length ? (
                 <div className="observability-fact-list compact">
@@ -1731,7 +1731,7 @@ const OBSERVABILITY_ACTION_FILTERS: Array<{ label: string; value: ObservationAct
   { label: "All", value: "all" },
   { label: "Entries", value: "entry" },
   { label: "Exits", value: "exit" },
-  { label: "Rejected", value: "rejected" },
+  { label: "Skipped", value: "rejected" },
   { label: "Scanner", value: "scanner" },
   { label: "Orders", value: "order" },
   { label: "Cancel", value: "cancel" },
@@ -1748,7 +1748,7 @@ function buildObservabilityActions(traces: DataRow[]): ObservabilityAction[] {
       const eventType = rowText(trace, "event_type");
       const decision = rowText(trace, "decision");
       const reasonCode = rowText(trace, "reason_code");
-      const reason = rowText(trace, "reason");
+      const reason = normalizeObservationReason(rowText(trace, "reason"), eventType);
       const values = parseObservationJson(trace.values_json);
       const state = parseObservationJson(trace.state_json);
       return {
@@ -1790,12 +1790,12 @@ function observationActionMatchesFilter(action: ObservabilityAction, filter: Obs
 
 function buildObservationEvidence(trace: DataRow, sources: ObservationEvidenceSources): ObservationEvidenceRows {
   return {
-    fillRows: relatedSymbolSessionRows(sources.fills, trace, ["filled_at", "bar_time_market"]).slice(0, 12),
-    orderRows: relatedSymbolSessionRows(sources.orders, trace, ["created_at", "filled_at"]).slice(0, 12),
-    rejectionRows: relatedSymbolSessionRows(sources.rejections, trace, ["timestamp"]).slice(0, 12),
+    fillRows: relatedSymbolActionRows(sources.fills, trace, ["filled_at", "bar_time_market"]).slice(0, 12),
+    orderRows: relatedSymbolActionRows(sources.orders, trace, ["created_at"]).slice(0, 12),
+    rejectionRows: relatedSymbolActionRows(sources.rejections, trace, ["timestamp"]).slice(0, 12),
     scannerRows: flattenScannerRows(relatedScannerRows(sources.scanner, trace)),
     stateRows: relatedStateRows(sources.states, trace).slice(0, 12),
-    tradeRows: relatedSymbolSessionRows(sources.trades, trace, ["entry_time", "exit_time"]).slice(0, 12),
+    tradeRows: relatedTradeActionRows(sources.trades, trace).slice(0, 12),
   };
 }
 
@@ -1819,24 +1819,18 @@ function relatedScannerRows(rows: DataRow[], trace: DataRow): DataRow[] {
   if (!sessionRows.length) return [];
   const preferredStage = stage === "setup_scanner" ? "setup_scanner" : "live_scanner";
   const stagedRows = sessionRows.filter((row) => rowText(row, "stage") === preferredStage);
-  const snapshotRows = latestScannerSnapshotRows(stagedRows.length ? stagedRows : sessionRows, traceTime);
+  const snapshotRows = scannerSnapshotRowsAtTime(stagedRows.length ? stagedRows : sessionRows, traceTime);
   if (snapshotRows.length) return snapshotRows.sort(compareScannerRows);
   if (!ticker) return [];
-  return sessionRows.filter((row) => normalizedTicker(rowText(row, "ticker")) === ticker).sort(compareScannerRows);
+  return sessionRows
+    .filter((row) => normalizedTicker(rowText(row, "ticker")) === ticker && sameObservationStepTime(rowTime(row), traceTime))
+    .sort(compareScannerRows);
 }
 
-function latestScannerSnapshotRows(rows: DataRow[], traceTime: number): DataRow[] {
+function scannerSnapshotRowsAtTime(rows: DataRow[], traceTime: number): DataRow[] {
   if (!rows.length) return [];
-  const times = Array.from(
-    new Set(
-      rows
-        .map(rowTime)
-        .filter((time) => Number.isFinite(time) && (!Number.isFinite(traceTime) || time <= traceTime))
-    )
-  ).sort((left, right) => right - left);
-  const targetTime = times[0];
-  if (!Number.isFinite(targetTime)) return [];
-  return rows.filter((row) => rowTime(row) === targetTime);
+  if (!Number.isFinite(traceTime)) return [];
+  return rows.filter((row) => sameObservationStepTime(rowTime(row), traceTime));
 }
 
 const SCANNER_IMPORTANT_COLUMNS = [
@@ -1931,20 +1925,36 @@ function relatedStateRows(rows: DataRow[], trace: DataRow): DataRow[] {
       if (rowText(row, "session_date") !== sessionDate) return false;
       const rowTicker = normalizedTicker(rowText(row, "ticker"));
       const rowTimeValue = rowTime(row);
-      if (Number.isFinite(traceTime) && rowTimeValue > traceTime) return false;
+      if (!sameObservationStepTime(rowTimeValue, traceTime)) return false;
       return !ticker || !rowTicker || rowTicker === ticker;
     })
     .sort(compareEvidenceRows);
 }
 
-function relatedSymbolSessionRows(rows: DataRow[], trace: DataRow, timeKeys: string[]): DataRow[] {
+function relatedSymbolActionRows(rows: DataRow[], trace: DataRow, timeKeys: string[]): DataRow[] {
   const ticker = normalizedTicker(rowText(trace, "ticker"));
   const sessionDate = rowText(trace, "session_date");
+  const traceTime = rowTime(trace);
   if (!ticker) return [];
   return rows
     .filter((row) => {
       if (normalizedTicker(rowText(row, "symbol") || rowText(row, "ticker")) !== ticker) return false;
-      return rowSessionDate(row, timeKeys) === sessionDate;
+      if (rowSessionDate(row, timeKeys) !== sessionDate) return false;
+      return timeKeys.some((key) => sameObservationStepTime(rowTimeForKey(row, key), traceTime));
+    })
+    .sort(compareEvidenceRows);
+}
+
+function relatedTradeActionRows(rows: DataRow[], trace: DataRow): DataRow[] {
+  const ticker = normalizedTicker(rowText(trace, "ticker"));
+  const sessionDate = rowText(trace, "session_date");
+  const traceTime = rowTime(trace);
+  if (!ticker) return [];
+  return rows
+    .filter((row) => {
+      if (normalizedTicker(rowText(row, "symbol") || rowText(row, "ticker")) !== ticker) return false;
+      if (rowSessionDate(row, ["exit_time"]) !== sessionDate) return false;
+      return sameObservationStepTime(rowTimeForKey(row, "exit_time"), traceTime);
     })
     .sort(compareEvidenceRows);
 }
@@ -1971,7 +1981,7 @@ function primaryObservationFields(action: ObservabilityAction): ObservationField
     { key: "decision", label: "Decision", value: action.decision || "observed" },
     { key: "stage", label: "Stage", value: formatObservationLabel(action.stage) || "-" },
     { key: "reason", label: "Reason", value: action.reason || action.reasonCode || "-" },
-    { key: "timestamp", label: "Time", value: action.timestamp || action.sessionDate },
+    { key: "timestamp", label: "Time", value: formatObservationTimestamp(action.timestamp || action.sessionDate) },
   ];
 }
 
@@ -2081,8 +2091,14 @@ function observationDecisionTone(decision: string, eventType: string): SemanticT
 }
 
 function formatObservationActionTitle(eventType: string, decision: string): string {
+  if (eventType === "candidate_rejected" || eventType === "candidate_skipped") return "Candidate Skipped";
   const label = formatObservationLabel(eventType || decision || "action");
   return label || "Action";
+}
+
+function normalizeObservationReason(reason: string, eventType: string): string {
+  if (eventType === "candidate_rejected") return reason.replace(/^Candidate rejected by /i, "Candidate skipped by ");
+  return reason;
 }
 
 function formatObservationLabel(value: string): string {
@@ -2105,7 +2121,40 @@ function formatObservationValue(value: unknown, key: string): string {
   }
   if (Array.isArray(value)) return value.join(", ");
   if (typeof value === "object") return JSON.stringify(value);
+  if (observationValueLooksLikeTime(String(value), key)) return formatObservationTimestamp(String(value));
   return String(value);
+}
+
+function observationValueLooksLikeTime(value: string, key: string): boolean {
+  const normalizedKey = key.toLowerCase();
+  if (!/(time|timestamp|created_at|filled_at|entry_time|exit_time|bar_time)/.test(normalizedKey)) return false;
+  return Number.isFinite(parseObservationTimestampMs(value));
+}
+
+function formatObservationTimestamp(value: string): string {
+  if (!value) return "";
+  const dateOnlyMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch;
+    return new Intl.DateTimeFormat("en-US", {
+      day: "numeric",
+      month: "short",
+      timeZone: "UTC",
+      year: "numeric",
+    }).format(new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 12)));
+  }
+  const parsed = parseObservationTimestampMs(value);
+  if (!Number.isFinite(parsed)) return value;
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    hour: "numeric",
+    hour12: true,
+    minute: "2-digit",
+    month: "short",
+    timeZone: "America/New_York",
+    year: "numeric",
+  });
+  return `${formatter.format(new Date(parsed))} ET`;
 }
 
 function compareEvidenceRows(left: DataRow, right: DataRow): number {
@@ -2123,9 +2172,60 @@ function compareScannerRows(left: DataRow, right: DataRow): number {
 
 function rowTime(row: DataRow): number {
   const value = rowText(row, "timestamp") || rowText(row, "filled_at") || rowText(row, "created_at") || rowText(row, "entry_time") || rowText(row, "exit_time") || rowText(row, "bar_time_market");
-  const normalized = value.includes("T") ? value : value.replace(" ", "T");
-  const parsed = Date.parse(normalized);
+  const parsed = parseObservationTimestampMs(value);
   return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function rowTimeForKey(row: DataRow, key: string): number {
+  const parsed = parseObservationTimestampMs(rowText(row, key));
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function sameObservationStepTime(left: number, right: number): boolean {
+  return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) < 1000;
+}
+
+function normalizeTimestampString(value: string): string {
+  return value.includes("T") ? value : value.replace(" ", "T");
+}
+
+function parseObservationTimestampMs(value: string): number {
+  if (!value) return Number.NaN;
+  const normalized = normalizeTimestampString(value);
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(normalized)) return Date.parse(normalized);
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return Date.parse(normalized);
+  const [, year, month, day, hour, minute, second = "0"] = match;
+  return exchangeLocalTimeToUtcMs(
+    Number(year),
+    Number(month),
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second)
+  );
+}
+
+function exchangeLocalTimeToUtcMs(year: number, month: number, day: number, hour: number, minute: number, second: number): number {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second);
+  const offset = timeZoneOffsetMs(new Date(utcGuess), "America/New_York");
+  return utcGuess - offset;
+}
+
+function timeZoneOffsetMs(date: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    month: "2-digit",
+    second: "2-digit",
+    timeZone,
+    year: "numeric",
+  }).formatToParts(date);
+  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  const zonedAsUtc = Date.UTC(value("year"), value("month") - 1, value("day"), value("hour"), value("minute"), value("second"));
+  return zonedAsUtc - date.getTime();
 }
 
 function rowSessionDate(row: DataRow, timeKeys: string[]): string {
