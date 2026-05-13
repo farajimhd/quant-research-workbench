@@ -738,7 +738,7 @@ function PnlCandleChart({ payload, runName, title }: { payload?: PortfolioCandle
   }
 
   return (
-    <section style={{ marginTop: 16 }}>
+    <section className="pnl-candle-chart">
       <div className="toolbar" style={{ justifyContent: "space-between" }}>
         <h2 style={{ margin: 0 }}>{title}</h2>
       </div>

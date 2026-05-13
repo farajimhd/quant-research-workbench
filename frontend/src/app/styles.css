@@ -830,9 +830,11 @@ button {
 }
 
 .backtest-results-tab-content {
+  display: flex;
   flex: 1 1 auto;
+  flex-direction: column;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .backtest-results-tab-content > .data-table-shell {
@@ -843,6 +845,34 @@ button {
   height: 100%;
   min-height: 0;
   overflow: auto;
+}
+
+.pnl-candle-chart {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.pnl-candle-chart > .toolbar {
+  flex: 0 0 auto;
+}
+
+.pnl-candle-chart > .chart-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.pnl-candle-chart .chart-canvas-stack {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.pnl-candle-chart .chart-price {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
 }
 
 .new-run-metric-strip {
