@@ -154,9 +154,11 @@ Core artifacts:
 - `fills.parquet`: each execution event produced by the fill model
 - `trades.parquet`: realized position close or reduce records
 - `positions.parquet`: point-in-time position snapshots
-- `portfolio.parquet`: cash, equity, and exposure snapshots
-- `portfolio_candles.parquet`: P/L and equity OHLC candles for `1m`, `1h`,
-  `2h`, `4h`, and `1d`
+- `portfolio.parquet`: cash, mark-to-market equity, realized P/L, open
+  unrealized P/L, gross exposure, peak equity, and drawdown snapshots
+- `portfolio_candles.parquet`: mark-to-market P/L and equity OHLC candles plus
+  open-unrealized and drawdown OHLC fields for `1m`, `1h`, `2h`, `4h`, and
+  `1d`
 - `signal_events.parquet`: strategy signal events
 - `rejection_events.parquet`: rejected strategy candidates or invalid signals
 - `candidate_rankings.parquet`: setup rankings

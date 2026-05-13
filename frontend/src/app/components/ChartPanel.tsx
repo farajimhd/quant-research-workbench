@@ -1939,6 +1939,7 @@ function buildOscillatorPaneGroups(series: ChartSeries[]): OscillatorPaneGroup[]
 }
 
 function formatOscillatorPaneLabel(group: OscillatorPaneGroup) {
+  if (group.key === "oscillator:portfolio_risk") return "Portfolio Risk";
   if (group.key === "oscillator:macd") return "MACD Pane";
   if (group.key === "oscillator:pane_2") return "Pane 2";
   if (group.key === "oscillator:pane_3") return "Pane 3";

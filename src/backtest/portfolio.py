@@ -32,6 +32,25 @@ class Portfolio:
         mark = float(bar["close"]) if bar is not None else position.entry_price
         return position.quantity * mark
 
+    def realized_pnl(self) -> float:
+        return sum(float(trade.pnl) for trade in self.trades)
+
+    def open_unrealized_pnl(self, bars_by_symbol: dict[str, dict]) -> float:
+        total = 0.0
+        for symbol, position in self.positions.items():
+            bar = bars_by_symbol.get(symbol)
+            mark = float(bar["close"]) if bar is not None else position.entry_price
+            total += (mark - position.entry_price) * position.quantity
+        return total
+
+    def gross_exposure(self, bars_by_symbol: dict[str, dict]) -> float:
+        total = 0.0
+        for symbol, position in self.positions.items():
+            bar = bars_by_symbol.get(symbol)
+            mark = float(bar["close"]) if bar is not None else position.entry_price
+            total += abs(mark * position.quantity)
+        return total
+
     def can_afford(self, price: float, quantity: int) -> bool:
         return self.cash >= price * quantity
 

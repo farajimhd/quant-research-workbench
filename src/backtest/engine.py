@@ -318,11 +318,24 @@ class BacktestEngine:
 
     def _record_portfolio(self, timestamp: datetime, bars_by_symbol: dict[str, dict]) -> None:
         equity = self.portfolio.total_equity(bars_by_symbol)
+        peak_equity = max(
+            self.config.initial_cash,
+            equity,
+            float(self.portfolio_rows[-1]["peak_equity"]) if self.portfolio_rows else self.config.initial_cash,
+        )
+        drawdown = equity - peak_equity
         self.portfolio_rows.append(
             {
                 "timestamp": timestamp,
                 "cash": self.portfolio.cash,
                 "equity": equity,
+                "pnl": equity - self.config.initial_cash,
+                "realized_pnl": self.portfolio.realized_pnl(),
+                "open_unrealized_pnl": self.portfolio.open_unrealized_pnl(bars_by_symbol),
+                "gross_exposure": self.portfolio.gross_exposure(bars_by_symbol),
+                "peak_equity": peak_equity,
+                "drawdown": drawdown,
+                "drawdown_pct": drawdown / peak_equity if peak_equity else 0.0,
                 "open_positions": len(self.portfolio.positions),
             }
         )

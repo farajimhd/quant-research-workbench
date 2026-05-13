@@ -988,7 +988,7 @@ function PnlCandleChart({ payload, runName, title }: { payload?: PortfolioCandle
         tickerMaxLength={64}
         timeframe={timeframe}
         timeframes={availableTimeframes}
-        visibleColumns={[]}
+        visibleColumns={["portfolio_drawdown", "open_unrealized_pnl"]}
         visibleSupervisionGroups={[]}
       />
     </section>
@@ -1012,25 +1012,64 @@ function portfolioChartPeriodBounds(payload: PortfolioCandlePayload | null | und
 }
 
 function portfolioChartPayload(payload: PortfolioCandlePayload | null | undefined, timeframe: string, periodStart: string, periodEnd: string): ChartPayload | null {
-  const candles = (payload?.candles?.[timeframe] ?? [])
+  const sourceCandles = (payload?.candles?.[timeframe] ?? [])
     .filter((candle) => Number.isFinite(candle.time))
-    .filter((candle) => candleInPeriod(candle, periodStart, periodEnd))
-    .map((candle) => ({
-      close: Number(candle.close ?? 0),
-      high: Number(candle.high ?? 0),
-      low: Number(candle.low ?? 0),
-      open: Number(candle.open ?? 0),
-      time: Number(candle.time)
-    }));
+    .filter((candle) => candleInPeriod(candle, periodStart, periodEnd));
+  const candles = sourceCandles.map((candle) => ({
+    close: Number(candle.close ?? 0),
+    high: Number(candle.high ?? 0),
+    low: Number(candle.low ?? 0),
+    open: Number(candle.open ?? 0),
+    time: Number(candle.time)
+  }));
   if (!candles.length) return null;
   return {
     candles,
     markers: [],
-    oscillator_series: [],
+    oscillator_series: portfolioRiskSeries(sourceCandles),
     overlay_series: [],
     regions: [],
     volume: []
   };
+}
+
+function portfolioRiskSeries(candles: PortfolioCandle[]): ChartPayload["oscillator_series"] {
+  const drawdownData = candles
+    .map((candle) => ({
+      color: "#dc2626",
+      time: Number(candle.time),
+      value: Number(candle.drawdown_close ?? 0)
+    }))
+    .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value));
+  const unrealizedData = candles
+    .map((candle) => ({
+      time: Number(candle.time),
+      value: Number(candle.open_unrealized_close ?? 0)
+    }))
+    .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value));
+  return [
+    {
+      color: "#dc2626",
+      column: "portfolio_drawdown",
+      data: drawdownData,
+      displayItemId: "portfolio_drawdown",
+      label: "Drawdown",
+      lineWidth: 2,
+      paneKey: "portfolio_risk",
+      style: "histogram"
+    },
+    {
+      color: "#2563eb",
+      column: "open_unrealized_pnl",
+      data: unrealizedData,
+      displayItemId: "open_unrealized_pnl",
+      label: "Open Unrealized P/L",
+      lineStyle: "solid",
+      lineWidth: 2,
+      paneKey: "portfolio_risk",
+      style: "line"
+    }
+  ];
 }
 
 function candleInPeriod(candle: PortfolioCandle, periodStart: string, periodEnd: string) {
@@ -1062,6 +1101,20 @@ type PortfolioCandle = {
   equity_high?: number;
   equity_low?: number;
   equity_close?: number;
+  open_unrealized_open?: number;
+  open_unrealized_high?: number;
+  open_unrealized_low?: number;
+  open_unrealized_close?: number;
+  realized_pnl_open?: number;
+  realized_pnl_high?: number;
+  realized_pnl_low?: number;
+  realized_pnl_close?: number;
+  drawdown_open?: number;
+  drawdown_high?: number;
+  drawdown_low?: number;
+  drawdown_close?: number;
+  drawdown_pct_close?: number;
+  gross_exposure?: number;
 };
 
 type PortfolioCandlePayload = {

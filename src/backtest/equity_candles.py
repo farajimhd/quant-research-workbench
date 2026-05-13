@@ -32,10 +32,10 @@ def build_portfolio_candles(
         .with_columns(
             pl.col("timestamp").cast(pl.Datetime).alias("timestamp"),
             pl.col("equity").cast(pl.Float64),
-            (pl.col("equity").cast(pl.Float64) - float(initial_cash)).alias("pnl"),
         )
         .sort("timestamp")
     )
+    frame = ensure_portfolio_metric_columns(frame, initial_cash)
     rows = []
     for timeframe in timeframes:
         if timeframe == "1m":
@@ -44,6 +44,37 @@ def build_portfolio_candles(
             candles = aggregate_candles(frame, timeframe)
         rows.extend(candles.with_columns(pl.lit(timeframe).alias("timeframe")).to_dicts())
     return rows
+
+
+def ensure_portfolio_metric_columns(frame: pl.DataFrame, initial_cash: float) -> pl.DataFrame:
+    if "pnl" not in frame.columns:
+        frame = frame.with_columns((pl.col("equity").cast(pl.Float64) - float(initial_cash)).alias("pnl"))
+    if "open_unrealized_pnl" not in frame.columns:
+        frame = frame.with_columns(pl.lit(0.0).alias("open_unrealized_pnl"))
+    if "realized_pnl" not in frame.columns:
+        frame = frame.with_columns((pl.col("pnl") - pl.col("open_unrealized_pnl")).alias("realized_pnl"))
+    if "gross_exposure" not in frame.columns:
+        frame = frame.with_columns(pl.lit(0.0).alias("gross_exposure"))
+    if "peak_equity" not in frame.columns:
+        frame = frame.with_columns(pl.col("equity").cum_max().clip(lower_bound=float(initial_cash)).alias("peak_equity"))
+    if "drawdown" not in frame.columns:
+        frame = frame.with_columns((pl.col("equity") - pl.col("peak_equity")).alias("drawdown"))
+    if "drawdown_pct" not in frame.columns:
+        frame = frame.with_columns(
+            pl.when(pl.col("peak_equity") > 0)
+            .then(pl.col("drawdown") / pl.col("peak_equity"))
+            .otherwise(0.0)
+            .alias("drawdown_pct")
+        )
+    return frame.with_columns(
+        pl.col("pnl").cast(pl.Float64),
+        pl.col("open_unrealized_pnl").cast(pl.Float64),
+        pl.col("realized_pnl").cast(pl.Float64),
+        pl.col("gross_exposure").cast(pl.Float64),
+        pl.col("peak_equity").cast(pl.Float64),
+        pl.col("drawdown").cast(pl.Float64),
+        pl.col("drawdown_pct").cast(pl.Float64),
+    )
 
 
 def minute_candles(frame: pl.DataFrame) -> pl.DataFrame:
@@ -58,6 +89,20 @@ def minute_candles(frame: pl.DataFrame) -> pl.DataFrame:
         pl.col("equity").alias("equity_high"),
         pl.col("equity").alias("equity_low"),
         pl.col("equity").alias("equity_close"),
+        pl.col("open_unrealized_pnl").alias("open_unrealized_open"),
+        pl.col("open_unrealized_pnl").alias("open_unrealized_high"),
+        pl.col("open_unrealized_pnl").alias("open_unrealized_low"),
+        pl.col("open_unrealized_pnl").alias("open_unrealized_close"),
+        pl.col("realized_pnl").alias("realized_pnl_open"),
+        pl.col("realized_pnl").alias("realized_pnl_high"),
+        pl.col("realized_pnl").alias("realized_pnl_low"),
+        pl.col("realized_pnl").alias("realized_pnl_close"),
+        pl.col("drawdown").alias("drawdown_open"),
+        pl.col("drawdown").alias("drawdown_high"),
+        pl.col("drawdown").alias("drawdown_low"),
+        pl.col("drawdown").alias("drawdown_close"),
+        pl.col("drawdown_pct").alias("drawdown_pct_close"),
+        "gross_exposure",
         "cash",
         "open_positions",
     )
@@ -76,6 +121,20 @@ def aggregate_candles(frame: pl.DataFrame, timeframe: str) -> pl.DataFrame:
             pl.col("equity").max().alias("equity_high"),
             pl.col("equity").min().alias("equity_low"),
             pl.col("equity").last().alias("equity_close"),
+            pl.col("open_unrealized_pnl").first().alias("open_unrealized_open"),
+            pl.col("open_unrealized_pnl").max().alias("open_unrealized_high"),
+            pl.col("open_unrealized_pnl").min().alias("open_unrealized_low"),
+            pl.col("open_unrealized_pnl").last().alias("open_unrealized_close"),
+            pl.col("realized_pnl").first().alias("realized_pnl_open"),
+            pl.col("realized_pnl").max().alias("realized_pnl_high"),
+            pl.col("realized_pnl").min().alias("realized_pnl_low"),
+            pl.col("realized_pnl").last().alias("realized_pnl_close"),
+            pl.col("drawdown").first().alias("drawdown_open"),
+            pl.col("drawdown").max().alias("drawdown_high"),
+            pl.col("drawdown").min().alias("drawdown_low"),
+            pl.col("drawdown").last().alias("drawdown_close"),
+            pl.col("drawdown_pct").last().alias("drawdown_pct_close"),
+            pl.col("gross_exposure").max().alias("gross_exposure"),
             pl.col("cash").last().alias("cash"),
             pl.col("open_positions").max().alias("open_positions"),
         )
