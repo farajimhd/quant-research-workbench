@@ -927,21 +927,25 @@ button {
 
 .new-run-metric-strip {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(8, minmax(112px, 1fr));
   gap: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
 }
 
 .new-run-metric-card {
+  --metric-tone: var(--muted-foreground);
   position: relative;
   display: grid;
   min-width: 0;
-  gap: 5px;
+  gap: 4px;
   overflow: hidden;
-  border: 1px solid var(--surface-border);
+  border: 1px solid color-mix(in oklab, var(--metric-tone) 20%, var(--surface-border));
   border-radius: 8px;
-  background: var(--card);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--metric-tone) 6%, var(--card)), var(--card) 58%);
   box-shadow: 0 10px 28px rgba(16, 24, 40, 0.06);
-  padding: 11px 12px 12px;
+  padding: 9px 10px 10px;
 }
 
 .new-run-metric-card::before {
@@ -950,20 +954,24 @@ button {
   right: 0;
   left: 0;
   height: 2px;
-  background: var(--border);
+  background: var(--metric-tone);
   content: "";
 }
 
-.new-run-metric-card[data-tone="info"]::before {
-  background: var(--info);
+.new-run-metric-card[data-tone="danger"] {
+  --metric-tone: var(--danger);
 }
 
-.new-run-metric-card[data-tone="success"]::before {
-  background: var(--success);
+.new-run-metric-card[data-tone="info"] {
+  --metric-tone: var(--info);
 }
 
-.new-run-metric-card[data-tone="warning"]::before {
-  background: var(--warning);
+.new-run-metric-card[data-tone="success"] {
+  --metric-tone: var(--success);
+}
+
+.new-run-metric-card[data-tone="warning"] {
+  --metric-tone: var(--warning);
 }
 
 .new-run-metric-icon {
@@ -973,8 +981,8 @@ button {
   align-items: center;
   justify-content: center;
   border-radius: 6px;
-  background: color-mix(in oklab, var(--primary) 7%, transparent);
-  color: var(--primary);
+  background: color-mix(in oklab, var(--metric-tone) 11%, transparent);
+  color: var(--metric-tone);
 }
 
 .new-run-metric-label {
@@ -988,9 +996,9 @@ button {
 
 .new-run-metric-value {
   overflow: hidden;
-  color: var(--foreground);
+  color: var(--metric-tone);
   font-family: var(--font-display);
-  font-size: 21px;
+  font-size: 18px;
   font-weight: 650;
   letter-spacing: 0;
   line-height: 1.05;
@@ -5759,7 +5767,6 @@ button {
   }
 
   .metric-strip,
-  .new-run-metric-strip,
   .phase-grid,
   .schema-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

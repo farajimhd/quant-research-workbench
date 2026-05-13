@@ -50,7 +50,7 @@ type StrategyConfig = {
 
 type StrategyParamValue = number | string | boolean;
 type EditTarget = "run" | "strategy";
-type NewRunMetricTone = "info" | "neutral" | "success" | "warning";
+type NewRunMetricTone = "danger" | "info" | "neutral" | "success" | "warning";
 type NewRunMetric = {
   detail: string;
   icon: ReactNode;
@@ -1076,31 +1076,35 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
       detail: "Annualized from live equity returns",
       icon: <Activity size={15} />,
       label: "Sharpe",
+      tone: sharpeTone(sharpe),
       value: formatNumber(sharpe, 2)
     },
     {
       detail: `${formatMoney(maxDrawdown)} peak-to-trough`,
       icon: <Gauge size={15} />,
       label: "Max DD",
-      tone: maxDrawdownPct > 0 ? "warning" : "neutral",
+      tone: drawdownTone(maxDrawdownPct),
       value: formatPct(maxDrawdownPct)
     },
     {
       detail: "Closed trades",
       icon: <ListChecks size={15} />,
       label: "Trades",
+      tone: countTone(tradeCount),
       value: formatNumber(tradeCount)
     },
     {
       detail: "Winning closed trades",
       icon: <Percent size={15} />,
       label: "Win Rate",
+      tone: winRateTone(winRate, tradeCount),
       value: formatPct(winRate)
     },
     {
       detail: "Gross profit / gross loss",
       icon: <Shield size={15} />,
       label: "Profit Factor",
+      tone: profitFactorTone(profitFactor, tradeCount),
       value: formatNumber(profitFactor, 2)
     },
     {
@@ -1126,8 +1130,39 @@ function liveSummary(job: Record<string, unknown> | null, detail: RunDetailPaylo
 
 function signedTone(value: number): NewRunMetricTone {
   if (value > 0) return "success";
-  if (value < 0) return "warning";
+  if (value < 0) return "danger";
   return "neutral";
+}
+
+function sharpeTone(value: number): NewRunMetricTone {
+  if (value >= 1) return "success";
+  if (value >= 0.3) return "warning";
+  if (value < 0) return "danger";
+  return "neutral";
+}
+
+function drawdownTone(value: number): NewRunMetricTone {
+  if (value >= 0.1) return "danger";
+  if (value > 0) return "warning";
+  return "neutral";
+}
+
+function countTone(value: number): NewRunMetricTone {
+  return value > 0 ? "info" : "neutral";
+}
+
+function winRateTone(value: number, tradeCount: number): NewRunMetricTone {
+  if (tradeCount <= 0) return "neutral";
+  if (value >= 0.5) return "success";
+  if (value >= 0.4) return "warning";
+  return "danger";
+}
+
+function profitFactorTone(value: number, tradeCount: number): NewRunMetricTone {
+  if (tradeCount <= 0 || value <= 0) return "neutral";
+  if (value >= 1.5) return "success";
+  if (value >= 1) return "warning";
+  return "danger";
 }
 
 function buildBacktestProgress(job: Record<string, unknown> | null, detail: RunDetailPayload | null, config: StrategyConfig) {
