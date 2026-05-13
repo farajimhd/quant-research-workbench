@@ -76,15 +76,112 @@ The strategy may return a small number of order requests as Python objects. It
 is acceptable to convert only selected candidates or held positions to Python
 dicts; avoid iterating every ticker row in Python.
 
+## Portfolio And Order State
+
+Strategies should have read access to portfolio and order state while the
+backtest engine owns all mutations.
+
+The strategy may inspect:
+
+- current positions
+- cash, equity, buying power, and exposure when those constraints are enabled
+- open entry and exit orders
+- recent fills or order status when needed for strategy rules
+- available position slots
+- per-symbol state such as held, pending, blocked, or recently exited
+
+The strategy should not directly open positions, close positions, mutate cash,
+fill orders, or create trades. It observes state and emits order requests; the
+engine or broker simulator accepts, rejects, cancels, fills, and records the
+result.
+
+## Orders, Fills, And Trades
+
+Orders and trades are execution-layer records, not provider data and not
+strategy-owned state.
+
+The standard lifecycle is:
+
+```text
+Strategy signal
+  -> OrderRequest
+  -> Order accepted into the simulated order book
+  -> Fill model checks fresh bar, quote, or trade data
+  -> Fill event
+  -> Portfolio update
+  -> Trade record when a position is closed or reduced
+```
+
+An order represents intent and execution history. A trade represents realized
+position history. A single round-trip trade usually contains an entry fill and
+an exit fill, while the underlying orders remain separate audit records.
+
+Example:
+
+```text
+BUY STOP CADL 100 @ 3.20
+  order created at 09:41
+  filled at 09:44
+
+SELL STOP CADL 100 @ 2.95
+  order created at 09:44
+  filled at 10:03
+
+Trade:
+  CADL entry 09:44 @ 3.20
+  exit 10:03 @ 2.95
+  pnl = realized exit value minus entry cost
+```
+
+For the timestamp-slice simulator, order crossing must use fresh updates. If a
+symbol has no new row at the current timestamp, the engine cannot claim that the
+symbol's high or low crossed a stop or limit at that time. Latest-known rows can
+mark positions, but they should not trigger fills unless a later execution model
+explicitly supports that behavior.
+
+The order book should be indexed so the engine checks pending orders only for
+symbols with fresh updates at the current timestamp. This keeps the event loop
+small even when the provider frame contains many symbols.
+
+## Run Artifacts
+
+Backtests should persist execution state as structured artifacts so every signal,
+order, fill, position, and realized trade can be audited after the run.
+
+Core artifacts:
+
+- `orders.parquet`: every accepted, filled, canceled, or rejected order
+- `trades.parquet`: realized position close or reduce records
+- `positions.parquet`: point-in-time position snapshots
+- `portfolio.parquet`: cash, equity, and exposure snapshots
+- `signal_events.parquet`: strategy signal events
+- `rejection_events.parquet`: rejected strategy candidates or invalid signals
+- `candidate_rankings.parquet`: setup rankings
+- `live_rankings.parquet`: timestamp-level live rankings
+
+As execution modeling becomes more realistic, the backtest should also write:
+
+- `fills.parquet`: each execution event, including partial fills
+- `order_events.parquet`: order lifecycle events such as accepted, canceled,
+  expired, rejected, partially filled, and filled
+
+Separating orders, fills, and trades is important for Phase 2 quote/trade
+execution. Partial fills, spread checks, liquidity limits, and extended-hours
+execution rules are much easier to debug when every lifecycle event is recorded
+directly instead of being collapsed into a single order row.
+
 ## Backtest Responsibilities
 
 The backtest engine is responsible for:
 
 - validating that required provider data is available before simulation
 - iterating timestamp slices in market-clock order
+- exposing read-only portfolio and order views to strategies
+- accepting, rejecting, canceling, and filling orders
 - maintaining pending orders and open positions
 - applying fill models
-- tracking cash, equity, exposure, and position snapshots
+- creating trade records from realized position changes
+- tracking cash, equity, exposure, position snapshots, and execution artifacts
 - writing run artifacts and metrics
 - exposing progress to jobs and the frontend
 
