@@ -115,6 +115,32 @@ def read_table(path: Path, limit: int = 1000) -> dict[str, Any]:
     return {"columns": frame.columns, "rows": json_safe(frame.to_dicts())}
 
 
+def empty_backtest_tables() -> dict[str, dict[str, Any]]:
+    return {
+        "daily": {"columns": [], "rows": []},
+        "trades": {"columns": [], "rows": []},
+        "orders": {"columns": [], "rows": []},
+        "fills": {"columns": [], "rows": []},
+        "scanner": {"columns": [], "rows": []},
+        "rejections": {"columns": [], "rows": []},
+        "positions": {"columns": [], "rows": []},
+        "portfolio": {"columns": [], "rows": []},
+    }
+
+
+def backtest_tables_payload(run_dir: Path) -> dict[str, dict[str, Any]]:
+    return {
+        "daily": read_table(run_dir / "daily_summary.parquet"),
+        "trades": read_table(run_dir / "trades.parquet"),
+        "orders": read_table(run_dir / "orders.parquet"),
+        "fills": read_table(run_dir / "fills.parquet"),
+        "scanner": read_table(run_dir / "scanner_snapshots.parquet"),
+        "rejections": read_table(run_dir / "rejection_events.parquet"),
+        "positions": read_table(run_dir / "positions.parquet"),
+        "portfolio": read_table(run_dir / "portfolio.parquet"),
+    }
+
+
 def read_json_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -344,7 +370,12 @@ def backtest_job_status(job_id: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)
 
 
 @app.get("/api/backtests/runs/{run_id}")
-def backtest_run_detail(run_id: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+def backtest_run_detail(
+    run_id: str,
+    output_root: str = str(DEFAULT_OUTPUT_ROOT),
+    include_logs: bool = True,
+    include_tables: bool = True,
+) -> dict[str, Any]:
     root = Path(output_root).resolve()
     run_dir = (root / run_id).resolve()
     if root != run_dir and root not in run_dir.parents:
@@ -355,18 +386,9 @@ def backtest_run_detail(run_id: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)
     return {
         "metadata": json_safe(metadata),
         "summary": json_safe(metadata.get("summary") or {}),
-        "tables": {
-            "daily": read_table(run_dir / "daily_summary.parquet"),
-            "trades": read_table(run_dir / "trades.parquet"),
-            "orders": read_table(run_dir / "orders.parquet"),
-            "fills": read_table(run_dir / "fills.parquet"),
-            "scanner": read_table(run_dir / "scanner_snapshots.parquet"),
-            "rejections": read_table(run_dir / "rejection_events.parquet"),
-            "positions": read_table(run_dir / "positions.parquet"),
-            "portfolio": read_table(run_dir / "portfolio.parquet"),
-        },
+        "tables": backtest_tables_payload(run_dir) if include_tables else empty_backtest_tables(),
         "portfolio_candles": json_safe(portfolio_candle_payload(run_dir, metadata)),
-        "logs": (run_dir / "logs.txt").read_text(encoding="utf-8") if (run_dir / "logs.txt").exists() else "",
+        "logs": (run_dir / "logs.txt").read_text(encoding="utf-8") if include_logs and (run_dir / "logs.txt").exists() else "",
     }
 
 

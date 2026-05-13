@@ -450,10 +450,14 @@ function NewRunPanel({
   useEffect(() => {
     if (!jobId || !["running", "queued"].includes(String(job?.status ?? "running"))) return;
     const timer = window.setInterval(() => {
-      api<Record<string, unknown>>(`/api/backtests/jobs/${jobId}${query({ output_root: config.output_root })}`).then((payload) => {
-        setJob(payload);
-        if (String(payload.status) === "complete") onComplete();
-      });
+      api<Record<string, unknown>>(`/api/backtests/jobs/${jobId}${query({ output_root: config.output_root })}`)
+        .then((payload) => {
+          setJob(payload);
+          if (String(payload.status) === "complete") onComplete();
+        })
+        .catch((err) => {
+          setError(err instanceof Error ? err.message : String(err));
+        });
     }, 1000);
     return () => window.clearInterval(timer);
   }, [jobId, job?.status, config.output_root]);
@@ -973,15 +977,44 @@ function BacktestJobPanel({
   const latestRunId = latestRunDir ? latestRunDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "" : "";
   const jobConfig = job?.config && typeof job.config === "object" ? job.config as Record<string, unknown> : null;
   const [detail, setDetail] = useState<RunDetailPayload | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [tab, setTab] = useState("Backtest Results");
+  const shouldLoadTables = tab !== "Backtest Results";
 
   useEffect(() => {
     if (!latestRunId) {
       setDetail(null);
+      setDetailError(null);
       return;
     }
-    api<RunDetailPayload>(`/api/backtests/runs/${latestRunId}${query({ output_root: outputRoot })}`).then(setDetail).catch(() => undefined);
-  }, [latestRunId, outputRoot, `${job?.status ?? "not-started"}-${events.length}`]);
+    let canceled = false;
+    let loaded = false;
+    const loadDetail = () => {
+      if (loaded) return;
+      fetchRunDetail(latestRunId, outputRoot, shouldLoadTables)
+        .then((payload) => {
+          if (canceled) return;
+          setDetail((current) => (shouldLoadTables ? payload : mergeLiveRunDetail(current, payload)));
+          setDetailError(null);
+          loaded = shouldLoadTables || hasPortfolioCandles(payload);
+        })
+        .catch((err) => {
+          if (!canceled) setDetailError(err instanceof Error ? err.message : String(err));
+        });
+    };
+    loadDetail();
+    const shouldRetry = ["running", "queued"].includes(String(job?.status ?? "").toLowerCase());
+    if (!shouldRetry) {
+      return () => {
+        canceled = true;
+      };
+    }
+    const timer = window.setInterval(loadDetail, 2500);
+    return () => {
+      canceled = true;
+      window.clearInterval(timer);
+    };
+  }, [latestRunId, outputRoot, shouldLoadTables, `${job?.status ?? "not-started"}-${events.length}`]);
 
   const progress = buildBacktestProgress(job, detail, config);
   const activeRunName = String(detail?.metadata.run_name ?? jobConfig?.run_name ?? config.run_name ?? "Backtest Results");
@@ -1009,6 +1042,7 @@ function BacktestJobPanel({
               <span className="meta-tag">{progress.done}/{progress.total} sessions</span>
               {latestRunDir ? <span className="meta-tag">{latestRunDir}</span> : null}
             </div>
+            {detailError ? <div className="error-panel">{detailError}</div> : null}
             <PnlCandleChart payload={detail?.portfolio_candles} runName={activeRunName} title="Portfolio P/L Candles" />
           </>
         ) : null}
@@ -1052,11 +1086,30 @@ function estimateCalendarDays(start: string, end: string) {
   return Math.max(1, Math.round((endParts.date.getTime() - startParts.date.getTime()) / 86_400_000) + 1);
 }
 
+function fetchRunDetail(runId: string, outputRoot: string, includeTables = true) {
+  return api<RunDetailPayload>(
+    `/api/backtests/runs/${runId}${query({ include_logs: includeTables, include_tables: includeTables, output_root: outputRoot })}`
+  );
+}
+
+function mergeLiveRunDetail(current: RunDetailPayload | null, next: RunDetailPayload): RunDetailPayload {
+  if (!current) return next;
+  return {
+    ...next,
+    logs: next.logs || current.logs,
+    tables: current.tables
+  };
+}
+
+function hasPortfolioCandles(detail: RunDetailPayload): boolean {
+  return Object.values(detail.portfolio_candles?.candles ?? {}).some((rows) => rows.length > 0);
+}
+
 function RunDetail({ runId, outputRoot, onClose }: { runId: string; outputRoot: string; onClose: () => void }) {
   const [detail, setDetail] = useState<RunDetailPayload | null>(null);
   const [tab, setTab] = useState("Overview");
   useEffect(() => {
-    api<RunDetailPayload>(`/api/backtests/runs/${runId}${query({ output_root: outputRoot })}`).then(setDetail);
+    fetchRunDetail(runId, outputRoot).then(setDetail);
   }, [runId, outputRoot]);
   const summary = detail?.summary ?? {};
   return (
