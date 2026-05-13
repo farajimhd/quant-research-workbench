@@ -1313,18 +1313,6 @@ function ObservationActionPreview({ action }: { action: ObservabilityAction }) {
 }
 
 function ObservationActionPreviewFields({ fields }: { fields: ObservationFieldValue[] }) {
-  const [openFieldKey, setOpenFieldKey] = useState<string | null>(null);
-  useEffect(() => {
-    if (!openFieldKey) return;
-    const closePopover = () => setOpenFieldKey(null);
-    document.addEventListener("click", closePopover);
-    return () => document.removeEventListener("click", closePopover);
-  }, [openFieldKey]);
-  const toggleFieldDetails = (fieldKey: string, event: MouseEvent<HTMLSpanElement> | KeyboardEvent<HTMLSpanElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setOpenFieldKey((current) => (current === fieldKey ? null : fieldKey));
-  };
   if (!fields.length) return null;
   return (
     <span className="observability-action-preview-fields">
@@ -1332,21 +1320,6 @@ function ObservationActionPreviewFields({ fields }: { fields: ObservationFieldVa
         <span className="observability-action-preview-chip" key={field.key}>
           <span>{field.label}</span>
           <span className="observability-action-preview-value">{formatObservationValue(field.value, field.label)}</span>
-          <span
-            aria-expanded={openFieldKey === field.key}
-            aria-label={`Show ${field.label} details`}
-            className="observability-tag-detail-trigger"
-            onClick={(event) => toggleFieldDetails(field.key, event)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") toggleFieldDetails(field.key, event);
-              if (event.key === "Escape") setOpenFieldKey(null);
-            }}
-            role="button"
-            tabIndex={0}
-          >
-            <MoreHorizontal size={13} />
-          </span>
-          {openFieldKey === field.key ? <ObservationTagDetailPopover field={field} /> : null}
         </span>
       ))}
     </span>
@@ -1374,10 +1347,15 @@ function ObservationTagDetailPopover({ field }: { field: ObservationFieldValue }
 }
 
 function ObservationFact({ label, value }: { label: string; value: unknown }) {
+  const field = { key: label, label, value };
   return (
     <div className="observability-fact">
       <span>{label}</span>
-      <span className="observability-fact-value">{formatObservationValue(value, label)}</span>
+      {observationFieldIsStructuredTag(field) ? (
+        <ObservationStructuredTagValue field={field} />
+      ) : (
+        <span className="observability-fact-value">{formatObservationValue(value, label)}</span>
+      )}
     </div>
   );
 }
@@ -1483,6 +1461,14 @@ function ObservationEvidenceCard({ index, row, title }: { index: number; row: Da
 
 function ObservationEvidenceCardField({ field }: { field: ObservationFieldValue }) {
   const semanticTone = observationFieldSemanticTone(field);
+  if (observationFieldIsStructuredTag(field)) {
+    return (
+      <div className="observability-evidence-card-field">
+        <span>{field.label}</span>
+        <ObservationStructuredTagValue field={field} compact />
+      </div>
+    );
+  }
   return (
     <div className="observability-evidence-card-field">
       <span>{field.label}</span>
@@ -1492,6 +1478,41 @@ function ObservationEvidenceCardField({ field }: { field: ObservationFieldValue 
         <span>{formatObservationValue(field.value, field.label)}</span>
       )}
     </div>
+  );
+}
+
+function ObservationStructuredTagValue({ compact = false, field }: { compact?: boolean; field: ObservationFieldValue }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const closePopover = () => setOpen(false);
+    document.addEventListener("click", closePopover);
+    return () => document.removeEventListener("click", closePopover);
+  }, [open]);
+  const toggleDetails = (event: MouseEvent<HTMLSpanElement> | KeyboardEvent<HTMLSpanElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setOpen((current) => !current);
+  };
+  return (
+    <span className={compact ? "observability-structured-tag compact" : "observability-structured-tag"} onClick={(event) => event.stopPropagation()}>
+      <span className="observability-structured-tag-text">{formatObservationValue(field.value, field.label)}</span>
+      <span
+        aria-expanded={open}
+        aria-label={`Show ${field.label} details`}
+        className="observability-tag-detail-trigger"
+        onClick={toggleDetails}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") toggleDetails(event);
+          if (event.key === "Escape") setOpen(false);
+        }}
+        role="button"
+        tabIndex={0}
+      >
+        <MoreHorizontal size={13} />
+      </span>
+      {open ? <ObservationTagDetailPopover field={field} /> : null}
+    </span>
   );
 }
 
@@ -1857,7 +1878,7 @@ function observationActionPreviewFields(action: ObservabilityAction): Observatio
 
 function observationTagDetailSegments(field: ObservationFieldValue): Array<{ label: string; value: string }> {
   const formattedValue = formatObservationValue(field.value, field.label);
-  const parts = `${field.label}|${formattedValue}`
+  const parts = formattedValue
     .split("|")
     .map((part) => part.trim())
     .filter(Boolean);
@@ -1870,10 +1891,16 @@ function observationTagDetailSegments(field: ObservationFieldValue): Array<{ lab
       };
     }
     return {
-      label: index === 0 ? "Label" : `Field ${formatNumber(index)}`,
+      label: index === 0 ? "Tag" : `Field ${formatNumber(index)}`,
       value: part
     };
   });
+}
+
+function observationFieldIsStructuredTag(field: ObservationFieldValue): boolean {
+  const normalized = `${field.key} ${field.label}`.toLowerCase();
+  const formattedValue = formatObservationValue(field.value, field.label);
+  return /\btag\b/.test(normalized) && formattedValue.includes("|");
 }
 
 function findObservationTagSegmentDivider(segment: string) {

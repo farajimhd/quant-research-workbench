@@ -6165,6 +6165,10 @@ button {
   background: color-mix(in srgb, var(--card) 90%, var(--surface));
 }
 
+.observability-action-card.open {
+  overflow: visible;
+}
+
 .observability-card-corner {
   position: absolute;
   top: 5px;
@@ -6300,10 +6304,6 @@ button {
   border-radius: 999px;
   background: color-mix(in srgb, var(--card) 72%, var(--surface));
   padding: 2px 7px;
-}
-
-.observability-action-preview-chip:has(.observability-tag-popover) {
-  z-index: 30;
 }
 
 .observability-action-preview-chip > span:first-child {
@@ -6573,6 +6573,35 @@ button {
   white-space: nowrap;
 }
 
+.observability-structured-tag {
+  position: relative;
+  display: inline-flex;
+  max-width: min(720px, 100%);
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  color: var(--observability-value);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.observability-structured-tag.compact {
+  max-width: min(520px, 100%);
+  font-size: 11.5px;
+}
+
+.observability-structured-tag:has(.observability-tag-popover) {
+  z-index: 35;
+}
+
+.observability-structured-tag-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .observability-field-group,
 .observability-evidence-block,
 .observability-state-snapshots {
@@ -6732,7 +6761,7 @@ button {
   padding: 4px 7px;
 }
 
-.observability-evidence-card-field span:first-child {
+.observability-evidence-card-field > span:first-child {
   overflow: hidden;
   color: var(--observability-label);
   font-size: 9.5px;
@@ -6742,7 +6771,7 @@ button {
   white-space: nowrap;
 }
 
-.observability-evidence-card-field span:last-child {
+.observability-evidence-card-field > span:last-child {
   min-width: 0;
   overflow: hidden;
   color: var(--observability-value);
