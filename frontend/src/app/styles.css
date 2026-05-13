@@ -6478,10 +6478,10 @@ button {
   gap: 7px;
   border: 0;
   border-radius: 7px;
-  background: color-mix(in srgb, var(--card) 68%, var(--surface));
+  background: color-mix(in srgb, #f6efe3 82%, var(--surface));
   color: var(--foreground);
   cursor: pointer;
-  padding: 7px 8px;
+  padding: 8px 9px;
   text-align: left;
 }
 
