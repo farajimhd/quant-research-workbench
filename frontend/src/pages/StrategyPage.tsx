@@ -1214,6 +1214,9 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
   const evidence = useMemo(() => (open ? buildObservationEvidence(action.trace, sources) : emptyObservationEvidence()), [action.trace, open, sources]);
   const evidenceCount = evidence.scannerRows.length + evidence.stateRows.length + evidence.rejectionRows.length + evidence.orderRows.length + evidence.fillRows.length + evidence.tradeRows.length;
   const primaryFields = primaryObservationFields(action);
+  const previewFields = observationActionPreviewFields(action);
+  const inputFields = prioritizedObservationFields(action.inputFields, "input").slice(0, 8);
+  const stateFields = prioritizedObservationFields(action.stateFields, "state").slice(0, 8);
   return (
     <article className={open ? "observability-action-card open" : "observability-action-card"} data-tone={action.tone}>
       <button aria-expanded={open} className="observability-action-header" onClick={() => setOpen((value) => !value)} type="button">
@@ -1228,18 +1231,18 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
             {action.ticker ? <span>{action.ticker}</span> : null}
           </span>
           <strong>{action.title}</strong>
-          <small>{action.subtitle}</small>
+          <ObservationActionPreview action={action} fields={previewFields} />
         </span>
         <span className="observability-action-meta">
           <SemanticBadge tone={action.tone}>{action.decision || "observed"}</SemanticBadge>
-          <span className="observability-card-count">{open ? `${formatNumber(evidenceCount)} rows` : "Expand"}</span>
+          <span className="observability-card-count">{open ? `${formatNumber(evidenceCount)} rows` : "Open"}</span>
         </span>
       </button>
       {open ? (
         <div className="observability-action-body">
           <ObservationFieldGroup fields={primaryFields} title="Decision Summary" />
-          {action.inputFields.length ? <ObservationFieldGroup fields={action.inputFields.slice(0, 8)} title="Inputs & Thresholds" /> : null}
-          {action.stateFields.length ? <ObservationFieldGroup fields={action.stateFields.slice(0, 8)} title="Strategy State" /> : null}
+          {inputFields.length ? <ObservationFieldGroup fields={inputFields} title="Inputs & Thresholds" /> : null}
+          {stateFields.length ? <ObservationFieldGroup fields={stateFields} title="Strategy State" /> : null}
           <ObservationStateSnapshots rows={evidence.stateRows} />
           <ObservationEvidenceTable
             description="Strategy-level skip or rejection rows for the same ticker and session."
@@ -1273,6 +1276,25 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
         </div>
       ) : null}
     </article>
+  );
+}
+
+function ObservationActionPreview({ action, fields }: { action: ObservabilityAction; fields: ObservationFieldValue[] }) {
+  const reason = action.reason || action.reasonCode || "No reason recorded";
+  return (
+    <span className="observability-action-preview">
+      <span className="observability-action-reason">{reason}</span>
+      {fields.length ? (
+        <span className="observability-action-preview-fields">
+          {fields.map((field) => (
+            <span className="observability-action-preview-chip" key={field.key}>
+              <span>{field.label}</span>
+              <strong>{formatObservationValue(field.value, field.label)}</strong>
+            </span>
+          ))}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -1765,10 +1787,53 @@ function objectToObservationFields(value: Record<string, unknown>): ObservationF
 function primaryObservationFields(action: ObservabilityAction): ObservationFieldValue[] {
   return [
     { key: "decision", label: "Decision", value: action.decision || "observed" },
-    { key: "ticker", label: "Ticker", value: action.ticker || "Run" },
+    { key: "stage", label: "Stage", value: formatObservationLabel(action.stage) || "-" },
     { key: "reason", label: "Reason", value: action.reason || action.reasonCode || "-" },
     { key: "timestamp", label: "Time", value: action.timestamp || action.sessionDate },
   ];
+}
+
+function observationActionPreviewFields(action: ObservabilityAction): ObservationFieldValue[] {
+  const merged = [...action.inputFields, ...action.stateFields];
+  return prioritizedObservationFields(merged, "preview").slice(0, 3);
+}
+
+function prioritizedObservationFields(fields: ObservationFieldValue[], group: "input" | "preview" | "state"): ObservationFieldValue[] {
+  return [...fields]
+    .filter((field) => field.value !== undefined && field.value !== null && field.value !== "")
+    .sort((left, right) => observationFieldPriority(left.key, group) - observationFieldPriority(right.key, group));
+}
+
+function observationFieldPriority(key: string, group: "input" | "preview" | "state"): number {
+  const normalized = key.toLowerCase();
+  const priorityGroups = {
+    input: [
+      ["setup_score", "score", "rank"],
+      ["entry_price", "entry_trigger", "trigger", "price", "close"],
+      ["stop_price", "stop"],
+      ["range_high", "range_low", "orb", "range"],
+      ["volume", "relative_volume", "rvol"],
+      ["macd", "momentum"],
+    ],
+    preview: [
+      ["setup_score", "score", "rank"],
+      ["entry_price", "exit_price", "fill_price", "price", "close"],
+      ["stop_price", "stop"],
+      ["quantity", "qty", "position_size", "position"],
+      ["pnl", "fees", "commission"],
+      ["range_high", "range_low", "orb", "range"],
+    ],
+    state: [
+      ["position", "quantity", "qty", "shares"],
+      ["entry_price", "avg_price", "price"],
+      ["stop_price", "stop"],
+      ["unrealized", "pnl"],
+      ["cash", "equity"],
+      ["orders", "fills", "trades"],
+    ],
+  } satisfies Record<typeof group, string[][]>;
+  const matchedGroup = priorityGroups[group].findIndex((terms) => terms.some((term) => normalized.includes(term)));
+  return matchedGroup >= 0 ? matchedGroup : 100;
 }
 
 function observationDecisionTone(decision: string, eventType: string): SemanticTone {

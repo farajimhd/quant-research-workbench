@@ -6228,6 +6228,61 @@ button {
   font-weight: 650;
 }
 
+.observability-action-preview {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.observability-action-reason {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.observability-action-preview-fields {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.observability-action-preview-chip {
+  display: inline-flex;
+  max-width: 220px;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card) 72%, var(--surface));
+  padding: 2px 7px;
+}
+
+.observability-action-preview-chip span {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.observability-action-preview-chip strong {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .observability-action-meta {
   display: flex;
   align-items: center;
