@@ -6112,6 +6112,8 @@ button {
 }
 
 .observability-action-card {
+  --observability-label: color-mix(in srgb, var(--muted-foreground) 82%, #2563eb);
+  --observability-value: var(--foreground);
   flex: 0 0 auto;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
@@ -6265,7 +6267,7 @@ button {
 
 .observability-action-preview-chip span {
   overflow: hidden;
-  color: var(--muted-foreground);
+  color: var(--observability-label);
   font-size: 10px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -6275,7 +6277,7 @@ button {
 
 .observability-action-preview-value {
   overflow: hidden;
-  color: var(--foreground);
+  color: var(--observability-value);
   font-size: 11px;
   font-weight: 500;
   line-height: 1.2;
@@ -6353,7 +6355,7 @@ button {
 .observability-field-group h4,
 .observability-evidence-block h4,
 .observability-state-snapshots h4 {
-  color: var(--muted-foreground);
+  color: var(--observability-label);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0;
@@ -6362,14 +6364,14 @@ button {
 }
 
 .observability-decision-copy strong {
-  color: var(--foreground);
+  color: var(--observability-value);
   font-size: 18px;
   font-weight: 750;
   line-height: 1.15;
 }
 
 .observability-decision-copy p {
-  color: var(--foreground);
+  color: var(--observability-value);
   font-size: 12.5px;
   font-weight: 550;
   line-height: 1.35;
@@ -6403,7 +6405,7 @@ button {
 
 .observability-fact span {
   flex: 0 0 auto;
-  color: var(--muted-foreground);
+  color: var(--observability-label);
   font-size: 10px;
   font-weight: 650;
   line-height: 1.15;
@@ -6413,7 +6415,7 @@ button {
 .observability-fact-value {
   min-width: 0;
   overflow: hidden;
-  color: var(--foreground);
+  color: var(--observability-value);
   font-size: 12px;
   font-weight: 500;
   line-height: 1.2;
@@ -6444,7 +6446,7 @@ button {
 }
 
 .observability-section-header h4 {
-  color: var(--foreground);
+  color: var(--observability-value);
   font-size: 11.5px;
   font-weight: 750;
   margin: 0;
@@ -6455,7 +6457,7 @@ button {
   flex: 0 0 auto;
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface) 72%, transparent);
-  color: var(--foreground);
+  color: var(--observability-label);
   font-size: 10.5px;
   font-weight: 650;
   padding: 2px 7px;
@@ -6575,7 +6577,7 @@ button {
 
 .observability-evidence-card-field span:first-child {
   overflow: hidden;
-  color: var(--muted-foreground);
+  color: var(--observability-label);
   font-size: 9.5px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -6586,7 +6588,7 @@ button {
 .observability-evidence-card-field span:last-child {
   min-width: 0;
   overflow: hidden;
-  color: var(--foreground);
+  color: var(--observability-value);
   font-size: 11.5px;
   font-weight: 500;
   line-height: 1.3;
