@@ -1248,16 +1248,19 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
           />
           <ObservationEvidenceTable
             description="Order records submitted, canceled, filled, or rejected for the same ticker and session."
+            presentation="cards"
             rows={evidence.orderRows}
             title="Execution Orders"
           />
           <ObservationEvidenceTable
             description="Fill records produced by the backtest fill model for those orders."
+            presentation="cards"
             rows={evidence.fillRows}
             title="Execution Fills"
           />
           <ObservationEvidenceTable
             description="Closed trade records connected to the same ticker and session."
+            presentation="cards"
             rows={evidence.tradeRows}
             title="Closed Trades"
           />
@@ -1318,7 +1321,19 @@ function ObservationFieldTable({ fields }: { fields: ObservationFieldValue[] }) 
   );
 }
 
-function ObservationEvidenceTable({ collapsible = false, description, rows, title }: { collapsible?: boolean; description?: string; rows: DataRow[]; title: string }) {
+function ObservationEvidenceTable({
+  collapsible = false,
+  description,
+  presentation = "table",
+  rows,
+  title,
+}: {
+  collapsible?: boolean;
+  description?: string;
+  presentation?: "cards" | "table";
+  rows: DataRow[];
+  title: string;
+}) {
   const [open, setOpen] = useState(false);
   if (!rows.length) return null;
   if (!collapsible) {
@@ -1331,7 +1346,7 @@ function ObservationEvidenceTable({ collapsible = false, description, rows, titl
           </span>
           <small>{formatNumber(rows.length)} rows</small>
         </div>
-        <DataTable rows={rows} />
+        {presentation === "cards" ? <ObservationEvidenceCards rows={rows} title={title} /> : <DataTable rows={rows} />}
       </section>
     );
   }
@@ -1348,6 +1363,102 @@ function ObservationEvidenceTable({ collapsible = false, description, rows, titl
       {open ? <DataTable rows={rows} /> : null}
     </section>
   );
+}
+
+function ObservationEvidenceCards({ rows, title }: { rows: DataRow[]; title: string }) {
+  return (
+    <div className="observability-evidence-card-list">
+      {rows.map((row, index) => (
+        <ObservationEvidenceCard index={index} key={`${title}:${evidenceRowIdentity(row, index)}:${index}`} row={row} title={title} />
+      ))}
+    </div>
+  );
+}
+
+function ObservationEvidenceCard({ index, row, title }: { index: number; row: DataRow; title: string }) {
+  const label = evidenceCardLabel(row, title, index);
+  const time = rowText(row, "created_at") || rowText(row, "filled_at") || rowText(row, "entry_time") || rowText(row, "exit_time") || rowText(row, "bar_time_market") || rowText(row, "timestamp");
+  const badge = rowText(row, "status") || rowText(row, "state") || rowText(row, "side") || rowText(row, "exit_reason") || rowText(row, "reason") || "";
+  const fields = evidenceCardFields(row);
+  return (
+    <article className="observability-evidence-card">
+      <div className="observability-evidence-card-header">
+        <span className="observability-evidence-card-title">
+          <strong>{label}</strong>
+          {time ? <small>{time}</small> : null}
+        </span>
+        {badge ? <SemanticBadge tone={observationDecisionTone(badge, title)}>{badge}</SemanticBadge> : null}
+      </div>
+      {fields.length ? (
+        <div className="observability-evidence-card-fields">
+          {fields.map((field) => (
+            <ObservationEvidenceCardField field={field} key={field.key} />
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state">No row details.</div>
+      )}
+    </article>
+  );
+}
+
+function ObservationEvidenceCardField({ field }: { field: ObservationFieldValue }) {
+  return (
+    <div className="observability-evidence-card-field">
+      <span>{field.label}</span>
+      <span>{formatObservationValue(field.value, field.label)}</span>
+    </div>
+  );
+}
+
+function evidenceCardFields(row: DataRow): ObservationFieldValue[] {
+  const preferredKeys = [
+    "symbol",
+    "ticker",
+    "side",
+    "quantity",
+    "qty",
+    "status",
+    "state",
+    "order_type",
+    "limit_price",
+    "stop_price",
+    "fill_price",
+    "filled_price",
+    "entry_price",
+    "exit_price",
+    "pnl",
+    "fees",
+    "commission",
+    "order_id",
+    "trade_id",
+    "fill_id",
+    "created_at",
+    "filled_at",
+    "entry_time",
+    "exit_time",
+    "exit_reason",
+    "reason",
+  ];
+  const orderedKeys = [
+    ...preferredKeys.filter((key) => key in row),
+    ...Object.keys(row).filter((key) => !preferredKeys.includes(key)),
+  ];
+  return orderedKeys
+    .filter((key) => key !== "values_json" && key !== "state_json")
+    .map((key) => ({ key, label: formatObservationLabel(key), value: normalizeObservationTableValue(row[key]) }))
+    .filter((field) => field.value !== undefined && field.value !== null && field.value !== "");
+}
+
+function evidenceCardLabel(row: DataRow, title: string, index: number): string {
+  const symbol = rowText(row, "symbol") || rowText(row, "ticker");
+  const identifier = rowText(row, "trade_id") || rowText(row, "order_id") || rowText(row, "fill_id") || String(index + 1);
+  if (symbol) return `${symbol} #${identifier}`;
+  return `${title.replace(/^Execution\s+/, "").replace(/^Closed\s+/, "")} #${identifier}`;
+}
+
+function evidenceRowIdentity(row: DataRow, index: number): string {
+  return rowText(row, "trade_id") || rowText(row, "order_id") || rowText(row, "fill_id") || rowText(row, "created_at") || rowText(row, "filled_at") || rowText(row, "entry_time") || String(index);
 }
 
 function ObservationStateSnapshots({ rows }: { rows: DataRow[] }) {
