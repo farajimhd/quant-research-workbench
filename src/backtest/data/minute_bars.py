@@ -67,8 +67,27 @@ def validate_provider_artifacts(
             for group in groups:
                 check(f"features_{group}", timeframe, session)
 
+    daily_context_start = None
+    daily_context_end = None
+    daily_context_missing = False
+    if sessions and requirements.daily_lookback_days > 0:
+        daily_context_start = sessions[0] - timedelta(days=requirements.daily_lookback_days)
+        daily_context_end = sessions[-1] - timedelta(days=1)
+        for session in market_sessions(daily_context_start, daily_context_end):
+            before = len(missing) + len(column_errors)
+            check("bars", "1d", session)
+            for group in requirements.daily_feature_groups:
+                check(f"features_{group}", "1d", session)
+            daily_context_missing = daily_context_missing or (len(missing) + len(column_errors) > before)
+
     if missing or column_errors:
         parts = []
+        if daily_context_missing and daily_context_start and daily_context_end:
+            groups = ", ".join(requirements.daily_feature_groups) or "none"
+            parts.append(
+                "daily context required: build provider 1d bars"
+                f" and feature groups [{groups}] for {daily_context_start.isoformat()}..{daily_context_end.isoformat()}"
+            )
         if missing:
             shown = ", ".join(missing[:12])
             suffix = " ..." if len(missing) > 12 else ""
