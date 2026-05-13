@@ -1382,10 +1382,11 @@ function TradeTickerChart({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [timeframe, setTimeframe] = useState("1m");
+  const selectedTradeDay = useMemo(() => tradeMarketDate(selectedTrade), [selectedTrade]);
   const sameSymbolTrades = useMemo(() => {
     const payloadTrades = payload?.trades?.length ? payload.trades : trades;
-    return payloadTrades.filter((trade) => tradeSymbol(trade) === symbol);
-  }, [payload?.trades, symbol, trades]);
+    return payloadTrades.filter((trade) => tradeSymbol(trade) === symbol && (!selectedTradeDay || tradeMarketDate(trade) === selectedTradeDay));
+  }, [payload?.trades, selectedTradeDay, symbol, trades]);
   const availableTimeframes = useMemo(() => symbolChartTimeframes(payload), [payload]);
   const chartPayload = useMemo(() => symbolTradeChartPayload(payload, sameSymbolTrades, selectedKey, timeframe), [payload, sameSymbolTrades, selectedKey, timeframe]);
   const visibleOverlayColumns = useMemo(() => strategyVisibleColumns(chartPayload, payload), [chartPayload, payload]);
@@ -1441,6 +1442,7 @@ function TradeTickerChart({
       markers: chartPayload.markers.filter((marker) => visibleTimes.has(Number(marker.time))),
       overlay_series: chartPayload.overlay_series.map((series) => ({ ...series, data: series.data.filter((point) => visibleTimes.has(Number(point.time))) })),
       oscillator_series: chartPayload.oscillator_series.map((series) => ({ ...series, data: series.data.filter((point) => visibleTimes.has(Number(point.time))) })),
+      price_zones: (chartPayload.price_zones ?? []).filter((zone) => candles.some((candle) => candle.time >= zone.start && candle.time <= zone.end)),
       volume: chartPayload.volume.filter((point) => visibleTimes.has(Number(point.time)))
     };
   }, [chartPayload, period.end, period.start]);
@@ -1582,7 +1584,8 @@ function symbolTradeChartPayload(payload: RunSymbolChartPayload | null | undefin
     markers: [],
     oscillator_series: source?.oscillator_series ?? [],
     overlay_series: source?.overlay_series ?? [],
-    regions: [],
+    price_zones: source?.price_zones ?? [],
+    regions: source?.regions ?? [],
     trade_annotations: tradeAnnotations(trades, selectedKey, candleTimes),
     volume: (source?.volume ?? []).filter((point) => candleTimes.has(Number(point.time)))
   };
@@ -1602,10 +1605,12 @@ function tradeAnnotations(trades: DataRow[], selectedKey: string, candleTimes: S
     const color = pnl >= 0 ? "#16a34a" : "#dc2626";
     return [{
       color,
-      entryLabel: quantity ? `Entry @${formatNumber(quantity)}` : "Entry",
+      entryLabel: tradeEntryLabel(trade, quantity, entryPrice),
+      entryLabelSide: "left",
       entryPrice,
       entryTime,
-      exitLabel: quantity ? `Exit @${formatNumber(quantity)}` : "Exit",
+      exitLabel: tradeExitLabel(trade, exitPrice, pnl),
+      exitLabelSide: "right",
       exitPrice,
       exitTime,
       id: `${key}:trade:${index}`,
@@ -1642,6 +1647,17 @@ function strategyVisibleColumns(chartPayload: ChartPayload | null, payload: RunS
   return configured.length ? configured : available;
 }
 
+function tradeEntryLabel(trade: DataRow, quantity: number | null, entryPrice: number) {
+  const reason = String(trade.entry_reason ?? trade.reason ?? "Entry").trim();
+  const size = quantity ? `${formatNumber(quantity)}` : "";
+  return `${reason} ${size}@${formatMoney(entryPrice)}`.replace(/\s+/g, " ").trim();
+}
+
+function tradeExitLabel(trade: DataRow, exitPrice: number, pnl: number) {
+  const reason = String(trade.exit_reason ?? "Exit").trim();
+  return `${reason}@${formatMoney(exitPrice)}, P/L=${formatMoney(pnl)}`;
+}
+
 function selectedTradeReference(trade: DataRow) {
   const entryTime = tradeTimestampSeconds(trade.entry_time);
   const exitTime = tradeTimestampSeconds(trade.exit_time);
@@ -1651,6 +1667,13 @@ function selectedTradeReference(trade: DataRow) {
 
 function tradeSymbol(trade: DataRow | null | undefined) {
   return String(trade?.symbol ?? trade?.ticker ?? "").trim().toUpperCase();
+}
+
+function tradeMarketDate(trade: DataRow | null | undefined) {
+  const entry = tradeTimestampSeconds(trade?.entry_time);
+  if (entry !== null) return dateStringFromTimestamp(entry);
+  const exit = tradeTimestampSeconds(trade?.exit_time);
+  return exit === null ? "" : dateStringFromTimestamp(exit);
 }
 
 function numericTradeValue(value: unknown): number | null {
@@ -1808,6 +1831,8 @@ type RunSymbolChartTimeframePayload = {
   volume: ChartPayload["volume"];
   overlay_series: ChartPayload["overlay_series"];
   oscillator_series: ChartPayload["oscillator_series"];
+  price_zones?: ChartPayload["price_zones"];
+  regions?: ChartPayload["regions"];
 };
 
 type RunSymbolChartPresentation = {

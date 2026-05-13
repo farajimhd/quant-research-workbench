@@ -5442,7 +5442,7 @@ button {
 .trade-guide-line span {
   position: absolute;
   right: 0;
-  max-width: 96px;
+  max-width: 220px;
   overflow: hidden;
   border: 1px solid;
   border-radius: 999px;
@@ -5454,6 +5454,16 @@ button {
   text-overflow: ellipsis;
   transform: translateY(-50%);
   white-space: nowrap;
+}
+
+.trade-price-line.label-left span {
+  right: auto;
+  left: 0;
+}
+
+.trade-price-line.label-right span {
+  right: 0;
+  left: auto;
 }
 
 .trade-guide-line {

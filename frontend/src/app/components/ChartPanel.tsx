@@ -54,9 +54,11 @@ type Region = { start: number; end: number; color: string; label: string };
 type TradeAnnotation = {
   color: string;
   entryLabel?: string;
+  entryLabelSide?: "left" | "right";
   entryPrice: number;
   entryTime: number;
   exitLabel?: string;
+  exitLabelSide?: "left" | "right";
   exitPrice: number;
   exitTime: number;
   id: string;
@@ -386,10 +388,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   useImperativeHandle(ref, () => ({
     fitFirstDay() {
-      fitFirstDay(priceChartRef.current, payload?.candles ?? []);
+      fitFirstDay(priceChartRef.current, fitCandles(payload));
     },
     fitRecent() {
-      fitRecent(priceChartRef.current, payload?.candles ?? []);
+      fitRecent(priceChartRef.current, fitCandles(payload));
     },
     toggleFullscreen() {
       setFullscreen((value) => !value);
@@ -947,8 +949,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           <Settings size={15} />
         </button>
         <span className="toolbar-divider" />
-        <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, payload?.candles ?? [])}><CalendarRange size={15} /></button>
-        <button className="toolbar-button" type="button" title="Fit recent" onClick={() => fitRecent(priceChartRef.current, payload?.candles ?? [])}><LocateFixed size={15} /></button>
+        <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, fitCandles(payload))}><CalendarRange size={15} /></button>
+        <button className="toolbar-button" type="button" title="Fit recent" onClick={() => fitRecent(priceChartRef.current, fitCandles(payload))}><LocateFixed size={15} /></button>
         <span className="toolbar-divider" />
         <button
           className="toolbar-button"
@@ -2285,6 +2287,17 @@ function fitFirstDay(chart: IChartApi | null, candles: Candle[]) {
   chart.timeScale().setVisibleLogicalRange({ from: -1, to: Math.max(8, lastIndex + 1) });
 }
 
+function fitCandles(payload: ChartPayload | null | undefined) {
+  return (payload?.candles ?? []).filter(
+    (candle) =>
+      Number.isFinite(candle.time) &&
+      Number.isFinite(candle.open) &&
+      Number.isFinite(candle.high) &&
+      Number.isFinite(candle.low) &&
+      Number.isFinite(candle.close)
+  );
+}
+
 function fitInitialRange(chart: IChartApi | null, candles: Candle[]) {
   if (!chart || !candles.length) return;
   if (hasMultipleMarketDates(candles)) {
@@ -2580,8 +2593,8 @@ function drawTradeAnnotations(
     region.style.borderColor = rgbaFromHex(color, selected ? 0.28 : 0.12);
     layer.appendChild(region);
 
-    drawTradePriceLine(layer, left, width, entryY, color, annotation.entryLabel ?? "Entry", "entry", selected);
-    drawTradePriceLine(layer, left, width, exitY, color, annotation.exitLabel ?? "Exit", "exit", selected);
+    drawTradePriceLine(layer, left, width, entryY, color, annotation.entryLabel ?? "Entry", "entry", selected, annotation.entryLabelSide ?? "left");
+    drawTradePriceLine(layer, left, width, exitY, color, annotation.exitLabel ?? "Exit", "exit", selected, annotation.exitLabelSide ?? "right");
     drawTradeArrow(layer, entryX, entryY, color, "entry", selected);
     drawTradeArrow(layer, exitX, exitY, color, "exit", selected);
     if (typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
@@ -2595,9 +2608,9 @@ function drawTradeAnnotations(
   });
 }
 
-function drawTradePriceLine(layer: HTMLDivElement, left: number, width: number, y: number, color: string, label: string, kind: "entry" | "exit", selected: boolean) {
+function drawTradePriceLine(layer: HTMLDivElement, left: number, width: number, y: number, color: string, label: string, kind: "entry" | "exit", selected: boolean, labelSide: "left" | "right") {
   const line = document.createElement("div");
-  line.className = `trade-price-line ${kind}${selected ? " selected" : ""}`;
+  line.className = `trade-price-line ${kind} label-${labelSide}${selected ? " selected" : ""}`;
   line.style.left = `${left}px`;
   line.style.top = `${y}px`;
   line.style.width = `${width}px`;

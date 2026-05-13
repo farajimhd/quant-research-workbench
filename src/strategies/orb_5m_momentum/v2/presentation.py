@@ -4,114 +4,22 @@ from typing import Any
 
 
 def chart_presentation() -> dict[str, Any]:
+    timeframes = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"]
+    intraday_timeframes = ["1m", "5m", "15m", "30m", "1h", "2h", "4h"]
     return {
         "schema_version": 1,
         "kind": "strategy_trade_chart",
         "default_timeframe": "1m",
-        "timeframes": ["1m", "5m"],
-        "default_visible": ["tema9_5m", "tema20_5m", "macd_line_5m", "macd_signal_5m", "macd_hist_5m"],
-        "indicators": [
-            {
-                "id": "tema9_5m",
-                "source_column": "tema9_5m",
-                "timeframe": "1m",
-                "label": "TEMA 9 · 5m",
-                "pane": "price",
-                "style": "line",
-                "color": "#0891b2",
-                "line_width": 2,
-            },
-            {
-                "id": "tema20_5m",
-                "source_column": "tema20_5m",
-                "timeframe": "1m",
-                "label": "TEMA 20 · 5m",
-                "pane": "price",
-                "style": "line",
-                "color": "#9333ea",
-                "line_width": 2,
-            },
-            {
-                "id": "macd_line_5m",
-                "source_column": "macd_line_5m",
-                "timeframe": "1m",
-                "label": "MACD · 5m",
-                "pane": "macd_5m",
-                "style": "line",
-                "color": "#2563eb",
-                "line_width": 2,
-            },
-            {
-                "id": "macd_signal_5m",
-                "source_column": "macd_signal_5m",
-                "timeframe": "1m",
-                "label": "Signal · 5m",
-                "pane": "macd_5m",
-                "style": "line",
-                "color": "#f97316",
-                "line_width": 2,
-            },
-            {
-                "id": "macd_hist_5m",
-                "source_column": "macd_hist_5m",
-                "timeframe": "1m",
-                "label": "Histogram · 5m",
-                "pane": "macd_5m",
-                "style": "histogram",
-                "color": "#64748b",
-                "line_width": 2,
-            },
-            {
-                "id": "tema9_5m",
-                "source_column": "tema9",
-                "timeframe": "5m",
-                "label": "TEMA 9 · 5m",
-                "pane": "price",
-                "style": "line",
-                "color": "#0891b2",
-                "line_width": 2,
-            },
-            {
-                "id": "tema20_5m",
-                "source_column": "tema20",
-                "timeframe": "5m",
-                "label": "TEMA 20 · 5m",
-                "pane": "price",
-                "style": "line",
-                "color": "#9333ea",
-                "line_width": 2,
-            },
-            {
-                "id": "macd_line_5m",
-                "source_column": "macd_line",
-                "timeframe": "5m",
-                "label": "MACD · 5m",
-                "pane": "macd_5m",
-                "style": "line",
-                "color": "#2563eb",
-                "line_width": 2,
-            },
-            {
-                "id": "macd_signal_5m",
-                "source_column": "macd_signal",
-                "timeframe": "5m",
-                "label": "Signal · 5m",
-                "pane": "macd_5m",
-                "style": "line",
-                "color": "#f97316",
-                "line_width": 2,
-            },
-            {
-                "id": "macd_hist_5m",
-                "source_column": "macd_hist",
-                "timeframe": "5m",
-                "label": "Histogram · 5m",
-                "pane": "macd_5m",
-                "style": "histogram",
-                "color": "#64748b",
-                "line_width": 2,
-            },
-        ],
+        "timeframes": timeframes,
+        "default_visible": ["indicator.tema_trend", "indicator.macd", "feature.opening_range_5m"],
+        "display_items": {
+            timeframe: ["indicator.tema_trend", "indicator.macd", *([] if timeframe not in intraday_timeframes else ["feature.opening_range_5m"])]
+            for timeframe in timeframes
+        },
+        "feature_groups": {
+            timeframe: ["momentum", *(["session"] if timeframe in intraday_timeframes else [])]
+            for timeframe in timeframes
+        },
         "trade_annotations": {
             "entry_label": "quantity",
             "exit_label": "quantity",
