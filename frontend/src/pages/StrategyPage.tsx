@@ -981,6 +981,7 @@ function BacktestJobPanel({
   const [detailError, setDetailError] = useState<string | null>(null);
   const [tab, setTab] = useState("Backtest Results");
   const shouldLoadTables = tab !== "Backtest Results";
+  const liveChartRefreshKey = liveChartProgressBucket(job, detail, config);
 
   useEffect(() => {
     if (!latestRunId) {
@@ -1015,7 +1016,7 @@ function BacktestJobPanel({
       canceled = true;
       window.clearInterval(timer);
     };
-  }, [latestRunId, outputRoot, shouldLoadTables, `${job?.status ?? "not-started"}-${events.length}`]);
+  }, [latestRunId, outputRoot, shouldLoadTables, liveChartRefreshKey, `${job?.status ?? "not-started"}-${events.length}`]);
 
   const progress = buildBacktestProgress(job, detail, config);
   const activeRunName = String(detail?.metadata.run_name ?? jobConfig?.run_name ?? config.run_name ?? "Backtest Results");
@@ -1102,6 +1103,29 @@ function buildBacktestProgress(job: Record<string, unknown> | null, detail: RunD
 function finiteNumber(value: unknown): number {
   const numeric = Number(value ?? 0);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function liveChartProgressBucket(job: Record<string, unknown> | null, detail: RunDetailPayload | null, config: StrategyConfig): string {
+  const processedBars = finiteNumber(job?.processed_event_bars ?? detail?.metadata.processed_event_bars);
+  const progressUnit = String(job?.progress_unit ?? detail?.metadata.progress_unit ?? "1m");
+  const defaultTimeframe = String(detail?.portfolio_candles?.default_timeframe || defaultPortfolioTimeframe(config.start_date, config.end_date));
+  const interval = Math.max(1, Math.ceil(timeframeMinutes(defaultTimeframe) / Math.max(1, timeframeMinutes(progressUnit))));
+  return `${defaultTimeframe}:${Math.floor(processedBars / interval)}`;
+}
+
+function defaultPortfolioTimeframe(start: string, end: string): string {
+  const days = estimateCalendarDays(start, end);
+  if (days <= 5) return "1h";
+  if (days <= 15) return "2h";
+  return "1d";
+}
+
+function timeframeMinutes(timeframe: string): number {
+  const normalized = timeframe.toLowerCase();
+  if (normalized.endsWith("m")) return Number(normalized.slice(0, -1)) || 1;
+  if (normalized.endsWith("h")) return (Number(normalized.slice(0, -1)) || 1) * 60;
+  if (normalized === "1d") return 390;
+  return 1;
 }
 
 function estimateCalendarDays(start: string, end: string) {

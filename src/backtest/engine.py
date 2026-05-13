@@ -105,6 +105,7 @@ class BacktestEngine:
 
             processed_event_bars = 0
             total_event_bars = int(metadata["total_event_bars"])
+            live_chart_bar_interval = self._live_chart_bar_interval(requirements)
             for index, session_date in enumerate(sessions, start=1):
                 day_start_equity = self.portfolio.total_equity()
                 frames = load_day_frames(self.config, session_date, requirements)
@@ -169,6 +170,8 @@ class BacktestEngine:
                     processed_event_bars += 1
                     session_processed_bars += 1
                     total_event_bars = max(total_event_bars, processed_event_bars)
+                    if self._should_write_live_chart(session_processed_bars, session_total_bars, live_chart_bar_interval):
+                        self._write_chart_artifacts(run_dir)
                     if self._should_emit_bar_progress(session_processed_bars, session_total_bars):
                         self._emit_progress(
                             progress_callback,
@@ -295,6 +298,17 @@ class BacktestEngine:
         if session_processed_bars <= 0:
             return False
         return session_processed_bars == session_total_bars or session_processed_bars % 10 == 0
+
+    def _live_chart_bar_interval(self, requirements: DataRequirements) -> int:
+        default_timeframe = default_portfolio_candle_timeframe(self.config.start_date, self.config.end_date)
+        chart_minutes = timeframe_minutes(default_timeframe)
+        event_minutes = max(1, timeframe_minutes(requirements.event_timeframe))
+        return max(1, ceil(chart_minutes / event_minutes))
+
+    def _should_write_live_chart(self, session_processed_bars: int, session_total_bars: int, interval: int) -> bool:
+        if session_processed_bars <= 0:
+            return False
+        return session_processed_bars == session_total_bars or session_processed_bars % interval == 0
 
     def _emit_progress(self, progress_callback, payload: dict) -> None:
         if progress_callback:
@@ -524,7 +538,7 @@ class BacktestEngine:
         write_table(run_dir / "trades.parquet", self.trades)
         write_table(run_dir / "positions.parquet", self.position_rows)
         write_table(run_dir / "portfolio.parquet", self.portfolio_rows)
-        write_table(run_dir / "portfolio_candles.parquet", build_portfolio_candles(self.portfolio_rows, initial_cash=self.config.initial_cash))
+        self._write_chart_artifacts(run_dir)
         write_table(run_dir / "scanner_snapshots.parquet", artifacts.get("scanner_snapshots", []))
         write_table(run_dir / "candidate_rankings.parquet", artifacts.get("candidate_rankings", []))
         write_table(run_dir / "live_rankings.parquet", artifacts.get("live_rankings", []))
@@ -534,6 +548,10 @@ class BacktestEngine:
             write_table(run_dir / "symbol_bars.parquet", self.symbol_bar_rows)
         if self.symbol_bar_5m_rows:
             write_table(run_dir / "symbol_bars_5m.parquet", self.symbol_bar_5m_rows)
+        (run_dir / "logs.txt").write_text("\n".join(self.logs), encoding="utf-8")
+
+    def _write_chart_artifacts(self, run_dir) -> None:
+        write_table(run_dir / "portfolio_candles.parquet", build_portfolio_candles(self.portfolio_rows, initial_cash=self.config.initial_cash))
         write_json(
             run_dir / "chart_metadata.json",
             {
@@ -544,4 +562,3 @@ class BacktestEngine:
                 ),
             },
         )
-        (run_dir / "logs.txt").write_text("\n".join(self.logs), encoding="utf-8")

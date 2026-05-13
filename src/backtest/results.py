@@ -65,14 +65,18 @@ def write_run_metadata(run_dir: Path, metadata: dict) -> None:
 
 
 def write_json(path: Path, data: dict) -> None:
-    path.write_text(json.dumps(data, indent=2, default=json_default), encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, default=json_default), encoding="utf-8")
+    tmp.replace(path)
 
 
 def write_table(path: Path, rows: list[dict]) -> None:
+    tmp = path.with_name(f"{path.name}.tmp")
     if rows:
-        pl.DataFrame([normalize_row(row) for row in rows], infer_schema_length=None).write_parquet(path)
+        pl.DataFrame([normalize_row(row) for row in rows], infer_schema_length=None).write_parquet(tmp)
     else:
-        pl.DataFrame().write_parquet(path)
+        pl.DataFrame().write_parquet(tmp)
+    tmp.replace(path)
 
 
 def normalize_row(row: dict) -> dict:
