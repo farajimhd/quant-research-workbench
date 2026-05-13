@@ -1413,7 +1413,7 @@ function ObservationEvidenceCard({ index, row, title }: { index: number; row: Da
           <strong>{label}</strong>
           {time ? <small>{time}</small> : null}
         </span>
-        {badge ? <SemanticBadge tone={observationDecisionTone(badge, title)}>{badge}</SemanticBadge> : null}
+        {badge ? <SemanticBadge tone={observabilitySemanticTone(badge, title)}>{badge}</SemanticBadge> : null}
       </div>
       {fields.length ? (
         <div className="observability-evidence-card-fields">
@@ -1429,10 +1429,15 @@ function ObservationEvidenceCard({ index, row, title }: { index: number; row: Da
 }
 
 function ObservationEvidenceCardField({ field }: { field: ObservationFieldValue }) {
+  const semanticTone = observationFieldSemanticTone(field);
   return (
     <div className="observability-evidence-card-field">
       <span>{field.label}</span>
-      <span>{formatObservationValue(field.value, field.label)}</span>
+      {semanticTone ? (
+        <SemanticBadge tone={semanticTone}>{formatObservationValue(field.value, field.label)}</SemanticBadge>
+      ) : (
+        <span>{formatObservationValue(field.value, field.label)}</span>
+      )}
     </div>
   );
 }
@@ -1835,13 +1840,31 @@ function observationFieldPriority(key: string, group: "input" | "preview" | "sta
   return matchedGroup >= 0 ? matchedGroup : 100;
 }
 
+function observationFieldSemanticTone(field: ObservationFieldValue): SemanticTone | null {
+  const key = field.key.toLowerCase();
+  if (!["decision", "exit_reason", "reason", "side", "state", "status"].some((term) => key.includes(term))) return null;
+  const value = String(field.value ?? "").trim();
+  return value ? observabilitySemanticTone(value, key) : null;
+}
+
+function observabilitySemanticTone(value: string, context = ""): SemanticTone {
+  const normalized = `${context} ${value}`.toLowerCase();
+  if (normalized.includes("reject") || normalized.includes("failed") || normalized.includes("error") || normalized.includes("blocked")) return "danger";
+  if (normalized.includes("sell") || normalized.includes("stop") || normalized.includes("loss")) return "danger";
+  if (normalized.includes("buy") || normalized.includes("filled") || normalized.includes("complete")) return "success";
+  if (normalized.includes("cancel") || normalized.includes("skip") || normalized.includes("partial")) return "warning";
+  if (normalized.includes("submit") || normalized.includes("pending") || normalized.includes("open") || normalized.includes("entry")) return "info";
+  if (normalized.includes("closed") || normalized.includes("market")) return "muted";
+  return "neutral";
+}
+
 function observationDecisionTone(decision: string, eventType: string): SemanticTone {
   const normalized = `${decision} ${eventType}`.toLowerCase();
   if (normalized.includes("reject") || normalized.includes("skip") || normalized.includes("blocked")) return "danger";
   if (normalized.includes("cancel")) return "warning";
   if (normalized.includes("submit") || normalized.includes("entry")) return "success";
   if (normalized.includes("exit")) return "info";
-  return "neutral";
+  return observabilitySemanticTone(decision, eventType);
 }
 
 function formatObservationActionTitle(eventType: string, decision: string): string {
