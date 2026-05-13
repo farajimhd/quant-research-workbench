@@ -925,7 +925,7 @@ button {
   min-height: 0;
 }
 
-.trade-chart-modal-panel {
+.modal-panel.trade-chart-modal-panel {
   display: flex;
   width: min(4800px, calc(100vw - 2px));
   height: min(940px, calc(100vh - 40px));
