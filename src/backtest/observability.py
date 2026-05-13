@@ -18,6 +18,7 @@ class ObservabilityRecorder:
         self.scanner_rows: list[dict[str, Any]] = []
         self.trace_rows: list[dict[str, Any]] = []
         self.state_rows: list[dict[str, Any]] = []
+        self.sequence = 0
 
     def start_session(self, session_date: date, session_index: int) -> None:
         self.session_date = session_date
@@ -113,9 +114,11 @@ class ObservabilityRecorder:
         }
 
     def _base_row(self, timestamp: datetime | str, ticker: Any, *, stage: str) -> dict[str, Any]:
+        self.sequence += 1
         return {
             "session_date": self.session_date.isoformat() if self.session_date else "",
             "session_index": self.session_index,
+            "sequence": self.sequence,
             "timestamp": timestamp,
             "ticker": str(ticker or ""),
             "strategy_name": self.config.strategy_name,

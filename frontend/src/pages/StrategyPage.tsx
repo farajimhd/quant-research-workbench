@@ -1739,7 +1739,7 @@ const OBSERVABILITY_ACTION_FILTERS: Array<{ label: string; value: ObservationAct
 
 function buildObservabilityActions(traces: DataRow[]): ObservabilityAction[] {
   return [...traces]
-    .sort((left, right) => rowTime(left) - rowTime(right))
+    .sort(compareObservationTraceRows)
     .map((trace, index) => {
       const sessionDate = rowText(trace, "session_date");
       const timestamp = rowText(trace, "timestamp");
@@ -1770,6 +1770,52 @@ function buildObservabilityActions(traces: DataRow[]): ObservabilityAction[] {
         trace,
       };
     });
+}
+
+function compareObservationTraceRows(left: DataRow, right: DataRow): number {
+  const timeDiff = rowTime(left) - rowTime(right);
+  if (timeDiff) return timeDiff;
+
+  const sequenceDiff = finiteObservationNumber(left.sequence) - finiteObservationNumber(right.sequence);
+  if (sequenceDiff) return sequenceDiff;
+
+  const stageDiff = observationStageOrder(rowText(left, "stage")) - observationStageOrder(rowText(right, "stage"));
+  if (stageDiff) return stageDiff;
+
+  const leftValues = parseObservationJson(left.values_json);
+  const rightValues = parseObservationJson(right.values_json);
+  const rankDiff = observationRank(left, leftValues) - observationRank(right, rightValues);
+  if (rankDiff) return rankDiff;
+
+  return normalizedTicker(rowText(left, "ticker")).localeCompare(normalizedTicker(rowText(right, "ticker")));
+}
+
+function finiteObservationNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
+function observationRank(row: DataRow, values: Record<string, unknown>): number {
+  return Math.min(
+    finiteObservationNumber(row.setup_rank),
+    finiteObservationNumber(row.live_rank),
+    finiteObservationNumber(row.rank),
+    finiteObservationNumber(values.setup_rank),
+    finiteObservationNumber(values.live_rank),
+    finiteObservationNumber(values.rank)
+  );
+}
+
+function observationStageOrder(stage: string): number {
+  const normalized = stage.toLowerCase();
+  if (normalized.includes("setup_scanner")) return 0;
+  if (normalized.includes("entry_evaluation")) return 10;
+  if (normalized.includes("risk_check")) return 20;
+  if (normalized.includes("order_request")) return 30;
+  if (normalized.includes("entry_order_management")) return 40;
+  if (normalized.includes("exit_evaluation")) return 50;
+  if (normalized.includes("day_end")) return 60;
+  return 100;
 }
 
 function countObservationActionFilter(actions: ObservabilityAction[], filter: ObservationActionFilter): number {
