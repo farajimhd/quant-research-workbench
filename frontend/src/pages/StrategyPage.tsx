@@ -1476,7 +1476,7 @@ function buildObservationEvidence(trace: DataRow, sources: ObservationEvidenceSo
     fillRows: relatedSymbolSessionRows(sources.fills, trace, ["filled_at", "bar_time_market"]).slice(0, 12),
     orderRows: relatedSymbolSessionRows(sources.orders, trace, ["created_at", "filled_at"]).slice(0, 12),
     rejectionRows: relatedSymbolSessionRows(sources.rejections, trace, ["timestamp"]).slice(0, 12),
-    scannerRows: relatedScannerRows(sources.scanner, trace),
+    scannerRows: flattenScannerRows(relatedScannerRows(sources.scanner, trace)),
     stateRows: relatedStateRows(sources.states, trace).slice(0, 12),
     tradeRows: relatedSymbolSessionRows(sources.trades, trace, ["entry_time", "exit_time"]).slice(0, 12),
   };
@@ -1520,6 +1520,45 @@ function latestScannerSnapshotRows(rows: DataRow[], traceTime: number): DataRow[
   const targetTime = times[0];
   if (!Number.isFinite(targetTime)) return [];
   return rows.filter((row) => rowTime(row) === targetTime);
+}
+
+function flattenScannerRows(rows: DataRow[]): DataRow[] {
+  const preferredColumns = [
+    "session_date",
+    "session_index",
+    "timestamp",
+    "stage",
+    "rank",
+    "ticker",
+    "scanner_status",
+    "reason_code",
+    "score",
+    "score_key",
+    "total_candidates",
+    "captured_candidates",
+  ];
+  return rows.map((row) => {
+    const values = parseObservationJson(row.values_json);
+    const flattened: DataRow = {};
+    for (const key of preferredColumns) {
+      if (key in row && key !== "values_json") flattened[key] = row[key];
+    }
+    for (const [key, value] of Object.entries(row)) {
+      if (key === "values_json" || key in flattened) continue;
+      flattened[key] = value;
+    }
+    for (const [key, value] of Object.entries(values)) {
+      const flattenedKey = key in flattened ? `candidate_${key}` : key;
+      flattened[flattenedKey] = normalizeObservationTableValue(value);
+    }
+    return flattened;
+  });
+}
+
+function normalizeObservationTableValue(value: unknown): unknown {
+  if (value === undefined || value === null) return "";
+  if (Array.isArray(value) || typeof value === "object") return JSON.stringify(value);
+  return value;
 }
 
 function relatedStateRows(rows: DataRow[], trace: DataRow): DataRow[] {
