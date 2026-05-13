@@ -593,13 +593,19 @@ function SavedRunPanel({
 
 function NewRunMetricStrip({ metrics }: { metrics: NewRunMetric[] }) {
   return (
-    <div className="new-run-metric-strip">
+    <div aria-label="Backtest metrics" className="new-run-metric-strip" role="list">
       {metrics.map((metric) => (
-        <article className="new-run-metric-card" data-tone={metric.tone ?? "neutral"} key={metric.label}>
+        <article
+          aria-label={`${metric.label}: ${typeof metric.value === "string" ? metric.value : metric.detail}`}
+          className="new-run-metric-card"
+          data-tone={metric.tone ?? "neutral"}
+          key={metric.label}
+          role="listitem"
+          title={metric.detail}
+        >
           <div className="new-run-metric-icon">{metric.icon}</div>
           <span className="new-run-metric-label">{metric.label}</span>
           <strong className="new-run-metric-value">{metric.value}</strong>
-          <span className="new-run-metric-detail">{metric.detail}</span>
         </article>
       ))}
     </div>
@@ -1115,7 +1121,7 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
       detail: "Estimated commissions and fees",
       icon: <Banknote size={15} />,
       label: "Fees",
-      tone: totalFees > 0 ? "warning" : "neutral",
+      tone: "danger",
       value: formatMoney(totalFees)
     },
     {
@@ -1128,7 +1134,7 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
     {
       detail: "Worst / best unrealized",
       icon: <Gauge size={15} />,
-      label: "+/-",
+      label: "Open Range",
       tone: unrealizedRangeTone(maxUnrealizedLoss, maxUnrealizedGain),
       value: <UnrealizedRangeValue gain={maxUnrealizedGain} loss={maxUnrealizedLoss} />
     }

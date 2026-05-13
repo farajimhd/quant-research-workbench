@@ -928,40 +928,35 @@ button {
 .new-run-metric-strip {
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: repeat(10, minmax(90px, 1fr));
-  gap: 8px;
-  min-height: 88px;
-  overflow-x: auto;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 0;
+  min-height: 74px;
+  overflow-x: hidden;
   overflow-y: hidden;
-  padding: 1px 0 6px;
+  background: transparent;
+  padding: 8px 0 10px;
   scrollbar-color: color-mix(in oklab, var(--muted-foreground) 42%, transparent) transparent;
   scrollbar-width: thin;
 }
 
 .new-run-metric-card {
   --metric-tone: var(--muted-foreground);
-  position: relative;
   display: grid;
   grid-template-areas:
     "icon label"
-    "value value"
-    "detail detail";
-  grid-template-columns: 22px minmax(0, 1fr);
+    "value value";
+  grid-template-columns: 16px minmax(0, 1fr);
   min-width: 0;
-  min-height: 76px;
-  column-gap: 7px;
-  row-gap: 6px;
+  min-height: 54px;
+  align-content: center;
+  column-gap: 6px;
+  row-gap: 5px;
   overflow: hidden;
-  border: 1px solid var(--surface-border);
-  border-left: 3px solid var(--metric-tone);
-  border-radius: 8px;
-  background: var(--card);
-  box-shadow: 0 6px 18px rgba(16, 24, 40, 0.045);
-  padding: 9px 9px 8px;
+  padding: 0 4px;
 }
 
 .new-run-metric-card[data-tone="danger"] {
-  --metric-tone: var(--danger);
+  --metric-tone: #dc2626;
 }
 
 .new-run-metric-card[data-tone="info"] {
@@ -979,12 +974,11 @@ button {
 .new-run-metric-icon {
   grid-area: icon;
   display: inline-flex;
-  width: 22px;
-  height: 22px;
+  width: 16px;
+  height: 16px;
+  align-self: center;
   align-items: center;
   justify-content: center;
-  border-radius: 5px;
-  background: color-mix(in oklab, var(--metric-tone) 9%, var(--surface-muted));
   color: var(--metric-tone);
 }
 
@@ -993,26 +987,30 @@ button {
   align-self: center;
   overflow: hidden;
   color: var(--muted-foreground);
-  font-size: 10.5px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
   letter-spacing: 0;
-  line-height: 1;
+  line-height: 1.15;
   text-overflow: ellipsis;
-  text-transform: uppercase;
   white-space: nowrap;
 }
 
 .new-run-metric-value {
   grid-area: value;
+  min-width: 0;
   overflow: hidden;
   color: var(--foreground);
   font-family: var(--font-display);
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 22px;
+  font-weight: 500;
   letter-spacing: 0;
   line-height: 1.08;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.new-run-metric-card:first-child .new-run-metric-value {
+  font-weight: 700;
 }
 
 .new-run-metric-strip::-webkit-scrollbar {
@@ -1069,16 +1067,6 @@ button {
 
 .new-run-metric-range-gain {
   color: var(--success);
-}
-
-.new-run-metric-detail {
-  grid-area: detail;
-  overflow: hidden;
-  color: var(--muted-foreground);
-  font-size: 11px;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .run-config-grid {
