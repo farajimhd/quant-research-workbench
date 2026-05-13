@@ -7,7 +7,7 @@ import polars as pl
 from src.backtest.data.minute_bars import DayFrames
 from src.backtest.models import BarContext, DataRequirements, Order, OrderRequest
 from src.backtest.portfolio import Portfolio
-from src.strategies.orb_5m_momentum.config import OrbMomentumConfig
+from src.strategies.orb_5m_momentum.v1.config import OrbMomentumConfig
 
 
 class OrbFiveMinuteMomentumStrategy:

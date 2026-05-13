@@ -145,9 +145,13 @@ export function StrategyPage() {
 
   useEffect(() => {
     api<{ strategies: Strategy[] }>("/api/strategies").then((payload) => setStrategy(payload.strategies.find((item) => item.name === strategyName) ?? payload.strategies[0]));
-    api<{ content: string }>(`/api/strategies/${strategyName}/readme`).then((payload) => setReadme(payload.content));
     api<StrategyConfig>(`/api/strategies/${strategyName}/default-config`).then(setConfig);
   }, []);
+
+  useEffect(() => {
+    if (!config) return;
+    api<{ content: string }>(`/api/strategies/${strategyName}/readme${query({ version: config.strategy_version || "v1" })}`).then((payload) => setReadme(payload.content));
+  }, [config?.strategy_version]);
 
   useEffect(() => {
     if (!config) return;

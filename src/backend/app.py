@@ -45,8 +45,13 @@ from src.data_provider.config import (
 )
 from src.data_provider.jobs import cancel_build_job, get_build_status, list_build_jobs, submit_build_job
 from src.data_provider.manifest import read_manifest
-from src.strategies.orb_5m_momentum.config import OrbMomentumConfig
-from src.strategies.registry import available_strategies, create_strategy, default_strategy_version
+from src.strategies.registry import (
+    available_strategies,
+    create_strategy,
+    default_strategy_params,
+    default_strategy_version,
+    strategy_readme_path,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -226,11 +231,14 @@ def strategies() -> dict[str, Any]:
 
 
 @app.get("/api/strategies/{strategy_name}/readme")
-def strategy_readme(strategy_name: str) -> dict[str, str]:
-    path = PROJECT_ROOT / "src" / "strategies" / strategy_name / "README.md"
+def strategy_readme(strategy_name: str, version: str | None = None) -> dict[str, str]:
+    try:
+        path = strategy_readme_path(strategy_name, version)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not path.exists():
         return {"content": "No README exists for this strategy."}
-    return {"content": path.read_text(encoding="utf-8")}
+    return {"content": path.read_text(encoding="utf-8"), "version": version or default_strategy_version(strategy_name)}
 
 
 @app.get("/api/strategies/{strategy_name}/default-config")
@@ -249,7 +257,7 @@ def strategy_default_config(strategy_name: str) -> dict[str, Any]:
         "initial_cash": 10_000.0,
         "slippage_bps": 2.0,
         "save_symbol_bars": True,
-        "strategy_params": OrbMomentumConfig().to_dict(),
+        "strategy_params": default_strategy_params(strategy_name),
     }
 
 
