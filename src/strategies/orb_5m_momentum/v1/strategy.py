@@ -87,7 +87,7 @@ class OrbFiveMinuteMomentumStrategy:
         requests.extend(self._cancel_invalid_entries(context, pending_orders))
         requests.extend(self._position_exit_requests(context, portfolio))
 
-        if minute < self.config.opening_box_end_minute:
+        if minute < self.first_entry_action_minute():
             return requests
 
         if minute >= self.config.entry_cutoff_minute:
@@ -612,6 +612,9 @@ class OrbFiveMinuteMomentumStrategy:
             (pl.col("minute_of_day") >= self.config.opening_box_start_minute)
             & (pl.col("minute_of_day") < 16 * 60)
         )
+
+    def first_entry_action_minute(self) -> int:
+        return self.config.opening_box_end_minute + 1
 
     def _reject(self, timestamp: datetime, ticker: str, reason: str, setup: dict, bar: dict, live_score: float | None = None):
         self.rejection_events.append(

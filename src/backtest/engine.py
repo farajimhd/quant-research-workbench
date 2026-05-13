@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from math import ceil
 from typing import Callable, Protocol
 
@@ -164,7 +164,7 @@ class BacktestEngine:
                         },
                     )
 
-                    for timestamp, updates in self._timestamp_slices(event_frame):
+                    for timestamp, updates in self._timestamp_slices(event_frame, requirements.event_timeframe):
                         self._check_cancelled(cancel_check)
                         last_timestamp = timestamp
                         update_rows = updates.to_dicts()
@@ -317,12 +317,13 @@ class BacktestEngine:
                     logging.exception("Failed to flush backtest artifacts after run error")
                 raise
 
-    def _timestamp_slices(self, event_frame: pl.DataFrame):
+    def _timestamp_slices(self, event_frame: pl.DataFrame, event_timeframe: str):
         if event_frame.is_empty():
             return
+        bar_duration = timedelta(minutes=timeframe_minutes(event_timeframe))
         for key, frame in event_frame.partition_by("bar_time_market", as_dict=True, maintain_order=True).items():
-            timestamp = key[0] if isinstance(key, tuple) else key
-            yield timestamp, frame
+            bar_start = key[0] if isinstance(key, tuple) else key
+            yield bar_start + bar_duration, frame
 
     def _expected_event_bar_count(self, sessions: list, requirements: DataRequirements) -> int:
         return max(1, len(sessions) * self._expected_bars_per_session(requirements))
