@@ -1240,12 +1240,15 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
       </button>
       {open ? (
         <div className="observability-action-body">
-          <ObservationFieldGroup fields={primaryFields} title="Decision Summary" />
-          {inputFields.length ? <ObservationFieldGroup fields={inputFields} title="Inputs & Thresholds" /> : null}
-          {stateFields.length ? <ObservationFieldGroup fields={stateFields} title="Strategy State" /> : null}
+          <ObservationDecisionPanel action={action} fields={primaryFields} />
+          <div className="observability-detail-grid">
+            {inputFields.length ? <ObservationFieldGroup fields={inputFields} title="Inputs & Thresholds" /> : null}
+            {stateFields.length ? <ObservationFieldGroup fields={stateFields} title="Strategy State" /> : null}
+          </div>
           <ObservationStateSnapshots rows={evidence.stateRows} />
           <ObservationEvidenceTable
             description="Strategy-level skip or rejection rows for the same ticker and session."
+            presentation="cards"
             rows={evidence.rejectionRows}
             title="Strategy Rejections"
           />
@@ -1279,6 +1282,25 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
   );
 }
 
+function ObservationDecisionPanel({ action, fields }: { action: ObservabilityAction; fields: ObservationFieldValue[] }) {
+  return (
+    <section className="observability-decision-panel" data-tone={action.tone}>
+      <div className="observability-decision-copy">
+        <span>Decision</span>
+        <strong>{action.decision || "observed"}</strong>
+        <p>{action.reason || action.reasonCode || "No reason recorded"}</p>
+      </div>
+      <div className="observability-decision-facts">
+        {fields
+          .filter((field) => field.key !== "decision" && field.key !== "reason")
+          .map((field) => (
+            <ObservationFact key={field.key} label={field.label} value={field.value} />
+          ))}
+      </div>
+    </section>
+  );
+}
+
 function ObservationActionPreview({ action, fields }: { action: ObservabilityAction; fields: ObservationFieldValue[] }) {
   const reason = action.reason || action.reasonCode || "No reason recorded";
   return (
@@ -1289,7 +1311,7 @@ function ObservationActionPreview({ action, fields }: { action: ObservabilityAct
           {fields.map((field) => (
             <span className="observability-action-preview-chip" key={field.key}>
               <span>{field.label}</span>
-              <strong>{formatObservationValue(field.value, field.label)}</strong>
+              <span className="observability-action-preview-value">{formatObservationValue(field.value, field.label)}</span>
             </span>
           ))}
         </span>
@@ -1298,11 +1320,11 @@ function ObservationActionPreview({ action, fields }: { action: ObservabilityAct
   );
 }
 
-function ObservationField({ label, value, wide = false }: { label: string; value: unknown; wide?: boolean }) {
+function ObservationFact({ label, value }: { label: string; value: unknown }) {
   return (
-    <div className={wide ? "observability-field wide" : "observability-field"}>
+    <div className="observability-fact">
       <span>{label}</span>
-      <span className="observability-field-value">{formatObservationValue(value, label)}</span>
+      <span className="observability-fact-value">{formatObservationValue(value, label)}</span>
     </div>
   );
 }
@@ -1310,36 +1332,18 @@ function ObservationField({ label, value, wide = false }: { label: string; value
 function ObservationFieldGroup({ fields, title }: { fields: ObservationFieldValue[]; title: string }) {
   const visibleFields = fields.filter((field) => field.value !== undefined && field.value !== null && field.value !== "");
   if (!visibleFields.length) return null;
-  const useCards = visibleFields.length <= 4;
   return (
-    <section className={useCards ? "observability-field-group cards" : "observability-field-group table"}>
+    <section className="observability-field-group">
       <div className="observability-section-header">
         <h4>{title}</h4>
-        <small>{useCards ? "Key values" : `${formatNumber(visibleFields.length)} values`}</small>
+        <small>{formatNumber(visibleFields.length)} values</small>
       </div>
-      {useCards ? (
-        <div className="observability-field-grid">
-          {visibleFields.map((field) => (
-            <ObservationField key={field.key} label={field.label} value={field.value} />
-          ))}
-        </div>
-      ) : (
-        <ObservationFieldTable fields={visibleFields} />
-      )}
+      <div className="observability-fact-list">
+        {visibleFields.map((field) => (
+          <ObservationFact key={field.key} label={field.label} value={field.value} />
+        ))}
+      </div>
     </section>
-  );
-}
-
-function ObservationFieldTable({ fields }: { fields: ObservationFieldValue[] }) {
-  return (
-    <div className="observability-field-table">
-      {fields.map((field) => (
-        <div className="observability-field-row" key={field.key}>
-          <span>{field.label}</span>
-          <span>{formatObservationValue(field.value, field.label)}</span>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -1495,7 +1499,6 @@ function ObservationStateSnapshots({ rows }: { rows: DataRow[] }) {
         {rows.map((row, index) => {
           const state = parseObservationJson(row.state_json);
           const fields = objectToObservationFields(state).slice(0, 8);
-          const useCards = fields.length <= 4;
           return (
             <article className="observability-state-card" key={`${rowText(row, "timestamp")}:${rowText(row, "ticker")}:${index}`}>
               <div className="observability-state-card-header">
@@ -1503,15 +1506,11 @@ function ObservationStateSnapshots({ rows }: { rows: DataRow[] }) {
                 <small>{rowText(row, "timestamp") || rowText(row, "session_date")}</small>
               </div>
               {fields.length ? (
-                useCards ? (
-                  <div className="observability-field-grid compact">
-                    {fields.map((field) => (
-                      <ObservationField key={field.key} label={field.label} value={field.value} />
-                    ))}
-                  </div>
-                ) : (
-                  <ObservationFieldTable fields={fields} />
-                )
+                <div className="observability-fact-list compact">
+                  {fields.map((field) => (
+                    <ObservationFact key={field.key} label={field.label} value={field.value} />
+                  ))}
+                </div>
               ) : (
                 <div className="empty-state">No parsed state values.</div>
               )}
