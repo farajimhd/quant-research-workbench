@@ -1213,6 +1213,7 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
   const [open, setOpen] = useState(false);
   const evidence = useMemo(() => (open ? buildObservationEvidence(action.trace, sources) : emptyObservationEvidence()), [action.trace, open, sources]);
   const evidenceCount = evidence.scannerRows.length + evidence.stateRows.length + evidence.rejectionRows.length + evidence.orderRows.length + evidence.fillRows.length + evidence.tradeRows.length;
+  const primaryFields = primaryObservationFields(action);
   return (
     <article className={open ? "observability-action-card open" : "observability-action-card"} data-tone={action.tone}>
       <button aria-expanded={open} className="observability-action-header" onClick={() => setOpen((value) => !value)} type="button">
@@ -1236,21 +1237,35 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
       </button>
       {open ? (
         <div className="observability-action-body">
-          <div className="observability-action-overview">
-            <ObservationField label="Stage" value={action.stage} />
-            <ObservationField label="Event" value={action.eventType} />
-            <ObservationField label="Ticker" value={action.ticker || "Run"} />
-            <ObservationField label="Reason code" value={action.reasonCode || "-"} />
-            <ObservationField label="Reason" value={action.reason || "-"} wide />
-          </div>
-          {action.inputFields.length ? <ObservationFieldGroup fields={action.inputFields} title="Inputs And Thresholds" /> : null}
-          {action.stateFields.length ? <ObservationFieldGroup fields={action.stateFields} title="State At Decision" /> : null}
-          <ObservationEvidenceTable rows={evidence.scannerRows} title="Scanner Evidence" />
-          <ObservationEvidenceTable rows={evidence.stateRows} title="State Snapshots" />
-          <ObservationEvidenceTable rows={evidence.rejectionRows} title="Rejection Evidence" />
-          <ObservationEvidenceTable rows={evidence.orderRows} title="Related Orders" />
-          <ObservationEvidenceTable rows={evidence.fillRows} title="Related Fills" />
-          <ObservationEvidenceTable rows={evidence.tradeRows} title="Related Trades" />
+          <ObservationFieldGroup fields={primaryFields} title="Decision Summary" />
+          {action.inputFields.length ? <ObservationFieldGroup fields={action.inputFields.slice(0, 8)} title="Inputs And Thresholds" /> : null}
+          {action.stateFields.length ? <ObservationFieldGroup fields={action.stateFields.slice(0, 8)} title="State At Decision" /> : null}
+          <ObservationEvidenceTable
+            description="Captured scanner candidates for this action timestamp, not only the selected ticker."
+            rows={evidence.scannerRows}
+            title="Scanner Snapshot"
+          />
+          <ObservationStateSnapshots rows={evidence.stateRows} />
+          <ObservationEvidenceTable
+            description="Strategy-level skip or rejection rows for the same ticker and session."
+            rows={evidence.rejectionRows}
+            title="Strategy Rejections"
+          />
+          <ObservationEvidenceTable
+            description="Order records submitted, canceled, filled, or rejected for the same ticker and session."
+            rows={evidence.orderRows}
+            title="Execution Orders"
+          />
+          <ObservationEvidenceTable
+            description="Fill records produced by the backtest fill model for those orders."
+            rows={evidence.fillRows}
+            title="Execution Fills"
+          />
+          <ObservationEvidenceTable
+            description="Closed trade records connected to the same ticker and session."
+            rows={evidence.tradeRows}
+            title="Closed Trades"
+          />
         </div>
       ) : null}
     </article>
@@ -1261,7 +1276,7 @@ function ObservationField({ label, value, wide = false }: { label: string; value
   return (
     <div className={wide ? "observability-field wide" : "observability-field"}>
       <span>{label}</span>
-      <strong>{formatObservationValue(value, label)}</strong>
+      <span className="observability-field-value">{formatObservationValue(value, label)}</span>
     </div>
   );
 }
@@ -1279,17 +1294,52 @@ function ObservationFieldGroup({ fields, title }: { fields: ObservationFieldValu
   );
 }
 
-function ObservationEvidenceTable({ rows, title }: { rows: DataRow[]; title: string }) {
+function ObservationEvidenceTable({ description, rows, title }: { description?: string; rows: DataRow[]; title: string }) {
   const [open, setOpen] = useState(false);
   if (!rows.length) return null;
   return (
     <section className="observability-evidence-block">
       <button aria-expanded={open} className="observability-evidence-header" onClick={() => setOpen((value) => !value)} type="button">
         <span>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
-        <strong>{title}</strong>
+        <span className="observability-evidence-title">
+          <span>{title}</span>
+          {description ? <small>{description}</small> : null}
+        </span>
         <small>{formatNumber(rows.length)} rows</small>
       </button>
       {open ? <DataTable rows={rows} /> : null}
+    </section>
+  );
+}
+
+function ObservationStateSnapshots({ rows }: { rows: DataRow[] }) {
+  if (!rows.length) return null;
+  return (
+    <section className="observability-state-snapshots">
+      <h4>State Snapshots</h4>
+      <div className="observability-state-card-grid">
+        {rows.map((row, index) => {
+          const state = parseObservationJson(row.state_json);
+          const fields = objectToObservationFields(state).slice(0, 8);
+          return (
+            <article className="observability-state-card" key={`${rowText(row, "timestamp")}:${rowText(row, "ticker")}:${index}`}>
+              <div className="observability-state-card-header">
+                <span>{rowText(row, "scope") || "state"}</span>
+                <small>{rowText(row, "timestamp") || rowText(row, "session_date")}</small>
+              </div>
+              {fields.length ? (
+                <div className="observability-field-grid compact">
+                  {fields.map((field) => (
+                    <ObservationField key={field.key} label={field.label} value={field.value} />
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-state">No parsed state values.</div>
+              )}
+            </article>
+          );
+        })}
+      </div>
     </section>
   );
 }
@@ -1426,7 +1476,7 @@ function buildObservationEvidence(trace: DataRow, sources: ObservationEvidenceSo
     fillRows: relatedSymbolSessionRows(sources.fills, trace, ["filled_at", "bar_time_market"]).slice(0, 12),
     orderRows: relatedSymbolSessionRows(sources.orders, trace, ["created_at", "filled_at"]).slice(0, 12),
     rejectionRows: relatedSymbolSessionRows(sources.rejections, trace, ["timestamp"]).slice(0, 12),
-    scannerRows: relatedScannerRows(sources.scanner, trace).slice(0, 30),
+    scannerRows: relatedScannerRows(sources.scanner, trace),
     stateRows: relatedStateRows(sources.states, trace).slice(0, 12),
     tradeRows: relatedSymbolSessionRows(sources.trades, trace, ["entry_time", "exit_time"]).slice(0, 12),
   };
@@ -1448,16 +1498,28 @@ function relatedScannerRows(rows: DataRow[], trace: DataRow): DataRow[] {
   const sessionDate = rowText(trace, "session_date");
   const stage = rowText(trace, "stage");
   const traceTime = rowTime(trace);
-  return rows
-    .filter((row) => {
-      if (rowText(row, "session_date") !== sessionDate) return false;
-      const rowTicker = normalizedTicker(rowText(row, "ticker"));
-      const rowTimeValue = rowTime(row);
-      if (stage === "setup_scanner") return rowText(row, "stage") === "setup_scanner";
-      if (ticker) return rowTicker === ticker && (!Number.isFinite(traceTime) || rowTimeValue <= traceTime);
-      return rowTimeValue === traceTime;
-    })
-    .sort(compareEvidenceRows);
+  const sessionRows = rows.filter((row) => rowText(row, "session_date") === sessionDate);
+  if (!sessionRows.length) return [];
+  const preferredStage = stage === "setup_scanner" ? "setup_scanner" : "live_scanner";
+  const stagedRows = sessionRows.filter((row) => rowText(row, "stage") === preferredStage);
+  const snapshotRows = latestScannerSnapshotRows(stagedRows.length ? stagedRows : sessionRows, traceTime);
+  if (snapshotRows.length) return snapshotRows.sort(compareScannerRows);
+  if (!ticker) return [];
+  return sessionRows.filter((row) => normalizedTicker(rowText(row, "ticker")) === ticker).sort(compareScannerRows);
+}
+
+function latestScannerSnapshotRows(rows: DataRow[], traceTime: number): DataRow[] {
+  if (!rows.length) return [];
+  const times = Array.from(
+    new Set(
+      rows
+        .map(rowTime)
+        .filter((time) => Number.isFinite(time) && (!Number.isFinite(traceTime) || time <= traceTime))
+    )
+  ).sort((left, right) => right - left);
+  const targetTime = times[0];
+  if (!Number.isFinite(targetTime)) return [];
+  return rows.filter((row) => rowTime(row) === targetTime);
 }
 
 function relatedStateRows(rows: DataRow[], trace: DataRow): DataRow[] {
@@ -1504,6 +1566,19 @@ function objectToObservationFields(value: Record<string, unknown>): ObservationF
     .map(([key, fieldValue]) => ({ key, label: formatObservationLabel(key), value: fieldValue }));
 }
 
+function primaryObservationFields(action: ObservabilityAction): ObservationFieldValue[] {
+  return [
+    { key: "decision", label: "Decision", value: action.decision || "observed" },
+    { key: "ticker", label: "Ticker", value: action.ticker || "Run" },
+    { key: "stage", label: "Stage", value: action.stage },
+    { key: "event", label: "Event", value: action.eventType },
+    { key: "reason_code", label: "Reason Code", value: action.reasonCode || "-" },
+    { key: "reason", label: "Reason", value: action.reason || "-" },
+    { key: "timestamp", label: "Time", value: action.timestamp || action.sessionDate },
+    { key: "session", label: "Session", value: action.sessionDate },
+  ];
+}
+
 function observationDecisionTone(decision: string, eventType: string): SemanticTone {
   const normalized = `${decision} ${eventType}`.toLowerCase();
   if (normalized.includes("reject") || normalized.includes("skip") || normalized.includes("blocked")) return "danger";
@@ -1545,6 +1620,13 @@ function compareEvidenceRows(left: DataRow, right: DataRow): number {
   const timeDiff = rowTime(right) - rowTime(left);
   if (timeDiff) return timeDiff;
   return Number(left.rank ?? 0) - Number(right.rank ?? 0);
+}
+
+function compareScannerRows(left: DataRow, right: DataRow): number {
+  const leftRank = Number(left.rank ?? Number.POSITIVE_INFINITY);
+  const rightRank = Number(right.rank ?? Number.POSITIVE_INFINITY);
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  return Number(right.score ?? 0) - Number(left.score ?? 0);
 }
 
 function rowTime(row: DataRow): number {
