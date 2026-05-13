@@ -40,7 +40,7 @@ class Portfolio:
         for symbol, position in self.positions.items():
             bar = bars_by_symbol.get(symbol)
             mark = float(bar["close"]) if bar is not None else position.entry_price
-            total += (mark - position.entry_price) * position.quantity
+            total += (mark - position.entry_price) * position.quantity - position.entry_fee
         return total
 
     def gross_exposure(self, bars_by_symbol: dict[str, dict]) -> float:
@@ -51,8 +51,8 @@ class Portfolio:
             total += abs(mark * position.quantity)
         return total
 
-    def can_afford(self, price: float, quantity: int) -> bool:
-        return self.cash >= price * quantity
+    def can_afford(self, price: float, quantity: int, fee: float = 0.0) -> bool:
+        return self.cash >= price * quantity + fee
 
     def open_position(
         self,
@@ -62,12 +62,13 @@ class Portfolio:
         setup_score: float,
         live_score: float,
         stop_price: float,
+        fee: float = 0.0,
     ) -> None:
         if order.fill_price is None or order.filled_at is None:
             raise ValueError("Cannot open position from an unfilled order")
 
         cost = order.fill_price * order.quantity
-        self.cash -= cost
+        self.cash -= cost + fee
         self.positions[order.symbol] = Position(
             symbol=order.symbol,
             quantity=order.quantity,
@@ -81,18 +82,24 @@ class Portfolio:
             live_score=live_score,
             max_price=order.fill_price,
             min_price=order.fill_price,
+            entry_fee=fee,
         )
 
-    def close_position(self, order: Order) -> Trade | None:
+    def close_position(self, order: Order, fee: float = 0.0) -> Trade | None:
         position = self.positions.get(order.symbol)
         if position is None or order.fill_price is None or order.filled_at is None:
             return None
 
         quantity = min(position.quantity, abs(order.quantity))
+        original_quantity = position.quantity
+        entry_fee = position.entry_fee * (quantity / original_quantity) if original_quantity else 0.0
         proceeds = order.fill_price * quantity
-        self.cash += proceeds
-        pnl = (order.fill_price - position.entry_price) * quantity
-        return_pct = (order.fill_price / position.entry_price) - 1.0 if position.entry_price > 0 else 0.0
+        self.cash += proceeds - fee
+        gross_pnl = (order.fill_price - position.entry_price) * quantity
+        fees = entry_fee + fee
+        pnl = gross_pnl - fees
+        cost_basis = (position.entry_price * quantity) + entry_fee
+        return_pct = pnl / cost_basis if cost_basis > 0 else 0.0
 
         trade = Trade(
             symbol=order.symbol,
@@ -102,6 +109,10 @@ class Portfolio:
             entry_price=position.entry_price,
             exit_price=order.fill_price,
             pnl=pnl,
+            gross_pnl=gross_pnl,
+            entry_fee=entry_fee,
+            exit_fee=fee,
+            fees=fees,
             return_pct=return_pct,
             exit_reason=order.reason,
             max_unrealized_profit=position.max_unrealized_profit,
@@ -117,6 +128,7 @@ class Portfolio:
             del self.positions[order.symbol]
         else:
             position.quantity = remaining
+            position.entry_fee = max(0.0, position.entry_fee - entry_fee)
 
         return trade
 
@@ -145,7 +157,8 @@ class Portfolio:
                 {
                     "timestamp": timestamp,
                     "mark_price": mark,
-                    "unrealized_pnl": (mark - position.entry_price) * position.quantity,
+                    "unrealized_pnl": (mark - position.entry_price) * position.quantity - position.entry_fee,
+                    "entry_fee": position.entry_fee,
                     "market_value": mark * position.quantity,
                 }
             )

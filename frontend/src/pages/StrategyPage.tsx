@@ -44,6 +44,8 @@ type StrategyConfig = {
   output_root: string;
   initial_cash: number;
   slippage_bps: number;
+  fee_model: string;
+  fee_tax_rate: number;
   save_symbol_bars: boolean;
   strategy_params: Record<string, number | string | boolean>;
 };
@@ -77,6 +79,8 @@ const RUN_PARAMETER_HELP: Record<string, string> = {
   processed_data_root: "Canonical provider-built market data root used by the backtest.",
   initial_cash: "Starting portfolio cash used to size positions and calculate return.",
   slippage_bps: "Per-fill slippage in basis points. One basis point is 0.01 percent.",
+  fee_model: "Commission and regulatory fee model applied at each fill. The default estimates IBKR Canada fixed pricing for US stocks.",
+  fee_tax_rate: "Optional tax rate applied to estimated commissions. Leave 0 unless you want to explicitly model GST/PST/HST.",
   save_symbol_bars: "When enabled, the run saves per-symbol bar snapshots for diagnostics."
 };
 
@@ -632,6 +636,8 @@ function BacktestParameterEditor({
         <EditField help={RUN_PARAMETER_HELP.end_date} label="End" type="date" value={config.end_date} onChange={(value) => onChange({ ...config, end_date: value })} />
         <EditNumberField help={RUN_PARAMETER_HELP.initial_cash} label="Initial cash" value={config.initial_cash} onChange={(value) => onChange({ ...config, initial_cash: value })} />
         <EditNumberField help={RUN_PARAMETER_HELP.slippage_bps} label="Slippage bps" value={config.slippage_bps} onChange={(value) => onChange({ ...config, slippage_bps: value })} />
+        <EditReadonlyField help={RUN_PARAMETER_HELP.fee_model} label="Fee model" value={config.fee_model || "ibkr_ca_us_stock_fixed"} />
+        <EditNumberField help={RUN_PARAMETER_HELP.fee_tax_rate} label="Fee tax rate" value={config.fee_tax_rate ?? 0} onChange={(value) => onChange({ ...config, fee_tax_rate: value })} />
       </EditSection>
       <EditSection description="Provider-built data is preferred for backtests; output root controls saved run artifacts." title="Data & Artifacts">
         <EditField help={RUN_PARAMETER_HELP.processed_data_root} label="Processed data root" value={config.processed_data_root} onChange={(value) => onChange({ ...config, processed_data_root: value })} />
@@ -1050,6 +1056,7 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
   const tradeCount = finiteNumber(summary.trade_count);
   const winRate = finiteNumber(summary.win_rate);
   const profitFactor = finiteNumber(summary.profit_factor);
+  const totalFees = finiteNumber(summary.total_fees);
   const unrealized = finiteNumber(summary.open_unrealized_pnl);
   const maxUnrealizedGain = finiteNumber(summary.max_open_unrealized_pnl);
   const maxUnrealizedLoss = finiteNumber(summary.max_open_unrealized_loss);
@@ -1103,6 +1110,13 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
       label: "PF",
       tone: profitFactorTone(profitFactor, tradeCount),
       value: formatNumber(profitFactor, 2)
+    },
+    {
+      detail: "Estimated commissions and fees",
+      icon: <Banknote size={15} />,
+      label: "Fees",
+      tone: totalFees > 0 ? "warning" : "neutral",
+      value: formatMoney(totalFees)
     },
     {
       detail: "Current unrealized P/L",

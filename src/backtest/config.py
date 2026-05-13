@@ -65,6 +65,8 @@ class BacktestConfig:
     session_start_minute: int = 9 * 60 + 30
     session_end_minute: int = 16 * 60
     slippage_bps: float = 2.0
+    fee_model: str = "ibkr_ca_us_stock_fixed"
+    fee_tax_rate: float = 0.0
     save_symbol_bars: bool = True
     created_by_app: bool = False
     strategy_params: dict[str, Any] = field(default_factory=dict)
@@ -98,6 +100,8 @@ class BacktestConfig:
             "session_start_minute": self.session_start_minute,
             "session_end_minute": self.session_end_minute,
             "slippage_bps": self.slippage_bps,
+            "fee_model": self.fee_model,
+            "fee_tax_rate": self.fee_tax_rate,
             "save_symbol_bars": self.save_symbol_bars,
             "created_by_app": self.created_by_app,
             "strategy_params": self.strategy_params,

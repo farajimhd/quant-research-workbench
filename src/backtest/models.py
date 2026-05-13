@@ -43,6 +43,11 @@ class Order:
     status: str = "OPEN"
     filled_at: datetime | None = None
     fill_price: float | None = None
+    fill_fee: float = 0.0
+    commission: float = 0.0
+    regulatory_fee: float = 0.0
+    fee_tax: float = 0.0
+    fee_model: str = ""
     tag: str = ""
 
 
@@ -58,6 +63,14 @@ class Fill:
     order_type: str
     reason: str
     slippage_bps: float
+    commission: float = 0.0
+    regulatory_fee: float = 0.0
+    fee_tax: float = 0.0
+    total_fee: float = 0.0
+    sec_fee: float = 0.0
+    finra_taf: float = 0.0
+    finra_cat: float = 0.0
+    fee_model: str = ""
     bar_time_market: datetime | None = None
     bar_open: float | None = None
     bar_high: float | None = None
@@ -80,6 +93,7 @@ class Position:
     live_score: float
     max_price: float
     min_price: float
+    entry_fee: float = 0.0
     max_unrealized_profit: float = 0.0
     max_r_multiple: float = 0.0
     max_adverse_excursion: float = 0.0
@@ -94,6 +108,10 @@ class Trade:
     entry_price: float
     exit_price: float
     pnl: float
+    gross_pnl: float
+    entry_fee: float
+    exit_fee: float
+    fees: float
     return_pct: float
     exit_reason: str
     max_unrealized_profit: float

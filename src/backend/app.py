@@ -95,6 +95,8 @@ class BacktestSubmit(BaseModel):
     output_root: str = Field(default=str(DEFAULT_OUTPUT_ROOT))
     initial_cash: float = 10_000.0
     slippage_bps: float = 2.0
+    fee_model: str = "ibkr_ca_us_stock_fixed"
+    fee_tax_rate: float = 0.0
     save_symbol_bars: bool = True
     strategy_params: dict[str, Any] = Field(default_factory=dict)
 
@@ -314,6 +316,8 @@ def strategy_default_config(strategy_name: str, version: str | None = None) -> d
         "output_root": str(DEFAULT_OUTPUT_ROOT),
         "initial_cash": 10_000.0,
         "slippage_bps": 2.0,
+        "fee_model": "ibkr_ca_us_stock_fixed",
+        "fee_tax_rate": 0.0,
         "save_symbol_bars": True,
         "strategy_params": strategy_params,
     }

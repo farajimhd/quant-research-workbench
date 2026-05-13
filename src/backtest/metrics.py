@@ -183,6 +183,12 @@ def compute_summary(
     annual_sortino = (risk_mean / risk_downside) * math.sqrt(periods_per_year) if risk_downside else 0.0
     fills = fills or []
     filled_orders = [order for order in orders if order.get("status") == "FILLED"]
+    total_commissions = sum(float(fill.get("commission") or 0.0) for fill in fills)
+    total_regulatory_fees = sum(float(fill.get("regulatory_fee") or 0.0) for fill in fills)
+    total_fee_tax = sum(float(fill.get("fee_tax") or 0.0) for fill in fills)
+    total_fees = sum(float(fill.get("total_fee") or fill.get("fill_fee") or 0.0) for fill in fills)
+    if not total_fees:
+        total_fees = sum(float(order.get("fill_fee") or 0.0) for order in filled_orders)
     traded_value = (
         sum(abs(float(fill.get("quantity") or 0.0) * float(fill.get("fill_price") or 0.0)) for fill in fills)
         if fills
@@ -236,7 +242,7 @@ def compute_summary(
         "maximumEndTradeDrawdown": max([float(trade.get("end_trade_drawdown") or 0.0) for trade in trades], default=0.0),
         "averageEndTradeDrawdown": safe_mean([float(trade.get("end_trade_drawdown") or 0.0) for trade in trades]),
         "maximumDrawdownDuration": "not_available",
-        "totalFees": 0.0,
+        "totalFees": total_fees,
     }
 
     portfolio_statistics = {
@@ -269,7 +275,7 @@ def compute_summary(
 
     runtime_statistics = {
         "Equity": final_equity,
-        "Fees": 0.0,
+        "Fees": total_fees,
         "Holdings": gross_exposure,
         "Net Profit": total_pnl,
         "Return": total_return,
@@ -305,6 +311,10 @@ def compute_summary(
         "portfolio_turnover": turnover,
         "gross_exposure": gross_exposure,
         "open_positions": open_positions,
+        "total_fees": total_fees,
+        "total_commissions": total_commissions,
+        "total_regulatory_fees": total_regulatory_fees,
+        "total_fee_tax": total_fee_tax,
         "total_orders": len(orders),
         "total_fills": len(fills),
     }

@@ -13,6 +13,7 @@ from src.backtest.cancel import BacktestCancelled
 from src.backtest.config import BacktestConfig
 from src.backtest.data.minute_bars import DayFrames, available_session_dates, load_day_frames, timeframe_minutes
 from src.backtest.equity_candles import default_portfolio_candle_timeframe
+from src.backtest.fees import FeeBreakdown, fee_model_for_name
 from src.backtest.fills import BarFillModel
 from src.backtest.metrics import compute_summary
 from src.backtest.models import BarContext, DataRequirements, Fill, Order, OrderRequest
@@ -60,6 +61,7 @@ class BacktestEngine:
         self.symbol_bar_rows: list[dict] = []
         self.symbol_bar_5m_rows: list[dict] = []
         self.fill_model = BarFillModel()
+        self.fee_model = fee_model_for_name(config.fee_model, tax_rate=config.fee_tax_rate)
 
     def run(self, progress_callback=None, cancel_check: Callable[[], None] | None = None) -> dict:
         run_dir = create_run_dir(self.config)
@@ -426,10 +428,11 @@ class BacktestEngine:
 
     def _fill_order(self, order: Order, timestamp: datetime, bar: dict, reason: str) -> None:
         fill_price = self.fill_model.fill_price(order, bar, self.config.slippage_bps)
+        fee = self.fee_model.estimate(side=order.side, quantity=order.quantity, fill_price=fill_price)
 
         if order.side == "BUY":
             metadata = self.strategy.entry_metadata(order)
-            if not self.portfolio.can_afford(fill_price, order.quantity):
+            if not self.portfolio.can_afford(fill_price, order.quantity, fee.total):
                 order.status = "REJECTED_CASH"
                 order.filled_at = timestamp
                 order.fill_price = fill_price
@@ -439,7 +442,8 @@ class BacktestEngine:
                 order.filled_at = timestamp
                 order.fill_price = fill_price
                 order.reason = reason
-                self._record_fill(order, timestamp, bar, fill_price)
+                self._apply_fee_to_order(order, fee)
+                self._record_fill(order, timestamp, bar, fill_price, fee)
                 self.portfolio.open_position(
                     order,
                     setup_rank=int(metadata.get("setup_rank", 0)),
@@ -447,6 +451,7 @@ class BacktestEngine:
                     setup_score=float(metadata.get("setup_score", 0.0)),
                     live_score=float(metadata.get("live_score", 0.0)),
                     stop_price=float(metadata.get("stop_price", order.stop_price or fill_price)),
+                    fee=fee.total,
                 )
         else:
             if order.symbol not in self.portfolio.positions:
@@ -460,14 +465,22 @@ class BacktestEngine:
             order.filled_at = timestamp
             order.fill_price = fill_price
             order.reason = reason
-            self._record_fill(order, timestamp, bar, fill_price)
-            trade = self.portfolio.close_position(order)
+            self._apply_fee_to_order(order, fee)
+            self._record_fill(order, timestamp, bar, fill_price, fee)
+            trade = self.portfolio.close_position(order, fee=fee.total)
             if trade is not None:
                 self.trades.append(asdict(trade))
 
         self.orders.append(asdict(order))
 
-    def _record_fill(self, order: Order, timestamp: datetime, bar: dict, fill_price: float) -> None:
+    def _apply_fee_to_order(self, order: Order, fee: FeeBreakdown) -> None:
+        order.fill_fee = fee.total
+        order.commission = fee.commission
+        order.regulatory_fee = fee.regulatory_fee
+        order.fee_tax = fee.tax
+        order.fee_model = fee.model
+
+    def _record_fill(self, order: Order, timestamp: datetime, bar: dict, fill_price: float, fee: FeeBreakdown) -> None:
         fill = Fill(
             fill_id=self.next_fill_id,
             order_id=order.order_id,
@@ -479,6 +492,14 @@ class BacktestEngine:
             order_type=order.order_type,
             reason=order.reason,
             slippage_bps=self.config.slippage_bps,
+            commission=fee.commission,
+            regulatory_fee=fee.regulatory_fee,
+            fee_tax=fee.tax,
+            total_fee=fee.total,
+            sec_fee=fee.sec_fee,
+            finra_taf=fee.finra_taf,
+            finra_cat=fee.finra_cat,
+            fee_model=fee.model,
             bar_time_market=bar.get("bar_time_market"),
             bar_open=float(bar["open"]) if bar.get("open") is not None else None,
             bar_high=float(bar["high"]) if bar.get("high") is not None else None,
