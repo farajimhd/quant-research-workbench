@@ -604,7 +604,8 @@ button {
   display: flex;
   gap: 18px;
   border-bottom: 1px solid var(--border);
-  margin: 14px 0 18px;
+  margin: 0 0;
+  margin-bottom: 10px;
 }
 
 .tab {
@@ -3117,8 +3118,9 @@ button {
 
 .progress-meter {
   display: grid;
-  gap: 6px;
-  margin: 12px 0;
+  gap: 0px;
+  margin-top: 0;
+  margin-bottom: 30px;
 }
 
 .progress-meter.compact {
