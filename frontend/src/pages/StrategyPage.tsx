@@ -1021,11 +1021,6 @@ function BacktestJobPanel({
               total={progress.total}
             />
             <NewRunMetricStrip metrics={metrics} />
-            <div className="toolbar">
-              <span className="meta-tag">{formatNumber(progress.done)}/{formatNumber(progress.total)} {progress.unitLabel}</span>
-              {progress.currentSession ? <span className="meta-tag">{progress.currentSession}</span> : null}
-              {latestRunDir ? <span className="meta-tag">{latestRunDir}</span> : null}
-            </div>
             {detailError ? <div className="error-panel">{detailError}</div> : null}
             <PnlCandleChart payload={detail?.portfolio_candles} runName={activeRunName} title="Portfolio P/L Candles" />
           </>
