@@ -6265,7 +6265,7 @@ button {
   padding: 2px 7px;
 }
 
-.observability-action-preview-chip span {
+.observability-action-preview-chip > span:first-child {
   overflow: hidden;
   color: var(--observability-label);
   font-size: 10px;
@@ -6404,7 +6404,7 @@ button {
   padding: 5px 8px;
 }
 
-.observability-fact span {
+.observability-fact > span:first-child {
   flex: 0 0 auto;
   color: var(--observability-label);
   font-size: 10px;
