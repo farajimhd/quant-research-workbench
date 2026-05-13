@@ -41,13 +41,11 @@ from src.data_provider.config import (
     SUPERVISION_GROUPS,
     TIMEFRAMES,
     BuildRequest,
-    DataProviderConfig,
 )
 from src.data_provider.jobs import cancel_build_job, get_build_status, list_build_jobs, submit_build_job
 from src.data_provider.manifest import read_manifest
-from src.data_provider.provider import MarketDataProvider
 from src.strategies.orb_5m_momentum.config import OrbMomentumConfig
-from src.strategies.registry import available_strategies
+from src.strategies.registry import available_strategies, create_strategy
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -217,13 +215,13 @@ def backtest_runs(output_root: str = str(DEFAULT_OUTPUT_ROOT), strategy_name: st
 def start_backtest(payload: BacktestSubmit) -> dict[str, Any]:
     raw = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     config = BacktestConfig.from_dict({**raw, "created_by_app": True})
-    missing_processed = MarketDataProvider(
-        DataProviderConfig(processed_root=config.processed_data_root)
-    ).missing_dates(config.start_date, config.end_date, "1m")
-    if missing_processed:
-        shown = ", ".join(missing_processed[:10])
-        suffix = " ..." if len(missing_processed) > 10 else ""
-        raise HTTPException(status_code=400, detail=f"Processed provider data is missing for: {shown}{suffix}")
+    try:
+        strategy = create_strategy(config.strategy_name, config.strategy_params)
+        from src.backtest.data.minute_bars import available_session_dates
+
+        available_session_dates(config, strategy.data_requirements())
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return submit_backtest_job(config)
 
 

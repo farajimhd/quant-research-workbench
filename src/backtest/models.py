@@ -3,6 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+import polars as pl
+
+
+@dataclass(frozen=True, slots=True)
+class DataRequirements:
+    event_timeframe: str = "1m"
+    feature_groups: tuple[str, ...] = ()
+    context_feature_groups: dict[str, tuple[str, ...]] | None = None
+    daily_lookback_days: int = 0
+    daily_feature_groups: tuple[str, ...] = ()
+    required_columns: tuple[str, ...] = ()
+
 
 @dataclass(slots=True)
 class OrderRequest:
@@ -75,3 +87,12 @@ class Trade:
 class MinuteContext:
     timestamp: datetime
     bars_by_symbol: dict[str, dict]
+
+
+@dataclass(slots=True)
+class BarContext:
+    timestamp: datetime
+    updates: pl.DataFrame
+    latest: pl.DataFrame
+    updates_by_symbol: dict[str, dict]
+    latest_by_symbol: dict[str, dict]

@@ -5,7 +5,7 @@ from datetime import datetime
 import polars as pl
 
 from src.backtest.data.minute_bars import DayFrames
-from src.backtest.models import MinuteContext, Order, OrderRequest
+from src.backtest.models import BarContext, DataRequirements, Order, OrderRequest
 from src.backtest.portfolio import Portfolio
 from src.strategies.orb_5m_momentum.config import OrbMomentumConfig
 
@@ -25,7 +25,17 @@ class OrbFiveMinuteMomentumStrategy:
         self.signal_events: list[dict] = []
         self.rejection_events: list[dict] = []
 
-    def prepare_day(self, frames: DayFrames, portfolio: Portfolio) -> None:
+    def data_requirements(self) -> DataRequirements:
+        return DataRequirements(
+            event_timeframe="1m",
+            feature_groups=("core", "session", "momentum", "volatility", "volume_liquidity", "price_action"),
+            context_feature_groups={"5m": ("momentum",)},
+            daily_lookback_days=60,
+            daily_feature_groups=("core", "volatility"),
+            required_columns=("ticker", "bar_time_market", "minute_of_day", "open", "high", "low", "close", "volume"),
+        )
+
+    def prepare_day(self, frames: DayFrames, portfolio: Portfolio) -> pl.DataFrame:
         self.session_date = frames.session_date
         self.watchlist = {}
         self.entry_order_metadata = {}
@@ -64,8 +74,9 @@ class OrbFiveMinuteMomentumStrategy:
                     **row,
                 }
             )
+        return self._session_frame(frames.event_frame)
 
-    def on_minute(self, context: MinuteContext, portfolio: Portfolio, pending_orders: list[Order]) -> list[OrderRequest]:
+    def on_bar(self, context: BarContext, portfolio: Portfolio, pending_orders: list[Order]) -> list[OrderRequest]:
         requests: list[OrderRequest] = []
         minute = context.timestamp.hour * 60 + context.timestamp.minute
 
@@ -111,14 +122,14 @@ class OrbFiveMinuteMomentumStrategy:
             )
         return requests
 
-    def _cancel_invalid_entries(self, context: MinuteContext, pending_orders: list[Order]) -> list[OrderRequest]:
+    def _cancel_invalid_entries(self, context: BarContext, pending_orders: list[Order]) -> list[OrderRequest]:
         requests = []
         minute = context.timestamp.hour * 60 + context.timestamp.minute
         for order in pending_orders:
             if order.side != "BUY" or order.status != "OPEN":
                 continue
             setup = self.watchlist.get(order.symbol)
-            bar = context.bars_by_symbol.get(order.symbol)
+            bar = context.updates_by_symbol.get(order.symbol)
             if setup is None or bar is None:
                 continue
             reason = None
@@ -178,7 +189,7 @@ class OrbFiveMinuteMomentumStrategy:
     def _build_setup_dataframe(self, frames: DayFrames) -> pl.DataFrame:
         cfg = self.config
         box = (
-            frames.minute_bars.filter(
+            self._session_frame(frames.event_frame).filter(
                 (pl.col("minute_of_day") >= cfg.opening_box_start_minute)
                 & (pl.col("minute_of_day") < cfg.opening_box_end_minute)
             )
@@ -196,7 +207,7 @@ class OrbFiveMinuteMomentumStrategy:
                 (pl.col("box_high") - pl.col("box_low")).alias("box_range"),
                 ((pl.col("box_high") + pl.col("box_low")) / 2.0).alias("box_mid"),
             )
-            .join(frames.prior_daily_stats, on="ticker", how="left")
+            .join(frames.daily_context, on="ticker", how="left")
             .with_columns(
                 pl.when(pl.col("avg_daily_volume_14") > 0)
                 .then(pl.col("box_volume") / (pl.col("avg_daily_volume_14") * cfg.relative_volume_daily_share))
@@ -279,7 +290,7 @@ class OrbFiveMinuteMomentumStrategy:
 
     def _live_candidates(
         self,
-        context: MinuteContext,
+        context: BarContext,
         portfolio: Portfolio,
         pending_orders: list[Order],
     ) -> list[dict]:
@@ -287,7 +298,7 @@ class OrbFiveMinuteMomentumStrategy:
         candidates = []
         live_rows = []
         for ticker, setup in self.watchlist.items():
-            bar = context.bars_by_symbol.get(ticker)
+            bar = context.updates_by_symbol.get(ticker)
             if bar is None:
                 continue
 
@@ -446,10 +457,10 @@ class OrbFiveMinuteMomentumStrategy:
             tag=tag,
         )
 
-    def _position_exit_requests(self, context: MinuteContext, portfolio: Portfolio) -> list[OrderRequest]:
+    def _position_exit_requests(self, context: BarContext, portfolio: Portfolio) -> list[OrderRequest]:
         requests = []
         for symbol, position in list(portfolio.positions.items()):
-            bar = context.bars_by_symbol.get(symbol)
+            bar = context.updates_by_symbol.get(symbol)
             if bar is None:
                 continue
 
@@ -590,6 +601,12 @@ class OrbFiveMinuteMomentumStrategy:
             f"EXIT|reason={reason}|price={float(bar['close']):.2f}|stop={position.stop_price:.2f}"
             f"|maxp={position.max_price:.2f}|maxu={position.max_unrealized_profit:.2f}|maxR={position.max_r_multiple:.2f}"
             f"|tema9={float(bar.get('tema9_5m') or 0.0):.4f}|tema20={float(bar.get('tema20_5m') or 0.0):.4f}"
+        )
+
+    def _session_frame(self, frame: pl.DataFrame) -> pl.DataFrame:
+        return frame.filter(
+            (pl.col("minute_of_day") >= self.config.opening_box_start_minute)
+            & (pl.col("minute_of_day") < 16 * 60)
         )
 
     def _reject(self, timestamp: datetime, ticker: str, reason: str, setup: dict, bar: dict, live_score: float | None = None):

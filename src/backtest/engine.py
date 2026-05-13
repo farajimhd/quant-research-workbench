@@ -11,7 +11,7 @@ from src.backtest.config import BacktestConfig
 from src.backtest.data.minute_bars import DayFrames, available_session_dates, load_day_frames
 from src.backtest.fills import BarFillModel
 from src.backtest.metrics import compute_summary
-from src.backtest.models import MinuteContext, Order, OrderRequest
+from src.backtest.models import BarContext, DataRequirements, Order, OrderRequest
 from src.backtest.portfolio import Portfolio
 from src.backtest.results import base_metadata, create_run_dir, write_json, write_run_metadata, write_table
 
@@ -19,10 +19,13 @@ from src.backtest.results import base_metadata, create_run_dir, write_json, writ
 class Strategy(Protocol):
     name: str
 
-    def prepare_day(self, frames: DayFrames, portfolio: Portfolio) -> None:
+    def data_requirements(self) -> DataRequirements:
         ...
 
-    def on_minute(self, context: MinuteContext, portfolio: Portfolio, pending_orders: list[Order]) -> list[OrderRequest]:
+    def prepare_day(self, frames: DayFrames, portfolio: Portfolio) -> pl.DataFrame:
+        ...
+
+    def on_bar(self, context: BarContext, portfolio: Portfolio, pending_orders: list[Order]) -> list[OrderRequest]:
         ...
 
     def on_day_end(self, timestamp: datetime, portfolio: Portfolio) -> list[OrderRequest]:
@@ -59,10 +62,11 @@ class BacktestEngine:
         write_json(run_dir / "config.json", self.config.to_dict())
 
         try:
-            sessions = available_session_dates(self.config)
+            requirements = self.strategy.data_requirements()
+            sessions = available_session_dates(self.config, requirements)
             if not sessions:
                 raise ValueError(
-                    f"No minute-bar files found for requested range "
+                    f"No market sessions found for requested range "
                     f"{self.config.start_date.isoformat()}..{self.config.end_date.isoformat()}"
                 )
             metadata.update(
@@ -78,42 +82,50 @@ class BacktestEngine:
 
             for index, session_date in enumerate(sessions, start=1):
                 day_start_equity = self.portfolio.total_equity()
-                frames = load_day_frames(self.config, session_date)
-                self.strategy.prepare_day(frames, self.portfolio)
+                frames = load_day_frames(self.config, session_date, requirements)
+                event_frame = self.strategy.prepare_day(frames, self.portfolio)
+                event_frame = event_frame.sort(["bar_time_market", "ticker"])
 
                 if self.config.save_symbol_bars:
-                    self.symbol_bar_rows.extend(self._symbol_bar_rows(frames.minute_bars, session_date))
-                    self.symbol_bar_5m_rows.extend(self._symbol_bar_rows(frames.five_minute_bars, session_date))
+                    self.symbol_bar_rows.extend(self._symbol_bar_rows(event_frame, session_date))
 
-                rows_by_time = self._rows_by_time(frames.minute_bars)
                 last_timestamp = None
-                last_bars = {}
+                latest_bars: dict[str, dict] = {}
 
-                for timestamp in sorted(rows_by_time):
+                for timestamp, updates in self._timestamp_slices(event_frame):
                     last_timestamp = timestamp
-                    bars_by_symbol = rows_by_time[timestamp]
-                    last_bars = bars_by_symbol
-                    self._fill_pending_orders(timestamp, bars_by_symbol)
-                    self.portfolio.update_peaks(bars_by_symbol)
+                    update_rows = updates.to_dicts()
+                    fresh_bars = {row["ticker"]: row for row in update_rows}
+                    latest_bars.update(fresh_bars)
+                    latest = pl.DataFrame(list(latest_bars.values()), infer_schema_length=None) if latest_bars else pl.DataFrame()
 
-                    requests = self.strategy.on_minute(
-                        MinuteContext(timestamp=timestamp, bars_by_symbol=bars_by_symbol),
+                    self._fill_pending_orders(timestamp, fresh_bars)
+                    self.portfolio.update_peaks(fresh_bars)
+
+                    requests = self.strategy.on_bar(
+                        BarContext(
+                            timestamp=timestamp,
+                            updates=updates,
+                            latest=latest,
+                            updates_by_symbol=fresh_bars,
+                            latest_by_symbol=latest_bars,
+                        ),
                         self.portfolio,
-                        self.pending_orders,
+                        list(self.pending_orders),
                     )
-                    self._handle_requests(timestamp, requests, bars_by_symbol)
-                    self._record_portfolio(timestamp, bars_by_symbol)
+                    self._handle_requests(timestamp, requests, fresh_bars)
+                    self._record_portfolio(timestamp, latest_bars)
 
                 if last_timestamp is not None:
                     self._handle_requests(
                         last_timestamp,
                         self.strategy.on_day_end(last_timestamp, self.portfolio),
-                        last_bars,
+                        latest_bars,
                     )
-                    self._fill_market_exits(last_timestamp, last_bars)
-                    self._record_portfolio(last_timestamp, last_bars)
+                    self._fill_market_exits(last_timestamp, latest_bars)
+                    self._record_portfolio(last_timestamp, latest_bars)
 
-                day_end_equity = self.portfolio.total_equity(last_bars)
+                day_end_equity = self.portfolio.total_equity(latest_bars)
                 self.daily_rows.append(
                     {
                         "session_date": session_date.isoformat(),
@@ -154,12 +166,12 @@ class BacktestEngine:
             write_run_metadata(run_dir, metadata)
             raise
 
-    def _rows_by_time(self, minute_bars: pl.DataFrame) -> dict[datetime, dict[str, dict]]:
-        grouped: dict[datetime, dict[str, dict]] = {}
-        for row in minute_bars.iter_rows(named=True):
-            timestamp = row["bar_time_market"]
-            grouped.setdefault(timestamp, {})[row["ticker"]] = row
-        return grouped
+    def _timestamp_slices(self, event_frame: pl.DataFrame):
+        if event_frame.is_empty():
+            return
+        for key, frame in event_frame.partition_by("bar_time_market", as_dict=True, maintain_order=True).items():
+            timestamp = key[0] if isinstance(key, tuple) else key
+            yield timestamp, frame
 
     def _handle_requests(self, timestamp: datetime, requests: list[OrderRequest], bars_by_symbol: dict[str, dict]) -> None:
         for request in requests:
@@ -183,7 +195,12 @@ class BacktestEngine:
             self.next_order_id += 1
 
             if order.order_type == "MARKET":
-                self._fill_order(order, timestamp, bars_by_symbol[order.symbol], order.reason)
+                bar = bars_by_symbol.get(order.symbol)
+                if bar is None:
+                    order.status = "REJECTED_NO_MARKET_DATA"
+                    self.orders.append(asdict(order))
+                else:
+                    self._fill_order(order, timestamp, bar, order.reason)
             else:
                 bar = bars_by_symbol.get(order.symbol)
                 if request.allow_same_bar_fill and bar is not None and self.fill_model.crossed(order, bar):
