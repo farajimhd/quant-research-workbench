@@ -42,6 +42,9 @@ class Strategy(Protocol):
     def entry_metadata(self, order: Order) -> dict:
         ...
 
+    def chart_presentation(self) -> dict:
+        ...
+
 
 class BacktestEngine:
     def __init__(self, config: BacktestConfig, strategy: Strategy):
@@ -66,6 +69,7 @@ class BacktestEngine:
     def run(self, progress_callback=None, cancel_check: Callable[[], None] | None = None) -> dict:
         run_dir = create_run_dir(self.config)
         metadata = base_metadata(self.config, run_dir, "running")
+        metadata["strategy_chart_presentation"] = self._strategy_chart_presentation()
 
         with ArtifactWriter() as artifact_writer:
             self._write_metadata(run_dir, metadata, artifact_writer)
@@ -131,6 +135,7 @@ class BacktestEngine:
 
                     if self.config.save_symbol_bars:
                         self.symbol_bar_rows.extend(self._symbol_bar_rows(event_frame, session_date))
+                        self._record_context_symbol_bars(frames.context_frames, session_date)
 
                     last_timestamp = None
                     latest_bars: dict[str, dict] = {}
@@ -559,6 +564,24 @@ class BacktestEngine:
         return minute_bars.select([col for col in selected_cols if col in minute_bars.columns]).with_columns(
             pl.lit(session_date.isoformat()).alias("session_date")
         ).to_dicts()
+
+    def _record_context_symbol_bars(self, context_frames: dict[str, pl.DataFrame], session_date) -> None:
+        for timeframe, frame in context_frames.items():
+            rows = self._context_symbol_bar_rows(frame, session_date)
+            if timeframe == "5m":
+                self.symbol_bar_5m_rows.extend(rows)
+
+    def _context_symbol_bar_rows(self, frame: pl.DataFrame, session_date) -> list[dict]:
+        if frame.is_empty():
+            return []
+        return frame.with_columns(pl.lit(session_date.isoformat()).alias("session_date")).to_dicts()
+
+    def _strategy_chart_presentation(self) -> dict:
+        presenter = getattr(self.strategy, "chart_presentation", None)
+        if callable(presenter):
+            presentation = presenter()
+            return presentation if isinstance(presentation, dict) else {}
+        return {}
 
     def _summary(self, run_dir) -> dict:
         return compute_summary(

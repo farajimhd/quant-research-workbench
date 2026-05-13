@@ -4,8 +4,10 @@ from pathlib import Path
 from typing import Callable
 
 from src.strategies.orb_5m_momentum.v1.config import OrbMomentumConfig as OrbMomentumV1Config
+from src.strategies.orb_5m_momentum.v1.presentation import chart_presentation as orb_5m_momentum_v1_chart_presentation
 from src.strategies.orb_5m_momentum.v1.strategy import OrbFiveMinuteMomentumStrategy
 from src.strategies.orb_5m_momentum.v2.config import OrbMomentumConfig as OrbMomentumV2Config
+from src.strategies.orb_5m_momentum.v2.presentation import chart_presentation as orb_5m_momentum_v2_chart_presentation
 from src.strategies.orb_5m_momentum.v2.strategy import OrbFiveMinuteMomentumV2Strategy
 
 STRATEGIES_ROOT = Path(__file__).resolve().parent
@@ -37,6 +39,11 @@ STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("orb_5m_momentum", "v2"): default_orb_5m_momentum_v2_params,
 }
 
+STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
+    ("orb_5m_momentum", "v1"): orb_5m_momentum_v1_chart_presentation,
+    ("orb_5m_momentum", "v2"): orb_5m_momentum_v2_chart_presentation,
+}
+
 DEFAULT_STRATEGY_VERSIONS: dict[str, str] = {
     "orb_5m_momentum": "v2",
 }
@@ -62,6 +69,15 @@ def default_strategy_params(name: str, version: str | None = None) -> dict:
     if factory is None:
         versions = ", ".join(available_strategy_versions(name)) or "none"
         raise KeyError(f"Unknown strategy config version: {name} {selected_version}. Available versions: {versions}")
+    return factory()
+
+
+def strategy_chart_presentation(name: str, version: str | None = None) -> dict:
+    selected_version = version or default_strategy_version(name)
+    factory = STRATEGY_CHART_PRESENTATION_FACTORIES.get((name, selected_version))
+    if factory is None:
+        versions = ", ".join(available_strategy_versions(name)) or "none"
+        raise KeyError(f"Unknown strategy chart presentation version: {name} {selected_version}. Available versions: {versions}")
     return factory()
 
 

@@ -8,6 +8,7 @@ from src.backtest.data.minute_bars import DayFrames
 from src.backtest.models import BarContext, DataRequirements, Order, OrderRequest
 from src.backtest.portfolio import Portfolio
 from src.strategies.orb_5m_momentum.v2.config import OrbMomentumConfig
+from src.strategies.orb_5m_momentum.v2.presentation import chart_presentation
 
 
 class OrbFiveMinuteMomentumV2Strategy:
@@ -32,6 +33,9 @@ class OrbFiveMinuteMomentumV2Strategy:
             context_feature_groups={"5m": ("momentum",)},
             required_columns=("ticker", "bar_time_market", "minute_of_day", "open", "high", "low", "close", "volume"),
         )
+
+    def chart_presentation(self) -> dict:
+        return chart_presentation()
 
     def prepare_day(self, frames: DayFrames, portfolio: Portfolio) -> pl.DataFrame:
         self.session_date = frames.session_date

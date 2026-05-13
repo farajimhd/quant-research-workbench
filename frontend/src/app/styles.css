@@ -5410,6 +5410,95 @@ button {
   white-space: nowrap;
 }
 
+.trade-annotation-region {
+  position: absolute;
+  z-index: 4;
+  border: 1px solid;
+  border-radius: 3px;
+  box-sizing: border-box;
+}
+
+.trade-annotation-region.selected {
+  border-width: 1.5px;
+}
+
+.trade-price-line,
+.trade-guide-line {
+  position: absolute;
+  z-index: 6;
+  height: 0;
+  border-top: 2px solid;
+}
+
+.trade-price-line.exit {
+  border-top-style: dashed;
+}
+
+.trade-price-line.selected {
+  border-top-width: 3px;
+}
+
+.trade-price-line span,
+.trade-guide-line span {
+  position: absolute;
+  right: 0;
+  max-width: 96px;
+  overflow: hidden;
+  border: 1px solid;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface) 92%, transparent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px 6px;
+  text-overflow: ellipsis;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.trade-guide-line {
+  z-index: 5;
+  border-top-style: dotted;
+}
+
+.trade-guide-line span {
+  font-weight: 500;
+  opacity: 0.82;
+}
+
+.trade-arrow {
+  position: absolute;
+  z-index: 7;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+}
+
+.trade-arrow.entry {
+  border-right: 7px solid transparent !important;
+  border-bottom: 11px solid;
+  border-left: 7px solid transparent !important;
+}
+
+.trade-arrow.exit {
+  border-top: 11px solid;
+  border-right: 7px solid transparent !important;
+  border-left: 7px solid transparent !important;
+  transform: translate(-50%, -100%);
+}
+
+.trade-arrow.selected.entry {
+  border-right-width: 9px !important;
+  border-bottom-width: 14px;
+  border-left-width: 9px !important;
+}
+
+.trade-arrow.selected.exit {
+  border-top-width: 14px;
+  border-right-width: 9px !important;
+  border-left-width: 9px !important;
+}
+
 .chart-reference-stack-layer {
   position: absolute;
   inset: 8px;

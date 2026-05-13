@@ -1381,15 +1381,22 @@ function TradeTickerChart({
   const [payload, setPayload] = useState<RunSymbolChartPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [timeframe, setTimeframe] = useState("1m");
   const sameSymbolTrades = useMemo(() => {
     const payloadTrades = payload?.trades?.length ? payload.trades : trades;
     return payloadTrades.filter((trade) => tradeSymbol(trade) === symbol);
   }, [payload?.trades, symbol, trades]);
-  const visibleOverlayColumns = useMemo(() => (payload?.overlay_series ?? []).map((series) => String(series.displayItemId ?? series.column ?? "")).filter(Boolean), [payload]);
-  const chartPayload = useMemo(() => symbolTradeChartPayload(payload, sameSymbolTrades, selectedKey), [payload, sameSymbolTrades, selectedKey]);
+  const availableTimeframes = useMemo(() => symbolChartTimeframes(payload), [payload]);
+  const chartPayload = useMemo(() => symbolTradeChartPayload(payload, sameSymbolTrades, selectedKey, timeframe), [payload, sameSymbolTrades, selectedKey, timeframe]);
+  const visibleOverlayColumns = useMemo(() => strategyVisibleColumns(chartPayload, payload), [chartPayload, payload]);
   const reference = useMemo(() => selectedTradeReference(selectedTrade), [selectedTrade]);
-  const periodBounds = useMemo(() => symbolChartPeriodBounds(payload), [payload]);
+  const periodBounds = useMemo(() => symbolChartPeriodBounds(payload, timeframe), [payload, timeframe]);
   const [period, setPeriod] = useState({ end: periodBounds.end, start: periodBounds.start });
+
+  useEffect(() => {
+    const next = payload?.default_timeframe || availableTimeframes[0] || "1m";
+    setTimeframe((current) => (availableTimeframes.includes(current) ? current : next));
+  }, [availableTimeframes, payload?.default_timeframe]);
 
   useEffect(() => {
     setPeriod({ end: periodBounds.end, start: periodBounds.start });
@@ -1457,7 +1464,7 @@ function TradeTickerChart({
         normalizeTicker={false}
         onPeriodChange={updatePeriod}
         onTickerChange={() => undefined}
-        onTimeframeChange={() => undefined}
+        onTimeframeChange={setTimeframe}
         onVisibleColumnsChange={() => undefined}
         onVisibleSupervisionGroupsChange={() => undefined}
         payload={filteredPayload}
@@ -1471,8 +1478,8 @@ function TradeTickerChart({
         ticker={symbol || "Trade"}
         tickerInputWidth={112}
         tickerMaxLength={16}
-        timeframe="1m"
-        timeframes={["1m"]}
+        timeframe={timeframe}
+        timeframes={availableTimeframes}
         visibleColumns={visibleOverlayColumns}
         visibleSupervisionGroups={[]}
       />
@@ -1557,8 +1564,9 @@ function portfolioRiskSeries(candles: PortfolioCandle[]): ChartPayload["oscillat
   ];
 }
 
-function symbolTradeChartPayload(payload: RunSymbolChartPayload | null | undefined, trades: DataRow[], selectedKey: string): ChartPayload | null {
-  const candles = (payload?.candles ?? [])
+function symbolTradeChartPayload(payload: RunSymbolChartPayload | null | undefined, trades: DataRow[], selectedKey: string, timeframe: string): ChartPayload | null {
+  const source = symbolTimeframePayload(payload, timeframe);
+  const candles = (source?.candles ?? [])
     .filter((candle) => Number.isFinite(candle.time))
     .map((candle) => ({
       close: Number(candle.close ?? 0),
@@ -1571,47 +1579,67 @@ function symbolTradeChartPayload(payload: RunSymbolChartPayload | null | undefin
   const candleTimes = new Set(candles.map((candle) => candle.time));
   return {
     candles,
-    markers: tradeMarkers(trades, selectedKey, candleTimes),
-    oscillator_series: payload?.oscillator_series ?? [],
-    overlay_series: payload?.overlay_series ?? [],
+    markers: [],
+    oscillator_series: source?.oscillator_series ?? [],
+    overlay_series: source?.overlay_series ?? [],
     regions: [],
-    volume: (payload?.volume ?? []).filter((point) => candleTimes.has(Number(point.time)))
+    trade_annotations: tradeAnnotations(trades, selectedKey, candleTimes),
+    volume: (source?.volume ?? []).filter((point) => candleTimes.has(Number(point.time)))
   };
 }
 
-function tradeMarkers(trades: DataRow[], selectedKey: string, candleTimes: Set<number>): ChartPayload["markers"] {
+function tradeAnnotations(trades: DataRow[], selectedKey: string, candleTimes: Set<number>): NonNullable<ChartPayload["trade_annotations"]> {
   return trades.flatMap((trade, index) => {
     const key = tradeRowKey(trade);
     const selected = key === selectedKey;
     const entryTime = nearestAvailableTime(tradeTimestampSeconds(trade.entry_time), candleTimes);
     const exitTime = nearestAvailableTime(tradeTimestampSeconds(trade.exit_time), candleTimes);
+    const entryPrice = numericTradeValue(trade.entry_price);
+    const exitPrice = numericTradeValue(trade.exit_price);
+    if (entryTime === null || exitTime === null || entryPrice === null || exitPrice === null) return [];
+    const quantity = numericTradeValue(trade.quantity);
     const pnl = Number(trade.pnl ?? 0);
-    const color = selected ? "#2563eb" : pnl >= 0 ? "#16a34a" : "#dc2626";
-    return [
-      ...(entryTime === null
-        ? []
-        : [{
-            color,
-            id: `${key}:entry:${index}`,
-            position: "belowBar" as const,
-            shape: "arrowUp" as const,
-            size: selected ? 1.4 : 1,
-            text: selected ? "Selected entry" : "Entry",
-            time: entryTime as unknown as ChartPayload["markers"][number]["time"]
-          }]),
-      ...(exitTime === null
-        ? []
-        : [{
-            color,
-            id: `${key}:exit:${index}`,
-            position: "aboveBar" as const,
-            shape: "arrowDown" as const,
-            size: selected ? 1.4 : 1,
-            text: selected ? "Selected exit" : "Exit",
-            time: exitTime as unknown as ChartPayload["markers"][number]["time"]
-          }])
-    ];
+    const color = pnl >= 0 ? "#16a34a" : "#dc2626";
+    return [{
+      color,
+      entryLabel: quantity ? `Entry @${formatNumber(quantity)}` : "Entry",
+      entryPrice,
+      entryTime,
+      exitLabel: quantity ? `Exit @${formatNumber(quantity)}` : "Exit",
+      exitPrice,
+      exitTime,
+      id: `${key}:trade:${index}`,
+      pnl,
+      selected,
+      stopPrice: numericTradeValue(trade.stop_price ?? trade.entry_stop) ?? undefined,
+      triggerPrice: numericTradeValue(trade.entry_trigger) ?? undefined
+    }];
   });
+}
+
+function symbolTimeframePayload(payload: RunSymbolChartPayload | null | undefined, timeframe: string): RunSymbolChartTimeframePayload | null {
+  if (!payload) return null;
+  return payload.timeframe_payloads?.[timeframe] ?? (timeframe === payload.default_timeframe ? payload : null) ?? payload;
+}
+
+function symbolChartTimeframes(payload: RunSymbolChartPayload | null | undefined) {
+  const configured = payload?.presentation?.timeframes?.map(String).filter(Boolean) ?? [];
+  const provided = payload?.timeframes?.map(String).filter(Boolean) ?? [];
+  const payloads = payload?.timeframe_payloads ?? {};
+  const withData = [...new Set([...configured, ...provided])].filter((timeframe) => {
+    const source = payloads[timeframe] ?? (timeframe === payload?.default_timeframe ? payload : null);
+    return (source?.candles ?? []).length > 0;
+  });
+  if (withData.length) return withData;
+  return provided.length ? provided : ["1m"];
+}
+
+function strategyVisibleColumns(chartPayload: ChartPayload | null, payload: RunSymbolChartPayload | null | undefined) {
+  const available = [...(chartPayload?.overlay_series ?? []), ...(chartPayload?.oscillator_series ?? [])]
+    .map((series) => String(series.displayItemId ?? series.column ?? ""))
+    .filter(Boolean);
+  const configured = payload?.presentation?.default_visible?.map(String).filter((column) => available.includes(column)) ?? [];
+  return configured.length ? configured : available;
 }
 
 function selectedTradeReference(trade: DataRow) {
@@ -1623,6 +1651,11 @@ function selectedTradeReference(trade: DataRow) {
 
 function tradeSymbol(trade: DataRow | null | undefined) {
   return String(trade?.symbol ?? trade?.ticker ?? "").trim().toUpperCase();
+}
+
+function numericTradeValue(value: unknown): number | null {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function tradeRowKey(trade: DataRow | null | undefined) {
@@ -1697,8 +1730,9 @@ function nearestAvailableTime(time: number | null, candleTimes: Set<number>) {
   return nearestDistance <= 15 * 60 ? nearest : time;
 }
 
-function symbolChartPeriodBounds(payload: RunSymbolChartPayload | null | undefined) {
-  const timestamps = (payload?.candles ?? []).map((candle) => Number(candle.time)).filter(Number.isFinite);
+function symbolChartPeriodBounds(payload: RunSymbolChartPayload | null | undefined, timeframe: string) {
+  const source = symbolTimeframePayload(payload, timeframe);
+  const timestamps = (source?.candles ?? []).map((candle) => Number(candle.time)).filter(Number.isFinite);
   if (!timestamps.length) return { end: "", max: "", min: "", start: "" };
   const dates = timestamps.map(dateStringFromTimestamp).filter(Boolean).sort();
   const min = dates[0] ?? "";
@@ -1763,10 +1797,7 @@ type PortfolioCandlePayload = {
   candles: Record<string, PortfolioCandle[]>;
 };
 
-type RunSymbolChartPayload = {
-  symbol: string;
-  timeframes: string[];
-  default_timeframe: string;
+type RunSymbolChartTimeframePayload = {
   candles: Array<{
     time: number;
     open: number;
@@ -1777,5 +1808,19 @@ type RunSymbolChartPayload = {
   volume: ChartPayload["volume"];
   overlay_series: ChartPayload["overlay_series"];
   oscillator_series: ChartPayload["oscillator_series"];
+};
+
+type RunSymbolChartPresentation = {
+  default_timeframe?: string;
+  default_visible?: string[];
+  timeframes?: string[];
+};
+
+type RunSymbolChartPayload = RunSymbolChartTimeframePayload & {
+  symbol: string;
+  timeframes: string[];
+  default_timeframe: string;
+  timeframe_payloads?: Record<string, RunSymbolChartTimeframePayload>;
+  presentation?: RunSymbolChartPresentation;
   trades?: DataRow[];
 };

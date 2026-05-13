@@ -18,6 +18,7 @@ class DayFrames:
     session_date: date
     event_frame: pl.DataFrame
     daily_context: pl.DataFrame
+    context_frames: dict[str, pl.DataFrame]
 
 
 def provider_for_config(config: BacktestConfig) -> MarketDataProvider:
@@ -218,8 +219,10 @@ def load_day_frames(
         requirements.event_timeframe,
         requirements.feature_groups,
     )
+    context_frames: dict[str, pl.DataFrame] = {}
     for timeframe, groups in (requirements.context_feature_groups or {}).items():
         context = load_provider_bars(config, session_date, timeframe, groups)
+        context_frames[timeframe] = context
         event_frame = attach_context_timeframe(event_frame, context, timeframe)
     daily_context = load_daily_context(config, session_date, requirements)
     event_frame = attach_daily_context(event_frame, daily_context)
@@ -227,4 +230,5 @@ def load_day_frames(
         session_date=session_date,
         event_frame=event_frame.sort(["bar_time_market", "ticker"]),
         daily_context=daily_context,
+        context_frames=context_frames,
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import asdict
 from datetime import date, datetime
@@ -53,6 +54,7 @@ from src.strategies.registry import (
     default_strategy_params,
     default_strategy_version,
     strategy_readme_path,
+    strategy_chart_presentation,
 )
 
 
@@ -234,31 +236,40 @@ def run_symbol_chart_payload(run_dir: Path, symbol: str) -> dict[str, Any]:
     normalized_symbol = symbol.strip().upper()
     if not normalized_symbol:
         raise HTTPException(status_code=400, detail="symbol is required")
-    path = run_dir / "symbol_bars.parquet"
+    metadata = read_run_metadata(run_dir) or {}
+    presentation = run_strategy_chart_presentation(metadata)
+    requested_timeframes = strategy_chart_timeframes(presentation)
+    timeframe_payloads = {
+        timeframe: symbol_timeframe_chart_payload(run_dir, normalized_symbol, timeframe, presentation)
+        for timeframe in requested_timeframes
+    }
+    available_timeframes = [timeframe for timeframe in requested_timeframes if timeframe_payloads[timeframe]["candles"]]
+    if not available_timeframes:
+        available_timeframes = [requested_timeframes[0] if requested_timeframes else "1m"]
+    default_timeframe = str(presentation.get("default_timeframe") or available_timeframes[0])
+    if default_timeframe not in available_timeframes:
+        default_timeframe = available_timeframes[0]
+    default_payload = timeframe_payloads.get(default_timeframe) or next(iter(timeframe_payloads.values()), empty_symbol_timeframe_payload())
+    trades = run_symbol_trades(run_dir, normalized_symbol)
+    return {
+        "symbol": normalized_symbol,
+        "timeframes": available_timeframes,
+        "default_timeframe": default_timeframe,
+        "timeframe_payloads": timeframe_payloads,
+        "presentation": presentation,
+        "trades": trades,
+        **default_payload,
+    }
+
+
+def symbol_timeframe_chart_payload(run_dir: Path, normalized_symbol: str, timeframe: str, presentation: dict[str, Any]) -> dict[str, Any]:
+    path = run_dir / ("symbol_bars.parquet" if timeframe == "1m" else f"symbol_bars_{timeframe}.parquet")
     if not path.exists():
-        return {
-            "symbol": normalized_symbol,
-            "timeframes": ["1m"],
-            "default_timeframe": "1m",
-            "candles": [],
-            "volume": [],
-            "overlay_series": [],
-            "oscillator_series": [],
-            "trades": run_symbol_trades(run_dir, normalized_symbol),
-        }
+        return empty_symbol_timeframe_payload()
     frame = pl.read_parquet(path)
     required_columns = {"ticker", "bar_time_market", "open", "high", "low", "close"}
     if not required_columns.issubset(set(frame.columns)):
-        return {
-            "symbol": normalized_symbol,
-            "timeframes": ["1m"],
-            "default_timeframe": "1m",
-            "candles": [],
-            "volume": [],
-            "overlay_series": [],
-            "oscillator_series": [],
-            "trades": run_symbol_trades(run_dir, normalized_symbol),
-        }
+        return empty_symbol_timeframe_payload()
     symbol_frame = (
         frame.filter(pl.col("ticker").cast(pl.Utf8).str.to_uppercase() == normalized_symbol)
         .sort("bar_time_market")
@@ -286,14 +297,10 @@ def run_symbol_chart_payload(run_dir: Path, symbol: str) -> dict[str, Any]:
         if "volume" in row
     ]
     return {
-        "symbol": normalized_symbol,
-        "timeframes": ["1m"],
-        "default_timeframe": "1m",
         "candles": candles,
         "volume": volume,
-        "overlay_series": symbol_overlay_series(timed_rows),
-        "oscillator_series": symbol_oscillator_series(timed_rows),
-        "trades": run_symbol_trades(run_dir, normalized_symbol),
+        "overlay_series": symbol_overlay_series(timed_rows, presentation, timeframe),
+        "oscillator_series": symbol_oscillator_series(timed_rows, presentation, timeframe),
     }
 
 
@@ -304,14 +311,82 @@ def run_symbol_trades(run_dir: Path, symbol: str) -> list[dict[str, Any]]:
     frame = pl.read_parquet(path)
     if "symbol" not in frame.columns:
         return []
-    return json_safe(
-        frame.filter(pl.col("symbol").cast(pl.Utf8).str.to_uppercase() == symbol)
-        .sort("entry_time")
-        .to_dicts()
-    )
+    rows = frame.filter(pl.col("symbol").cast(pl.Utf8).str.to_uppercase() == symbol).sort("entry_time").to_dicts()
+    orders_by_id = run_orders_by_id(run_dir)
+    return json_safe([enrich_trade_with_order_context(row, orders_by_id) for row in rows])
 
 
-def symbol_overlay_series(timed_rows: list[tuple[int, dict[str, Any]]]) -> list[dict[str, Any]]:
+def empty_symbol_timeframe_payload() -> dict[str, Any]:
+    return {"candles": [], "volume": [], "overlay_series": [], "oscillator_series": []}
+
+
+def run_strategy_chart_presentation(metadata: dict[str, Any]) -> dict[str, Any]:
+    snapshot = metadata.get("strategy_chart_presentation")
+    if isinstance(snapshot, dict) and snapshot:
+        return snapshot
+    strategy_name = str(metadata.get("strategy_name") or (metadata.get("config") or {}).get("strategy_name") or "").strip()
+    strategy_version = str(metadata.get("strategy_version") or (metadata.get("config") or {}).get("strategy_version") or "").strip()
+    if strategy_name:
+        try:
+            return strategy_chart_presentation(strategy_name, strategy_version or None)
+        except KeyError:
+            return {}
+    return {}
+
+
+def strategy_chart_timeframes(presentation: dict[str, Any]) -> list[str]:
+    values = presentation.get("timeframes")
+    if isinstance(values, list):
+        timeframes = [str(value) for value in values if str(value).strip()]
+        if timeframes:
+            return timeframes
+    return ["1m"]
+
+
+def run_orders_by_id(run_dir: Path) -> dict[int, dict[str, Any]]:
+    path = run_dir / "orders.parquet"
+    if not path.exists():
+        return {}
+    frame = pl.read_parquet(path)
+    if "order_id" not in frame.columns:
+        return {}
+    rows = frame.to_dicts()
+    return {int(row["order_id"]): row for row in rows if row.get("order_id") is not None}
+
+
+def enrich_trade_with_order_context(trade: dict[str, Any], orders_by_id: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    enriched = dict(trade)
+    entry_order_id = trade.get("entry_order_id")
+    entry_order = orders_by_id.get(int(entry_order_id)) if entry_order_id is not None else None
+    if entry_order:
+        tag = str(entry_order.get("tag") or "")
+        enriched["entry_order_tag"] = tag
+        for key, value in parse_pipe_tag(tag).items():
+            if key in {"trigger", "stop", "box_high", "box_mid", "box_low"}:
+                enriched[f"entry_{key}"] = value
+        if "entry_stop" in enriched:
+            enriched["stop_price"] = enriched["entry_stop"]
+    return enriched
+
+
+def parse_pipe_tag(tag: str) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for part in tag.split("|"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if not key:
+            continue
+        values[key] = float(value) if re.fullmatch(r"-?\d+(?:\.\d+)?", value) else value
+    return values
+
+
+def symbol_overlay_series(timed_rows: list[tuple[int, dict[str, Any]]], presentation: dict[str, Any] | None = None, timeframe: str = "1m") -> list[dict[str, Any]]:
+    configured = configured_symbol_series(timed_rows, presentation, timeframe, "price")
+    if configured:
+        return configured
     series_config = [
         ("tema9", "TEMA 9", "#2563eb"),
         ("tema20", "TEMA 20", "#7c3aed"),
@@ -334,7 +409,10 @@ def symbol_overlay_series(timed_rows: list[tuple[int, dict[str, Any]]]) -> list[
     ]
 
 
-def symbol_oscillator_series(timed_rows: list[tuple[int, dict[str, Any]]]) -> list[dict[str, Any]]:
+def symbol_oscillator_series(timed_rows: list[tuple[int, dict[str, Any]]], presentation: dict[str, Any] | None = None, timeframe: str = "1m") -> list[dict[str, Any]]:
+    configured = configured_symbol_series(timed_rows, presentation, timeframe, "oscillator")
+    if configured:
+        return configured
     series_config = [
         ("macd_line", "MACD", "#2563eb"),
         ("macd_signal", "Signal", "#f97316"),
@@ -355,6 +433,44 @@ def symbol_oscillator_series(timed_rows: list[tuple[int, dict[str, Any]]]) -> li
         for column, label, color in series_config
         if column in (timed_rows[0][1].keys() if timed_rows else set())
     ]
+
+
+def configured_symbol_series(timed_rows: list[tuple[int, dict[str, Any]]], presentation: dict[str, Any] | None, timeframe: str, pane: str) -> list[dict[str, Any]]:
+    if not timed_rows or not isinstance(presentation, dict):
+        return []
+    columns = timed_rows[0][1].keys()
+    indicators = presentation.get("indicators")
+    if not isinstance(indicators, list):
+        return []
+    series = []
+    for indicator in indicators:
+        if not isinstance(indicator, dict):
+            continue
+        if str(indicator.get("timeframe") or "1m") != timeframe:
+            continue
+        indicator_pane = str(indicator.get("pane") or "price")
+        is_price = indicator_pane == "price"
+        if pane == "price" and not is_price:
+            continue
+        if pane == "oscillator" and is_price:
+            continue
+        column = str(indicator.get("source_column") or indicator.get("column") or indicator.get("id") or "")
+        if not column or column not in columns:
+            continue
+        item = {
+            "color": str(indicator.get("color") or "#2563eb"),
+            "column": column,
+            "data": [{"time": timestamp, "value": row.get(column)} for timestamp, row in timed_rows if row.get(column) is not None],
+            "displayItemId": str(indicator.get("id") or column),
+            "label": str(indicator.get("label") or column),
+            "lineStyle": str(indicator.get("line_style") or "solid"),
+            "lineWidth": int(indicator.get("line_width") or 2),
+            "style": str(indicator.get("style") or "line"),
+        }
+        if not is_price:
+            item["paneKey"] = indicator_pane
+        series.append(item)
+    return series
 
 
 def resolve_chart_range(start_date: date | None, end_date: date | None, session_date: date | None) -> tuple[date, date]:
@@ -435,6 +551,7 @@ def strategy_default_config(strategy_name: str, version: str | None = None) -> d
     return {
         "strategy_name": strategy_name,
         "strategy_version": selected_version,
+        "chart_presentation": strategy_chart_presentation(strategy_name, selected_version),
         "run_name": generated_run_name(strategy_name, selected_version),
         "start_date": "2024-05-01",
         "end_date": "2024-05-02",

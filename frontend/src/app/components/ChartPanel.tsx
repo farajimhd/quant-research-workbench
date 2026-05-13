@@ -51,6 +51,20 @@ type ChartSeries = {
   data: Array<{ color?: string; time: number; value: number }>;
 };
 type Region = { start: number; end: number; color: string; label: string };
+type TradeAnnotation = {
+  color: string;
+  entryLabel?: string;
+  entryPrice: number;
+  entryTime: number;
+  exitLabel?: string;
+  exitPrice: number;
+  exitTime: number;
+  id: string;
+  pnl?: number;
+  selected?: boolean;
+  stopPrice?: number;
+  triggerPrice?: number;
+};
 type PriceZone = {
   borderColor?: string;
   borderOpacity?: number;
@@ -165,6 +179,7 @@ export type ChartPayload = {
   oscillator_series: ChartSeries[];
   markers: ChartMarker[];
   regions: Region[];
+  trade_annotations?: TradeAnnotation[];
   price_zones?: PriceZone[];
   options?: ChartOptions;
 };
@@ -735,7 +750,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const currentPayload = payloadRef.current;
     if (!chart || !currentPayload) return;
     const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
-    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.candles, chartSettingsRef.current);
+    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, chartSettingsRef.current);
     drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, reference);
   }
 
@@ -2413,6 +2428,7 @@ function drawRegions(
   layer: HTMLDivElement | null,
   regions: Region[],
   priceZones: PriceZone[],
+  tradeAnnotations: TradeAnnotation[],
   candles: Candle[],
   settings: ChartAppearanceSettings
 ) {
@@ -2436,6 +2452,7 @@ function drawRegions(
   });
   drawPriceZones(chart, priceSeries, layer, priceZones, candles, barWidth, candleDuration);
   drawDaySeparators(chart, layer, candles, settings, barWidth);
+  drawTradeAnnotations(chart, priceSeries, layer, tradeAnnotations, candles, barWidth);
 }
 
 function drawPriceZones(
@@ -2530,6 +2547,98 @@ function drawDaySeparators(chart: IChartApi, layer: HTMLDivElement, candles: Can
     node.style.borderLeft = `1px ${settings.daySeparatorStyle} ${rgbaFromHex(settings.daySeparatorColor, 0.78)}`;
     layer.appendChild(node);
   });
+}
+
+function drawTradeAnnotations(
+  chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick"> | null,
+  layer: HTMLDivElement,
+  annotations: TradeAnnotation[],
+  candles: Candle[],
+  barWidth: number
+) {
+  if (!priceSeries || !annotations.length || !candles.length) return;
+  annotations.forEach((annotation) => {
+    const entryX = xForAnnotationTime(chart, annotation.entryTime, candles);
+    const exitX = xForAnnotationTime(chart, annotation.exitTime, candles);
+    const entryY = priceSeries.priceToCoordinate(annotation.entryPrice);
+    const exitY = priceSeries.priceToCoordinate(annotation.exitPrice);
+    if (entryX === null || exitX === null || entryY === null || exitY === null) return;
+    const left = Math.min(entryX, exitX) - barWidth / 2;
+    const right = Math.max(entryX, exitX) + barWidth / 2;
+    const width = Math.max(3, right - left);
+    const color = validHexColor(annotation.color, annotation.pnl !== undefined && annotation.pnl < 0 ? "#dc2626" : "#16a34a");
+    const selected = annotation.selected === true;
+    const region = document.createElement("div");
+    region.className = selected ? "trade-annotation-region selected" : "trade-annotation-region";
+    region.title = annotation.pnl !== undefined ? `Trade P/L ${annotation.pnl.toFixed(2)}` : "Trade";
+    region.style.left = `${left}px`;
+    region.style.top = `${Math.min(entryY, exitY)}px`;
+    region.style.width = `${width}px`;
+    region.style.height = `${Math.max(7, Math.abs(exitY - entryY))}px`;
+    region.style.background = rgbaFromHex(color, selected ? 0.12 : 0.06);
+    region.style.borderColor = rgbaFromHex(color, selected ? 0.28 : 0.12);
+    layer.appendChild(region);
+
+    drawTradePriceLine(layer, left, width, entryY, color, annotation.entryLabel ?? "Entry", "entry", selected);
+    drawTradePriceLine(layer, left, width, exitY, color, annotation.exitLabel ?? "Exit", "exit", selected);
+    drawTradeArrow(layer, entryX, entryY, color, "entry", selected);
+    drawTradeArrow(layer, exitX, exitY, color, "exit", selected);
+    if (typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
+      const stopY = priceSeries.priceToCoordinate(annotation.stopPrice);
+      if (stopY !== null) drawTradeGuideLine(layer, left, width, stopY, "#dc2626", "Stop", "stop");
+    }
+    if (typeof annotation.triggerPrice === "number" && Number.isFinite(annotation.triggerPrice)) {
+      const triggerY = priceSeries.priceToCoordinate(annotation.triggerPrice);
+      if (triggerY !== null) drawTradeGuideLine(layer, left, width, triggerY, "#2563eb", "Trigger", "trigger");
+    }
+  });
+}
+
+function drawTradePriceLine(layer: HTMLDivElement, left: number, width: number, y: number, color: string, label: string, kind: "entry" | "exit", selected: boolean) {
+  const line = document.createElement("div");
+  line.className = `trade-price-line ${kind}${selected ? " selected" : ""}`;
+  line.style.left = `${left}px`;
+  line.style.top = `${y}px`;
+  line.style.width = `${width}px`;
+  line.style.borderColor = color;
+  const text = document.createElement("span");
+  text.textContent = label;
+  text.style.color = color;
+  text.style.borderColor = rgbaFromHex(color, 0.32);
+  line.appendChild(text);
+  layer.appendChild(line);
+}
+
+function drawTradeGuideLine(layer: HTMLDivElement, left: number, width: number, y: number, color: string, label: string, kind: string) {
+  const line = document.createElement("div");
+  line.className = `trade-guide-line ${kind}`;
+  line.style.left = `${left}px`;
+  line.style.top = `${y}px`;
+  line.style.width = `${width}px`;
+  line.style.borderColor = rgbaFromHex(color, 0.78);
+  const text = document.createElement("span");
+  text.textContent = label;
+  text.style.color = color;
+  text.style.borderColor = rgbaFromHex(color, 0.26);
+  line.appendChild(text);
+  layer.appendChild(line);
+}
+
+function drawTradeArrow(layer: HTMLDivElement, x: number, y: number, color: string, kind: "entry" | "exit", selected: boolean) {
+  const arrow = document.createElement("div");
+  arrow.className = `trade-arrow ${kind}${selected ? " selected" : ""}`;
+  arrow.style.left = `${x}px`;
+  arrow.style.top = `${kind === "entry" ? y + 7 : y - 7}px`;
+  arrow.style.borderColor = color;
+  layer.appendChild(arrow);
+}
+
+function xForAnnotationTime(chart: IChartApi, time: number, candles: Candle[]) {
+  const exact = chart.timeScale().timeToCoordinate(time as Time);
+  if (exact !== null) return exact;
+  const nearest = candles[nearestCandleIndex(candles, time)];
+  return nearest ? chart.timeScale().timeToCoordinate(nearest.time as Time) : null;
 }
 
 function drawReferenceLine(chart: IChartApi, layer: HTMLDivElement | null, candles: Candle[], reference?: ChartReference | null) {
