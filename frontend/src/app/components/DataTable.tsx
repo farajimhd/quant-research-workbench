@@ -125,6 +125,8 @@ type DataTableProps = {
   backendQuery?: BackendQueryConfig;
   columns?: string[];
   empty?: string;
+  isRowSelected?: (row: DataRow) => boolean;
+  onRowClick?: (row: DataRow) => void;
   rowAction?: RowActionConfig;
   rows: DataRow[];
   title?: string;
@@ -147,7 +149,7 @@ const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean
 ];
 let backendQueryConditionSequence = 0;
 
-export function DataTable({ backendQuery, columns, empty = "No rows.", rowAction, rows, title }: DataTableProps) {
+export function DataTable({ backendQuery, columns, empty = "No rows.", isRowSelected, onRowClick, rowAction, rows, title }: DataTableProps) {
   const resolvedColumns = useMemo(() => {
     if (columns?.length) return columns;
     return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -881,11 +883,17 @@ export function DataTable({ backendQuery, columns, empty = "No rows.", rowAction
             {sortedRows.length ? (
               sortedRows.map((row, rowIndex) => {
                 const rowActionAvailable = Boolean(rowAction && rowAction.isAvailable?.(row) !== false);
+                const rowClickable = Boolean(onRowClick) || rowActionAvailable;
+                const selected = Boolean(isRowSelected?.(row));
                 return (
                   <tr
-                    className={rowActionAvailable ? "data-table-row-actionable" : undefined}
+                    className={[
+                      rowClickable ? "data-table-row-actionable" : "",
+                      onRowClick ? "data-table-row-clickable" : "",
+                      selected ? "data-table-row-selected" : ""
+                    ].filter(Boolean).join(" ") || undefined}
                     key={rowIndex}
-                    onClick={rowActionAvailable ? (event) => openRowActionMenu(event, row) : undefined}
+                    onClick={rowClickable ? (event) => (onRowClick ? onRowClick(row) : openRowActionMenu(event, row)) : undefined}
                   >
                     {usableColumns.map((column) => (
                       <td className={cellClassName(row[column], column)} key={column}>

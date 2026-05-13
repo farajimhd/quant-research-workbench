@@ -60,6 +60,7 @@ type NewRunMetric = {
   tone?: NewRunMetricTone;
   value: ReactNode;
 };
+type DataRow = Record<string, unknown>;
 
 const tabs = ["Backtest", "Runs", "Strategy README"];
 const defaultStrategyName = "orb_5m_momentum";
@@ -967,6 +968,7 @@ function BacktestJobPanel({
   const [detail, setDetail] = useState<RunDetailPayload | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [tab, setTab] = useState("Backtest Results");
+  const [selectedTrade, setSelectedTrade] = useState<DataRow | null>(null);
   const shouldLoadTables = tab !== "Backtest Results";
   const isLiveRun = !runId && ["running", "queued"].includes(String(job?.status ?? "").toLowerCase());
   const metadataRunDir = String(detail?.metadata.run_dir ?? "");
@@ -976,6 +978,7 @@ function BacktestJobPanel({
   useEffect(() => {
     setDetail(null);
     setDetailError(null);
+    setSelectedTrade(null);
     setTab("Backtest Results");
   }, [latestRunId]);
 
@@ -1038,7 +1041,23 @@ function BacktestJobPanel({
           </>
         ) : null}
         {tab === "Daily" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
-        {tab === "Trades" ? <DataTable rows={detail?.tables.trades.rows ?? []} /> : null}
+        {tab === "Trades" ? (
+          <>
+            {selectedTrade ? (
+              <TradeTickerChart
+                outputRoot={outputRoot}
+                runId={latestRunId}
+                selectedTrade={selectedTrade}
+                trades={detail?.tables.trades.rows ?? []}
+              />
+            ) : null}
+            <DataTable
+              isRowSelected={(row) => tradeRowKey(row) === tradeRowKey(selectedTrade)}
+              onRowClick={setSelectedTrade}
+              rows={detail?.tables.trades.rows ?? []}
+            />
+          </>
+        ) : null}
         {tab === "Orders" ? <DataTable rows={detail?.tables.orders.rows ?? []} /> : null}
         {tab === "Fills" ? <DataTable rows={detail?.tables.fills.rows ?? []} /> : null}
         {tab === "Positions" ? <DataTable rows={detail?.tables.positions.rows ?? []} /> : null}
@@ -1344,6 +1363,124 @@ function PnlCandleChart({ payload, runName, title }: { payload?: PortfolioCandle
   );
 }
 
+function TradeTickerChart({
+  outputRoot,
+  runId,
+  selectedTrade,
+  trades
+}: {
+  outputRoot: string;
+  runId: string;
+  selectedTrade: DataRow;
+  trades: DataRow[];
+}) {
+  const symbol = tradeSymbol(selectedTrade);
+  const selectedKey = tradeRowKey(selectedTrade);
+  const [payload, setPayload] = useState<RunSymbolChartPayload | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const sameSymbolTrades = useMemo(() => {
+    const payloadTrades = payload?.trades?.length ? payload.trades : trades;
+    return payloadTrades.filter((trade) => tradeSymbol(trade) === symbol);
+  }, [payload?.trades, symbol, trades]);
+  const visibleOverlayColumns = useMemo(() => (payload?.overlay_series ?? []).map((series) => String(series.displayItemId ?? series.column ?? "")).filter(Boolean), [payload]);
+  const chartPayload = useMemo(() => symbolTradeChartPayload(payload, sameSymbolTrades, selectedKey), [payload, sameSymbolTrades, selectedKey]);
+  const reference = useMemo(() => selectedTradeReference(selectedTrade), [selectedTrade]);
+  const periodBounds = useMemo(() => symbolChartPeriodBounds(payload), [payload]);
+  const [period, setPeriod] = useState({ end: periodBounds.end, start: periodBounds.start });
+
+  useEffect(() => {
+    setPeriod({ end: periodBounds.end, start: periodBounds.start });
+  }, [periodBounds.end, periodBounds.start]);
+
+  useEffect(() => {
+    if (!runId || !symbol) {
+      setPayload(null);
+      setError(null);
+      return;
+    }
+    let canceled = false;
+    setLoading(true);
+    api<RunSymbolChartPayload>(`/api/backtests/runs/${runId}/symbols/${encodeURIComponent(symbol)}/chart${query({ output_root: outputRoot })}`)
+      .then((nextPayload) => {
+        if (canceled) return;
+        setPayload(nextPayload);
+        setError(null);
+      })
+      .catch((err) => {
+        if (!canceled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!canceled) setLoading(false);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [outputRoot, runId, symbol]);
+
+  function updatePeriod(start: string, end: string) {
+    setPeriod(start <= end ? { start, end } : { start: end, end: start });
+  }
+
+  const filteredPayload = useMemo(() => {
+    if (!chartPayload) return null;
+    const candles = chartPayload.candles.filter((candle) => candleInTradePeriod(candle, period.start, period.end));
+    const visibleTimes = new Set(candles.map((candle) => candle.time));
+    return {
+      ...chartPayload,
+      candles,
+      markers: chartPayload.markers.filter((marker) => visibleTimes.has(Number(marker.time))),
+      overlay_series: chartPayload.overlay_series.map((series) => ({ ...series, data: series.data.filter((point) => visibleTimes.has(Number(point.time))) })),
+      oscillator_series: chartPayload.oscillator_series.map((series) => ({ ...series, data: series.data.filter((point) => visibleTimes.has(Number(point.time))) })),
+      volume: chartPayload.volume.filter((point) => visibleTimes.has(Number(point.time)))
+    };
+  }, [chartPayload, period.end, period.start]);
+
+  return (
+    <section className="trade-chart-panel">
+      <div className="toolbar" style={{ justifyContent: "space-between" }}>
+        <div>
+          <h2 style={{ margin: 0 }}>{symbol ? `${symbol} Trade Chart` : "Trade Chart"}</h2>
+          <span className="trade-chart-subtitle">
+            Showing {sameSymbolTrades.length} trade{sameSymbolTrades.length === 1 ? "" : "s"} for this ticker. The selected trade is centered by its entry/exit midpoint.
+          </span>
+        </div>
+        <SemanticBadge tone={Number(selectedTrade.pnl ?? 0) >= 0 ? "success" : "danger"}>
+          {formatMoney(Number(selectedTrade.pnl ?? 0))}
+        </SemanticBadge>
+      </div>
+      <ChartPanel
+        emptyMessage={symbol ? `No saved symbol bars found for ${symbol}. Enable Save symbol bars before running the backtest.` : "Select a trade with a symbol to load the chart."}
+        errorMessage={error ?? undefined}
+        featureOptions={[]}
+        indicatorOptions={[]}
+        loading={loading}
+        normalizeTicker={false}
+        onPeriodChange={updatePeriod}
+        onTickerChange={() => undefined}
+        onTimeframeChange={() => undefined}
+        onVisibleColumnsChange={() => undefined}
+        onVisibleSupervisionGroupsChange={() => undefined}
+        payload={filteredPayload}
+        periodEnd={period.end}
+        periodMax={periodBounds.max}
+        periodMin={periodBounds.min}
+        periodStart={period.start}
+        reference={reference}
+        showIndicatorControls={false}
+        showSupervisionControls={false}
+        ticker={symbol || "Trade"}
+        tickerInputWidth={112}
+        tickerMaxLength={16}
+        timeframe="1m"
+        timeframes={["1m"]}
+        visibleColumns={visibleOverlayColumns}
+        visibleSupervisionGroups={[]}
+      />
+    </section>
+  );
+}
+
 function portfolioChartTimeframes(payload?: PortfolioCandlePayload | null) {
   const allowed = ["1h", "2h", "4h", "1d"];
   const provided = payload?.timeframes?.length ? payload.timeframes.map(String) : allowed;
@@ -1421,6 +1558,161 @@ function portfolioRiskSeries(candles: PortfolioCandle[]): ChartPayload["oscillat
   ];
 }
 
+function symbolTradeChartPayload(payload: RunSymbolChartPayload | null | undefined, trades: DataRow[], selectedKey: string): ChartPayload | null {
+  const candles = (payload?.candles ?? [])
+    .filter((candle) => Number.isFinite(candle.time))
+    .map((candle) => ({
+      close: Number(candle.close ?? 0),
+      high: Number(candle.high ?? 0),
+      low: Number(candle.low ?? 0),
+      open: Number(candle.open ?? 0),
+      time: Number(candle.time)
+    }));
+  if (!candles.length) return null;
+  const candleTimes = new Set(candles.map((candle) => candle.time));
+  return {
+    candles,
+    markers: tradeMarkers(trades, selectedKey, candleTimes),
+    oscillator_series: payload?.oscillator_series ?? [],
+    overlay_series: payload?.overlay_series ?? [],
+    regions: [],
+    volume: (payload?.volume ?? []).filter((point) => candleTimes.has(Number(point.time)))
+  };
+}
+
+function tradeMarkers(trades: DataRow[], selectedKey: string, candleTimes: Set<number>): ChartPayload["markers"] {
+  return trades.flatMap((trade, index) => {
+    const key = tradeRowKey(trade);
+    const selected = key === selectedKey;
+    const entryTime = nearestAvailableTime(tradeTimestampSeconds(trade.entry_time), candleTimes);
+    const exitTime = nearestAvailableTime(tradeTimestampSeconds(trade.exit_time), candleTimes);
+    const pnl = Number(trade.pnl ?? 0);
+    const color = selected ? "#2563eb" : pnl >= 0 ? "#16a34a" : "#dc2626";
+    return [
+      ...(entryTime === null
+        ? []
+        : [{
+            color,
+            id: `${key}:entry:${index}`,
+            position: "belowBar" as const,
+            shape: "arrowUp" as const,
+            size: selected ? 1.4 : 1,
+            text: selected ? "Selected entry" : "Entry",
+            time: entryTime as unknown as ChartPayload["markers"][number]["time"]
+          }]),
+      ...(exitTime === null
+        ? []
+        : [{
+            color,
+            id: `${key}:exit:${index}`,
+            position: "aboveBar" as const,
+            shape: "arrowDown" as const,
+            size: selected ? 1.4 : 1,
+            text: selected ? "Selected exit" : "Exit",
+            time: exitTime as unknown as ChartPayload["markers"][number]["time"]
+          }])
+    ];
+  });
+}
+
+function selectedTradeReference(trade: DataRow) {
+  const entryTime = tradeTimestampSeconds(trade.entry_time);
+  const exitTime = tradeTimestampSeconds(trade.exit_time);
+  const time = entryTime !== null && exitTime !== null ? Math.round((entryTime + exitTime) / 2) : entryTime ?? exitTime;
+  return time === null ? null : { label: "Selected trade", time };
+}
+
+function tradeSymbol(trade: DataRow | null | undefined) {
+  return String(trade?.symbol ?? trade?.ticker ?? "").trim().toUpperCase();
+}
+
+function tradeRowKey(trade: DataRow | null | undefined) {
+  if (!trade) return "";
+  return [
+    tradeSymbol(trade),
+    trade.entry_time ?? "",
+    trade.exit_time ?? "",
+    trade.quantity ?? "",
+    trade.entry_price ?? "",
+    trade.exit_price ?? ""
+  ].map(String).join("|");
+}
+
+function tradeTimestampSeconds(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.abs(value) > 100_000_000_000 ? Math.round(value / 1000) : Math.round(value);
+  }
+  if (typeof value !== "string" || !value.trim()) return null;
+  const text = value.trim();
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(text)) {
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? Math.round(parsed / 1000) : null;
+  }
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if (!match) {
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? Math.round(parsed / 1000) : null;
+  }
+  const [, year, month, day, hour = "00", minute = "00", second = "00"] = match;
+  return zonedTimestampSeconds(
+    Number(year),
+    Number(month),
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    "America/New_York"
+  );
+}
+
+function zonedTimestampSeconds(year: number, month: number, day: number, hour: number, minute: number, second: number, timeZone: string) {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    month: "2-digit",
+    second: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).formatToParts(new Date(utcGuess));
+  const part = (type: string) => Number(parts.find((item) => item.type === type)?.value ?? 0);
+  const zonedAsUtc = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"));
+  const offset = zonedAsUtc - utcGuess;
+  return Math.round((utcGuess - offset) / 1000);
+}
+
+function nearestAvailableTime(time: number | null, candleTimes: Set<number>) {
+  if (time === null) return null;
+  if (candleTimes.has(time)) return time;
+  let nearest: number | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  candleTimes.forEach((candidate) => {
+    const distance = Math.abs(candidate - time);
+    if (distance < nearestDistance) {
+      nearest = candidate;
+      nearestDistance = distance;
+    }
+  });
+  return nearestDistance <= 15 * 60 ? nearest : time;
+}
+
+function symbolChartPeriodBounds(payload: RunSymbolChartPayload | null | undefined) {
+  const timestamps = (payload?.candles ?? []).map((candle) => Number(candle.time)).filter(Number.isFinite);
+  if (!timestamps.length) return { end: "", max: "", min: "", start: "" };
+  const dates = timestamps.map(dateStringFromTimestamp).filter(Boolean).sort();
+  const min = dates[0] ?? "";
+  const max = dates[dates.length - 1] ?? min;
+  return { end: max, max, min, start: min };
+}
+
+function candleInTradePeriod(candle: { time: number }, periodStart: string, periodEnd: string) {
+  if (!periodStart || !periodEnd) return true;
+  const date = dateStringFromTimestamp(Number(candle.time));
+  return Boolean(date && date >= periodStart && date <= periodEnd);
+}
+
 function candleInPeriod(candle: PortfolioCandle, periodStart: string, periodEnd: string) {
   if (!periodStart || !periodEnd) return true;
   const date = dateStringFromTimestamp(Number(candle.time));
@@ -1470,4 +1762,21 @@ type PortfolioCandlePayload = {
   timeframes: string[];
   default_timeframe: string;
   candles: Record<string, PortfolioCandle[]>;
+};
+
+type RunSymbolChartPayload = {
+  symbol: string;
+  timeframes: string[];
+  default_timeframe: string;
+  candles: Array<{
+    time: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+  }>;
+  volume: ChartPayload["volume"];
+  overlay_series: ChartPayload["overlay_series"];
+  oscillator_series: ChartPayload["oscillator_series"];
+  trades?: DataRow[];
 };

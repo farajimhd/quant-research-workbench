@@ -230,6 +230,133 @@ def portfolio_candle_payload(run_dir: Path, metadata: dict[str, Any]) -> dict[st
     return {"timeframes": available_timeframes, "default_timeframe": default_timeframe, "candles": candles}
 
 
+def run_symbol_chart_payload(run_dir: Path, symbol: str) -> dict[str, Any]:
+    normalized_symbol = symbol.strip().upper()
+    if not normalized_symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    path = run_dir / "symbol_bars.parquet"
+    if not path.exists():
+        return {
+            "symbol": normalized_symbol,
+            "timeframes": ["1m"],
+            "default_timeframe": "1m",
+            "candles": [],
+            "volume": [],
+            "overlay_series": [],
+            "oscillator_series": [],
+            "trades": run_symbol_trades(run_dir, normalized_symbol),
+        }
+    frame = pl.read_parquet(path)
+    required_columns = {"ticker", "bar_time_market", "open", "high", "low", "close"}
+    if not required_columns.issubset(set(frame.columns)):
+        return {
+            "symbol": normalized_symbol,
+            "timeframes": ["1m"],
+            "default_timeframe": "1m",
+            "candles": [],
+            "volume": [],
+            "overlay_series": [],
+            "oscillator_series": [],
+            "trades": run_symbol_trades(run_dir, normalized_symbol),
+        }
+    symbol_frame = (
+        frame.filter(pl.col("ticker").cast(pl.Utf8).str.to_uppercase() == normalized_symbol)
+        .sort("bar_time_market")
+    )
+    rows = symbol_frame.to_dicts()
+    timed_rows = [(timestamp_seconds(row.get("bar_time_market")), row) for row in rows]
+    timed_rows = [(timestamp, row) for timestamp, row in timed_rows if timestamp is not None]
+    candles = [
+        {
+            "time": timestamp,
+            "open": row.get("open"),
+            "high": row.get("high"),
+            "low": row.get("low"),
+            "close": row.get("close"),
+        }
+        for timestamp, row in timed_rows
+    ]
+    volume = [
+        {
+            "time": timestamp,
+            "value": row.get("volume") or 0,
+            "color": "#16a34a" if float(row.get("close") or 0) >= float(row.get("open") or 0) else "#dc2626",
+        }
+        for timestamp, row in timed_rows
+        if "volume" in row
+    ]
+    return {
+        "symbol": normalized_symbol,
+        "timeframes": ["1m"],
+        "default_timeframe": "1m",
+        "candles": candles,
+        "volume": volume,
+        "overlay_series": symbol_overlay_series(timed_rows),
+        "oscillator_series": symbol_oscillator_series(timed_rows),
+        "trades": run_symbol_trades(run_dir, normalized_symbol),
+    }
+
+
+def run_symbol_trades(run_dir: Path, symbol: str) -> list[dict[str, Any]]:
+    path = run_dir / "trades.parquet"
+    if not path.exists():
+        return []
+    frame = pl.read_parquet(path)
+    if "symbol" not in frame.columns:
+        return []
+    return json_safe(
+        frame.filter(pl.col("symbol").cast(pl.Utf8).str.to_uppercase() == symbol)
+        .sort("entry_time")
+        .to_dicts()
+    )
+
+
+def symbol_overlay_series(timed_rows: list[tuple[int, dict[str, Any]]]) -> list[dict[str, Any]]:
+    series_config = [
+        ("tema9", "TEMA 9", "#2563eb"),
+        ("tema20", "TEMA 20", "#7c3aed"),
+        ("tema9_5m", "TEMA 9 5m", "#0891b2"),
+        ("tema20_5m", "TEMA 20 5m", "#9333ea"),
+    ]
+    return [
+        {
+            "color": color,
+            "column": column,
+            "data": [{"time": timestamp, "value": row.get(column)} for timestamp, row in timed_rows if row.get(column) is not None],
+            "displayItemId": column,
+            "label": label,
+            "lineStyle": "solid",
+            "lineWidth": 2,
+            "style": "line",
+        }
+        for column, label, color in series_config
+        if column in (timed_rows[0][1].keys() if timed_rows else set())
+    ]
+
+
+def symbol_oscillator_series(timed_rows: list[tuple[int, dict[str, Any]]]) -> list[dict[str, Any]]:
+    series_config = [
+        ("macd_line", "MACD", "#2563eb"),
+        ("macd_signal", "Signal", "#f97316"),
+        ("macd_hist", "Histogram", "#64748b"),
+    ]
+    return [
+        {
+            "color": color,
+            "column": column,
+            "data": [{"time": timestamp, "value": row.get(column)} for timestamp, row in timed_rows if row.get(column) is not None],
+            "displayItemId": column,
+            "label": label,
+            "lineStyle": "solid",
+            "lineWidth": 2,
+            "paneKey": "macd",
+            "style": "histogram" if column == "macd_hist" else "line",
+        }
+        for column, label, color in series_config
+        if column in (timed_rows[0][1].keys() if timed_rows else set())
+    ]
+
+
 def resolve_chart_range(start_date: date | None, end_date: date | None, session_date: date | None) -> tuple[date, date]:
     range_start = start_date or session_date
     range_end = end_date or range_start
@@ -412,6 +539,17 @@ def backtest_run_detail(
         "portfolio_candles": json_safe(portfolio_candle_payload(run_dir, metadata)),
         "logs": (run_dir / "logs.txt").read_text(encoding="utf-8") if include_logs and (run_dir / "logs.txt").exists() else "",
     }
+
+
+@app.get("/api/backtests/runs/{run_id}/symbols/{symbol}/chart")
+def backtest_run_symbol_chart(run_id: str, symbol: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    root = Path(output_root).resolve()
+    run_dir = (root / run_id).resolve()
+    if root != run_dir and root not in run_dir.parents:
+        raise HTTPException(status_code=400, detail="Invalid run path")
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+    return json_safe(run_symbol_chart_payload(run_dir, symbol))
 
 
 @app.delete("/api/backtests/runs/{run_id}")

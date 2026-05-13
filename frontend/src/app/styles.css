@@ -925,6 +925,26 @@ button {
   min-height: 0;
 }
 
+.trade-chart-panel {
+  display: flex;
+  min-height: 520px;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.trade-chart-panel .chart-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.trade-chart-subtitle {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
 .new-run-metric-strip {
   display: grid;
   flex: 0 0 auto;
@@ -3527,6 +3547,18 @@ button {
 
 .data-table tbody tr.data-table-row-actionable {
   cursor: context-menu;
+}
+
+.data-table tbody tr.data-table-row-clickable {
+  cursor: pointer;
+}
+
+.data-table tbody tr.data-table-row-selected {
+  background: color-mix(in oklab, var(--info) 8%, transparent);
+}
+
+.data-table tbody tr.data-table-row-selected:hover {
+  background: color-mix(in oklab, var(--info) 11%, transparent);
 }
 
 .data-table-row-menu {
