@@ -6112,7 +6112,7 @@ button {
 }
 
 .observability-action-card {
-  --observability-label: color-mix(in srgb, var(--muted-foreground) 82%, #2563eb);
+  --observability-label: var(--muted-foreground);
   --observability-value: var(--foreground);
   flex: 0 0 auto;
   overflow: hidden;
@@ -6137,6 +6137,12 @@ button {
 
 .observability-action-card[data-tone="info"] {
   border-left-color: var(--badge-info-fg);
+}
+
+.observability-action-card .semantic-badge[data-tone="info"] {
+  border-color: var(--badge-muted-border);
+  background: var(--badge-muted-bg);
+  color: var(--badge-muted-fg);
 }
 
 .observability-action-header {
