@@ -11,13 +11,13 @@ def chart_presentation() -> dict[str, Any]:
         "kind": "strategy_trade_chart",
         "default_timeframe": "1m",
         "timeframes": timeframes,
-        "default_visible": ["feature.opening_range_5m"],
+        "default_visible": ["indicator.tema_trend", "indicator.macd", "feature.opening_range_5m"],
         "display_items": {
-            timeframe: ([] if timeframe not in intraday_timeframes else ["feature.opening_range_5m"])
+            timeframe: ["indicator.tema_trend", "indicator.macd", *([] if timeframe not in intraday_timeframes else ["feature.opening_range_5m"])]
             for timeframe in timeframes
         },
         "feature_groups": {
-            timeframe: (["session"] if timeframe in intraday_timeframes else [])
+            timeframe: ["momentum", *(["session"] if timeframe in intraday_timeframes else [])]
             for timeframe in timeframes
         },
         "trade_annotations": {

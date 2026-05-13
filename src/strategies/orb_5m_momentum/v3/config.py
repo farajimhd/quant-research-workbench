@@ -10,6 +10,7 @@ class OrbMomentumConfig:
     max_price: float = 100.0
     min_opening_volume: float = 50_000.0
     min_opening_dollar_volume: float = 250_000.0
+    min_live_score: float = 55.0
     watchlist_size: int = 100
     max_active_positions: int = 5
     replacement_score_buffer: float = 10.0
@@ -19,13 +20,15 @@ class OrbMomentumConfig:
     entry_cutoff_minute: int = 15 * 60 + 30
     exit_minutes_before_close: int = 5
     entry_buffer_pct: float = 0.0005
+    entry_stage_proximity_pct: float = 0.01
+    stop_box_pullback_fraction: float = 0.50
     max_entry_extension_pct: float = 0.01
     min_risk_pct: float = 0.0025
     max_risk_pct: float = 0.0075
     max_capital_per_trade_pct: float = 0.15
     cash_reserve_pct: float = 0.05
-    trailing_activation_r: float = 1.0
-    trailing_giveback_fraction: float = 0.50
+    tema_entry_buffer_pct: float = 0.0005
+    tema_exit_buffer_pct: float = 0.0005
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "OrbMomentumConfig":

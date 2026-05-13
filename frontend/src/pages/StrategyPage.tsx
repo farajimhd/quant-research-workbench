@@ -143,9 +143,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_box_dollar_range: "Minimum opening-box dollar range required for setup eligibility.",
   max_entry_extension_pct: "Maximum allowed close extension beyond the entry trigger.",
   tema_entry_buffer_pct: "TEMA entry buffer as a fraction of opening-box close.",
-  tema_exit_buffer_pct: "TEMA exit buffer as a fraction of opening-box close.",
-  trailing_activation_r: "Minimum open R multiple before the price-only giveback exit can activate.",
-  trailing_giveback_fraction: "Fraction of the best open profit that can be given back before exiting."
+  tema_exit_buffer_pct: "TEMA exit buffer as a fraction of opening-box close."
 };
 
 const STRATEGY_PARAMETER_GROUPS = [
@@ -182,8 +180,6 @@ const STRATEGY_PARAMETER_GROUPS = [
       "entry_stage_proximity_pct",
       "max_entry_extension_pct",
       "stop_box_pullback_fraction",
-      "trailing_activation_r",
-      "trailing_giveback_fraction",
       "min_risk_pct",
       "max_risk_pct",
       "max_capital_per_trade_pct",
@@ -218,9 +214,7 @@ const IMPORTANT_STRATEGY_PARAMETER_KEYS = [
   "min_live_score",
   "entry_cutoff_minute",
   "min_risk_pct",
-  "max_risk_pct",
-  "trailing_activation_r",
-  "trailing_giveback_fraction"
+  "max_risk_pct"
 ];
 
 export function StrategyPage() {
@@ -1893,6 +1887,9 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "score_key",
   "setup_rank",
   "setup_score",
+  "macd_pressure_bps",
+  "opening_macd_pressure_bps",
+  "session_macd_pressure_bps",
   "live_rank",
   "live_score",
   "scanner_status",

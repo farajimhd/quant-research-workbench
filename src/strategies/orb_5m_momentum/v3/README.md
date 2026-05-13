@@ -1,28 +1,28 @@
 # ORB 5-Minute Momentum Strategy v3
 
-Version 3 simplifies the setup scanner and removes MACD/TEMA confirmation from the trading decision.
+Version 3 simplifies the setup scanner, but keeps the v2 entry, exit, stop, sizing, cancellation, and rotation rules.
 
 ## Data Requirements
 
 - `1m` bars for each requested session
 - `1m` feature groups: `core`, `session`
+- `5m` context feature groups: `momentum`
 
-It does not request same-session `5m` momentum indicators or prior daily context.
+It does not request prior daily context.
 
 ## Behavior
 
-The strategy builds the opening box from the 09:30-09:35 one-minute bars. The scanner only filters for tradability using price, opening share volume, and opening dollar volume.
+The strategy builds the opening box from the 09:30-09:35 one-minute bars. The scanner only filters for tradability using price, opening share volume, opening dollar volume, and a valid positive opening box range.
 
-Passing tickers are ranked by opening-box strength:
-
-```text
-box_strength = (box_high - box_low) / box_low
-```
-
-After the opening range is complete, live decisions wait for completed `1m` closes. The first possible entry/skip action is 09:36. A ticker becomes eligible when the completed `1m` close breaks above the buffered opening range high:
+Passing tickers are ranked by the completed `5m` MACD pressure available at the setup scan:
 
 ```text
-close > box_high * (1 + entry_buffer_pct)
+macd_pressure_bps = sum((macd_line - macd_signal) / close * 10000)
 ```
 
-Entries use market orders on the completed `1m` close. The initial stop is the opening-box midpoint. Normal exits are price-only: breakout failure at the stop, trailing giveback after the configured hold time and R-multiple activation, and end-of-day flattening.
+After the opening range is complete, live decisions wait for completed `1m` closes. The first possible entry/skip action is 09:36. From that point onward, entry/exit/stop behavior is inherited from v2:
+
+- Entry requires the completed `1m` close to break the buffered opening-range high.
+- Entry also requires `5m` MACD to be open and `5m` TEMA9 to be above TEMA20 plus the configured buffer.
+- The initial stop uses the same opening-box pullback formula as v2.
+- Normal exits use the same v2 breakout-failure, TEMA close, rotation, and end-of-day flatten rules.
