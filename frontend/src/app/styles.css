@@ -3068,6 +3068,15 @@ button {
   align-items: start;
 }
 
+.run-card.clickable {
+  cursor: pointer;
+}
+
+.run-card.clickable:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--primary) 68%, transparent);
+  outline-offset: 2px;
+}
+
 .session-card:hover,
 .run-card:hover {
   border-color: color-mix(in oklab, var(--primary) 16%, transparent);

@@ -236,7 +236,7 @@ export function StrategyPage() {
 
   async function loadRuns(outputRoot: string, strategyName: string, version: string) {
     const payload = await api<{ runs: RunRow[] }>(`/api/backtests/runs${query({ output_root: outputRoot, strategy_name: strategyName, strategy_version: version })}`);
-    setRuns(payload.runs);
+    setRuns(sortRunsNewestFirst(payload.runs));
   }
 
   function updateDraftStrategy(strategyName: string) {
@@ -428,7 +428,19 @@ function RunsPanel({
   return (
     <div className="progress-column-body">
       {runs.map((run) => (
-        <article className="run-card" key={run.run_id}>
+        <article
+          className="run-card clickable"
+          key={run.run_id}
+          onClick={() => onOpen(run.run_id)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            onOpen(run.run_id);
+          }}
+          role="button"
+          tabIndex={0}
+          title="Open run"
+        >
           <div>
             <div className="run-card-title">{run.run_name}</div>
             <div className="muted">{run.date_range} | {run.created_at}</div>
@@ -440,14 +452,28 @@ function RunsPanel({
               <span className="meta-tag">{run.trade_count} trades</span>
             </div>
           </div>
-          <div className="toolbar" style={{ margin: 0 }}>
-            <button className="button primary" onClick={() => onOpen(run.run_id)} type="button">Open</button>
-            <button className="icon-button" onClick={() => deleteRun(run.run_id)} type="button" title="Delete run"><Trash2 size={15} /></button>
+          <div className="toolbar" onKeyDown={(event) => event.stopPropagation()} style={{ margin: 0 }}>
+            <button className="button primary" onClick={(event) => { event.stopPropagation(); onOpen(run.run_id); }} type="button">Open</button>
+            <button className="icon-button" onClick={(event) => { event.stopPropagation(); deleteRun(run.run_id); }} type="button" title="Delete run"><Trash2 size={15} /></button>
           </div>
         </article>
       ))}
     </div>
   );
+}
+
+function sortRunsNewestFirst(runs: RunRow[]) {
+  return [...runs].sort((left, right) => {
+    const rightTime = runCreatedAtMs(right);
+    const leftTime = runCreatedAtMs(left);
+    if (rightTime !== leftTime) return rightTime - leftTime;
+    return right.run_id.localeCompare(left.run_id);
+  });
+}
+
+function runCreatedAtMs(run: RunRow) {
+  const parsed = Date.parse(run.created_at);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function NewRunPanel({
