@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 import re
@@ -10,6 +10,38 @@ import re
 DEFAULT_DATA_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1")
 DEFAULT_OUTPUT_ROOT = Path("D:/TradingData/quant-research-workbench/runs")
 DEFAULT_PROCESSED_DATA_ROOT = Path("D:/TradingData/quant-research-workbench/market_data")
+DEFAULT_RUN_NAME_PLACEHOLDERS = {"", "react app run", "untitled run"}
+
+
+def slugify_run_token(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", str(value)).strip("_").lower()
+    return slug or "run"
+
+
+def generated_run_name(strategy_name: str, strategy_version: str, created_at: datetime | None = None, suffix: str | None = None) -> str:
+    moment = created_at or datetime.now()
+    timestamp = moment.strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    parts = [slugify_run_token(strategy_name), slugify_run_token(strategy_version), timestamp]
+    if suffix:
+        parts.append(slugify_run_token(suffix))
+    return "_".join(parts)
+
+
+def is_generated_run_name(value: str, strategy_name: str, strategy_version: str) -> bool:
+    name = slugify_run_token(value)
+    prefix = f"{slugify_run_token(strategy_name)}_{slugify_run_token(strategy_version)}_"
+    timestamp_pattern = r"\d{8}_\d{6}_\d{3}(?:_.+)?$"
+    return bool(name.startswith(prefix) and re.match(f"^{re.escape(prefix)}{timestamp_pattern}", name))
+
+
+def submitted_run_name(strategy_name: str, strategy_version: str, current_name: str | None, created_at: datetime | None = None) -> str:
+    value = str(current_name or "").strip()
+    normalized = value.lower()
+    if normalized in DEFAULT_RUN_NAME_PLACEHOLDERS:
+        return generated_run_name(strategy_name, strategy_version, created_at)
+    if is_generated_run_name(value, strategy_name, strategy_version):
+        return slugify_run_token(value)
+    return generated_run_name(strategy_name, strategy_version, created_at, suffix=value)
 
 
 def parse_date(value: str | date) -> date:
@@ -73,6 +105,8 @@ class BacktestConfig:
 
     @property
     def run_slug(self) -> str:
-        raw = f"{self.strategy_name}_{self.strategy_version}_{self.run_name}".lower()
-        slug = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
-        return slug or self.strategy_name
+        prefix = f"{slugify_run_token(self.strategy_name)}_{slugify_run_token(self.strategy_version)}"
+        run_name_slug = slugify_run_token(self.run_name)
+        if run_name_slug.startswith(f"{prefix}_"):
+            return run_name_slug
+        return slugify_run_token(f"{prefix}_{self.run_name}")

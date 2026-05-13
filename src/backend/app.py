@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from src.backtest.config import DEFAULT_OUTPUT_ROOT, BacktestConfig
+from src.backtest.config import DEFAULT_OUTPUT_ROOT, BacktestConfig, generated_run_name, submitted_run_name
 from src.backtest.equity_candles import default_portfolio_candle_timeframe
 from src.backtest.jobs import get_backtest_status, list_backtest_jobs, submit_backtest_job
 from src.backtest.results import list_runs, read_run_metadata
@@ -84,7 +84,7 @@ class BuildSubmit(ScopeUpdate):
 class BacktestSubmit(BaseModel):
     strategy_name: str
     strategy_version: str = "v2"
-    run_name: str = "React app run"
+    run_name: str = ""
     start_date: date
     end_date: date
     data_root: str = Field(default=str(DEFAULT_RAW_ROOT))
@@ -270,7 +270,7 @@ def strategy_default_config(strategy_name: str, version: str | None = None) -> d
     return {
         "strategy_name": strategy_name,
         "strategy_version": selected_version,
-        "run_name": "React app run",
+        "run_name": generated_run_name(strategy_name, selected_version),
         "start_date": "2024-05-01",
         "end_date": "2024-05-02",
         "data_root": str(DEFAULT_RAW_ROOT),
@@ -318,6 +318,7 @@ def backtest_runs(
 @app.post("/api/backtests/jobs")
 def start_backtest(payload: BacktestSubmit) -> dict[str, Any]:
     raw = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    raw["run_name"] = submitted_run_name(raw["strategy_name"], raw.get("strategy_version") or "v2", raw.get("run_name"))
     config = BacktestConfig.from_dict({**raw, "created_by_app": True})
     try:
         strategy = create_strategy(config.strategy_name, config.strategy_params, config.strategy_version)

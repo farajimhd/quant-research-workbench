@@ -867,6 +867,18 @@ button {
   flex: 0 0 auto;
 }
 
+.backtest-results-title {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .backtest-results-tab-content {
   display: flex;
   flex: 1 1 auto;

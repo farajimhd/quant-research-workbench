@@ -219,7 +219,9 @@ export function StrategyPage() {
 
   useEffect(() => {
     if (!activeSelection) return;
-    api<StrategyConfig>(`/api/strategies/${activeSelection.strategyName}/default-config${query({ version: activeSelection.version })}`).then(setConfig);
+    api<StrategyConfig>(`/api/strategies/${activeSelection.strategyName}/default-config${query({ version: activeSelection.version })}`).then((payload) => {
+      setConfig({ ...payload, run_name: submittedRunName(payload) });
+    });
     api<{ content: string }>(`/api/strategies/${activeSelection.strategyName}/readme${query({ version: activeSelection.version })}`).then((payload) => setReadme(payload.content));
   }, [activeSelection?.strategyName, activeSelection?.version]);
 
@@ -458,8 +460,11 @@ function NewRunPanel({
 
   async function startRun() {
     setError(null);
+    const runConfig = { ...config, run_name: submittedRunName(config) };
+    onConfigChange(runConfig);
+    setDraftConfig(runConfig);
     try {
-      const payload = await api<Record<string, unknown>>("/api/backtests/jobs", { method: "POST", body: JSON.stringify(config) });
+      const payload = await api<Record<string, unknown>>("/api/backtests/jobs", { method: "POST", body: JSON.stringify(runConfig) });
       setJob(payload);
       setJobId(String(payload.job_id));
     } catch (err) {
@@ -811,6 +816,52 @@ function formatParamLabel(key: string): string {
     .join(" ");
 }
 
+function submittedRunName(config: StrategyConfig): string {
+  const currentName = config.run_name.trim();
+  const base = generatedRunName(config.strategy_name, config.strategy_version);
+  if (!currentName || isDefaultRunName(currentName) || isGeneratedRunName(currentName, config.strategy_name, config.strategy_version)) {
+    return base;
+  }
+  return `${base}_${slugRunToken(currentName)}`;
+}
+
+function generatedRunName(strategyName: string, strategyVersion: string, date = new Date()): string {
+  const timestamp = [
+    date.getFullYear(),
+    padDatePart(date.getMonth() + 1),
+    padDatePart(date.getDate()),
+    "_",
+    padDatePart(date.getHours()),
+    padDatePart(date.getMinutes()),
+    padDatePart(date.getSeconds()),
+    "_",
+    String(date.getMilliseconds()).padStart(3, "0")
+  ].join("");
+  return `${slugRunToken(strategyName)}_${slugRunToken(strategyVersion)}_${timestamp}`;
+}
+
+function isDefaultRunName(value: string): boolean {
+  return ["react app run", "untitled run"].includes(value.trim().toLowerCase());
+}
+
+function isGeneratedRunName(value: string, strategyName: string, strategyVersion: string): boolean {
+  const name = slugRunToken(value);
+  const prefix = `${slugRunToken(strategyName)}_${slugRunToken(strategyVersion)}_`;
+  return name.startsWith(prefix) && new RegExp(`^${escapeRegExp(prefix)}\\d{8}_\\d{6}_\\d{3}(?:_.+)?$`).test(name);
+}
+
+function slugRunToken(value: string): string {
+  return value.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase() || "run";
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function buildNewRunMetrics(config: StrategyConfig, params: Record<string, StrategyParamValue>, job: Record<string, unknown> | null): NewRunMetric[] {
   const status = String(job?.status ?? "draft");
   const eventCount = Array.isArray(job?.events) ? job.events.length : 0;
@@ -920,6 +971,7 @@ function BacktestJobPanel({
   const resultRunDir = String(result?.run_dir ?? "");
   const latestRunDir = resultRunDir || [...events].reverse().map((event) => String(event.run_dir ?? "")).find(Boolean) || "";
   const latestRunId = latestRunDir ? latestRunDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "" : "";
+  const jobConfig = job?.config && typeof job.config === "object" ? job.config as Record<string, unknown> : null;
   const [detail, setDetail] = useState<RunDetailPayload | null>(null);
   const [tab, setTab] = useState("Backtest Results");
 
@@ -932,11 +984,12 @@ function BacktestJobPanel({
   }, [latestRunId, outputRoot, `${job?.status ?? "not-started"}-${events.length}`]);
 
   const progress = buildBacktestProgress(job, detail, config);
+  const activeRunName = String(detail?.metadata.run_name ?? jobConfig?.run_name ?? config.run_name ?? "Backtest Results");
 
   return (
     <section className="panel backtest-results-panel" style={{ marginTop: 16 }}>
       <div className="toolbar" style={{ justifyContent: "space-between" }}>
-        <h2 style={{ margin: 0 }}>Backtest Results</h2>
+        <h2 className="backtest-results-title">{activeRunName}</h2>
         <SemanticBadge tone={toneForStatus(progress.status)}>{progress.status}</SemanticBadge>
       </div>
       <Tabs tabs={["Backtest Results", "Daily", "Trades", "Orders", "Fills", "Positions", "Scanner", "Rejected", "Progress Events", "Logs"]} active={tab} onChange={setTab} />
@@ -956,7 +1009,7 @@ function BacktestJobPanel({
               <span className="meta-tag">{progress.done}/{progress.total} sessions</span>
               {latestRunDir ? <span className="meta-tag">{latestRunDir}</span> : null}
             </div>
-            <PnlCandleChart payload={detail?.portfolio_candles} runName={config.run_name} title="Portfolio P/L Candles" />
+            <PnlCandleChart payload={detail?.portfolio_candles} runName={activeRunName} title="Portfolio P/L Candles" />
           </>
         ) : null}
         {tab === "Daily" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
