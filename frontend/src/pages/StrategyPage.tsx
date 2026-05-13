@@ -1117,18 +1117,11 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
       value: formatMoney(unrealized)
     },
     {
-      detail: "Worst open unrealized loss",
+      detail: "Worst loss / best gain while open",
       icon: <Gauge size={15} />,
-      label: "Max Unrlzd Loss",
-      tone: unrealizedLossTone(maxUnrealizedLoss),
-      value: formatMoney(maxUnrealizedLoss)
-    },
-    {
-      detail: "Best open unrealized gain",
-      icon: <Gauge size={15} />,
-      label: "Max Unrlzd Gain",
-      tone: signedTone(maxUnrealizedGain),
-      value: formatMoney(maxUnrealizedGain)
+      label: "Unrlzd Range",
+      tone: unrealizedRangeTone(maxUnrealizedLoss, maxUnrealizedGain),
+      value: `${formatMoney(maxUnrealizedLoss)} / ${formatSignedMoney(maxUnrealizedGain)}`
     }
   ];
 }
@@ -1163,9 +1156,16 @@ function drawdownTone(value: number): NewRunMetricTone {
   return "neutral";
 }
 
-function unrealizedLossTone(value: number): NewRunMetricTone {
-  if (value < 0) return "danger";
+function unrealizedRangeTone(loss: number, gain: number): NewRunMetricTone {
+  if (loss < 0 && gain > Math.abs(loss)) return "success";
+  if (loss < 0) return "danger";
+  if (gain > 0) return "success";
   return "neutral";
+}
+
+function formatSignedMoney(value: number): string {
+  if (value > 0) return `+${formatMoney(value)}`;
+  return formatMoney(value);
 }
 
 function countTone(value: number): NewRunMetricTone {
