@@ -32,9 +32,6 @@ class OrbFiveMinuteMomentumV3Strategy(OrbFiveMinuteMomentumV2Strategy):
                 "close",
                 "volume",
                 "transactions",
-                "macd_line",
-                "macd_signal",
-                "macd_hist",
             ),
         )
 
