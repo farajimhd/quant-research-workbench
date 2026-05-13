@@ -5,7 +5,7 @@ from datetime import date
 import polars as pl
 
 
-PORTFOLIO_CANDLE_TIMEFRAMES = ("1m", "1h", "2h", "4h", "1d")
+PORTFOLIO_CANDLE_TIMEFRAMES = ("1h", "2h", "4h", "1d")
 
 
 def default_portfolio_candle_timeframe(start_date: date, end_date: date) -> str:

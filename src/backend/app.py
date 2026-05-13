@@ -60,6 +60,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 CHART_DISPLAY_ITEMS_NONE = "__none__"
 EXCHANGE_TIME_ZONE = "America/New_York"
+PORTFOLIO_CHART_TIMEFRAMES = ["1h", "2h", "4h", "1d"]
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
 app.add_middleware(
@@ -171,7 +172,10 @@ def portfolio_candle_payload(run_dir: Path, metadata: dict[str, Any]) -> dict[st
     path = run_dir / "portfolio_candles.parquet"
     chart_metadata = read_json_file(run_dir / "chart_metadata.json")
     config = metadata.get("config") or {}
-    available_timeframes = chart_metadata.get("portfolio_candle_timeframes") or ["1m", "1h", "2h", "4h", "1d"]
+    metadata_timeframes = chart_metadata.get("portfolio_candle_timeframes") or PORTFOLIO_CHART_TIMEFRAMES
+    available_timeframes = [timeframe for timeframe in metadata_timeframes if timeframe in PORTFOLIO_CHART_TIMEFRAMES]
+    if not available_timeframes:
+        available_timeframes = PORTFOLIO_CHART_TIMEFRAMES
     default_timeframe = chart_metadata.get("default_portfolio_candle_timeframe")
     if not default_timeframe:
         try:
