@@ -1056,6 +1056,7 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
   const winRate = finiteNumber(summary.win_rate);
   const profitFactor = finiteNumber(summary.profit_factor);
   const unrealized = finiteNumber(summary.open_unrealized_pnl);
+  const maxUnrealizedLoss = finiteNumber(summary.max_open_unrealized_loss);
 
   return [
     {
@@ -1113,6 +1114,13 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
       label: "Unrealized",
       tone: signedTone(unrealized),
       value: formatMoney(unrealized)
+    },
+    {
+      detail: "Worst open unrealized loss",
+      icon: <Gauge size={15} />,
+      label: "Max Unrlzd Loss",
+      tone: unrealizedLossTone(maxUnrealizedLoss),
+      value: formatMoney(maxUnrealizedLoss)
     }
   ];
 }
@@ -1144,6 +1152,11 @@ function sharpeTone(value: number): NewRunMetricTone {
 function drawdownTone(value: number): NewRunMetricTone {
   if (value >= 0.1) return "danger";
   if (value > 0) return "warning";
+  return "neutral";
+}
+
+function unrealizedLossTone(value: number): NewRunMetricTone {
+  if (value < 0) return "danger";
   return "neutral";
 }
 

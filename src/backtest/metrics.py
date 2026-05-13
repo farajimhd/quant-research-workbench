@@ -149,7 +149,10 @@ def compute_summary(
 
     equity_values = [float(row.get("equity") or 0.0) for row in portfolio_rows]
     last_portfolio = portfolio_rows[-1] if portfolio_rows else {}
+    unrealized_values = [float(row.get("open_unrealized_pnl") or 0.0) for row in portfolio_rows]
     open_unrealized_pnl = float(last_portfolio.get("open_unrealized_pnl") or 0.0)
+    max_open_unrealized_pnl = max(unrealized_values, default=0.0)
+    max_open_unrealized_loss = min(unrealized_values, default=0.0)
     realized_pnl = float(last_portfolio.get("realized_pnl") or (total_pnl - open_unrealized_pnl))
     gross_exposure = float(last_portfolio.get("gross_exposure") or 0.0)
     open_positions = int(last_portfolio.get("open_positions") or 0)
@@ -271,6 +274,8 @@ def compute_summary(
         "Net Profit": total_pnl,
         "Return": total_return,
         "Unrealized": open_unrealized_pnl,
+        "Max Unrealized": max_open_unrealized_pnl,
+        "Max Unrealized Loss": max_open_unrealized_loss,
         "Volume": traded_value,
     }
 
@@ -283,6 +288,8 @@ def compute_summary(
         "total_pnl": total_pnl,
         "realized_pnl": realized_pnl,
         "open_unrealized_pnl": open_unrealized_pnl,
+        "max_open_unrealized_pnl": max_open_unrealized_pnl,
+        "max_open_unrealized_loss": max_open_unrealized_loss,
         "return_pct": total_return,
         "trade_count": len(trades),
         "win_count": len(wins),

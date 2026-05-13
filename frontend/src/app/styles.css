@@ -927,7 +927,7 @@ button {
 
 .new-run-metric-strip {
   display: grid;
-  grid-template-columns: repeat(8, minmax(112px, 1fr));
+  grid-template-columns: repeat(9, minmax(112px, 1fr));
   gap: 10px;
   overflow-x: auto;
   overflow-y: hidden;
