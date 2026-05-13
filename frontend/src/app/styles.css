@@ -6029,6 +6029,51 @@ button {
   line-height: 1;
 }
 
+.observability-filter-bar {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.observability-filter-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 7px 10px;
+}
+
+.observability-filter-chip strong {
+  min-width: 22px;
+  border-radius: 999px;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 6px;
+  text-align: center;
+}
+
+.observability-filter-chip.active {
+  border-color: var(--foreground);
+  background: var(--foreground);
+  color: var(--background);
+}
+
+.observability-filter-chip.active strong {
+  background: color-mix(in oklab, var(--background) 90%, var(--foreground));
+  color: var(--foreground);
+}
+
 .observability-action-list {
   display: grid;
   gap: 10px;
@@ -6072,12 +6117,29 @@ button {
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
   background: var(--card);
+  box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 7%, transparent);
+}
+
+.observability-action-card[data-tone="success"] {
+  border-left: 4px solid var(--badge-success-fg);
+}
+
+.observability-action-card[data-tone="danger"] {
+  border-left: 4px solid var(--badge-danger-fg);
+}
+
+.observability-action-card[data-tone="warning"] {
+  border-left: 4px solid var(--badge-warning-fg);
+}
+
+.observability-action-card[data-tone="info"] {
+  border-left: 4px solid var(--badge-info-fg);
 }
 
 .observability-action-header {
   display: grid;
   width: 100%;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   border: 0;
@@ -6086,6 +6148,34 @@ button {
   cursor: pointer;
   padding: 14px 16px;
   text-align: left;
+}
+
+.observability-action-card.open .observability-action-header {
+  background: color-mix(in oklab, var(--surface) 68%, var(--card));
+}
+
+.observability-step-badge {
+  display: grid;
+  width: 54px;
+  height: 44px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.observability-step-badge span {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.observability-step-badge strong {
+  color: var(--foreground);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 16px;
+  line-height: 1;
 }
 
 .observability-action-toggle {
@@ -6115,6 +6205,17 @@ button {
   color: var(--muted-foreground);
   font-size: 12px;
   font-weight: 550;
+}
+
+.observability-action-eyebrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.observability-action-eyebrow span + span {
+  color: var(--foreground);
+  font-weight: 750;
 }
 
 .observability-action-meta {
@@ -6285,11 +6386,15 @@ button {
   }
 
   .observability-action-header {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .observability-step-badge {
+    width: 48px;
   }
 
   .observability-action-meta {
-    grid-column: 2;
+    grid-column: 2 / 4;
     justify-content: flex-start;
   }
 }

@@ -1132,8 +1132,10 @@ function ObservabilityPanel({
   const legacyScannerRows = detail?.tables.scanner?.rows ?? [];
   const scannerContextRows = scannerRows.length ? scannerRows : legacyScannerRows;
   const actions = useMemo(() => buildObservabilityActions(traceRows), [traceRows]);
+  const [activeActionFilter, setActiveActionFilter] = useState<ObservationActionFilter>("all");
   const [visibleActionCount, setVisibleActionCount] = useState(100);
-  const visibleActions = actions.slice(0, visibleActionCount);
+  const filteredActions = useMemo(() => actions.filter((action) => observationActionMatchesFilter(action, activeActionFilter)), [actions, activeActionFilter]);
+  const visibleActions = filteredActions.slice(0, visibleActionCount);
   const sources = useMemo<ObservationEvidenceSources>(
     () => ({
       fills: detail?.tables.fills.rows ?? [],
@@ -1155,7 +1157,7 @@ function ObservabilityPanel({
 
   useEffect(() => {
     setVisibleActionCount(100);
-  }, [actions]);
+  }, [activeActionFilter, actions]);
 
   return (
     <section className="observability-workspace">
@@ -1165,6 +1167,19 @@ function ObservabilityPanel({
         <ObservabilitySummaryMetric label="State Rows" value={stateRows.length} />
         <ObservabilitySummaryMetric label="Rejected" value={rejectedRows.length} />
       </div>
+      <div className="observability-filter-bar">
+        {OBSERVABILITY_ACTION_FILTERS.map((filter) => (
+          <button
+            className={activeActionFilter === filter.value ? "observability-filter-chip active" : "observability-filter-chip"}
+            key={filter.value}
+            onClick={() => setActiveActionFilter(filter.value)}
+            type="button"
+          >
+            <span>{filter.label}</span>
+            <strong>{formatNumber(countObservationActionFilter(actions, filter.value))}</strong>
+          </button>
+        ))}
+      </div>
       <div className="observability-scroll-region">
         <div className="observability-action-list">
           {visibleActions.length ? (
@@ -1173,10 +1188,10 @@ function ObservabilityPanel({
             <div className="empty-state">No strategy actions were captured. Check observability mode and profile sessions.</div>
           )}
         </div>
-        {visibleActionCount < actions.length ? (
-          <button className="observability-load-more" onClick={() => setVisibleActionCount((count) => Math.min(actions.length, count + 100))} type="button">
+        {visibleActionCount < filteredActions.length ? (
+          <button className="observability-load-more" onClick={() => setVisibleActionCount((count) => Math.min(filteredActions.length, count + 100))} type="button">
             Show more actions
-            <span>{formatNumber(visibleActionCount)} of {formatNumber(actions.length)}</span>
+            <span>{formatNumber(visibleActionCount)} of {formatNumber(filteredActions.length)}</span>
           </button>
         ) : null}
         {systemRows.length || logs ? <ObservabilitySystemPanel logs={logs} rows={systemRows} /> : null}
@@ -1199,11 +1214,18 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
   const evidence = useMemo(() => (open ? buildObservationEvidence(action.trace, sources) : emptyObservationEvidence()), [action.trace, open, sources]);
   const evidenceCount = evidence.scannerRows.length + evidence.stateRows.length + evidence.rejectionRows.length + evidence.orderRows.length + evidence.fillRows.length + evidence.tradeRows.length;
   return (
-    <article className={open ? "observability-action-card open" : "observability-action-card"}>
+    <article className={open ? "observability-action-card open" : "observability-action-card"} data-tone={action.tone}>
       <button aria-expanded={open} className="observability-action-header" onClick={() => setOpen((value) => !value)} type="button">
+        <span className="observability-step-badge">
+          <span>Step</span>
+          <strong>{formatNumber(action.step)}</strong>
+        </span>
         <span className="observability-action-toggle" aria-hidden="true">{open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
         <span className="observability-action-title">
-          <span className="observability-action-eyebrow">{action.timestamp || action.sessionDate || "No timestamp"}</span>
+          <span className="observability-action-eyebrow">
+            <span>{action.timestamp || action.sessionDate || "No timestamp"}</span>
+            {action.ticker ? <span>{action.ticker}</span> : null}
+          </span>
           <strong>{action.title}</strong>
           <small>{action.subtitle}</small>
         </span>
@@ -1309,6 +1331,7 @@ type ObservabilityAction = {
   sessionDate: string;
   stage: string;
   stateFields: ObservationFieldValue[];
+  step: number;
   subtitle: string;
   ticker: string;
   timestamp: string;
@@ -1335,6 +1358,18 @@ type ObservationEvidenceRows = {
   tradeRows: DataRow[];
 };
 
+type ObservationActionFilter = "all" | "cancel" | "entry" | "exit" | "order" | "rejected" | "scanner";
+
+const OBSERVABILITY_ACTION_FILTERS: Array<{ label: string; value: ObservationActionFilter }> = [
+  { label: "All", value: "all" },
+  { label: "Entries", value: "entry" },
+  { label: "Exits", value: "exit" },
+  { label: "Rejected", value: "rejected" },
+  { label: "Scanner", value: "scanner" },
+  { label: "Orders", value: "order" },
+  { label: "Cancel", value: "cancel" },
+];
+
 function buildObservabilityActions(traces: DataRow[]): ObservabilityAction[] {
   return [...traces]
     .sort((left, right) => rowTime(left) - rowTime(right))
@@ -1359,6 +1394,7 @@ function buildObservabilityActions(traces: DataRow[]): ObservabilityAction[] {
         sessionDate,
         stage,
         stateFields: objectToObservationFields(state),
+        step: index + 1,
         subtitle: [ticker || "Run", formatObservationLabel(stage), reasonCode || reason].filter(Boolean).join(" | "),
         ticker,
         timestamp,
@@ -1367,6 +1403,22 @@ function buildObservabilityActions(traces: DataRow[]): ObservabilityAction[] {
         trace,
       };
     });
+}
+
+function countObservationActionFilter(actions: ObservabilityAction[], filter: ObservationActionFilter): number {
+  return actions.reduce((count, action) => count + (observationActionMatchesFilter(action, filter) ? 1 : 0), 0);
+}
+
+function observationActionMatchesFilter(action: ObservabilityAction, filter: ObservationActionFilter): boolean {
+  if (filter === "all") return true;
+  const text = `${action.eventType} ${action.decision} ${action.stage} ${action.reasonCode} ${action.reason}`.toLowerCase();
+  if (filter === "entry") return text.includes("entry");
+  if (filter === "exit") return text.includes("exit") || text.includes("day_end");
+  if (filter === "rejected") return text.includes("reject") || text.includes("skip");
+  if (filter === "scanner") return text.includes("scanner") || text.includes("watchlist");
+  if (filter === "order") return text.includes("order") || text.includes("submit");
+  if (filter === "cancel") return text.includes("cancel");
+  return true;
 }
 
 function buildObservationEvidence(trace: DataRow, sources: ObservationEvidenceSources): ObservationEvidenceRows {
