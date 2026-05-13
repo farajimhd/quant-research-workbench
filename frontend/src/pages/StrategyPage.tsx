@@ -56,7 +56,7 @@ type NewRunMetric = {
   icon: ReactNode;
   label: string;
   tone?: NewRunMetricTone;
-  value: string;
+  value: ReactNode;
 };
 
 const tabs = ["Backtest", "Runs", "Strategy README"];
@@ -1098,32 +1098,42 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
     {
       detail: "Winning closed trades",
       icon: <Percent size={15} />,
-      label: "Win Rate",
+      label: "Win %",
       tone: winRateTone(winRate, tradeCount),
       value: formatPct(winRate)
     },
     {
       detail: "Gross profit / gross loss",
       icon: <Shield size={15} />,
-      label: "Profit Factor",
+      label: "PF",
       tone: profitFactorTone(profitFactor, tradeCount),
       value: formatNumber(profitFactor, 2)
     },
     {
-      detail: "Open mark-to-market P/L",
+      detail: "Current unrealized P/L",
       icon: <Banknote size={15} />,
-      label: "Unrealized",
+      label: "Open",
       tone: signedTone(unrealized),
       value: formatMoney(unrealized)
     },
     {
-      detail: "Worst loss / best gain while open",
+      detail: "Worst / best unrealized",
       icon: <Gauge size={15} />,
-      label: "Unrlzd Range",
+      label: "+/-",
       tone: unrealizedRangeTone(maxUnrealizedLoss, maxUnrealizedGain),
-      value: `${formatMoney(maxUnrealizedLoss)} / ${formatSignedMoney(maxUnrealizedGain)}`
+      value: <UnrealizedRangeValue gain={maxUnrealizedGain} loss={maxUnrealizedLoss} />
     }
   ];
+}
+
+function UnrealizedRangeValue({ gain, loss }: { gain: number; loss: number }) {
+  return (
+    <span className="new-run-metric-range">
+      <span className={loss < 0 ? "new-run-metric-range-loss" : undefined}>{formatCompactMoney(loss)}</span>
+      <span className="new-run-metric-range-divider">/</span>
+      <span className={gain > 0 ? "new-run-metric-range-gain" : undefined}>{formatSignedCompactMoney(gain)}</span>
+    </span>
+  );
 }
 
 function liveSummary(job: Record<string, unknown> | null, detail: RunDetailPayload | null): Record<string, unknown> {
@@ -1163,9 +1173,21 @@ function unrealizedRangeTone(loss: number, gain: number): NewRunMetricTone {
   return "neutral";
 }
 
-function formatSignedMoney(value: number): string {
-  if (value > 0) return `+${formatMoney(value)}`;
-  return formatMoney(value);
+function formatCompactMoney(value: number): string {
+  if (!Number.isFinite(value)) return "-";
+  const useCompact = Math.abs(value) >= 1000;
+  return value.toLocaleString(undefined, {
+    currency: "USD",
+    maximumFractionDigits: useCompact ? 1 : 0,
+    minimumFractionDigits: 0,
+    notation: useCompact ? "compact" : "standard",
+    style: "currency"
+  });
+}
+
+function formatSignedCompactMoney(value: number): string {
+  if (value > 0) return `+${formatCompactMoney(value)}`;
+  return formatCompactMoney(value);
 }
 
 function countTone(value: number): NewRunMetricTone {
