@@ -1,9 +1,9 @@
-import { createChart, type IChartApi, type ISeriesApi, type SeriesType, type Time } from "lightweight-charts";
 import { Activity, Banknote, CalendarRange, CircleHelp, Database, Gauge, ListChecks, Pencil, Play, Shield, SlidersHorizontal, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
 import { api, query } from "../api/client";
+import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
 import { DataTable } from "../app/components/DataTable";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
@@ -772,7 +772,7 @@ function BacktestJobPanel({ config, job, outputRoot }: { config: StrategyConfig;
         <span className="meta-tag">{progress.done}/{progress.total} sessions</span>
         {latestRunDir ? <span className="meta-tag">{latestRunDir}</span> : null}
       </div>
-      <PnlCandleChart payload={detail?.portfolio_candles} title="Portfolio P/L Candles" />
+      <PnlCandleChart payload={detail?.portfolio_candles} runName={config.run_name} title="Portfolio P/L Candles" />
       <Tabs tabs={["Daily", "Trades", "Orders", "Fills", "Positions", "Scanner", "Rejected", "Progress Events", "Logs"]} active={tab} onChange={setTab} />
       {tab === "Daily" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
       {tab === "Trades" ? <DataTable rows={detail?.tables.trades.rows ?? []} /> : null}
@@ -832,7 +832,13 @@ function RunDetail({ runId, outputRoot, onClose }: { runId: string; outputRoot: 
       />
       <Tabs tabs={["Overview", "P/L Chart", "Trades", "Orders", "Fills", "Scanner", "Rejected", "Positions", "Logs"]} active={tab} onChange={setTab} />
       {tab === "Overview" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
-      {tab === "P/L Chart" ? <PnlCandleChart payload={detail?.portfolio_candles} title="Portfolio P/L Candles" /> : null}
+      {tab === "P/L Chart" ? (
+        <PnlCandleChart
+          payload={detail?.portfolio_candles}
+          runName={String(detail?.metadata.run_name ?? detail?.metadata.run_id ?? runId)}
+          title="Portfolio P/L Candles"
+        />
+      ) : null}
       {tab === "Trades" ? <DataTable rows={detail?.tables.trades.rows ?? []} /> : null}
       {tab === "Orders" ? <DataTable rows={detail?.tables.orders.rows ?? []} /> : null}
       {tab === "Fills" ? <DataTable rows={detail?.tables.fills.rows ?? []} /> : null}
@@ -844,85 +850,111 @@ function RunDetail({ runId, outputRoot, onClose }: { runId: string; outputRoot: 
   );
 }
 
-function PnlCandleChart({ payload, title }: { payload?: PortfolioCandlePayload | null; title: string }) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
-  const [timeframe, setTimeframe] = useState(payload?.default_timeframe ?? "1h");
-  const timeframes = payload?.timeframes?.length ? payload.timeframes : ["1m", "1h", "2h", "4h", "1d"];
-  const candles = payload?.candles?.[timeframe] ?? [];
+function PnlCandleChart({ payload, runName, title }: { payload?: PortfolioCandlePayload | null; runName: string; title: string }) {
+  const availableTimeframes = useMemo(() => portfolioChartTimeframes(payload), [payload]);
+  const defaultTimeframe = availableTimeframes.includes(payload?.default_timeframe ?? "") ? String(payload?.default_timeframe) : availableTimeframes[0] ?? "1h";
+  const [timeframe, setTimeframe] = useState(defaultTimeframe);
+  const periodBounds = useMemo(() => portfolioChartPeriodBounds(payload, availableTimeframes), [availableTimeframes, payload]);
+  const [period, setPeriod] = useState({ end: periodBounds.end, start: periodBounds.start });
 
   useEffect(() => {
-    if (payload?.default_timeframe) setTimeframe(payload.default_timeframe);
-  }, [payload?.default_timeframe]);
+    setTimeframe(defaultTimeframe);
+  }, [defaultTimeframe]);
 
   useEffect(() => {
-    if (!containerRef.current) return;
-    const chart = createChart(containerRef.current, {
-      autoSize: true,
-      height: 280,
-      layout: { background: { color: "#ffffff" }, textColor: "#344054" },
-      grid: { horzLines: { color: "#f2f4f7" }, vertLines: { color: "#f2f4f7" } },
-      rightPriceScale: { borderVisible: false },
-      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
-      localization: { priceFormatter: (value: number) => formatMoney(value) }
-    });
-    const series = chart.addCandlestickSeries({
-      upColor: "#149044",
-      downColor: "#c9184a",
-      borderUpColor: "#149044",
-      borderDownColor: "#c9184a",
-      wickUpColor: "#149044",
-      wickDownColor: "#c9184a"
-    });
-    series.createPriceLine({ price: 0, color: "#667085", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "Flat" });
-    chartRef.current = chart;
-    seriesRef.current = series as ISeriesApi<SeriesType>;
-    return () => {
-      chart.remove();
-      chartRef.current = null;
-      seriesRef.current = null;
-    };
-  }, []);
+    setPeriod({ end: periodBounds.end, start: periodBounds.start });
+  }, [periodBounds.end, periodBounds.start]);
 
-  useEffect(() => {
-    if (!seriesRef.current) return;
-    const data = candles
-      .filter((candle) => Number.isFinite(candle.time))
-      .map((candle) => ({
-        time: candle.time as Time,
-        open: Number(candle.open ?? 0),
-        high: Number(candle.high ?? 0),
-        low: Number(candle.low ?? 0),
-        close: Number(candle.close ?? 0)
-      }));
-    seriesRef.current.setData(data as never);
-    chartRef.current?.timeScale().fitContent();
-  }, [candles]);
+  const chartPayload = useMemo(
+    () => portfolioChartPayload(payload, timeframe, period.start, period.end),
+    [payload, period.end, period.start, timeframe]
+  );
+
+  function updatePeriod(start: string, end: string) {
+    setPeriod(start <= end ? { start, end } : { start: end, end: start });
+  }
 
   return (
     <section style={{ marginTop: 16 }}>
       <div className="toolbar" style={{ justifyContent: "space-between" }}>
         <h2 style={{ margin: 0 }}>{title}</h2>
-        <div className="toolbar" style={{ margin: 0 }}>
-          {timeframes.map((item) => (
-            <button
-              className={`button ${item === timeframe ? "primary" : "secondary"}`}
-              key={item}
-              onClick={() => setTimeframe(item)}
-              type="button"
-            >
-              {item}
-            </button>
-          ))}
-        </div>
       </div>
-      <div className="chart-shell" style={{ height: 280, minHeight: 280 }}>
-        <div className="chart-price" ref={containerRef} />
-      </div>
-      {!candles.length ? <div className="empty-state">No portfolio candles have been written yet.</div> : null}
+      <ChartPanel
+        emptyMessage="No portfolio P/L candles have been written yet."
+        featureOptions={[]}
+        indicatorOptions={[]}
+        normalizeTicker={false}
+        onPeriodChange={updatePeriod}
+        onTickerChange={() => undefined}
+        onTimeframeChange={setTimeframe}
+        onVisibleColumnsChange={() => undefined}
+        onVisibleSupervisionGroupsChange={() => undefined}
+        payload={chartPayload}
+        periodEnd={period.end}
+        periodMax={periodBounds.max}
+        periodMin={periodBounds.min}
+        periodStart={period.start}
+        showIndicatorControls={false}
+        showSupervisionControls={false}
+        ticker={runName || "Backtest"}
+        tickerInputWidth={180}
+        tickerMaxLength={64}
+        timeframe={timeframe}
+        timeframes={availableTimeframes}
+        visibleColumns={[]}
+        visibleSupervisionGroups={[]}
+      />
     </section>
   );
+}
+
+function portfolioChartTimeframes(payload?: PortfolioCandlePayload | null) {
+  const allowed = ["1m", "1h", "2h", "4h", "1d"];
+  const provided = payload?.timeframes?.length ? payload.timeframes.map(String) : allowed;
+  const filtered = allowed.filter((timeframe) => provided.includes(timeframe));
+  return filtered.length ? filtered : ["1h"];
+}
+
+function portfolioChartPeriodBounds(payload: PortfolioCandlePayload | null | undefined, timeframes: string[]) {
+  const timestamps = timeframes.flatMap((timeframe) => (payload?.candles?.[timeframe] ?? []).map((candle) => Number(candle.time)).filter(Number.isFinite));
+  if (!timestamps.length) return { end: "", max: "", min: "", start: "" };
+  const dates = timestamps.map(dateStringFromTimestamp).filter(Boolean).sort();
+  const min = dates[0] ?? "";
+  const max = dates[dates.length - 1] ?? min;
+  return { end: max, max, min, start: min };
+}
+
+function portfolioChartPayload(payload: PortfolioCandlePayload | null | undefined, timeframe: string, periodStart: string, periodEnd: string): ChartPayload | null {
+  const candles = (payload?.candles?.[timeframe] ?? [])
+    .filter((candle) => Number.isFinite(candle.time))
+    .filter((candle) => candleInPeriod(candle, periodStart, periodEnd))
+    .map((candle) => ({
+      close: Number(candle.close ?? 0),
+      high: Number(candle.high ?? 0),
+      low: Number(candle.low ?? 0),
+      open: Number(candle.open ?? 0),
+      time: Number(candle.time)
+    }));
+  if (!candles.length) return null;
+  return {
+    candles,
+    markers: [],
+    oscillator_series: [],
+    overlay_series: [],
+    regions: [],
+    volume: []
+  };
+}
+
+function candleInPeriod(candle: PortfolioCandle, periodStart: string, periodEnd: string) {
+  if (!periodStart || !periodEnd) return true;
+  const date = dateStringFromTimestamp(Number(candle.time));
+  return Boolean(date && date >= periodStart && date <= periodEnd);
+}
+
+function dateStringFromTimestamp(timestamp: number) {
+  if (!Number.isFinite(timestamp)) return "";
+  return new Date(timestamp * 1000).toISOString().slice(0, 10);
 }
 
 type RunDetailPayload = {

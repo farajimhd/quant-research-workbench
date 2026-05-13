@@ -192,6 +192,7 @@ type ChartPanelProps = {
   indicatorOptions: string[];
   labelOptions?: ChartLabelOption[];
   loading?: boolean;
+  normalizeTicker?: boolean;
   onPeriodChange?: (start: string, end: string) => void;
   onTickerChange: (value: string) => void;
   onTimeframeChange: (value: string) => void;
@@ -203,7 +204,11 @@ type ChartPanelProps = {
   periodMin?: string;
   periodStart?: string;
   reference?: ChartReference | null;
+  showIndicatorControls?: boolean;
+  showSupervisionControls?: boolean;
   ticker: string;
+  tickerInputWidth?: number | string;
+  tickerMaxLength?: number;
   timeframe: string;
   timeframes: string[];
   visibleColumns: string[];
@@ -248,6 +253,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   indicatorOptions,
   labelOptions = [],
   loading = false,
+  normalizeTicker = true,
   onPeriodChange,
   onTickerChange,
   onTimeframeChange,
@@ -259,7 +265,11 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   periodStart,
   payload,
   reference = null,
+  showIndicatorControls = true,
+  showSupervisionControls = true,
   ticker,
+  tickerInputWidth,
+  tickerMaxLength = 10,
   timeframe,
   timeframes,
   visibleColumns,
@@ -289,7 +299,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const overlayRedrawTimerRef = useRef<number | null>(null);
   const regionDrawRef = useRef<(() => void) | null>(null);
   const baseDataSignatureRef = useRef("");
-  const [draftTicker, setDraftTicker] = useState(ticker.toUpperCase());
+  const normalizeTickerValue = (value: string) => (normalizeTicker ? value.toUpperCase() : value);
+  const [draftTicker, setDraftTicker] = useState(normalizeTickerValue(ticker));
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const [supervisionMenuOpen, setSupervisionMenuOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
@@ -381,8 +392,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, []);
 
   useEffect(() => {
-    setDraftTicker(ticker.toUpperCase());
-  }, [ticker]);
+    setDraftTicker(normalizeTickerValue(ticker));
+  }, [normalizeTicker, ticker]);
 
   useEffect(() => {
     if (!chartSettingsOpen) return;
@@ -810,13 +821,13 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   const commitTicker = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const normalized = draftTicker.trim().toUpperCase();
+    const normalized = normalizeTickerValue(draftTicker.trim());
     if (!normalized) {
-      setDraftTicker(ticker.toUpperCase());
+      setDraftTicker(normalizeTickerValue(ticker));
       return;
     }
     setDraftTicker(normalized);
-    if (normalized !== ticker.toUpperCase()) {
+    if (normalized !== normalizeTickerValue(ticker)) {
       onTickerChange(normalized);
     }
   };
@@ -828,9 +839,10 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           <input
             aria-label="Ticker"
             className="chart-ticker-input"
-            maxLength={10}
-            onChange={(event) => setDraftTicker(event.target.value.toUpperCase())}
+            maxLength={tickerMaxLength}
+            onChange={(event) => setDraftTicker(normalizeTickerValue(event.target.value))}
             spellCheck={false}
+            style={{ textTransform: normalizeTicker ? "uppercase" : "none", width: tickerInputWidth }}
             value={draftTicker}
           />
         </form>
@@ -860,42 +872,50 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             </button>
           ))}
         </div>
-        <span className="toolbar-divider" />
-        <IndicatorFeatureSelect
-          catalogColumns={catalogColumns}
-          displayItemOptions={displayItemOptions}
-          featureOptions={featureOptions}
-          indicatorOptions={indicatorOptions}
-          onChange={onVisibleColumnsChange}
-          onOpenChange={(value) => {
-            setColumnMenuOpen(value);
-            if (value) {
-              setSupervisionMenuOpen(false);
-              setChartSettingsOpen(false);
-              setPeriodMenuOpen(false);
-            }
-          }}
-          open={columnMenuOpen}
-          values={visibleColumns}
-        />
-        <SupervisionSelect
-          catalogColumns={catalogColumns}
-          displayItemOptions={displayItemOptions}
-          labelOptions={labelOptions}
-          onChange={onVisibleColumnsChange}
-          onLabelChange={onVisibleSupervisionGroupsChange}
-          onOpenChange={(value) => {
-            setSupervisionMenuOpen(value);
-            if (value) {
-              setColumnMenuOpen(false);
-              setChartSettingsOpen(false);
-              setPeriodMenuOpen(false);
-            }
-          }}
-          open={supervisionMenuOpen}
-          values={visibleColumns}
-          visibleLabels={visibleSupervisionGroups}
-        />
+        {showIndicatorControls || showSupervisionControls ? (
+          <>
+            <span className="toolbar-divider" />
+            {showIndicatorControls ? (
+              <IndicatorFeatureSelect
+                catalogColumns={catalogColumns}
+                displayItemOptions={displayItemOptions}
+                featureOptions={featureOptions}
+                indicatorOptions={indicatorOptions}
+                onChange={onVisibleColumnsChange}
+                onOpenChange={(value) => {
+                  setColumnMenuOpen(value);
+                  if (value) {
+                    setSupervisionMenuOpen(false);
+                    setChartSettingsOpen(false);
+                    setPeriodMenuOpen(false);
+                  }
+                }}
+                open={columnMenuOpen}
+                values={visibleColumns}
+              />
+            ) : null}
+            {showSupervisionControls ? (
+              <SupervisionSelect
+                catalogColumns={catalogColumns}
+                displayItemOptions={displayItemOptions}
+                labelOptions={labelOptions}
+                onChange={onVisibleColumnsChange}
+                onLabelChange={onVisibleSupervisionGroupsChange}
+                onOpenChange={(value) => {
+                  setSupervisionMenuOpen(value);
+                  if (value) {
+                    setColumnMenuOpen(false);
+                    setChartSettingsOpen(false);
+                    setPeriodMenuOpen(false);
+                  }
+                }}
+                open={supervisionMenuOpen}
+                values={visibleColumns}
+                visibleLabels={visibleSupervisionGroups}
+              />
+            ) : null}
+          </>
+        ) : null}
         <div className="toolbar-spacer" />
         <button
           className="toolbar-button"
