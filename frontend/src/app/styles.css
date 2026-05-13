@@ -927,11 +927,12 @@ button {
 
 .trade-chart-modal-panel {
   display: flex;
-  width: min(4000px, calc(100vw - 4px));
+  width: min(4800px, calc(100vw - 2px));
   height: min(940px, calc(100vh - 40px));
   max-height: calc(100vh - 40px);
   flex-direction: column;
   overflow: hidden;
+  padding: 12px;
 }
 
 .trade-chart-modal-panel .modal-header {
