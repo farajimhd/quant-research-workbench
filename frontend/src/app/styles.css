@@ -6256,9 +6256,9 @@ button {
 
 .observability-action-symbol strong {
   overflow: hidden;
-  color: var(--foreground);
+  color: var(--muted-foreground);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 650;
   letter-spacing: 0;
   line-height: 1;
