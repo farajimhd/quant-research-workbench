@@ -490,7 +490,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const volume = priceChart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "", base: 0 });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     volumeRef.current = volume;
-    const draw = () => drawCurrentRegions();
+    const draw = () => scheduleOverlayRedraw();
     regionDrawRef.current = draw;
     priceChart.timeScale().subscribeVisibleLogicalRangeChange(draw);
     const observer = new ResizeObserver(() => {
@@ -772,13 +772,13 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (overlayRedrawTimerRef.current !== null) {
       window.clearTimeout(overlayRedrawTimerRef.current);
     }
-    let remainingTicks = 8;
+    let remainingTicks = 12;
     const tick = () => {
       scheduleOverlayRedraw();
       remainingTicks -= 1;
-      overlayRedrawTimerRef.current = remainingTicks > 0 ? window.setTimeout(tick, 45) : null;
+      overlayRedrawTimerRef.current = remainingTicks > 0 ? window.setTimeout(tick, 16) : null;
     };
-    overlayRedrawTimerRef.current = window.setTimeout(tick, 45);
+    overlayRedrawTimerRef.current = window.setTimeout(tick, 16);
   }
 
   function cleanupChartRuntime() {
@@ -1029,12 +1029,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
 function attachOverlayRedrawListeners(target: HTMLElement | null, redraw: () => void, redrawBurst: () => void) {
   if (!target) return () => undefined;
-  let pointerInterval: number | null = null;
   const stopPointerRedraw = (redrawAfter = true) => {
-    if (pointerInterval !== null) {
-      window.clearInterval(pointerInterval);
-      pointerInterval = null;
-    }
+    window.removeEventListener("pointermove", redraw);
     window.removeEventListener("pointerup", endPointerRedraw);
     window.removeEventListener("pointercancel", endPointerRedraw);
     if (redrawAfter) redrawBurst();
@@ -1042,11 +1038,9 @@ function attachOverlayRedrawListeners(target: HTMLElement | null, redraw: () => 
   const endPointerRedraw = () => stopPointerRedraw(true);
   const startPointerRedraw = () => {
     redraw();
-    if (pointerInterval === null) {
-      pointerInterval = window.setInterval(redraw, 40);
-      window.addEventListener("pointerup", endPointerRedraw);
-      window.addEventListener("pointercancel", endPointerRedraw);
-    }
+    window.addEventListener("pointermove", redraw);
+    window.addEventListener("pointerup", endPointerRedraw);
+    window.addEventListener("pointercancel", endPointerRedraw);
   };
   target.addEventListener("pointerdown", startPointerRedraw);
   target.addEventListener("wheel", redrawBurst, { passive: true });
