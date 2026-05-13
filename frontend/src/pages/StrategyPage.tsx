@@ -1134,7 +1134,7 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
     {
       detail: "Worst / best unrealized",
       icon: <Gauge size={15} />,
-      label: "Open Range",
+      label: "Max Unrealized",
       tone: unrealizedRangeTone(maxUnrealizedLoss, maxUnrealizedGain),
       value: <UnrealizedRangeValue gain={maxUnrealizedGain} loss={maxUnrealizedLoss} />
     }
