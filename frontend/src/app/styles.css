@@ -927,7 +927,7 @@ button {
 
 .trade-chart-modal-panel {
   display: flex;
-  width: min(1500px, calc(100vw - 40px));
+  width: min(3000px, calc(100vw - 16px));
   height: min(940px, calc(100vh - 40px));
   max-height: calc(100vh - 40px);
   flex-direction: column;
