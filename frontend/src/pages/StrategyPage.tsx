@@ -1,4 +1,4 @@
-import { Activity, Banknote, CalendarRange, CircleHelp, Database, Gauge, ListChecks, Pencil, Play, Shield, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Activity, Banknote, CalendarRange, CircleHelp, Database, Gauge, ListChecks, Play, Shield, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
@@ -272,60 +272,31 @@ function NewRunPanel({
         <button className="button primary" onClick={startRun} type="button" disabled={["running", "queued"].includes(String(job?.status ?? ""))}>
           <Play size={15} /> Start Backtest
         </button>
-      </div>
-      <NewRunMetricStrip metrics={topMetrics} />
-
-      <div className="run-config-grid">
-        <ParameterCard
-          description="Backtest identity, date range, data roots, and execution assumptions."
-          icon={<Database size={18} />}
-          onEdit={() => openEditor("run")}
-          title="Backtest Parameters"
-        >
-          <ParameterSection title="Identity & Range">
-            <ParameterItem help={RUN_PARAMETER_HELP.run_name} label="Run name" value={config.run_name} />
-            <ParameterItem help={RUN_PARAMETER_HELP.start_date} label="Start" value={config.start_date} />
-            <ParameterItem help={RUN_PARAMETER_HELP.end_date} label="End" value={config.end_date} />
-            <ParameterItem help={RUN_PARAMETER_HELP.save_symbol_bars} label="Save symbol bars" value={config.save_symbol_bars ? "Enabled" : "Disabled"} />
-          </ParameterSection>
-          <ParameterSection title="Data & Storage">
-            <ParameterItem help={RUN_PARAMETER_HELP.processed_data_root} label="Processed data root" mono value={config.processed_data_root} />
-            <ParameterItem help={RUN_PARAMETER_HELP.data_root} label="Raw data root" mono value={config.data_root} />
-            <ParameterItem help={RUN_PARAMETER_HELP.output_root} label="Output root" mono value={config.output_root} />
-          </ParameterSection>
-          <ParameterSection title="Capital & Fill Model">
-            <ParameterItem help={RUN_PARAMETER_HELP.initial_cash} label="Initial cash" value={formatMoney(config.initial_cash)} />
-            <ParameterItem help={RUN_PARAMETER_HELP.slippage_bps} label="Slippage" value={`${formatNumber(config.slippage_bps, 2)} bps`} />
-          </ParameterSection>
-        </ParameterCard>
-
-        <ParameterCard
-          description="Grouped ORB momentum thresholds used by the strategy engine."
-          icon={<SlidersHorizontal size={18} />}
-          onEdit={() => openEditor("strategy")}
-          title="Strategy Parameters"
-        >
-          <StrategyParameterDisplay params={params} />
-        </ParameterCard>
+        <button className="button secondary" onClick={() => openEditor("run")} type="button">
+          <Database size={15} /> Update Backtest Parameters
+        </button>
+        <button className="button secondary" onClick={() => openEditor("strategy")} type="button">
+          <SlidersHorizontal size={15} /> Update Strategy Parameters
+        </button>
       </div>
 
       {error ? <div className="error-panel" style={{ marginTop: 12 }}>{error}</div> : null}
-      <BacktestJobPanel config={config} job={job} outputRoot={config.output_root} />
+      <BacktestJobPanel config={config} job={job} metrics={topMetrics} outputRoot={config.output_root} />
       {editing === "run" ? (
-        <Modal title="Edit Backtest Parameters" onClose={() => setEditing(null)}>
+        <Modal title="Update Backtest Parameters" onClose={() => setEditing(null)}>
           <BacktestParameterEditor config={draftConfig} onChange={setDraftConfig} />
           <div className="modal-actions">
             <button className="button" onClick={() => setEditing(null)} type="button">Cancel</button>
-            <button className="button primary" onClick={applyDraft} type="button">Apply</button>
+            <button className="button primary" onClick={applyDraft} type="button">Update Parameters</button>
           </div>
         </Modal>
       ) : null}
       {editing === "strategy" ? (
-        <Modal title="Edit Strategy Parameters" onClose={() => setEditing(null)}>
+        <Modal title="Update Strategy Parameters" onClose={() => setEditing(null)}>
           <StrategyParameterEditor config={draftConfig} onChange={setDraftConfig} />
           <div className="modal-actions">
             <button className="button" onClick={() => setEditing(null)} type="button">Cancel</button>
-            <button className="button primary" onClick={applyDraft} type="button">Apply</button>
+            <button className="button primary" onClick={applyDraft} type="button">Update Parameters</button>
           </div>
         </Modal>
       ) : null}
@@ -344,114 +315,6 @@ function NewRunMetricStrip({ metrics }: { metrics: NewRunMetric[] }) {
           <span className="new-run-metric-detail">{metric.detail}</span>
         </article>
       ))}
-    </div>
-  );
-}
-
-function ParameterCard({
-  children,
-  description,
-  icon,
-  onEdit,
-  title
-}: {
-  children: ReactNode;
-  description: string;
-  icon: ReactNode;
-  onEdit: () => void;
-  title: string;
-}) {
-  return (
-    <section className="parameter-card">
-      <div className="parameter-card-header">
-        <div className="parameter-card-title-group">
-          <span className="parameter-card-icon">{icon}</span>
-          <div>
-            <h2>{title}</h2>
-            <p>{description}</p>
-          </div>
-        </div>
-        <button className="icon-button parameter-edit-button" onClick={onEdit} type="button" aria-label={`Edit ${title}`}>
-          <Pencil size={15} />
-        </button>
-      </div>
-      <div className="parameter-card-body">{children}</div>
-    </section>
-  );
-}
-
-function ParameterSection({ children, title }: { children: ReactNode; title: string }) {
-  return (
-    <section className="parameter-section">
-      <h3>{title}</h3>
-      <div className="parameter-grid">{children}</div>
-    </section>
-  );
-}
-
-function ParameterItem({ help, label, mono = false, value }: { help: string; label: string; mono?: boolean; value: string | number }) {
-  return (
-    <div className="parameter-item">
-      <div className="parameter-label">
-        <span>{label}</span>
-        <HelpButton help={help} label={label} />
-      </div>
-      <div className={mono ? "parameter-value mono" : "parameter-value"} title={String(value)}>
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function StrategyParameterDisplay({ params }: { params: Record<string, StrategyParamValue> }) {
-  const rendered = new Set<string>();
-  const groups = STRATEGY_PARAMETER_GROUPS.map((group) => ({
-    ...group,
-    keys: group.keys.filter((key) => key in params)
-  })).filter((group) => group.keys.length > 0);
-  const remaining = Object.keys(params).filter((key) => !STRATEGY_PARAMETER_GROUPS.some((group) => group.keys.includes(key)));
-
-  return (
-    <div className="strategy-parameter-groups">
-      {groups.map((group) => {
-        group.keys.forEach((key) => rendered.add(key));
-        return (
-          <section className="strategy-parameter-group" key={group.title}>
-            <div className="strategy-group-heading">
-              <h3>{group.title}</h3>
-              <p>{group.description}</p>
-            </div>
-            <div className="parameter-grid dense">
-              {group.keys.map((key) => (
-                <ParameterItem
-                  help={STRATEGY_PARAMETER_HELP[key] ?? `Controls ${formatParamLabel(key)} for this strategy run.`}
-                  key={key}
-                  label={formatParamLabel(key)}
-                  value={formatStrategyParamValue(key, params[key])}
-                />
-              ))}
-            </div>
-          </section>
-        );
-      })}
-      {remaining.filter((key) => !rendered.has(key)).length ? (
-        <section className="strategy-parameter-group">
-          <div className="strategy-group-heading">
-            <h3>Other Parameters</h3>
-            <p>Additional strategy settings declared by the backend configuration.</p>
-          </div>
-          <div className="parameter-grid dense">
-            {remaining.filter((key) => !rendered.has(key)).map((key) => (
-              <ParameterItem
-                help={STRATEGY_PARAMETER_HELP[key] ?? `Controls ${formatParamLabel(key)} for this strategy run.`}
-                key={key}
-                label={formatParamLabel(key)}
-                value={formatStrategyParamValue(key, params[key])}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
     </div>
   );
 }
@@ -625,23 +488,6 @@ function formatParamLabel(key: string): string {
     .join(" ");
 }
 
-function formatStrategyParamValue(key: string, value: StrategyParamValue): string {
-  if (typeof value === "boolean") return value ? "Enabled" : "Disabled";
-  if (typeof value !== "number") return String(value);
-  if (key === "opening_box_start_minute" || key === "opening_box_end_minute" || key === "entry_cutoff_minute") return formatMinuteOfDay(value);
-  if (key === "minimum_hold_minutes" || key === "exit_minutes_before_close") return `${formatNumber(value)} min`;
-  if (key.includes("_pct") || key.includes("_fraction") || key.includes("_share") || key === "min_close_location" || key === "min_body_to_range") return formatPct(value);
-  if (Math.abs(value) >= 10_000) return formatNumber(value);
-  if (!Number.isInteger(value)) return formatNumber(value, 4);
-  return formatNumber(value);
-}
-
-function formatMinuteOfDay(value: number): string {
-  const hours = Math.floor(value / 60);
-  const minutes = value % 60;
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-}
-
 function buildNewRunMetrics(config: StrategyConfig, params: Record<string, StrategyParamValue>, job: Record<string, unknown> | null): NewRunMetric[] {
   const status = String(job?.status ?? "draft");
   const eventCount = Array.isArray(job?.events) ? job.events.length : 0;
@@ -735,7 +581,17 @@ function parseIsoDate(value: string): { date: Date; month: number; year: number 
   return { date: new Date(Date.UTC(year, month - 1, day)), month, year };
 }
 
-function BacktestJobPanel({ config, job, outputRoot }: { config: StrategyConfig; job: Record<string, unknown> | null; outputRoot: string }) {
+function BacktestJobPanel({
+  config,
+  job,
+  metrics,
+  outputRoot
+}: {
+  config: StrategyConfig;
+  job: Record<string, unknown> | null;
+  metrics: NewRunMetric[];
+  outputRoot: string;
+}) {
   const events = Array.isArray(job?.events) ? (job?.events as Record<string, unknown>[]) : [];
   const result = job?.result && typeof job.result === "object" ? job.result as Record<string, unknown> : null;
   const resultRunDir = String(result?.run_dir ?? "");
@@ -768,6 +624,7 @@ function BacktestJobPanel({ config, job, outputRoot }: { config: StrategyConfig;
         status={progress.meterStatus}
         total={progress.total}
       />
+      <NewRunMetricStrip metrics={metrics} />
       <div className="toolbar">
         <span className="meta-tag">{progress.done}/{progress.total} sessions</span>
         {latestRunDir ? <span className="meta-tag">{latestRunDir}</span> : null}
