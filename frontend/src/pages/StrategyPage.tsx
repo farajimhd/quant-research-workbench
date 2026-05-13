@@ -1056,6 +1056,7 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
   const winRate = finiteNumber(summary.win_rate);
   const profitFactor = finiteNumber(summary.profit_factor);
   const unrealized = finiteNumber(summary.open_unrealized_pnl);
+  const maxUnrealizedGain = finiteNumber(summary.max_open_unrealized_pnl);
   const maxUnrealizedLoss = finiteNumber(summary.max_open_unrealized_loss);
 
   return [
@@ -1121,6 +1122,13 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
       label: "Max Unrlzd Loss",
       tone: unrealizedLossTone(maxUnrealizedLoss),
       value: formatMoney(maxUnrealizedLoss)
+    },
+    {
+      detail: "Best open unrealized gain",
+      icon: <Gauge size={15} />,
+      label: "Max Unrlzd Gain",
+      tone: signedTone(maxUnrealizedGain),
+      value: formatMoney(maxUnrealizedGain)
     }
   ];
 }
