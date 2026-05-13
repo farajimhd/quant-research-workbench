@@ -333,6 +333,14 @@ button {
   padding: 24px;
 }
 
+.page-cache-panel {
+  display: none;
+}
+
+.page-cache-panel.active {
+  display: block;
+}
+
 .page-intro {
   display: flex;
   align-items: flex-start;
