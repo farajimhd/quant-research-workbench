@@ -1,5 +1,5 @@
-import { Activity, Banknote, ChevronDown, ChevronRight, CircleHelp, Database, Gauge, ListChecks, Percent, Play, Shield, SlidersHorizontal, StopCircle, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Activity, Banknote, ChevronDown, ChevronRight, CircleHelp, Database, Gauge, ListChecks, MoreHorizontal, Percent, Play, Shield, SlidersHorizontal, StopCircle, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
 import { api, query } from "../api/client";
@@ -1302,7 +1302,19 @@ function ObservationDecisionPanel({ action, fields }: { action: ObservabilityAct
 }
 
 function ObservationActionPreview({ action, fields }: { action: ObservabilityAction; fields: ObservationFieldValue[] }) {
+  const [openFieldKey, setOpenFieldKey] = useState<string | null>(null);
   const reason = action.reason || action.reasonCode || "No reason recorded";
+  useEffect(() => {
+    if (!openFieldKey) return;
+    const closePopover = () => setOpenFieldKey(null);
+    document.addEventListener("click", closePopover);
+    return () => document.removeEventListener("click", closePopover);
+  }, [openFieldKey]);
+  const toggleFieldDetails = (fieldKey: string, event: MouseEvent<HTMLSpanElement> | KeyboardEvent<HTMLSpanElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setOpenFieldKey((current) => (current === fieldKey ? null : fieldKey));
+  };
   return (
     <span className="observability-action-preview">
       <span className="observability-action-reason">{reason}</span>
@@ -1312,10 +1324,45 @@ function ObservationActionPreview({ action, fields }: { action: ObservabilityAct
             <span className="observability-action-preview-chip" key={field.key}>
               <span>{field.label}</span>
               <span className="observability-action-preview-value">{formatObservationValue(field.value, field.label)}</span>
+              <span
+                aria-expanded={openFieldKey === field.key}
+                aria-label={`Show ${field.label} details`}
+                className="observability-tag-detail-trigger"
+                onClick={(event) => toggleFieldDetails(field.key, event)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") toggleFieldDetails(field.key, event);
+                  if (event.key === "Escape") setOpenFieldKey(null);
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                <MoreHorizontal size={13} />
+              </span>
+              {openFieldKey === field.key ? <ObservationTagDetailPopover field={field} /> : null}
             </span>
           ))}
         </span>
       ) : null}
+    </span>
+  );
+}
+
+function ObservationTagDetailPopover({ field }: { field: ObservationFieldValue }) {
+  const segments = observationTagDetailSegments(field);
+  return (
+    <span className="observability-tag-popover" onClick={(event) => event.stopPropagation()}>
+      <span className="observability-tag-popover-header">
+        <span>{field.label}</span>
+        <small>{formatNumber(segments.length)} fields</small>
+      </span>
+      <span className="observability-tag-popover-grid">
+        {segments.map((segment, index) => (
+          <span className="observability-tag-popover-field" key={`${segment.label}:${segment.value}:${index}`}>
+            <span>{segment.label}</span>
+            <span>{segment.value}</span>
+          </span>
+        ))}
+      </span>
     </span>
   );
 }
@@ -1800,6 +1847,35 @@ function primaryObservationFields(action: ObservabilityAction): ObservationField
 function observationActionPreviewFields(action: ObservabilityAction): ObservationFieldValue[] {
   const merged = [...action.inputFields, ...action.stateFields];
   return prioritizedObservationFields(merged, "preview").slice(0, 3);
+}
+
+function observationTagDetailSegments(field: ObservationFieldValue): Array<{ label: string; value: string }> {
+  const formattedValue = formatObservationValue(field.value, field.label);
+  const parts = `${field.label}|${formattedValue}`
+    .split("|")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.map((part, index) => {
+    const splitIndex = findObservationTagSegmentDivider(part);
+    if (splitIndex > 0) {
+      return {
+        label: formatObservationLabel(part.slice(0, splitIndex).trim()),
+        value: part.slice(splitIndex + 1).trim() || "-"
+      };
+    }
+    return {
+      label: index === 0 ? "Label" : `Field ${formatNumber(index)}`,
+      value: part
+    };
+  });
+}
+
+function findObservationTagSegmentDivider(segment: string) {
+  const equalsIndex = segment.indexOf("=");
+  const colonIndex = segment.indexOf(":");
+  if (equalsIndex < 0) return colonIndex;
+  if (colonIndex < 0) return equalsIndex;
+  return Math.min(equalsIndex, colonIndex);
 }
 
 function prioritizedObservationFields(fields: ObservationFieldValue[], group: "input" | "preview" | "state"): ObservationFieldValue[] {
