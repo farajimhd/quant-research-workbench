@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from src.backtest.config import DEFAULT_OUTPUT_ROOT, BacktestConfig, generated_run_name, submitted_run_name
 from src.backtest.equity_candles import default_portfolio_candle_timeframe
-from src.backtest.jobs import get_backtest_status, list_backtest_jobs, submit_backtest_job
+from src.backtest.jobs import cancel_backtest_job, get_backtest_status, list_backtest_jobs, submit_backtest_job
 from src.backtest.results import list_runs, read_run_metadata
 from src.backend.json_utils import json_safe, parse_csv_list
 from src.backend.market_data_service import (
@@ -364,6 +364,14 @@ def get_backtest_jobs(output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, 
 @app.get("/api/backtests/jobs/{job_id}")
 def backtest_job_status(job_id: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
     status = get_backtest_status(Path(output_root), job_id)
+    if not status.get("job_id"):
+        raise HTTPException(status_code=404, detail="Backtest job not found")
+    return status
+
+
+@app.post("/api/backtests/jobs/{job_id}/cancel")
+def stop_backtest(job_id: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+    status = cancel_backtest_job(Path(output_root), job_id)
     if not status.get("job_id"):
         raise HTTPException(status_code=404, detail="Backtest job not found")
     return status

@@ -172,6 +172,11 @@ flushed before the run is marked complete. Job progress and cancellation files
 remain synchronous control-plane state so the UI can observe subprocess
 progress deterministically.
 
+Long-running jobs can be stopped by writing `cancel.requested` in the job
+directory through the backtest cancel endpoint. The worker and engine check that
+file between bar events, mark the job `cancelled`, and flush the partial run
+artifacts so the visible result can still be reviewed.
+
 As execution modeling becomes more realistic, the backtest should also write or
 extend:
 

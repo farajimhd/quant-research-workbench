@@ -4,8 +4,9 @@ import sys
 import traceback
 from pathlib import Path
 
+from src.backtest.cancel import BacktestCancelled
 from src.backtest.config import BacktestConfig
-from src.backtest.jobs import append_event, read_job, update_job, utc_now
+from src.backtest.jobs import append_event, check_cancelled, read_job, update_job, utc_now
 from src.backtest.runner import run_backtest
 
 
@@ -15,6 +16,7 @@ def run_job(path: Path) -> int:
     update_job(path, status="running", started_at=payload.get("started_at") or utc_now())
 
     def on_progress(*args) -> None:
+        check_cancelled(path)
         if len(args) == 1 and isinstance(args[0], dict):
             payload = dict(args[0])
             update_progress_job(path, payload)
@@ -37,10 +39,15 @@ def run_job(path: Path) -> int:
         raise TypeError(f"Unsupported progress payload: {args!r}")
 
     try:
+        check_cancelled(path)
         append_event(path, {"event": "job_started", "phase": "backtest", "status": "running"})
-        result = run_backtest({**config.to_dict(), "created_by_app": True}, progress_callback=on_progress)
+        result = run_backtest({**config.to_dict(), "created_by_app": True}, progress_callback=on_progress, cancel_check=lambda: check_cancelled(path))
         append_event(path, {"event": "job_complete", "phase": "backtest", "status": "complete", "run_dir": result["run_dir"]})
         update_job(path, status="complete", finished_at=utc_now(), result=result)
+        return 0
+    except BacktestCancelled as exc:
+        append_event(path, {"event": "job_cancelled", "phase": "cancel", "status": "cancelled", "message": str(exc)})
+        update_job(path, status="cancelled", finished_at=utc_now(), error=str(exc))
         return 0
     except Exception as exc:
         append_event(

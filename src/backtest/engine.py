@@ -4,11 +4,12 @@ import logging
 from dataclasses import asdict
 from datetime import datetime
 from math import ceil
-from typing import Protocol
+from typing import Callable, Protocol
 
 import polars as pl
 
 from src.backtest.artifact_writer import ArtifactWriter
+from src.backtest.cancel import BacktestCancelled
 from src.backtest.config import BacktestConfig
 from src.backtest.data.minute_bars import DayFrames, available_session_dates, load_day_frames, timeframe_minutes
 from src.backtest.equity_candles import default_portfolio_candle_timeframe
@@ -60,7 +61,7 @@ class BacktestEngine:
         self.symbol_bar_5m_rows: list[dict] = []
         self.fill_model = BarFillModel()
 
-    def run(self, progress_callback=None) -> dict:
+    def run(self, progress_callback=None, cancel_check: Callable[[], None] | None = None) -> dict:
         run_dir = create_run_dir(self.config)
         metadata = base_metadata(self.config, run_dir, "running")
 
@@ -69,6 +70,7 @@ class BacktestEngine:
             artifact_writer.write_json(run_dir / "config.json", self.config.to_dict())
 
             try:
+                self._check_cancelled(cancel_check)
                 requirements = self.strategy.data_requirements()
                 sessions = available_session_dates(self.config, requirements)
                 if not sessions:
@@ -110,9 +112,11 @@ class BacktestEngine:
                 total_event_bars = int(metadata["total_event_bars"])
                 live_chart_bar_interval = self._live_chart_bar_interval(requirements)
                 for index, session_date in enumerate(sessions, start=1):
+                    self._check_cancelled(cancel_check)
                     day_start_equity = self.portfolio.total_equity()
                     frames = load_day_frames(self.config, session_date, requirements)
                     event_frame = self.strategy.prepare_day(frames, self.portfolio)
+                    self._check_cancelled(cancel_check)
                     event_frame = event_frame.sort(["bar_time_market", "ticker"])
                     session_total_bars = self._event_bar_count(event_frame)
                     remaining_sessions = len(sessions) - index
@@ -148,6 +152,7 @@ class BacktestEngine:
                     )
 
                     for timestamp, updates in self._timestamp_slices(event_frame):
+                        self._check_cancelled(cancel_check)
                         last_timestamp = timestamp
                         update_rows = updates.to_dicts()
                         fresh_bars = {row["ticker"]: row for row in update_rows}
@@ -272,6 +277,20 @@ class BacktestEngine:
                 self._write_metadata(run_dir, metadata, artifact_writer)
                 artifact_writer.wait()
                 return {"run_dir": str(run_dir), "summary": summary}
+            except BacktestCancelled as exc:
+                summary = self._summary(run_dir)
+                metadata.update(
+                    {
+                        "status": "cancelled",
+                        "cancelled_at": datetime.now().isoformat(timespec="seconds"),
+                        "error": str(exc),
+                        "summary": summary,
+                    }
+                )
+                self._write_artifacts(run_dir, summary, artifact_writer)
+                self._write_metadata(run_dir, metadata, artifact_writer)
+                artifact_writer.wait()
+                raise
             except Exception as exc:
                 metadata.update({"status": "error", "error": str(exc), "failed_at": datetime.now().isoformat(timespec="seconds")})
                 self._write_metadata(run_dir, metadata, artifact_writer)
@@ -320,6 +339,10 @@ class BacktestEngine:
     def _emit_progress(self, progress_callback, payload: dict) -> None:
         if progress_callback:
             progress_callback(payload)
+
+    def _check_cancelled(self, cancel_check: Callable[[], None] | None) -> None:
+        if cancel_check:
+            cancel_check()
 
     def _handle_requests(self, timestamp: datetime, requests: list[OrderRequest], bars_by_symbol: dict[str, dict]) -> None:
         for request in requests:

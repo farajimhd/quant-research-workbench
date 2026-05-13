@@ -1,4 +1,4 @@
-import { Activity, Banknote, CalendarRange, CircleHelp, Database, Gauge, ListChecks, Play, Shield, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Activity, Banknote, CalendarRange, CircleHelp, Database, Gauge, ListChecks, Play, Shield, SlidersHorizontal, StopCircle, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
@@ -448,12 +448,12 @@ function NewRunPanel({
   const params = config.strategy_params;
 
   useEffect(() => {
-    if (!jobId || !["running", "queued"].includes(String(job?.status ?? "running"))) return;
+    if (!jobId || !["running", "queued", "canceling"].includes(String(job?.status ?? "running"))) return;
     const timer = window.setInterval(() => {
       api<Record<string, unknown>>(`/api/backtests/jobs/${jobId}${query({ output_root: config.output_root })}`)
         .then((payload) => {
           setJob(payload);
-          if (String(payload.status) === "complete") onComplete();
+          if (["complete", "cancelled"].includes(String(payload.status))) onComplete();
         })
         .catch((err) => {
           setError(err instanceof Error ? err.message : String(err));
@@ -476,6 +476,20 @@ function NewRunPanel({
     }
   }
 
+  async function stopRun() {
+    if (!jobId) return;
+    setError(null);
+    try {
+      const payload = await api<Record<string, unknown>>(
+        `/api/backtests/jobs/${jobId}/cancel${query({ output_root: config.output_root })}`,
+        { method: "POST" }
+      );
+      setJob(payload);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function openEditor(target: EditTarget) {
     setDraftConfig(config);
     setEditing(target);
@@ -487,12 +501,18 @@ function NewRunPanel({
   }
 
   const topMetrics = buildNewRunMetrics(config, params, job);
+  const jobStatus = String(job?.status ?? "").toLowerCase();
+  const running = ["running", "queued", "canceling"].includes(jobStatus);
+  const canStop = ["running", "queued"].includes(jobStatus);
 
   return (
     <section className="new-run-page">
       <div className="new-run-action-row">
-        <button className="button primary" onClick={startRun} type="button" disabled={["running", "queued"].includes(String(job?.status ?? ""))}>
+        <button className="button primary" onClick={startRun} type="button" disabled={running}>
           <Play size={15} /> Start Backtest
+        </button>
+        <button className="button danger" onClick={stopRun} type="button" disabled={!canStop}>
+          <StopCircle size={15} /> Stop Backtest
         </button>
         <button className="button secondary" onClick={() => openEditor("run")} type="button">
           <Database size={15} /> Update Backtest Parameters

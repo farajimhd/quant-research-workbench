@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from src.backtest.cancel import BacktestCancelled
 from src.backtest.config import BacktestConfig
 from src.data_provider.file_lock import file_lock
 
@@ -17,6 +18,7 @@ JOB_DIR = "jobs"
 JOB_FILE = "job.json"
 EVENTS_FILE = "events.jsonl"
 LOG_FILE = "worker.log"
+CANCEL_FILE = "cancel.requested"
 
 
 def utc_now() -> str:
@@ -45,6 +47,10 @@ def events_lock_file(path: Path) -> Path:
 
 def log_file(path: Path) -> Path:
     return path / LOG_FILE
+
+
+def cancel_file(path: Path) -> Path:
+    return path / CANCEL_FILE
 
 
 def read_job(path: Path) -> dict[str, Any]:
@@ -93,6 +99,15 @@ def read_events(path: Path) -> list[dict[str, Any]]:
     return events
 
 
+def is_cancel_requested(path: Path) -> bool:
+    return cancel_file(path).exists()
+
+
+def check_cancelled(path: Path) -> None:
+    if is_cancel_requested(path):
+        raise BacktestCancelled("Backtest job was stopped.")
+
+
 def submit_backtest_job(config: BacktestConfig) -> dict[str, Any]:
     job_id = uuid.uuid4().hex
     path = job_dir(config.output_root, job_id)
@@ -122,6 +137,18 @@ def submit_backtest_job(config: BacktestConfig) -> dict[str, Any]:
     return payload
 
 
+def cancel_backtest_job(output_root: Path, job_id: str) -> dict[str, Any]:
+    path = job_dir(output_root, job_id)
+    payload = read_job(path)
+    if not payload:
+        return {}
+    if str(payload.get("status") or "").lower() in {"complete", "failed", "cancelled"}:
+        return payload
+    cancel_file(path).write_text(utc_now(), encoding="utf-8")
+    append_event(path, {"event": "cancel_requested", "phase": "cancel", "status": "canceling"})
+    return update_job(path, status="canceling")
+
+
 def get_backtest_status(output_root: Path, job_id: str) -> dict[str, Any]:
     path = job_dir(output_root, job_id)
     payload = read_job(path)
@@ -137,4 +164,3 @@ def list_backtest_jobs(output_root: Path) -> list[dict[str, Any]]:
         return []
     jobs = [read_job(path) for path in root.iterdir() if path.is_dir() and job_file(path).exists()]
     return sorted(jobs, key=lambda item: str(item.get("created_at") or ""), reverse=True)
-
