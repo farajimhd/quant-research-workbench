@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict
 from datetime import datetime
+from math import ceil
 from typing import Protocol
 
 import polars as pl
 
 from src.backtest.config import BacktestConfig
-from src.backtest.data.minute_bars import DayFrames, available_session_dates, load_day_frames
+from src.backtest.data.minute_bars import DayFrames, available_session_dates, load_day_frames, timeframe_minutes
 from src.backtest.equity_candles import build_portfolio_candles, default_portfolio_candle_timeframe
 from src.backtest.fills import BarFillModel
 from src.backtest.metrics import compute_summary
@@ -78,22 +79,69 @@ class BacktestEngine:
                     "requested_end_date": self.config.end_date.isoformat(),
                     "scheduled_sessions": [session.isoformat() for session in sessions],
                     "total_sessions": len(sessions),
+                    "progress_kind": "bars",
+                    "progress_unit": requirements.event_timeframe,
+                    "processed_event_bars": 0,
+                    "total_event_bars": self._expected_event_bar_count(sessions, requirements),
                 }
             )
             write_run_metadata(run_dir, metadata)
+            self._emit_progress(
+                progress_callback,
+                {
+                    "event": "run_progress_initialized",
+                    "phase": "backtest",
+                    "status": "running",
+                    "run_dir": str(run_dir),
+                    "progress_kind": metadata["progress_kind"],
+                    "progress_unit": metadata["progress_unit"],
+                    "processed_event_bars": 0,
+                    "total_event_bars": metadata["total_event_bars"],
+                    "completed_sessions": 0,
+                    "total_sessions": len(sessions),
+                },
+            )
             logging.info("Running %s sessions", len(sessions))
 
+            processed_event_bars = 0
+            total_event_bars = int(metadata["total_event_bars"])
             for index, session_date in enumerate(sessions, start=1):
                 day_start_equity = self.portfolio.total_equity()
                 frames = load_day_frames(self.config, session_date, requirements)
                 event_frame = self.strategy.prepare_day(frames, self.portfolio)
                 event_frame = event_frame.sort(["bar_time_market", "ticker"])
+                session_total_bars = self._event_bar_count(event_frame)
+                remaining_sessions = len(sessions) - index
+                total_event_bars = max(
+                    total_event_bars,
+                    processed_event_bars + session_total_bars + self._expected_bars_per_session(requirements) * remaining_sessions,
+                )
 
                 if self.config.save_symbol_bars:
                     self.symbol_bar_rows.extend(self._symbol_bar_rows(event_frame, session_date))
 
                 last_timestamp = None
                 latest_bars: dict[str, dict] = {}
+                session_processed_bars = 0
+                self._emit_progress(
+                    progress_callback,
+                    {
+                        "event": "session_started",
+                        "phase": "backtest",
+                        "status": "running",
+                        "run_dir": str(run_dir),
+                        "progress_kind": "bars",
+                        "progress_unit": requirements.event_timeframe,
+                        "processed_event_bars": processed_event_bars,
+                        "total_event_bars": total_event_bars,
+                        "completed_sessions": index - 1,
+                        "total_sessions": len(sessions),
+                        "session_date": session_date.isoformat(),
+                        "current_session": session_date.isoformat(),
+                        "current_session_processed_bars": 0,
+                        "current_session_total_bars": session_total_bars,
+                    },
+                )
 
                 for timestamp, updates in self._timestamp_slices(event_frame):
                     last_timestamp = timestamp
@@ -118,6 +166,29 @@ class BacktestEngine:
                     )
                     self._handle_requests(timestamp, requests, fresh_bars)
                     self._record_portfolio(timestamp, latest_bars)
+                    processed_event_bars += 1
+                    session_processed_bars += 1
+                    total_event_bars = max(total_event_bars, processed_event_bars)
+                    if self._should_emit_bar_progress(session_processed_bars, session_total_bars):
+                        self._emit_progress(
+                            progress_callback,
+                            {
+                                "event": "bar_progress",
+                                "phase": "backtest",
+                                "status": "running",
+                                "run_dir": str(run_dir),
+                                "progress_kind": "bars",
+                                "progress_unit": requirements.event_timeframe,
+                                "processed_event_bars": processed_event_bars,
+                                "total_event_bars": total_event_bars,
+                                "completed_sessions": index - 1,
+                                "total_sessions": len(sessions),
+                                "current_session": session_date.isoformat(),
+                                "current_bar_time": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
+                                "current_session_processed_bars": session_processed_bars,
+                                "current_session_total_bars": session_total_bars,
+                            },
+                        )
 
                 if last_timestamp is not None:
                     self._handle_requests(
@@ -148,6 +219,10 @@ class BacktestEngine:
                         "status": "running",
                         "completed_sessions": index,
                         "total_sessions": len(sessions),
+                        "processed_event_bars": processed_event_bars,
+                        "total_event_bars": total_event_bars,
+                        "progress_kind": "bars",
+                        "progress_unit": requirements.event_timeframe,
                         "latest_session": session_date.isoformat(),
                         "latest_daily_summary": dict(self.daily_rows[-1]),
                     }
@@ -157,10 +232,37 @@ class BacktestEngine:
                 self._write_artifacts(run_dir, metadata["summary"])
 
                 if progress_callback:
-                    progress_callback(session_date, dict(self.daily_rows[-1]), run_dir)
+                    self._emit_progress(
+                        progress_callback,
+                        {
+                            "event": "session_complete",
+                            "phase": "backtest",
+                            "status": "running",
+                            "run_dir": str(run_dir),
+                            "progress_kind": "bars",
+                            "progress_unit": requirements.event_timeframe,
+                            "processed_event_bars": processed_event_bars,
+                            "total_event_bars": total_event_bars,
+                            "completed_sessions": index,
+                            "total_sessions": len(sessions),
+                            "current_session": session_date.isoformat(),
+                            "current_session_processed_bars": session_processed_bars,
+                            "current_session_total_bars": session_total_bars,
+                            "session_date": session_date.isoformat(),
+                            "daily_summary": dict(self.daily_rows[-1]),
+                        },
+                    )
 
             summary = self._summary(run_dir)
-            metadata.update({"status": "complete", "completed_at": datetime.now().isoformat(timespec="seconds"), "summary": summary})
+            metadata.update(
+                {
+                    "status": "complete",
+                    "completed_at": datetime.now().isoformat(timespec="seconds"),
+                    "processed_event_bars": processed_event_bars,
+                    "total_event_bars": max(total_event_bars, processed_event_bars),
+                    "summary": summary,
+                }
+            )
             write_run_metadata(run_dir, metadata)
             self._write_artifacts(run_dir, summary)
             return {"run_dir": str(run_dir), "summary": summary}
@@ -175,6 +277,28 @@ class BacktestEngine:
         for key, frame in event_frame.partition_by("bar_time_market", as_dict=True, maintain_order=True).items():
             timestamp = key[0] if isinstance(key, tuple) else key
             yield timestamp, frame
+
+    def _expected_event_bar_count(self, sessions: list, requirements: DataRequirements) -> int:
+        return max(1, len(sessions) * self._expected_bars_per_session(requirements))
+
+    def _expected_bars_per_session(self, requirements: DataRequirements) -> int:
+        minutes = max(1, timeframe_minutes(requirements.event_timeframe))
+        session_minutes = max(1, self.config.session_end_minute - self.config.session_start_minute)
+        return max(1, ceil(session_minutes / minutes))
+
+    def _event_bar_count(self, event_frame: pl.DataFrame) -> int:
+        if event_frame.is_empty() or "bar_time_market" not in event_frame.columns:
+            return 0
+        return int(event_frame.select(pl.col("bar_time_market").n_unique()).item())
+
+    def _should_emit_bar_progress(self, session_processed_bars: int, session_total_bars: int) -> bool:
+        if session_processed_bars <= 0:
+            return False
+        return session_processed_bars == session_total_bars or session_processed_bars % 10 == 0
+
+    def _emit_progress(self, progress_callback, payload: dict) -> None:
+        if progress_callback:
+            progress_callback(payload)
 
     def _handle_requests(self, timestamp: datetime, requests: list[OrderRequest], bars_by_symbol: dict[str, dict]) -> None:
         for request in requests:

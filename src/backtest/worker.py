@@ -14,18 +14,27 @@ def run_job(path: Path) -> int:
     config = BacktestConfig.from_dict(payload["config"])
     update_job(path, status="running", started_at=payload.get("started_at") or utc_now())
 
-    def on_progress(session_date, daily_summary, run_dir) -> None:
-        append_event(
-            path,
-            {
+    def on_progress(*args) -> None:
+        if len(args) == 1 and isinstance(args[0], dict):
+            payload = dict(args[0])
+            update_progress_job(path, payload)
+            if payload.get("event") in {"run_progress_initialized", "session_started", "session_complete"}:
+                append_event(path, payload)
+            return
+        if len(args) == 3:
+            session_date, daily_summary, run_dir = args
+            event = {
                 "event": "session_complete",
                 "phase": "backtest",
                 "status": "running",
                 "session_date": str(session_date),
                 "daily_summary": daily_summary,
                 "run_dir": str(run_dir),
-            },
-        )
+            }
+            update_progress_job(path, event)
+            append_event(path, event)
+            return
+        raise TypeError(f"Unsupported progress payload: {args!r}")
 
     try:
         append_event(path, {"event": "job_started", "phase": "backtest", "status": "running"})
@@ -48,6 +57,34 @@ def run_job(path: Path) -> int:
         return 1
 
 
+def update_progress_job(path: Path, payload: dict) -> None:
+    update = {
+        key: payload[key]
+        for key in (
+            "run_dir",
+            "status",
+            "progress_kind",
+            "progress_unit",
+            "processed_event_bars",
+            "total_event_bars",
+            "completed_sessions",
+            "total_sessions",
+            "latest_session",
+            "current_session",
+            "current_bar_time",
+            "current_session_processed_bars",
+            "current_session_total_bars",
+        )
+        if key in payload
+    }
+    if "session_date" in payload:
+        update["latest_session"] = str(payload["session_date"])
+    if "daily_summary" in payload:
+        update["latest_daily_summary"] = payload["daily_summary"]
+    if update:
+        update_job(path, **update)
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Usage: python -m src.backtest.worker <job_dir>")
@@ -56,4 +93,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

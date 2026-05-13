@@ -973,7 +973,8 @@ function BacktestJobPanel({
   const events = Array.isArray(job?.events) ? (job?.events as Record<string, unknown>[]) : [];
   const result = job?.result && typeof job.result === "object" ? job.result as Record<string, unknown> : null;
   const resultRunDir = String(result?.run_dir ?? "");
-  const latestRunDir = resultRunDir || [...events].reverse().map((event) => String(event.run_dir ?? "")).find(Boolean) || "";
+  const jobRunDir = String(job?.run_dir ?? "");
+  const latestRunDir = resultRunDir || jobRunDir || [...events].reverse().map((event) => String(event.run_dir ?? "")).find(Boolean) || "";
   const latestRunId = latestRunDir ? latestRunDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "" : "";
   const jobConfig = job?.config && typeof job.config === "object" ? job.config as Record<string, unknown> : null;
   const [detail, setDetail] = useState<RunDetailPayload | null>(null);
@@ -1032,14 +1033,15 @@ function BacktestJobPanel({
             <ProgressMeter
               done={progress.done}
               elapsed_sec={0}
-              label="Backtest progress"
+              label={progress.label}
               progress={progress.percent}
               status={progress.meterStatus}
               total={progress.total}
             />
             <NewRunMetricStrip metrics={metrics} />
             <div className="toolbar">
-              <span className="meta-tag">{progress.done}/{progress.total} sessions</span>
+              <span className="meta-tag">{formatNumber(progress.done)}/{formatNumber(progress.total)} {progress.unitLabel}</span>
+              {progress.currentSession ? <span className="meta-tag">{progress.currentSession}</span> : null}
               {latestRunDir ? <span className="meta-tag">{latestRunDir}</span> : null}
             </div>
             {detailError ? <div className="error-panel">{detailError}</div> : null}
@@ -1063,20 +1065,43 @@ function BacktestJobPanel({
 
 function buildBacktestProgress(job: Record<string, unknown> | null, detail: RunDetailPayload | null, config: StrategyConfig) {
   const status = String(job?.status ?? detail?.metadata.status ?? "not started").replaceAll("_", " ");
-  const eventCount = Array.isArray(job?.events) ? (job?.events as unknown[]).filter(Boolean).length : 0;
-  const completed = Number(detail?.metadata.completed_sessions ?? eventCount);
-  const totalFromMetadata = Number(detail?.metadata.total_sessions ?? 0);
-  const total = totalFromMetadata > 0 ? totalFromMetadata : estimateCalendarDays(config.start_date, config.end_date);
-  const done = Math.min(total, Math.max(0, Number.isFinite(completed) ? completed : 0));
   const normalizedStatus = status.toLowerCase();
+  const barDone = finiteNumber(job?.processed_event_bars ?? detail?.metadata.processed_event_bars);
+  const barTotal = finiteNumber(job?.total_event_bars ?? detail?.metadata.total_event_bars);
+  if (barTotal > 0) {
+    const done = Math.min(barTotal, Math.max(0, barDone));
+    return {
+      currentSession: String(job?.current_session ?? detail?.metadata.latest_session ?? ""),
+      done,
+      label: "Backtest bar progress",
+      meterStatus: normalizedStatus === "not started" ? "queued" : status,
+      percent: normalizedStatus.includes("complete") ? 100 : (done / barTotal) * 100,
+      status,
+      total: Math.max(1, barTotal),
+      unitLabel: `${String(job?.progress_unit ?? detail?.metadata.progress_unit ?? "event")} bars`
+    };
+  }
+  const eventCount = Array.isArray(job?.events) ? (job?.events as unknown[]).filter(Boolean).length : 0;
+  const completed = finiteNumber(detail?.metadata.completed_sessions ?? eventCount);
+  const totalFromMetadata = finiteNumber(detail?.metadata.total_sessions);
+  const total = totalFromMetadata > 0 ? totalFromMetadata : estimateCalendarDays(config.start_date, config.end_date);
+  const done = Math.min(total, Math.max(0, completed));
   const percent = normalizedStatus.includes("complete") ? 100 : total > 0 ? (done / total) * 100 : 0;
   return {
+    currentSession: String(job?.current_session ?? detail?.metadata.latest_session ?? ""),
     done,
+    label: "Backtest session progress",
     meterStatus: normalizedStatus === "not started" ? "queued" : status,
     percent,
     status,
-    total: Math.max(1, total)
+    total: Math.max(1, total),
+    unitLabel: "sessions"
   };
+}
+
+function finiteNumber(value: unknown): number {
+  const numeric = Number(value ?? 0);
+  return Number.isFinite(numeric) ? numeric : 0;
 }
 
 function estimateCalendarDays(start: string, end: string) {
