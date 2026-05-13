@@ -6317,8 +6317,9 @@ button {
   grid-template-columns: minmax(260px, 0.75fr) minmax(0, 1.25fr);
   gap: 12px;
   min-width: 0;
-  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  border: 0;
   border-left-width: 4px;
+  border-left-style: solid;
   border-radius: 9px;
   background: color-mix(in srgb, var(--card) 86%, var(--surface));
   padding: 11px 12px;
@@ -6397,7 +6398,7 @@ button {
   min-width: 0;
   align-items: baseline;
   gap: 7px;
-  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border: 0;
   border-radius: 999px;
   background: color-mix(in srgb, var(--card) 74%, var(--surface));
   padding: 5px 8px;
@@ -6431,8 +6432,15 @@ button {
   min-width: 0;
 }
 
+.observability-evidence-block {
+  border: 0;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 54%, var(--card));
+  padding: 8px;
+}
+
 .observability-field-group {
-  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  border: 0;
   border-radius: 9px;
   background: color-mix(in srgb, var(--card) 90%, var(--surface));
   padding: 10px;
@@ -6468,7 +6476,7 @@ button {
   width: 100%;
   align-items: center;
   gap: 7px;
-  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border: 0;
   border-radius: 7px;
   background: color-mix(in srgb, var(--card) 68%, var(--surface));
   color: var(--foreground);
@@ -6521,7 +6529,7 @@ button {
   display: grid;
   gap: 8px;
   min-width: 0;
-  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  border: 0;
   border-radius: 8px;
   background: color-mix(in srgb, var(--card) 88%, var(--surface));
   padding: 9px;
@@ -6569,7 +6577,7 @@ button {
   min-width: 0;
   align-items: baseline;
   gap: 6px;
-  border: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+  border: 0;
   border-radius: 999px;
   background: color-mix(in srgb, var(--card) 72%, var(--surface));
   padding: 4px 7px;
@@ -6602,11 +6610,15 @@ button {
   gap: 8px;
 }
 
+.observability-detail-grid .observability-state-card-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .observability-state-card {
   display: grid;
   gap: 8px;
   min-width: 0;
-  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  border: 0;
   border-radius: 8px;
   background: color-mix(in srgb, var(--card) 88%, var(--surface));
   padding: 9px;

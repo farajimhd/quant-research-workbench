@@ -1243,9 +1243,9 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
           <ObservationDecisionPanel action={action} fields={primaryFields} />
           <div className="observability-detail-grid">
             {inputFields.length ? <ObservationFieldGroup fields={inputFields} title="Inputs & Thresholds" /> : null}
-            {stateFields.length ? <ObservationFieldGroup fields={stateFields} title="Strategy State" /> : null}
+            <ObservationStateSnapshots rows={evidence.stateRows} />
           </div>
-          <ObservationStateSnapshots rows={evidence.stateRows} />
+          {stateFields.length ? <ObservationFieldGroup fields={stateFields} title="Strategy State" /> : null}
           <ObservationEvidenceTable
             description="Strategy-level skip or rejection rows for the same ticker and session."
             presentation="cards"
