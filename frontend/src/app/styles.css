@@ -6553,6 +6553,11 @@ button {
   padding: 5px 8px;
 }
 
+.observability-fact:has(.observability-tag-popover) {
+  overflow: visible;
+  z-index: 35;
+}
+
 .observability-fact > span:first-child {
   flex: 0 0 auto;
   color: var(--observability-label);
@@ -6761,6 +6766,11 @@ button {
   padding: 4px 7px;
 }
 
+.observability-evidence-card-field:has(.observability-tag-popover) {
+  overflow: visible;
+  z-index: 35;
+}
+
 .observability-evidence-card-field > span:first-child {
   overflow: hidden;
   color: var(--observability-label);
@@ -6771,7 +6781,7 @@ button {
   white-space: nowrap;
 }
 
-.observability-evidence-card-field > span:last-child {
+.observability-evidence-card-field > span:last-child:not(.observability-structured-tag) {
   min-width: 0;
   overflow: hidden;
   color: var(--observability-value);

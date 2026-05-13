@@ -1900,7 +1900,7 @@ function observationTagDetailSegments(field: ObservationFieldValue): Array<{ lab
 function observationFieldIsStructuredTag(field: ObservationFieldValue): boolean {
   const normalized = `${field.key} ${field.label}`.toLowerCase();
   const formattedValue = formatObservationValue(field.value, field.label);
-  return /\btag\b/.test(normalized) && formattedValue.includes("|");
+  return normalized.includes("tag") && formattedValue.includes("|");
 }
 
 function findObservationTagSegmentDivider(segment: string) {
