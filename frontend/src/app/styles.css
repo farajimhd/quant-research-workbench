@@ -6076,7 +6076,7 @@ button {
 
 .observability-action-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .observability-load-more {
@@ -6114,59 +6114,64 @@ button {
 .observability-action-card {
   flex: 0 0 auto;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  border-left-width: 3px;
+  border-radius: 10px;
   background: var(--card);
-  box-shadow: none;
+  box-shadow: 0 1px 0 rgb(15 23 42 / 0.03);
 }
 
 .observability-action-card[data-tone="success"] {
-  border-left: 4px solid var(--badge-success-fg);
+  border-left-color: var(--badge-success-fg);
 }
 
 .observability-action-card[data-tone="danger"] {
-  border-left: 4px solid var(--badge-danger-fg);
+  border-left-color: var(--badge-danger-fg);
 }
 
 .observability-action-card[data-tone="warning"] {
-  border-left: 4px solid var(--badge-warning-fg);
+  border-left-color: var(--badge-warning-fg);
 }
 
 .observability-action-card[data-tone="info"] {
-  border-left: 4px solid var(--badge-info-fg);
+  border-left-color: var(--badge-info-fg);
 }
 
 .observability-action-header {
   display: grid;
   width: 100%;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   border: 0;
-  background: color-mix(in oklab, var(--card) 82%, var(--surface));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--surface) 46%, transparent), transparent 72%);
   color: var(--foreground);
   cursor: pointer;
-  padding: 12px 14px;
+  padding: 9px 11px;
   text-align: left;
 }
 
 .observability-action-card.open .observability-action-header {
-  background: var(--card);
+  background: color-mix(in srgb, var(--card) 90%, var(--surface));
 }
 
 .observability-step-badge {
-  display: grid;
-  width: 54px;
-  height: 44px;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--surface);
+  display: inline-flex;
+  min-width: 54px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card) 72%, var(--surface));
+  padding: 0 8px;
 }
 
 .observability-step-badge span {
   color: var(--muted-foreground);
-  font-size: 9px;
-  font-weight: 800;
+  font-size: 10px;
+  font-weight: 700;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -6174,15 +6179,15 @@ button {
 .observability-step-badge strong {
   color: var(--foreground);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 650;
   line-height: 1;
 }
 
 .observability-action-toggle {
-  display: inline-flex;
-  width: 26px;
-  height: 26px;
+  display: none;
+  width: 22px;
+  height: 22px;
   align-items: center;
   justify-content: center;
   border-radius: 999px;
@@ -6192,27 +6197,30 @@ button {
 
 .observability-action-title {
   display: grid;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
 }
 
 .observability-action-title strong {
-  font-size: 15px;
+  overflow: hidden;
+  font-size: 13.5px;
   font-weight: 650;
   line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .observability-action-title small,
 .observability-action-eyebrow {
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 550;
 }
 
 .observability-action-eyebrow {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 6px;
 }
 
 .observability-action-eyebrow span + span {
@@ -6224,34 +6232,34 @@ button {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
 }
 
 .observability-action-body {
   display: grid;
-  gap: 14px;
-  border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 38%, transparent);
-  padding: 14px;
+  gap: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  background: color-mix(in srgb, var(--surface) 30%, transparent);
+  padding: 10px;
 }
 
 .observability-action-overview,
 .observability-field-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 7px;
 }
 
 .observability-field {
   display: grid;
   align-content: start;
-  gap: 5px;
+  gap: 3px;
   min-width: 0;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
-  background: color-mix(in srgb, var(--card) 88%, var(--surface));
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  background: color-mix(in srgb, var(--card) 92%, var(--surface));
   box-shadow: 0 1px 0 rgb(15 23 42 / 0.03);
-  padding: 10px 11px;
+  padding: 7px 8px;
 }
 
 .observability-field.wide {
@@ -6263,7 +6271,7 @@ button {
 .observability-evidence-block h4,
 .observability-state-snapshots h4 {
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 650;
   letter-spacing: 0;
   margin: 0;
@@ -6273,7 +6281,7 @@ button {
 .observability-field-value {
   overflow-wrap: anywhere;
   color: var(--foreground);
-  font-size: 13.5px;
+  font-size: 12.5px;
   font-weight: 550;
   line-height: 1.35;
 }
@@ -6282,15 +6290,15 @@ button {
 .observability-evidence-block,
 .observability-state-snapshots {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
 .observability-field-group {
-  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: 8px;
   background: var(--card);
-  padding: 12px;
+  padding: 9px;
 }
 
 .observability-section-header {
@@ -6316,8 +6324,8 @@ button {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1px;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 7px;
   background: var(--border);
 }
 
@@ -6331,20 +6339,20 @@ button {
 .observability-field-row span {
   min-width: 0;
   overflow-wrap: anywhere;
-  padding: 8px 10px;
+  padding: 6px 8px;
   line-height: 1.35;
 }
 
 .observability-field-row span:first-child {
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
 }
 
 .observability-field-row span:last-child {
   color: var(--foreground);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -6356,13 +6364,13 @@ button {
   display: flex;
   width: 100%;
   align-items: center;
-  gap: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--card) 68%, var(--surface));
   color: var(--foreground);
   cursor: pointer;
-  padding: 9px 10px;
+  padding: 7px 8px;
   text-align: left;
 }
 
@@ -6383,37 +6391,37 @@ button {
 
 .observability-evidence-title > span {
   flex: 1 1 auto;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 650;
 }
 
 .observability-evidence-title small {
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 500;
   line-height: 1.35;
 }
 
 .observability-evidence-header > small {
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
 }
 
 .observability-evidence-card-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .observability-evidence-card {
   display: grid;
-  gap: 11px;
+  gap: 8px;
   min-width: 0;
-  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  border-radius: 8px;
   background: var(--card);
-  padding: 12px;
+  padding: 9px;
 }
 
 .observability-evidence-card-header {
@@ -6432,7 +6440,7 @@ button {
 .observability-evidence-card-title strong {
   overflow: hidden;
   color: var(--foreground);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 650;
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -6441,29 +6449,29 @@ button {
 
 .observability-evidence-card-title small {
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 500;
 }
 
 .observability-evidence-card-fields {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .observability-evidence-card-field {
   display: grid;
   min-width: 0;
-  gap: 3px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
-  padding: 8px 9px;
+  gap: 2px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  padding: 6px 7px;
 }
 
 .observability-evidence-card-field span:first-child {
   overflow: hidden;
   color: var(--muted-foreground);
-  font-size: 10.5px;
+  font-size: 9.5px;
   font-weight: 600;
   text-overflow: ellipsis;
   text-transform: uppercase;
@@ -6474,7 +6482,7 @@ button {
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--foreground);
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 500;
   line-height: 1.3;
 }
@@ -6482,17 +6490,17 @@ button {
 .observability-state-card-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .observability-state-card {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
-  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  border-radius: 8px;
   background: var(--card);
-  padding: 12px;
+  padding: 9px;
 }
 
 .observability-state-card-header {
@@ -6504,14 +6512,14 @@ button {
 
 .observability-state-card-header span {
   color: var(--foreground);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 650;
   text-transform: capitalize;
 }
 
 .observability-state-card-header small {
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 500;
 }
 
@@ -6556,11 +6564,12 @@ button {
 .observability-card-count {
   flex: 0 0 auto;
   border-radius: 999px;
-  background: var(--secondary);
-  color: var(--secondary-foreground);
-  font-size: 12px;
-  font-weight: 650;
-  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  background: color-mix(in srgb, var(--surface) 64%, transparent);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 7px;
 }
 
 .observability-card-body {
@@ -6598,7 +6607,7 @@ button {
   }
 
   .observability-step-badge {
-    width: 48px;
+    min-width: 48px;
   }
 
   .observability-action-meta {
