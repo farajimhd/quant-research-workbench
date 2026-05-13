@@ -46,7 +46,7 @@ from src.data_provider.config import (
 from src.data_provider.jobs import cancel_build_job, get_build_status, list_build_jobs, submit_build_job
 from src.data_provider.manifest import read_manifest
 from src.strategies.orb_5m_momentum.config import OrbMomentumConfig
-from src.strategies.registry import available_strategies, create_strategy
+from src.strategies.registry import available_strategies, create_strategy, default_strategy_version
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -77,6 +77,7 @@ class BuildSubmit(ScopeUpdate):
 
 class BacktestSubmit(BaseModel):
     strategy_name: str
+    strategy_version: str = "v1"
     run_name: str = "React app run"
     start_date: date
     end_date: date
@@ -238,6 +239,7 @@ def strategy_default_config(strategy_name: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Unknown strategy")
     return {
         "strategy_name": strategy_name,
+        "strategy_version": default_strategy_version(strategy_name),
         "run_name": "React app run",
         "start_date": "2024-05-01",
         "end_date": "2024-05-02",
@@ -264,6 +266,7 @@ def backtest_runs(output_root: str = str(DEFAULT_OUTPUT_ROOT), strategy_name: st
                 "run_dir": str(path),
                 "run_name": metadata.get("run_name", path.name),
                 "strategy_name": metadata.get("strategy_name", config.get("strategy_name")),
+                "strategy_version": metadata.get("strategy_version", config.get("strategy_version", "v1")),
                 "status": metadata.get("status", "unknown"),
                 "created_at": metadata.get("created_at"),
                 "date_range": f"{config.get('start_date', '')} to {config.get('end_date', '')}",
@@ -280,7 +283,7 @@ def start_backtest(payload: BacktestSubmit) -> dict[str, Any]:
     raw = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     config = BacktestConfig.from_dict({**raw, "created_by_app": True})
     try:
-        strategy = create_strategy(config.strategy_name, config.strategy_params)
+        strategy = create_strategy(config.strategy_name, config.strategy_params, config.strategy_version)
         from src.backtest.data.minute_bars import available_session_dates
 
         available_session_dates(config, strategy.data_requirements())

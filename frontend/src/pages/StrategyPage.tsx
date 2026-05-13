@@ -23,6 +23,7 @@ type RunRow = {
   run_id: string;
   run_name: string;
   strategy_name: string;
+  strategy_version: string;
   status: string;
   created_at: string;
   date_range: string;
@@ -33,6 +34,7 @@ type RunRow = {
 
 type StrategyConfig = {
   strategy_name: string;
+  strategy_version: string;
   run_name: string;
   start_date: string;
   end_date: string;
@@ -61,6 +63,7 @@ const strategyName = "orb_5m_momentum";
 
 const RUN_PARAMETER_HELP: Record<string, string> = {
   run_name: "A readable label for this backtest run. It is used in saved run folders and run history.",
+  strategy_version: "Version of the strategy implementation used for this run. It is saved with the run metadata.",
   output_root: "Folder where backtest outputs, summaries, logs, and tables are saved.",
   start_date: "First market session included in the backtest range.",
   end_date: "Last market session included in the backtest range.",
@@ -201,6 +204,7 @@ function RunsPanel({
             <div className="muted">{run.date_range} | {run.created_at}</div>
             <div className="toolbar" style={{ marginBottom: 0 }}>
               <SemanticBadge tone={toneForStatus(run.status)}>{run.status}</SemanticBadge>
+              <span className="meta-tag">{run.strategy_version || "v1"}</span>
               <span className="meta-tag">{formatPct(run.return_pct)}</span>
               <span className="meta-tag">{formatMoney(run.total_pnl)}</span>
               <span className="meta-tag">{run.trade_count} trades</span>
@@ -324,6 +328,7 @@ function BacktestParameterEditor({ config, onChange }: { config: StrategyConfig;
     <div className="parameter-edit-stack">
       <EditSection description="These values identify the run and choose the inclusive backtest date range." title="Identity & Range">
         <EditField help={RUN_PARAMETER_HELP.run_name} label="Run name" value={config.run_name} onChange={(value) => onChange({ ...config, run_name: value })} />
+        <EditField help={RUN_PARAMETER_HELP.strategy_version} label="Strategy version" value={config.strategy_version || "v1"} onChange={(value) => onChange({ ...config, strategy_version: value })} />
         <EditField help={RUN_PARAMETER_HELP.start_date} label="Start" type="date" value={config.start_date} onChange={(value) => onChange({ ...config, start_date: value })} />
         <EditField help={RUN_PARAMETER_HELP.end_date} label="End" type="date" value={config.end_date} onChange={(value) => onChange({ ...config, end_date: value })} />
         <EditBooleanField help={RUN_PARAMETER_HELP.save_symbol_bars} label="Save symbol bars" value={config.save_symbol_bars} onChange={(value) => onChange({ ...config, save_symbol_bars: value })} />

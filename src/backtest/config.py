@@ -23,6 +23,7 @@ class BacktestConfig:
     strategy_name: str
     start_date: date
     end_date: date
+    strategy_version: str = "v1"
     run_name: str = "Untitled run"
     data_root: Path = DEFAULT_DATA_ROOT
     processed_data_root: Path = DEFAULT_PROCESSED_DATA_ROOT
@@ -45,6 +46,7 @@ class BacktestConfig:
         data["processed_data_root"] = Path(data.get("processed_data_root", DEFAULT_PROCESSED_DATA_ROOT))
         data["output_root"] = Path(data.get("output_root", DEFAULT_OUTPUT_ROOT))
         data["strategy_params"] = dict(data.get("strategy_params", {}))
+        data["strategy_version"] = str(data.get("strategy_version") or "v1").strip()
         data["run_name"] = str(data.get("run_name") or "Untitled run").strip()
         data["created_by_app"] = bool(data.get("created_by_app", False))
         return cls(**data)
@@ -52,6 +54,7 @@ class BacktestConfig:
     def to_dict(self) -> dict[str, Any]:
         return {
             "strategy_name": self.strategy_name,
+            "strategy_version": self.strategy_version,
             "run_name": self.run_name,
             "start_date": self.start_date.isoformat(),
             "end_date": self.end_date.isoformat(),
@@ -70,6 +73,6 @@ class BacktestConfig:
 
     @property
     def run_slug(self) -> str:
-        raw = f"{self.strategy_name}_{self.run_name}".lower()
+        raw = f"{self.strategy_name}_{self.strategy_version}_{self.run_name}".lower()
         slug = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
         return slug or self.strategy_name
