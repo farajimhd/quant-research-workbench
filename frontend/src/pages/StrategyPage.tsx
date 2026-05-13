@@ -8,6 +8,7 @@ import { DataTable } from "../app/components/DataTable";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
+import { ProgressMeter } from "../app/components/Progress";
 import { SemanticBadge, toneForStatus } from "../app/components/SemanticBadge";
 import { Tabs } from "../app/components/Tabs";
 import { formatMoney, formatNumber, formatPct } from "../app/format";
@@ -55,7 +56,7 @@ type NewRunMetric = {
   value: string;
 };
 
-const tabs = ["Runs", "New Run", "Strategy README"];
+const tabs = ["Backtest", "Runs", "Strategy README"];
 const strategyName = "orb_5m_momentum";
 
 const RUN_PARAMETER_HELP: Record<string, string> = {
@@ -163,8 +164,8 @@ export function StrategyPage() {
         description={strategy?.description ?? "Opening range momentum research strategy."}
       />
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+      {activeTab === "Backtest" && config ? <NewRunPanel config={config} onConfigChange={setConfig} onComplete={() => loadRuns(config.output_root)} /> : null}
       {activeTab === "Runs" && config ? <RunsPanel runs={runs} outputRoot={config.output_root} onOpen={setSelectedRun} onDeleted={() => loadRuns(config.output_root)} /> : null}
-      {activeTab === "New Run" && config ? <NewRunPanel config={config} onConfigChange={setConfig} onComplete={() => loadRuns(config.output_root)} /> : null}
       {activeTab === "Strategy README" ? (
         <div className="markdown-panel">
           <ReactMarkdown>{readme}</ReactMarkdown>
@@ -309,7 +310,7 @@ function NewRunPanel({
       </div>
 
       {error ? <div className="error-panel" style={{ marginTop: 12 }}>{error}</div> : null}
-      {job ? <BacktestJobPanel job={job} outputRoot={config.output_root} /> : null}
+      <BacktestJobPanel config={config} job={job} outputRoot={config.output_root} />
       {editing === "run" ? (
         <Modal title="Edit Backtest Parameters" onClose={() => setEditing(null)}>
           <BacktestParameterEditor config={draftConfig} onChange={setDraftConfig} />
@@ -734,32 +735,82 @@ function parseIsoDate(value: string): { date: Date; month: number; year: number 
   return { date: new Date(Date.UTC(year, month - 1, day)), month, year };
 }
 
-function BacktestJobPanel({ job, outputRoot }: { job: Record<string, unknown>; outputRoot: string }) {
-  const events = Array.isArray(job.events) ? (job.events as Record<string, unknown>[]) : [];
-  const result = job.result && typeof job.result === "object" ? job.result as Record<string, unknown> : null;
+function BacktestJobPanel({ config, job, outputRoot }: { config: StrategyConfig; job: Record<string, unknown> | null; outputRoot: string }) {
+  const events = Array.isArray(job?.events) ? (job?.events as Record<string, unknown>[]) : [];
+  const result = job?.result && typeof job.result === "object" ? job.result as Record<string, unknown> : null;
   const resultRunDir = String(result?.run_dir ?? "");
   const latestRunDir = resultRunDir || [...events].reverse().map((event) => String(event.run_dir ?? "")).find(Boolean) || "";
   const latestRunId = latestRunDir ? latestRunDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "" : "";
+  const [detail, setDetail] = useState<RunDetailPayload | null>(null);
+  const [tab, setTab] = useState("P/L Chart");
+
+  useEffect(() => {
+    if (!latestRunId) {
+      setDetail(null);
+      return;
+    }
+    api<RunDetailPayload>(`/api/backtests/runs/${latestRunId}${query({ output_root: outputRoot })}`).then(setDetail).catch(() => undefined);
+  }, [latestRunId, outputRoot, `${job?.status ?? "not-started"}-${events.length}`]);
+
+  const progress = buildBacktestProgress(job, detail, config);
+
   return (
     <section className="panel" style={{ marginTop: 16 }}>
-      <h2>Backtest Progress</h2>
+      <div className="toolbar" style={{ justifyContent: "space-between" }}>
+        <h2 style={{ margin: 0 }}>Backtest Results</h2>
+        <SemanticBadge tone={toneForStatus(progress.status)}>{progress.status}</SemanticBadge>
+      </div>
+      <ProgressMeter
+        done={progress.done}
+        elapsed_sec={0}
+        label="Backtest progress"
+        progress={progress.percent}
+        status={progress.meterStatus}
+        total={progress.total}
+      />
       <div className="toolbar">
-        <SemanticBadge tone={toneForStatus(String(job.status))}>{String(job.status)}</SemanticBadge>
+        <span className="meta-tag">{progress.done}/{progress.total} sessions</span>
         {latestRunDir ? <span className="meta-tag">{latestRunDir}</span> : null}
       </div>
-      {latestRunId ? <LiveRunPortfolioChart runId={latestRunId} outputRoot={outputRoot} refreshKey={`${job.status}-${events.length}`} /> : null}
-      <DataTable rows={events.map((event) => ({ session_date: event.session_date, status: event.status, run_dir: event.run_dir, ...((event.daily_summary as Record<string, unknown>) ?? {}) }))} />
-      {job.error ? <div className="error-panel">{String(job.error)}</div> : null}
+      <PnlCandleChart payload={detail?.portfolio_candles} title="Portfolio P/L Candles" />
+      <Tabs tabs={["Daily", "Trades", "Orders", "Fills", "Positions", "Scanner", "Rejected", "Progress Events", "Logs"]} active={tab} onChange={setTab} />
+      {tab === "Daily" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
+      {tab === "Trades" ? <DataTable rows={detail?.tables.trades.rows ?? []} /> : null}
+      {tab === "Orders" ? <DataTable rows={detail?.tables.orders.rows ?? []} /> : null}
+      {tab === "Fills" ? <DataTable rows={detail?.tables.fills.rows ?? []} /> : null}
+      {tab === "Positions" ? <DataTable rows={detail?.tables.positions.rows ?? []} /> : null}
+      {tab === "Scanner" ? <DataTable rows={detail?.tables.scanner.rows ?? []} /> : null}
+      {tab === "Rejected" ? <DataTable rows={detail?.tables.rejections.rows ?? []} /> : null}
+      {tab === "Progress Events" ? <DataTable rows={events.map((event) => ({ session_date: event.session_date, status: event.status, run_dir: event.run_dir, ...((event.daily_summary as Record<string, unknown>) ?? {}) }))} /> : null}
+      {tab === "Logs" ? <pre className="markdown-panel">{detail?.logs || "No logs yet."}</pre> : null}
+      {job?.error ? <div className="error-panel">{String(job.error)}</div> : null}
     </section>
   );
 }
 
-function LiveRunPortfolioChart({ runId, outputRoot, refreshKey }: { runId: string; outputRoot: string; refreshKey: string }) {
-  const [detail, setDetail] = useState<RunDetailPayload | null>(null);
-  useEffect(() => {
-    api<RunDetailPayload>(`/api/backtests/runs/${runId}${query({ output_root: outputRoot })}`).then(setDetail).catch(() => undefined);
-  }, [runId, outputRoot, refreshKey]);
-  return <PnlCandleChart payload={detail?.portfolio_candles} title="Live P/L Candles" />;
+function buildBacktestProgress(job: Record<string, unknown> | null, detail: RunDetailPayload | null, config: StrategyConfig) {
+  const status = String(job?.status ?? detail?.metadata.status ?? "not started").replaceAll("_", " ");
+  const eventCount = Array.isArray(job?.events) ? (job?.events as unknown[]).filter(Boolean).length : 0;
+  const completed = Number(detail?.metadata.completed_sessions ?? eventCount);
+  const totalFromMetadata = Number(detail?.metadata.total_sessions ?? 0);
+  const total = totalFromMetadata > 0 ? totalFromMetadata : estimateCalendarDays(config.start_date, config.end_date);
+  const done = Math.min(total, Math.max(0, Number.isFinite(completed) ? completed : 0));
+  const normalizedStatus = status.toLowerCase();
+  const percent = normalizedStatus.includes("complete") ? 100 : total > 0 ? (done / total) * 100 : 0;
+  return {
+    done,
+    meterStatus: normalizedStatus === "not started" ? "queued" : status,
+    percent,
+    status,
+    total: Math.max(1, total)
+  };
+}
+
+function estimateCalendarDays(start: string, end: string) {
+  const startParts = parseIsoDate(start);
+  const endParts = parseIsoDate(end);
+  if (!startParts || !endParts) return 1;
+  return Math.max(1, Math.round((endParts.date.getTime() - startParts.date.getTime()) / 86_400_000) + 1);
 }
 
 function RunDetail({ runId, outputRoot, onClose }: { runId: string; outputRoot: string; onClose: () => void }) {
@@ -850,7 +901,7 @@ function PnlCandleChart({ payload, title }: { payload?: PortfolioCandlePayload |
   }, [candles]);
 
   return (
-    <section className="panel" style={{ marginTop: 16 }}>
+    <section style={{ marginTop: 16 }}>
       <div className="toolbar" style={{ justifyContent: "space-between" }}>
         <h2 style={{ margin: 0 }}>{title}</h2>
         <div className="toolbar" style={{ margin: 0 }}>
