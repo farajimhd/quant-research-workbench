@@ -5,7 +5,7 @@ Version 3 simplifies the setup scanner, but keeps the v2 entry, exit, stop, sizi
 ## Data Requirements
 
 - `1m` bars for each requested session
-- `1m` feature groups: `core`, `session`
+- `1m` feature groups: `core`, `session`, `momentum`
 - `5m` context feature groups: `momentum`
 
 It does not request prior daily context.
@@ -14,11 +14,21 @@ It does not request prior daily context.
 
 The strategy builds the opening box from the 09:30-09:35 one-minute bars. The scanner only filters for tradability using price, opening share volume, opening dollar volume, and a valid positive opening box range.
 
-Passing tickers are ranked by the completed `5m` MACD pressure available at the setup scan:
+The opening setup rank uses completed `1m` MACD pressure available at the setup scan:
 
 ```text
 macd_pressure_bps = sum((macd_line - macd_signal) / close * 10000)
 ```
+
+During the session, the live scanner is recalculated every minute from completed `1m` bars:
+
+```text
+cumulative_macd_pressure_bps = sum(1m macd_hist / close * 10000 from session start through the current bar)
+price_trend_bps = (current_close / opening_box_close - 1) * 10000
+trend_score = trend_macd_weight * cumulative_macd_pressure_bps + trend_price_weight * price_trend_bps
+```
+
+The live rank uses this dynamic `trend_score` as the scanner base, so a candidate can move up or down as the morning trend improves or fades.
 
 After the opening range is complete, live decisions wait for completed `1m` closes. The first possible entry/skip action is 09:36. From that point onward, entry/exit/stop behavior is inherited from v2:
 

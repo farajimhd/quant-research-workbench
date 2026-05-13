@@ -113,6 +113,8 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_opening_relative_volume: "Minimum opening relative volume required during setup scoring.",
   min_setup_score: "Minimum pre-entry setup score for a ticker to stay in the candidate list.",
   min_live_score: "Minimum live score required before the strategy can place an entry.",
+  trend_macd_weight: "Weight applied to cumulative 1-minute MACD pressure in the live scanner score.",
+  trend_price_weight: "Weight applied to price change since the opening box in the live scanner score.",
   watchlist_size: "Maximum number of candidate tickers carried from scan into live evaluation.",
   max_active_positions: "Maximum number of simultaneous open positions.",
   replacement_score_buffer: "Score advantage required before a new candidate can replace a weaker active idea.",
@@ -165,7 +167,7 @@ const STRATEGY_PARAMETER_GROUPS = [
   {
     title: "Scoring & Capacity",
     description: "Controls candidate ranking, live confirmation, and portfolio breadth.",
-    keys: ["min_setup_score", "min_live_score", "watchlist_size", "max_active_positions", "replacement_score_buffer"]
+    keys: ["min_setup_score", "min_live_score", "trend_macd_weight", "trend_price_weight", "watchlist_size", "max_active_positions", "replacement_score_buffer"]
   },
   {
     title: "Session Timing",
@@ -212,6 +214,8 @@ const IMPORTANT_STRATEGY_PARAMETER_KEYS = [
   "cash_reserve_pct",
   "min_setup_score",
   "min_live_score",
+  "trend_macd_weight",
+  "trend_price_weight",
   "entry_cutoff_minute",
   "min_risk_pct",
   "max_risk_pct"
@@ -1887,9 +1891,12 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "score_key",
   "setup_rank",
   "setup_score",
+  "trend_score",
   "macd_pressure_bps",
+  "cumulative_macd_pressure_bps",
   "opening_macd_pressure_bps",
   "session_macd_pressure_bps",
+  "price_trend_bps",
   "live_rank",
   "live_score",
   "scanner_status",

@@ -11,6 +11,8 @@ class OrbMomentumConfig:
     min_opening_volume: float = 50_000.0
     min_opening_dollar_volume: float = 250_000.0
     min_live_score: float = 55.0
+    trend_macd_weight: float = 1.0
+    trend_price_weight: float = 1.0
     watchlist_size: int = 100
     max_active_positions: int = 5
     replacement_score_buffer: float = 10.0
