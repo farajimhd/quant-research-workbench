@@ -1068,11 +1068,31 @@ button {
   gap: 18px;
 }
 
+.parameter-editor-shell .parameter-edit-stack {
+  margin-top: 18px;
+  gap: 12px;
+}
+
 .parameter-section + .parameter-section,
-.strategy-parameter-group + .strategy-parameter-group,
-.parameter-edit-section + .parameter-edit-section {
+.strategy-parameter-group + .strategy-parameter-group {
   border-top: 1px solid var(--border);
   padding-top: 18px;
+}
+
+.parameter-edit-section {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  padding: 14px;
+}
+
+.parameter-edit-section[data-emphasis="primary"] {
+  border-color: color-mix(in oklab, var(--info) 24%, var(--border));
+  background: linear-gradient(180deg, color-mix(in oklab, var(--info) 4%, var(--card)), var(--card) 56%);
+}
+
+.parameter-edit-section[data-emphasis="primary"] .parameter-edit-heading h3 {
+  color: var(--info);
 }
 
 .parameter-section h3,
@@ -1091,6 +1111,14 @@ button {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.parameter-edit-section[data-emphasis="primary"] .parameter-edit-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.parameter-edit-section[data-emphasis="primary"] .parameter-edit-grid > :first-child {
+  grid-column: span 2;
 }
 
 .parameter-grid > *,
@@ -1203,8 +1231,47 @@ button {
   margin-bottom: 12px;
 }
 
+.parameter-editor-shell .parameter-edit-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.parameter-editor-shell .parameter-edit-heading h3 {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+}
+
+.parameter-editor-shell .parameter-edit-heading p {
+  max-width: 620px;
+  margin-top: 0;
+  text-align: right;
+}
+
 .config-field > .parameter-label {
   margin-bottom: 2px;
+}
+
+.parameter-editor-shell .config-field {
+  gap: 7px;
+}
+
+.parameter-editor-shell .field input,
+.parameter-editor-shell .field select,
+.parameter-editor-shell .field textarea {
+  min-height: 40px;
+  border-color: color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-alt) 24%, var(--card));
+}
+
+.parameter-editor-shell .field input:focus,
+.parameter-editor-shell .field select:focus,
+.parameter-editor-shell .field textarea:focus {
+  border-color: color-mix(in oklab, var(--primary) 30%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 8%, transparent);
+  outline: none;
 }
 
 .config-checkbox-field {
@@ -1217,6 +1284,12 @@ button {
   border-radius: 8px;
   background: var(--card);
   padding: 8px 10px;
+}
+
+.parameter-editor-shell .config-checkbox-field {
+  min-height: 64px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-alt) 24%, var(--card));
 }
 
 .config-checkbox-field input {
@@ -4242,6 +4315,125 @@ button {
   font-size: 18px;
 }
 
+.parameter-modal-panel {
+  display: flex;
+  width: min(1040px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.parameter-modal-panel .modal-header {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--surface-alt) 35%, var(--card));
+  margin: 0;
+  padding: 16px 18px;
+}
+
+.parameter-modal-panel > .modal-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  background: color-mix(in oklab, var(--surface-alt) 28%, var(--card));
+  padding: 14px 18px;
+}
+
+.parameter-editor-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+}
+
+.parameter-editor-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.85fr);
+  gap: 18px;
+  align-items: stretch;
+  border: 1px solid color-mix(in oklab, var(--primary) 12%, var(--border));
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, color-mix(in oklab, var(--primary) 5%, transparent), transparent 44%),
+    color-mix(in oklab, var(--surface-alt) 42%, var(--card));
+  padding: 16px;
+}
+
+.parameter-editor-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.parameter-editor-icon {
+  display: inline-flex;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in oklab, var(--primary) 12%, transparent);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--primary);
+}
+
+.parameter-editor-title-row h3 {
+  margin: 1px 0 6px;
+  color: var(--foreground);
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.parameter-editor-title-row p {
+  max-width: 660px;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.parameter-editor-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.parameter-editor-summary-item {
+  min-width: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--card) 88%, transparent);
+  padding: 9px 10px;
+}
+
+.parameter-editor-summary-item span,
+.parameter-editor-summary-item b {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parameter-editor-summary-item span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.parameter-editor-summary-item b {
+  margin-top: 4px;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .chart-context-modal-panel {
   display: flex;
   width: min(1500px, calc(100vw - 40px));
@@ -5559,6 +5751,26 @@ button {
   .phase-grid,
   .schema-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .parameter-editor-hero,
+  .parameter-editor-summary,
+  .parameter-edit-section[data-emphasis="primary"] .parameter-edit-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .parameter-edit-section[data-emphasis="primary"] .parameter-edit-grid > :first-child {
+    grid-column: auto;
+  }
+
+  .parameter-editor-shell .parameter-edit-heading {
+    display: grid;
+    gap: 6px;
+  }
+
+  .parameter-editor-shell .parameter-edit-heading p {
+    max-width: none;
+    text-align: left;
   }
 
   .schema-card-grid {

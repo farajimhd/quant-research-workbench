@@ -183,6 +183,17 @@ const STRATEGY_PARAMETER_GROUPS = [
   }
 ] satisfies Array<{ title: string; description: string; keys: string[] }>;
 
+const IMPORTANT_STRATEGY_PARAMETER_KEYS = [
+  "max_active_positions",
+  "max_capital_per_trade_pct",
+  "cash_reserve_pct",
+  "min_setup_score",
+  "min_live_score",
+  "entry_cutoff_minute",
+  "min_risk_pct",
+  "max_risk_pct"
+];
+
 export function StrategyPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [draftSelection, setDraftSelection] = useState<StrategySelection | null>(null);
@@ -485,7 +496,7 @@ function NewRunPanel({
       {error ? <div className="error-panel" style={{ marginTop: 12 }}>{error}</div> : null}
       <BacktestJobPanel config={config} job={job} metrics={topMetrics} outputRoot={config.output_root} />
       {editing === "run" ? (
-        <Modal title="Update Backtest Parameters" onClose={() => setEditing(null)}>
+        <Modal className="parameter-modal-panel" title="Update Backtest Parameters" onClose={() => setEditing(null)}>
           <BacktestParameterEditor config={draftConfig} onChange={setDraftConfig} versions={versions} />
           <div className="modal-actions">
             <button className="button" onClick={() => setEditing(null)} type="button">Cancel</button>
@@ -494,7 +505,7 @@ function NewRunPanel({
         </Modal>
       ) : null}
       {editing === "strategy" ? (
-        <Modal title="Update Strategy Parameters" onClose={() => setEditing(null)}>
+        <Modal className="parameter-modal-panel" title="Update Strategy Parameters" onClose={() => setEditing(null)}>
           <StrategyParameterEditor config={draftConfig} onChange={setDraftConfig} />
           <div className="modal-actions">
             <button className="button" onClick={() => setEditing(null)} type="button">Cancel</button>
@@ -531,28 +542,41 @@ function BacktestParameterEditor({
   versions: string[];
 }) {
   return (
-    <div className="parameter-edit-stack">
-      <EditSection description="These values identify the run and choose the inclusive backtest date range." title="Identity & Range">
+    <ParameterEditorShell
+      description="Define the run identity, date window, capital model, and artifact locations before submitting the backtest."
+      icon={<Database size={18} />}
+      meta={[
+        { label: "Strategy", value: config.strategy_name.replaceAll("_", " ") },
+        { label: "Version", value: versions.includes(config.strategy_version) ? config.strategy_version : config.strategy_version || "v1" },
+        { label: "Range", value: `${config.start_date} to ${config.end_date}` }
+      ]}
+      title="Backtest Run Settings"
+    >
+      <EditSection
+        description="Most runs are changed here: name, date range, starting capital, and synthetic fill cost."
+        emphasis="primary"
+        title="Important Settings"
+      >
         <EditField help={RUN_PARAMETER_HELP.run_name} label="Run name" value={config.run_name} onChange={(value) => onChange({ ...config, run_name: value })} />
+        <EditField help={RUN_PARAMETER_HELP.start_date} label="Start" type="date" value={config.start_date} onChange={(value) => onChange({ ...config, start_date: value })} />
+        <EditField help={RUN_PARAMETER_HELP.end_date} label="End" type="date" value={config.end_date} onChange={(value) => onChange({ ...config, end_date: value })} />
+        <EditNumberField help={RUN_PARAMETER_HELP.initial_cash} label="Initial cash" value={config.initial_cash} onChange={(value) => onChange({ ...config, initial_cash: value })} />
+        <EditNumberField help={RUN_PARAMETER_HELP.slippage_bps} label="Slippage bps" value={config.slippage_bps} onChange={(value) => onChange({ ...config, slippage_bps: value })} />
+      </EditSection>
+      <EditSection description="Provider-built data is preferred for backtests; output root controls saved run artifacts." title="Data & Artifacts">
+        <EditField help={RUN_PARAMETER_HELP.processed_data_root} label="Processed data root" value={config.processed_data_root} onChange={(value) => onChange({ ...config, processed_data_root: value })} />
+        <EditField help={RUN_PARAMETER_HELP.data_root} label="Raw data root" value={config.data_root} onChange={(value) => onChange({ ...config, data_root: value })} />
+        <EditField help={RUN_PARAMETER_HELP.output_root} label="Output root" value={config.output_root} onChange={(value) => onChange({ ...config, output_root: value })} />
+        <EditBooleanField help={RUN_PARAMETER_HELP.save_symbol_bars} label="Save symbol bars" value={config.save_symbol_bars} onChange={(value) => onChange({ ...config, save_symbol_bars: value })} />
+      </EditSection>
+      <EditSection description="Strategy context is locked by the workspace selection so saved runs stay traceable." title="Strategy Context">
         <EditReadonlyField
           help={RUN_PARAMETER_HELP.strategy_version}
           label="Strategy version"
           value={versions.includes(config.strategy_version) ? config.strategy_version : config.strategy_version || "v1"}
         />
-        <EditField help={RUN_PARAMETER_HELP.start_date} label="Start" type="date" value={config.start_date} onChange={(value) => onChange({ ...config, start_date: value })} />
-        <EditField help={RUN_PARAMETER_HELP.end_date} label="End" type="date" value={config.end_date} onChange={(value) => onChange({ ...config, end_date: value })} />
-        <EditBooleanField help={RUN_PARAMETER_HELP.save_symbol_bars} label="Save symbol bars" value={config.save_symbol_bars} onChange={(value) => onChange({ ...config, save_symbol_bars: value })} />
       </EditSection>
-      <EditSection description="Provider-built data is preferred for backtests; output root controls saved run artifacts." title="Data & Storage">
-        <EditField help={RUN_PARAMETER_HELP.processed_data_root} label="Processed data root" value={config.processed_data_root} onChange={(value) => onChange({ ...config, processed_data_root: value })} />
-        <EditField help={RUN_PARAMETER_HELP.data_root} label="Raw data root" value={config.data_root} onChange={(value) => onChange({ ...config, data_root: value })} />
-        <EditField help={RUN_PARAMETER_HELP.output_root} label="Output root" value={config.output_root} onChange={(value) => onChange({ ...config, output_root: value })} />
-      </EditSection>
-      <EditSection description="These values control portfolio starting capital and synthetic fill slippage." title="Capital & Fill Model">
-        <EditNumberField help={RUN_PARAMETER_HELP.initial_cash} label="Initial cash" value={config.initial_cash} onChange={(value) => onChange({ ...config, initial_cash: value })} />
-        <EditNumberField help={RUN_PARAMETER_HELP.slippage_bps} label="Slippage bps" value={config.slippage_bps} onChange={(value) => onChange({ ...config, slippage_bps: value })} />
-      </EditSection>
-    </div>
+    </ParameterEditorShell>
   );
 }
 
@@ -568,6 +592,8 @@ function EditReadonlyField({ help, label, value }: { help: string; label: string
 function StrategyParameterEditor({ config, onChange }: { config: StrategyConfig; onChange: (config: StrategyConfig) => void }) {
   const params = config.strategy_params;
   const knownKeys = new Set(STRATEGY_PARAMETER_GROUPS.flatMap((group) => group.keys));
+  const importantKeys = IMPORTANT_STRATEGY_PARAMETER_KEYS.filter((key) => key in params);
+  const importantKeySet = new Set(importantKeys);
   const remaining = Object.keys(params).filter((key) => !knownKeys.has(key));
 
   function updateParam(key: string, value: StrategyParamValue) {
@@ -575,9 +601,35 @@ function StrategyParameterEditor({ config, onChange }: { config: StrategyConfig;
   }
 
   return (
-    <div className="parameter-edit-stack">
+    <ParameterEditorShell
+      description="Tune the active strategy version. Capacity, scoring, timing, and risk controls are kept at the top because they change results the most."
+      icon={<SlidersHorizontal size={18} />}
+      meta={[
+        { label: "Strategy", value: config.strategy_name.replaceAll("_", " ") },
+        { label: "Version", value: config.strategy_version || "v1" },
+        { label: "Parameters", value: formatNumber(Object.keys(params).length) }
+      ]}
+      title="Strategy Controls"
+    >
+      {importantKeys.length ? (
+        <EditSection
+          description="High-impact controls for breadth, capital allocation, score thresholds, entry timing, and risk bounds."
+          emphasis="primary"
+          title="Important Settings"
+        >
+          {importantKeys.map((key) => (
+            <EditStrategyParamField
+              help={STRATEGY_PARAMETER_HELP[key] ?? `Controls ${formatParamLabel(key)} for this strategy run.`}
+              key={key}
+              name={key}
+              onChange={(value) => updateParam(key, value)}
+              value={params[key]}
+            />
+          ))}
+        </EditSection>
+      ) : null}
       {STRATEGY_PARAMETER_GROUPS.map((group) => {
-        const keys = group.keys.filter((key) => key in params);
+        const keys = group.keys.filter((key) => key in params && !importantKeySet.has(key));
         if (!keys.length) return null;
         return (
           <EditSection description={group.description} key={group.title} title={group.title}>
@@ -606,13 +658,60 @@ function StrategyParameterEditor({ config, onChange }: { config: StrategyConfig;
           ))}
         </EditSection>
       ) : null}
+    </ParameterEditorShell>
+  );
+}
+
+function ParameterEditorShell({
+  children,
+  description,
+  icon,
+  meta,
+  title
+}: {
+  children: ReactNode;
+  description: string;
+  icon: ReactNode;
+  meta: Array<{ label: string; value: string }>;
+  title: string;
+}) {
+  return (
+    <div className="parameter-editor-shell">
+      <div className="parameter-editor-hero">
+        <div className="parameter-editor-title-row">
+          <span className="parameter-editor-icon">{icon}</span>
+          <div>
+            <h3>{title}</h3>
+            <p>{description}</p>
+          </div>
+        </div>
+        <div className="parameter-editor-summary">
+          {meta.map((item) => (
+            <div className="parameter-editor-summary-item" key={item.label}>
+              <span>{item.label}</span>
+              <b>{item.value}</b>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="parameter-edit-stack">{children}</div>
     </div>
   );
 }
 
-function EditSection({ children, description, title }: { children: ReactNode; description: string; title: string }) {
+function EditSection({
+  children,
+  description,
+  emphasis,
+  title
+}: {
+  children: ReactNode;
+  description: string;
+  emphasis?: "primary";
+  title: string;
+}) {
   return (
-    <section className="parameter-edit-section">
+    <section className="parameter-edit-section" data-emphasis={emphasis ?? "standard"}>
       <div className="parameter-edit-heading">
         <h3>{title}</h3>
         <p>{description}</p>
