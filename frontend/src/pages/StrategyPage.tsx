@@ -1220,18 +1220,20 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
   return (
     <article className={open ? "observability-action-card open" : "observability-action-card"} data-tone={action.tone}>
       <button aria-expanded={open} className="observability-action-header" onClick={() => setOpen((value) => !value)} type="button">
-        <span className="observability-step-badge">
-          <span>Step</span>
-          <strong>{formatNumber(action.step)}</strong>
+        <span className="observability-card-corner">
+          <span>{action.timestamp || action.sessionDate || "No timestamp"}</span>
+          <strong>#{formatNumber(action.step)}</strong>
+        </span>
+        <span className="observability-action-symbol">
+          <strong>{action.ticker || "-"}</strong>
         </span>
         <span className="observability-action-toggle" aria-hidden="true">{open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
         <span className="observability-action-title">
-          <span className="observability-action-eyebrow">
-            <span>{action.timestamp || action.sessionDate || "No timestamp"}</span>
-            {action.ticker ? <span>{action.ticker}</span> : null}
-          </span>
           <strong>{action.title}</strong>
-          <ObservationActionPreview action={action} fields={previewFields} />
+          <ObservationActionPreview action={action} />
+        </span>
+        <span className="observability-action-tags">
+          <ObservationActionPreviewFields fields={previewFields} />
         </span>
         <span className="observability-action-meta">
           <SemanticBadge tone={action.tone}>{action.decision || "observed"}</SemanticBadge>
@@ -1301,9 +1303,17 @@ function ObservationDecisionPanel({ action, fields }: { action: ObservabilityAct
   );
 }
 
-function ObservationActionPreview({ action, fields }: { action: ObservabilityAction; fields: ObservationFieldValue[] }) {
-  const [openFieldKey, setOpenFieldKey] = useState<string | null>(null);
+function ObservationActionPreview({ action }: { action: ObservabilityAction }) {
   const reason = action.reason || action.reasonCode || "No reason recorded";
+  return (
+    <span className="observability-action-preview">
+      <span className="observability-action-reason">{reason}</span>
+    </span>
+  );
+}
+
+function ObservationActionPreviewFields({ fields }: { fields: ObservationFieldValue[] }) {
+  const [openFieldKey, setOpenFieldKey] = useState<string | null>(null);
   useEffect(() => {
     if (!openFieldKey) return;
     const closePopover = () => setOpenFieldKey(null);
@@ -1315,34 +1325,30 @@ function ObservationActionPreview({ action, fields }: { action: ObservabilityAct
     event.stopPropagation();
     setOpenFieldKey((current) => (current === fieldKey ? null : fieldKey));
   };
+  if (!fields.length) return null;
   return (
-    <span className="observability-action-preview">
-      <span className="observability-action-reason">{reason}</span>
-      {fields.length ? (
-        <span className="observability-action-preview-fields">
-          {fields.map((field) => (
-            <span className="observability-action-preview-chip" key={field.key}>
-              <span>{field.label}</span>
-              <span className="observability-action-preview-value">{formatObservationValue(field.value, field.label)}</span>
-              <span
-                aria-expanded={openFieldKey === field.key}
-                aria-label={`Show ${field.label} details`}
-                className="observability-tag-detail-trigger"
-                onClick={(event) => toggleFieldDetails(field.key, event)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") toggleFieldDetails(field.key, event);
-                  if (event.key === "Escape") setOpenFieldKey(null);
-                }}
-                role="button"
-                tabIndex={0}
-              >
-                <MoreHorizontal size={13} />
-              </span>
-              {openFieldKey === field.key ? <ObservationTagDetailPopover field={field} /> : null}
-            </span>
-          ))}
+    <span className="observability-action-preview-fields">
+      {fields.map((field) => (
+        <span className="observability-action-preview-chip" key={field.key}>
+          <span>{field.label}</span>
+          <span className="observability-action-preview-value">{formatObservationValue(field.value, field.label)}</span>
+          <span
+            aria-expanded={openFieldKey === field.key}
+            aria-label={`Show ${field.label} details`}
+            className="observability-tag-detail-trigger"
+            onClick={(event) => toggleFieldDetails(field.key, event)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") toggleFieldDetails(field.key, event);
+              if (event.key === "Escape") setOpenFieldKey(null);
+            }}
+            role="button"
+            tabIndex={0}
+          >
+            <MoreHorizontal size={13} />
+          </span>
+          {openFieldKey === field.key ? <ObservationTagDetailPopover field={field} /> : null}
         </span>
-      ) : null}
+      ))}
     </span>
   );
 }
