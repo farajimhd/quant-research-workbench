@@ -10,16 +10,13 @@ export type PageKey = "strategy" | "build-data" | "review-data";
 type LayoutProps = {
   page: PageKey;
   onPageChange: (page: PageKey) => void;
-  onStrategyVersionChange: (version: string) => void;
-  selectedStrategyVersion: string;
-  strategyVersions: string[];
   children: ReactNode;
 };
 
 const navGroups = [
   {
-    label: "Strategies",
-    items: [{ key: "strategy" as PageKey, label: "ORB 5M Momentum", icon: BarChart3 }]
+    label: "Research",
+    items: [{ key: "strategy" as PageKey, label: "Backtest", icon: BarChart3 }]
   },
   {
     label: "Market Data",
@@ -35,10 +32,7 @@ const THEME_STORAGE_KEY = "quant-research-workbench.theme";
 export function Layout({
   children,
   onPageChange,
-  onStrategyVersionChange,
-  page,
-  selectedStrategyVersion,
-  strategyVersions
+  page
 }: LayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
@@ -97,34 +91,16 @@ export function Layout({
                   {group.items.map((item) => {
                     const Icon = item.icon;
                     return (
-                      <div className="nav-item-wrap" key={item.key}>
-                        <button
-                          className={buildMenuItemButtonClassName(page === item.key)}
-                          onClick={() => onPageChange(item.key)}
-                          type="button"
-                          title={item.label}
-                        >
-                          <Icon size={17} />
-                          {!collapsed ? <span>{item.label}</span> : null}
-                        </button>
-                        {item.key === "strategy" && !collapsed && strategyVersions.length ? (
-                          <div className="strategy-version-list">
-                            {strategyVersions.map((version) => (
-                              <button
-                                className={version === selectedStrategyVersion ? "strategy-version-item active" : "strategy-version-item"}
-                                key={version}
-                                onClick={() => {
-                                  onStrategyVersionChange(version);
-                                  onPageChange("strategy");
-                                }}
-                                type="button"
-                              >
-                                {version}
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
+                      <button
+                        className={buildMenuItemButtonClassName(page === item.key)}
+                        key={item.key}
+                        onClick={() => onPageChange(item.key)}
+                        type="button"
+                        title={item.label}
+                      >
+                        <Icon size={17} />
+                        {!collapsed ? <span>{item.label}</span> : null}
+                      </button>
                     );
                   })}
                 </div>

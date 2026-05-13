@@ -61,7 +61,12 @@ type NewRunMetric = {
 };
 
 const tabs = ["Backtest", "Runs", "Strategy README"];
-const strategyName = "orb_5m_momentum";
+const defaultStrategyName = "orb_5m_momentum";
+
+type StrategySelection = {
+  strategyName: string;
+  version: string;
+};
 
 const RUN_PARAMETER_HELP: Record<string, string> = {
   run_name: "A readable label for this backtest run. It is used in saved run folders and run history.",
@@ -178,39 +183,107 @@ const STRATEGY_PARAMETER_GROUPS = [
   }
 ] satisfies Array<{ title: string; description: string; keys: string[] }>;
 
-export function StrategyPage({ selectedVersion, versions }: { selectedVersion: string; versions: string[] }) {
-  const [strategy, setStrategy] = useState<Strategy | null>(null);
+export function StrategyPage() {
+  const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [draftSelection, setDraftSelection] = useState<StrategySelection | null>(null);
+  const [activeSelection, setActiveSelection] = useState<StrategySelection | null>(null);
   const [activeTab, setActiveTab] = useState(tabs[0]);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [readme, setReadme] = useState("");
   const [config, setConfig] = useState<StrategyConfig | null>(null);
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
+  const activeStrategy = activeSelection ? strategies.find((item) => item.name === activeSelection.strategyName) ?? null : null;
+  const draftStrategy = draftSelection ? strategies.find((item) => item.name === draftSelection.strategyName) ?? null : null;
 
   useEffect(() => {
-    api<{ strategies: Strategy[] }>("/api/strategies").then((payload) => setStrategy(payload.strategies.find((item) => item.name === strategyName) ?? payload.strategies[0]));
+    api<{ strategies: Strategy[] }>("/api/strategies").then((payload) => {
+      const nextStrategies = payload.strategies;
+      setStrategies(nextStrategies);
+      const defaultStrategy = nextStrategies.find((item) => item.name === defaultStrategyName) ?? nextStrategies[0];
+      if (!defaultStrategy) return;
+      const version = defaultStrategy.default_version ?? defaultStrategy.versions?.[0] ?? "v1";
+      setDraftSelection((current) => current ?? { strategyName: defaultStrategy.name, version });
+    });
   }, []);
 
   useEffect(() => {
-    api<StrategyConfig>(`/api/strategies/${strategyName}/default-config${query({ version: selectedVersion })}`).then(setConfig);
-    api<{ content: string }>(`/api/strategies/${strategyName}/readme${query({ version: selectedVersion })}`).then((payload) => setReadme(payload.content));
-  }, [selectedVersion]);
+    if (!activeSelection) return;
+    api<StrategyConfig>(`/api/strategies/${activeSelection.strategyName}/default-config${query({ version: activeSelection.version })}`).then(setConfig);
+    api<{ content: string }>(`/api/strategies/${activeSelection.strategyName}/readme${query({ version: activeSelection.version })}`).then((payload) => setReadme(payload.content));
+  }, [activeSelection?.strategyName, activeSelection?.version]);
 
   useEffect(() => {
-    if (!config) return;
-    loadRuns(config.output_root, selectedVersion);
-  }, [config?.output_root, selectedVersion]);
+    if (!config || !activeSelection) return;
+    loadRuns(config.output_root, activeSelection.strategyName, activeSelection.version);
+  }, [config?.output_root, activeSelection?.strategyName, activeSelection?.version]);
 
-  async function loadRuns(outputRoot: string, version: string) {
+  async function loadRuns(outputRoot: string, strategyName: string, version: string) {
     const payload = await api<{ runs: RunRow[] }>(`/api/backtests/runs${query({ output_root: outputRoot, strategy_name: strategyName, strategy_version: version })}`);
     setRuns(payload.runs);
+  }
+
+  function updateDraftStrategy(strategyName: string) {
+    const strategy = strategies.find((item) => item.name === strategyName);
+    const version = strategy?.default_version ?? strategy?.versions?.[0] ?? "v1";
+    setDraftSelection({ strategyName, version });
+  }
+
+  function updateDraftVersion(version: string) {
+    if (!draftSelection) return;
+    setDraftSelection({ ...draftSelection, version });
+  }
+
+  function openBacktestWorkspace() {
+    if (!draftSelection) return;
+    setConfig(null);
+    setRuns([]);
+    setReadme("");
+    setSelectedRun(null);
+    setActiveTab(tabs[0]);
+    setActiveSelection(draftSelection);
+  }
+
+  function changeSelection() {
+    if (activeSelection) setDraftSelection(activeSelection);
+    setActiveSelection(null);
+    setActiveTab(tabs[0]);
+    setConfig(null);
+    setRuns([]);
+    setReadme("");
+    setSelectedRun(null);
+  }
+
+  if (!activeSelection) {
+    return (
+      <>
+        <PageIntro
+          groupLabel="Backtest"
+          title="Backtest"
+          description="Select the strategy and version before opening the run workspace."
+        />
+        <BacktestSelectionPanel
+          draftSelection={draftSelection}
+          onOpen={openBacktestWorkspace}
+          onStrategyChange={updateDraftStrategy}
+          onVersionChange={updateDraftVersion}
+          strategies={strategies}
+          strategy={draftStrategy}
+        />
+      </>
+    );
   }
 
   return (
     <>
       <PageIntro
-        groupLabel="Strategies"
-        title={strategy?.display_name ?? "ORB 5M Momentum"}
-        description={strategy?.description ?? "Opening range momentum research strategy."}
+        actions={
+          <button className="button secondary" onClick={changeSelection} type="button">
+            <SlidersHorizontal size={15} /> Change Strategy
+          </button>
+        }
+        groupLabel="Backtest"
+        title={`${activeStrategy?.display_name ?? activeSelection.strategyName.replaceAll("_", " ")} ${activeSelection.version}`}
+        description={activeStrategy?.description ?? "Opening range momentum research strategy."}
       />
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
       {activeTab === "Backtest" && config ? (
@@ -218,12 +291,17 @@ export function StrategyPage({ selectedVersion, versions }: { selectedVersion: s
           config={config}
           key={config.strategy_version}
           onConfigChange={setConfig}
-          onComplete={() => loadRuns(config.output_root, selectedVersion)}
-          versions={versions}
+          onComplete={() => loadRuns(config.output_root, activeSelection.strategyName, activeSelection.version)}
+          versions={activeStrategy?.versions ?? [activeSelection.version]}
         />
       ) : null}
       {activeTab === "Runs" && config ? (
-        <RunsPanel runs={runs} outputRoot={config.output_root} onOpen={setSelectedRun} onDeleted={() => loadRuns(config.output_root, selectedVersion)} />
+        <RunsPanel
+          runs={runs}
+          outputRoot={config.output_root}
+          onOpen={setSelectedRun}
+          onDeleted={() => loadRuns(config.output_root, activeSelection.strategyName, activeSelection.version)}
+        />
       ) : null}
       {activeTab === "Strategy README" ? (
         <div className="markdown-panel">
@@ -232,6 +310,68 @@ export function StrategyPage({ selectedVersion, versions }: { selectedVersion: s
       ) : null}
       {selectedRun && config ? <RunDetail runId={selectedRun} outputRoot={config.output_root} onClose={() => setSelectedRun(null)} /> : null}
     </>
+  );
+}
+
+function BacktestSelectionPanel({
+  draftSelection,
+  onOpen,
+  onStrategyChange,
+  onVersionChange,
+  strategies,
+  strategy
+}: {
+  draftSelection: StrategySelection | null;
+  onOpen: () => void;
+  onStrategyChange: (strategyName: string) => void;
+  onVersionChange: (version: string) => void;
+  strategies: Strategy[];
+  strategy: Strategy | null;
+}) {
+  const versions = strategy?.versions?.length ? strategy.versions : draftSelection?.version ? [draftSelection.version] : [];
+
+  return (
+    <section className="panel backtest-selection-panel">
+      <div className="backtest-selection-grid">
+        <div className="field config-field">
+          <label>Strategy</label>
+          <select
+            disabled={!strategies.length}
+            onChange={(event) => onStrategyChange(event.target.value)}
+            value={draftSelection?.strategyName ?? ""}
+          >
+            {strategies.map((item) => (
+              <option key={item.name} value={item.name}>
+                {item.display_name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field config-field">
+          <label>Version</label>
+          <select
+            disabled={!versions.length}
+            onChange={(event) => onVersionChange(event.target.value)}
+            value={draftSelection?.version ?? ""}
+          >
+            {versions.map((version) => (
+              <option key={version} value={version}>
+                {version}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <div className="backtest-selection-footer">
+        <div>
+          <h2>{strategy?.display_name ?? "Strategy"}</h2>
+          <p>{strategy?.description ?? "Strategy catalog is loading."}</p>
+        </div>
+        <button className="button primary" disabled={!draftSelection} onClick={onOpen} type="button">
+          <Play size={15} /> Open Backtest
+        </button>
+      </div>
+    </section>
   );
 }
 
