@@ -9,9 +9,10 @@ import polars as pl
 
 from src.backtest.config import BacktestConfig
 from src.backtest.data.minute_bars import DayFrames, available_session_dates, load_day_frames
+from src.backtest.equity_candles import build_portfolio_candles, default_portfolio_candle_timeframe
 from src.backtest.fills import BarFillModel
 from src.backtest.metrics import compute_summary
-from src.backtest.models import BarContext, DataRequirements, Order, OrderRequest
+from src.backtest.models import BarContext, DataRequirements, Fill, Order, OrderRequest
 from src.backtest.portfolio import Portfolio
 from src.backtest.results import base_metadata, create_run_dir, write_json, write_run_metadata, write_table
 
@@ -44,8 +45,10 @@ class BacktestEngine:
         self.strategy = strategy
         self.portfolio = Portfolio(config.initial_cash)
         self.next_order_id = 1
+        self.next_fill_id = 1
         self.pending_orders: list[Order] = []
         self.orders: list[dict] = []
+        self.fills: list[dict] = []
         self.trades: list[dict] = []
         self.portfolio_rows: list[dict] = []
         self.position_rows: list[dict] = []
@@ -250,16 +253,20 @@ class BacktestEngine:
 
     def _fill_order(self, order: Order, timestamp: datetime, bar: dict, reason: str) -> None:
         fill_price = self.fill_model.fill_price(order, bar, self.config.slippage_bps)
-        order.status = "FILLED"
-        order.filled_at = timestamp
-        order.fill_price = fill_price
-        order.reason = reason
 
         if order.side == "BUY":
             metadata = self.strategy.entry_metadata(order)
             if not self.portfolio.can_afford(fill_price, order.quantity):
                 order.status = "REJECTED_CASH"
+                order.filled_at = timestamp
+                order.fill_price = fill_price
+                order.reason = reason
             else:
+                order.status = "FILLED"
+                order.filled_at = timestamp
+                order.fill_price = fill_price
+                order.reason = reason
+                self._record_fill(order, timestamp, bar, fill_price)
                 self.portfolio.open_position(
                     order,
                     setup_rank=int(metadata.get("setup_rank", 0)),
@@ -269,11 +276,45 @@ class BacktestEngine:
                     stop_price=float(metadata.get("stop_price", order.stop_price or fill_price)),
                 )
         else:
+            if order.symbol not in self.portfolio.positions:
+                order.status = "REJECTED_NO_POSITION"
+                order.filled_at = timestamp
+                order.fill_price = fill_price
+                order.reason = reason
+                self.orders.append(asdict(order))
+                return
+            order.status = "FILLED"
+            order.filled_at = timestamp
+            order.fill_price = fill_price
+            order.reason = reason
+            self._record_fill(order, timestamp, bar, fill_price)
             trade = self.portfolio.close_position(order)
             if trade is not None:
                 self.trades.append(asdict(trade))
 
         self.orders.append(asdict(order))
+
+    def _record_fill(self, order: Order, timestamp: datetime, bar: dict, fill_price: float) -> None:
+        fill = Fill(
+            fill_id=self.next_fill_id,
+            order_id=order.order_id,
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            fill_price=fill_price,
+            filled_at=timestamp,
+            order_type=order.order_type,
+            reason=order.reason,
+            slippage_bps=self.config.slippage_bps,
+            bar_time_market=bar.get("bar_time_market"),
+            bar_open=float(bar["open"]) if bar.get("open") is not None else None,
+            bar_high=float(bar["high"]) if bar.get("high") is not None else None,
+            bar_low=float(bar["low"]) if bar.get("low") is not None else None,
+            bar_close=float(bar["close"]) if bar.get("close") is not None else None,
+            tag=order.tag,
+        )
+        self.next_fill_id += 1
+        self.fills.append(asdict(fill))
 
     def _record_portfolio(self, timestamp: datetime, bars_by_symbol: dict[str, dict]) -> None:
         equity = self.portfolio.total_equity(bars_by_symbol)
@@ -322,6 +363,7 @@ class BacktestEngine:
             orders=self.orders,
             portfolio_rows=self.portfolio_rows,
             daily_rows=self.daily_rows,
+            fills=self.fills,
         )
 
     def _candidate_count_for_day(self, session_date) -> int:
@@ -341,9 +383,11 @@ class BacktestEngine:
         write_json(run_dir / "summary.json", summary)
         write_table(run_dir / "daily_summary.parquet", self.daily_rows)
         write_table(run_dir / "orders.parquet", self.orders)
+        write_table(run_dir / "fills.parquet", self.fills)
         write_table(run_dir / "trades.parquet", self.trades)
         write_table(run_dir / "positions.parquet", self.position_rows)
         write_table(run_dir / "portfolio.parquet", self.portfolio_rows)
+        write_table(run_dir / "portfolio_candles.parquet", build_portfolio_candles(self.portfolio_rows, initial_cash=self.config.initial_cash))
         write_table(run_dir / "scanner_snapshots.parquet", artifacts.get("scanner_snapshots", []))
         write_table(run_dir / "candidate_rankings.parquet", artifacts.get("candidate_rankings", []))
         write_table(run_dir / "live_rankings.parquet", artifacts.get("live_rankings", []))
@@ -353,4 +397,14 @@ class BacktestEngine:
             write_table(run_dir / "symbol_bars.parquet", self.symbol_bar_rows)
         if self.symbol_bar_5m_rows:
             write_table(run_dir / "symbol_bars_5m.parquet", self.symbol_bar_5m_rows)
+        write_json(
+            run_dir / "chart_metadata.json",
+            {
+                "portfolio_candle_timeframes": ["1m", "1h", "2h", "4h", "1d"],
+                "default_portfolio_candle_timeframe": default_portfolio_candle_timeframe(
+                    self.config.start_date,
+                    self.config.end_date,
+                ),
+            },
+        )
         (run_dir / "logs.txt").write_text("\n".join(self.logs), encoding="utf-8")

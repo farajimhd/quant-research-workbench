@@ -1,5 +1,6 @@
+import { createChart, type IChartApi, type ISeriesApi, type SeriesType, type Time } from "lightweight-charts";
 import { Activity, Banknote, CalendarRange, CircleHelp, Database, Gauge, ListChecks, Pencil, Play, Shield, SlidersHorizontal, Trash2 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
 import { api, query } from "../api/client";
@@ -308,7 +309,7 @@ function NewRunPanel({
       </div>
 
       {error ? <div className="error-panel" style={{ marginTop: 12 }}>{error}</div> : null}
-      {job ? <BacktestJobPanel job={job} /> : null}
+      {job ? <BacktestJobPanel job={job} outputRoot={config.output_root} /> : null}
       {editing === "run" ? (
         <Modal title="Edit Backtest Parameters" onClose={() => setEditing(null)}>
           <BacktestParameterEditor config={draftConfig} onChange={setDraftConfig} />
@@ -733,19 +734,32 @@ function parseIsoDate(value: string): { date: Date; month: number; year: number 
   return { date: new Date(Date.UTC(year, month - 1, day)), month, year };
 }
 
-function BacktestJobPanel({ job }: { job: Record<string, unknown> }) {
+function BacktestJobPanel({ job, outputRoot }: { job: Record<string, unknown>; outputRoot: string }) {
   const events = Array.isArray(job.events) ? (job.events as Record<string, unknown>[]) : [];
+  const result = job.result && typeof job.result === "object" ? job.result as Record<string, unknown> : null;
+  const resultRunDir = String(result?.run_dir ?? "");
+  const latestRunDir = resultRunDir || [...events].reverse().map((event) => String(event.run_dir ?? "")).find(Boolean) || "";
+  const latestRunId = latestRunDir ? latestRunDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "" : "";
   return (
     <section className="panel" style={{ marginTop: 16 }}>
       <h2>Backtest Progress</h2>
       <div className="toolbar">
         <SemanticBadge tone={toneForStatus(String(job.status))}>{String(job.status)}</SemanticBadge>
-        {job.result && typeof job.result === "object" ? <span className="meta-tag">{String((job.result as Record<string, unknown>).run_dir ?? "")}</span> : null}
+        {latestRunDir ? <span className="meta-tag">{latestRunDir}</span> : null}
       </div>
+      {latestRunId ? <LiveRunPortfolioChart runId={latestRunId} outputRoot={outputRoot} refreshKey={`${job.status}-${events.length}`} /> : null}
       <DataTable rows={events.map((event) => ({ session_date: event.session_date, status: event.status, run_dir: event.run_dir, ...((event.daily_summary as Record<string, unknown>) ?? {}) }))} />
       {job.error ? <div className="error-panel">{String(job.error)}</div> : null}
     </section>
   );
+}
+
+function LiveRunPortfolioChart({ runId, outputRoot, refreshKey }: { runId: string; outputRoot: string; refreshKey: string }) {
+  const [detail, setDetail] = useState<RunDetailPayload | null>(null);
+  useEffect(() => {
+    api<RunDetailPayload>(`/api/backtests/runs/${runId}${query({ output_root: outputRoot })}`).then(setDetail).catch(() => undefined);
+  }, [runId, outputRoot, refreshKey]);
+  return <PnlCandleChart payload={detail?.portfolio_candles} title="Live P/L Candles" />;
 }
 
 function RunDetail({ runId, outputRoot, onClose }: { runId: string; outputRoot: string; onClose: () => void }) {
@@ -765,10 +779,12 @@ function RunDetail({ runId, outputRoot, onClose }: { runId: string; outputRoot: 
           { label: "Status", value: String(detail?.metadata.status ?? "-"), kind: "status" }
         ]}
       />
-      <Tabs tabs={["Overview", "Trades", "Orders", "Scanner", "Rejected", "Positions", "Logs"]} active={tab} onChange={setTab} />
+      <Tabs tabs={["Overview", "P/L Chart", "Trades", "Orders", "Fills", "Scanner", "Rejected", "Positions", "Logs"]} active={tab} onChange={setTab} />
       {tab === "Overview" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
+      {tab === "P/L Chart" ? <PnlCandleChart payload={detail?.portfolio_candles} title="Portfolio P/L Candles" /> : null}
       {tab === "Trades" ? <DataTable rows={detail?.tables.trades.rows ?? []} /> : null}
       {tab === "Orders" ? <DataTable rows={detail?.tables.orders.rows ?? []} /> : null}
+      {tab === "Fills" ? <DataTable rows={detail?.tables.fills.rows ?? []} /> : null}
       {tab === "Scanner" ? <DataTable rows={detail?.tables.scanner.rows ?? []} /> : null}
       {tab === "Rejected" ? <DataTable rows={detail?.tables.rejections.rows ?? []} /> : null}
       {tab === "Positions" ? <DataTable rows={detail?.tables.positions.rows ?? []} /> : null}
@@ -777,9 +793,109 @@ function RunDetail({ runId, outputRoot, onClose }: { runId: string; outputRoot: 
   );
 }
 
+function PnlCandleChart({ payload, title }: { payload?: PortfolioCandlePayload | null; title: string }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
+  const [timeframe, setTimeframe] = useState(payload?.default_timeframe ?? "1h");
+  const timeframes = payload?.timeframes?.length ? payload.timeframes : ["1m", "1h", "2h", "4h", "1d"];
+  const candles = payload?.candles?.[timeframe] ?? [];
+
+  useEffect(() => {
+    if (payload?.default_timeframe) setTimeframe(payload.default_timeframe);
+  }, [payload?.default_timeframe]);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const chart = createChart(containerRef.current, {
+      autoSize: true,
+      height: 280,
+      layout: { background: { color: "#ffffff" }, textColor: "#344054" },
+      grid: { horzLines: { color: "#f2f4f7" }, vertLines: { color: "#f2f4f7" } },
+      rightPriceScale: { borderVisible: false },
+      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
+      localization: { priceFormatter: (value: number) => formatMoney(value) }
+    });
+    const series = chart.addCandlestickSeries({
+      upColor: "#149044",
+      downColor: "#c9184a",
+      borderUpColor: "#149044",
+      borderDownColor: "#c9184a",
+      wickUpColor: "#149044",
+      wickDownColor: "#c9184a"
+    });
+    series.createPriceLine({ price: 0, color: "#667085", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "Flat" });
+    chartRef.current = chart;
+    seriesRef.current = series as ISeriesApi<SeriesType>;
+    return () => {
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!seriesRef.current) return;
+    const data = candles
+      .filter((candle) => Number.isFinite(candle.time))
+      .map((candle) => ({
+        time: candle.time as Time,
+        open: Number(candle.open ?? 0),
+        high: Number(candle.high ?? 0),
+        low: Number(candle.low ?? 0),
+        close: Number(candle.close ?? 0)
+      }));
+    seriesRef.current.setData(data as never);
+    chartRef.current?.timeScale().fitContent();
+  }, [candles]);
+
+  return (
+    <section className="panel" style={{ marginTop: 16 }}>
+      <div className="toolbar" style={{ justifyContent: "space-between" }}>
+        <h2 style={{ margin: 0 }}>{title}</h2>
+        <div className="toolbar" style={{ margin: 0 }}>
+          {timeframes.map((item) => (
+            <button
+              className={`button ${item === timeframe ? "primary" : "secondary"}`}
+              key={item}
+              onClick={() => setTimeframe(item)}
+              type="button"
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="chart-shell" style={{ height: 280, minHeight: 280 }}>
+        <div className="chart-price" ref={containerRef} />
+      </div>
+      {!candles.length ? <div className="empty-state">No portfolio candles have been written yet.</div> : null}
+    </section>
+  );
+}
+
 type RunDetailPayload = {
   metadata: Record<string, unknown>;
   summary: Record<string, unknown>;
   tables: Record<string, { columns: string[]; rows: Record<string, unknown>[] }>;
+  portfolio_candles?: PortfolioCandlePayload;
   logs: string;
+};
+
+type PortfolioCandle = {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  equity_open?: number;
+  equity_high?: number;
+  equity_low?: number;
+  equity_close?: number;
+};
+
+type PortfolioCandlePayload = {
+  timeframes: string[];
+  default_timeframe: string;
+  candles: Record<string, PortfolioCandle[]>;
 };

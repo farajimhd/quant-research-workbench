@@ -47,6 +47,26 @@ class Order:
 
 
 @dataclass(slots=True)
+class Fill:
+    fill_id: int
+    order_id: int
+    symbol: str
+    side: str
+    quantity: int
+    fill_price: float
+    filled_at: datetime
+    order_type: str
+    reason: str
+    slippage_bps: float
+    bar_time_market: datetime | None = None
+    bar_open: float | None = None
+    bar_high: float | None = None
+    bar_low: float | None = None
+    bar_close: float | None = None
+    tag: str = ""
+
+
+@dataclass(slots=True)
 class Position:
     symbol: str
     quantity: int

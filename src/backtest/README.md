@@ -151,19 +151,24 @@ order, fill, position, and realized trade can be audited after the run.
 Core artifacts:
 
 - `orders.parquet`: every accepted, filled, canceled, or rejected order
+- `fills.parquet`: each execution event produced by the fill model
 - `trades.parquet`: realized position close or reduce records
 - `positions.parquet`: point-in-time position snapshots
 - `portfolio.parquet`: cash, equity, and exposure snapshots
+- `portfolio_candles.parquet`: P/L and equity OHLC candles for `1m`, `1h`,
+  `2h`, `4h`, and `1d`
 - `signal_events.parquet`: strategy signal events
 - `rejection_events.parquet`: rejected strategy candidates or invalid signals
 - `candidate_rankings.parquet`: setup rankings
 - `live_rankings.parquet`: timestamp-level live rankings
 
-As execution modeling becomes more realistic, the backtest should also write:
+As execution modeling becomes more realistic, the backtest should also write or
+extend:
 
-- `fills.parquet`: each execution event, including partial fills
 - `order_events.parquet`: order lifecycle events such as accepted, canceled,
   expired, rejected, partially filled, and filled
+- `fills.parquet`: partial fills, quote/trade execution references, spread
+  checks, and liquidity diagnostics
 
 Separating orders, fills, and trades is important for Phase 2 quote/trade
 execution. Partial fills, spread checks, liquidity limits, and extended-hours

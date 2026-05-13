@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.backtest.config import DEFAULT_OUTPUT_ROOT, BacktestConfig
+from src.backtest.equity_candles import default_portfolio_candle_timeframe
 from src.backtest.jobs import get_backtest_status, list_backtest_jobs, submit_backtest_job
 from src.backtest.results import list_runs, read_run_metadata
 from src.backend.json_utils import json_safe, parse_csv_list
@@ -105,6 +106,69 @@ def read_table(path: Path, limit: int = 1000) -> dict[str, Any]:
     if frame.height > limit:
         frame = frame.head(limit)
     return {"columns": frame.columns, "rows": json_safe(frame.to_dicts())}
+
+
+def read_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def timestamp_seconds(value: Any) -> int | None:
+    if isinstance(value, datetime):
+        return int(value.timestamp())
+    if value is None:
+        return None
+    try:
+        return int(datetime.fromisoformat(str(value)).timestamp())
+    except ValueError:
+        return None
+
+
+def portfolio_candle_payload(run_dir: Path, metadata: dict[str, Any]) -> dict[str, Any]:
+    path = run_dir / "portfolio_candles.parquet"
+    chart_metadata = read_json_file(run_dir / "chart_metadata.json")
+    config = metadata.get("config") or {}
+    available_timeframes = chart_metadata.get("portfolio_candle_timeframes") or ["1m", "1h", "2h", "4h", "1d"]
+    default_timeframe = chart_metadata.get("default_portfolio_candle_timeframe")
+    if not default_timeframe:
+        try:
+            default_timeframe = default_portfolio_candle_timeframe(
+                date.fromisoformat(str(config.get("start_date"))),
+                date.fromisoformat(str(config.get("end_date"))),
+            )
+        except (TypeError, ValueError):
+            default_timeframe = "1h"
+    if not path.exists():
+        return {"timeframes": available_timeframes, "default_timeframe": default_timeframe, "candles": {}}
+    frame = pl.read_parquet(path)
+    candles: dict[str, list[dict[str, Any]]] = {}
+    for timeframe in available_timeframes:
+        if "timeframe" not in frame.columns:
+            rows = frame.to_dicts()
+        else:
+            rows = frame.filter(pl.col("timeframe") == timeframe).sort("timestamp").to_dicts()
+        candles[str(timeframe)] = [
+            {
+                "time": timestamp_seconds(row.get("timestamp")),
+                "open": row.get("open"),
+                "high": row.get("high"),
+                "low": row.get("low"),
+                "close": row.get("close"),
+                "equity_open": row.get("equity_open"),
+                "equity_high": row.get("equity_high"),
+                "equity_low": row.get("equity_low"),
+                "equity_close": row.get("equity_close"),
+                "cash": row.get("cash"),
+                "open_positions": row.get("open_positions"),
+            }
+            for row in rows
+            if timestamp_seconds(row.get("timestamp")) is not None
+        ]
+    return {"timeframes": available_timeframes, "default_timeframe": default_timeframe, "candles": candles}
 
 
 def resolve_chart_range(start_date: date | None, end_date: date | None, session_date: date | None) -> tuple[date, date]:
@@ -254,11 +318,13 @@ def backtest_run_detail(run_id: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)
             "daily": read_table(run_dir / "daily_summary.parquet"),
             "trades": read_table(run_dir / "trades.parquet"),
             "orders": read_table(run_dir / "orders.parquet"),
+            "fills": read_table(run_dir / "fills.parquet"),
             "scanner": read_table(run_dir / "scanner_snapshots.parquet"),
             "rejections": read_table(run_dir / "rejection_events.parquet"),
             "positions": read_table(run_dir / "positions.parquet"),
             "portfolio": read_table(run_dir / "portfolio.parquet"),
         },
+        "portfolio_candles": json_safe(portfolio_candle_payload(run_dir, metadata)),
         "logs": (run_dir / "logs.txt").read_text(encoding="utf-8") if (run_dir / "logs.txt").exists() else "",
     }
 

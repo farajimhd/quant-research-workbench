@@ -128,6 +128,7 @@ def compute_summary(
     orders: list[dict],
     portfolio_rows: list[dict],
     daily_rows: list[dict],
+    fills: list[dict] | None = None,
 ) -> dict:
     final_equity = float(portfolio_rows[-1]["equity"]) if portfolio_rows else float(initial_cash)
     total_pnl = final_equity - float(initial_cash)
@@ -170,8 +171,13 @@ def compute_summary(
     annual_variance = annual_std * annual_std
     annual_sharpe = (daily_mean / daily_std) * math.sqrt(252.0) if daily_std else 0.0
     annual_sortino = (daily_mean / daily_downside) * math.sqrt(252.0) if daily_downside else 0.0
+    fills = fills or []
     filled_orders = [order for order in orders if order.get("status") == "FILLED"]
-    traded_value = sum(abs(float(order.get("quantity") or 0.0) * float(order.get("fill_price") or 0.0)) for order in filled_orders)
+    traded_value = (
+        sum(abs(float(fill.get("quantity") or 0.0) * float(fill.get("fill_price") or 0.0)) for fill in fills)
+        if fills
+        else sum(abs(float(order.get("quantity") or 0.0) * float(order.get("fill_price") or 0.0)) for order in filled_orders)
+    )
     avg_equity = safe_mean(equity_values)
     turnover = traded_value / avg_equity if avg_equity else 0.0
 
@@ -282,6 +288,7 @@ def compute_summary(
         "sortino_ratio": annual_sortino,
         "portfolio_turnover": turnover,
         "total_orders": len(orders),
+        "total_fills": len(fills),
     }
 
     return {
