@@ -47,6 +47,12 @@ type StrategyConfig = {
   fee_model: string;
   fee_tax_rate: number;
   save_symbol_bars: boolean;
+  observability_mode: string;
+  observability_sessions: number;
+  observability_scanner_top_percent: number;
+  observability_scanner_min_rows: number;
+  observability_scanner_max_rows: number;
+  observability_always_trace_trades: boolean;
   strategy_params: Record<string, number | string | boolean>;
 };
 
@@ -82,7 +88,13 @@ const RUN_PARAMETER_HELP: Record<string, string> = {
   slippage_bps: "Per-fill slippage in basis points. One basis point is 0.01 percent.",
   fee_model: "Commission and regulatory fee model applied at each fill. The default estimates IBKR Canada fixed pricing for US stocks.",
   fee_tax_rate: "Optional tax rate applied to estimated commissions. Leave 0 unless you want to explicitly model GST/PST/HST.",
-  save_symbol_bars: "When enabled, the run saves per-symbol bar snapshots for diagnostics."
+  save_symbol_bars: "When enabled, the run saves per-symbol bar snapshots for diagnostics.",
+  observability_mode: "Controls rich strategy debugging artifacts. Standard captures a bounded profiling window; Off saves only core execution artifacts.",
+  observability_sessions: "Number of initial market sessions with rich scanner, trace, and state capture.",
+  observability_scanner_top_percent: "Fraction of scanner candidates to keep at each actionable timestamp. Use 0.25 for the top 25 percent.",
+  observability_scanner_min_rows: "Minimum scanner rows to keep when scanner capture is active.",
+  observability_scanner_max_rows: "Maximum scanner rows to keep at each actionable timestamp.",
+  observability_always_trace_trades: "Keep entry/exit intent traces even outside the profiling window."
 };
 
 const STRATEGY_PARAMETER_HELP: Record<string, string> = {
@@ -678,6 +690,14 @@ function BacktestParameterEditor({
         <EditField help={RUN_PARAMETER_HELP.output_root} label="Output root" value={config.output_root} onChange={(value) => onChange({ ...config, output_root: value })} />
         <EditBooleanField help={RUN_PARAMETER_HELP.save_symbol_bars} label="Save symbol bars" value={config.save_symbol_bars} onChange={(value) => onChange({ ...config, save_symbol_bars: value })} />
       </EditSection>
+      <EditSection description="Profile the first sessions deeply without turning every long backtest into a huge artifact set." title="Observability">
+        <EditField help={RUN_PARAMETER_HELP.observability_mode} label="Mode" value={config.observability_mode || "standard"} onChange={(value) => onChange({ ...config, observability_mode: value })} />
+        <EditNumberField help={RUN_PARAMETER_HELP.observability_sessions} label="Profile sessions" value={config.observability_sessions ?? 7} onChange={(value) => onChange({ ...config, observability_sessions: Math.max(0, Math.round(value)) })} />
+        <EditNumberField help={RUN_PARAMETER_HELP.observability_scanner_top_percent} label="Scanner top fraction" value={config.observability_scanner_top_percent ?? 0.25} onChange={(value) => onChange({ ...config, observability_scanner_top_percent: value })} />
+        <EditNumberField help={RUN_PARAMETER_HELP.observability_scanner_min_rows} label="Scanner min rows" value={config.observability_scanner_min_rows ?? 10} onChange={(value) => onChange({ ...config, observability_scanner_min_rows: Math.max(1, Math.round(value)) })} />
+        <EditNumberField help={RUN_PARAMETER_HELP.observability_scanner_max_rows} label="Scanner max rows" value={config.observability_scanner_max_rows ?? 100} onChange={(value) => onChange({ ...config, observability_scanner_max_rows: Math.max(1, Math.round(value)) })} />
+        <EditBooleanField help={RUN_PARAMETER_HELP.observability_always_trace_trades} label="Always trace trades" value={config.observability_always_trace_trades ?? true} onChange={(value) => onChange({ ...config, observability_always_trace_trades: value })} />
+      </EditSection>
       <EditSection description="Strategy context is locked by the workspace selection so saved runs stay traceable." title="Strategy Context">
         <EditReadonlyField
           help={RUN_PARAMETER_HELP.strategy_version}
@@ -1049,7 +1069,7 @@ function BacktestJobPanel({
         <h2 className="backtest-results-title">{activeRunName}</h2>
         <SemanticBadge tone={toneForStatus(progress.status)}>{progress.status}</SemanticBadge>
       </div>
-      <Tabs tabs={["Backtest Results", "Daily", "Trades", "Orders", "Fills", "Positions", "Scanner", "Rejected", "Progress Events", "Logs"]} active={tab} onChange={setTab} />
+      <Tabs tabs={["Backtest Results", "Observability", "Daily", "Trades", "Orders", "Fills", "Positions"]} active={tab} onChange={setTab} />
       <div className="backtest-results-tab-content">
         {tab === "Backtest Results" ? (
           <>
@@ -1067,6 +1087,7 @@ function BacktestJobPanel({
           </>
         ) : null}
         {tab === "Daily" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
+        {tab === "Observability" ? <ObservabilityPanel detail={detail} events={events} logs={detail?.logs ?? ""} /> : null}
         {tab === "Trades" ? (
           <>
             {selectedTrade ? (
@@ -1089,13 +1110,125 @@ function BacktestJobPanel({
         {tab === "Orders" ? <DataTable rows={detail?.tables.orders.rows ?? []} /> : null}
         {tab === "Fills" ? <DataTable rows={detail?.tables.fills.rows ?? []} /> : null}
         {tab === "Positions" ? <DataTable rows={detail?.tables.positions.rows ?? []} /> : null}
-        {tab === "Scanner" ? <DataTable rows={detail?.tables.scanner.rows ?? []} /> : null}
-        {tab === "Rejected" ? <DataTable rows={detail?.tables.rejections.rows ?? []} /> : null}
-        {tab === "Progress Events" ? <DataTable rows={events.map((event) => ({ session_date: event.session_date, status: event.status, run_dir: event.run_dir, ...((event.daily_summary as Record<string, unknown>) ?? {}) }))} /> : null}
-        {tab === "Logs" ? <pre className="markdown-panel backtest-results-log">{detail?.logs || "No logs yet."}</pre> : null}
         {job?.error ? <div className="error-panel">{String(job.error)}</div> : null}
       </div>
     </section>
+  );
+}
+
+function ObservabilityPanel({
+  detail,
+  events,
+  logs
+}: {
+  detail: RunDetailPayload | null;
+  events: Record<string, unknown>[];
+  logs: string;
+}) {
+  const scannerRows = detail?.tables.observability_scanner?.rows ?? [];
+  const traceRows = detail?.tables.observability_trace?.rows ?? [];
+  const stateRows = detail?.tables.observability_state?.rows ?? [];
+  const rejectedRows = detail?.tables.rejections?.rows ?? [];
+  const legacyScannerRows = detail?.tables.scanner?.rows ?? [];
+  const systemRows = events.map((event) => ({
+    event: event.event,
+    session_date: event.session_date,
+    status: event.status,
+    run_dir: event.run_dir,
+    ...((event.daily_summary as Record<string, unknown>) ?? {})
+  }));
+  const cards = [
+    {
+      title: "1. Scanner",
+      subtitle: "Top captured opportunity rows from setup and live scans.",
+      rows: scannerRows.length ? scannerRows : legacyScannerRows,
+      empty: "No scanner observability was captured. Check observability mode and profile sessions."
+    },
+    {
+      title: "2. Decision Trace",
+      subtitle: "Actionable strategy decisions, intents, skips, and reasons.",
+      rows: traceRows,
+      empty: "No decision trace rows were captured for this run."
+    },
+    {
+      title: "3. State Snapshots",
+      subtitle: "Strategy, portfolio, and symbol state at captured decision times.",
+      rows: stateRows,
+      empty: "No state snapshots were captured for this run."
+    },
+    {
+      title: "4. Rejected",
+      subtitle: "Rejected candidates, invalidated entries, and blocked decisions.",
+      rows: rejectedRows,
+      empty: "No rejection rows were saved."
+    },
+    {
+      title: "5. System",
+      subtitle: "Run progress events and raw logs for infrastructure debugging.",
+      rows: systemRows,
+      empty: "No progress events were reported.",
+      footer: logs ? <pre className="observability-log">{logs}</pre> : null
+    }
+  ];
+
+  return (
+    <section className="observability-workspace">
+      <div className="observability-summary">
+        <ObservabilitySummaryMetric label="Scanner Rows" value={scannerRows.length || legacyScannerRows.length} />
+        <ObservabilitySummaryMetric label="Trace Rows" value={traceRows.length} />
+        <ObservabilitySummaryMetric label="State Rows" value={stateRows.length} />
+        <ObservabilitySummaryMetric label="Rejected" value={rejectedRows.length} />
+      </div>
+      <div className="observability-card-list">
+        {cards.map((card, index) => (
+          <ObservabilityCard defaultOpen={index < 2} key={card.title} {...card} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ObservabilitySummaryMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <article className="observability-summary-card">
+      <span>{label}</span>
+      <strong>{formatNumber(value)}</strong>
+    </article>
+  );
+}
+
+function ObservabilityCard({
+  defaultOpen = false,
+  empty,
+  footer,
+  rows,
+  subtitle,
+  title
+}: {
+  defaultOpen?: boolean;
+  empty: string;
+  footer?: ReactNode;
+  rows: DataRow[];
+  subtitle: string;
+  title: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <article className={open ? "observability-card open" : "observability-card"}>
+      <button className="observability-card-header" onClick={() => setOpen((value) => !value)} type="button">
+        <span>
+          <strong>{title}</strong>
+          <small>{subtitle}</small>
+        </span>
+        <span className="observability-card-count">{formatNumber(rows.length)} rows</span>
+      </button>
+      {open ? (
+        <div className="observability-card-body">
+          {rows.length ? <DataTable rows={rows} /> : <div className="empty-state">{empty}</div>}
+          {footer}
+        </div>
+      ) : null}
+    </article>
   );
 }
 

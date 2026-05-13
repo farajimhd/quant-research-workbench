@@ -17,6 +17,24 @@ The backtest engine uses this declaration to load provider-built data. If the
 requested range or features have not been built, the run should fail before
 simulation.
 
+## Observability Contract
+
+Strategies should emit observability through the recorder supplied by the
+backtest engine when it is available. Observability is run configuration, so it
+must not change trading behavior.
+
+The common observability records are:
+
+- scanner rows: ranked opportunity candidates and filtered rows at actionable
+  scanner times
+- trace rows: decisions, skips, entry intents, exit intents, and reason codes
+- state rows: strategy, symbol, position, or portfolio state snapshots attached
+  to actionable times
+
+The default backtest captures rich observability for the first profiling
+sessions and keeps trade-related intent traces when configured. Strategies
+should keep scanner records flat and bounded so long runs remain practical.
+
 ## Input Shape
 
 The standard strategy input is a Polars table where rows are ticker bars for the

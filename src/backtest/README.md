@@ -165,6 +165,13 @@ Core artifacts:
 - `rejection_events.parquet`: rejected strategy candidates or invalid signals
 - `candidate_rankings.parquet`: setup rankings
 - `live_rankings.parquet`: timestamp-level live rankings
+- `observability_scanner.parquet`: bounded scanner/opportunity rows captured
+  during the configured profiling window
+- `observability_trace.parquet`: strategy decision trace rows for actionable
+  times, including scanner completion, rejections, entry intents, and exit
+  intents
+- `observability_state.parquet`: strategy, symbol, or portfolio state snapshots
+  captured with observability trace events
 
 Run artifacts are written through a single background artifact writer thread.
 The simulation loop queues JSON, text, parquet, and P/L candle writes and keeps
@@ -178,6 +185,18 @@ Long-running jobs can be stopped by writing `cancel.requested` in the job
 directory through the backtest cancel endpoint. The worker and engine check that
 file between bar events, mark the job `cancelled`, and flush the partial run
 artifacts so the visible result can still be reviewed.
+
+## Strategy Observability
+
+Observability is controlled by backtest configuration, not by strategy
+parameters. The default mode captures rich scanner, trace, and state artifacts
+for the first seven market sessions and keeps trade-related intent traces
+outside that window. Scanner capture is percentage based with min/max caps, so
+large universes do not create unbounded run artifacts.
+
+Strategies should emit observability through the engine-provided recorder when
+available. The engine owns persistence, run metadata, and artifact writing; the
+strategy only reports what it saw, what state it held, what it decided, and why.
 
 Live progress events also publish a summary snapshot with mark-to-market P/L,
 return, Sharpe, drawdown, trade counts, win rate, profit factor, and unrealized

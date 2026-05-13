@@ -104,6 +104,12 @@ class BacktestSubmit(BaseModel):
     fee_model: str = "ibkr_ca_us_stock_fixed"
     fee_tax_rate: float = 0.0
     save_symbol_bars: bool = True
+    observability_mode: str = "standard"
+    observability_sessions: int = 7
+    observability_scanner_top_percent: float = 0.25
+    observability_scanner_min_rows: int = 10
+    observability_scanner_max_rows: int = 100
+    observability_always_trace_trades: bool = True
     strategy_params: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -133,6 +139,9 @@ def empty_backtest_tables() -> dict[str, dict[str, Any]]:
         "orders": {"columns": [], "rows": []},
         "fills": {"columns": [], "rows": []},
         "scanner": {"columns": [], "rows": []},
+        "observability_scanner": {"columns": [], "rows": []},
+        "observability_trace": {"columns": [], "rows": []},
+        "observability_state": {"columns": [], "rows": []},
         "rejections": {"columns": [], "rows": []},
         "positions": {"columns": [], "rows": []},
         "portfolio": {"columns": [], "rows": []},
@@ -146,6 +155,9 @@ def backtest_tables_payload(run_dir: Path) -> dict[str, dict[str, Any]]:
         "orders": read_table(run_dir / "orders.parquet"),
         "fills": read_table(run_dir / "fills.parquet"),
         "scanner": read_table(run_dir / "scanner_snapshots.parquet"),
+        "observability_scanner": read_table(run_dir / "observability_scanner.parquet", limit=5000),
+        "observability_trace": read_table(run_dir / "observability_trace.parquet", limit=5000),
+        "observability_state": read_table(run_dir / "observability_state.parquet", limit=5000),
         "rejections": read_table(run_dir / "rejection_events.parquet"),
         "positions": read_table(run_dir / "positions.parquet"),
         "portfolio": read_table(run_dir / "portfolio.parquet"),

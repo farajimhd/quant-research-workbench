@@ -68,6 +68,12 @@ class BacktestConfig:
     fee_model: str = "ibkr_ca_us_stock_fixed"
     fee_tax_rate: float = 0.0
     save_symbol_bars: bool = True
+    observability_mode: str = "standard"
+    observability_sessions: int = 7
+    observability_scanner_top_percent: float = 0.25
+    observability_scanner_min_rows: int = 10
+    observability_scanner_max_rows: int = 100
+    observability_always_trace_trades: bool = True
     created_by_app: bool = False
     strategy_params: dict[str, Any] = field(default_factory=dict)
 
@@ -82,6 +88,12 @@ class BacktestConfig:
         data["strategy_params"] = dict(data.get("strategy_params", {}))
         data["strategy_version"] = str(data.get("strategy_version") or "v2").strip()
         data["run_name"] = str(data.get("run_name") or "Untitled run").strip()
+        data["observability_mode"] = str(data.get("observability_mode") or "standard").strip().lower()
+        data["observability_sessions"] = int(data.get("observability_sessions", 7))
+        data["observability_scanner_top_percent"] = float(data.get("observability_scanner_top_percent", 0.25))
+        data["observability_scanner_min_rows"] = int(data.get("observability_scanner_min_rows", 10))
+        data["observability_scanner_max_rows"] = int(data.get("observability_scanner_max_rows", 100))
+        data["observability_always_trace_trades"] = bool(data.get("observability_always_trace_trades", True))
         data["created_by_app"] = bool(data.get("created_by_app", False))
         return cls(**data)
 
@@ -103,6 +115,12 @@ class BacktestConfig:
             "fee_model": self.fee_model,
             "fee_tax_rate": self.fee_tax_rate,
             "save_symbol_bars": self.save_symbol_bars,
+            "observability_mode": self.observability_mode,
+            "observability_sessions": self.observability_sessions,
+            "observability_scanner_top_percent": self.observability_scanner_top_percent,
+            "observability_scanner_min_rows": self.observability_scanner_min_rows,
+            "observability_scanner_max_rows": self.observability_scanner_max_rows,
+            "observability_always_trace_trades": self.observability_always_trace_trades,
             "created_by_app": self.created_by_app,
             "strategy_params": self.strategy_params,
         }

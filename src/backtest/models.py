@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 import polars as pl
 
@@ -134,3 +135,4 @@ class BarContext:
     latest: pl.DataFrame
     updates_by_symbol: dict[str, dict]
     latest_by_symbol: dict[str, dict]
+    observability: Any | None = None

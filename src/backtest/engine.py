@@ -17,6 +17,7 @@ from src.backtest.fees import FeeBreakdown, fee_model_for_name
 from src.backtest.fills import BarFillModel
 from src.backtest.metrics import compute_summary
 from src.backtest.models import BarContext, DataRequirements, Fill, Order, OrderRequest
+from src.backtest.observability import ObservabilityRecorder
 from src.backtest.portfolio import Portfolio
 from src.backtest.results import base_metadata, create_run_dir
 
@@ -65,6 +66,8 @@ class BacktestEngine:
         self.symbol_bar_5m_rows: list[dict] = []
         self.fill_model = BarFillModel()
         self.fee_model = fee_model_for_name(config.fee_model, tax_rate=config.fee_tax_rate)
+        self.observability = ObservabilityRecorder(config)
+        self._attach_observability()
 
     def run(self, progress_callback=None, cancel_check: Callable[[], None] | None = None) -> dict:
         run_dir = create_run_dir(self.config)
@@ -121,6 +124,7 @@ class BacktestEngine:
                 live_chart_bar_interval = self._live_chart_bar_interval(requirements)
                 for index, session_date in enumerate(sessions, start=1):
                     self._check_cancelled(cancel_check)
+                    self.observability.start_session(session_date, index)
                     day_start_equity = self.portfolio.total_equity()
                     frames = load_day_frames(self.config, session_date, requirements)
                     event_frame = self.strategy.prepare_day(frames, self.portfolio)
@@ -178,6 +182,7 @@ class BacktestEngine:
                                 latest=latest,
                                 updates_by_symbol=fresh_bars,
                                 latest_by_symbol=latest_bars,
+                                observability=self.observability,
                             ),
                             self.portfolio,
                             list(self.pending_orders),
@@ -586,6 +591,11 @@ class BacktestEngine:
             return presentation if isinstance(presentation, dict) else {}
         return {}
 
+    def _attach_observability(self) -> None:
+        setter = getattr(self.strategy, "set_observability", None)
+        if callable(setter):
+            setter(self.observability)
+
     def _summary(self, run_dir) -> dict:
         return compute_summary(
             run_dir=str(run_dir),
@@ -613,6 +623,7 @@ class BacktestEngine:
 
     def _write_artifacts(self, run_dir, summary: dict, artifact_writer: ArtifactWriter) -> None:
         artifacts = self.strategy.artifacts()
+        observability_artifacts = self.observability.artifacts()
         artifact_writer.write_json(run_dir / "summary.json", summary)
         artifact_writer.write_table(run_dir / "daily_summary.parquet", self.daily_rows)
         artifact_writer.write_table(run_dir / "orders.parquet", self.orders)
@@ -626,6 +637,9 @@ class BacktestEngine:
         artifact_writer.write_table(run_dir / "live_rankings.parquet", artifacts.get("live_rankings", []))
         artifact_writer.write_table(run_dir / "signal_events.parquet", artifacts.get("signal_events", []))
         artifact_writer.write_table(run_dir / "rejection_events.parquet", artifacts.get("rejection_events", []))
+        artifact_writer.write_table(run_dir / "observability_scanner.parquet", observability_artifacts.get("observability_scanner", []))
+        artifact_writer.write_table(run_dir / "observability_trace.parquet", observability_artifacts.get("observability_trace", []))
+        artifact_writer.write_table(run_dir / "observability_state.parquet", observability_artifacts.get("observability_state", []))
         if self.symbol_bar_rows:
             artifact_writer.write_table(run_dir / "symbol_bars.parquet", self.symbol_bar_rows)
         if self.symbol_bar_5m_rows:

@@ -6,6 +6,7 @@ import polars as pl
 
 from src.backtest.data.minute_bars import DayFrames
 from src.backtest.models import BarContext, DataRequirements, Order, OrderRequest
+from src.backtest.observability import ObservabilityRecorder
 from src.backtest.portfolio import Portfolio
 from src.strategies.orb_5m_momentum.v2.config import OrbMomentumConfig
 from src.strategies.orb_5m_momentum.v2.presentation import chart_presentation
@@ -25,6 +26,10 @@ class OrbFiveMinuteMomentumV2Strategy:
         self.live_rankings: list[dict] = []
         self.signal_events: list[dict] = []
         self.rejection_events: list[dict] = []
+        self.observability: ObservabilityRecorder | None = None
+
+    def set_observability(self, observability: ObservabilityRecorder) -> None:
+        self.observability = observability
 
     def data_requirements(self) -> DataRequirements:
         return DataRequirements(
@@ -46,6 +51,7 @@ class OrbFiveMinuteMomentumV2Strategy:
         setup_df = self._build_setup_dataframe(frames)
         candidates = setup_df.filter(pl.col("passes_setup_filter")).sort("setup_score", descending=True)
         selected = candidates.head(self.config.watchlist_size)
+        self._observe_setup_scan(frames, setup_df, candidates, selected, portfolio)
 
         self.scanner_snapshots.append(
             {
@@ -149,6 +155,22 @@ class OrbFiveMinuteMomentumV2Strategy:
             if reason is None:
                 continue
             self.breakout_armed[order.symbol] = True
+            self._trace(
+                timestamp=context.timestamp,
+                ticker=order.symbol,
+                stage="entry_order_management",
+                event_type="entry_order_cancel_requested",
+                decision="cancel_order",
+                reason_code=reason,
+                reason=f"Pending entry no longer satisfies {reason}",
+                values={
+                    "last_price": last_price,
+                    "trigger": self.entry_trigger(setup),
+                    "stop": self.protective_stop_price(setup),
+                    "order_id": order.order_id,
+                },
+                force=self._force_trade_trace(),
+            )
             requests.append(
                 OrderRequest(
                     symbol=order.symbol,
@@ -164,6 +186,18 @@ class OrbFiveMinuteMomentumV2Strategy:
     def on_day_end(self, timestamp: datetime, portfolio: Portfolio) -> list[OrderRequest]:
         requests = []
         for symbol, position in list(portfolio.positions.items()):
+            self._trace(
+                timestamp=timestamp,
+                ticker=symbol,
+                stage="day_end",
+                event_type="exit_intent",
+                decision="exit",
+                reason_code="EOD",
+                reason="End of session flatten",
+                values={"quantity": position.quantity, "entry_price": position.entry_price},
+                state=self._portfolio_state(portfolio, []),
+                force=self._force_trade_trace(),
+            )
             requests.append(
                 OrderRequest(
                     symbol=symbol,
@@ -184,6 +218,44 @@ class OrbFiveMinuteMomentumV2Strategy:
             "signal_events": self.signal_events,
             "rejection_events": self.rejection_events,
         }
+
+    def _observe_setup_scan(self, frames: DayFrames, setup_df: pl.DataFrame, candidates: pl.DataFrame, selected: pl.DataFrame, portfolio: Portfolio) -> None:
+        if not self.observability:
+            return
+        scan_time = f"{frames.session_date.isoformat()} 09:35:00"
+        rows = (
+            setup_df.with_columns(
+                pl.when(pl.col("passes_setup_filter")).then(pl.lit("candidate")).otherwise(pl.lit("filtered_out")).alias("scanner_status"),
+                pl.col("reject_reason").alias("reason_code"),
+            )
+            .to_dicts()
+        )
+        self.observability.scanner(timestamp=scan_time, rows=rows, score_key="setup_score", stage="setup_scanner")
+        self.observability.trace(
+            timestamp=scan_time,
+            stage="setup_scanner",
+            event_type="setup_scan_complete",
+            decision="build_watchlist",
+            reason_code="opening_range_complete",
+            reason="Opening range scan completed and watchlist selected",
+            values={
+                "total_scanned": setup_df.height,
+                "candidate_count": candidates.height,
+                "selected_count": selected.height,
+                "watchlist_size": self.config.watchlist_size,
+            },
+            state={"watchlist": [row["ticker"] for row in selected.select("ticker").to_dicts()]},
+        )
+        self.observability.state(
+            timestamp=scan_time,
+            scope="strategy",
+            state={
+                "candidate_count": candidates.height,
+                "selected_count": selected.height,
+                "watchlist_size": self.config.watchlist_size,
+                "open_positions": len(portfolio.positions),
+            },
+        )
 
     def entry_metadata(self, order: Order) -> dict:
         return self.entry_order_metadata.get(order.symbol, {})
@@ -374,6 +446,23 @@ class OrbFiveMinuteMomentumV2Strategy:
         for live_rank, row in enumerate(live_rows, start=1):
             row["live_rank"] = live_rank
             self.live_rankings.append(row)
+        if self.observability and live_rows:
+            self.observability.scanner(
+                timestamp=context.timestamp,
+                rows=live_rows,
+                score_key="live_score",
+                stage="live_scanner",
+            )
+            self.observability.state(
+                timestamp=context.timestamp,
+                scope="strategy",
+                state=self._portfolio_state(portfolio, pending_orders)
+                | {
+                    "watchlist_count": len(self.watchlist),
+                    "live_rows": len(live_rows),
+                    "eligible_count": len([row for row in live_rows if row.get("status") == "eligible"]),
+                },
+            )
 
         candidates.sort(key=lambda item: item["live_score"], reverse=True)
         for live_rank, candidate in enumerate(candidates[:10], start=1):
@@ -423,6 +512,24 @@ class OrbFiveMinuteMomentumV2Strategy:
                     "stop": candidate["stop"],
                 }
             )
+            self._trace(
+                timestamp=candidate["timestamp"],
+                ticker=candidate["ticker"],
+                stage="risk_check",
+                event_type="entry_rejected",
+                decision="skip",
+                reason_code="quantity",
+                reason="Calculated quantity was zero",
+                values={
+                    "live_score": candidate["live_score"],
+                    "trigger": candidate["trigger"],
+                    "stop": candidate["stop"],
+                    "entry": entry_price,
+                    "risk_pct": risk_pct,
+                },
+                state=self._portfolio_state(portfolio, []),
+                force=self._force_trade_trace(),
+            )
             return None
 
         metadata = {
@@ -434,6 +541,28 @@ class OrbFiveMinuteMomentumV2Strategy:
         }
         self.entry_order_metadata[candidate["ticker"]] = metadata
         self.breakout_armed[candidate["ticker"]] = False
+        self._trace(
+            timestamp=candidate["timestamp"],
+            ticker=candidate["ticker"],
+            stage="order_request",
+            event_type="entry_intent",
+            decision="submit_order",
+            reason_code="LIVE_SIGNAL",
+            reason="Live candidate passed entry, risk, and portfolio checks",
+            values={
+                "quantity": quantity,
+                "entry_price": entry_price,
+                "trigger": candidate["trigger"],
+                "stop": candidate["stop"],
+                "setup_rank": candidate["rank"],
+                "live_rank": live_rank,
+                "setup_score": candidate["setup_score"],
+                "live_score": candidate["live_score"],
+                "risk_pct": risk_pct,
+            },
+            state=self._portfolio_state(portfolio, []),
+            force=self._force_trade_trace(),
+        )
         tag = (
             f"ENTRY|type=MARKET|rule=1M_CLOSE_5M_MACD_TEMA|rank={candidate['rank']}|lrank={live_rank}"
             f"|qty={quantity}|entry={entry_price:.2f}|trigger={candidate['trigger']:.2f}|stop={candidate['stop']:.2f}"
@@ -458,6 +587,7 @@ class OrbFiveMinuteMomentumV2Strategy:
                 continue
 
             if float(bar["close"]) <= position.stop_price:
+                self._trace_exit_intent(context.timestamp, symbol, "BREAKOUT_FAIL", position, bar, portfolio)
                 requests.append(
                     OrderRequest(
                         symbol=symbol,
@@ -472,6 +602,7 @@ class OrbFiveMinuteMomentumV2Strategy:
 
             setup = self.watchlist.get(symbol)
             if setup is not None and self._tema_closed(bar, setup):
+                self._trace_exit_intent(context.timestamp, symbol, "TEMA_CLOSE", position, bar, portfolio)
                 requests.append(
                     OrderRequest(
                         symbol=symbol,
@@ -612,3 +743,84 @@ class OrbFiveMinuteMomentumV2Strategy:
                 "price": float(bar["close"]),
             }
         )
+        self._trace(
+            timestamp=timestamp,
+            ticker=ticker,
+            stage="entry_evaluation",
+            event_type="candidate_rejected",
+            decision="skip",
+            reason_code=reason,
+            reason=f"Candidate rejected by {reason}",
+            values={
+                "setup_rank": setup.get("rank"),
+                "setup_score": setup.get("setup_score"),
+                "live_score": live_score,
+                "price": float(bar["close"]),
+                "trigger": self.entry_trigger(setup),
+                "stop": self.protective_stop_price(setup),
+            },
+        )
+
+    def _trace_exit_intent(self, timestamp: datetime, symbol: str, reason: str, position, bar: dict, portfolio: Portfolio) -> None:
+        self._trace(
+            timestamp=timestamp,
+            ticker=symbol,
+            stage="exit_evaluation",
+            event_type="exit_intent",
+            decision="exit",
+            reason_code=reason,
+            reason=f"Exit condition {reason} triggered",
+            values={
+                "quantity": position.quantity,
+                "price": float(bar["close"]),
+                "entry_price": position.entry_price,
+                "stop": position.stop_price,
+                "max_price": position.max_price,
+                "max_unrealized_profit": position.max_unrealized_profit,
+                "tema9_5m": bar.get("tema9_5m"),
+                "tema20_5m": bar.get("tema20_5m"),
+            },
+            state=self._portfolio_state(portfolio, []),
+            force=self._force_trade_trace(),
+        )
+
+    def _trace(
+        self,
+        *,
+        timestamp: datetime | str,
+        stage: str,
+        event_type: str,
+        decision: str,
+        reason_code: str = "",
+        reason: str = "",
+        ticker: str | None = None,
+        values: dict | None = None,
+        state: dict | None = None,
+        force: bool = False,
+    ) -> None:
+        if not self.observability:
+            return
+        self.observability.trace(
+            timestamp=timestamp,
+            ticker=ticker,
+            stage=stage,
+            event_type=event_type,
+            decision=decision,
+            reason_code=reason_code,
+            reason=reason,
+            values=values,
+            state=state,
+            force=force,
+        )
+
+    def _force_trade_trace(self) -> bool:
+        return bool(self.observability and self.observability.config.observability_always_trace_trades)
+
+    def _portfolio_state(self, portfolio: Portfolio, pending_orders: list[Order]) -> dict:
+        return {
+            "cash": portfolio.cash,
+            "open_positions": len(portfolio.positions),
+            "pending_orders": len([order for order in pending_orders if order.status == "OPEN"]),
+            "max_active_positions": self.config.max_active_positions,
+            "watchlist_count": len(self.watchlist),
+        }

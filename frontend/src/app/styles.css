@@ -5991,6 +5991,110 @@ button {
   font-weight: 750;
 }
 
+.observability-workspace {
+  display: grid;
+  gap: 14px;
+}
+
+.observability-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.observability-summary-card {
+  display: grid;
+  gap: 4px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface) 84%, var(--card));
+  padding: 10px 12px;
+}
+
+.observability-summary-card span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.observability-summary-card strong {
+  color: var(--foreground);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.observability-card-list {
+  display: grid;
+  gap: 10px;
+}
+
+.observability-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--card);
+}
+
+.observability-card-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  padding: 13px 14px;
+  text-align: left;
+}
+
+.observability-card-header span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.observability-card-header strong {
+  font-size: 14px;
+}
+
+.observability-card-header small {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.observability-card-count {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: 12px;
+  font-weight: 650;
+  padding: 5px 9px;
+}
+
+.observability-card-body {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding: 12px;
+}
+
+.observability-log {
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
 .error-panel {
   border: 1px solid var(--badge-danger-border);
   border-radius: var(--radius-panel);
