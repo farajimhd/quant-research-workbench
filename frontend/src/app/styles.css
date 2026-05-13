@@ -6218,6 +6218,7 @@ button {
   display: grid;
   min-width: 0;
   align-items: center;
+  padding-left: 20px;
 }
 
 .observability-action-symbol strong {
