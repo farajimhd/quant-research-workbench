@@ -784,6 +784,8 @@ if FRONTEND_DIST.exists():
 
 @app.get("/{path:path}")
 def frontend(path: str) -> FileResponse:
+    if path == "api" or path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API route not found. Restart the backend if this route was just added.")
     index = FRONTEND_DIST / "index.html"
     if not index.exists():
         raise HTTPException(status_code=404, detail="React build not found. Run `npm --prefix frontend run build`.")

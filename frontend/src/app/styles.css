@@ -925,22 +925,53 @@ button {
   min-height: 0;
 }
 
-.trade-chart-panel {
+.trade-chart-modal-panel {
   display: flex;
-  min-height: 520px;
+  width: min(1500px, calc(100vw - 40px));
+  height: min(940px, calc(100vh - 40px));
+  max-height: calc(100vh - 40px);
   flex-direction: column;
-  gap: 10px;
-  margin-bottom: 14px;
+  overflow: hidden;
 }
 
-.trade-chart-panel .chart-shell {
+.trade-chart-modal-panel .modal-header {
+  flex: 0 0 auto;
+}
+
+.trade-chart-modal-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.trade-chart-summary {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trade-chart-modal-panel .chart-shell {
   flex: 1 1 auto;
   min-height: 0;
 }
 
+.trade-chart-modal-panel .chart-canvas-stack {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.trade-chart-modal-panel .chart-price {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 300px;
+}
+
 .trade-chart-subtitle {
   display: block;
-  margin-top: 4px;
   color: var(--muted-foreground);
   font-size: 12px;
 }

@@ -8,19 +8,35 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     },
     ...init
   });
+  const text = await response.text();
+  const payload = parseJsonPayload(text);
   if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const payload = await response.json();
-      detail = formatApiErrorDetail(payload);
-    } catch {
-      detail = response.statusText;
-    }
+    const detail = payload === undefined ? response.statusText : formatApiErrorDetail(payload);
     const error = new Error(detail) as ApiError;
     error.status = response.status;
     throw error;
   }
-  return response.json() as Promise<T>;
+  if (payload === undefined) {
+    throw new Error(formatNonJsonApiResponse(path, text));
+  }
+  return payload as T;
+}
+
+function parseJsonPayload(text: string): unknown | undefined {
+  if (!text.trim()) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function formatNonJsonApiResponse(path: string, text: string): string {
+  const preview = text.trim().slice(0, 80);
+  if (/^<!doctype\s+html/i.test(preview) || /^<html[\s>]/i.test(preview)) {
+    return `API route ${path} returned the frontend HTML page instead of JSON. Restart the backend and refresh the page; if it continues, the API route is missing.`;
+  }
+  return `API route ${path} returned a non-JSON response${preview ? `: ${preview}` : "."}`;
 }
 
 function formatApiErrorDetail(payload: unknown): string {

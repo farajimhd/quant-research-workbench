@@ -1044,12 +1044,14 @@ function BacktestJobPanel({
         {tab === "Trades" ? (
           <>
             {selectedTrade ? (
-              <TradeTickerChart
-                outputRoot={outputRoot}
-                runId={latestRunId}
-                selectedTrade={selectedTrade}
-                trades={detail?.tables.trades.rows ?? []}
-              />
+              <Modal className="trade-chart-modal-panel" title={`${tradeSymbol(selectedTrade) || "Trade"} Chart`} onClose={() => setSelectedTrade(null)}>
+                <TradeTickerChart
+                  outputRoot={outputRoot}
+                  runId={latestRunId}
+                  selectedTrade={selectedTrade}
+                  trades={detail?.tables.trades.rows ?? []}
+                />
+              </Modal>
             ) : null}
             <DataTable
               isRowSelected={(row) => tradeRowKey(row) === tradeRowKey(selectedTrade)}
@@ -1437,14 +1439,11 @@ function TradeTickerChart({
   }, [chartPayload, period.end, period.start]);
 
   return (
-    <section className="trade-chart-panel">
-      <div className="toolbar" style={{ justifyContent: "space-between" }}>
-        <div>
-          <h2 style={{ margin: 0 }}>{symbol ? `${symbol} Trade Chart` : "Trade Chart"}</h2>
-          <span className="trade-chart-subtitle">
-            Showing {sameSymbolTrades.length} trade{sameSymbolTrades.length === 1 ? "" : "s"} for this ticker. The selected trade is centered by its entry/exit midpoint.
-          </span>
-        </div>
+    <section className="trade-chart-modal-body">
+      <div className="trade-chart-summary">
+        <span className="trade-chart-subtitle">
+          Showing {sameSymbolTrades.length} trade{sameSymbolTrades.length === 1 ? "" : "s"} for this ticker. The selected trade is centered by its entry/exit midpoint.
+        </span>
         <SemanticBadge tone={Number(selectedTrade.pnl ?? 0) >= 0 ? "success" : "danger"}>
           {formatMoney(Number(selectedTrade.pnl ?? 0))}
         </SemanticBadge>
