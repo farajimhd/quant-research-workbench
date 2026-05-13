@@ -928,7 +928,7 @@ button {
 .new-run-metric-strip {
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: repeat(10, minmax(0, 1fr));
+  grid-template-columns: minmax(20px, 0.35fr) repeat(9, minmax(0, 1fr)) minmax(112px, 1.35fr) minmax(20px, 0.35fr);
   gap: 0;
   min-height: 74px;
   overflow-x: hidden;
@@ -939,20 +939,29 @@ button {
   scrollbar-width: thin;
 }
 
+.new-run-metric-strip::before,
+.new-run-metric-strip::after {
+  min-width: 0;
+  content: "";
+}
+
 .new-run-metric-card {
   --metric-tone: var(--muted-foreground);
   display: grid;
   grid-template-areas:
     "icon label"
     "value value";
-  grid-template-columns: 16px minmax(0, 1fr);
+  grid-template-columns: 16px minmax(0, max-content);
   min-width: 0;
   min-height: 54px;
   align-content: center;
+  justify-content: center;
+  justify-items: center;
   column-gap: 6px;
   row-gap: 5px;
   overflow: hidden;
-  padding: 0 4px;
+  padding: 0 3px;
+  text-align: center;
 }
 
 .new-run-metric-card[data-tone="danger"] {
@@ -985,6 +994,7 @@ button {
 .new-run-metric-label {
   grid-area: label;
   align-self: center;
+  max-width: 100%;
   overflow: hidden;
   color: var(--muted-foreground);
   font-size: 11px;
