@@ -92,7 +92,7 @@ class BuildSubmit(ScopeUpdate):
 
 class BacktestSubmit(BaseModel):
     strategy_name: str
-    strategy_version: str = "v2"
+    strategy_version: str = "v3"
     run_name: str = ""
     start_date: date
     end_date: date
@@ -635,7 +635,7 @@ def strategies() -> dict[str, Any]:
             {
                 "name": name,
                 "display_name": name.replace("_", " ").title(),
-                "description": "Opening-range momentum strategy using a 09:30-09:35 setup ranking, live ranking, and 5-minute confirmation.",
+                "description": "Opening-range momentum strategy with versioned scanner, entry, and exit rules.",
                 "versions": available_strategy_versions(name),
                 "default_version": default_strategy_version(name),
             }
@@ -718,7 +718,7 @@ def backtest_runs(
 @app.post("/api/backtests/jobs")
 def start_backtest(payload: BacktestSubmit) -> dict[str, Any]:
     raw = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-    raw["run_name"] = submitted_run_name(raw["strategy_name"], raw.get("strategy_version") or "v2", raw.get("run_name"))
+    raw["run_name"] = submitted_run_name(raw["strategy_name"], raw.get("strategy_version") or "v3", raw.get("run_name"))
     config = BacktestConfig.from_dict({**raw, "created_by_app": True})
     try:
         strategy = create_strategy(config.strategy_name, config.strategy_params, config.strategy_version)

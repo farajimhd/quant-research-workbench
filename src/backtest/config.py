@@ -55,7 +55,7 @@ class BacktestConfig:
     strategy_name: str
     start_date: date
     end_date: date
-    strategy_version: str = "v2"
+    strategy_version: str = "v3"
     run_name: str = "Untitled run"
     data_root: Path = DEFAULT_DATA_ROOT
     processed_data_root: Path = DEFAULT_PROCESSED_DATA_ROOT
@@ -86,7 +86,7 @@ class BacktestConfig:
         data["processed_data_root"] = Path(data.get("processed_data_root", DEFAULT_PROCESSED_DATA_ROOT))
         data["output_root"] = Path(data.get("output_root", DEFAULT_OUTPUT_ROOT))
         data["strategy_params"] = dict(data.get("strategy_params", {}))
-        data["strategy_version"] = str(data.get("strategy_version") or "v2").strip()
+        data["strategy_version"] = str(data.get("strategy_version") or "v3").strip()
         data["run_name"] = str(data.get("run_name") or "Untitled run").strip()
         data["observability_mode"] = str(data.get("observability_mode") or "standard").strip().lower()
         data["observability_sessions"] = int(data.get("observability_sessions", 7))

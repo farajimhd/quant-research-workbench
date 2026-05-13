@@ -9,6 +9,9 @@ from src.strategies.orb_5m_momentum.v1.strategy import OrbFiveMinuteMomentumStra
 from src.strategies.orb_5m_momentum.v2.config import OrbMomentumConfig as OrbMomentumV2Config
 from src.strategies.orb_5m_momentum.v2.presentation import chart_presentation as orb_5m_momentum_v2_chart_presentation
 from src.strategies.orb_5m_momentum.v2.strategy import OrbFiveMinuteMomentumV2Strategy
+from src.strategies.orb_5m_momentum.v3.config import OrbMomentumConfig as OrbMomentumV3Config
+from src.strategies.orb_5m_momentum.v3.presentation import chart_presentation as orb_5m_momentum_v3_chart_presentation
+from src.strategies.orb_5m_momentum.v3.strategy import OrbFiveMinuteMomentumV3Strategy
 
 STRATEGIES_ROOT = Path(__file__).resolve().parent
 
@@ -29,23 +32,34 @@ def default_orb_5m_momentum_v2_params() -> dict:
     return OrbMomentumV2Config().to_dict()
 
 
+def create_orb_5m_momentum_v3(params: dict | None = None) -> OrbFiveMinuteMomentumV3Strategy:
+    return OrbFiveMinuteMomentumV3Strategy(OrbMomentumV3Config.from_dict(params))
+
+
+def default_orb_5m_momentum_v3_params() -> dict:
+    return OrbMomentumV3Config().to_dict()
+
+
 STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("orb_5m_momentum", "v1"): create_orb_5m_momentum_v1,
     ("orb_5m_momentum", "v2"): create_orb_5m_momentum_v2,
+    ("orb_5m_momentum", "v3"): create_orb_5m_momentum_v3,
 }
 
 STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("orb_5m_momentum", "v1"): default_orb_5m_momentum_v1_params,
     ("orb_5m_momentum", "v2"): default_orb_5m_momentum_v2_params,
+    ("orb_5m_momentum", "v3"): default_orb_5m_momentum_v3_params,
 }
 
 STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("orb_5m_momentum", "v1"): orb_5m_momentum_v1_chart_presentation,
     ("orb_5m_momentum", "v2"): orb_5m_momentum_v2_chart_presentation,
+    ("orb_5m_momentum", "v3"): orb_5m_momentum_v3_chart_presentation,
 }
 
 DEFAULT_STRATEGY_VERSIONS: dict[str, str] = {
-    "orb_5m_momentum": "v2",
+    "orb_5m_momentum": "v3",
 }
 
 
