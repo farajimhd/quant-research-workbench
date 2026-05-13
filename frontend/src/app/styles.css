@@ -6025,9 +6025,109 @@ button {
   line-height: 1;
 }
 
-.observability-card-list {
+.observability-action-list {
   display: grid;
   gap: 10px;
+}
+
+.observability-action-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--card);
+}
+
+.observability-action-header {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.observability-action-title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.observability-action-title strong {
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.observability-action-title small,
+.observability-action-eyebrow {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.observability-action-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.observability-action-body {
+  display: grid;
+  gap: 14px;
+  border-top: 1px solid var(--border);
+  padding: 14px;
+}
+
+.observability-action-overview,
+.observability-field-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.observability-field {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 9px 10px;
+}
+
+.observability-field.wide {
+  grid-column: span 2;
+}
+
+.observability-field span,
+.observability-field-group h4,
+.observability-evidence-block h4 {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.observability-field strong {
+  overflow-wrap: anywhere;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.observability-field-group,
+.observability-evidence-block {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 
 .observability-card {
@@ -6095,6 +6195,34 @@ button {
   margin: 0;
   padding: 12px;
   white-space: pre-wrap;
+}
+
+@media (max-width: 1100px) {
+  .observability-summary,
+  .observability-action-overview,
+  .observability-field-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .observability-action-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .observability-action-meta {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 680px) {
+  .observability-summary,
+  .observability-action-overview,
+  .observability-field-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .observability-field.wide {
+    grid-column: auto;
+  }
 }
 
 .error-panel {

@@ -8,7 +8,7 @@ import { DataTable } from "../app/components/DataTable";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { ProgressMeter } from "../app/components/Progress";
-import { SemanticBadge, toneForStatus } from "../app/components/SemanticBadge";
+import { SemanticBadge, toneForStatus, type SemanticTone } from "../app/components/SemanticBadge";
 import { Tabs } from "../app/components/Tabs";
 import { formatMoney, formatNumber, formatPct } from "../app/format";
 
@@ -1130,6 +1130,15 @@ function ObservabilityPanel({
   const stateRows = detail?.tables.observability_state?.rows ?? [];
   const rejectedRows = detail?.tables.rejections?.rows ?? [];
   const legacyScannerRows = detail?.tables.scanner?.rows ?? [];
+  const actions = buildObservabilityActions({
+    fills: detail?.tables.fills.rows ?? [],
+    orders: detail?.tables.orders.rows ?? [],
+    rejections: rejectedRows,
+    scanner: scannerRows.length ? scannerRows : legacyScannerRows,
+    states: stateRows,
+    traces: traceRows,
+    trades: detail?.tables.trades.rows ?? [],
+  });
   const systemRows = events.map((event) => ({
     event: event.event,
     session_date: event.session_date,
@@ -1137,53 +1146,23 @@ function ObservabilityPanel({
     run_dir: event.run_dir,
     ...((event.daily_summary as Record<string, unknown>) ?? {})
   }));
-  const cards = [
-    {
-      title: "1. Scanner",
-      subtitle: "Top captured opportunity rows from setup and live scans.",
-      rows: scannerRows.length ? scannerRows : legacyScannerRows,
-      empty: "No scanner observability was captured. Check observability mode and profile sessions."
-    },
-    {
-      title: "2. Decision Trace",
-      subtitle: "Actionable strategy decisions, intents, skips, and reasons.",
-      rows: traceRows,
-      empty: "No decision trace rows were captured for this run."
-    },
-    {
-      title: "3. State Snapshots",
-      subtitle: "Strategy, portfolio, and symbol state at captured decision times.",
-      rows: stateRows,
-      empty: "No state snapshots were captured for this run."
-    },
-    {
-      title: "4. Rejected",
-      subtitle: "Rejected candidates, invalidated entries, and blocked decisions.",
-      rows: rejectedRows,
-      empty: "No rejection rows were saved."
-    },
-    {
-      title: "5. System",
-      subtitle: "Run progress events and raw logs for infrastructure debugging.",
-      rows: systemRows,
-      empty: "No progress events were reported.",
-      footer: logs ? <pre className="observability-log">{logs}</pre> : null
-    }
-  ];
 
   return (
     <section className="observability-workspace">
       <div className="observability-summary">
-        <ObservabilitySummaryMetric label="Scanner Rows" value={scannerRows.length || legacyScannerRows.length} />
-        <ObservabilitySummaryMetric label="Trace Rows" value={traceRows.length} />
+        <ObservabilitySummaryMetric label="Actions" value={actions.length} />
+        <ObservabilitySummaryMetric label="Scanner Context" value={scannerRows.length || legacyScannerRows.length} />
         <ObservabilitySummaryMetric label="State Rows" value={stateRows.length} />
         <ObservabilitySummaryMetric label="Rejected" value={rejectedRows.length} />
       </div>
-      <div className="observability-card-list">
-        {cards.map((card, index) => (
-          <ObservabilityCard defaultOpen={index < 2} key={card.title} {...card} />
-        ))}
+      <div className="observability-action-list">
+        {actions.length ? (
+          actions.map((action, index) => <ObservabilityActionCard action={action} defaultOpen={index === 0} key={action.id} />)
+        ) : (
+          <div className="empty-state">No strategy actions were captured. Check observability mode and profile sessions.</div>
+        )}
       </div>
+      {systemRows.length || logs ? <ObservabilitySystemPanel logs={logs} rows={systemRows} /> : null}
     </section>
   );
 }
@@ -1197,39 +1176,317 @@ function ObservabilitySummaryMetric({ label, value }: { label: string; value: nu
   );
 }
 
-function ObservabilityCard({
-  defaultOpen = false,
-  empty,
-  footer,
-  rows,
-  subtitle,
-  title
-}: {
-  defaultOpen?: boolean;
-  empty: string;
-  footer?: ReactNode;
-  rows: DataRow[];
-  subtitle: string;
-  title: string;
-}) {
+function ObservabilityActionCard({ action, defaultOpen = false }: { action: ObservabilityAction; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <article className={open ? "observability-card open" : "observability-card"}>
-      <button className="observability-card-header" onClick={() => setOpen((value) => !value)} type="button">
-        <span>
-          <strong>{title}</strong>
-          <small>{subtitle}</small>
+    <article className={open ? "observability-action-card open" : "observability-action-card"}>
+      <button className="observability-action-header" onClick={() => setOpen((value) => !value)} type="button">
+        <span className="observability-action-title">
+          <span className="observability-action-eyebrow">{action.timestamp || action.sessionDate || "No timestamp"}</span>
+          <strong>{action.title}</strong>
+          <small>{action.subtitle}</small>
         </span>
-        <span className="observability-card-count">{formatNumber(rows.length)} rows</span>
+        <span className="observability-action-meta">
+          <SemanticBadge tone={action.tone}>{action.decision || "observed"}</SemanticBadge>
+          <span className="observability-card-count">{formatNumber(action.evidenceCount)} evidence rows</span>
+        </span>
       </button>
       {open ? (
-        <div className="observability-card-body">
-          {rows.length ? <DataTable rows={rows} /> : <div className="empty-state">{empty}</div>}
-          {footer}
+        <div className="observability-action-body">
+          <div className="observability-action-overview">
+            <ObservationField label="Stage" value={action.stage} />
+            <ObservationField label="Event" value={action.eventType} />
+            <ObservationField label="Ticker" value={action.ticker || "Run"} />
+            <ObservationField label="Reason code" value={action.reasonCode || "-"} />
+            <ObservationField label="Reason" value={action.reason || "-"} wide />
+          </div>
+          {action.inputFields.length ? <ObservationFieldGroup fields={action.inputFields} title="Inputs And Thresholds" /> : null}
+          {action.stateFields.length ? <ObservationFieldGroup fields={action.stateFields} title="State At Decision" /> : null}
+          <ObservationEvidenceTable rows={action.scannerRows} title="Scanner Evidence" />
+          <ObservationEvidenceTable rows={action.stateRows} title="State Snapshots" />
+          <ObservationEvidenceTable rows={action.rejectionRows} title="Rejection Evidence" />
+          <ObservationEvidenceTable rows={action.orderRows} title="Related Orders" />
+          <ObservationEvidenceTable rows={action.fillRows} title="Related Fills" />
+          <ObservationEvidenceTable rows={action.tradeRows} title="Related Trades" />
         </div>
       ) : null}
     </article>
   );
+}
+
+function ObservationField({ label, value, wide = false }: { label: string; value: unknown; wide?: boolean }) {
+  return (
+    <div className={wide ? "observability-field wide" : "observability-field"}>
+      <span>{label}</span>
+      <strong>{formatObservationValue(value, label)}</strong>
+    </div>
+  );
+}
+
+function ObservationFieldGroup({ fields, title }: { fields: ObservationFieldValue[]; title: string }) {
+  return (
+    <section className="observability-field-group">
+      <h4>{title}</h4>
+      <div className="observability-field-grid">
+        {fields.map((field) => (
+          <ObservationField key={field.key} label={field.label} value={field.value} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ObservationEvidenceTable({ rows, title }: { rows: DataRow[]; title: string }) {
+  if (!rows.length) return null;
+  return (
+    <section className="observability-evidence-block">
+      <h4>{title}</h4>
+      <DataTable rows={rows} />
+    </section>
+  );
+}
+
+function ObservabilitySystemPanel({ logs, rows }: { logs: string; rows: DataRow[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <article className={open ? "observability-card open" : "observability-card"}>
+      <button className="observability-card-header" onClick={() => setOpen((value) => !value)} type="button">
+        <span>
+          <strong>Run System Context</strong>
+          <small>Progress events and raw logs for infrastructure debugging.</small>
+        </span>
+        <span className="observability-card-count">{formatNumber(rows.length)} events</span>
+      </button>
+      {open ? (
+        <div className="observability-card-body">
+          {rows.length ? <DataTable rows={rows} /> : <div className="empty-state">No progress events were reported.</div>}
+          {logs ? <pre className="observability-log">{logs}</pre> : null}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+type ObservationFieldValue = {
+  key: string;
+  label: string;
+  value: unknown;
+};
+
+type ObservabilityAction = {
+  decision: string;
+  eventType: string;
+  evidenceCount: number;
+  fillRows: DataRow[];
+  id: string;
+  inputFields: ObservationFieldValue[];
+  orderRows: DataRow[];
+  reason: string;
+  reasonCode: string;
+  rejectionRows: DataRow[];
+  scannerRows: DataRow[];
+  sessionDate: string;
+  stage: string;
+  stateFields: ObservationFieldValue[];
+  stateRows: DataRow[];
+  subtitle: string;
+  ticker: string;
+  timestamp: string;
+  title: string;
+  tone: SemanticTone;
+  tradeRows: DataRow[];
+};
+
+function buildObservabilityActions({
+  fills,
+  orders,
+  rejections,
+  scanner,
+  states,
+  traces,
+  trades
+}: {
+  fills: DataRow[];
+  orders: DataRow[];
+  rejections: DataRow[];
+  scanner: DataRow[];
+  states: DataRow[];
+  traces: DataRow[];
+  trades: DataRow[];
+}): ObservabilityAction[] {
+  return [...traces]
+    .sort((left, right) => rowTime(left) - rowTime(right))
+    .map((trace, index) => {
+      const sessionDate = rowText(trace, "session_date");
+      const timestamp = rowText(trace, "timestamp");
+      const ticker = normalizedTicker(rowText(trace, "ticker"));
+      const stage = rowText(trace, "stage");
+      const eventType = rowText(trace, "event_type");
+      const decision = rowText(trace, "decision");
+      const reasonCode = rowText(trace, "reason_code");
+      const reason = rowText(trace, "reason");
+      const scannerRows = relatedScannerRows(scanner, trace).slice(0, 30);
+      const stateRows = relatedStateRows(states, trace).slice(0, 12);
+      const rejectionRows = relatedSymbolSessionRows(rejections, trace, ["timestamp"]).slice(0, 12);
+      const orderRows = relatedSymbolSessionRows(orders, trace, ["created_at", "filled_at"]).slice(0, 12);
+      const fillRows = relatedSymbolSessionRows(fills, trace, ["filled_at", "bar_time_market"]).slice(0, 12);
+      const tradeRows = relatedSymbolSessionRows(trades, trace, ["entry_time", "exit_time"]).slice(0, 12);
+      const values = parseObservationJson(trace.values_json);
+      const state = parseObservationJson(trace.state_json);
+      return {
+        decision,
+        eventType,
+        evidenceCount: scannerRows.length + stateRows.length + rejectionRows.length + orderRows.length + fillRows.length + tradeRows.length,
+        fillRows,
+        id: `${timestamp}:${ticker}:${stage}:${eventType}:${index}`,
+        inputFields: objectToObservationFields(values),
+        orderRows,
+        reason,
+        reasonCode,
+        rejectionRows,
+        scannerRows,
+        sessionDate,
+        stage,
+        stateFields: objectToObservationFields(state),
+        stateRows,
+        subtitle: [ticker || "Run", formatObservationLabel(stage), reasonCode || reason].filter(Boolean).join(" | "),
+        ticker,
+        timestamp,
+        title: formatObservationActionTitle(eventType, decision),
+        tone: observationDecisionTone(decision, eventType),
+        tradeRows,
+      };
+    });
+}
+
+function relatedScannerRows(rows: DataRow[], trace: DataRow): DataRow[] {
+  const ticker = normalizedTicker(rowText(trace, "ticker"));
+  const sessionDate = rowText(trace, "session_date");
+  const stage = rowText(trace, "stage");
+  const traceTime = rowTime(trace);
+  return rows
+    .filter((row) => {
+      if (rowText(row, "session_date") !== sessionDate) return false;
+      const rowTicker = normalizedTicker(rowText(row, "ticker"));
+      const rowTimeValue = rowTime(row);
+      if (stage === "setup_scanner") return rowText(row, "stage") === "setup_scanner";
+      if (ticker) return rowTicker === ticker && (!Number.isFinite(traceTime) || rowTimeValue <= traceTime);
+      return rowTimeValue === traceTime;
+    })
+    .sort(compareEvidenceRows);
+}
+
+function relatedStateRows(rows: DataRow[], trace: DataRow): DataRow[] {
+  const ticker = normalizedTicker(rowText(trace, "ticker"));
+  const sessionDate = rowText(trace, "session_date");
+  const traceTime = rowTime(trace);
+  return rows
+    .filter((row) => {
+      if (rowText(row, "session_date") !== sessionDate) return false;
+      const rowTicker = normalizedTicker(rowText(row, "ticker"));
+      const rowTimeValue = rowTime(row);
+      if (Number.isFinite(traceTime) && rowTimeValue > traceTime) return false;
+      return !ticker || !rowTicker || rowTicker === ticker;
+    })
+    .sort(compareEvidenceRows);
+}
+
+function relatedSymbolSessionRows(rows: DataRow[], trace: DataRow, timeKeys: string[]): DataRow[] {
+  const ticker = normalizedTicker(rowText(trace, "ticker"));
+  const sessionDate = rowText(trace, "session_date");
+  if (!ticker) return [];
+  return rows
+    .filter((row) => {
+      if (normalizedTicker(rowText(row, "symbol") || rowText(row, "ticker")) !== ticker) return false;
+      return rowSessionDate(row, timeKeys) === sessionDate;
+    })
+    .sort(compareEvidenceRows);
+}
+
+function parseObservationJson(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function objectToObservationFields(value: Record<string, unknown>): ObservationFieldValue[] {
+  return Object.entries(value)
+    .filter(([, fieldValue]) => fieldValue !== undefined && fieldValue !== null && fieldValue !== "")
+    .slice(0, 24)
+    .map(([key, fieldValue]) => ({ key, label: formatObservationLabel(key), value: fieldValue }));
+}
+
+function observationDecisionTone(decision: string, eventType: string): SemanticTone {
+  const normalized = `${decision} ${eventType}`.toLowerCase();
+  if (normalized.includes("reject") || normalized.includes("skip") || normalized.includes("blocked")) return "danger";
+  if (normalized.includes("cancel")) return "warning";
+  if (normalized.includes("submit") || normalized.includes("entry")) return "success";
+  if (normalized.includes("exit")) return "info";
+  return "neutral";
+}
+
+function formatObservationActionTitle(eventType: string, decision: string): string {
+  const label = formatObservationLabel(eventType || decision || "action");
+  return label || "Action";
+}
+
+function formatObservationLabel(value: string): string {
+  return String(value || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function formatObservationValue(value: unknown, key: string): string {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") {
+    const normalized = key.toLowerCase();
+    if (normalized.includes("price") || normalized.includes("pnl") || normalized.includes("cash") || normalized.includes("equity") || normalized.includes("fee") || normalized.includes("stop") || normalized.includes("trigger")) {
+      return formatMoney(value);
+    }
+    return formatNumber(value, Number.isInteger(value) ? 0 : 4);
+  }
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function compareEvidenceRows(left: DataRow, right: DataRow): number {
+  const timeDiff = rowTime(right) - rowTime(left);
+  if (timeDiff) return timeDiff;
+  return Number(left.rank ?? 0) - Number(right.rank ?? 0);
+}
+
+function rowTime(row: DataRow): number {
+  const value = rowText(row, "timestamp") || rowText(row, "filled_at") || rowText(row, "created_at") || rowText(row, "entry_time") || rowText(row, "exit_time") || rowText(row, "bar_time_market");
+  const normalized = value.includes("T") ? value : value.replace(" ", "T");
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function rowSessionDate(row: DataRow, timeKeys: string[]): string {
+  const explicit = rowText(row, "session_date");
+  if (explicit) return explicit.slice(0, 10);
+  for (const key of timeKeys) {
+    const value = rowText(row, key);
+    if (value.length >= 10) return value.slice(0, 10);
+  }
+  return "";
+}
+
+function rowText(row: DataRow, key: string): string {
+  const value = row[key];
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function normalizedTicker(value: string): string {
+  return value.trim().toUpperCase();
 }
 
 function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: RunDetailPayload | null): NewRunMetric[] {
