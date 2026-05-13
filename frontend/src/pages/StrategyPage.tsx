@@ -1,4 +1,4 @@
-import { Activity, Banknote, CircleHelp, Database, Gauge, ListChecks, Percent, Play, Shield, SlidersHorizontal, StopCircle, Trash2 } from "lucide-react";
+import { Activity, Banknote, ChevronDown, ChevronRight, CircleHelp, Database, Gauge, ListChecks, Percent, Play, Shield, SlidersHorizontal, StopCircle, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
@@ -1130,15 +1130,21 @@ function ObservabilityPanel({
   const stateRows = detail?.tables.observability_state?.rows ?? [];
   const rejectedRows = detail?.tables.rejections?.rows ?? [];
   const legacyScannerRows = detail?.tables.scanner?.rows ?? [];
-  const actions = buildObservabilityActions({
-    fills: detail?.tables.fills.rows ?? [],
-    orders: detail?.tables.orders.rows ?? [],
-    rejections: rejectedRows,
-    scanner: scannerRows.length ? scannerRows : legacyScannerRows,
-    states: stateRows,
-    traces: traceRows,
-    trades: detail?.tables.trades.rows ?? [],
-  });
+  const scannerContextRows = scannerRows.length ? scannerRows : legacyScannerRows;
+  const actions = useMemo(() => buildObservabilityActions(traceRows), [traceRows]);
+  const [visibleActionCount, setVisibleActionCount] = useState(100);
+  const visibleActions = actions.slice(0, visibleActionCount);
+  const sources = useMemo<ObservationEvidenceSources>(
+    () => ({
+      fills: detail?.tables.fills.rows ?? [],
+      orders: detail?.tables.orders.rows ?? [],
+      rejections: rejectedRows,
+      scanner: scannerContextRows,
+      states: stateRows,
+      trades: detail?.tables.trades.rows ?? [],
+    }),
+    [detail?.tables.fills.rows, detail?.tables.orders.rows, detail?.tables.trades.rows, rejectedRows, scannerContextRows, stateRows]
+  );
   const systemRows = events.map((event) => ({
     event: event.event,
     session_date: event.session_date,
@@ -1147,22 +1153,34 @@ function ObservabilityPanel({
     ...((event.daily_summary as Record<string, unknown>) ?? {})
   }));
 
+  useEffect(() => {
+    setVisibleActionCount(100);
+  }, [actions]);
+
   return (
     <section className="observability-workspace">
       <div className="observability-summary">
         <ObservabilitySummaryMetric label="Actions" value={actions.length} />
-        <ObservabilitySummaryMetric label="Scanner Context" value={scannerRows.length || legacyScannerRows.length} />
+        <ObservabilitySummaryMetric label="Scanner Context" value={scannerContextRows.length} />
         <ObservabilitySummaryMetric label="State Rows" value={stateRows.length} />
         <ObservabilitySummaryMetric label="Rejected" value={rejectedRows.length} />
       </div>
-      <div className="observability-action-list">
-        {actions.length ? (
-          actions.map((action, index) => <ObservabilityActionCard action={action} defaultOpen={index === 0} key={action.id} />)
-        ) : (
-          <div className="empty-state">No strategy actions were captured. Check observability mode and profile sessions.</div>
-        )}
+      <div className="observability-scroll-region">
+        <div className="observability-action-list">
+          {visibleActions.length ? (
+            visibleActions.map((action) => <ObservabilityActionCard action={action} key={action.id} sources={sources} />)
+          ) : (
+            <div className="empty-state">No strategy actions were captured. Check observability mode and profile sessions.</div>
+          )}
+        </div>
+        {visibleActionCount < actions.length ? (
+          <button className="observability-load-more" onClick={() => setVisibleActionCount((count) => Math.min(actions.length, count + 100))} type="button">
+            Show more actions
+            <span>{formatNumber(visibleActionCount)} of {formatNumber(actions.length)}</span>
+          </button>
+        ) : null}
+        {systemRows.length || logs ? <ObservabilitySystemPanel logs={logs} rows={systemRows} /> : null}
       </div>
-      {systemRows.length || logs ? <ObservabilitySystemPanel logs={logs} rows={systemRows} /> : null}
     </section>
   );
 }
@@ -1176,11 +1194,14 @@ function ObservabilitySummaryMetric({ label, value }: { label: string; value: nu
   );
 }
 
-function ObservabilityActionCard({ action, defaultOpen = false }: { action: ObservabilityAction; defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(defaultOpen);
+function ObservabilityActionCard({ action, sources }: { action: ObservabilityAction; sources: ObservationEvidenceSources }) {
+  const [open, setOpen] = useState(false);
+  const evidence = useMemo(() => (open ? buildObservationEvidence(action.trace, sources) : emptyObservationEvidence()), [action.trace, open, sources]);
+  const evidenceCount = evidence.scannerRows.length + evidence.stateRows.length + evidence.rejectionRows.length + evidence.orderRows.length + evidence.fillRows.length + evidence.tradeRows.length;
   return (
     <article className={open ? "observability-action-card open" : "observability-action-card"}>
-      <button className="observability-action-header" onClick={() => setOpen((value) => !value)} type="button">
+      <button aria-expanded={open} className="observability-action-header" onClick={() => setOpen((value) => !value)} type="button">
+        <span className="observability-action-toggle" aria-hidden="true">{open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
         <span className="observability-action-title">
           <span className="observability-action-eyebrow">{action.timestamp || action.sessionDate || "No timestamp"}</span>
           <strong>{action.title}</strong>
@@ -1188,7 +1209,7 @@ function ObservabilityActionCard({ action, defaultOpen = false }: { action: Obse
         </span>
         <span className="observability-action-meta">
           <SemanticBadge tone={action.tone}>{action.decision || "observed"}</SemanticBadge>
-          <span className="observability-card-count">{formatNumber(action.evidenceCount)} evidence rows</span>
+          <span className="observability-card-count">{open ? `${formatNumber(evidenceCount)} rows` : "Expand"}</span>
         </span>
       </button>
       {open ? (
@@ -1202,12 +1223,12 @@ function ObservabilityActionCard({ action, defaultOpen = false }: { action: Obse
           </div>
           {action.inputFields.length ? <ObservationFieldGroup fields={action.inputFields} title="Inputs And Thresholds" /> : null}
           {action.stateFields.length ? <ObservationFieldGroup fields={action.stateFields} title="State At Decision" /> : null}
-          <ObservationEvidenceTable rows={action.scannerRows} title="Scanner Evidence" />
-          <ObservationEvidenceTable rows={action.stateRows} title="State Snapshots" />
-          <ObservationEvidenceTable rows={action.rejectionRows} title="Rejection Evidence" />
-          <ObservationEvidenceTable rows={action.orderRows} title="Related Orders" />
-          <ObservationEvidenceTable rows={action.fillRows} title="Related Fills" />
-          <ObservationEvidenceTable rows={action.tradeRows} title="Related Trades" />
+          <ObservationEvidenceTable rows={evidence.scannerRows} title="Scanner Evidence" />
+          <ObservationEvidenceTable rows={evidence.stateRows} title="State Snapshots" />
+          <ObservationEvidenceTable rows={evidence.rejectionRows} title="Rejection Evidence" />
+          <ObservationEvidenceTable rows={evidence.orderRows} title="Related Orders" />
+          <ObservationEvidenceTable rows={evidence.fillRows} title="Related Fills" />
+          <ObservationEvidenceTable rows={evidence.tradeRows} title="Related Trades" />
         </div>
       ) : null}
     </article>
@@ -1237,11 +1258,16 @@ function ObservationFieldGroup({ fields, title }: { fields: ObservationFieldValu
 }
 
 function ObservationEvidenceTable({ rows, title }: { rows: DataRow[]; title: string }) {
+  const [open, setOpen] = useState(false);
   if (!rows.length) return null;
   return (
     <section className="observability-evidence-block">
-      <h4>{title}</h4>
-      <DataTable rows={rows} />
+      <button aria-expanded={open} className="observability-evidence-header" onClick={() => setOpen((value) => !value)} type="button">
+        <span>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+        <strong>{title}</strong>
+        <small>{formatNumber(rows.length)} rows</small>
+      </button>
+      {open ? <DataTable rows={rows} /> : null}
     </section>
   );
 }
@@ -1276,44 +1302,40 @@ type ObservationFieldValue = {
 type ObservabilityAction = {
   decision: string;
   eventType: string;
-  evidenceCount: number;
-  fillRows: DataRow[];
   id: string;
   inputFields: ObservationFieldValue[];
-  orderRows: DataRow[];
   reason: string;
   reasonCode: string;
-  rejectionRows: DataRow[];
-  scannerRows: DataRow[];
   sessionDate: string;
   stage: string;
   stateFields: ObservationFieldValue[];
-  stateRows: DataRow[];
   subtitle: string;
   ticker: string;
   timestamp: string;
   title: string;
   tone: SemanticTone;
-  tradeRows: DataRow[];
+  trace: DataRow;
 };
 
-function buildObservabilityActions({
-  fills,
-  orders,
-  rejections,
-  scanner,
-  states,
-  traces,
-  trades
-}: {
+type ObservationEvidenceSources = {
   fills: DataRow[];
   orders: DataRow[];
   rejections: DataRow[];
   scanner: DataRow[];
   states: DataRow[];
-  traces: DataRow[];
   trades: DataRow[];
-}): ObservabilityAction[] {
+};
+
+type ObservationEvidenceRows = {
+  fillRows: DataRow[];
+  orderRows: DataRow[];
+  rejectionRows: DataRow[];
+  scannerRows: DataRow[];
+  stateRows: DataRow[];
+  tradeRows: DataRow[];
+};
+
+function buildObservabilityActions(traces: DataRow[]): ObservabilityAction[] {
   return [...traces]
     .sort((left, right) => rowTime(left) - rowTime(right))
     .map((trace, index) => {
@@ -1325,38 +1347,48 @@ function buildObservabilityActions({
       const decision = rowText(trace, "decision");
       const reasonCode = rowText(trace, "reason_code");
       const reason = rowText(trace, "reason");
-      const scannerRows = relatedScannerRows(scanner, trace).slice(0, 30);
-      const stateRows = relatedStateRows(states, trace).slice(0, 12);
-      const rejectionRows = relatedSymbolSessionRows(rejections, trace, ["timestamp"]).slice(0, 12);
-      const orderRows = relatedSymbolSessionRows(orders, trace, ["created_at", "filled_at"]).slice(0, 12);
-      const fillRows = relatedSymbolSessionRows(fills, trace, ["filled_at", "bar_time_market"]).slice(0, 12);
-      const tradeRows = relatedSymbolSessionRows(trades, trace, ["entry_time", "exit_time"]).slice(0, 12);
       const values = parseObservationJson(trace.values_json);
       const state = parseObservationJson(trace.state_json);
       return {
         decision,
         eventType,
-        evidenceCount: scannerRows.length + stateRows.length + rejectionRows.length + orderRows.length + fillRows.length + tradeRows.length,
-        fillRows,
         id: `${timestamp}:${ticker}:${stage}:${eventType}:${index}`,
         inputFields: objectToObservationFields(values),
-        orderRows,
         reason,
         reasonCode,
-        rejectionRows,
-        scannerRows,
         sessionDate,
         stage,
         stateFields: objectToObservationFields(state),
-        stateRows,
         subtitle: [ticker || "Run", formatObservationLabel(stage), reasonCode || reason].filter(Boolean).join(" | "),
         ticker,
         timestamp,
         title: formatObservationActionTitle(eventType, decision),
         tone: observationDecisionTone(decision, eventType),
-        tradeRows,
+        trace,
       };
     });
+}
+
+function buildObservationEvidence(trace: DataRow, sources: ObservationEvidenceSources): ObservationEvidenceRows {
+  return {
+    fillRows: relatedSymbolSessionRows(sources.fills, trace, ["filled_at", "bar_time_market"]).slice(0, 12),
+    orderRows: relatedSymbolSessionRows(sources.orders, trace, ["created_at", "filled_at"]).slice(0, 12),
+    rejectionRows: relatedSymbolSessionRows(sources.rejections, trace, ["timestamp"]).slice(0, 12),
+    scannerRows: relatedScannerRows(sources.scanner, trace).slice(0, 30),
+    stateRows: relatedStateRows(sources.states, trace).slice(0, 12),
+    tradeRows: relatedSymbolSessionRows(sources.trades, trace, ["entry_time", "exit_time"]).slice(0, 12),
+  };
+}
+
+function emptyObservationEvidence(): ObservationEvidenceRows {
+  return {
+    fillRows: [],
+    orderRows: [],
+    rejectionRows: [],
+    scannerRows: [],
+    stateRows: [],
+    tradeRows: [],
+  };
 }
 
 function relatedScannerRows(rows: DataRow[], trace: DataRow): DataRow[] {

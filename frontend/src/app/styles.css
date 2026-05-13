@@ -5994,8 +5994,12 @@ button {
 }
 
 .observability-workspace {
-  display: grid;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
   gap: 14px;
+  overflow: hidden;
 }
 
 .observability-summary {
@@ -6030,7 +6034,40 @@ button {
   gap: 10px;
 }
 
+.observability-load-more {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--foreground);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 10px 12px;
+}
+
+.observability-load-more span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.observability-scroll-region {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
 .observability-action-card {
+  flex: 0 0 auto;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
@@ -6040,15 +6077,26 @@ button {
 .observability-action-header {
   display: grid;
   width: 100%;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   border: 0;
   background: transparent;
   color: var(--foreground);
   cursor: pointer;
   padding: 14px 16px;
   text-align: left;
+}
+
+.observability-action-toggle {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
 }
 
 .observability-action-title {
@@ -6130,7 +6178,39 @@ button {
   min-width: 0;
 }
 
+.observability-evidence-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--foreground);
+  cursor: pointer;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.observability-evidence-header span {
+  display: inline-flex;
+  color: var(--muted-foreground);
+}
+
+.observability-evidence-header strong {
+  flex: 1 1 auto;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.observability-evidence-header small {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .observability-card {
+  flex: 0 0 auto;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
@@ -6205,10 +6285,11 @@ button {
   }
 
   .observability-action-header {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
   .observability-action-meta {
+    grid-column: 2;
     justify-content: flex-start;
   }
 }
