@@ -124,6 +124,7 @@ type RowMenuState = {
 type DataTableProps = {
   backendQuery?: BackendQueryConfig;
   columns?: string[];
+  defaultSort?: SortState;
   empty?: string;
   isRowSelected?: (row: DataRow) => boolean;
   onRowClick?: (row: DataRow) => void;
@@ -149,7 +150,7 @@ const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean
 ];
 let backendQueryConditionSequence = 0;
 
-export function DataTable({ backendQuery, columns, empty = "No rows.", isRowSelected, onRowClick, rowAction, rows, title }: DataTableProps) {
+export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows.", isRowSelected, onRowClick, rowAction, rows, title }: DataTableProps) {
   const resolvedColumns = useMemo(() => {
     if (columns?.length) return columns;
     return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -189,7 +190,7 @@ export function DataTable({ backendQuery, columns, empty = "No rows.", isRowSele
       );
     });
   }, [columnsSearch, profilesByColumn, resolvedColumns]);
-  const effectiveSort = sort ?? (resolvedColumns[0] ? { column: resolvedColumns[0], direction: "asc" as const } : null);
+  const effectiveSort = sort ?? defaultSort ?? (resolvedColumns[0] ? { column: resolvedColumns[0], direction: "asc" as const } : null);
   const activeFilterCount =
     Object.values(activeValueFiltersByColumn).reduce((count, values) => count + values.length, 0) +
     Object.keys(manualFiltersByColumn).length;

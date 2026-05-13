@@ -1392,7 +1392,11 @@ function ObservationEvidenceTable({
   title: string;
 }) {
   const [open, setOpen] = useState(false);
-  if (!rows.length) return null;
+  const scannerTable = title === "Scanner Snapshot";
+  const displayRows = scannerTable ? sortScannerSnapshotRows(rows) : rows;
+  const scannerColumns = scannerTable ? scannerSnapshotColumns(displayRows) : undefined;
+  const scannerSort = scannerTable && scannerColumns?.includes("rank") ? { column: "rank", direction: "asc" as const } : undefined;
+  if (!displayRows.length) return null;
   if (!collapsible) {
     return (
       <section className="observability-evidence-block">
@@ -1401,9 +1405,9 @@ function ObservationEvidenceTable({
             <span>{title}</span>
             {description ? <small>{description}</small> : null}
           </span>
-          <small>{formatNumber(rows.length)} rows</small>
+          <small>{formatNumber(displayRows.length)} rows</small>
         </div>
-        {presentation === "cards" ? <ObservationEvidenceCards rows={rows} title={title} /> : <DataTable rows={rows} />}
+        {presentation === "cards" ? <ObservationEvidenceCards rows={displayRows} title={title} /> : <DataTable columns={scannerColumns} defaultSort={scannerSort} rows={displayRows} />}
       </section>
     );
   }
@@ -1415,9 +1419,9 @@ function ObservationEvidenceTable({
           <span>{title}</span>
           {description ? <small>{description}</small> : null}
         </span>
-        <small>{formatNumber(rows.length)} rows</small>
+        <small>{formatNumber(displayRows.length)} rows</small>
       </button>
-      {open ? <DataTable rows={rows} /> : null}
+      {open ? <DataTable columns={scannerColumns} defaultSort={scannerSort} rows={displayRows} /> : null}
     </section>
   );
 }
@@ -1779,26 +1783,59 @@ function latestScannerSnapshotRows(rows: DataRow[], traceTime: number): DataRow[
   return rows.filter((row) => rowTime(row) === targetTime);
 }
 
+const SCANNER_IMPORTANT_COLUMNS = [
+  "timestamp",
+  "ticker",
+  "rank",
+  "score",
+  "score_key",
+  "setup_rank",
+  "setup_score",
+  "live_rank",
+  "live_score",
+  "scanner_status",
+  "status",
+  "reason_code",
+  "reject_reason",
+  "reason",
+  "price",
+  "trigger",
+  "stop",
+  "box_high",
+  "box_mid",
+  "box_low",
+  "box_close",
+  "box_range",
+  "box_range_pct",
+  "box_volume",
+  "box_dollar_volume",
+  "volume_score",
+  "liquidity_score",
+  "ideal_range_score",
+  "close_location",
+  "body_to_range",
+  "macd_hist_5m",
+  "macd_line_5m",
+  "macd_signal_5m",
+  "tema9_5m",
+  "tema20_5m",
+  "total_candidates",
+  "captured_candidates",
+  "stage",
+  "session_date",
+  "session_index",
+] as const;
+
 function flattenScannerRows(rows: DataRow[]): DataRow[] {
-  const preferredColumns = [
-    "session_date",
-    "session_index",
-    "timestamp",
-    "stage",
-    "rank",
-    "ticker",
-    "scanner_status",
-    "reason_code",
-    "score",
-    "score_key",
-    "total_candidates",
-    "captured_candidates",
-  ];
   return rows.map((row) => {
     const values = parseObservationJson(row.values_json);
     const flattened: DataRow = {};
-    for (const key of preferredColumns) {
-      if (key in row && key !== "values_json") flattened[key] = row[key];
+    for (const key of SCANNER_IMPORTANT_COLUMNS) {
+      if (key in row) {
+        flattened[key] = row[key];
+      } else if (key in values) {
+        flattened[key] = normalizeObservationTableValue(values[key]);
+      }
     }
     for (const [key, value] of Object.entries(row)) {
       if (key === "values_json" || key in flattened) continue;
@@ -1810,6 +1847,17 @@ function flattenScannerRows(rows: DataRow[]): DataRow[] {
     }
     return flattened;
   });
+}
+
+function scannerSnapshotColumns(rows: DataRow[]): string[] {
+  const availableColumns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+  const preferredColumns = SCANNER_IMPORTANT_COLUMNS.filter((column) => availableColumns.includes(column));
+  const remainingColumns = availableColumns.filter((column) => !preferredColumns.includes(column as typeof SCANNER_IMPORTANT_COLUMNS[number]));
+  return [...preferredColumns, ...remainingColumns];
+}
+
+function sortScannerSnapshotRows(rows: DataRow[]): DataRow[] {
+  return [...rows].sort(compareScannerRows);
 }
 
 function normalizeObservationTableValue(value: unknown): unknown {
