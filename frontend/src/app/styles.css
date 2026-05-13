@@ -6157,7 +6157,7 @@ button {
   background: linear-gradient(90deg, color-mix(in srgb, var(--surface) 46%, transparent), transparent 72%);
   color: var(--foreground);
   cursor: pointer;
-  padding: 17px 11px 9px;
+  padding: 17px 52px 9px 11px;
   text-align: left;
 }
 
@@ -6167,6 +6167,31 @@ button {
 
 .observability-action-card.open {
   overflow: visible;
+}
+
+.observability-action-chart-button {
+  position: absolute;
+  top: 32px;
+  right: 12px;
+  z-index: 2;
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card) 88%, var(--surface));
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.observability-action-chart-button:hover,
+.observability-action-chart-button:focus-visible {
+  border-color: color-mix(in srgb, var(--foreground) 22%, var(--border));
+  background: color-mix(in srgb, var(--surface) 78%, var(--card));
+  color: var(--foreground);
+  outline: 0;
 }
 
 .observability-card-corner {

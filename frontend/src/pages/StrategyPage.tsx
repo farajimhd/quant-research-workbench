@@ -1,4 +1,4 @@
-import { Activity, Banknote, ChevronDown, ChevronRight, CircleHelp, Database, Gauge, ListChecks, MoreHorizontal, Percent, Play, Shield, SlidersHorizontal, StopCircle, Trash2 } from "lucide-react";
+import { Activity, Banknote, BarChart3, ChevronDown, ChevronRight, CircleHelp, Database, Gauge, ListChecks, MoreHorizontal, Percent, Play, Shield, SlidersHorizontal, StopCircle, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
@@ -67,6 +67,13 @@ type NewRunMetric = {
   value: ReactNode;
 };
 type DataRow = Record<string, unknown>;
+type ObservationChartTarget = {
+  label: string;
+  row?: DataRow;
+  source: string;
+  symbol: string;
+  timestamp: string;
+};
 
 const tabs = ["Backtest", "Runs", "Strategy README"];
 const defaultStrategyName = "orb_5m_momentum";
@@ -1014,6 +1021,7 @@ function BacktestJobPanel({
   const [detail, setDetail] = useState<RunDetailPayload | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [tab, setTab] = useState("Backtest Results");
+  const [selectedObservationChart, setSelectedObservationChart] = useState<ObservationChartTarget | null>(null);
   const [selectedTrade, setSelectedTrade] = useState<DataRow | null>(null);
   const shouldLoadTables = tab !== "Backtest Results";
   const isLiveRun = !runId && ["running", "queued"].includes(String(job?.status ?? "").toLowerCase());
@@ -1024,6 +1032,7 @@ function BacktestJobPanel({
   useEffect(() => {
     setDetail(null);
     setDetailError(null);
+    setSelectedObservationChart(null);
     setSelectedTrade(null);
     setTab("Backtest Results");
   }, [latestRunId]);
@@ -1070,6 +1079,16 @@ function BacktestJobPanel({
         <SemanticBadge tone={toneForStatus(progress.status)}>{progress.status}</SemanticBadge>
       </div>
       <Tabs tabs={["Backtest Results", "Observability", "Daily", "Trades", "Orders", "Fills", "Positions"]} active={tab} onChange={setTab} />
+      {selectedObservationChart ? (
+        <Modal className="trade-chart-modal-panel" title={`${selectedObservationChart.symbol || "Symbol"} Chart`} onClose={() => setSelectedObservationChart(null)}>
+          <StrategySymbolChart
+            outputRoot={outputRoot}
+            runId={latestRunId}
+            target={selectedObservationChart}
+            trades={detail?.tables.trades.rows ?? []}
+          />
+        </Modal>
+      ) : null}
       <div className="backtest-results-tab-content">
         {tab === "Backtest Results" ? (
           <>
@@ -1087,7 +1106,7 @@ function BacktestJobPanel({
           </>
         ) : null}
         {tab === "Daily" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
-        {tab === "Observability" ? <ObservabilityPanel detail={detail} events={events} logs={detail?.logs ?? ""} /> : null}
+        {tab === "Observability" ? <ObservabilityPanel detail={detail} events={events} logs={detail?.logs ?? ""} onOpenChart={setSelectedObservationChart} /> : null}
         {tab === "Trades" ? (
           <>
             {selectedTrade ? (
@@ -1119,11 +1138,13 @@ function BacktestJobPanel({
 function ObservabilityPanel({
   detail,
   events,
-  logs
+  logs,
+  onOpenChart
 }: {
   detail: RunDetailPayload | null;
   events: Record<string, unknown>[];
   logs: string;
+  onOpenChart: (target: ObservationChartTarget) => void;
 }) {
   const scannerRows = detail?.tables.observability_scanner?.rows ?? [];
   const traceRows = detail?.tables.observability_trace?.rows ?? [];
@@ -1183,7 +1204,7 @@ function ObservabilityPanel({
       <div className="observability-scroll-region">
         <div className="observability-action-list">
           {visibleActions.length ? (
-            visibleActions.map((action) => <ObservabilityActionCard action={action} key={action.id} sources={sources} />)
+            visibleActions.map((action) => <ObservabilityActionCard action={action} key={action.id} onOpenChart={onOpenChart} sources={sources} />)
           ) : (
             <div className="empty-state">No strategy actions were captured. Check observability mode and profile sessions.</div>
           )}
@@ -1209,7 +1230,7 @@ function ObservabilitySummaryMetric({ label, value }: { label: string; value: nu
   );
 }
 
-function ObservabilityActionCard({ action, sources }: { action: ObservabilityAction; sources: ObservationEvidenceSources }) {
+function ObservabilityActionCard({ action, onOpenChart, sources }: { action: ObservabilityAction; onOpenChart: (target: ObservationChartTarget) => void; sources: ObservationEvidenceSources }) {
   const [open, setOpen] = useState(false);
   const evidence = useMemo(() => (open ? buildObservationEvidence(action.trace, sources) : emptyObservationEvidence()), [action.trace, open, sources]);
   const evidenceCount = evidence.scannerRows.length + evidence.stateRows.length + evidence.rejectionRows.length + evidence.orderRows.length + evidence.fillRows.length + evidence.tradeRows.length;
@@ -1217,6 +1238,7 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
   const previewFields = observationActionPreviewFields(action);
   const inputFields = prioritizedObservationFields(action.inputFields, "input").slice(0, 8);
   const stateFields = prioritizedObservationFields(action.stateFields, "state").slice(0, 8);
+  const chartTarget = observationActionChartTarget(action);
   return (
     <article className={open ? "observability-action-card open" : "observability-action-card"} data-tone={action.tone}>
       <button aria-expanded={open} className="observability-action-header" onClick={() => setOpen((value) => !value)} type="button">
@@ -1240,6 +1262,20 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
           <span className="observability-card-count">{open ? `${formatNumber(evidenceCount)} rows` : "Open"}</span>
         </span>
       </button>
+      {chartTarget ? (
+        <button
+          aria-label={`Show ${action.ticker} action on chart`}
+          className="observability-action-chart-button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenChart(chartTarget);
+          }}
+          title="Show action on chart"
+          type="button"
+        >
+          <BarChart3 size={14} />
+        </button>
+      ) : null}
       {open ? (
         <div className="observability-action-body">
           <ObservationDecisionPanel action={action} fields={primaryFields} />
@@ -1275,6 +1311,7 @@ function ObservabilityActionCard({ action, sources }: { action: ObservabilityAct
           <ObservationEvidenceTable
             collapsible
             description="Captured scanner candidates for this action timestamp, not only the selected ticker."
+            onOpenChart={onOpenChart}
             rows={evidence.scannerRows}
             title="Scanner Snapshot"
           />
@@ -1381,12 +1418,14 @@ function ObservationFieldGroup({ fields, title }: { fields: ObservationFieldValu
 function ObservationEvidenceTable({
   collapsible = false,
   description,
+  onOpenChart,
   presentation = "table",
   rows,
   title,
 }: {
   collapsible?: boolean;
   description?: string;
+  onOpenChart?: (target: ObservationChartTarget) => void;
   presentation?: "cards" | "table";
   rows: DataRow[];
   title: string;
@@ -1407,7 +1446,16 @@ function ObservationEvidenceTable({
           </span>
           <small>{formatNumber(displayRows.length)} rows</small>
         </div>
-        {presentation === "cards" ? <ObservationEvidenceCards rows={displayRows} title={title} /> : <DataTable columns={scannerColumns} defaultSort={scannerSort} rows={displayRows} />}
+        {presentation === "cards" ? (
+          <ObservationEvidenceCards rows={displayRows} title={title} />
+        ) : (
+          <DataTable
+            columns={scannerColumns}
+            defaultSort={scannerSort}
+            onRowClick={scannerTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
+            rows={displayRows}
+          />
+        )}
       </section>
     );
   }
@@ -1421,7 +1469,14 @@ function ObservationEvidenceTable({
         </span>
         <small>{formatNumber(displayRows.length)} rows</small>
       </button>
-      {open ? <DataTable columns={scannerColumns} defaultSort={scannerSort} rows={displayRows} /> : null}
+      {open ? (
+        <DataTable
+          columns={scannerColumns}
+          defaultSort={scannerSort}
+          onRowClick={scannerTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
+          rows={displayRows}
+        />
+      ) : null}
     </section>
   );
 }
@@ -2394,22 +2449,39 @@ function TradeTickerChart({
   selectedTrade: DataRow;
   trades: DataRow[];
 }) {
-  const symbol = tradeSymbol(selectedTrade);
-  const selectedKey = tradeRowKey(selectedTrade);
+  const target = tradeChartTarget(selectedTrade);
+  return <StrategySymbolChart outputRoot={outputRoot} runId={runId} selectedTrade={selectedTrade} target={target} trades={trades} />;
+}
+
+function StrategySymbolChart({
+  outputRoot,
+  runId,
+  selectedTrade,
+  target,
+  trades
+}: {
+  outputRoot: string;
+  runId: string;
+  selectedTrade?: DataRow;
+  target: ObservationChartTarget;
+  trades: DataRow[];
+}) {
+  const symbol = target.symbol;
+  const selectedKey = selectedTrade ? tradeRowKey(selectedTrade) : "";
   const [payload, setPayload] = useState<RunSymbolChartPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [timeframe, setTimeframe] = useState("1m");
-  const selectedTradeDay = useMemo(() => tradeMarketDate(selectedTrade), [selectedTrade]);
+  const selectedDay = useMemo(() => observationTargetMarketDate(target) || tradeMarketDate(selectedTrade), [selectedTrade, target]);
   const sameSymbolTrades = useMemo(() => {
     const payloadTrades = payload?.trades?.length ? payload.trades : trades;
-    return payloadTrades.filter((trade) => tradeSymbol(trade) === symbol && (!selectedTradeDay || tradeMarketDate(trade) === selectedTradeDay));
-  }, [payload?.trades, selectedTradeDay, symbol, trades]);
+    return payloadTrades.filter((trade) => tradeSymbol(trade) === symbol && (!selectedDay || tradeMarketDate(trade) === selectedDay));
+  }, [payload?.trades, selectedDay, symbol, trades]);
   const availableTimeframes = useMemo(() => symbolChartTimeframes(payload), [payload]);
   const chartPayload = useMemo(() => symbolTradeChartPayload(payload, sameSymbolTrades, selectedKey, timeframe), [payload, sameSymbolTrades, selectedKey, timeframe]);
   const visibleOverlayColumns = useMemo(() => strategyVisibleColumns(chartPayload, payload), [chartPayload, payload]);
-  const reference = useMemo(() => selectedTradeReference(selectedTrade), [selectedTrade]);
-  const periodBounds = useMemo(() => symbolChartPeriodBounds(payload, timeframe), [payload, timeframe]);
+  const reference = useMemo(() => selectedSymbolReference(target, selectedTrade), [selectedTrade, target]);
+  const periodBounds = useMemo(() => symbolChartPeriodBounds(payload, timeframe, selectedDay), [payload, selectedDay, timeframe]);
   const [period, setPeriod] = useState({ end: periodBounds.end, start: periodBounds.start });
 
   useEffect(() => {
@@ -2452,7 +2524,7 @@ function TradeTickerChart({
 
   const filteredPayload = useMemo(() => {
     if (!chartPayload) return null;
-    const candles = chartPayload.candles.filter((candle) => candleInTradePeriod(candle, period.start, period.end));
+    const candles = chartPayload.candles.filter((candle) => candleInChartPeriod(candle, period.start, period.end));
     const visibleTimes = new Set(candles.map((candle) => candle.time));
     return {
       ...chartPayload,
@@ -2469,11 +2541,17 @@ function TradeTickerChart({
     <section className="trade-chart-modal-body">
       <div className="trade-chart-summary">
         <span className="trade-chart-subtitle">
-          Showing {sameSymbolTrades.length} trade{sameSymbolTrades.length === 1 ? "" : "s"} for this ticker. The selected trade is centered by its entry/exit midpoint.
+          {selectedTrade
+            ? `Showing ${sameSymbolTrades.length} trade${sameSymbolTrades.length === 1 ? "" : "s"} for this ticker. The selected trade is centered by its entry/exit midpoint.`
+            : `${target.source} at ${target.timestamp || "the selected time"}. The gray line marks the exact event time.`}
         </span>
-        <SemanticBadge tone={Number(selectedTrade.pnl ?? 0) >= 0 ? "success" : "danger"}>
-          {formatMoney(Number(selectedTrade.pnl ?? 0))}
-        </SemanticBadge>
+        {selectedTrade ? (
+          <SemanticBadge tone={Number(selectedTrade.pnl ?? 0) >= 0 ? "success" : "danger"}>
+            {formatMoney(Number(selectedTrade.pnl ?? 0))}
+          </SemanticBadge>
+        ) : (
+          <SemanticBadge tone="neutral">{target.label}</SemanticBadge>
+        )}
       </div>
       <ChartPanel
         emptyMessage={symbol ? `No saved symbol bars found for ${symbol}. Enable Save symbol bars before running the backtest.` : "Select a trade with a symbol to load the chart."}
@@ -2707,6 +2785,55 @@ function selectedTradeReference(trade: DataRow) {
   return time === null ? null : { label: "Selected trade", time };
 }
 
+function selectedSymbolReference(target: ObservationChartTarget, selectedTrade?: DataRow) {
+  if (selectedTrade) return selectedTradeReference(selectedTrade);
+  const time = tradeTimestampSeconds(target.timestamp);
+  return time === null ? null : { label: target.label || target.source || "Selected event", time };
+}
+
+function tradeChartTarget(trade: DataRow): ObservationChartTarget {
+  const symbol = tradeSymbol(trade);
+  const timestamp = String(trade.entry_time ?? trade.exit_time ?? "");
+  return {
+    label: "Selected trade",
+    row: trade,
+    source: "Trade",
+    symbol,
+    timestamp
+  };
+}
+
+function observationActionChartTarget(action: ObservabilityAction): ObservationChartTarget | null {
+  if (!action.ticker || !action.timestamp) return null;
+  return {
+    label: action.title || "Action",
+    row: action.trace,
+    source: "Action",
+    symbol: action.ticker,
+    timestamp: action.timestamp
+  };
+}
+
+function scannerRowChartTarget(row: DataRow): ObservationChartTarget | null {
+  const symbol = normalizedTicker(rowText(row, "ticker") || rowText(row, "candidate_ticker") || rowText(row, "symbol"));
+  const timestamp = rowText(row, "timestamp") || rowText(row, "candidate_timestamp");
+  if (!symbol || !timestamp) return null;
+  const rank = rowText(row, "rank") || rowText(row, "live_rank") || rowText(row, "setup_rank");
+  const scoreKey = rowText(row, "score_key") || "score";
+  return {
+    label: rank ? `Scanner rank ${rank}` : "Scanner row",
+    row,
+    source: `Scanner ${scoreKey}`,
+    symbol,
+    timestamp
+  };
+}
+
+function openScannerRowChart(row: DataRow, onOpenChart: (target: ObservationChartTarget) => void) {
+  const target = scannerRowChartTarget(row);
+  if (target) onOpenChart(target);
+}
+
 function tradeSymbol(trade: DataRow | null | undefined) {
   return String(trade?.symbol ?? trade?.ticker ?? "").trim().toUpperCase();
 }
@@ -2795,17 +2922,23 @@ function nearestAvailableTime(time: number | null, candleTimes: Set<number>) {
   return nearestDistance <= 15 * 60 ? nearest : time;
 }
 
-function symbolChartPeriodBounds(payload: RunSymbolChartPayload | null | undefined, timeframe: string) {
+function observationTargetMarketDate(target: ObservationChartTarget | null | undefined) {
+  const timestamp = tradeTimestampSeconds(target?.timestamp);
+  return timestamp === null ? "" : dateStringFromTimestamp(timestamp);
+}
+
+function symbolChartPeriodBounds(payload: RunSymbolChartPayload | null | undefined, timeframe: string, selectedDay = "") {
   const source = symbolTimeframePayload(payload, timeframe);
   const timestamps = (source?.candles ?? []).map((candle) => Number(candle.time)).filter(Number.isFinite);
   if (!timestamps.length) return { end: "", max: "", min: "", start: "" };
   const dates = timestamps.map(dateStringFromTimestamp).filter(Boolean).sort();
   const min = dates[0] ?? "";
   const max = dates[dates.length - 1] ?? min;
-  return { end: max, max, min, start: min };
+  const selectedInRange = selectedDay && selectedDay >= min && selectedDay <= max;
+  return { end: selectedInRange ? selectedDay : max, max, min, start: selectedInRange ? selectedDay : min };
 }
 
-function candleInTradePeriod(candle: { time: number }, periodStart: string, periodEnd: string) {
+function candleInChartPeriod(candle: { time: number }, periodStart: string, periodEnd: string) {
   if (!periodStart || !periodEnd) return true;
   const date = dateStringFromTimestamp(Number(candle.time));
   return Boolean(date && date >= periodStart && date <= periodEnd);
