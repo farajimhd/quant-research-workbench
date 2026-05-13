@@ -1093,6 +1093,7 @@ function BacktestJobPanel({
         {tab === "Backtest Results" ? (
           <>
             <ProgressMeter
+              ariaLabel="Backtest progress"
               done={progress.done}
               elapsed_sec={0}
               label={progress.label}
@@ -2327,7 +2328,7 @@ function buildBacktestProgress(job: Record<string, unknown> | null, detail: RunD
     return {
       currentSession: String(job?.current_session ?? detail?.metadata.latest_session ?? ""),
       done,
-      label: "Backtest bar progress",
+      label: "",
       meterStatus: normalizedStatus === "not started" ? "queued" : status,
       percent: normalizedStatus.includes("complete") ? 100 : (done / barTotal) * 100,
       status,

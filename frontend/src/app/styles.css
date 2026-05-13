@@ -3137,6 +3137,10 @@ button {
   font-weight: 650;
 }
 
+.progress-meter-row.no-label {
+  justify-content: flex-end;
+}
+
 .progress-meter-row span:last-child {
   color: var(--foreground);
   font-variant-numeric: tabular-nums;

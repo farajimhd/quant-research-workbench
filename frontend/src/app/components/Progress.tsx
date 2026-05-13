@@ -41,6 +41,7 @@ export function StageRow({ stage }: { stage: Stage }) {
 }
 
 export function ProgressMeter({
+  ariaLabel,
   done,
   elapsed_sec,
   label,
@@ -49,6 +50,7 @@ export function ProgressMeter({
   status,
   total
 }: {
+  ariaLabel?: string;
   done: number;
   elapsed_sec: number;
   label: string;
@@ -58,15 +60,16 @@ export function ProgressMeter({
   total: number;
 }) {
   const boundedProgress = Math.max(0, Math.min(100, progress || 0));
+  const visibleLabel = label.trim();
   return (
     <div className={showLabel ? "progress-meter" : "progress-meter compact"}>
       {showLabel ? (
-        <div className="progress-meter-row">
-          <span>{label}</span>
+        <div className={`progress-meter-row ${visibleLabel ? "" : "no-label"}`}>
+          {visibleLabel ? <span>{visibleLabel}</span> : null}
           <span>{progressMeta(done, total, elapsed_sec)}</span>
         </div>
       ) : null}
-      <span aria-label={label} className="progress-meter-track" role="meter" aria-valuemax={100} aria-valuemin={0} aria-valuenow={Math.round(boundedProgress)}>
+      <span aria-label={ariaLabel ?? visibleLabel} className="progress-meter-track" role="meter" aria-valuemax={100} aria-valuemin={0} aria-valuenow={Math.round(boundedProgress)}>
         <span className={`progress-meter-fill ${progressTone(status, boundedProgress)}`} style={{ width: `${boundedProgress}%` }} />
       </span>
     </div>
