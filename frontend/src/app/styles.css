@@ -848,6 +848,12 @@ button {
   line-height: 1.45;
 }
 
+.backtest-selection-footer .button {
+  flex: 0 0 auto;
+  min-width: 160px;
+  white-space: nowrap;
+}
+
 .backtest-results-panel {
   display: flex;
   flex: 1 1 auto;
