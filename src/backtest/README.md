@@ -164,6 +164,14 @@ Core artifacts:
 - `candidate_rankings.parquet`: setup rankings
 - `live_rankings.parquet`: timestamp-level live rankings
 
+Run artifacts are written through a single background artifact writer thread.
+The simulation loop queues JSON, text, parquet, and P/L candle writes and keeps
+processing bars while disk I/O completes. Live chart artifacts are refreshed
+during the run at the active P/L candle cadence; the full artifact set is
+flushed before the run is marked complete. Job progress and cancellation files
+remain synchronous control-plane state so the UI can observe subprocess
+progress deterministically.
+
 As execution modeling becomes more realistic, the backtest should also write or
 extend:
 

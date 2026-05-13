@@ -981,7 +981,7 @@ function BacktestJobPanel({
   const [detailError, setDetailError] = useState<string | null>(null);
   const [tab, setTab] = useState("Backtest Results");
   const shouldLoadTables = tab !== "Backtest Results";
-  const liveChartRefreshKey = liveChartProgressBucket(job, detail, config);
+  const isLiveRun = ["running", "queued"].includes(String(job?.status ?? "").toLowerCase());
 
   useEffect(() => {
     if (!latestRunId) {
@@ -990,23 +990,19 @@ function BacktestJobPanel({
       return;
     }
     let canceled = false;
-    let loaded = false;
     const loadDetail = () => {
-      if (loaded) return;
       fetchRunDetail(latestRunId, outputRoot, shouldLoadTables)
         .then((payload) => {
           if (canceled) return;
           setDetail((current) => (shouldLoadTables ? payload : mergeLiveRunDetail(current, payload)));
           setDetailError(null);
-          loaded = shouldLoadTables || hasPortfolioCandles(payload);
         })
         .catch((err) => {
           if (!canceled) setDetailError(err instanceof Error ? err.message : String(err));
         });
     };
     loadDetail();
-    const shouldRetry = ["running", "queued"].includes(String(job?.status ?? "").toLowerCase());
-    if (!shouldRetry) {
+    if (!isLiveRun || shouldLoadTables) {
       return () => {
         canceled = true;
       };
@@ -1016,7 +1012,7 @@ function BacktestJobPanel({
       canceled = true;
       window.clearInterval(timer);
     };
-  }, [latestRunId, outputRoot, shouldLoadTables, liveChartRefreshKey, `${job?.status ?? "not-started"}-${events.length}`]);
+  }, [latestRunId, outputRoot, shouldLoadTables, isLiveRun, `${job?.status ?? "not-started"}-${events.length}`]);
 
   const progress = buildBacktestProgress(job, detail, config);
   const activeRunName = String(detail?.metadata.run_name ?? jobConfig?.run_name ?? config.run_name ?? "Backtest Results");
@@ -1105,29 +1101,6 @@ function finiteNumber(value: unknown): number {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
-function liveChartProgressBucket(job: Record<string, unknown> | null, detail: RunDetailPayload | null, config: StrategyConfig): string {
-  const processedBars = finiteNumber(job?.processed_event_bars ?? detail?.metadata.processed_event_bars);
-  const progressUnit = String(job?.progress_unit ?? detail?.metadata.progress_unit ?? "1m");
-  const defaultTimeframe = String(detail?.portfolio_candles?.default_timeframe || defaultPortfolioTimeframe(config.start_date, config.end_date));
-  const interval = Math.max(1, Math.ceil(timeframeMinutes(defaultTimeframe) / Math.max(1, timeframeMinutes(progressUnit))));
-  return `${defaultTimeframe}:${Math.floor(processedBars / interval)}`;
-}
-
-function defaultPortfolioTimeframe(start: string, end: string): string {
-  const days = estimateCalendarDays(start, end);
-  if (days <= 5) return "1h";
-  if (days <= 15) return "2h";
-  return "1d";
-}
-
-function timeframeMinutes(timeframe: string): number {
-  const normalized = timeframe.toLowerCase();
-  if (normalized.endsWith("m")) return Number(normalized.slice(0, -1)) || 1;
-  if (normalized.endsWith("h")) return (Number(normalized.slice(0, -1)) || 1) * 60;
-  if (normalized === "1d") return 390;
-  return 1;
-}
-
 function estimateCalendarDays(start: string, end: string) {
   const startParts = parseIsoDate(start);
   const endParts = parseIsoDate(end);
@@ -1148,10 +1121,6 @@ function mergeLiveRunDetail(current: RunDetailPayload | null, next: RunDetailPay
     logs: next.logs || current.logs,
     tables: current.tables
   };
-}
-
-function hasPortfolioCandles(detail: RunDetailPayload): boolean {
-  return Object.values(detail.portfolio_candles?.candles ?? {}).some((rows) => rows.length > 0);
 }
 
 function RunDetail({ runId, outputRoot, onClose }: { runId: string; outputRoot: string; onClose: () => void }) {

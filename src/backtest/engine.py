@@ -8,14 +8,15 @@ from typing import Protocol
 
 import polars as pl
 
+from src.backtest.artifact_writer import ArtifactWriter
 from src.backtest.config import BacktestConfig
 from src.backtest.data.minute_bars import DayFrames, available_session_dates, load_day_frames, timeframe_minutes
-from src.backtest.equity_candles import build_portfolio_candles, default_portfolio_candle_timeframe
+from src.backtest.equity_candles import default_portfolio_candle_timeframe
 from src.backtest.fills import BarFillModel
 from src.backtest.metrics import compute_summary
 from src.backtest.models import BarContext, DataRequirements, Fill, Order, OrderRequest
 from src.backtest.portfolio import Portfolio
-from src.backtest.results import base_metadata, create_run_dir, write_json, write_run_metadata, write_table
+from src.backtest.results import base_metadata, create_run_dir
 
 
 class Strategy(Protocol):
@@ -62,183 +63,74 @@ class BacktestEngine:
     def run(self, progress_callback=None) -> dict:
         run_dir = create_run_dir(self.config)
         metadata = base_metadata(self.config, run_dir, "running")
-        write_run_metadata(run_dir, metadata)
-        write_json(run_dir / "config.json", self.config.to_dict())
 
-        try:
-            requirements = self.strategy.data_requirements()
-            sessions = available_session_dates(self.config, requirements)
-            if not sessions:
-                raise ValueError(
-                    f"No market sessions found for requested range "
-                    f"{self.config.start_date.isoformat()}..{self.config.end_date.isoformat()}"
+        with ArtifactWriter() as artifact_writer:
+            self._write_metadata(run_dir, metadata, artifact_writer)
+            artifact_writer.write_json(run_dir / "config.json", self.config.to_dict())
+
+            try:
+                requirements = self.strategy.data_requirements()
+                sessions = available_session_dates(self.config, requirements)
+                if not sessions:
+                    raise ValueError(
+                        f"No market sessions found for requested range "
+                        f"{self.config.start_date.isoformat()}..{self.config.end_date.isoformat()}"
+                    )
+                metadata.update(
+                    {
+                        "requested_start_date": self.config.start_date.isoformat(),
+                        "requested_end_date": self.config.end_date.isoformat(),
+                        "scheduled_sessions": [session.isoformat() for session in sessions],
+                        "total_sessions": len(sessions),
+                        "progress_kind": "bars",
+                        "progress_unit": requirements.event_timeframe,
+                        "processed_event_bars": 0,
+                        "total_event_bars": self._expected_event_bar_count(sessions, requirements),
+                    }
                 )
-            metadata.update(
-                {
-                    "requested_start_date": self.config.start_date.isoformat(),
-                    "requested_end_date": self.config.end_date.isoformat(),
-                    "scheduled_sessions": [session.isoformat() for session in sessions],
-                    "total_sessions": len(sessions),
-                    "progress_kind": "bars",
-                    "progress_unit": requirements.event_timeframe,
-                    "processed_event_bars": 0,
-                    "total_event_bars": self._expected_event_bar_count(sessions, requirements),
-                }
-            )
-            write_run_metadata(run_dir, metadata)
-            self._emit_progress(
-                progress_callback,
-                {
-                    "event": "run_progress_initialized",
-                    "phase": "backtest",
-                    "status": "running",
-                    "run_dir": str(run_dir),
-                    "progress_kind": metadata["progress_kind"],
-                    "progress_unit": metadata["progress_unit"],
-                    "processed_event_bars": 0,
-                    "total_event_bars": metadata["total_event_bars"],
-                    "completed_sessions": 0,
-                    "total_sessions": len(sessions),
-                },
-            )
-            logging.info("Running %s sessions", len(sessions))
-
-            processed_event_bars = 0
-            total_event_bars = int(metadata["total_event_bars"])
-            live_chart_bar_interval = self._live_chart_bar_interval(requirements)
-            for index, session_date in enumerate(sessions, start=1):
-                day_start_equity = self.portfolio.total_equity()
-                frames = load_day_frames(self.config, session_date, requirements)
-                event_frame = self.strategy.prepare_day(frames, self.portfolio)
-                event_frame = event_frame.sort(["bar_time_market", "ticker"])
-                session_total_bars = self._event_bar_count(event_frame)
-                remaining_sessions = len(sessions) - index
-                total_event_bars = max(
-                    total_event_bars,
-                    processed_event_bars + session_total_bars + self._expected_bars_per_session(requirements) * remaining_sessions,
-                )
-
-                if self.config.save_symbol_bars:
-                    self.symbol_bar_rows.extend(self._symbol_bar_rows(event_frame, session_date))
-
-                last_timestamp = None
-                latest_bars: dict[str, dict] = {}
-                session_processed_bars = 0
+                self._write_metadata(run_dir, metadata, artifact_writer)
                 self._emit_progress(
                     progress_callback,
                     {
-                        "event": "session_started",
+                        "event": "run_progress_initialized",
                         "phase": "backtest",
                         "status": "running",
                         "run_dir": str(run_dir),
                         "progress_kind": "bars",
                         "progress_unit": requirements.event_timeframe,
-                        "processed_event_bars": processed_event_bars,
-                        "total_event_bars": total_event_bars,
-                        "completed_sessions": index - 1,
+                        "processed_event_bars": 0,
+                        "total_event_bars": metadata["total_event_bars"],
+                        "completed_sessions": 0,
                         "total_sessions": len(sessions),
-                        "session_date": session_date.isoformat(),
-                        "current_session": session_date.isoformat(),
-                        "current_session_processed_bars": 0,
-                        "current_session_total_bars": session_total_bars,
                     },
                 )
+                logging.info("Running %s sessions", len(sessions))
 
-                for timestamp, updates in self._timestamp_slices(event_frame):
-                    last_timestamp = timestamp
-                    update_rows = updates.to_dicts()
-                    fresh_bars = {row["ticker"]: row for row in update_rows}
-                    latest_bars.update(fresh_bars)
-                    latest = pl.DataFrame(list(latest_bars.values()), infer_schema_length=None) if latest_bars else pl.DataFrame()
-
-                    self._fill_pending_orders(timestamp, fresh_bars)
-                    self.portfolio.update_peaks(fresh_bars)
-
-                    requests = self.strategy.on_bar(
-                        BarContext(
-                            timestamp=timestamp,
-                            updates=updates,
-                            latest=latest,
-                            updates_by_symbol=fresh_bars,
-                            latest_by_symbol=latest_bars,
-                        ),
-                        self.portfolio,
-                        list(self.pending_orders),
+                processed_event_bars = 0
+                total_event_bars = int(metadata["total_event_bars"])
+                live_chart_bar_interval = self._live_chart_bar_interval(requirements)
+                for index, session_date in enumerate(sessions, start=1):
+                    day_start_equity = self.portfolio.total_equity()
+                    frames = load_day_frames(self.config, session_date, requirements)
+                    event_frame = self.strategy.prepare_day(frames, self.portfolio)
+                    event_frame = event_frame.sort(["bar_time_market", "ticker"])
+                    session_total_bars = self._event_bar_count(event_frame)
+                    remaining_sessions = len(sessions) - index
+                    total_event_bars = max(
+                        total_event_bars,
+                        processed_event_bars + session_total_bars + self._expected_bars_per_session(requirements) * remaining_sessions,
                     )
-                    self._handle_requests(timestamp, requests, fresh_bars)
-                    self._record_portfolio(timestamp, latest_bars)
-                    processed_event_bars += 1
-                    session_processed_bars += 1
-                    total_event_bars = max(total_event_bars, processed_event_bars)
-                    if self._should_write_live_chart(session_processed_bars, session_total_bars, live_chart_bar_interval):
-                        self._write_chart_artifacts(run_dir)
-                    if self._should_emit_bar_progress(session_processed_bars, session_total_bars):
-                        self._emit_progress(
-                            progress_callback,
-                            {
-                                "event": "bar_progress",
-                                "phase": "backtest",
-                                "status": "running",
-                                "run_dir": str(run_dir),
-                                "progress_kind": "bars",
-                                "progress_unit": requirements.event_timeframe,
-                                "processed_event_bars": processed_event_bars,
-                                "total_event_bars": total_event_bars,
-                                "completed_sessions": index - 1,
-                                "total_sessions": len(sessions),
-                                "current_session": session_date.isoformat(),
-                                "current_bar_time": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
-                                "current_session_processed_bars": session_processed_bars,
-                                "current_session_total_bars": session_total_bars,
-                            },
-                        )
 
-                if last_timestamp is not None:
-                    self._handle_requests(
-                        last_timestamp,
-                        self.strategy.on_day_end(last_timestamp, self.portfolio),
-                        latest_bars,
-                    )
-                    self._fill_market_exits(last_timestamp, latest_bars)
-                    self._record_portfolio(last_timestamp, latest_bars)
+                    if self.config.save_symbol_bars:
+                        self.symbol_bar_rows.extend(self._symbol_bar_rows(event_frame, session_date))
 
-                day_end_equity = self.portfolio.total_equity(latest_bars)
-                self.daily_rows.append(
-                    {
-                        "session_date": session_date.isoformat(),
-                        "start_equity": day_start_equity,
-                        "end_equity": day_end_equity,
-                        "pnl": day_end_equity - day_start_equity,
-                        "return_pct": (day_end_equity / day_start_equity) - 1.0 if day_start_equity else 0.0,
-                        "trade_count": len([t for t in self.trades if str(t["exit_time"]).startswith(session_date.isoformat())]),
-                        "candidate_count": self._candidate_count_for_day(session_date),
-                        "signal_count": self._signal_count_for_day(session_date),
-                        "rejection_count": self._rejection_count_for_day(session_date),
-                    }
-                )
-
-                metadata.update(
-                    {
-                        "status": "running",
-                        "completed_sessions": index,
-                        "total_sessions": len(sessions),
-                        "processed_event_bars": processed_event_bars,
-                        "total_event_bars": total_event_bars,
-                        "progress_kind": "bars",
-                        "progress_unit": requirements.event_timeframe,
-                        "latest_session": session_date.isoformat(),
-                        "latest_daily_summary": dict(self.daily_rows[-1]),
-                    }
-                )
-                metadata["summary"] = self._summary(run_dir)
-                write_run_metadata(run_dir, metadata)
-                self._write_artifacts(run_dir, metadata["summary"])
-
-                if progress_callback:
+                    last_timestamp = None
+                    latest_bars: dict[str, dict] = {}
+                    session_processed_bars = 0
                     self._emit_progress(
                         progress_callback,
                         {
-                            "event": "session_complete",
+                            "event": "session_started",
                             "phase": "backtest",
                             "status": "running",
                             "run_dir": str(run_dir),
@@ -246,33 +138,148 @@ class BacktestEngine:
                             "progress_unit": requirements.event_timeframe,
                             "processed_event_bars": processed_event_bars,
                             "total_event_bars": total_event_bars,
-                            "completed_sessions": index,
+                            "completed_sessions": index - 1,
                             "total_sessions": len(sessions),
-                            "current_session": session_date.isoformat(),
-                            "current_session_processed_bars": session_processed_bars,
-                            "current_session_total_bars": session_total_bars,
                             "session_date": session_date.isoformat(),
-                            "daily_summary": dict(self.daily_rows[-1]),
+                            "current_session": session_date.isoformat(),
+                            "current_session_processed_bars": 0,
+                            "current_session_total_bars": session_total_bars,
                         },
                     )
 
-            summary = self._summary(run_dir)
-            metadata.update(
-                {
-                    "status": "complete",
-                    "completed_at": datetime.now().isoformat(timespec="seconds"),
-                    "processed_event_bars": processed_event_bars,
-                    "total_event_bars": max(total_event_bars, processed_event_bars),
-                    "summary": summary,
-                }
-            )
-            write_run_metadata(run_dir, metadata)
-            self._write_artifacts(run_dir, summary)
-            return {"run_dir": str(run_dir), "summary": summary}
-        except Exception as exc:
-            metadata.update({"status": "error", "error": str(exc), "failed_at": datetime.now().isoformat(timespec="seconds")})
-            write_run_metadata(run_dir, metadata)
-            raise
+                    for timestamp, updates in self._timestamp_slices(event_frame):
+                        last_timestamp = timestamp
+                        update_rows = updates.to_dicts()
+                        fresh_bars = {row["ticker"]: row for row in update_rows}
+                        latest_bars.update(fresh_bars)
+                        latest = pl.DataFrame(list(latest_bars.values()), infer_schema_length=None) if latest_bars else pl.DataFrame()
+
+                        self._fill_pending_orders(timestamp, fresh_bars)
+                        self.portfolio.update_peaks(fresh_bars)
+
+                        requests = self.strategy.on_bar(
+                            BarContext(
+                                timestamp=timestamp,
+                                updates=updates,
+                                latest=latest,
+                                updates_by_symbol=fresh_bars,
+                                latest_by_symbol=latest_bars,
+                            ),
+                            self.portfolio,
+                            list(self.pending_orders),
+                        )
+                        self._handle_requests(timestamp, requests, fresh_bars)
+                        self._record_portfolio(timestamp, latest_bars)
+                        processed_event_bars += 1
+                        session_processed_bars += 1
+                        total_event_bars = max(total_event_bars, processed_event_bars)
+                        if self._should_write_live_chart(session_processed_bars, session_total_bars, live_chart_bar_interval):
+                            self._write_chart_artifacts(run_dir, artifact_writer)
+                        if self._should_emit_bar_progress(session_processed_bars, session_total_bars):
+                            self._emit_progress(
+                                progress_callback,
+                                {
+                                    "event": "bar_progress",
+                                    "phase": "backtest",
+                                    "status": "running",
+                                    "run_dir": str(run_dir),
+                                    "progress_kind": "bars",
+                                    "progress_unit": requirements.event_timeframe,
+                                    "processed_event_bars": processed_event_bars,
+                                    "total_event_bars": total_event_bars,
+                                    "completed_sessions": index - 1,
+                                    "total_sessions": len(sessions),
+                                    "current_session": session_date.isoformat(),
+                                    "current_bar_time": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
+                                    "current_session_processed_bars": session_processed_bars,
+                                    "current_session_total_bars": session_total_bars,
+                                },
+                            )
+
+                    if last_timestamp is not None:
+                        self._handle_requests(
+                            last_timestamp,
+                            self.strategy.on_day_end(last_timestamp, self.portfolio),
+                            latest_bars,
+                        )
+                        self._fill_market_exits(last_timestamp, latest_bars)
+                        self._record_portfolio(last_timestamp, latest_bars)
+
+                    day_end_equity = self.portfolio.total_equity(latest_bars)
+                    self.daily_rows.append(
+                        {
+                            "session_date": session_date.isoformat(),
+                            "start_equity": day_start_equity,
+                            "end_equity": day_end_equity,
+                            "pnl": day_end_equity - day_start_equity,
+                            "return_pct": (day_end_equity / day_start_equity) - 1.0 if day_start_equity else 0.0,
+                            "trade_count": len([t for t in self.trades if str(t["exit_time"]).startswith(session_date.isoformat())]),
+                            "candidate_count": self._candidate_count_for_day(session_date),
+                            "signal_count": self._signal_count_for_day(session_date),
+                            "rejection_count": self._rejection_count_for_day(session_date),
+                        }
+                    )
+
+                    metadata.update(
+                        {
+                            "status": "running",
+                            "completed_sessions": index,
+                            "total_sessions": len(sessions),
+                            "processed_event_bars": processed_event_bars,
+                            "total_event_bars": total_event_bars,
+                            "progress_kind": "bars",
+                            "progress_unit": requirements.event_timeframe,
+                            "latest_session": session_date.isoformat(),
+                            "latest_daily_summary": dict(self.daily_rows[-1]),
+                        }
+                    )
+                    metadata["summary"] = self._summary(run_dir)
+                    self._write_metadata(run_dir, metadata, artifact_writer)
+
+                    if progress_callback:
+                        self._emit_progress(
+                            progress_callback,
+                            {
+                                "event": "session_complete",
+                                "phase": "backtest",
+                                "status": "running",
+                                "run_dir": str(run_dir),
+                                "progress_kind": "bars",
+                                "progress_unit": requirements.event_timeframe,
+                                "processed_event_bars": processed_event_bars,
+                                "total_event_bars": total_event_bars,
+                                "completed_sessions": index,
+                                "total_sessions": len(sessions),
+                                "current_session": session_date.isoformat(),
+                                "current_session_processed_bars": session_processed_bars,
+                                "current_session_total_bars": session_total_bars,
+                                "session_date": session_date.isoformat(),
+                                "daily_summary": dict(self.daily_rows[-1]),
+                            },
+                        )
+
+                summary = self._summary(run_dir)
+                metadata.update(
+                    {
+                        "status": "complete",
+                        "completed_at": datetime.now().isoformat(timespec="seconds"),
+                        "processed_event_bars": processed_event_bars,
+                        "total_event_bars": max(total_event_bars, processed_event_bars),
+                        "summary": summary,
+                    }
+                )
+                self._write_artifacts(run_dir, summary, artifact_writer)
+                self._write_metadata(run_dir, metadata, artifact_writer)
+                artifact_writer.wait()
+                return {"run_dir": str(run_dir), "summary": summary}
+            except Exception as exc:
+                metadata.update({"status": "error", "error": str(exc), "failed_at": datetime.now().isoformat(timespec="seconds")})
+                self._write_metadata(run_dir, metadata, artifact_writer)
+                try:
+                    artifact_writer.wait()
+                except Exception:
+                    logging.exception("Failed to flush backtest artifacts after run error")
+                raise
 
     def _timestamp_slices(self, event_frame: pl.DataFrame):
         if event_frame.is_empty():
@@ -529,30 +536,34 @@ class BacktestEngine:
         day = session_date.isoformat()
         return len([row for row in self.strategy.artifacts().get("rejection_events", []) if str(row.get("timestamp", "")).startswith(day)])
 
-    def _write_artifacts(self, run_dir, summary: dict) -> None:
+    def _write_artifacts(self, run_dir, summary: dict, artifact_writer: ArtifactWriter) -> None:
         artifacts = self.strategy.artifacts()
-        write_json(run_dir / "summary.json", summary)
-        write_table(run_dir / "daily_summary.parquet", self.daily_rows)
-        write_table(run_dir / "orders.parquet", self.orders)
-        write_table(run_dir / "fills.parquet", self.fills)
-        write_table(run_dir / "trades.parquet", self.trades)
-        write_table(run_dir / "positions.parquet", self.position_rows)
-        write_table(run_dir / "portfolio.parquet", self.portfolio_rows)
-        self._write_chart_artifacts(run_dir)
-        write_table(run_dir / "scanner_snapshots.parquet", artifacts.get("scanner_snapshots", []))
-        write_table(run_dir / "candidate_rankings.parquet", artifacts.get("candidate_rankings", []))
-        write_table(run_dir / "live_rankings.parquet", artifacts.get("live_rankings", []))
-        write_table(run_dir / "signal_events.parquet", artifacts.get("signal_events", []))
-        write_table(run_dir / "rejection_events.parquet", artifacts.get("rejection_events", []))
+        artifact_writer.write_json(run_dir / "summary.json", summary)
+        artifact_writer.write_table(run_dir / "daily_summary.parquet", self.daily_rows)
+        artifact_writer.write_table(run_dir / "orders.parquet", self.orders)
+        artifact_writer.write_table(run_dir / "fills.parquet", self.fills)
+        artifact_writer.write_table(run_dir / "trades.parquet", self.trades)
+        artifact_writer.write_table(run_dir / "positions.parquet", self.position_rows)
+        artifact_writer.write_table(run_dir / "portfolio.parquet", self.portfolio_rows)
+        self._write_chart_artifacts(run_dir, artifact_writer)
+        artifact_writer.write_table(run_dir / "scanner_snapshots.parquet", artifacts.get("scanner_snapshots", []))
+        artifact_writer.write_table(run_dir / "candidate_rankings.parquet", artifacts.get("candidate_rankings", []))
+        artifact_writer.write_table(run_dir / "live_rankings.parquet", artifacts.get("live_rankings", []))
+        artifact_writer.write_table(run_dir / "signal_events.parquet", artifacts.get("signal_events", []))
+        artifact_writer.write_table(run_dir / "rejection_events.parquet", artifacts.get("rejection_events", []))
         if self.symbol_bar_rows:
-            write_table(run_dir / "symbol_bars.parquet", self.symbol_bar_rows)
+            artifact_writer.write_table(run_dir / "symbol_bars.parquet", self.symbol_bar_rows)
         if self.symbol_bar_5m_rows:
-            write_table(run_dir / "symbol_bars_5m.parquet", self.symbol_bar_5m_rows)
-        (run_dir / "logs.txt").write_text("\n".join(self.logs), encoding="utf-8")
+            artifact_writer.write_table(run_dir / "symbol_bars_5m.parquet", self.symbol_bar_5m_rows)
+        artifact_writer.write_text(run_dir / "logs.txt", "\n".join(self.logs))
 
-    def _write_chart_artifacts(self, run_dir) -> None:
-        write_table(run_dir / "portfolio_candles.parquet", build_portfolio_candles(self.portfolio_rows, initial_cash=self.config.initial_cash))
-        write_json(
+    def _write_chart_artifacts(self, run_dir, artifact_writer: ArtifactWriter) -> None:
+        artifact_writer.write_portfolio_candles(
+            run_dir / "portfolio_candles.parquet",
+            self.portfolio_rows,
+            initial_cash=self.config.initial_cash,
+        )
+        artifact_writer.write_json(
             run_dir / "chart_metadata.json",
             {
                 "portfolio_candle_timeframes": ["1m", "1h", "2h", "4h", "1d"],
@@ -562,3 +573,6 @@ class BacktestEngine:
                 ),
             },
         )
+
+    def _write_metadata(self, run_dir, metadata: dict, artifact_writer: ArtifactWriter) -> None:
+        artifact_writer.write_json(run_dir / "metadata.json", metadata)

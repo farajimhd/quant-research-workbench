@@ -60,10 +60,6 @@ def read_run_metadata(run_dir: Path) -> dict | None:
         return None
 
 
-def write_run_metadata(run_dir: Path, metadata: dict) -> None:
-    write_json(run_dir / "metadata.json", metadata)
-
-
 def write_json(path: Path, data: dict) -> None:
     tmp = path.with_name(f"{path.name}.tmp")
     tmp.write_text(json.dumps(data, indent=2, default=json_default), encoding="utf-8")
