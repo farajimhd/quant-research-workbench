@@ -1173,7 +1173,8 @@ def build_market_data_parallel(
     request: BuildRequest,
     *,
     job_path: Path | None,
-    max_workers: int = 5,
+    bar_workers: int = 3,
+    artifact_workers: int = 5,
     progress_callback: ProgressCallback | None = None,
 ) -> dict:
     if job_path is None:
@@ -1247,15 +1248,16 @@ def build_market_data_parallel(
             continue
         build_jobs.append((index, asdict(status)))
 
-    worker_count = min(max(1, int(max_workers)), len(build_jobs)) if build_jobs else 0
+    bar_worker_count = min(max(1, int(bar_workers)), len(build_jobs)) if build_jobs else 0
+    artifact_worker_limit = max(1, int(artifact_workers))
     emit(
         progress_callback,
         {
             "event": "parallel_started",
             "phase": "parallel_bars",
-            "status": "running" if worker_count else "complete",
-            "worker_count": worker_count,
-            "requested_worker_count": max_workers,
+            "status": "running" if bar_worker_count else "complete",
+            "worker_count": bar_worker_count,
+            "requested_worker_count": bar_workers,
             "worker_limit_reason": None,
             "buildable_sessions": len(build_jobs),
             "polars_threads_per_worker": os.environ.get("POLARS_MAX_THREADS"),
@@ -1264,10 +1266,25 @@ def build_market_data_parallel(
     )
 
     artifact_tasks: list[dict] = []
+    artifact_results: list[dict] = []
     if build_jobs:
-        executor = build_process_pool(worker_count)
-        futures = {
-            executor.submit(
+        emit(
+            progress_callback,
+            {
+                "event": "parallel_started",
+                "phase": "parallel_artifacts",
+                "status": "running",
+                "worker_count": artifact_worker_limit,
+                "requested_worker_count": artifact_workers,
+                "artifact_jobs": 0,
+                "polars_threads_per_worker": os.environ.get("POLARS_MAX_THREADS"),
+                "work_total": total_units,
+            },
+        )
+        bar_executor = build_process_pool(bar_worker_count)
+        artifact_executor = build_process_pool(artifact_worker_limit)
+        bar_futures = {
+            bar_executor.submit(
                 _parallel_session_worker,
                 request,
                 status,
@@ -1278,117 +1295,84 @@ def build_market_data_parallel(
             ): status
             for index, status in build_jobs
         }
-        pending = set(futures)
+        artifact_futures = {}
         try:
-            while pending:
-                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+            while bar_futures or artifact_futures:
+                done, _ = wait(set(bar_futures) | set(artifact_futures), timeout=0.5, return_when=FIRST_COMPLETED)
                 if not done:
                     check_cancelled(job_path)
                     continue
                 for future in done:
-                    result = future.result()
-                    for timeframe in result.get("timeframes", []):
-                        artifact_tasks.append({"session_date": str(result.get("session_date")), "timeframe": str(timeframe)})
-                    completed.append(
-                        {
-                            "session_date": str(result.get("session_date")),
-                            "status": str(result.get("status") or "bars_complete"),
-                            "rows": int(result.get("rows") or 0),
-                        }
-                    )
+                    if future in bar_futures:
+                        bar_futures.pop(future, None)
+                        result = future.result()
+                        for timeframe in result.get("timeframes", []):
+                            task = {"session_date": str(result.get("session_date")), "timeframe": str(timeframe)}
+                            artifact_tasks.append(task)
+                            artifact_futures[
+                                artifact_executor.submit(
+                                    _parallel_artifact_worker,
+                                    request,
+                                    task,
+                                    total_units,
+                                    str(job_path),
+                                )
+                            ] = task
+                        completed.append(
+                            {
+                                "session_date": str(result.get("session_date")),
+                                "status": str(result.get("status") or "bars_complete"),
+                                "rows": int(result.get("rows") or 0),
+                            }
+                        )
+                    elif future in artifact_futures:
+                        artifact_futures.pop(future, None)
+                        artifact_results.append(future.result())
                 check_cancelled(job_path)
         except BrokenProcessPool as exc:
             message = (
-                "A bar build worker terminated abruptly, usually because the worker exceeded available memory while "
-                "reading or aggregating a raw source file."
+                "A data build worker terminated abruptly, usually because the worker exceeded available memory while "
+                "building bars, features, or supervision artifacts."
             )
             emit(
                 progress_callback,
                 {
                     "event": "parallel_failed",
-                    "phase": "parallel_bars",
+                    "phase": "parallel_pipeline",
                     "status": "failed",
                     "message": message,
-                    "worker_count": worker_count,
-                    "worker_limit_reason": None,
+                    "bar_worker_count": bar_worker_count,
+                    "artifact_worker_count": artifact_worker_limit,
                 },
             )
-            for future in pending:
+            for future in set(bar_futures) | set(artifact_futures):
                 future.cancel()
-            executor.shutdown(wait=False, cancel_futures=True)
+            bar_executor.shutdown(wait=False, cancel_futures=True)
+            artifact_executor.shutdown(wait=False, cancel_futures=True)
             raise RuntimeError(message) from exc
         except Exception:
-            for future in pending:
+            for future in set(bar_futures) | set(artifact_futures):
                 future.cancel()
-            executor.shutdown(wait=False, cancel_futures=True)
+            bar_executor.shutdown(wait=False, cancel_futures=True)
+            artifact_executor.shutdown(wait=False, cancel_futures=True)
             raise
         else:
-            executor.shutdown(wait=True)
-
-    artifact_worker_count = min(max(1, int(max_workers)), len(artifact_tasks)) if artifact_tasks else 0
-    emit(
-        progress_callback,
-        {
-            "event": "parallel_started",
-            "phase": "parallel_artifacts",
-            "status": "running" if artifact_worker_count else "complete",
-            "worker_count": artifact_worker_count,
-            "requested_worker_count": max_workers,
-            "artifact_jobs": len(artifact_tasks),
-            "polars_threads_per_worker": os.environ.get("POLARS_MAX_THREADS"),
-            "work_total": total_units,
-        },
-    )
-
-    artifact_results: list[dict] = []
-    if artifact_tasks:
-        executor = build_process_pool(artifact_worker_count)
-        futures = {
-            executor.submit(
-                _parallel_artifact_worker,
-                request,
-                task,
-                total_units,
-                str(job_path),
-            ): task
-            for task in artifact_tasks
-        }
-        pending = set(futures)
-        try:
-            while pending:
-                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
-                if not done:
-                    check_cancelled(job_path)
-                    continue
-                for future in done:
-                    artifact_results.append(future.result())
-                check_cancelled(job_path)
-        except BrokenProcessPool as exc:
-            message = (
-                "An artifact build worker terminated abruptly, usually because the worker exceeded available memory while "
-                "building feature or supervision artifacts."
-            )
-            emit(
-                progress_callback,
-                {
-                    "event": "parallel_failed",
-                    "phase": "parallel_artifacts",
-                    "status": "failed",
-                    "message": message,
-                    "worker_count": artifact_worker_count,
-                },
-            )
-            for future in pending:
-                future.cancel()
-            executor.shutdown(wait=False, cancel_futures=True)
-            raise RuntimeError(message) from exc
-        except Exception:
-            for future in pending:
-                future.cancel()
-            executor.shutdown(wait=False, cancel_futures=True)
-            raise
-        else:
-            executor.shutdown(wait=True)
+            bar_executor.shutdown(wait=True)
+            artifact_executor.shutdown(wait=True)
+    else:
+        emit(
+            progress_callback,
+            {
+                "event": "parallel_started",
+                "phase": "parallel_artifacts",
+                "status": "complete",
+                "worker_count": 0,
+                "requested_worker_count": artifact_workers,
+                "artifact_jobs": 0,
+                "polars_threads_per_worker": os.environ.get("POLARS_MAX_THREADS"),
+                "work_total": total_units,
+            },
+        )
 
     expected_by_session: dict[str, int] = {}
     complete_by_session: dict[str, int] = {}

@@ -275,7 +275,7 @@ export function MarketDataBuildPage() {
               <span>{metrics.missing_reference_sessions} reference session raw file(s) are missing, so carry-over indicators may have a shorter warm-up.</span>
             </InlineNotice>
           ) : null}
-          <PhasePanel elapsedSec={metrics?.elapsed_sec ?? 0} phases={progress?.phases ?? []} status={metrics?.status ?? job?.status} workers={job.resources?.max_workers} />
+          <PhasePanel elapsedSec={metrics?.elapsed_sec ?? 0} phases={progress?.phases ?? []} status={metrics?.status ?? job?.status} />
           {job?.status === "failed" ? <div className="error-panel" style={{ marginTop: 18 }}>{job.error ?? "Build failed."}</div> : null}
         </>
         ) : null
@@ -440,7 +440,8 @@ function BuildRunHeader({ job }: { job: BuildJob }) {
       <div className="build-summary-facts">
         <BuildFact label="Build id" value={job.job_id} />
         <BuildFact label="Created" value={formatTimestamp(job.created_at)} />
-        <BuildFact label="Workers" value={`${job.resources?.max_workers ?? "-"} workers`} />
+        <BuildFact label="Bar workers" value={`${job.resources?.bar_workers ?? job.resources?.max_workers ?? "-"} workers`} />
+        <BuildFact label="Feature workers" value={`${job.resources?.artifact_workers ?? job.resources?.max_workers ?? "-"} workers`} />
         <BuildFact label="Polars" value={`${job.resources?.polars_threads ?? "-"} threads`} />
         <BuildFact label="Output starts" value={String(metrics?.output_start_date ?? "-")} />
         <BuildFact label="Warm-up" value={`${formatNumber(metrics?.warmup_sessions ?? 13)} sessions`} />
@@ -572,7 +573,7 @@ function Field({ label, value, onChange, type = "text" }: { label: string; value
   );
 }
 
-function PhasePanel({ elapsedSec, phases, status }: { elapsedSec: number; phases: Stage[]; status?: string; workers?: unknown }) {
+function PhasePanel({ elapsedSec, phases, status }: { elapsedSec: number; phases: Stage[]; status?: string }) {
   const done = phases.reduce((total, phase) => total + Number(phase.done || 0), 0);
   const total = phases.reduce((sum, phase) => sum + Number(phase.total || 0), 0);
   const progress = total > 0 ? (done / total) * 100 : 0;
