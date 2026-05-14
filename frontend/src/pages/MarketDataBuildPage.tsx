@@ -572,11 +572,10 @@ function Field({ label, value, onChange, type = "text" }: { label: string; value
   );
 }
 
-function PhasePanel({ elapsedSec, phases, status, workers }: { elapsedSec: number; phases: Stage[]; status?: string; workers?: unknown }) {
+function PhasePanel({ elapsedSec, phases, status }: { elapsedSec: number; phases: Stage[]; status?: string; workers?: unknown }) {
   const done = phases.reduce((total, phase) => total + Number(phase.done || 0), 0);
   const total = phases.reduce((sum, phase) => sum + Number(phase.total || 0), 0);
   const progress = total > 0 ? (done / total) * 100 : 0;
-  const workerCount = Math.max(1, Number(workers || 1));
   return (
     <section className="panel phase-panel">
       <h2>Build Progress</h2>
@@ -585,7 +584,7 @@ function PhasePanel({ elapsedSec, phases, status, workers }: { elapsedSec: numbe
           <ProgressMeter done={done} elapsed_sec={elapsedSec} label="Total build progress" progress={progress} status={status} total={total} />
           <div className="build-step-grid">
             {phases.map((phase) => (
-              <BuildStepCard key={phase.phase ?? phase.label} stage={phase} workerCount={workerCount} />
+              <BuildStepCard key={phase.phase ?? phase.label} stage={phase} />
             ))}
           </div>
         </>
@@ -596,11 +595,12 @@ function PhasePanel({ elapsedSec, phases, status, workers }: { elapsedSec: numbe
   );
 }
 
-function BuildStepCard({ stage, workerCount }: { stage: Stage; workerCount: number }) {
+function BuildStepCard({ stage }: { stage: Stage }) {
   const description = buildStageDescription(stage.phase);
   const isSkipped = Number(stage.total || 0) === 0;
   const active = stage.active_items ?? [];
-  const mode = buildStageMode(stage.phase, workerCount, isSkipped);
+  const activeCount = Number(stage.active_count ?? active.length);
+  const mode = buildStageMode(stage.phase, activeCount, isSkipped, stage.progress);
   return (
     <article className="build-step-card" data-status={isSkipped ? "skipped" : progressStatus(stage.progress)}>
       <header className="build-step-card-header">
@@ -662,10 +662,12 @@ function buildStageDescription(phase: string | undefined): string {
   }
 }
 
-function buildStageMode(phase: string | undefined, workerCount: number, skipped: boolean): string {
+function buildStageMode(phase: string | undefined, activeCount: number, skipped: boolean, progress: number): string {
   if (skipped) return "Skipped";
+  if (activeCount > 0) return `${formatNumber(activeCount)} Concurrent`;
+  if (progress >= 100) return "Complete";
   if (phase === "build_bars" || phase === "build_features" || phase === "build_supervision") {
-    return `${formatNumber(workerCount)} Concurrent`;
+    return "Waiting";
   }
   if (phase === "reference_window") return "Reference";
   return "Sequential";
