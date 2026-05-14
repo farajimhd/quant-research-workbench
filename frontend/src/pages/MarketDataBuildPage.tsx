@@ -133,7 +133,7 @@ export function MarketDataBuildPage() {
       <PageIntro
         groupLabel="Market Data"
         title="Build Data"
-        description="Rebuild the canonical market-data store with every supported timeframe, feature group, and supervision label."
+        description="Rebuild the canonical market-data store with every supported timeframe and feature group."
         actions={scope ? <ScopeCard scope={scope} /> : null}
       />
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />

@@ -286,7 +286,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   payload,
   reference = null,
   showIndicatorControls = true,
-  showSupervisionControls = true,
+  showSupervisionControls = false,
   ticker,
   tickerInputWidth,
   tickerMaxLength = 10,

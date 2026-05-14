@@ -2,7 +2,7 @@
 
 The data provider is the canonical market-data layer for local research, backtests, and chart inspection. It separates data preparation from strategy execution:
 
-- Offline build mode reads raw Massive minute files, normalizes timestamps, rebuilds all supported timeframes, calculates feature columns and supervision labels, writes Parquet artifacts, and records a manifest.
+- Offline build mode reads raw Massive minute files, normalizes timestamps, rebuilds all supported timeframes, calculates feature columns, writes Parquet artifacts, and records a manifest.
 - Online/read mode loads those prepared artifacts without recalculating indicators.
 - Consumers decide their own trading/session filters. The provider stores all bars present in the raw source, including premarket and after-hours data.
 
@@ -50,7 +50,7 @@ Builds intentionally use a single `force_rebuild` mode. Every selected session a
 Build execution is split into two provider-owned phases:
 
 1. Read each raw `1m` source file, normalize it, and write every selected bar timeframe for that session.
-2. Run independent artifact jobs per `(session_date, timeframe)` to calculate features, bar supervision, method supervision, and scanner supervision from the written bar files.
+2. Run independent artifact jobs per `(session_date, timeframe)` to calculate feature groups from the written bar files.
 
 This keeps bar generation separate from heavier feature and label work, and it lets the provider parallelize artifact jobs without putting build work inside the frontend process.
 
@@ -432,8 +432,8 @@ The React frontend has a `Market Data` workspace served by `src.backend.app`:
 
 - The Build Data page auto-fills raw root, processed root, start date, and end date from available data.
 - Scope changes are made through the compact data-scope editor.
-- The build always runs in `force_rebuild` mode and calculates every configured timeframe, feature group, and supervision group.
-- Progress is reported per source day and per timeframe. Each day card shows raw loading, other-timeframe generation, and timeframe-specific progress for normalization, bar writes, feature calculation, feature writes, bar labels, method labels, and scanner labels.
+- The build always runs in `force_rebuild` mode and calculates every configured timeframe and feature group.
+- Progress is reported per source day and per timeframe. Each day card shows raw loading, other-timeframe generation, and timeframe-specific progress for normalization, bar writes, feature calculation, and feature writes.
 - Progress aggregation is owned by the backend API and rendered by React without full page reloads.
 
 Charts and run dashboards use `MarketDataProvider` first. If provider artifacts are missing, the chart loader can fall back to older run artifacts/raw paths where that fallback is still supported.
@@ -459,8 +459,8 @@ Frontend chart controls, schema/catalog review pages, and marker rendering shoul
 - Build output is partitioned by day and timeframe so the UI can load only the requested dates.
 - Feature groups are separate Parquet files to avoid loading every indicator for every use case.
 - Consumers can request specific tickers and columns.
-- Full builds run outside request/UI threads in provider-managed worker processes. Bar generation runs first, then independent per-timeframe artifact jobs run from written bar files.
-- Supervision uses 1/2/3 bar horizons and the three active method families to keep full-universe builds bounded.
+- Full builds run outside request/UI threads in provider-managed worker processes. Bar generation runs first, then independent per-timeframe feature artifact jobs run from written bar files.
+- Supervision code and catalog metadata are retained for future offline research, but active provider builds do not generate supervision artifacts.
 
 ## Research Discipline
 

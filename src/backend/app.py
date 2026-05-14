@@ -44,7 +44,6 @@ from src.data_provider.config import (
     DEFAULT_RAW_ROOT,
     DataProviderConfig,
     FEATURE_GROUPS,
-    SUPERVISION_GROUPS,
     TIMEFRAMES,
     BuildRequest,
 )
@@ -624,7 +623,7 @@ def config_defaults() -> dict[str, Any]:
         "output_root": str(DEFAULT_OUTPUT_ROOT),
         "timeframes": list(TIMEFRAMES),
         "feature_groups": list(FEATURE_GROUPS),
-        "supervision_groups": list(SUPERVISION_GROUPS),
+        "supervision_groups": [],
     }
 
 
@@ -817,7 +816,7 @@ def start_build(payload: BuildSubmit) -> dict[str, Any]:
         end_date=payload.end_date,
         timeframes=list(TIMEFRAMES),
         feature_groups=list(FEATURE_GROUPS),
-        supervision_groups=list(SUPERVISION_GROUPS),
+        supervision_groups=[],
         rebuild_mode="force_rebuild",
         tickers=None,
     )
@@ -980,7 +979,7 @@ def market_chart(
     selected_columns = parse_csv_list(columns) if columns is not None else []
     if selected_display_items is None and not selected_columns:
         selected_display_items = default_catalog_display_items(processed_root_path)
-    selected_supervision = parse_csv_list(supervision_groups) if supervision_groups is not None else []
+    selected_supervision: list[str] = []
     range_start, range_end = resolve_chart_range(start_date, end_date, session_date)
     return json_safe(
         chart_payload(

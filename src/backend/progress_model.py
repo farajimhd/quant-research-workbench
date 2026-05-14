@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from src.data_provider.config import FEATURE_GROUPS, SUPERVISION_GROUPS, TIMEFRAMES
+from src.data_provider.config import FEATURE_GROUPS, TIMEFRAMES
 
 
 PHASE_LABELS = {
@@ -36,7 +36,7 @@ def request_options(job_status: dict[str, Any] | None) -> tuple[list[str], list[
     return (
         list(request.get("timeframes") or TIMEFRAMES),
         list(request.get("feature_groups") or FEATURE_GROUPS),
-        list(request.get("supervision_groups") or SUPERVISION_GROUPS),
+        list(request.get("supervision_groups") or []),
     )
 
 
@@ -373,7 +373,11 @@ def build_session_cards(
                     "total": tf_total,
                     "elapsed_sec": round(tf_elapsed, 3),
                     "progress": round((tf_done / tf_total) * 100.0, 2) if tf_total else 0.0,
-                    "stages": [materialize_stage(label, stages.get(stage, stage_state(0))) for stage, label in stage_labels],
+                    "stages": [
+                        materialize_stage(label, stages.get(stage, stage_state(0)))
+                        for stage, label in stage_labels
+                        if int(stages.get(stage, {}).get("total") or 0) > 0
+                    ],
                 }
             )
         done, total, elapsed = total_stage_progress(all_stages)
@@ -450,4 +454,3 @@ def build_progress_model(
         "feature_groups": feature_groups,
         "supervision_groups": supervision_groups,
     }
-

@@ -5,7 +5,7 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 
 import { api, query } from "../api/client";
-import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartLabelOption, type ChartPayload, type ChartReference } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload, type ChartReference } from "../app/components/ChartPanel";
 import { DataTable, type BackendTableQuery } from "../app/components/DataTable";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
@@ -440,7 +440,6 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
   const [ticker, setTicker] = useState("");
   const [featureGroups, setFeatureGroups] = useState(DEFAULT_CHART_FEATURE_GROUPS);
   const [visibleColumns, setVisibleColumns] = useState(DEFAULT_CHART_DISPLAY_ITEMS);
-  const [visibleSupervisionGroups, setVisibleSupervisionGroups] = useState<string[]>([]);
   const [payload, setPayload] = useState<ChartPayload | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState("");
@@ -462,12 +461,6 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
     if (!defaults.length || !sameList(visibleColumns, DEFAULT_CHART_DISPLAY_ITEMS)) return;
     setVisibleColumns(defaults);
   }, [catalog, visibleColumns]);
-
-  useEffect(() => {
-    const defaults = defaultCatalogSupervisionGroups(catalog);
-    if (!defaults.length || visibleSupervisionGroups.length) return;
-    setVisibleSupervisionGroups(defaults);
-  }, [catalog, visibleSupervisionGroups.length]);
 
   useEffect(() => {
     if (!rangeStart || !rangeEnd || !timeframes.length) return;
@@ -505,7 +498,6 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
         ticker: ticker.trim().toUpperCase(),
         feature_groups: featureGroups.join(","),
         display_items: chartDisplayItemsRequestValue(visibleColumns),
-        supervision_groups: visibleSupervisionGroups.join(","),
         min_confidence: DEFAULT_CHART_MIN_CONFIDENCE
       })}`
     ).then((nextPayload) => {
@@ -525,7 +517,7 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
     return () => {
       active = false;
     };
-  }, [scope.processed_root, rangeEnd, rangeStart, timeframe, ticker, featureGroups, visibleColumns, visibleSupervisionGroups]);
+  }, [scope.processed_root, rangeEnd, rangeStart, timeframe, ticker, featureGroups, visibleColumns]);
 
   function updateChartPeriod(start: string, end: string) {
     if (start <= end) {
@@ -540,7 +532,6 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
   const displayItemOptions = payload?.options?.display_items ?? defaultCatalogDisplayItemOptions(catalog);
   const indicatorOptions = payload?.options?.standard_indicators ?? DEFAULT_CHART_DISPLAY_ITEMS;
   const featureOptions = payload?.options?.feature_columns ?? [];
-  const labelOptions = chartLabelOptions(catalog, payload?.options?.supervision_groups ?? []);
 
   if (!barRecords.length) return <div className="empty-state panel">No saved bar artifacts are available for charting.</div>;
   return (
@@ -552,13 +543,11 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
         errorMessage={chartError}
         featureOptions={featureOptions}
         indicatorOptions={indicatorOptions}
-        labelOptions={labelOptions}
         loading={chartLoading}
         onPeriodChange={updateChartPeriod}
         onTickerChange={setTicker}
         onTimeframeChange={setTimeframe}
         onVisibleColumnsChange={(nextColumns) => updateChartVisibleColumns(nextColumns, setVisibleColumns, setPayload)}
-        onVisibleSupervisionGroupsChange={setVisibleSupervisionGroups}
         payload={payload}
         periodEnd={rangeEnd}
         periodMax={availableSessions[availableSessions.length - 1] ?? scope.end_date}
@@ -568,7 +557,6 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
         timeframe={timeframe}
         timeframes={timeframes}
         visibleColumns={visibleColumns}
-        visibleSupervisionGroups={visibleSupervisionGroups}
       />
     </section>
   );
@@ -770,7 +758,6 @@ function PreviewRowChartModal({
   const [rangeEnd, setRangeEnd] = useState(initial.range.end);
   const [featureGroups, setFeatureGroups] = useState(initial.featureGroups);
   const [visibleColumns, setVisibleColumns] = useState(initial.visibleColumns);
-  const [visibleSupervisionGroups, setVisibleSupervisionGroups] = useState(initial.visibleSupervisionGroups);
   const [payload, setPayload] = useState<ChartPayload | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState("");
@@ -794,7 +781,6 @@ function PreviewRowChartModal({
         ticker,
         feature_groups: featureGroups.join(","),
         display_items: chartDisplayItemsRequestValue(visibleColumns),
-        supervision_groups: visibleSupervisionGroups.join(","),
         min_confidence: DEFAULT_CHART_MIN_CONFIDENCE,
       })}`
     )
@@ -818,7 +804,7 @@ function PreviewRowChartModal({
     return () => {
       active = false;
     };
-  }, [featureGroups, rangeEnd, rangeStart, scope.processed_root, ticker, timeframe, visibleColumns, visibleSupervisionGroups]);
+  }, [featureGroups, rangeEnd, rangeStart, scope.processed_root, ticker, timeframe, visibleColumns]);
 
   function updateChartPeriod(start: string, end: string) {
     if (start <= end) {
@@ -833,7 +819,6 @@ function PreviewRowChartModal({
   const displayItemOptions = payload?.options?.display_items ?? defaultCatalogDisplayItemOptions(catalog);
   const indicatorOptions = payload?.options?.standard_indicators ?? initial.visibleColumns;
   const featureOptions = payload?.options?.feature_columns ?? [];
-  const labelOptions = chartLabelOptions(catalog, payload?.options?.supervision_groups ?? []);
   const periodBounds = chartPeriodBounds(records, timeframe, scope);
 
   return (
@@ -860,13 +845,11 @@ function PreviewRowChartModal({
           errorMessage={chartError}
           featureOptions={featureOptions}
           indicatorOptions={indicatorOptions}
-          labelOptions={labelOptions}
           loading={chartLoading}
           onPeriodChange={updateChartPeriod}
           onTickerChange={setTicker}
           onTimeframeChange={setTimeframe}
           onVisibleColumnsChange={(nextColumns) => updateChartVisibleColumns(nextColumns, setVisibleColumns, setPayload)}
-          onVisibleSupervisionGroupsChange={setVisibleSupervisionGroups}
           payload={payload}
           periodEnd={rangeEnd}
           periodMax={periodBounds.max}
@@ -877,7 +860,6 @@ function PreviewRowChartModal({
           timeframe={timeframe}
           timeframes={timeframes}
           visibleColumns={visibleColumns}
-          visibleSupervisionGroups={visibleSupervisionGroups}
         />
       ) : (
         <div className="empty-state">This row does not include a ticker, so it cannot be opened on the chart.</div>
@@ -894,7 +876,6 @@ function previewChartInitialState(target: PreviewChartTarget, records: RecordRow
   const sessionDate = barContext.sessionDate;
   const range = surroundingChartRange(records, timeframe, sessionDate);
   const visibleColumns = previewChartDisplayItems(target.record, catalog);
-  const visibleSupervisionGroups = previewSupervisionGroups(target.record);
   return {
     featureGroups: previewFeatureGroups(target.record, catalog, visibleColumns),
     range,
@@ -902,7 +883,6 @@ function previewChartInitialState(target: PreviewChartTarget, records: RecordRow
     ticker,
     timeframe,
     visibleColumns,
-    visibleSupervisionGroups,
   };
 }
 
@@ -1071,15 +1051,6 @@ function previewFeatureGroups(record: RecordRow, catalog: CatalogPayload | null,
 
 function artifactFeatureGroup(group: string) {
   return group.startsWith("features_") ? group.replace("features_", "") : "";
-}
-
-function previewSupervisionGroups(record: RecordRow) {
-  if (!record.group.startsWith("supervision_")) return [];
-  const group = record.group.replace("supervision_", "");
-  if (group === "bar") return ["bar:oracle_long_entry_signal", "bar:oracle_long_exit_signal"];
-  if (group === "method") return ["method:method_entry_signal", "method:method_exit_signal"];
-  if (group === "scanner") return ["scanner:is_top_1", "scanner:is_top_3", "scanner:is_top_5"];
-  return [group];
 }
 
 function surroundingChartRange(records: RecordRow[], timeframe: string, sessionDate: string) {
@@ -3109,58 +3080,6 @@ function defaultCatalogDisplayItems(catalog: CatalogPayload | null): string[] {
 
 function defaultCatalogDisplayItemOptions(catalog: CatalogPayload | null): ChartDisplayItem[] {
   return (catalog?.displayItems ?? []).filter((item) => item.presentation?.selectable !== false);
-}
-
-function defaultCatalogSupervisionGroups(catalog: CatalogPayload | null): string[] {
-  if (!catalog) return [];
-  const groups = catalog.columns
-    .filter((item) => item.presentation?.defaultVisible && item.presentation?.chartRole === "marker")
-    .map(supervisionGroupForCatalogItem)
-    .filter(Boolean) as string[];
-  if (catalog.supervisionMethods.some((item) => item.presentation?.defaultVisible)) groups.push("method");
-  if (catalog.scanners.some((item) => item.presentation?.defaultVisible)) groups.push("scanner");
-  return Array.from(new Set(groups));
-}
-
-function chartLabelOptions(catalog: CatalogPayload | null, availableGroups: string[]): ChartLabelOption[] {
-  if (!catalog) return [];
-  const available = new Set(availableGroups);
-  const candidates = [
-    { column: "oracle_long_entry_signal", group: "bar:oracle_long_entry_signal", source: "bar", title: "Bar entry" },
-    { column: "oracle_long_exit_signal", group: "bar:oracle_long_exit_signal", source: "bar", title: "Bar exit" },
-    { column: "mfe_before_mae", group: "bar:mfe_before_mae", source: "bar", title: "MFE before MAE" },
-    { column: "fwd_liquidity_confirmed", group: "bar:fwd_liquidity_confirmed", source: "bar", title: "Future liquidity" },
-    { column: "fwd_volume_shock_before_mfe", group: "bar:fwd_volume_shock_before_mfe", source: "bar", title: "Volume before MFE" },
-    { column: "method_entry_signal", group: "method:method_entry_signal", source: "method", title: "Method entry" },
-    { column: "method_exit_signal", group: "method:method_exit_signal", source: "method", title: "Method ignore" },
-    { column: "is_top_1", group: "scanner:is_top_1", source: "scanner", title: "Scanner top 1" },
-    { column: "is_top_3", group: "scanner:is_top_3", source: "scanner", title: "Scanner top 3" },
-    { column: "is_top_5", group: "scanner:is_top_5", source: "scanner", title: "Scanner top 5" },
-    { column: "is_top_10", group: "scanner:is_top_10", source: "scanner", title: "Scanner top 10" },
-    { column: "is_top_1pct", group: "scanner:is_top_1pct", source: "scanner", title: "Scanner top 1%" },
-    { column: "is_top_5pct", group: "scanner:is_top_5pct", source: "scanner", title: "Scanner top 5%" },
-  ];
-  return candidates
-    .filter((candidate) => available.has(candidate.source) && catalog.columns.some((column) => column.column === candidate.column))
-    .map((candidate) => {
-      const item = catalog.columns.find((column) => column.column === candidate.column);
-      return {
-        group: candidate.group,
-        id: item?.id ?? candidate.group,
-        knowledge: item?.knowledge,
-        leakage: item?.leakage,
-        lookahead: true,
-        title: candidate.title,
-      };
-    });
-}
-
-function supervisionGroupForCatalogItem(item: CatalogItem): string | null {
-  const groups = item.artifactGroups ?? [];
-  if (groups.includes("supervision_bar")) return "bar";
-  if (groups.includes("supervision_method")) return "method";
-  if (groups.includes("supervision_scanner")) return "scanner";
-  return null;
 }
 
 function sameList(left: string[], right: string[]) {

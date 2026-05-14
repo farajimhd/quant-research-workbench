@@ -23,7 +23,6 @@ from src.data_provider.config import (
     DEFAULT_RAW_ROOT,
     EXCHANGE_TIME_ZONE,
     FEATURE_GROUPS,
-    SUPERVISION_GROUPS,
     TIMEFRAMES,
     DataProviderConfig,
 )
@@ -1370,11 +1369,7 @@ def chart_payload(
         "feature_groups": feature_group_options(records, timeframe, start_date, end_date),
         "feature_columns": non_indicator_columns,
         "standard_indicators": indicator_columns,
-        "supervision_groups": [
-            group
-            for group in SUPERVISION_GROUPS
-            if matching_artifacts(records, f"supervision_{group}", timeframe, start_date, end_date)
-        ],
+        "supervision_groups": [],
         "display_items": display_options,
     }
     if bars.is_empty():

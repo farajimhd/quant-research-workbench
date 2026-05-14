@@ -96,7 +96,7 @@ class BuildRequest:
     exchange_timezone: str = EXCHANGE_TIME_ZONE
     timeframes: list[str] = field(default_factory=lambda: ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"])
     feature_groups: list[str] = field(default_factory=lambda: list(FEATURE_GROUPS))
-    supervision_groups: list[str] = field(default_factory=lambda: list(SUPERVISION_GROUPS))
+    supervision_groups: list[str] = field(default_factory=list)
     rebuild_mode: str = "force_rebuild"
     tickers: list[str] | None = None
 
@@ -110,7 +110,7 @@ class BuildRequest:
             exchange_timezone=str(raw.get("exchange_timezone") or EXCHANGE_TIME_ZONE),
             timeframes=list_from_dict(raw, "timeframes", TIMEFRAMES),
             feature_groups=list_from_dict(raw, "feature_groups", FEATURE_GROUPS),
-            supervision_groups=list_from_dict(raw, "supervision_groups", SUPERVISION_GROUPS),
+            supervision_groups=list_from_dict(raw, "supervision_groups", []),
             rebuild_mode="force_rebuild",
             tickers=list(raw["tickers"]) if raw.get("tickers") else None,
         )
