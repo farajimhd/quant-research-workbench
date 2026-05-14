@@ -88,6 +88,7 @@ type BuildMetric = {
 };
 
 const tabs = ["Build", "Build Timings", "Artifacts", "Plan", "Processed Store", "Manifest"];
+const activeBuildStatuses = new Set(["queued", "running", "canceling", "cancelling"]);
 
 export function MarketDataBuildPage() {
   const [scope, setScope] = useState<Scope | null>(null);
@@ -111,13 +112,13 @@ export function MarketDataBuildPage() {
   }, [scope]);
 
   useEffect(() => {
-    if (!scope || !jobs.some((item) => ["queued", "running", "canceling"].includes(item.status))) return;
+    if (!scope || !jobs.some((item) => activeBuildStatuses.has(String(item.status).toLowerCase()))) return;
     const timer = window.setInterval(() => loadJobs(scope), 3000);
     return () => window.clearInterval(timer);
   }, [scope, jobs]);
 
   useEffect(() => {
-    if (!scope || !job || !["queued", "running", "canceling"].includes(job.status)) return;
+    if (!scope || !job || !activeBuildStatuses.has(String(job.status).toLowerCase())) return;
     const timer = window.setInterval(() => loadJob(scope, job.job_id), 1000);
     return () => window.clearInterval(timer);
   }, [scope, job?.job_id, job?.status]);
@@ -168,8 +169,8 @@ export function MarketDataBuildPage() {
 
   async function stopBuild() {
     if (!scope || !job) return;
-    await api(`/api/market-data/build/jobs/${job.job_id}/cancel${query({ processed_root: scope.processed_root })}`, { method: "POST" });
-    await loadJob(scope, job.job_id);
+    const payload = await api<BuildJob>(`/api/market-data/build/jobs/${job.job_id}/cancel${query({ processed_root: scope.processed_root })}`, { method: "POST" });
+    setJob(payload);
     await loadJobs(scope);
   }
 
@@ -208,7 +209,7 @@ export function MarketDataBuildPage() {
     setJobs([]);
   }
 
-  const running = Boolean(job && ["queued", "running", "canceling"].includes(job.status));
+  const running = Boolean(job && activeBuildStatuses.has(String(job.status).toLowerCase()));
   const progress = job?.progress;
   const metrics = progress?.metrics;
   const missing = useMemo(() => (progress?.plan ?? []).filter((row) => row.expected_market_session && !row.exists), [progress?.plan]);
@@ -400,7 +401,7 @@ function BuildStartPage({
                   <SemanticBadge tone={toneForStatus(item.status)}>{item.status}</SemanticBadge>
                   <button
                     className="icon-button"
-                    disabled={["queued", "running", "canceling"].includes(String(item.status).toLowerCase())}
+                    disabled={activeBuildStatuses.has(String(item.status).toLowerCase())}
                     onClick={() => onDeleteRequest(item)}
                     title="Delete build"
                     type="button"

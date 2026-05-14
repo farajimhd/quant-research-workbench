@@ -27,6 +27,9 @@ class BuildCancelled(RuntimeError):
     pass
 
 
+TERMINAL_STATUSES = {"complete", "failed", "error", "cancelled", "canceled"}
+
+
 def jobs_root(processed_root: Path) -> Path:
     return processed_root / JOB_DIR
 
@@ -127,6 +130,68 @@ def is_cancel_requested(path: Path) -> bool:
 def check_cancelled(path: Path) -> None:
     if is_cancel_requested(path):
         raise BuildCancelled("Build job was cancelled.")
+
+
+def terminate_process_tree(pid: int | None) -> dict[str, Any]:
+    if not pid:
+        return {"terminated": False, "reason": "missing_pid"}
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except subprocess.TimeoutExpired:
+            return {"terminated": False, "reason": "taskkill_timeout"}
+        output = "\n".join(part.strip() for part in [result.stdout, result.stderr] if part.strip())
+        already_stopped = "not found" in output.lower() or "not running" in output.lower()
+        return {
+            "terminated": result.returncode == 0,
+            "already_stopped": already_stopped,
+            "returncode": result.returncode,
+            "message": output,
+        }
+    try:
+        os.kill(pid, 15)
+        return {"terminated": True}
+    except ProcessLookupError:
+        return {"terminated": False, "already_stopped": True, "reason": "not_found"}
+    except PermissionError as exc:
+        return {"terminated": False, "reason": str(exc)}
+
+
+def payload_pid(payload: dict[str, Any]) -> int | None:
+    try:
+        return int(payload.get("pid") or 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def settle_canceling_job(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    if str(payload.get("status") or "").lower() != "canceling" or not is_cancel_requested(path):
+        return payload
+    termination = terminate_process_tree(payload_pid(payload))
+    append_event(
+        path,
+        {
+            "event": "job_cancelled",
+            "phase": "cancel",
+            "status": "cancelled",
+            "message": "Build job cancellation settled by status refresh.",
+            "termination": termination,
+        },
+    )
+    return update_job(
+        path,
+        status="cancelled",
+        finished_at=payload.get("finished_at") or utc_now(),
+        error=payload.get("error") or "Build job was cancelled by user.",
+        cancellation=termination,
+    )
 
 
 def parse_utc(value: str | None) -> datetime | None:
@@ -235,9 +300,34 @@ def submit_build_job(
 
 def cancel_build_job(processed_root: Path, job_id: str) -> dict[str, Any]:
     path = job_dir(processed_root, job_id)
+    payload = read_job(path)
+    if not payload:
+        return {"status": "not_found", "job_id": job_id}
+    status = str(payload.get("status") or "").lower()
+    if status in TERMINAL_STATUSES:
+        return attach_job_summary(payload)
     cancel_file(path).write_text(utc_now(), encoding="utf-8")
     append_event(path, {"event": "cancel_requested", "phase": "cancel", "status": "canceling"})
-    return update_job(path, status="canceling")
+    termination = terminate_process_tree(payload_pid(payload))
+    append_event(
+        path,
+        {
+            "event": "job_cancelled",
+            "phase": "cancel",
+            "status": "cancelled",
+            "message": "Build job cancellation requested by user.",
+            "termination": termination,
+        },
+    )
+    return attach_job_summary(
+        update_job(
+            path,
+            status="cancelled",
+            finished_at=utc_now(),
+            error="Build job was cancelled by user.",
+            cancellation=termination,
+        )
+    )
 
 
 def delete_build_job(processed_root: Path, job_id: str, *, delete_data: bool = True) -> dict[str, Any]:
@@ -276,6 +366,7 @@ def delete_build_job(processed_root: Path, job_id: str, *, delete_data: bool = T
 def get_build_status(processed_root: Path, job_id: str) -> dict[str, Any]:
     path = job_dir(processed_root, job_id)
     payload = read_job(path)
+    payload = settle_canceling_job(path, payload) if payload else payload
     events = read_events(path)
     payload = attach_job_summary(payload, events)
     payload["events"] = events
@@ -288,5 +379,9 @@ def list_build_jobs(processed_root: Path) -> list[dict[str, Any]]:
     root = jobs_root(processed_root)
     if not root.exists():
         return []
-    jobs = [attach_job_summary(read_job(path), read_events(path)) for path in root.iterdir() if path.is_dir() and job_file(path).exists()]
+    jobs = [
+        attach_job_summary(settle_canceling_job(path, read_job(path)), read_events(path))
+        for path in root.iterdir()
+        if path.is_dir() and job_file(path).exists()
+    ]
     return sorted(jobs, key=lambda item: str(item.get("created_at") or ""), reverse=True)
