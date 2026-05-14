@@ -14,12 +14,17 @@ PHASE_LABELS = {
     "aggregate": "Intraday aggregates",
     "aggregate_daily": "Daily aggregate",
     "bars_write": "Bar files",
-    "feature_compute": "Feature calc frames",
+    "feature_compute": "Session/carry-over features",
     "feature_write": "Feature files",
     "supervision_bar": "Bar label files",
     "supervision_method": "Method label files",
     "supervision_scanner": "Scanner files",
 }
+
+
+def is_output_row(row: dict[str, Any]) -> bool:
+    role = row.get("build_role")
+    return role == "output" or role is None
 
 
 def session_timeframes(timeframes: Iterable[str] | None = None) -> list[str]:
@@ -79,7 +84,7 @@ def phase_totals(
     feature_groups: list[str],
     supervision_groups: list[str],
 ) -> dict[str, int]:
-    buildable = [row for row in plan_rows if row.get("expected_market_session") and row.get("exists")]
+    buildable = [row for row in plan_rows if is_output_row(row) and row.get("expected_market_session") and row.get("exists")]
     buildable_count = len(buildable)
     selected_timeframes = session_timeframes(timeframes)
     contexts = buildable_count * len(selected_timeframes)
@@ -237,6 +242,8 @@ def build_session_cards(
     planned_total = 1 + max(0, len(selected_timeframes) - 1) + sum(tf_stage_totals.values()) * len(selected_timeframes)
     session_rows: dict[str, dict[str, Any]] = {}
     for row in plan_rows:
+        if not is_output_row(row):
+            continue
         session_rows[row["session_date"]] = {
             "session_date": row["session_date"],
             "expected_market_session": row.get("expected_market_session"),
@@ -413,17 +420,28 @@ def build_session_cards(
 
 def build_metrics(plan_rows: list[dict[str, Any]], events: list[dict[str, Any]], job_status: dict[str, Any] | None) -> dict[str, Any]:
     expected = [row for row in plan_rows if row.get("expected_market_session")]
-    buildable = [row for row in expected if row.get("exists")]
+    output = [row for row in expected if is_output_row(row)]
+    reference = [row for row in expected if row.get("build_role") == "reference_only"]
+    buildable = [row for row in output if row.get("exists")]
     missing = [row for row in expected if not row.get("exists")]
+    missing_reference = [row for row in reference if not row.get("exists")]
     closed = [row for row in plan_rows if not row.get("expected_market_session")]
     artifact_events = [event for event in events if event.get("event") == "artifact_complete"]
     run_complete = next((event for event in reversed(events) if event.get("event") == "run_complete"), None)
     elapsed = float(run_complete.get("duration_sec") or 0.0) if run_complete else started_at_seconds((job_status or {}).get("started_at"))
     status = str((job_status or {}).get("status") or ("ready" if not events else events[-1].get("status") or "running"))
+    output_start = next((str(row.get("session_date")) for row in output), None)
+    plan_event = next((event for event in reversed(events) if event.get("event") == "plan_complete"), {})
     return {
         "raw": len(buildable),
         "expected": len(expected),
         "missing": len(missing),
+        "reference_sessions": len(reference),
+        "missing_reference_sessions": len(missing_reference),
+        "output_sessions": len(output),
+        "output_start_date": output_start,
+        "warmup_sessions": int(plan_event.get("warmup_sessions") or len(reference) or 0),
+        "carryover_timeframes": list(plan_event.get("carryover_timeframes") or []),
         "closed": len(closed),
         "rows": sum(int(event.get("rows_out") or 0) for event in artifact_events),
         "written_bytes": sum(int(event.get("size_bytes") or 0) for event in artifact_events),

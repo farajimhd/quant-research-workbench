@@ -215,8 +215,9 @@ def add_session_reference_features(frame: pl.DataFrame) -> pl.DataFrame:
     if frame.is_empty():
         return frame
     keys = ["ticker", "session_date"]
+    regular_open_minute = 9 * 60 + 30
     premarket = (
-        frame.filter(pl.col("minute_of_day") < 9 * 60 + 30)
+        frame.filter(pl.col("minute_of_day") < regular_open_minute)
         .group_by(keys)
         .agg(
             pl.col("high").max().alias("premarket_high"),
@@ -225,11 +226,16 @@ def add_session_reference_features(frame: pl.DataFrame) -> pl.DataFrame:
         )
         .with_columns((pl.col("premarket_high") - pl.col("premarket_low")).alias("premarket_range"))
     )
-    result = frame.join(premarket, on=keys, how="left")
+    result = frame.join(premarket, on=keys, how="left").with_columns(
+        pl.when(pl.col("minute_of_day") >= regular_open_minute).then(pl.col("premarket_high")).otherwise(None).alias("premarket_high"),
+        pl.when(pl.col("minute_of_day") >= regular_open_minute).then(pl.col("premarket_low")).otherwise(None).alias("premarket_low"),
+        pl.when(pl.col("minute_of_day") >= regular_open_minute).then(pl.col("premarket_volume")).otherwise(None).alias("premarket_volume"),
+        pl.when(pl.col("minute_of_day") >= regular_open_minute).then(pl.col("premarket_range")).otherwise(None).alias("premarket_range"),
+    )
     for minutes in [5, 10, 15, 30]:
-        end_minute = 9 * 60 + 30 + minutes
+        end_minute = regular_open_minute + minutes
         opening = (
-            frame.filter((pl.col("minute_of_day") >= 9 * 60 + 30) & (pl.col("minute_of_day") < end_minute))
+            frame.filter((pl.col("minute_of_day") >= regular_open_minute) & (pl.col("minute_of_day") < end_minute))
             .group_by(keys)
             .agg(
                 pl.col("high").max().alias(f"or_{minutes}m_high"),
@@ -237,23 +243,37 @@ def add_session_reference_features(frame: pl.DataFrame) -> pl.DataFrame:
             )
             .with_columns((pl.col(f"or_{minutes}m_high") - pl.col(f"or_{minutes}m_low")).alias(f"or_{minutes}m_range"))
         )
-        result = result.join(opening, on=keys, how="left")
+        result = result.join(opening, on=keys, how="left").with_columns(
+            pl.when(pl.col("minute_of_day") >= end_minute).then(pl.col(f"or_{minutes}m_high")).otherwise(None).alias(f"or_{minutes}m_high"),
+            pl.when(pl.col("minute_of_day") >= end_minute).then(pl.col(f"or_{minutes}m_low")).otherwise(None).alias(f"or_{minutes}m_low"),
+            pl.when(pl.col("minute_of_day") >= end_minute).then(pl.col(f"or_{minutes}m_range")).otherwise(None).alias(f"or_{minutes}m_range"),
+        )
     return result
+
+
+def add_previous_session_close(frame: pl.DataFrame) -> pl.DataFrame:
+    session_close = (
+        frame.group_by(["ticker", "session_date"])
+        .agg(pl.col("close").last().alias("_session_close"))
+        .sort(["ticker", "session_date"])
+        .with_columns(pl.col("_session_close").shift(1).over("ticker").alias("prev_close"))
+        .drop("_session_close")
+    )
+    return frame.join(session_close, on=["ticker", "session_date"], how="left")
 
 
 def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
     if frame.is_empty():
         return frame
     frame = frame.sort(["ticker", "bar_time_utc"])
-    prior_close = pl.col("close").shift(1).over("ticker")
-    prev_day_close = pl.col("close").shift(1).over("ticker")
+    prior_bar_close = pl.col("close").shift(1).over("ticker")
     frame = (
         frame.with_columns(
             ((pl.col("high") + pl.col("low") + pl.col("close")) / 3.0).alias("hlc3"),
             ((pl.col("open") + pl.col("high") + pl.col("low") + pl.col("close")) / 4.0).alias("ohlc4"),
             (pl.col("close") * pl.col("volume")).alias("dollar_volume"),
-            ((pl.col("close") / prior_close) - 1.0).fill_null(0.0).alias("return_1"),
-            (pl.col("close") / prior_close).log().fill_null(0.0).alias("log_return_1"),
+            ((pl.col("close") / prior_bar_close) - 1.0).fill_null(0.0).alias("return_1"),
+            (pl.col("close") / prior_bar_close).log().fill_null(0.0).alias("log_return_1"),
             (pl.col("high") - pl.col("low")).alias("bar_range"),
             (pl.col("close") - pl.col("open")).alias("body"),
             (pl.col("close") - pl.col("open")).abs().alias("body_abs"),
@@ -272,8 +292,8 @@ def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
             pl.col("high").cum_max().over(["ticker", "session_date"]).alias("day_high_so_far"),
             pl.col("low").cum_min().over(["ticker", "session_date"]).alias("day_low_so_far"),
             pl.col("volume").cum_sum().over(["ticker", "session_date"]).alias("day_volume_so_far"),
-            prev_day_close.alias("prev_close"),
         )
+        .pipe(add_previous_session_close)
         .with_columns(
             pl.when(pl.col("prev_close") > 0).then((pl.col("day_open") / pl.col("prev_close")) - 1.0).otherwise(0.0).alias("gap_pct"),
             pl.when(pl.col("day_open") > 0).then((pl.col("close") / pl.col("day_open")) - 1.0).otherwise(0.0).alias("distance_to_day_open_pct"),
@@ -306,8 +326,9 @@ def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
             (pl.cum_count("close").over("ticker") >= 20).alias("tema_ready"),
         )
     )
-    up = pl.when(pl.col("body") > 0).then(pl.col("body")).otherwise(0.0)
-    down = pl.when(pl.col("body") < 0).then(-pl.col("body")).otherwise(0.0)
+    close_delta = pl.col("close") - pl.col("close").shift(1).over("ticker")
+    up = pl.when(close_delta > 0).then(close_delta).otherwise(0.0)
+    down = pl.when(close_delta < 0).then(-close_delta).otherwise(0.0)
     prev_close_expr = pl.col("close").shift(1).over("ticker")
     true_range = pl.max_horizontal(
         pl.col("high") - pl.col("low"),
@@ -355,9 +376,10 @@ def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
     positive_flow = pl.when(pl.col("hlc3") > pl.col("hlc3").shift(1).over("ticker")).then(typical_money_flow).otherwise(0.0)
     negative_flow = pl.when(pl.col("hlc3") < pl.col("hlc3").shift(1).over("ticker")).then(typical_money_flow).otherwise(0.0)
     money_flow_multiplier = pl.when(pl.col("high") > pl.col("low")).then(((pl.col("close") - pl.col("low")) - (pl.col("high") - pl.col("close"))) / (pl.col("high") - pl.col("low"))).otherwise(0.0)
+    obv_delta = pl.col("close") - pl.col("close").shift(1).over("ticker")
     frame = (
         frame.with_columns(
-            pl.when(pl.col("close") >= pl.col("close").shift(1).over("ticker")).then(pl.col("volume")).otherwise(-pl.col("volume")).cum_sum().over("ticker").alias("obv"),
+            pl.when(obv_delta > 0).then(pl.col("volume")).when(obv_delta < 0).then(-pl.col("volume")).otherwise(0.0).cum_sum().over("ticker").alias("obv"),
             positive_flow.rolling_sum(14).over("ticker").alias("_mfi_pos14"),
             negative_flow.rolling_sum(14).over("ticker").alias("_mfi_neg14"),
             (money_flow_multiplier * pl.col("volume")).rolling_sum(20).over("ticker").alias("_cmf_num20"),
@@ -375,16 +397,20 @@ def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
     )
     frame = (
         frame.with_columns(
+            (pl.col("is_green") == False).cast(pl.Int32).cum_sum().over("ticker").alias("_green_reset"),
+            (pl.col("is_red") == False).cast(pl.Int32).cum_sum().over("ticker").alias("_red_reset"),
+        )
+        .with_columns(
             ((pl.col("high") < pl.col("high").shift(1).over("ticker")) & (pl.col("low") > pl.col("low").shift(1).over("ticker"))).alias("inside_bar"),
             ((pl.col("high") > pl.col("high").shift(1).over("ticker")) & (pl.col("low") < pl.col("low").shift(1).over("ticker"))).alias("outside_bar"),
             ((pl.col("close") > pl.col("open")) & (pl.col("open") < pl.col("close").shift(1).over("ticker")) & (pl.col("close") > pl.col("open").shift(1).over("ticker"))).alias("bullish_engulfing"),
             ((pl.col("close") < pl.col("open")) & (pl.col("open") > pl.col("close").shift(1).over("ticker")) & (pl.col("close") < pl.col("open").shift(1).over("ticker"))).alias("bearish_engulfing"),
             (pl.col("bar_range") <= pl.col("bar_range").rolling_min(4).over("ticker")).alias("nr4"),
             (pl.col("bar_range") <= pl.col("bar_range").rolling_min(7).over("ticker")).alias("nr7"),
-            (pl.col("is_green").cast(pl.Int32)).cum_sum().over("ticker").alias("consecutive_green"),
-            (pl.col("is_red").cast(pl.Int32)).cum_sum().over("ticker").alias("consecutive_red"),
-            (pl.col("high") >= pl.col("high").rolling_max(20).over("ticker")).alias("breaks_high20"),
-            (pl.col("low") <= pl.col("low").rolling_min(20).over("ticker")).alias("breaks_low20"),
+            pl.when(pl.col("is_green")).then(pl.col("is_green").cast(pl.Int32).cum_sum().over(["ticker", "_green_reset"])).otherwise(0).alias("consecutive_green"),
+            pl.when(pl.col("is_red")).then(pl.col("is_red").cast(pl.Int32).cum_sum().over(["ticker", "_red_reset"])).otherwise(0).alias("consecutive_red"),
+            (pl.col("high") > pl.col("high").shift(1).rolling_max(20).over("ticker")).fill_null(False).alias("breaks_high20"),
+            (pl.col("low") < pl.col("low").shift(1).rolling_min(20).over("ticker")).fill_null(False).alias("breaks_low20"),
             pl.when(pl.col("donchian_high20") > 0).then((pl.col("close") / pl.col("donchian_high20")) - 1.0).otherwise(0.0).alias("pullback_from_high20_pct"),
             ((pl.col("close") > pl.col("vwap")) & (pl.col("close").shift(1).over("ticker") <= pl.col("vwap").shift(1).over("ticker"))).alias("reclaim_vwap"),
             ((pl.col("close") < pl.col("vwap")) & (pl.col("close").shift(1).over("ticker") >= pl.col("vwap").shift(1).over("ticker"))).alias("breakdown_vwap"),
@@ -405,14 +431,14 @@ def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
     )
     frame = (
         frame.with_columns(
-            (pl.col("high") >= pl.col("high").rolling_max(3, center=True).over("ticker")).alias("swing_high_3"),
-            (pl.col("low") <= pl.col("low").rolling_min(3, center=True).over("ticker")).alias("swing_low_3"),
-            (pl.col("high") >= pl.col("high").rolling_max(5, center=True).over("ticker")).alias("swing_high_5"),
-            (pl.col("low") <= pl.col("low").rolling_min(5, center=True).over("ticker")).alias("swing_low_5"),
+            (pl.col("high") >= pl.col("high").rolling_max(3).over("ticker")).fill_null(False).alias("swing_high_3"),
+            (pl.col("low") <= pl.col("low").rolling_min(3).over("ticker")).fill_null(False).alias("swing_low_3"),
+            (pl.col("high") >= pl.col("high").rolling_max(5).over("ticker")).fill_null(False).alias("swing_high_5"),
+            (pl.col("low") <= pl.col("low").rolling_min(5).over("ticker")).fill_null(False).alias("swing_low_5"),
             (pl.col("high") > pl.col("high").shift(1).over("ticker")).alias("higher_high"),
             (pl.col("low") < pl.col("low").shift(1).over("ticker")).alias("lower_low"),
-            (pl.col("close") > pl.col("high").shift(1).rolling_max(20).over("ticker")).alias("bos_up"),
-            (pl.col("close") < pl.col("low").shift(1).rolling_min(20).over("ticker")).alias("bos_down"),
+            (pl.col("close") > pl.col("high").shift(1).rolling_max(20).over("ticker")).fill_null(False).alias("bos_up"),
+            (pl.col("close") < pl.col("low").shift(1).rolling_min(20).over("ticker")).fill_null(False).alias("bos_down"),
             pl.when(pl.col("ema20") > pl.col("ema50")).then(pl.lit("up")).when(pl.col("ema20") < pl.col("ema50")).then(pl.lit("down")).otherwise(pl.lit("range")).alias("trend_regime"),
             ((pl.col("bar_range") > pl.col("atr14") * 1.5) & (pl.col("close") > pl.col("open"))).alias("bullish_displacement"),
             ((pl.col("bar_range") > pl.col("atr14") * 1.5) & (pl.col("close") < pl.col("open"))).alias("bearish_displacement"),
@@ -434,11 +460,11 @@ def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
             ((pl.col("return_z20") >= 2.5) & (pl.col("return_1") > 0)).alias("return_shock"),
             ((pl.col("range_z20") >= 2.5) & (pl.col("body") > 0)).alias("range_shock"),
             (
-                pl.col("breaks_high20")
-                | ((prior_day_high > 0) & (pl.col("close") > prior_day_high))
-                | ((pl.col("premarket_high") > 0) & (pl.col("close") > pl.col("premarket_high")))
-                | ((pl.col("or_5m_high") > 0) & (pl.col("close") > pl.col("or_5m_high")))
-                | pl.col("reclaim_vwap")
+                pl.col("breaks_high20").fill_null(False)
+                | ((prior_day_high > 0) & (pl.col("close") > prior_day_high)).fill_null(False)
+                | ((pl.col("premarket_high") > 0) & (pl.col("close") > pl.col("premarket_high"))).fill_null(False)
+                | ((pl.col("or_5m_high") > 0) & (pl.col("close") > pl.col("or_5m_high"))).fill_null(False)
+                | pl.col("reclaim_vwap").fill_null(False)
             ).alias("structure_break_shock"),
             (pl.col("relative_volume20") >= 3.0).alias("relative_volume_shock"),
             (pl.col("relative_dollar_volume20") >= 3.0).alias("dollar_volume_shock"),

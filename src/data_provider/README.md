@@ -209,10 +209,10 @@ Feature artifacts are split by group so consumers can load only what they need. 
 - `bearish_engulfing`: red bar whose body overlaps below the previous body.
 - `nr4`: current range is the narrowest of the last 4 bars.
 - `nr7`: current range is the narrowest of the last 7 bars.
-- `consecutive_green`: cumulative green count per ticker. This name is retained for compatibility but should be treated as a cumulative count until a reset-based streak feature is added.
-- `consecutive_red`: cumulative red count per ticker. This name is retained for compatibility but should be treated as a cumulative count until a reset-based streak feature is added.
-- `breaks_high20`: high equals or exceeds the 20-bar rolling high.
-- `breaks_low20`: low equals or breaks the 20-bar rolling low.
+- `consecutive_green`: current green-candle streak; resets to zero when a candle is not green.
+- `consecutive_red`: current red-candle streak; resets to zero when a candle is not red.
+- `breaks_high20`: high exceeds the highest high from the prior 20 bars.
+- `breaks_low20`: low breaks below the lowest low from the prior 20 bars.
 - `pullback_from_high20_pct`: `close / donchian_high20 - 1`.
 - `reclaim_vwap`: close crosses from below/equal VWAP to above VWAP.
 - `breakdown_vwap`: close crosses from above/equal VWAP to below VWAP.
@@ -257,10 +257,10 @@ These are deterministic three-bar gap approximations:
 
 ### Market Structure
 
-- `swing_high_3`: high equals or exceeds centered 3-bar rolling high.
-- `swing_low_3`: low equals or breaks centered 3-bar rolling low.
-- `swing_high_5`: high equals or exceeds centered 5-bar rolling high.
-- `swing_low_5`: low equals or breaks centered 5-bar rolling low.
+- `swing_high_3`: high equals or exceeds the highest high from the current and prior two bars.
+- `swing_low_3`: low equals or breaks the lowest low from the current and prior two bars.
+- `swing_high_5`: high equals or exceeds the highest high from the current and prior four bars.
+- `swing_low_5`: low equals or breaks the lowest low from the current and prior four bars.
 - `higher_high`: high above prior high.
 - `lower_low`: low below prior low.
 - `bos_up`: close breaks above the prior 20-bar high.

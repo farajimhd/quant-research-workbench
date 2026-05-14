@@ -5,7 +5,7 @@ import os
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Callable
@@ -29,6 +29,8 @@ from src.data_provider.timeframes import aggregate_daily, aggregate_intraday, ca
 
 
 ProgressCallback = Callable[[dict], None]
+CARRYOVER_TIMEFRAMES = {"1m", "5m", "15m", "30m"}
+REFERENCE_LOOKBACK_SESSIONS = 13
 
 
 def emit(progress_callback: ProgressCallback | None, event: dict) -> None:
@@ -48,13 +50,76 @@ def session_timeframes(request: BuildRequest) -> list[str]:
     return [timeframe for timeframe in request.timeframes if timeframe != "1mo"]
 
 
-def estimate_session_units(request: BuildRequest, buildable_sessions: int, monthly_periods: int = 0) -> int:
+def estimate_session_units(request: BuildRequest, output_sessions: int, monthly_periods: int = 0) -> int:
     timeframes = session_timeframes(request)
     supervision_units = len(request.supervision_groups)
     feature_compute_units = 1 if request.feature_groups or request.supervision_groups else 0
     per_timeframe = 1 + 1 + feature_compute_units + len(request.feature_groups) + supervision_units
     per_session = 1 + (len(timeframes) * per_timeframe)
-    return max(1, buildable_sessions * per_session)
+    return max(1, output_sessions * per_session)
+
+
+def build_plan(statuses: list) -> list[dict]:
+    rows: list[dict] = []
+    expected_seen = 0
+    output_started = False
+    for status in statuses:
+        row = asdict(status)
+        if not status.expected_market_session:
+            row.update(
+                {
+                    "build_role": "closed",
+                    "write_output": False,
+                    "reference_only": False,
+                    "reason": "Market closed.",
+                }
+            )
+        else:
+            expected_seen += 1
+            if expected_seen <= REFERENCE_LOOKBACK_SESSIONS:
+                row.update(
+                    {
+                        "build_role": "reference_only",
+                        "write_output": False,
+                        "reference_only": True,
+                        "reason": f"Warm-up context for carry-over indicators ({expected_seen}/{REFERENCE_LOOKBACK_SESSIONS}).",
+                    }
+                )
+            else:
+                output_started = True
+                row.update(
+                    {
+                        "build_role": "output",
+                        "write_output": True,
+                        "reference_only": False,
+                        "reason": "Artifacts will be written for this session." if status.exists else "Output session raw file is missing.",
+                    }
+                )
+        rows.append(row)
+    if not output_started:
+        for row in rows:
+            if row.get("build_role") == "reference_only":
+                row["reason"] = "Reference-only warm-up session; no output artifacts will be written until at least 14 market sessions are in scope."
+    return rows
+
+
+def output_start_date(plan_rows: list[dict]) -> str | None:
+    output_rows = [row for row in plan_rows if row.get("build_role") == "output"]
+    return str(output_rows[0]["session_date"]) if output_rows else None
+
+
+def plan_metadata(plan_rows: list[dict]) -> dict:
+    reference_rows = [row for row in plan_rows if row.get("build_role") == "reference_only"]
+    output_rows = [row for row in plan_rows if row.get("build_role") == "output"]
+    missing_reference_rows = [row for row in reference_rows if row.get("expected_market_session") and not row.get("exists")]
+    return {
+        "reference_sessions": len(reference_rows),
+        "missing_reference_sessions": len(missing_reference_rows),
+        "output_sessions": len(output_rows),
+        "output_start_date": output_start_date(plan_rows),
+        "warmup_sessions": REFERENCE_LOOKBACK_SESSIONS,
+        "carryover_timeframes": sorted(CARRYOVER_TIMEFRAMES),
+    }
 
 
 def write_artifact(
@@ -221,6 +286,9 @@ def build_feature_groups(
             "session_date": session_date,
             "timeframe": timeframe,
             "rows_in": bars.height,
+            "artifact_session_date": artifact_session_date,
+            "calculation_mode": "session_local_and_carryover" if timeframe in CARRYOVER_TIMEFRAMES else "session_local",
+            "warmup_sessions": REFERENCE_LOOKBACK_SESSIONS if timeframe in CARRYOVER_TIMEFRAMES else 0,
             "work_completed": progress_state.get("completed_units") if progress_state else None,
             "work_total": progress_state.get("total_units") if progress_state else None,
         },
@@ -243,6 +311,9 @@ def build_feature_groups(
             "timeframe": timeframe,
             "rows_in": bars.height,
             "rows_out": artifact_features.height,
+            "artifact_session_date": artifact_session_date,
+            "calculation_mode": "session_local_and_carryover" if timeframe in CARRYOVER_TIMEFRAMES else "session_local",
+            "warmup_sessions": REFERENCE_LOOKBACK_SESSIONS if timeframe in CARRYOVER_TIMEFRAMES else 0,
             "duration_sec": elapsed_since(started_at),
             "work_completed": progress_state.get("completed_units") if progress_state else None,
             "work_total": progress_state.get("total_units") if progress_state else None,
@@ -742,14 +813,28 @@ def artifact_source_path(request: BuildRequest, timeframe: str, session_text: st
 
 
 def read_timeframe_context_bars(request: BuildRequest, timeframe: str, session_text: str) -> pl.DataFrame:
+    session = datetime.fromisoformat(session_text).date()
+    if timeframe in CARRYOVER_TIMEFRAMES:
+        context_sessions = market_sessions(request.start_date, session)
+        prior_sessions = [item for item in context_sessions if item < session][-REFERENCE_LOOKBACK_SESSIONS:]
+        frames = []
+        for context_session in [*prior_sessions, session]:
+            raw = load_raw_minute_bars(request.raw_root, context_session, request.tickers)
+            if raw.is_empty():
+                continue
+            bars_1m = canonicalize_1m(raw, request.exchange_timezone)
+            if timeframe == "1m":
+                frames.append(bars_1m)
+            else:
+                frames.append(aggregate_intraday(bars_1m, timeframe))
+        if not frames:
+            return pl.DataFrame()
+        return pl.concat(frames, how="diagonal").sort(["ticker", "bar_time_utc"])
+
     source_path = partition_path(request.processed_root, "bars", timeframe, session_text)
     if timeframe != "1d":
         return read_frame(source_path)
-
-    session = datetime.fromisoformat(session_text).date()
-    history_sessions = market_sessions(session - timedelta(days=90), session - timedelta(days=1))[-60:]
-    future_sessions = market_sessions(session, session + timedelta(days=14))[:4]
-    context_sessions = [*history_sessions, *future_sessions]
+    context_sessions = [session]
     frames = []
     for context_session in context_sessions:
         path = partition_path(request.processed_root, "bars", timeframe, context_session.isoformat())
@@ -953,9 +1038,13 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
     run_started_at = perf_counter()
     scan_started_at = perf_counter()
     statuses = scan_market_source(request.raw_root, request.start_date, request.end_date)
-    buildable_statuses = [status for status in statuses if status.expected_market_session and status.exists]
-    missing_statuses = [status for status in statuses if status.expected_market_session and not status.exists]
+    plan_rows = build_plan(statuses)
+    plan_by_session = {str(row["session_date"]): row for row in plan_rows}
+    output_statuses = [status for status in statuses if plan_by_session[status.session_date].get("build_role") == "output"]
+    buildable_statuses = [status for status in output_statuses if status.expected_market_session and status.exists]
+    missing_statuses = [status for status in output_statuses if status.expected_market_session and not status.exists]
     progress_state = {"completed_units": 0, "total_units": estimate_session_units(request, len(buildable_statuses))}
+    metadata = plan_metadata(plan_rows)
     emit(
         progress_callback,
         {
@@ -967,15 +1056,32 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
             "missing_sessions": len(missing_statuses),
             "calendar_days": len(statuses),
             "work_total": progress_state["total_units"],
-            "plan": [asdict(status) for status in statuses],
+            "plan": plan_rows,
+            **metadata,
         },
     )
     completed = []
     artifact_tasks: list[dict] = []
 
     for index, status in enumerate(statuses, start=1):
+        plan_row = plan_by_session[status.session_date]
         if not status.expected_market_session:
             completed.append({"session_date": status.session_date, "status": "closed", "rows": 0})
+            continue
+        if plan_row.get("build_role") == "reference_only":
+            completed.append({"session_date": status.session_date, "status": "reference_only", "rows": 0})
+            emit(
+                progress_callback,
+                {
+                    "event": "session_skipped",
+                    "phase": "reference_warmup",
+                    "status": "reference_only" if status.exists else "missing_reference",
+                    "session_date": status.session_date,
+                    "index": index,
+                    "total": len(statuses),
+                    "reason": plan_row.get("reason"),
+                },
+            )
             continue
         if not status.exists:
             completed.append({"session_date": status.session_date, "status": "missing_raw", "rows": 0})
@@ -1042,7 +1148,8 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
     return {
         "processed_root": str(request.processed_root),
         "completed": completed,
-        "plan": [asdict(status) for status in statuses],
+        "plan": plan_rows,
+        **metadata,
         "request": {
             "raw_root": str(request.raw_root),
             "processed_root": str(request.processed_root),
@@ -1073,9 +1180,13 @@ def build_market_data_parallel(
     run_started_at = perf_counter()
     scan_started_at = perf_counter()
     statuses = scan_market_source(request.raw_root, request.start_date, request.end_date)
-    buildable_statuses = [status for status in statuses if status.expected_market_session and status.exists]
-    missing_statuses = [status for status in statuses if status.expected_market_session and not status.exists]
+    plan_rows = build_plan(statuses)
+    plan_by_session = {str(row["session_date"]): row for row in plan_rows}
+    output_statuses = [status for status in statuses if plan_by_session[status.session_date].get("build_role") == "output"]
+    buildable_statuses = [status for status in output_statuses if status.expected_market_session and status.exists]
+    missing_statuses = [status for status in output_statuses if status.expected_market_session and not status.exists]
     total_units = estimate_session_units(request, len(buildable_statuses))
+    metadata = plan_metadata(plan_rows)
     emit(
         progress_callback,
         {
@@ -1087,15 +1198,32 @@ def build_market_data_parallel(
             "missing_sessions": len(missing_statuses),
             "calendar_days": len(statuses),
             "work_total": total_units,
-            "plan": [asdict(status) for status in statuses],
+            "plan": plan_rows,
+            **metadata,
         },
     )
 
     completed: list[dict] = []
     build_jobs: list[tuple[int, dict]] = []
     for index, status in enumerate(statuses, start=1):
+        plan_row = plan_by_session[status.session_date]
         if not status.expected_market_session:
             completed.append({"session_date": status.session_date, "status": "closed", "rows": 0})
+            continue
+        if plan_row.get("build_role") == "reference_only":
+            completed.append({"session_date": status.session_date, "status": "reference_only", "rows": 0})
+            emit(
+                progress_callback,
+                {
+                    "event": "session_skipped",
+                    "phase": "reference_warmup",
+                    "status": "reference_only" if status.exists else "missing_reference",
+                    "session_date": status.session_date,
+                    "index": index,
+                    "total": len(statuses),
+                    "reason": plan_row.get("reason"),
+                },
+            )
             continue
         if not status.exists:
             completed.append({"session_date": status.session_date, "status": "missing_raw", "rows": 0})
@@ -1285,7 +1413,8 @@ def build_market_data_parallel(
     return {
         "processed_root": str(request.processed_root),
         "completed": completed,
-        "plan": [asdict(status) for status in statuses],
+        "plan": plan_rows,
+        **metadata,
         "request": {
             "raw_root": str(request.raw_root),
             "processed_root": str(request.processed_root),

@@ -31,6 +31,12 @@ type BuildProgress = {
     rows: number;
     written_bytes: number;
     elapsed_sec: number;
+    reference_sessions?: number;
+    missing_reference_sessions?: number;
+    output_sessions?: number;
+    output_start_date?: string | null;
+    warmup_sessions?: number;
+    carryover_timeframes?: string[];
     status: string;
   };
   phases: Stage[];
@@ -56,6 +62,8 @@ type BuildJob = {
     event_count?: number;
     expected_sessions?: number;
     missing_sessions?: number;
+    output_sessions?: number;
+    reference_sessions?: number;
     rows_written?: number;
   };
   progress?: BuildProgress;
@@ -231,8 +239,8 @@ export function MarketDataBuildPage() {
           {metrics ? (
             <MetricStrip
               items={[
-                { label: "Raw", value: metrics.raw, kind: "number" },
-                { label: "Exp", value: metrics.expected, kind: "number" },
+                { label: "Output", value: metrics.output_sessions ?? metrics.raw, kind: "number" },
+                { label: "Reference", value: metrics.reference_sessions ?? 0, kind: "number" },
                 { label: "Miss", value: metrics.missing, kind: "number" },
                 { label: "Closed", value: metrics.closed, kind: "number" },
                 { label: "Rows", value: metrics.rows, kind: "number" },
@@ -263,6 +271,16 @@ export function MarketDataBuildPage() {
               </span>
             </InlineNotice>
           ) : null}
+          {metrics && Number(metrics.output_sessions ?? 0) === 0 ? (
+            <InlineNotice tone="warning" icon={<AlertTriangle size={16} />} title="Reference-only build range">
+              <span>This range does not contain an output session after the {metrics.warmup_sessions ?? 13} trading-session warm-up window, so no artifacts will be written.</span>
+            </InlineNotice>
+          ) : null}
+          {metrics && Number(metrics.missing_reference_sessions ?? 0) > 0 ? (
+            <InlineNotice tone="warning" icon={<AlertTriangle size={16} />} title="Incomplete warm-up context">
+              <span>{metrics.missing_reference_sessions} reference session raw file(s) are missing, so carry-over indicators may have a shorter warm-up.</span>
+            </InlineNotice>
+          ) : null}
           <PhasePanel elapsedSec={metrics?.elapsed_sec ?? 0} phases={progress?.phases ?? []} status={metrics?.status ?? job?.status} />
           <div className="build-board">
             <SessionProgressColumn title="Active Queue" cards={progress?.active_sessions ?? []} />
@@ -284,7 +302,10 @@ export function MarketDataBuildPage() {
       ) : null}
       {job && activeTab === "Plan" ? (
         <BuildTablePanel trigger={`plan:${job?.job_id ?? ""}:${progress?.plan?.length ?? 0}`}>
-          <DataTable rows={progress?.plan ?? []} />
+          <DataTable
+            rows={progress?.plan ?? []}
+            columns={["session_date", "build_role", "status", "exists", "write_output", "reference_only", "reason", "path", "size_bytes", "modified_at"]}
+          />
         </BuildTablePanel>
       ) : null}
       {job && activeTab === "Processed Store" ? <ProcessedStore scope={viewScope} /> : null}
@@ -413,6 +434,7 @@ function BuildStartPage({
 
 function BuildRunHeader({ job }: { job: BuildJob }) {
   const request = job.request ?? {};
+  const metrics = job.progress?.metrics;
   return (
     <section className="panel">
       <div className="section-heading-row">
@@ -434,6 +456,12 @@ function BuildRunHeader({ job }: { job: BuildJob }) {
           <ScopeItem label="Timeframes" value={asListText(request.timeframes)} />
           <ScopeItem label="Feature groups" value={asListText(request.feature_groups)} />
           <ScopeItem label="Resources" value={`workers=${job.resources?.max_workers ?? "-"}, polars=${job.resources?.polars_threads ?? "-"}`} />
+        </div>
+        <div>
+          <ScopeItem label="Warm-up sessions" value={formatNumber(metrics?.warmup_sessions ?? 13)} />
+          <ScopeItem label="Output starts" value={String(metrics?.output_start_date ?? "-")} />
+          <ScopeItem label="Output sessions" value={formatNumber(metrics?.output_sessions ?? 0)} />
+          <ScopeItem label="Carry-over TFs" value={asListText(metrics?.carryover_timeframes ?? ["1m", "5m", "15m", "30m"])} />
         </div>
       </div>
     </section>

@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 9
+CATALOG_VERSION = 10
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -1850,14 +1850,13 @@ def knowledge_for_column(column: str, group: str, category: str, title: str) -> 
         window = trailing_number(lower, 14)
         return knowledge_block(
             short=f"Relative Strength Index over {window} bars.",
-            detailed="RSI compares rolling average positive and negative candle-body movement on a bounded 0-100 scale. In this provider the Polars expression uses `body = close - open`, then averages `max(body, 0)` and `max(-body, 0)` over 14 bars by ticker. It is therefore an open-to-close body-pressure RSI, not the textbook close-to-close-delta RSI.",
-            theory="RSI is a bounded transform of the ratio between smoothed positive and negative movement. This implementation focuses on candle body pressure, so it emphasizes whether bars are closing above or below their own opens rather than whether each close is above or below the prior close. The bounded scale is useful for comparing pressure across tickers, but it compresses information during persistent trends.",
+            detailed="RSI compares rolling average positive and negative close-to-close movement on a bounded 0-100 scale. In this provider the Polars expression uses `close - close.shift(1)` by ticker, then averages positive and negative deltas over 14 bars.",
+            theory="RSI is a bounded transform of the ratio between smoothed positive and negative close-to-close movement. It measures recent directional pressure after compressing the gain/loss balance into a 0-100 oscillator, which makes it useful for comparing momentum pressure across tickers and regimes.",
             interpretation="Use RSI as a regime-dependent momentum-pressure measure. In a strong breakout, RSI holding above 60 can indicate persistent demand; in a range, RSI above 70 can mark overextension. Divergence between price making a new high and RSI failing to confirm can indicate weaker marginal momentum.",
-            equation=f"$$Body_t=Close_t-Open_t$$\n\n$$AvgGain_t=SMA_{{{window}}}(\\max(Body_t,0))$$\n\n$$AvgLoss_t=SMA_{{{window}}}(\\max(-Body_t,0))$$\n\n$$RSI_t=\\begin{{cases}}100-\\frac{{100}}{{1+AvgGain_t/AvgLoss_t}},&AvgLoss_t>0\\\\100,&otherwise\\end{{cases}}$$",
-            variables={"Body_t": "Provider candle body, close minus open", "AvgGain_t": "14-bar rolling mean of positive body values by ticker", "AvgLoss_t": "14-bar rolling mean of negative body magnitudes by ticker"},
+            equation=f"$$Delta_t=Close_t-Close_{{t-1}}$$\n\n$$AvgGain_t=SMA_{{{window}}}(\\max(Delta_t,0))$$\n\n$$AvgLoss_t=SMA_{{{window}}}(\\max(-Delta_t,0))$$\n\n$$RSI_t=\\begin{{cases}}100-\\frac{{100}}{{1+AvgGain_t/AvgLoss_t}},&AvgLoss_t>0\\\\100,&otherwise\\end{{cases}}$$",
+            variables={"Delta_t": "Close-to-close change", "AvgGain_t": "14-bar rolling mean of positive close deltas by ticker", "AvgLoss_t": "14-bar rolling mean of negative close-delta magnitudes by ticker"},
             caveats=[
                 "RSI thresholds are regime-dependent; fixed 70/30 rules are too crude for all markets.",
-                "This provider uses candle body movement, not close-to-close delta, so values can differ from many charting packages.",
                 "Strong trends can remain overbought or oversold for long periods.",
                 "RSI ignores volume and intrabar path, so confirm with participation and structure.",
             ],
@@ -2054,16 +2053,16 @@ def session_feature_knowledge(lower: str, group: str, category: str, title: str)
             {"Volume_i": "Earlier volume in the same ticker/session"},
         ),
         "prev_close": (
-            "Previous close for the ticker sequence.",
-            "Previous close is the immediately prior close after sorting by ticker and bar time. It is used for close-to-close returns and gap context.",
-            "$$PrevClose_t=Close_{t-1}$$",
-            {"Close_{t-1}": "Previous bar close for the same ticker"},
+            "Previous completed-session close.",
+            "Previous close is the prior completed session close for the same ticker. It is used for session gap context and requires prior-session calculation context.",
+            "$$PrevClose_t=SessionClose_{d-1}$$",
+            {"SessionClose_{d-1}": "Previous session close for the same ticker"},
         ),
         "gap_pct": (
-            "Session open compared with the previous bar close.",
-            "Gap percent is implemented as `day_open / prev_close - 1`, where `prev_close` is the immediately prior bar close for the ticker at the current row. On the first row of a session this behaves like an open gap versus the prior bar; on later rows it is a moving comparison between the fixed day open and the prior bar close.",
+            "Session open compared with the previous session close.",
+            "Gap percent is implemented as `day_open / prev_close - 1`, where `prev_close` is the previous completed session close for the ticker. The value is fixed across the current session and is null-safe when prior session context is unavailable.",
             "$$GapPct_t=\\frac{DayOpen_t}{PrevClose_t}-1$$",
-            {"DayOpen_t": "First open for the ticker/session", "PrevClose_t": "Previous close for the ticker"},
+            {"DayOpen_t": "First open for the ticker/session", "PrevClose_t": "Previous completed session close for the ticker"},
         ),
         "premarket_high": (
             "Highest premarket price for the session.",
@@ -2099,13 +2098,13 @@ def session_feature_knowledge(lower: str, group: str, category: str, title: str)
         field = opening_range.group(2)
         if field == "high":
             equation = f"$$OR{minutes}High_t=\\max_{{570\\le minute(i)<{570 + minutes}}}High_i$$"
-            detailed = f"Opening range {minutes}m high is the maximum high from 09:30 through the first {minutes} regular-session minutes for the same ticker/session."
+            detailed = f"Opening range {minutes}m high is the maximum high from 09:30 through the first {minutes} regular-session minutes for the same ticker/session. It is null until the range has closed."
         elif field == "low":
             equation = f"$$OR{minutes}Low_t=\\min_{{570\\le minute(i)<{570 + minutes}}}Low_i$$"
-            detailed = f"Opening range {minutes}m low is the minimum low from 09:30 through the first {minutes} regular-session minutes for the same ticker/session."
+            detailed = f"Opening range {minutes}m low is the minimum low from 09:30 through the first {minutes} regular-session minutes for the same ticker/session. It is null until the range has closed."
         else:
             equation = f"$$OR{minutes}Range_t=OR{minutes}High_t-OR{minutes}Low_t$$"
-            detailed = f"Opening range {minutes}m range is the high-low span of the first {minutes} regular-session minutes."
+            detailed = f"Opening range {minutes}m range is the high-low span of the first {minutes} regular-session minutes. It is null until the range has closed."
         return knowledge_block(
             short=f"{minutes}-minute opening-range {field}.",
             detailed=detailed,
@@ -2304,10 +2303,10 @@ def price_action_knowledge(lower: str, group: str, category: str, title: str) ->
         "bearish_engulfing": ("Bearish engulfing candle.", "Bearish engulfing is true when the candle closes red and its body crosses below the prior candle body range.", "$$BearEngulf_t=I(Close_t<Open_t\\land Open_t>Close_{t-1}\\land Close_t<Open_{t-1})$$"),
         "nr4": ("Narrowest range in four bars.", "NR4 is true when the current high-low range is less than or equal to the rolling 4-bar minimum range. It identifies short compression.", "$$NR4_t=I(Range_t\\le \\min_{i=t-3}^{t}Range_i)$$"),
         "nr7": ("Narrowest range in seven bars.", "NR7 is true when the current high-low range is less than or equal to the rolling 7-bar minimum range. It identifies stronger compression.", "$$NR7_t=I(Range_t\\le \\min_{i=t-6}^{t}Range_i)$$"),
-        "consecutive_green": ("Running count of green candles.", "This field is implemented as the cumulative count of green candles for the ticker, not a reset-on-red streak. It increases by one whenever close is above open.", "$$ConsecutiveGreen_t=\\sum_{i\\le t}I(Close_i>Open_i)$$"),
-        "consecutive_red": ("Running count of red candles.", "This field is implemented as the cumulative count of red candles for the ticker, not a reset-on-green streak. It increases by one whenever close is below open.", "$$ConsecutiveRed_t=\\sum_{i\\le t}I(Close_i<Open_i)$$"),
-        "breaks_high20": ("Breaks the rolling 20-bar high.", "Breaks high20 is true when the current high reaches or exceeds the highest high in the rolling 20-bar window.", "$$BreaksHigh20_t=I(High_t\\ge \\max_{i=t-19}^{t}High_i)$$"),
-        "breaks_low20": ("Breaks the rolling 20-bar low.", "Breaks low20 is true when the current low reaches or falls below the lowest low in the rolling 20-bar window.", "$$BreaksLow20_t=I(Low_t\\le \\min_{i=t-19}^{t}Low_i)$$"),
+        "consecutive_green": ("Current green-candle streak.", "This field counts consecutive green candles and resets to zero when a candle is not green.", "$$ConsecutiveGreen_t=I(Green_t)(ConsecutiveGreen_{t-1}+1)$$"),
+        "consecutive_red": ("Current red-candle streak.", "This field counts consecutive red candles and resets to zero when a candle is not red.", "$$ConsecutiveRed_t=I(Red_t)(ConsecutiveRed_{t-1}+1)$$"),
+        "breaks_high20": ("Breaks the prior 20-bar high.", "Breaks high20 is true when the current high exceeds the highest high from the prior 20 bars, excluding the current bar from the reference.", "$$BreaksHigh20_t=I(High_t>\\max_{i=t-20}^{t-1}High_i)$$"),
+        "breaks_low20": ("Breaks the prior 20-bar low.", "Breaks low20 is true when the current low breaks below the lowest low from the prior 20 bars, excluding the current bar from the reference.", "$$BreaksLow20_t=I(Low_t<\\min_{i=t-20}^{t-1}Low_i)$$"),
         "pullback_from_high20_pct": ("Percent distance from Donchian high.", "Pullback from high20 compares close with the 20-bar Donchian high. Negative values show how far price has pulled back from the recent high.", "$$PullbackHigh20_t=\\frac{Close_t}{DonchianHigh20_t}-1$$"),
         "reclaim_vwap": ("VWAP reclaim event.", "Reclaim VWAP is true when close moves from at or below VWAP on the prior bar to above VWAP on the current bar.", "$$ReclaimVWAP_t=I(Close_t>VWAP_t\\land Close_{t-1}\\le VWAP_{t-1})$$"),
         "breakdown_vwap": ("VWAP breakdown event.", "Breakdown VWAP is true when close moves from at or above VWAP on the prior bar to below VWAP on the current bar.", "$$BreakdownVWAP_t=I(Close_t<VWAP_t\\land Close_{t-1}\\ge VWAP_{t-1})$$"),
@@ -2332,10 +2331,10 @@ def fvg_knowledge(lower: str, group: str, category: str, title: str) -> dict[str
 
 def market_structure_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
     details = {
-        "swing_high_3": ("Centered 3-bar swing high.", "True when the current high is at least the maximum high of the centered 3-bar window.", "$$SwingHigh3_t=I(High_t\\ge \\max(High_{t-1},High_t,High_{t+1}))$$"),
-        "swing_low_3": ("Centered 3-bar swing low.", "True when the current low is at most the minimum low of the centered 3-bar window.", "$$SwingLow3_t=I(Low_t\\le \\min(Low_{t-1},Low_t,Low_{t+1}))$$"),
-        "swing_high_5": ("Centered 5-bar swing high.", "True when the current high is at least the maximum high of the centered 5-bar window.", "$$SwingHigh5_t=I(High_t\\ge \\max_{i=t-2}^{t+2}High_i)$$"),
-        "swing_low_5": ("Centered 5-bar swing low.", "True when the current low is at most the minimum low of the centered 5-bar window.", "$$SwingLow5_t=I(Low_t\\le \\min_{i=t-2}^{t+2}Low_i)$$"),
+        "swing_high_3": ("Causal 3-bar local high.", "True when the current high is at least the highest high in the current and prior two bars. It does not use future bars.", "$$SwingHigh3_t=I(High_t\\ge \\max_{i=t-2}^{t}High_i)$$"),
+        "swing_low_3": ("Causal 3-bar local low.", "True when the current low is at most the lowest low in the current and prior two bars. It does not use future bars.", "$$SwingLow3_t=I(Low_t\\le \\min_{i=t-2}^{t}Low_i)$$"),
+        "swing_high_5": ("Causal 5-bar local high.", "True when the current high is at least the highest high in the current and prior four bars. It does not use future bars.", "$$SwingHigh5_t=I(High_t\\ge \\max_{i=t-4}^{t}High_i)$$"),
+        "swing_low_5": ("Causal 5-bar local low.", "True when the current low is at most the lowest low in the current and prior four bars. It does not use future bars.", "$$SwingLow5_t=I(Low_t\\le \\min_{i=t-4}^{t}Low_i)$$"),
         "higher_high": ("Higher high versus prior bar.", "True when the current high is above the previous bar high.", "$$HigherHigh_t=I(High_t>High_{t-1})$$"),
         "lower_low": ("Lower low versus prior bar.", "True when the current low is below the previous bar low.", "$$LowerLow_t=I(Low_t<Low_{t-1})$$"),
         "bos_up": ("Bullish break of structure.", "True when close breaks above the prior 20-bar high, excluding the current bar from the reference.", "$$BOSUp_t=I(Close_t>\\max_{i=t-20}^{t-1}High_i)$$"),
@@ -2599,7 +2598,7 @@ def theory_for_group(group: str, category: str) -> str:
     if group == "price_action":
         return "Price-action features convert candle geometry and local breakout events into deterministic state variables. They summarize how price traveled inside recent bars, whether new local extremes were reached, and whether buyers or sellers controlled the close relative to the range."
     if group == "market_structure":
-        return "Market-structure features approximate the sequence of local pivots and structural breaks. They are designed to separate random candle movement from a change in the market's accepted high-low structure, while keeping centered swing fields clearly marked as review-only where future bars are needed."
+        return "Market-structure features approximate the sequence of local pivots and structural breaks. They are designed to separate random candle movement from a change in the market's accepted high-low structure using causal local extrema and prior-bar references."
     if group == "order_blocks":
         return "Order-block features are deterministic proxies for displacement-derived supply and demand zones. They do not observe hidden institutional orders; they identify large directional expansion candles and use adjacent prices as reproducible chart-review zones where later reaction can be studied."
     if group == "fvg":
@@ -2619,7 +2618,7 @@ def interpretation_for_group(group: str, category: str) -> str:
     if group == "price_action":
         return "Read true flags as local events, not complete trade decisions. Their value comes from clustering: a reclaim, breakout, strong close location, and expanding participation together are more informative than any single candle flag."
     if group == "market_structure":
-        return "Read these values as local swing and regime descriptors. Break-of-structure fields point to a change in accepted highs or lows; centered swing fields are useful for retrospective chart labeling but should not be treated as live features."
+        return "Read these values as local swing and regime descriptors. Break-of-structure fields point to a change in accepted highs or lows, while swing fields identify causal local extrema from the current and prior bars."
     if group == "order_blocks":
         return "Read these zones as reproducible displacement-derived supply or demand proxies. Their usefulness should be tested by later reaction, mitigation, and failure behavior, not by assuming they reveal hidden order flow."
     if group == "fvg":
