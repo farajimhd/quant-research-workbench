@@ -31,6 +31,7 @@ from src.data_provider.timeframes import aggregate_daily, aggregate_intraday, ca
 ProgressCallback = Callable[[dict], None]
 CARRYOVER_TIMEFRAMES = {"1m", "5m", "15m", "30m"}
 REFERENCE_LOOKBACK_SESSIONS = 13
+STATEFUL_WORKERS = 1
 
 
 def build_process_pool(max_workers: int) -> ProcessPoolExecutor:
@@ -279,6 +280,7 @@ def build_feature_groups(
     progress_callback: ProgressCallback | None = None,
     progress_state: dict | None = None,
     artifact_session_date: str | None = None,
+    stateful: bool = False,
 ) -> pl.DataFrame:
     if bars.is_empty():
         return bars
@@ -293,6 +295,7 @@ def build_feature_groups(
             "timeframe": timeframe,
             "rows_in": bars.height,
             "artifact_session_date": artifact_session_date,
+            "stateful": stateful,
             "calculation_mode": "session_local_and_carryover" if timeframe in CARRYOVER_TIMEFRAMES else "session_local",
             "warmup_sessions": REFERENCE_LOOKBACK_SESSIONS if timeframe in CARRYOVER_TIMEFRAMES else 0,
             "work_completed": progress_state.get("completed_units") if progress_state else None,
@@ -318,6 +321,7 @@ def build_feature_groups(
             "rows_in": bars.height,
             "rows_out": artifact_features.height,
             "artifact_session_date": artifact_session_date,
+            "stateful": stateful,
             "calculation_mode": "session_local_and_carryover" if timeframe in CARRYOVER_TIMEFRAMES else "session_local",
             "warmup_sessions": REFERENCE_LOOKBACK_SESSIONS if timeframe in CARRYOVER_TIMEFRAMES else 0,
             "duration_sec": elapsed_since(started_at),
@@ -351,6 +355,7 @@ def build_feature_groups(
                 "session_date": session_date,
                 "timeframe": timeframe,
                 "group": f"features_{group}",
+                "stateful": stateful,
                 "rows_out": group_frame.height,
                 "duration_sec": elapsed_since(started_at),
                 "path": str(path),
@@ -372,6 +377,7 @@ def build_supervision_groups(
     progress_callback: ProgressCallback | None = None,
     progress_state: dict | None = None,
     artifact_session_date: str | None = None,
+    stateful: bool = False,
 ) -> None:
     if bars.is_empty() or not request.supervision_groups:
         return
@@ -400,6 +406,7 @@ def build_supervision_groups(
                 "timeframe": timeframe,
                 "rows_in": bars.height,
                 "estimated_rows_out": estimated_rows["supervision_bar"],
+                "stateful": stateful,
                 "work_completed": progress_state.get("completed_units") if progress_state else None,
                 "work_total": progress_state.get("total_units") if progress_state else None,
             },
@@ -426,6 +433,7 @@ def build_supervision_groups(
                 "session_date": session_date,
                 "timeframe": timeframe,
                 "group": "supervision_bar",
+                "stateful": stateful,
                 "rows_in": bars.height,
                 "rows_out": estimated_rows["supervision_bar"],
                 "duration_sec": elapsed_since(started_at),
@@ -446,6 +454,7 @@ def build_supervision_groups(
                 "timeframe": timeframe,
                 "rows_in": bars.height,
                 "estimated_rows_out": estimated_rows["supervision_method"],
+                "stateful": stateful,
                 "work_completed": progress_state.get("completed_units") if progress_state else None,
                 "work_total": progress_state.get("total_units") if progress_state else None,
             },
@@ -476,6 +485,7 @@ def build_supervision_groups(
                     "session_date": session_date,
                     "timeframe": timeframe,
                     "group": "supervision_method",
+                    "stateful": stateful,
                     "rows_in": bars.height,
                     "rows_out": method_supervision.height,
                     "duration_sec": elapsed_since(started_at),
@@ -498,6 +508,7 @@ def build_supervision_groups(
                 "timeframe": timeframe,
                 "rows_in": method_supervision.height,
                 "estimated_rows_out": estimated_rows["supervision_scanner"],
+                "stateful": stateful,
                 "work_completed": progress_state.get("completed_units") if progress_state else None,
                 "work_total": progress_state.get("total_units") if progress_state else None,
             },
@@ -526,6 +537,7 @@ def build_supervision_groups(
                 "session_date": session_date,
                 "timeframe": timeframe,
                 "group": "supervision_scanner",
+                "stateful": stateful,
                 "rows_in": method_rows,
                 "rows_out": scanner_supervision.height,
                 "duration_sec": elapsed_since(started_at),
@@ -605,6 +617,7 @@ def build_session_bars(
     progress_callback: ProgressCallback | None,
     progress_state: dict,
     build_artifacts: bool = False,
+    artifact_timeframes: set[str] | None = None,
 ) -> dict:
     session_text = str(status["session_date"])
     session_date = datetime.fromisoformat(session_text).date()
@@ -688,6 +701,7 @@ def build_session_bars(
     )
     built_timeframes: list[str] = []
     artifact_results: list[dict] = []
+    should_build_artifacts = artifact_timeframes if artifact_timeframes is not None else set(selected_timeframes)
     if "1m" in selected_timeframes:
         write_bars_artifact(
             request=request,
@@ -699,7 +713,7 @@ def build_session_bars(
             progress_state=progress_state,
         )
         built_timeframes.append("1m")
-        if build_artifacts:
+        if build_artifacts and "1m" in should_build_artifacts:
             artifact_results.append(
                 build_timeframe_artifacts(
                     request=request,
@@ -756,7 +770,7 @@ def build_session_bars(
                 progress_state=progress_state,
             )
             built_timeframes.append(timeframe)
-            if build_artifacts:
+            if build_artifacts and timeframe in should_build_artifacts:
                 artifact_results.append(
                     build_timeframe_artifacts(
                         request=request,
@@ -811,7 +825,7 @@ def build_session_bars(
                 progress_state=progress_state,
             )
             built_timeframes.append("1d")
-            if build_artifacts:
+            if build_artifacts and "1d" in should_build_artifacts:
                 artifact_results.append(
                     build_timeframe_artifacts(
                         request=request,
@@ -918,6 +932,7 @@ def build_timeframe_artifacts(
     progress_callback: ProgressCallback | None,
     progress_state: dict,
     current_bars: pl.DataFrame | None = None,
+    stateful: bool = False,
 ) -> dict:
     bars = read_timeframe_context_bars(request, timeframe, session_text, current_bars=current_bars)
     if bars.is_empty():
@@ -933,6 +948,7 @@ def build_timeframe_artifacts(
         progress_callback=progress_callback,
         progress_state=progress_state,
         artifact_session_date=session_text,
+        stateful=stateful,
     )
     build_supervision_groups(
         request=request,
@@ -943,6 +959,7 @@ def build_timeframe_artifacts(
         progress_callback=progress_callback,
         progress_state=progress_state,
         artifact_session_date=session_text,
+        stateful=stateful,
     )
     rows = featured_bars.filter(pl.col("session_date") == session_text).height if "session_date" in featured_bars.columns else featured_bars.height
     del featured_bars, bars
@@ -957,6 +974,7 @@ def _parallel_session_worker(
     total: int,
     total_units: int,
     job_path_text: str,
+    artifact_timeframes: set[str] | None = None,
 ) -> dict:
     from src.data_provider.jobs import BuildCancelled, append_event, check_cancelled
 
@@ -983,6 +1001,7 @@ def _parallel_session_worker(
             progress_callback=on_progress,
             progress_state=progress_state,
             build_artifacts=True,
+            artifact_timeframes=artifact_timeframes,
         )
     except BuildCancelled:
         append_event(
@@ -1013,6 +1032,189 @@ def _parallel_session_worker(
             },
         )
         raise
+
+
+def _stateful_artifact_worker(
+    request: BuildRequest,
+    task: dict,
+    total_units: int,
+    job_path_text: str,
+) -> dict:
+    from src.data_provider.jobs import BuildCancelled, append_event, check_cancelled
+
+    job_path = Path(job_path_text)
+    session_text = str(task["session_date"])
+    timeframe = str(task["timeframe"])
+    progress_state = {"completed_units": 0, "total_units": total_units}
+
+    def on_progress(event: dict) -> None:
+        payload = dict(event)
+        payload["stateful"] = True
+        payload["worker_pid"] = os.getpid()
+        payload.setdefault("session_date", session_text)
+        payload.setdefault("timeframe", timeframe)
+        payload.setdefault("work_total", total_units)
+        payload.pop("work_completed", None)
+        append_event(job_path, payload)
+        check_cancelled(job_path)
+
+    try:
+        check_cancelled(job_path)
+        emit(
+            on_progress,
+            {
+                "event": "phase_started",
+                "phase": "stateful_features",
+                "status": "running",
+                "session_date": session_text,
+                "timeframe": timeframe,
+                "stateful": True,
+            },
+        )
+        result = build_timeframe_artifacts(
+            request=request,
+            session_text=session_text,
+            timeframe=timeframe,
+            progress_callback=on_progress,
+            progress_state=progress_state,
+            stateful=True,
+        )
+        emit(
+            on_progress,
+            {
+                "event": "phase_complete",
+                "phase": "stateful_features",
+                "status": str(result.get("status") or "complete"),
+                "session_date": session_text,
+                "timeframe": timeframe,
+                "rows_out": int(result.get("rows") or 0),
+                "stateful": True,
+            },
+        )
+        return result
+    except BuildCancelled:
+        append_event(
+            job_path,
+            {
+                "event": "stateful_job_cancelled",
+                "phase": "cancel",
+                "status": "cancelled",
+                "session_date": session_text,
+                "timeframe": timeframe,
+                "worker_pid": os.getpid(),
+                "stateful": True,
+            },
+        )
+        raise
+    except Exception as exc:
+        append_event(
+            job_path,
+            {
+                "event": "stateful_job_failed",
+                "phase": "stateful_features",
+                "status": "failed",
+                "session_date": session_text,
+                "timeframe": timeframe,
+                "message": str(exc),
+                "worker_pid": os.getpid(),
+                "stateful": True,
+            },
+        )
+        raise
+
+
+def build_stateful_artifact_tasks(
+    *,
+    request: BuildRequest,
+    tasks: list[dict],
+    total_units: int,
+    job_path: Path | None,
+    progress_callback: ProgressCallback | None,
+    progress_state: dict | None = None,
+) -> list[dict]:
+    if not tasks:
+        return []
+    if job_path is None:
+        state = progress_state or {"completed_units": 0, "total_units": total_units}
+        return [
+            build_timeframe_artifacts(
+                request=request,
+                session_text=str(task["session_date"]),
+                timeframe=str(task["timeframe"]),
+                progress_callback=progress_callback,
+                progress_state=state,
+                stateful=True,
+            )
+            for task in tasks
+        ]
+
+    from src.data_provider.jobs import check_cancelled
+
+    worker_count = min(STATEFUL_WORKERS, len(tasks))
+    emit(
+        progress_callback,
+        {
+            "event": "parallel_started",
+            "phase": "stateful_features",
+            "status": "running",
+            "worker_count": worker_count,
+            "requested_worker_count": STATEFUL_WORKERS,
+            "artifact_jobs": len(tasks),
+            "polars_threads_per_worker": os.environ.get("POLARS_MAX_THREADS"),
+            "work_total": total_units,
+            "stateful": True,
+        },
+    )
+    executor = build_process_pool(worker_count)
+    futures = {
+        executor.submit(
+            _stateful_artifact_worker,
+            request,
+            task,
+            total_units,
+            str(job_path),
+        ): task
+        for task in tasks
+    }
+    pending = set(futures)
+    results: list[dict] = []
+    try:
+        while pending:
+            done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+            if not done:
+                check_cancelled(job_path)
+                continue
+            for future in done:
+                results.append(future.result())
+            check_cancelled(job_path)
+    except BrokenProcessPool as exc:
+        message = (
+            "A stateful feature worker terminated abruptly, usually because the worker exceeded available memory while "
+            "building carry-over features."
+        )
+        emit(
+            progress_callback,
+            {
+                "event": "parallel_failed",
+                "phase": "stateful_features",
+                "status": "failed",
+                "message": message,
+                "worker_count": worker_count,
+                "stateful": True,
+            },
+        )
+        for future in pending:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise RuntimeError(message) from exc
+    except Exception:
+        for future in pending:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+    return results
 
 
 def build_market_data(request: BuildRequest, progress_callback: ProgressCallback | None = None) -> dict:
@@ -1046,6 +1248,9 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
     completed = []
     artifact_tasks: list[dict] = []
     artifact_results: list[dict] = []
+    selected_timeframes = set(session_timeframes(request))
+    local_artifact_timeframes = selected_timeframes - CARRYOVER_TIMEFRAMES
+    stateful_tasks: list[dict] = []
 
     for index, status in enumerate(statuses, start=1):
         plan_row = plan_by_session[status.session_date]
@@ -1090,11 +1295,27 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
             progress_callback=progress_callback,
             progress_state=progress_state,
             build_artifacts=True,
+            artifact_timeframes=local_artifact_timeframes,
         )
         for artifact_result in result.get("artifacts", []):
             artifact_tasks.append({"session_date": status.session_date, "timeframe": str(artifact_result.get("timeframe"))})
             artifact_results.append(artifact_result)
+        for timeframe in result.get("timeframes", []):
+            if str(timeframe) in CARRYOVER_TIMEFRAMES:
+                stateful_tasks.append({"session_date": status.session_date, "timeframe": str(timeframe)})
         completed.append({"session_date": status.session_date, "status": "bars_complete", "rows": int(result.get("rows") or 0)})
+
+    stateful_results = build_stateful_artifact_tasks(
+        request=request,
+        tasks=stateful_tasks,
+        total_units=progress_state["total_units"],
+        job_path=None,
+        progress_callback=progress_callback,
+        progress_state=progress_state,
+    )
+    for result in stateful_results:
+        artifact_tasks.append({"session_date": str(result.get("session_date")), "timeframe": str(result.get("timeframe"))})
+        artifact_results.append(result)
 
     expected_by_session: dict[str, int] = {}
     complete_by_session: dict[str, int] = {}
@@ -1235,6 +1456,9 @@ def build_market_data_parallel(
 
     artifact_tasks: list[dict] = []
     artifact_results: list[dict] = []
+    selected_timeframes = set(session_timeframes(request))
+    local_artifact_timeframes = selected_timeframes - CARRYOVER_TIMEFRAMES
+    stateful_tasks: list[dict] = []
     if build_jobs:
         executor = build_process_pool(worker_count)
         futures = {
@@ -1246,6 +1470,7 @@ def build_market_data_parallel(
                 len(statuses),
                 total_units,
                 str(job_path),
+                local_artifact_timeframes,
             ): status
             for index, status in build_jobs
         }
@@ -1266,6 +1491,9 @@ def build_market_data_parallel(
                             }
                         )
                         artifact_results.append(artifact_result)
+                    for timeframe in result.get("timeframes", []):
+                        if str(timeframe) in CARRYOVER_TIMEFRAMES:
+                            stateful_tasks.append({"session_date": str(result.get("session_date")), "timeframe": str(timeframe)})
                     completed.append(
                         {
                             "session_date": str(result.get("session_date")),
@@ -1300,6 +1528,17 @@ def build_market_data_parallel(
             raise
         else:
             executor.shutdown(wait=True)
+
+    stateful_results = build_stateful_artifact_tasks(
+        request=request,
+        tasks=stateful_tasks,
+        total_units=total_units,
+        job_path=job_path,
+        progress_callback=progress_callback,
+    )
+    for result in stateful_results:
+        artifact_tasks.append({"session_date": str(result.get("session_date")), "timeframe": str(result.get("timeframe"))})
+        artifact_results.append(result)
 
     expected_by_session: dict[str, int] = {}
     complete_by_session: dict[str, int] = {}

@@ -499,7 +499,7 @@ function buildMetricsForDisplay(metrics: BuildProgress["metrics"] | undefined, p
     {
       label: "Artifacts written",
       value: formatNumber(progress?.artifact_events?.length ?? 0),
-      detail: "Bar, feature, and supervision artifacts written by this build.",
+      detail: "Bar and feature artifacts written by this build.",
       icon: <FileStack size={16} />,
       tone: "success",
     },
@@ -652,9 +652,9 @@ function buildStageDescription(phase: string | undefined): string {
     case "build_bars":
       return "Loads raw data, normalizes 1m bars, aggregates timeframes, and writes bar files.";
     case "build_features":
-      return "Calculates feature groups, using carry-over context for lower timeframes.";
-    case "build_supervision":
-      return "Writes optional label and scanner supervision artifacts.";
+      return "Calculates feature artifacts that only need the current session table.";
+    case "build_stateful":
+      return "Calculates carry-over features after parallel session workers have drained.";
     case "finalize":
       return "Records final status and closes the build run.";
     default:
@@ -666,7 +666,7 @@ function buildStageMode(phase: string | undefined, activeCount: number, skipped:
   if (skipped) return "Skipped";
   if (activeCount > 0) return `${formatNumber(activeCount)} Concurrent`;
   if (progress >= 100) return "Complete";
-  if (phase === "build_bars" || phase === "build_features" || phase === "build_supervision") {
+  if (phase === "build_bars" || phase === "build_features" || phase === "build_stateful") {
     return "Waiting";
   }
   if (phase === "reference_window") return "Reference";
