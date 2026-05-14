@@ -298,6 +298,27 @@ def submit_build_job(
     return payload
 
 
+def resume_build_job(processed_root: Path, job_id: str, *, session_workers: int | None = None, polars_threads: int | None = None) -> dict[str, Any]:
+    source_path = job_dir(processed_root, job_id)
+    source_payload = read_job(source_path)
+    if not source_payload:
+        return {"status": "not_found", "job_id": job_id}
+    status = str(source_payload.get("status") or "").lower()
+    if status not in TERMINAL_STATUSES:
+        raise ValueError("Stop the build before resuming it")
+    request = BuildRequest.from_dict(source_payload["request"])
+    source_resources = source_payload.get("resources") or {}
+    request.resume_from_build_id = job_id
+    request.resume_stage = "stateful_features"
+    request.build_id = None
+    request.build_name = f"{source_payload.get('build_name') or job_id}_resume_stateful"
+    return submit_build_job(
+        request,
+        session_workers=int(session_workers or source_resources.get("session_workers") or 8),
+        polars_threads=int(polars_threads or source_resources.get("polars_threads") or 10),
+    )
+
+
 def cancel_build_job(processed_root: Path, job_id: str) -> dict[str, Any]:
     path = job_dir(processed_root, job_id)
     payload = read_job(path)

@@ -101,6 +101,8 @@ class BuildRequest:
     tickers: list[str] | None = None
     build_id: str | None = None
     build_name: str | None = None
+    resume_from_build_id: str | None = None
+    resume_stage: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "BuildRequest":
@@ -117,6 +119,8 @@ class BuildRequest:
             tickers=list(raw["tickers"]) if raw.get("tickers") else None,
             build_id=str(raw["build_id"]) if raw.get("build_id") else None,
             build_name=str(raw["build_name"]) if raw.get("build_name") else None,
+            resume_from_build_id=str(raw["resume_from_build_id"]) if raw.get("resume_from_build_id") else None,
+            resume_stage=str(raw["resume_stage"]) if raw.get("resume_stage") else None,
         )
 
     def to_config(self) -> DataProviderConfig:

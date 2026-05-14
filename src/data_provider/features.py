@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import polars as pl
 
+FeatureFrame = pl.DataFrame | pl.LazyFrame
+
 
 FEATURE_COLUMNS: dict[str, list[str]] = {
     "core": [
@@ -188,6 +190,16 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
 }
 
 
+def is_lazy_frame(frame: FeatureFrame) -> bool:
+    return isinstance(frame, pl.LazyFrame)
+
+
+def frame_columns(frame: FeatureFrame) -> list[str]:
+    if isinstance(frame, pl.LazyFrame):
+        return frame.collect_schema().names()
+    return list(frame.columns)
+
+
 def rolling_z(column: str, window: int, alias: str) -> pl.Expr:
     mean = pl.col(column).rolling_mean(window).over("ticker")
     std = pl.col(column).rolling_std(window).over("ticker")
@@ -198,7 +210,7 @@ def ema_expr(column: str, span: int, alias: str) -> pl.Expr:
     return pl.col(column).ewm_mean(span=span, adjust=False).over("ticker").alias(alias)
 
 
-def add_tema(frame: pl.DataFrame, period: int, alias: str) -> pl.DataFrame:
+def add_tema(frame: FeatureFrame, period: int, alias: str) -> FeatureFrame:
     ema1 = f"_{alias}_ema1"
     ema2 = f"_{alias}_ema2"
     ema3 = f"_{alias}_ema3"
@@ -211,8 +223,8 @@ def add_tema(frame: pl.DataFrame, period: int, alias: str) -> pl.DataFrame:
     )
 
 
-def add_session_reference_features(frame: pl.DataFrame) -> pl.DataFrame:
-    if frame.is_empty():
+def add_session_reference_features(frame: FeatureFrame) -> FeatureFrame:
+    if isinstance(frame, pl.DataFrame) and frame.is_empty():
         return frame
     keys = ["ticker", "session_date"]
     regular_open_minute = 9 * 60 + 30
@@ -251,7 +263,7 @@ def add_session_reference_features(frame: pl.DataFrame) -> pl.DataFrame:
     return result
 
 
-def add_previous_session_close(frame: pl.DataFrame) -> pl.DataFrame:
+def add_previous_session_close(frame: FeatureFrame) -> FeatureFrame:
     session_close = (
         frame.group_by(["ticker", "session_date"])
         .agg(pl.col("close").last().alias("_session_close"))
@@ -262,8 +274,8 @@ def add_previous_session_close(frame: pl.DataFrame) -> pl.DataFrame:
     return frame.join(session_close, on=["ticker", "session_date"], how="left")
 
 
-def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
-    if frame.is_empty():
+def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
+    if isinstance(frame, pl.DataFrame) and frame.is_empty():
         return frame
     frame = frame.sort(["ticker", "bar_time_utc"])
     prior_bar_close = pl.col("close").shift(1).over("ticker")
@@ -569,9 +581,10 @@ def add_feature_columns(frame: pl.DataFrame) -> pl.DataFrame:
             ).alias("price_volume_shock_score")
         )
     )
-    return frame.drop([col for col in frame.columns if col.startswith("_")])
+    return frame.drop([col for col in frame_columns(frame) if col.startswith("_")])
 
 
-def select_feature_group(frame: pl.DataFrame, group: str) -> pl.DataFrame:
-    columns = [column for column in FEATURE_COLUMNS[group] if column in frame.columns]
+def select_feature_group(frame: FeatureFrame, group: str) -> FeatureFrame:
+    source_columns = set(frame_columns(frame))
+    columns = [column for column in FEATURE_COLUMNS[group] if column in source_columns]
     return frame.select(columns)

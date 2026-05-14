@@ -150,6 +150,8 @@ def summarize_phases(
     bar_total = contexts
     feature_total = buildable_count * len(local_timeframes) * len(feature_groups)
     stateful_total = buildable_count * len(stateful_timeframes) * len(feature_groups)
+    plan_event = next((event for event in reversed(events) if event.get("event") == "plan_complete"), {})
+    resume_stage = str(plan_event.get("resume_stage") or "").lower()
 
     scan_done = 0.0
     scan_elapsed = 0.0
@@ -161,6 +163,9 @@ def summarize_phases(
     finalize_done = 0.0
     stateful_done = 0.0
     stateful_elapsed = 0.0
+    if resume_stage == "stateful_features":
+        bar_done = float(bar_total)
+        feature_done = float(feature_total)
     active_by_stage: dict[str, dict[tuple[str, str, str, str], dict[str, Any]]] = {
         "scan_source": {},
         "reference_window": {},

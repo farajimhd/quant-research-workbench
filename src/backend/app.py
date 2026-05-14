@@ -47,7 +47,7 @@ from src.data_provider.config import (
     TIMEFRAMES,
     BuildRequest,
 )
-from src.data_provider.jobs import cancel_build_job, delete_build_job, get_build_status, list_build_jobs, submit_build_job
+from src.data_provider.jobs import cancel_build_job, delete_build_job, get_build_status, list_build_jobs, resume_build_job, submit_build_job
 from src.data_provider.manifest import read_manifest
 from src.data_provider.provider import MarketDataProvider
 from src.strategies.registry import (
@@ -848,6 +848,14 @@ def build_job_status(job_id: str, processed_root: str = str(DEFAULT_PROCESSED_RO
 @app.post("/api/market-data/build/jobs/{job_id}/cancel")
 def stop_build(job_id: str, processed_root: str = str(DEFAULT_PROCESSED_ROOT)) -> dict[str, Any]:
     return cancel_build_job(Path(processed_root), job_id)
+
+
+@app.post("/api/market-data/build/jobs/{job_id}/resume-stateful")
+def resume_build_stateful(job_id: str, processed_root: str = str(DEFAULT_PROCESSED_ROOT)) -> dict[str, Any]:
+    try:
+        return resume_build_job(Path(processed_root), job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.delete("/api/market-data/build/jobs/{job_id}")

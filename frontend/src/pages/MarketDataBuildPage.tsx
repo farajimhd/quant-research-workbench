@@ -89,6 +89,7 @@ type BuildMetric = {
 
 const tabs = ["Build", "Build Timings", "Artifacts", "Plan", "Processed Store", "Manifest"];
 const activeBuildStatuses = new Set(["queued", "running", "canceling", "cancelling"]);
+const resumableBuildStatuses = new Set(["cancelled", "canceled", "failed", "error"]);
 
 export function MarketDataBuildPage() {
   const [scope, setScope] = useState<Scope | null>(null);
@@ -174,6 +175,20 @@ export function MarketDataBuildPage() {
     await loadJobs(scope);
   }
 
+  async function resumeStatefulBuild() {
+    if (!scope || !job) return;
+    setError(null);
+    try {
+      const payload = await api<BuildJob>(`/api/market-data/build/jobs/${job.job_id}/resume-stateful${query({ processed_root: scope.processed_root })}`, { method: "POST" });
+      setJob(payload);
+      await loadJobs(scope);
+      await loadJob(scope, payload.job_id);
+      setActiveTab(tabs[0]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function requestDeleteBuild(target: BuildJob) {
     setError(null);
     setDeleteResult(null);
@@ -210,6 +225,7 @@ export function MarketDataBuildPage() {
   }
 
   const running = Boolean(job && activeBuildStatuses.has(String(job.status).toLowerCase()));
+  const resumable = Boolean(job && !running && resumableBuildStatuses.has(String(job.status).toLowerCase()));
   const progress = job?.progress;
   const metrics = progress?.metrics;
   const missing = useMemo(() => (progress?.plan ?? []).filter((row) => row.expected_market_session && !row.exists), [progress?.plan]);
@@ -231,6 +247,11 @@ export function MarketDataBuildPage() {
           <button className={running ? "button danger" : "button primary"} onClick={running ? stopBuild : startBuild} type="button">
             {running ? "Stop build" : "New build"}
           </button>
+          {resumable ? (
+            <button className="button primary" onClick={resumeStatefulBuild} type="button">
+              Resume stateful
+            </button>
+          ) : null}
           <button className="button" onClick={() => setEditingScope(true)} type="button">
             Edit scope
           </button>
