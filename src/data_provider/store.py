@@ -24,7 +24,10 @@ def ensure_parent(path: Path) -> None:
 
 def write_frame(path: Path, frame: pl.DataFrame) -> None:
     ensure_parent(path)
-    frame.write_parquet(path)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.unlink(missing_ok=True)
+    frame.write_parquet(tmp_path)
+    tmp_path.replace(path)
 
 
 def read_frame(path: Path) -> pl.DataFrame:
