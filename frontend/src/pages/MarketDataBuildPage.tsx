@@ -7,7 +7,7 @@ import { InlineNotice } from "../app/components/InlineNotice";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
-import { ProgressMeter, SessionProgressColumn, type SessionCard, StageRow, type Stage } from "../app/components/Progress";
+import { ProgressMeter, StageRow, type Stage } from "../app/components/Progress";
 import { SemanticBadge, toneForStatus } from "../app/components/SemanticBadge";
 import { Tabs } from "../app/components/Tabs";
 import { formatBytes, formatDuration, formatNumber } from "../app/format";
@@ -40,8 +40,6 @@ type BuildProgress = {
     status: string;
   };
   phases: Stage[];
-  active_sessions: SessionCard[];
-  completed_sessions: SessionCard[];
   plan: Record<string, unknown>[];
   artifact_events: Record<string, unknown>[];
   phase_events: Record<string, unknown>[];
@@ -297,10 +295,6 @@ export function MarketDataBuildPage() {
             </InlineNotice>
           ) : null}
           <PhasePanel elapsedSec={metrics?.elapsed_sec ?? 0} phases={progress?.phases ?? []} status={metrics?.status ?? job?.status} />
-          <div className="build-board">
-            <SessionProgressColumn title="Active Queue" cards={progress?.active_sessions ?? []} />
-            <SessionProgressColumn title="Completed Files" cards={progress?.completed_sessions ?? []} />
-          </div>
           {job?.status === "failed" ? <div className="error-panel" style={{ marginTop: 18 }}>{job.error ?? "Build failed."}</div> : null}
         </>
         ) : null
