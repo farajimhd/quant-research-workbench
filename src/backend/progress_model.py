@@ -73,6 +73,7 @@ def summary_stage(
     total: int,
     elapsed_sec: float = 0.0,
     active_items: list[dict[str, Any]] | None = None,
+    unit_label: str = "items",
 ) -> dict[str, Any]:
     bounded_done = min(float(total), max(0.0, float(done))) if total else 0.0
     return {
@@ -83,6 +84,7 @@ def summary_stage(
         "elapsed_sec": round(float(elapsed_sec), 3),
         "progress": round((bounded_done / total) * 100.0, 2) if total else 0.0,
         "active_items": active_items or [],
+        "unit_label": unit_label,
     }
 
 
@@ -133,17 +135,14 @@ def summarize_phases(
     output_rows = [row for row in plan_rows if is_output_row(row) and row.get("expected_market_session")]
     buildable_rows = [row for row in output_rows if row.get("exists")]
     reference_rows = [row for row in plan_rows if row.get("build_role") == "reference_only" and row.get("expected_market_session")]
+    expected_rows = [row for row in plan_rows if row.get("expected_market_session")]
     buildable_count = len(buildable_rows)
     contexts = buildable_count * len(selected_timeframes)
 
-    bar_total = (
-        buildable_count
-        + buildable_count
-        + (buildable_count * len(intraday_timeframes(timeframes)))
-        + (buildable_count if "1d" in selected_timeframes else 0)
-        + contexts
-    )
-    feature_total = (contexts if feature_groups or supervision_groups else 0) + (contexts * len(feature_groups))
+    scan_total = len(expected_rows)
+    reference_total = len(reference_rows)
+    bar_total = contexts
+    feature_total = contexts * len(feature_groups)
     supervision_total = contexts * len([group for group in supervision_groups if group in {"bar", "method", "scanner"}])
 
     scan_done = 0.0
@@ -185,13 +184,12 @@ def summarize_phases(
             }
 
         if event_name == "plan_complete" and status == "complete":
-            scan_done = 1.0
+            scan_done = scan_total
             scan_elapsed += duration
             active_by_stage["scan_source"].clear()
         elif event_name == "session_skipped" and phase == "reference_warmup":
             reference_done += 1.0
         elif event_name == "phase_complete" and status == "complete" and phase in {"raw_load", "canonicalize_1m", "aggregate", "aggregate_daily"}:
-            bar_done += 1.0
             bar_elapsed += duration
             active_by_stage["build_bars"].pop(key, None)
         elif event_name == "artifact_complete" and status == "complete" and group == "bars":
@@ -199,7 +197,6 @@ def summarize_phases(
             bar_elapsed += duration
             active_by_stage["build_bars"].pop(key, None)
         elif event_name == "phase_complete" and status == "complete" and phase == "feature_compute":
-            feature_done += 1.0
             feature_elapsed += duration
             active_by_stage["build_features"].pop(key, None)
         elif event_name == "artifact_complete" and status == "complete" and group.startswith("features_"):
@@ -230,12 +227,12 @@ def summarize_phases(
     }
 
     rows = [
-        summary_stage("scan_source", "Scan source", scan_done, 1, scan_elapsed, active_items["scan_source"]),
-        summary_stage("reference_window", "Reference window", reference_done, len(reference_rows), active_items=active_items["reference_window"]),
-        summary_stage("build_bars", "Build bars", bar_done, bar_total, bar_elapsed, active_items["build_bars"]),
-        summary_stage("build_features", "Build features", feature_done, feature_total, feature_elapsed, active_items["build_features"]),
-        summary_stage("build_supervision", "Build supervision", supervision_done + sum(supervision_partials.values()), supervision_total, supervision_elapsed, active_items["build_supervision"]),
-        summary_stage("finalize", "Finalize build", finalize_done, 1, active_items=active_items["finalize"]),
+        summary_stage("scan_source", "Scan source", scan_done, scan_total, scan_elapsed, active_items["scan_source"], "sessions"),
+        summary_stage("reference_window", "Reference window", reference_done, reference_total, active_items=active_items["reference_window"], unit_label="sessions"),
+        summary_stage("build_bars", "Build bars", bar_done, bar_total, bar_elapsed, active_items["build_bars"], "bar files"),
+        summary_stage("build_features", "Build features", feature_done, feature_total, feature_elapsed, active_items["build_features"], "feature files"),
+        summary_stage("build_supervision", "Build supervision", supervision_done + sum(supervision_partials.values()), supervision_total, supervision_elapsed, active_items["build_supervision"], "supervision files"),
+        summary_stage("finalize", "Finalize build", finalize_done, 1, active_items=active_items["finalize"], unit_label="step"),
     ]
     return rows
 

@@ -624,7 +624,7 @@ function BuildStepCard({ stage, workerCount }: { stage: Stage; workerCount: numb
         total={stage.total}
       />
       <div className="build-step-meta">
-        <span>{formatNumber(stage.done, stage.done % 1 ? 1 : 0)} / {formatNumber(stage.total)} total</span>
+        <span>{formatNumber(stage.done, stage.done % 1 ? 1 : 0)} / {formatNumber(stage.total)} {stage.unit_label ?? "total"}</span>
         <span>{formatDuration(stage.elapsed_sec)} elapsed</span>
       </div>
       <div className="build-step-active">

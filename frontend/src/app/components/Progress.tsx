@@ -8,6 +8,7 @@ export type Stage = {
   total: number;
   elapsed_sec: number;
   progress: number;
+  unit_label?: string;
   active_items?: Array<{
     label?: string;
     phase?: string;
