@@ -733,7 +733,9 @@ def read_timeframe_context_bars(request: BuildRequest, timeframe: str, session_t
         return read_frame(source_path)
 
     session = datetime.fromisoformat(session_text).date()
-    context_sessions = market_sessions(session, session + timedelta(days=14))[:4]
+    history_sessions = market_sessions(session - timedelta(days=90), session - timedelta(days=1))[-60:]
+    future_sessions = market_sessions(session, session + timedelta(days=14))[:4]
+    context_sessions = [*history_sessions, *future_sessions]
     frames = []
     for context_session in context_sessions:
         path = partition_path(request.processed_root, "bars", timeframe, context_session.isoformat())
