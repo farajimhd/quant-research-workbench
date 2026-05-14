@@ -165,6 +165,20 @@ def summarize_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def artifact_paths_from_events(events: list[dict[str, Any]]) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for event in events:
+        if event.get("event") != "artifact_complete":
+            continue
+        path = str(event.get("path") or "")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
 def attach_job_summary(payload: dict[str, Any], events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     if not payload:
         return payload
@@ -232,11 +246,13 @@ def delete_build_job(processed_root: Path, job_id: str, *, delete_data: bool = T
         raise FileNotFoundError("Build job not found")
     if str(payload.get("status") or "").lower() in {"queued", "running", "canceling"}:
         raise ValueError("Stop the build before deleting it")
-    data_result = delete_artifacts_for_build(root, job_id) if delete_data else {
+    events = read_events(path)
+    data_result = delete_artifacts_for_build(root, job_id, artifact_paths_from_events(events)) if delete_data else {
         "deleted_artifacts": 0,
         "deleted_files": 0,
         "missing_files": 0,
         "skipped_files": [],
+        "skipped_superseded_files": [],
     }
     shutil.rmtree(path)
     return {"status": "deleted", "job_id": job_id, "deleted_data": delete_data, **data_result}

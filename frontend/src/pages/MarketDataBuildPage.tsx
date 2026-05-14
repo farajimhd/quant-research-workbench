@@ -74,6 +74,14 @@ type BuildJob = {
   traceback?: string;
 };
 
+type DeleteBuildResponse = {
+  deleted_files?: number;
+  deleted_artifacts?: number;
+  missing_files?: number;
+  skipped_files?: string[];
+  skipped_superseded_files?: string[];
+};
+
 const tabs = ["Build", "Build Timings", "Artifacts", "Plan", "Processed Store", "Manifest"];
 
 export function MarketDataBuildPage() {
@@ -84,6 +92,7 @@ export function MarketDataBuildPage() {
   const [activeTab, setActiveTab] = useState(tabs[0]);
   const [deleteTarget, setDeleteTarget] = useState<BuildJob | null>(null);
   const [deleteData, setDeleteData] = useState(true);
+  const [deleteResult, setDeleteResult] = useState<string | null>(null);
   const [editingScope, setEditingScope] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -161,6 +170,7 @@ export function MarketDataBuildPage() {
 
   function requestDeleteBuild(target: BuildJob) {
     setError(null);
+    setDeleteResult(null);
     setDeleteData(true);
     setDeleteTarget(target);
   }
@@ -169,7 +179,11 @@ export function MarketDataBuildPage() {
     if (!scope || !deleteTarget) return;
     setError(null);
     try {
-      await api(`/api/market-data/build/jobs/${deleteTarget.job_id}${query({ processed_root: scope.processed_root, delete_data: deleteData })}`, { method: "DELETE" });
+      const result = await api<DeleteBuildResponse>(
+        `/api/market-data/build/jobs/${deleteTarget.job_id}${query({ processed_root: scope.processed_root, delete_data: deleteData })}`,
+        { method: "DELETE" }
+      );
+      setDeleteResult(deleteResultText(result, deleteData));
       if (job?.job_id === deleteTarget.job_id) {
         setJob(null);
       }
@@ -222,6 +236,7 @@ export function MarketDataBuildPage() {
       {!job ? (
         <BuildStartPage
           error={error}
+          deleteResult={deleteResult}
           jobs={jobs}
           onEditScope={() => setEditingScope(true)}
           onDeleteRequest={requestDeleteBuild}
@@ -335,7 +350,7 @@ export function MarketDataBuildPage() {
               <span>Also delete generated artifacts owned by this build from the processed store.</span>
             </label>
             <p className="muted">
-              Data deletion only removes manifest artifacts tagged with this build id. Artifacts overwritten by newer builds are left alone.
+              Data deletion removes artifacts recorded by this build. Files currently owned by a newer build are left alone.
             </p>
           </div>
           <div className="modal-actions">
@@ -349,6 +364,7 @@ export function MarketDataBuildPage() {
 }
 
 function BuildStartPage({
+  deleteResult,
   error,
   jobs,
   onEditScope,
@@ -357,6 +373,7 @@ function BuildStartPage({
   onStartBuild,
   scope,
 }: {
+  deleteResult: string | null;
   error: string | null;
   jobs: BuildJob[];
   onEditScope: () => void;
@@ -382,6 +399,7 @@ function BuildStartPage({
         </div>
       </div>
       {error ? <div className="error-panel">{error}</div> : null}
+      {deleteResult ? <InlineNotice tone="success" icon={<CheckCircle2 size={16} />} title="Build deleted">{deleteResult}</InlineNotice> : null}
       {jobs.length ? (
         <div className="runs-grid">
           {jobs.map((item) => (
@@ -627,6 +645,19 @@ function asListText(value: unknown): string {
   if (Array.isArray(value)) return value.length ? value.map(String).join(", ") : "-";
   if (value === null || value === undefined || value === "") return "-";
   return String(value);
+}
+
+function deleteResultText(result: DeleteBuildResponse, deletedData: boolean): string {
+  if (!deletedData) return "Build record removed. Data deletion was not selected.";
+  const deleted = formatNumber(result.deleted_files ?? 0);
+  const missing = Number(result.missing_files ?? 0);
+  const superseded = Number(result.skipped_superseded_files?.length ?? 0);
+  const skipped = Number(result.skipped_files?.length ?? 0);
+  const details = [`${deleted} file(s) deleted`];
+  if (missing) details.push(`${formatNumber(missing)} already missing`);
+  if (superseded) details.push(`${formatNumber(superseded)} newer-owned file(s) left alone`);
+  if (skipped) details.push(`${formatNumber(skipped)} unsafe path(s) skipped`);
+  return details.join(", ") + ".";
 }
 
 function scopeFromBuildJob(job: BuildJob | null, fallback: Scope | null): Scope | null {
