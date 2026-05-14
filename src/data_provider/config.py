@@ -99,6 +99,8 @@ class BuildRequest:
     supervision_groups: list[str] = field(default_factory=list)
     rebuild_mode: str = "force_rebuild"
     tickers: list[str] | None = None
+    build_id: str | None = None
+    build_name: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "BuildRequest":
@@ -113,6 +115,8 @@ class BuildRequest:
             supervision_groups=list_from_dict(raw, "supervision_groups", []),
             rebuild_mode="force_rebuild",
             tickers=list(raw["tickers"]) if raw.get("tickers") else None,
+            build_id=str(raw["build_id"]) if raw.get("build_id") else None,
+            build_name=str(raw["build_name"]) if raw.get("build_name") else None,
         )
 
     def to_config(self) -> DataProviderConfig:

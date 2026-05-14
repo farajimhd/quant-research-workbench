@@ -57,6 +57,11 @@ def utc_now() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
+def generated_build_name(request: BuildRequest, job_id: str) -> str:
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return f"market_data_{request.start_date.isoformat()}_{request.end_date.isoformat()}_{timestamp}_{job_id[:6]}"
+
+
 def request_to_dict(request: BuildRequest) -> dict[str, Any]:
     raw = asdict(request)
     raw["raw_root"] = str(request.raw_root)
@@ -90,6 +95,7 @@ def update_job(path: Path, **updates: Any) -> dict[str, Any]:
 def append_event(path: Path, event: dict[str, Any]) -> None:
     path.mkdir(parents=True, exist_ok=True)
     payload = dict(event)
+    payload.setdefault("build_id", path.name)
     payload.setdefault("emitted_at", utc_now())
     with file_lock(events_lock_file(path)):
         with events_file(path).open("a", encoding="utf-8") as handle:
@@ -121,11 +127,60 @@ def check_cancelled(path: Path) -> None:
         raise BuildCancelled("Build job was cancelled.")
 
 
+def parse_utc(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def build_duration_seconds(payload: dict[str, Any]) -> float | None:
+    start = parse_utc(payload.get("started_at") or payload.get("created_at"))
+    end = parse_utc(payload.get("finished_at") or payload.get("updated_at"))
+    if not start or not end:
+        return None
+    return max(0.0, round((end - start).total_seconds(), 3))
+
+
+def summarize_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    artifact_events = [event for event in events if event.get("event") == "artifact_complete"]
+    plan = next((event.get("plan") for event in reversed(events) if event.get("event") == "plan_complete" and isinstance(event.get("plan"), list)), [])
+    expected = [row for row in plan if row.get("expected_market_session")] if isinstance(plan, list) else []
+    missing = [row for row in expected if not row.get("exists")]
+    return {
+        "artifact_count": len(artifact_events),
+        "rows_written": sum(int(event.get("rows_out") or 0) for event in artifact_events),
+        "bytes_written": sum(int(event.get("size_bytes") or 0) for event in artifact_events),
+        "expected_sessions": len(expected),
+        "missing_sessions": len(missing),
+        "event_count": len(events),
+    }
+
+
+def attach_job_summary(payload: dict[str, Any], events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    if not payload:
+        return payload
+    event_rows = events if events is not None else read_events(job_dir(Path(payload.get("request", {}).get("processed_root", "")), str(payload.get("job_id", ""))))
+    summary = {**(payload.get("summary") or {}), **summarize_events(event_rows)}
+    duration = build_duration_seconds(payload)
+    if duration is not None:
+        summary["duration_sec"] = duration
+    request = payload.get("request") or {}
+    payload.setdefault("build_name", request.get("build_name") or f"market_data_{payload.get('created_at', '')}")
+    payload["summary"] = summary
+    return payload
+
+
 def submit_build_job(request: BuildRequest, *, max_workers: int = 4, polars_threads: int = 6) -> dict[str, Any]:
     job_id = uuid.uuid4().hex
+    request.build_id = job_id
+    request.build_name = request.build_name or generated_build_name(request, job_id)
     path = job_dir(request.processed_root, job_id)
     payload = {
         "job_id": job_id,
+        "build_name": request.build_name,
         "status": "queued",
         "created_at": utc_now(),
         "updated_at": utc_now(),
@@ -163,7 +218,9 @@ def cancel_build_job(processed_root: Path, job_id: str) -> dict[str, Any]:
 def get_build_status(processed_root: Path, job_id: str) -> dict[str, Any]:
     path = job_dir(processed_root, job_id)
     payload = read_job(path)
-    payload["events"] = read_events(path)
+    events = read_events(path)
+    payload = attach_job_summary(payload, events)
+    payload["events"] = events
     payload["job_dir"] = str(path)
     payload["log_path"] = str(log_file(path))
     return payload
@@ -173,5 +230,5 @@ def list_build_jobs(processed_root: Path) -> list[dict[str, Any]]:
     root = jobs_root(processed_root)
     if not root.exists():
         return []
-    jobs = [read_job(path) for path in root.iterdir() if path.is_dir() and job_file(path).exists()]
+    jobs = [attach_job_summary(read_job(path), read_events(path)) for path in root.iterdir() if path.is_dir() and job_file(path).exists()]
     return sorted(jobs, key=lambda item: str(item.get("created_at") or ""), reverse=True)

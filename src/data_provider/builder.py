@@ -64,6 +64,8 @@ def write_artifact(
     timeframe: str,
     session_date: str,
     frame: pl.DataFrame,
+    build_id: str | None = None,
+    build_name: str | None = None,
     source_path: Path | None = None,
 ) -> Path:
     path = partition_path(root, group, timeframe, session_date)
@@ -79,6 +81,8 @@ def write_artifact(
             rows=frame.height,
             columns=list(frame.columns),
             built_at=datetime.now().isoformat(timespec="seconds"),
+            build_id=build_id,
+            build_name=build_name,
             source_path=str(source_path) if source_path else None,
             source_modified_at=source_path.stat().st_mtime if source_exists else None,
             source_size_bytes=source_path.stat().st_size if source_exists else None,
@@ -184,6 +188,8 @@ def write_bar_supervision_artifact(
             rows=rows_out,
             columns=columns,
             built_at=datetime.now().isoformat(timespec="seconds"),
+            build_id=request.build_id,
+            build_name=request.build_name,
             source_path=str(source_path),
             source_modified_at=source_path.stat().st_mtime if source_exists else None,
             source_size_bytes=source_path.stat().st_size if source_exists else None,
@@ -253,6 +259,8 @@ def build_feature_groups(
             timeframe=timeframe,
             session_date=session_date,
             frame=group_frame,
+            build_id=request.build_id,
+            build_name=request.build_name,
             source_path=source_path,
         )
         if progress_state is not None:
@@ -376,6 +384,8 @@ def build_supervision_groups(
                 timeframe=timeframe,
                 session_date=session_date,
                 frame=method_supervision,
+                build_id=request.build_id,
+                build_name=request.build_name,
                 source_path=source_path,
             )
             if progress_state is not None:
@@ -424,6 +434,8 @@ def build_supervision_groups(
             timeframe=timeframe,
             session_date=session_date,
             frame=scanner_supervision,
+            build_id=request.build_id,
+            build_name=request.build_name,
             source_path=source_path,
         )
         if progress_state is not None:
@@ -482,6 +494,8 @@ def write_bars_artifact(
         timeframe=timeframe,
         session_date=session_date,
         frame=bars,
+        build_id=request.build_id,
+        build_name=request.build_name,
         source_path=source_path,
     )
     progress_state["completed_units"] += 1

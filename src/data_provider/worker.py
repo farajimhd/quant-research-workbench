@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.data_provider.builder import build_market_data_parallel
 from src.data_provider.config import BuildRequest
-from src.data_provider.jobs import BuildCancelled, append_event, check_cancelled, read_job, update_job, utc_now
+from src.data_provider.jobs import BuildCancelled, append_event, check_cancelled, read_events, read_job, summarize_events, update_job, utc_now
 
 
 def run_job(path: Path) -> int:
@@ -23,7 +23,7 @@ def run_job(path: Path) -> int:
     try:
         result = build_market_data_parallel(request, job_path=path, max_workers=max_workers, progress_callback=on_progress)
         append_event(path, {"event": "job_complete", "phase": "job", "status": "complete", "processed_root": result["processed_root"]})
-        update_job(path, status="complete", finished_at=utc_now(), result=result)
+        update_job(path, status="complete", finished_at=utc_now(), result=result, summary=summarize_events(read_events(path)))
         return 0
     except BuildCancelled as exc:
         append_event(path, {"event": "job_cancelled", "phase": "cancel", "status": "cancelled", "message": str(exc)})

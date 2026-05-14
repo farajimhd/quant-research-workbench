@@ -23,6 +23,8 @@ class ArtifactRecord:
     schema_version: int = SCHEMA_VERSION
     feature_version: int = FEATURE_VERSION
     supervision_version: int = SUPERVISION_VERSION
+    build_id: str | None = None
+    build_name: str | None = None
     source_path: str | None = None
     source_modified_at: float | None = None
     source_size_bytes: int | None = None

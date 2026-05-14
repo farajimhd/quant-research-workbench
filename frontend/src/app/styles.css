@@ -3039,6 +3039,13 @@ button {
   min-width: 0;
 }
 
+.runs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 14px;
+  min-width: 0;
+}
+
 .progress-column-body {
   display: grid;
   max-height: 820px;
@@ -3063,10 +3070,19 @@ button {
 }
 
 .run-card {
+  appearance: none;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 12px;
   align-items: start;
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.build-run-card {
+  grid-template-columns: 1fr;
 }
 
 .run-card.clickable {
@@ -3084,6 +3100,7 @@ button {
   background: color-mix(in oklab, var(--primary) 2%, var(--card));
 }
 
+.run-card-header,
 .session-card-header {
   display: flex;
   align-items: flex-start;
@@ -3092,10 +3109,28 @@ button {
   min-width: 0;
 }
 
+.run-card-header > div:first-child,
 .session-card-header > div:first-child {
   min-width: 0;
 }
 
+.run-card-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.run-card-metrics span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-card-header .muted,
+.run-card-header .run-card-title,
 .session-card-header strong,
 .session-card-header .muted {
   display: block;
@@ -6970,6 +7005,10 @@ button {
 }
 
 @media (max-width: 680px) {
+  .run-card-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .observability-summary,
   .observability-action-overview,
   .observability-detail-grid,

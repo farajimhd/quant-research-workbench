@@ -90,6 +90,8 @@ def artifact_records(root: Path) -> list[dict[str, Any]]:
                 "schema_version": record.get("schema_version"),
                 "feature_version": record.get("feature_version"),
                 "supervision_version": record.get("supervision_version"),
+                "build_id": record.get("build_id"),
+                "build_name": record.get("build_name"),
                 "source_path": record.get("source_path"),
                 "source_size_bytes": record.get("source_size_bytes"),
                 "size_bytes": size_bytes,

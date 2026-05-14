@@ -8,8 +8,9 @@ import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { ProgressMeter, SessionProgressColumn, type SessionCard, StageRow, type Stage } from "../app/components/Progress";
+import { SemanticBadge, toneForStatus } from "../app/components/SemanticBadge";
 import { Tabs } from "../app/components/Tabs";
-import { formatNumber } from "../app/format";
+import { formatBytes, formatDuration, formatNumber } from "../app/format";
 import { useViewportFillPanel } from "../app/hooks/useViewportFillPanel";
 
 type Scope = {
@@ -41,10 +42,26 @@ type BuildProgress = {
 };
 
 type BuildJob = {
+  build_name?: string;
+  created_at?: string;
+  finished_at?: string | null;
   job_id: string;
   status: string;
   request?: Record<string, unknown>;
+  resources?: Record<string, unknown>;
+  summary?: {
+    artifact_count?: number;
+    bytes_written?: number;
+    duration_sec?: number;
+    event_count?: number;
+    expected_sessions?: number;
+    missing_sessions?: number;
+    rows_written?: number;
+  };
   progress?: BuildProgress;
+  result?: Record<string, unknown>;
+  started_at?: string | null;
+  updated_at?: string;
   error?: string;
   traceback?: string;
 };
@@ -55,6 +72,7 @@ export function MarketDataBuildPage() {
   const [scope, setScope] = useState<Scope | null>(null);
   const [draft, setDraft] = useState<Scope | null>(null);
   const [job, setJob] = useState<BuildJob | null>(null);
+  const [jobs, setJobs] = useState<BuildJob[]>([]);
   const [activeTab, setActiveTab] = useState(tabs[0]);
   const [editingScope, setEditingScope] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,8 +83,14 @@ export function MarketDataBuildPage() {
 
   useEffect(() => {
     if (!scope) return;
-    loadLatestJob(scope);
+    loadJobs(scope);
   }, [scope]);
+
+  useEffect(() => {
+    if (!scope || !jobs.some((item) => ["queued", "running", "canceling"].includes(item.status))) return;
+    const timer = window.setInterval(() => loadJobs(scope), 3000);
+    return () => window.clearInterval(timer);
+  }, [scope, jobs]);
 
   useEffect(() => {
     if (!scope || !job || !["queued", "running", "canceling"].includes(job.status)) return;
@@ -80,11 +104,12 @@ export function MarketDataBuildPage() {
     setDraft(payload);
   }
 
-  async function loadLatestJob(currentScope: Scope) {
+  async function loadJobs(currentScope: Scope) {
     const payload = await api<{ jobs: BuildJob[] }>(`/api/market-data/build/jobs${query({ processed_root: currentScope.processed_root })}`);
-    const latest = payload.jobs.find((item) => ["queued", "running", "canceling"].includes(item.status)) ?? payload.jobs[0];
-    if (latest) {
-      await loadJob(currentScope, latest.job_id);
+    setJobs(payload.jobs);
+    if (job) {
+      const current = payload.jobs.find((item) => item.job_id === job.job_id);
+      if (current) setJob((value) => (value ? { ...value, ...current } : current));
     }
   }
 
@@ -93,6 +118,11 @@ export function MarketDataBuildPage() {
       `/api/market-data/build/jobs/${jobId}${query({ processed_root: currentScope.processed_root, raw_root: currentScope.raw_root })}`
     );
     setJob(payload);
+  }
+
+  async function openJob(currentScope: Scope, jobId: string) {
+    setActiveTab(tabs[0]);
+    await loadJob(currentScope, jobId);
   }
 
   async function startBuild() {
@@ -104,7 +134,9 @@ export function MarketDataBuildPage() {
         body: JSON.stringify({ ...scope, max_workers: 4, polars_threads: 6 })
       });
       setJob(payload);
+      await loadJobs(scope);
       await loadJob(scope, payload.job_id);
+      setActiveTab(tabs[0]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -114,6 +146,7 @@ export function MarketDataBuildPage() {
     if (!scope || !job) return;
     await api(`/api/market-data/build/jobs/${job.job_id}/cancel${query({ processed_root: scope.processed_root })}`, { method: "POST" });
     await loadJob(scope, job.job_id);
+    await loadJobs(scope);
   }
 
   function applyScope() {
@@ -121,12 +154,14 @@ export function MarketDataBuildPage() {
     setScope(draft);
     setEditingScope(false);
     setJob(null);
+    setJobs([]);
   }
 
   const running = Boolean(job && ["queued", "running", "canceling"].includes(job.status));
   const progress = job?.progress;
   const metrics = progress?.metrics;
   const missing = useMemo(() => (progress?.plan ?? []).filter((row) => row.expected_market_session && !row.exists), [progress?.plan]);
+  const viewScope = scopeFromBuildJob(job, scope);
 
   return (
     <>
@@ -136,18 +171,35 @@ export function MarketDataBuildPage() {
         description="Rebuild the canonical market-data store with every supported timeframe and feature group."
         actions={scope ? <ScopeCard scope={scope} /> : null}
       />
-      <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+      {job ? (
+        <div className="button-row">
+          <button className="button" onClick={() => setJob(null)} type="button">
+            Back to builds
+          </button>
+          <button className={running ? "button danger" : "button primary"} onClick={running ? stopBuild : startBuild} type="button">
+            {running ? "Stop build" : "New build"}
+          </button>
+          <button className="button" onClick={() => setEditingScope(true)} type="button">
+            Edit scope
+          </button>
+        </div>
+      ) : null}
+      {!job ? (
+        <BuildStartPage
+          error={error}
+          jobs={jobs}
+          onEditScope={() => setEditingScope(true)}
+          onOpenJob={(jobId) => scope && openJob(scope, jobId)}
+          onStartBuild={startBuild}
+          scope={scope}
+        />
+      ) : null}
+      {job ? <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} /> : null}
       {activeTab === "Build" ? (
+        job ? (
         <>
-          <div className="button-row">
-            <button className={running ? "button danger" : "button primary"} onClick={running ? stopBuild : startBuild} type="button">
-              {running ? "Stop build" : "Rebuild selected range"}
-            </button>
-            <button className="button" onClick={() => setEditingScope(true)} type="button">
-              Edit scope
-            </button>
-          </div>
           {error ? <div className="error-panel">{error}</div> : null}
+          <BuildRunHeader job={job} />
           {metrics ? (
             <MetricStrip
               items={[
@@ -190,24 +242,25 @@ export function MarketDataBuildPage() {
           </div>
           {job?.status === "failed" ? <div className="error-panel" style={{ marginTop: 18 }}>{job.error ?? "Build failed."}</div> : null}
         </>
+        ) : null
       ) : null}
-      {activeTab === "Build Timings" ? (
+      {job && activeTab === "Build Timings" ? (
         <BuildTablePanel trigger={`timings:${job?.job_id ?? ""}:${progress?.phase_events?.length ?? 0}`}>
           <DataTable rows={progress?.phase_events ?? []} />
         </BuildTablePanel>
       ) : null}
-      {activeTab === "Artifacts" ? (
+      {job && activeTab === "Artifacts" ? (
         <BuildTablePanel trigger={`artifacts:${job?.job_id ?? ""}:${progress?.artifact_events?.length ?? 0}`}>
           <DataTable rows={progress?.artifact_events ?? []} />
         </BuildTablePanel>
       ) : null}
-      {activeTab === "Plan" ? (
+      {job && activeTab === "Plan" ? (
         <BuildTablePanel trigger={`plan:${job?.job_id ?? ""}:${progress?.plan?.length ?? 0}`}>
           <DataTable rows={progress?.plan ?? []} />
         </BuildTablePanel>
       ) : null}
-      {activeTab === "Processed Store" ? <ProcessedStore scope={scope} /> : null}
-      {activeTab === "Manifest" ? <ManifestCard scope={scope} /> : null}
+      {job && activeTab === "Processed Store" ? <ProcessedStore scope={viewScope} /> : null}
+      {job && activeTab === "Manifest" ? <ManifestCard scope={viewScope} job={job} /> : null}
       {editingScope && draft ? (
         <Modal title="Update Data Scope" onClose={() => setEditingScope(false)}>
           <div className="form-grid">
@@ -223,6 +276,94 @@ export function MarketDataBuildPage() {
         </Modal>
       ) : null}
     </>
+  );
+}
+
+function BuildStartPage({
+  error,
+  jobs,
+  onEditScope,
+  onOpenJob,
+  onStartBuild,
+  scope,
+}: {
+  error: string | null;
+  jobs: BuildJob[];
+  onEditScope: () => void;
+  onOpenJob: (jobId: string) => void;
+  onStartBuild: () => void;
+  scope: Scope | null;
+}) {
+  return (
+    <section className="panel">
+      <div className="section-heading-row">
+        <div>
+          <h2>Build Runs</h2>
+          <p>Start a provider build or open an earlier build record. The market-data artifacts stay integrated in the shared processed store.</p>
+        </div>
+        <div className="button-row">
+          <button className="button primary" disabled={!scope} onClick={onStartBuild} type="button">
+            New build
+          </button>
+          <button className="button" disabled={!scope} onClick={onEditScope} type="button">
+            Edit scope
+          </button>
+        </div>
+      </div>
+      {error ? <div className="error-panel">{error}</div> : null}
+      {jobs.length ? (
+        <div className="runs-grid">
+          {jobs.map((item) => (
+            <button className="run-card build-run-card clickable" key={item.job_id} onClick={() => onOpenJob(item.job_id)} type="button">
+              <div className="run-card-header">
+                <div>
+                  <div className="run-card-title">{buildDisplayName(item)}</div>
+                  <div className="muted">{buildDateRange(item)} | {formatTimestamp(item.created_at)}</div>
+                </div>
+                <SemanticBadge tone={toneForStatus(item.status)}>{item.status}</SemanticBadge>
+              </div>
+              <div className="run-card-metrics">
+                <span>{formatNumber(item.summary?.artifact_count ?? 0)} artifacts</span>
+                <span>{formatNumber(item.summary?.rows_written ?? 0)} rows</span>
+                <span>{formatBytes(item.summary?.bytes_written ?? 0)}</span>
+                <span>{formatDuration(item.summary?.duration_sec ?? 0)}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state">No build runs have been recorded for this processed store.</div>
+      )}
+    </section>
+  );
+}
+
+function BuildRunHeader({ job }: { job: BuildJob }) {
+  const request = job.request ?? {};
+  return (
+    <section className="panel">
+      <div className="section-heading-row">
+        <div>
+          <h2>{buildDisplayName(job)}</h2>
+          <p>{buildDateRange(job)} | {String(request.processed_root ?? "-")}</p>
+        </div>
+        <SemanticBadge tone={toneForStatus(job.status)}>{job.status}</SemanticBadge>
+      </div>
+      <div className="split-row">
+        <div>
+          <ScopeItem label="Build id" value={job.job_id} />
+          <ScopeItem label="Created" value={formatTimestamp(job.created_at)} />
+          <ScopeItem label="Started" value={formatTimestamp(job.started_at)} />
+          <ScopeItem label="Finished" value={formatTimestamp(job.finished_at)} />
+        </div>
+        <div>
+          <ScopeItem label="Raw root" value={String(request.raw_root ?? "-")} />
+          <ScopeItem label="Timeframes" value={asListText(request.timeframes)} />
+          <ScopeItem label="Feature groups" value={asListText(request.feature_groups)} />
+          <ScopeItem label="Resources" value={`workers=${job.resources?.max_workers ?? "-"}, polars=${job.resources?.polars_threads ?? "-"}`} />
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -311,15 +452,19 @@ function ProcessedStore({ scope }: { scope: Scope | null }) {
   }, [scope]);
   return (
     <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
-      <DataTable rows={rows} columns={["group", "timeframe", "session_date", "rows", "column_count", "size", "built_at", "exists", "path"]} />
+      <DataTable rows={rows} columns={["group", "timeframe", "session_date", "rows", "column_count", "size", "built_at", "build_name", "exists", "path"]} />
     </section>
   );
 }
 
-function ManifestCard({ scope }: { scope: Scope | null }) {
+function ManifestCard({ job, scope }: { job: BuildJob | null; scope: Scope | null }) {
   const [card, setCard] = useState<Record<string, unknown> | null>(null);
   useEffect(() => {
-    if (!scope) return;
+    if (!scope) {
+      setCard(null);
+      return;
+    }
+    setCard(null);
     api<{ card: Record<string, unknown> }>(`/api/market-data/manifest${query({ processed_root: scope.processed_root })}`).then((payload) => setCard(payload.card));
   }, [scope]);
   if (!card) return <div className="empty-state">No manifest loaded.</div>;
@@ -338,6 +483,60 @@ function ManifestCard({ scope }: { scope: Scope | null }) {
           <ScopeItem label="Processed root" value={String(card.processed_root ?? "-")} />
         </div>
       </div>
+      {job ? (
+        <div className="split-row" style={{ marginTop: 18 }}>
+          <div>
+            <ScopeItem label="Selected build" value={buildDisplayName(job)} />
+            <ScopeItem label="Build id" value={job.job_id} />
+          </div>
+          <div>
+            <ScopeItem label="Build artifacts" value={formatNumber(job.summary?.artifact_count ?? 0)} />
+            <ScopeItem label="Build rows" value={formatNumber(job.summary?.rows_written ?? 0)} />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function buildDisplayName(job: BuildJob): string {
+  const request = job.request ?? {};
+  const value = job.build_name ?? request.build_name ?? job.job_id;
+  return String(value || job.job_id);
+}
+
+function buildDateRange(job: BuildJob): string {
+  const request = job.request ?? {};
+  const start = request.start_date ? String(request.start_date) : "-";
+  const end = request.end_date ? String(request.end_date) : "-";
+  return `${start} to ${end}`;
+}
+
+function formatTimestamp(value: unknown): string {
+  if (!value) return "-";
+  const parsed = new Date(String(value));
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+function asListText(value: unknown): string {
+  if (Array.isArray(value)) return value.length ? value.map(String).join(", ") : "-";
+  if (value === null || value === undefined || value === "") return "-";
+  return String(value);
+}
+
+function scopeFromBuildJob(job: BuildJob | null, fallback: Scope | null): Scope | null {
+  if (!job?.request) return fallback;
+  const request = job.request;
+  return {
+    raw_root: String(request.raw_root ?? fallback?.raw_root ?? ""),
+    processed_root: String(request.processed_root ?? fallback?.processed_root ?? ""),
+    start_date: String(request.start_date ?? fallback?.start_date ?? ""),
+    end_date: String(request.end_date ?? fallback?.end_date ?? ""),
+    raw_file_count: Number(fallback?.raw_file_count ?? 0),
+    artifact_count: Number(fallback?.artifact_count ?? 0),
+  };
 }
