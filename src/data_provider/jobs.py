@@ -193,7 +193,7 @@ def attach_job_summary(payload: dict[str, Any], events: list[dict[str, Any]] | N
     return payload
 
 
-def submit_build_job(request: BuildRequest, *, max_workers: int = 4, polars_threads: int = 6) -> dict[str, Any]:
+def submit_build_job(request: BuildRequest, *, max_workers: int = 8, polars_threads: int = 10) -> dict[str, Any]:
     job_id = uuid.uuid4().hex
     request.build_id = job_id
     request.build_name = request.build_name or generated_build_name(request, job_id)

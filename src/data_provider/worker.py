@@ -13,7 +13,7 @@ def run_job(path: Path) -> int:
     payload = read_job(path)
     request = BuildRequest.from_dict(payload["request"])
     resources = payload.get("resources") or {}
-    max_workers = int(resources.get("max_workers") or 1)
+    max_workers = int(resources.get("max_workers") or 8)
     update_job(path, status="running", started_at=payload.get("started_at") or utc_now())
 
     def on_progress(event: dict) -> None:

@@ -155,7 +155,7 @@ export function MarketDataBuildPage() {
     try {
       const payload = await api<BuildJob>("/api/market-data/build/jobs", {
         method: "POST",
-        body: JSON.stringify({ ...scope, max_workers: 4, polars_threads: 6 })
+        body: JSON.stringify(scope)
       });
       setJob(payload);
       await loadJobs(scope);
