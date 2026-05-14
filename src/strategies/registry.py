@@ -3,6 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from src.strategies.adaptive_live_trend_rotation.v1.config import (
+    AdaptiveLiveTrendRotationConfig as AdaptiveLiveTrendRotationV1Config,
+)
+from src.strategies.adaptive_live_trend_rotation.v1.presentation import (
+    chart_presentation as adaptive_live_trend_rotation_v1_chart_presentation,
+)
+from src.strategies.adaptive_live_trend_rotation.v1.strategy import AdaptiveLiveTrendRotationStrategy
 from src.strategies.orb_5m_momentum.v1.config import OrbMomentumConfig as OrbMomentumV1Config
 from src.strategies.orb_5m_momentum.v1.presentation import chart_presentation as orb_5m_momentum_v1_chart_presentation
 from src.strategies.orb_5m_momentum.v1.strategy import OrbFiveMinuteMomentumStrategy
@@ -40,25 +47,37 @@ def default_orb_5m_momentum_v3_params() -> dict:
     return OrbMomentumV3Config().to_dict()
 
 
+def create_adaptive_live_trend_rotation_v1(params: dict | None = None) -> AdaptiveLiveTrendRotationStrategy:
+    return AdaptiveLiveTrendRotationStrategy(AdaptiveLiveTrendRotationV1Config.from_dict(params))
+
+
+def default_adaptive_live_trend_rotation_v1_params() -> dict:
+    return AdaptiveLiveTrendRotationV1Config().to_dict()
+
+
 STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
+    ("adaptive_live_trend_rotation", "v1"): create_adaptive_live_trend_rotation_v1,
     ("orb_5m_momentum", "v1"): create_orb_5m_momentum_v1,
     ("orb_5m_momentum", "v2"): create_orb_5m_momentum_v2,
     ("orb_5m_momentum", "v3"): create_orb_5m_momentum_v3,
 }
 
 STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
+    ("adaptive_live_trend_rotation", "v1"): default_adaptive_live_trend_rotation_v1_params,
     ("orb_5m_momentum", "v1"): default_orb_5m_momentum_v1_params,
     ("orb_5m_momentum", "v2"): default_orb_5m_momentum_v2_params,
     ("orb_5m_momentum", "v3"): default_orb_5m_momentum_v3_params,
 }
 
 STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
+    ("adaptive_live_trend_rotation", "v1"): adaptive_live_trend_rotation_v1_chart_presentation,
     ("orb_5m_momentum", "v1"): orb_5m_momentum_v1_chart_presentation,
     ("orb_5m_momentum", "v2"): orb_5m_momentum_v2_chart_presentation,
     ("orb_5m_momentum", "v3"): orb_5m_momentum_v3_chart_presentation,
 }
 
 DEFAULT_STRATEGY_VERSIONS: dict[str, str] = {
+    "adaptive_live_trend_rotation": "v1",
     "orb_5m_momentum": "v3",
 }
 
