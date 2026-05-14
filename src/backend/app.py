@@ -85,7 +85,7 @@ class ScopeUpdate(BaseModel):
 
 
 class BuildSubmit(ScopeUpdate):
-    max_workers: int = Field(default=8, ge=1, le=24)
+    max_workers: int = Field(default=5, ge=1, le=24)
     polars_threads: int = Field(default=10, ge=1, le=24)
 
 
