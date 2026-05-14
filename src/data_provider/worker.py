@@ -13,8 +13,7 @@ def run_job(path: Path) -> int:
     payload = read_job(path)
     request = BuildRequest.from_dict(payload["request"])
     resources = payload.get("resources") or {}
-    bar_workers = int(resources.get("bar_workers") or resources.get("max_workers") or 3)
-    artifact_workers = int(resources.get("artifact_workers") or resources.get("max_workers") or 5)
+    session_workers = int(resources.get("session_workers") or resources.get("bar_workers") or resources.get("max_workers") or 3)
     update_job(path, status="running", started_at=payload.get("started_at") or utc_now())
 
     def on_progress(event: dict) -> None:
@@ -25,8 +24,7 @@ def run_job(path: Path) -> int:
         result = build_market_data_parallel(
             request,
             job_path=path,
-            bar_workers=bar_workers,
-            artifact_workers=artifact_workers,
+            session_workers=session_workers,
             progress_callback=on_progress,
         )
         append_event(path, {"event": "job_complete", "phase": "job", "status": "complete", "processed_root": result["processed_root"]})

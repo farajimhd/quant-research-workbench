@@ -85,8 +85,7 @@ class ScopeUpdate(BaseModel):
 
 
 class BuildSubmit(ScopeUpdate):
-    bar_workers: int = Field(default=3, ge=1, le=24)
-    artifact_workers: int = Field(default=5, ge=1, le=24)
+    session_workers: int = Field(default=3, ge=1, le=24)
     polars_threads: int = Field(default=10, ge=1, le=24)
 
 
@@ -823,8 +822,7 @@ def start_build(payload: BuildSubmit) -> dict[str, Any]:
     )
     return submit_build_job(
         request,
-        bar_workers=payload.bar_workers,
-        artifact_workers=payload.artifact_workers,
+        session_workers=payload.session_workers,
         polars_threads=payload.polars_threads,
     )
 

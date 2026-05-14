@@ -440,8 +440,7 @@ function BuildRunHeader({ job }: { job: BuildJob }) {
       <div className="build-summary-facts">
         <BuildFact label="Build id" value={job.job_id} />
         <BuildFact label="Created" value={formatTimestamp(job.created_at)} />
-        <BuildFact label="Bar workers" value={`${job.resources?.bar_workers ?? job.resources?.max_workers ?? "-"} workers`} />
-        <BuildFact label="Feature workers" value={`${job.resources?.artifact_workers ?? job.resources?.max_workers ?? "-"} workers`} />
+        <BuildFact label="Session workers" value={`${job.resources?.session_workers ?? job.resources?.bar_workers ?? job.resources?.max_workers ?? "-"} workers`} />
         <BuildFact label="Polars" value={`${job.resources?.polars_threads ?? "-"} threads`} />
         <BuildFact label="Output starts" value={String(metrics?.output_start_date ?? "-")} />
         <BuildFact label="Warm-up" value={`${formatNumber(metrics?.warmup_sessions ?? 13)} sessions`} />

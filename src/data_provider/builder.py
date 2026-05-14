@@ -604,6 +604,7 @@ def build_session_bars(
     total: int,
     progress_callback: ProgressCallback | None,
     progress_state: dict,
+    build_artifacts: bool = False,
 ) -> dict:
     session_text = str(status["session_date"])
     session_date = datetime.fromisoformat(session_text).date()
@@ -686,6 +687,7 @@ def build_session_bars(
         },
     )
     built_timeframes: list[str] = []
+    artifact_results: list[dict] = []
     if "1m" in selected_timeframes:
         write_bars_artifact(
             request=request,
@@ -697,6 +699,17 @@ def build_session_bars(
             progress_state=progress_state,
         )
         built_timeframes.append("1m")
+        if build_artifacts:
+            artifact_results.append(
+                build_timeframe_artifacts(
+                    request=request,
+                    session_text=session_text,
+                    timeframe="1m",
+                    progress_callback=progress_callback,
+                    progress_state=progress_state,
+                    current_bars=bars_1m,
+                )
+            )
 
     for timeframe in selected_timeframes:
         if timeframe == "1m":
@@ -743,6 +756,17 @@ def build_session_bars(
                 progress_state=progress_state,
             )
             built_timeframes.append(timeframe)
+            if build_artifacts:
+                artifact_results.append(
+                    build_timeframe_artifacts(
+                        request=request,
+                        session_text=session_text,
+                        timeframe=timeframe,
+                        progress_callback=progress_callback,
+                        progress_state=progress_state,
+                        current_bars=bars,
+                    )
+                )
             del bars
             gc.collect()
         elif timeframe == "1d":
@@ -787,6 +811,17 @@ def build_session_bars(
                 progress_state=progress_state,
             )
             built_timeframes.append("1d")
+            if build_artifacts:
+                artifact_results.append(
+                    build_timeframe_artifacts(
+                        request=request,
+                        session_text=session_text,
+                        timeframe="1d",
+                        progress_callback=progress_callback,
+                        progress_state=progress_state,
+                        current_bars=bars,
+                    )
+                )
             del bars
             gc.collect()
     rows_out = bars_1m.height
@@ -809,6 +844,7 @@ def build_session_bars(
         "status": "bars_complete",
         "rows": rows_out,
         "timeframes": built_timeframes,
+        "artifacts": artifact_results,
     }
 
 
@@ -818,25 +854,48 @@ def artifact_source_path(request: BuildRequest, timeframe: str, session_text: st
     return partition_path(request.processed_root, "bars", timeframe, session_text)
 
 
-def read_timeframe_context_bars(request: BuildRequest, timeframe: str, session_text: str) -> pl.DataFrame:
+def read_timeframe_context_bars(
+    request: BuildRequest,
+    timeframe: str,
+    session_text: str,
+    current_bars: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     session = datetime.fromisoformat(session_text).date()
     if timeframe in CARRYOVER_TIMEFRAMES:
         context_sessions = market_sessions(request.start_date, session)
         prior_sessions = [item for item in context_sessions if item < session][-REFERENCE_LOOKBACK_SESSIONS:]
         frames = []
-        for context_session in [*prior_sessions, session]:
+        for context_session in prior_sessions:
             raw = load_raw_minute_bars(request.raw_root, context_session, request.tickers)
             if raw.is_empty():
+                del raw
                 continue
             bars_1m = canonicalize_1m(raw, request.exchange_timezone)
             if timeframe == "1m":
                 frames.append(bars_1m)
             else:
                 frames.append(aggregate_intraday(bars_1m, timeframe))
+            del raw
+            if timeframe != "1m":
+                del bars_1m
+            gc.collect()
+        if current_bars is not None:
+            frames.append(current_bars)
+        else:
+            raw = load_raw_minute_bars(request.raw_root, session, request.tickers)
+            if not raw.is_empty():
+                bars_1m = canonicalize_1m(raw, request.exchange_timezone)
+                frames.append(bars_1m if timeframe == "1m" else aggregate_intraday(bars_1m, timeframe))
+                if timeframe != "1m":
+                    del bars_1m
+            del raw
+            gc.collect()
         if not frames:
             return pl.DataFrame()
         return pl.concat(frames, how="diagonal").sort(["ticker", "bar_time_utc"])
 
+    if current_bars is not None:
+        return current_bars.sort(["ticker", "bar_time_utc"])
     source_path = partition_path(request.processed_root, "bars", timeframe, session_text)
     if timeframe != "1d":
         return read_frame(source_path)
@@ -858,8 +917,9 @@ def build_timeframe_artifacts(
     timeframe: str,
     progress_callback: ProgressCallback | None,
     progress_state: dict,
+    current_bars: pl.DataFrame | None = None,
 ) -> dict:
-    bars = read_timeframe_context_bars(request, timeframe, session_text)
+    bars = read_timeframe_context_bars(request, timeframe, session_text, current_bars=current_bars)
     if bars.is_empty():
         return {"session_date": session_text, "timeframe": timeframe, "status": "missing_bars", "rows": 0}
 
@@ -922,6 +982,7 @@ def _parallel_session_worker(
             total=total,
             progress_callback=on_progress,
             progress_state=progress_state,
+            build_artifacts=True,
         )
     except BuildCancelled:
         append_event(
@@ -947,90 +1008,6 @@ def _parallel_session_worker(
                 "session_date": session_text,
                 "index": index,
                 "total": total,
-                "message": str(exc),
-                "worker_pid": os.getpid(),
-            },
-        )
-        raise
-
-
-def _parallel_artifact_worker(
-    request: BuildRequest,
-    task: dict,
-    total_units: int,
-    job_path_text: str,
-) -> dict:
-    from src.data_provider.jobs import BuildCancelled, append_event, check_cancelled
-
-    job_path = Path(job_path_text)
-    session_text = str(task["session_date"])
-    timeframe = str(task["timeframe"])
-    progress_state = {"completed_units": 0, "total_units": total_units}
-
-    def on_progress(event: dict) -> None:
-        payload = dict(event)
-        payload["parallel_artifact"] = True
-        payload["worker_pid"] = os.getpid()
-        payload.setdefault("session_date", session_text)
-        payload.setdefault("timeframe", timeframe)
-        payload.setdefault("work_total", total_units)
-        payload.pop("work_completed", None)
-        append_event(job_path, payload)
-        check_cancelled(job_path)
-
-    try:
-        check_cancelled(job_path)
-        emit(
-            on_progress,
-            {
-                "event": "artifact_job_started",
-                "phase": "artifact_job",
-                "status": "running",
-                "session_date": session_text,
-                "timeframe": timeframe,
-            },
-        )
-        result = build_timeframe_artifacts(
-            request=request,
-            session_text=session_text,
-            timeframe=timeframe,
-            progress_callback=on_progress,
-            progress_state=progress_state,
-        )
-        emit(
-            on_progress,
-            {
-                "event": "artifact_job_complete",
-                "phase": "artifact_job",
-                "status": str(result.get("status") or "complete"),
-                "session_date": session_text,
-                "timeframe": timeframe,
-                "rows_out": int(result.get("rows") or 0),
-            },
-        )
-        return result
-    except BuildCancelled:
-        append_event(
-            job_path,
-            {
-                "event": "artifact_job_cancelled",
-                "phase": "cancel",
-                "status": "cancelled",
-                "session_date": session_text,
-                "timeframe": timeframe,
-                "worker_pid": os.getpid(),
-            },
-        )
-        raise
-    except Exception as exc:
-        append_event(
-            job_path,
-            {
-                "event": "artifact_job_failed",
-                "phase": "artifact_job",
-                "status": "failed",
-                "session_date": session_text,
-                "timeframe": timeframe,
                 "message": str(exc),
                 "worker_pid": os.getpid(),
             },
@@ -1068,6 +1045,7 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
     )
     completed = []
     artifact_tasks: list[dict] = []
+    artifact_results: list[dict] = []
 
     for index, status in enumerate(statuses, start=1):
         plan_row = plan_by_session[status.session_date]
@@ -1111,21 +1089,13 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
             total=len(statuses),
             progress_callback=progress_callback,
             progress_state=progress_state,
+            build_artifacts=True,
         )
-        for timeframe in result.get("timeframes", []):
-            artifact_tasks.append({"session_date": status.session_date, "timeframe": timeframe})
+        for artifact_result in result.get("artifacts", []):
+            artifact_tasks.append({"session_date": status.session_date, "timeframe": str(artifact_result.get("timeframe"))})
+            artifact_results.append(artifact_result)
         completed.append({"session_date": status.session_date, "status": "bars_complete", "rows": int(result.get("rows") or 0)})
 
-    artifact_results: list[dict] = []
-    for task in artifact_tasks:
-        result = build_timeframe_artifacts(
-            request=request,
-            session_text=str(task["session_date"]),
-            timeframe=str(task["timeframe"]),
-            progress_callback=progress_callback,
-            progress_state=progress_state,
-        )
-        artifact_results.append(result)
     expected_by_session: dict[str, int] = {}
     complete_by_session: dict[str, int] = {}
     for task in artifact_tasks:
@@ -1173,8 +1143,7 @@ def build_market_data_parallel(
     request: BuildRequest,
     *,
     job_path: Path | None,
-    bar_workers: int = 3,
-    artifact_workers: int = 5,
+    session_workers: int = 3,
     progress_callback: ProgressCallback | None = None,
 ) -> dict:
     if job_path is None:
@@ -1248,16 +1217,15 @@ def build_market_data_parallel(
             continue
         build_jobs.append((index, asdict(status)))
 
-    bar_worker_count = min(max(1, int(bar_workers)), len(build_jobs)) if build_jobs else 0
-    artifact_worker_limit = max(1, int(artifact_workers))
+    worker_count = min(max(1, int(session_workers)), len(build_jobs)) if build_jobs else 0
     emit(
         progress_callback,
         {
             "event": "parallel_started",
             "phase": "parallel_bars",
-            "status": "running" if bar_worker_count else "complete",
-            "worker_count": bar_worker_count,
-            "requested_worker_count": bar_workers,
+            "status": "running" if worker_count else "complete",
+            "worker_count": worker_count,
+            "requested_worker_count": session_workers,
             "worker_limit_reason": None,
             "buildable_sessions": len(build_jobs),
             "polars_threads_per_worker": os.environ.get("POLARS_MAX_THREADS"),
@@ -1268,23 +1236,9 @@ def build_market_data_parallel(
     artifact_tasks: list[dict] = []
     artifact_results: list[dict] = []
     if build_jobs:
-        emit(
-            progress_callback,
-            {
-                "event": "parallel_started",
-                "phase": "parallel_artifacts",
-                "status": "running",
-                "worker_count": artifact_worker_limit,
-                "requested_worker_count": artifact_workers,
-                "artifact_jobs": 0,
-                "polars_threads_per_worker": os.environ.get("POLARS_MAX_THREADS"),
-                "work_total": total_units,
-            },
-        )
-        bar_executor = build_process_pool(bar_worker_count)
-        artifact_executor = build_process_pool(artifact_worker_limit)
-        bar_futures = {
-            bar_executor.submit(
+        executor = build_process_pool(worker_count)
+        futures = {
+            executor.submit(
                 _parallel_session_worker,
                 request,
                 status,
@@ -1295,84 +1249,57 @@ def build_market_data_parallel(
             ): status
             for index, status in build_jobs
         }
-        artifact_futures = {}
+        pending = set(futures)
         try:
-            while bar_futures or artifact_futures:
-                done, _ = wait(set(bar_futures) | set(artifact_futures), timeout=0.5, return_when=FIRST_COMPLETED)
+            while pending:
+                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
                 if not done:
                     check_cancelled(job_path)
                     continue
                 for future in done:
-                    if future in bar_futures:
-                        bar_futures.pop(future, None)
-                        result = future.result()
-                        for timeframe in result.get("timeframes", []):
-                            task = {"session_date": str(result.get("session_date")), "timeframe": str(timeframe)}
-                            artifact_tasks.append(task)
-                            artifact_futures[
-                                artifact_executor.submit(
-                                    _parallel_artifact_worker,
-                                    request,
-                                    task,
-                                    total_units,
-                                    str(job_path),
-                                )
-                            ] = task
-                        completed.append(
+                    result = future.result()
+                    for artifact_result in result.get("artifacts", []):
+                        artifact_tasks.append(
                             {
                                 "session_date": str(result.get("session_date")),
-                                "status": str(result.get("status") or "bars_complete"),
-                                "rows": int(result.get("rows") or 0),
+                                "timeframe": str(artifact_result.get("timeframe")),
                             }
                         )
-                    elif future in artifact_futures:
-                        artifact_futures.pop(future, None)
-                        artifact_results.append(future.result())
+                        artifact_results.append(artifact_result)
+                    completed.append(
+                        {
+                            "session_date": str(result.get("session_date")),
+                            "status": str(result.get("status") or "bars_complete"),
+                            "rows": int(result.get("rows") or 0),
+                        }
+                    )
                 check_cancelled(job_path)
         except BrokenProcessPool as exc:
             message = (
-                "A data build worker terminated abruptly, usually because the worker exceeded available memory while "
-                "building bars, features, or supervision artifacts."
+                "A session build worker terminated abruptly, usually because the worker exceeded available memory while "
+                "building bars and features for one session."
             )
             emit(
                 progress_callback,
                 {
                     "event": "parallel_failed",
-                    "phase": "parallel_pipeline",
+                    "phase": "parallel_bars",
                     "status": "failed",
                     "message": message,
-                    "bar_worker_count": bar_worker_count,
-                    "artifact_worker_count": artifact_worker_limit,
+                    "worker_count": worker_count,
                 },
             )
-            for future in set(bar_futures) | set(artifact_futures):
+            for future in pending:
                 future.cancel()
-            bar_executor.shutdown(wait=False, cancel_futures=True)
-            artifact_executor.shutdown(wait=False, cancel_futures=True)
+            executor.shutdown(wait=False, cancel_futures=True)
             raise RuntimeError(message) from exc
         except Exception:
-            for future in set(bar_futures) | set(artifact_futures):
+            for future in pending:
                 future.cancel()
-            bar_executor.shutdown(wait=False, cancel_futures=True)
-            artifact_executor.shutdown(wait=False, cancel_futures=True)
+            executor.shutdown(wait=False, cancel_futures=True)
             raise
         else:
-            bar_executor.shutdown(wait=True)
-            artifact_executor.shutdown(wait=True)
-    else:
-        emit(
-            progress_callback,
-            {
-                "event": "parallel_started",
-                "phase": "parallel_artifacts",
-                "status": "complete",
-                "worker_count": 0,
-                "requested_worker_count": artifact_workers,
-                "artifact_jobs": 0,
-                "polars_threads_per_worker": os.environ.get("POLARS_MAX_THREADS"),
-                "work_total": total_units,
-            },
-        )
+            executor.shutdown(wait=True)
 
     expected_by_session: dict[str, int] = {}
     complete_by_session: dict[str, int] = {}
