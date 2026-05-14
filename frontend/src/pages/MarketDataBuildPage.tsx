@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, query } from "../api/client";
@@ -74,6 +74,8 @@ export function MarketDataBuildPage() {
   const [job, setJob] = useState<BuildJob | null>(null);
   const [jobs, setJobs] = useState<BuildJob[]>([]);
   const [activeTab, setActiveTab] = useState(tabs[0]);
+  const [deleteTarget, setDeleteTarget] = useState<BuildJob | null>(null);
+  const [deleteData, setDeleteData] = useState(true);
   const [editingScope, setEditingScope] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -149,6 +151,28 @@ export function MarketDataBuildPage() {
     await loadJobs(scope);
   }
 
+  function requestDeleteBuild(target: BuildJob) {
+    setError(null);
+    setDeleteData(true);
+    setDeleteTarget(target);
+  }
+
+  async function deleteBuild() {
+    if (!scope || !deleteTarget) return;
+    setError(null);
+    try {
+      await api(`/api/market-data/build/jobs/${deleteTarget.job_id}${query({ processed_root: scope.processed_root, delete_data: deleteData })}`, { method: "DELETE" });
+      if (job?.job_id === deleteTarget.job_id) {
+        setJob(null);
+      }
+      setDeleteTarget(null);
+      await loadScope();
+      await loadJobs(scope);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function applyScope() {
     if (!draft) return;
     setScope(draft);
@@ -182,6 +206,9 @@ export function MarketDataBuildPage() {
           <button className="button" onClick={() => setEditingScope(true)} type="button">
             Edit scope
           </button>
+          <button className="button danger" disabled={running} onClick={() => requestDeleteBuild(job)} type="button">
+            Delete build
+          </button>
         </div>
       ) : null}
       {!job ? (
@@ -189,6 +216,7 @@ export function MarketDataBuildPage() {
           error={error}
           jobs={jobs}
           onEditScope={() => setEditingScope(true)}
+          onDeleteRequest={requestDeleteBuild}
           onOpenJob={(jobId) => scope && openJob(scope, jobId)}
           onStartBuild={startBuild}
           scope={scope}
@@ -275,6 +303,26 @@ export function MarketDataBuildPage() {
           </div>
         </Modal>
       ) : null}
+      {deleteTarget ? (
+        <Modal title="Delete Build" onClose={() => setDeleteTarget(null)}>
+          <div className="delete-confirmation">
+            <p>
+              Delete <b>{buildDisplayName(deleteTarget)}</b> from the build list?
+            </p>
+            <label className="checkbox-row">
+              <input checked={deleteData} onChange={(event) => setDeleteData(event.target.checked)} type="checkbox" />
+              <span>Also delete generated artifacts owned by this build from the processed store.</span>
+            </label>
+            <p className="muted">
+              Data deletion only removes manifest artifacts tagged with this build id. Artifacts overwritten by newer builds are left alone.
+            </p>
+          </div>
+          <div className="modal-actions">
+            <button className="button" onClick={() => setDeleteTarget(null)} type="button">Cancel</button>
+            <button className="button danger" onClick={deleteBuild} type="button">Delete</button>
+          </div>
+        </Modal>
+      ) : null}
     </>
   );
 }
@@ -283,6 +331,7 @@ function BuildStartPage({
   error,
   jobs,
   onEditScope,
+  onDeleteRequest,
   onOpenJob,
   onStartBuild,
   scope,
@@ -290,6 +339,7 @@ function BuildStartPage({
   error: string | null;
   jobs: BuildJob[];
   onEditScope: () => void;
+  onDeleteRequest: (job: BuildJob) => void;
   onOpenJob: (jobId: string) => void;
   onStartBuild: () => void;
   scope: Scope | null;
@@ -314,13 +364,36 @@ function BuildStartPage({
       {jobs.length ? (
         <div className="runs-grid">
           {jobs.map((item) => (
-            <button className="run-card build-run-card clickable" key={item.job_id} onClick={() => onOpenJob(item.job_id)} type="button">
+            <article
+              className="run-card build-run-card clickable"
+              key={item.job_id}
+              onClick={() => onOpenJob(item.job_id)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                onOpenJob(item.job_id);
+              }}
+              role="button"
+              tabIndex={0}
+              title="Open build"
+            >
               <div className="run-card-header">
                 <div>
                   <div className="run-card-title">{buildDisplayName(item)}</div>
                   <div className="muted">{buildDateRange(item)} | {formatTimestamp(item.created_at)}</div>
                 </div>
-                <SemanticBadge tone={toneForStatus(item.status)}>{item.status}</SemanticBadge>
+                <div className="toolbar" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} style={{ margin: 0 }}>
+                  <SemanticBadge tone={toneForStatus(item.status)}>{item.status}</SemanticBadge>
+                  <button
+                    className="icon-button"
+                    disabled={["queued", "running", "canceling"].includes(String(item.status).toLowerCase())}
+                    onClick={() => onDeleteRequest(item)}
+                    title="Delete build"
+                    type="button"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               </div>
               <div className="run-card-metrics">
                 <span>{formatNumber(item.summary?.artifact_count ?? 0)} artifacts</span>
@@ -328,7 +401,7 @@ function BuildStartPage({
                 <span>{formatBytes(item.summary?.bytes_written ?? 0)}</span>
                 <span>{formatDuration(item.summary?.duration_sec ?? 0)}</span>
               </div>
-            </button>
+            </article>
           ))}
         </div>
       ) : (

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -12,6 +13,7 @@ from typing import Any
 
 from src.data_provider.config import BuildRequest
 from src.data_provider.file_lock import file_lock
+from src.data_provider.manifest import delete_artifacts_for_build
 
 
 JOB_DIR = "jobs"
@@ -213,6 +215,27 @@ def cancel_build_job(processed_root: Path, job_id: str) -> dict[str, Any]:
     cancel_file(path).write_text(utc_now(), encoding="utf-8")
     append_event(path, {"event": "cancel_requested", "phase": "cancel", "status": "canceling"})
     return update_job(path, status="canceling")
+
+
+def delete_build_job(processed_root: Path, job_id: str, *, delete_data: bool = True) -> dict[str, Any]:
+    root = processed_root.resolve()
+    root_jobs = jobs_root(root).resolve()
+    path = job_dir(root, job_id).resolve()
+    if root_jobs != path and root_jobs not in path.parents:
+        raise ValueError("Refusing to delete outside build jobs root")
+    payload = read_job(path)
+    if not payload:
+        raise FileNotFoundError("Build job not found")
+    if str(payload.get("status") or "").lower() in {"queued", "running", "canceling"}:
+        raise ValueError("Stop the build before deleting it")
+    data_result = delete_artifacts_for_build(root, job_id) if delete_data else {
+        "deleted_artifacts": 0,
+        "deleted_files": 0,
+        "missing_files": 0,
+        "skipped_files": [],
+    }
+    shutil.rmtree(path)
+    return {"status": "deleted", "job_id": job_id, "deleted_data": delete_data, **data_result}
 
 
 def get_build_status(processed_root: Path, job_id: str) -> dict[str, Any]:
