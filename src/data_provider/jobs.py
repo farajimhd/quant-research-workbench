@@ -249,7 +249,17 @@ def delete_build_job(processed_root: Path, job_id: str, *, delete_data: bool = T
         raise ValueError("Refusing to delete outside build jobs root")
     payload = read_job(path)
     if not payload:
-        raise FileNotFoundError("Build job not found")
+        events = read_events(path) if path.exists() else []
+        data_result = delete_artifacts_for_build(root, job_id, artifact_paths_from_events(events)) if delete_data else {
+            "deleted_artifacts": 0,
+            "deleted_files": 0,
+            "missing_files": 0,
+            "skipped_files": [],
+            "skipped_superseded_files": [],
+        }
+        if path.exists():
+            shutil.rmtree(path)
+        return {"status": "deleted", "job_id": job_id, "deleted_data": delete_data, "orphaned_job": True, **data_result}
     if str(payload.get("status") or "").lower() in {"queued", "running", "canceling"}:
         raise ValueError("Stop the build before deleting it")
     events = read_events(path)
