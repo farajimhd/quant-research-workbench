@@ -72,6 +72,7 @@ def summary_stage(
     done: float,
     total: int,
     elapsed_sec: float = 0.0,
+    active_items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     bounded_done = min(float(total), max(0.0, float(done))) if total else 0.0
     return {
@@ -81,7 +82,44 @@ def summary_stage(
         "total": int(total),
         "elapsed_sec": round(float(elapsed_sec), 3),
         "progress": round((bounded_done / total) * 100.0, 2) if total else 0.0,
+        "active_items": active_items or [],
     }
+
+
+def progress_stage_for_event(event: dict[str, Any]) -> str | None:
+    phase = str(event.get("phase") or "")
+    group = str(event.get("group") or "")
+    if phase == "scan_source":
+        return "scan_source"
+    if phase == "reference_warmup":
+        return "reference_window"
+    if phase in {"raw_load", "canonicalize_1m", "aggregate", "aggregate_daily", "bars_write"} or group == "bars":
+        return "build_bars"
+    if phase in {"feature_compute", "feature_write"} or group.startswith("features_"):
+        return "build_features"
+    if phase in SUPERVISION_ARTIFACT_GROUPS or group in SUPERVISION_ARTIFACT_GROUPS:
+        return "build_supervision"
+    if phase == "run":
+        return "finalize"
+    return None
+
+
+def active_item_key(event: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(event.get("session_date") or ""),
+        str(event.get("timeframe") or ""),
+        str(event.get("group") or ""),
+        str(event.get("phase") or ""),
+    )
+
+
+def active_item_label(event: dict[str, Any]) -> str:
+    session = str(event.get("session_date") or "")
+    timeframe = str(event.get("timeframe") or "")
+    group = str(event.get("group") or "")
+    phase = str(event.get("phase") or "").replace("_", " ")
+    parts = [item for item in [session, timeframe, group or phase] if item]
+    return " | ".join(parts) if parts else phase or "processing"
 
 
 def summarize_phases(
@@ -119,27 +157,51 @@ def summarize_phases(
     supervision_elapsed = 0.0
     finalize_done = 0.0
     supervision_partials: dict[tuple[str, str], float] = {}
+    active_by_stage: dict[str, dict[tuple[str, str, str, str], dict[str, Any]]] = {
+        "scan_source": {},
+        "reference_window": {},
+        "build_bars": {},
+        "build_features": {},
+        "build_supervision": {},
+        "finalize": {},
+    }
     for event in events:
         phase = str(event.get("phase") or "")
         event_name = str(event.get("event") or "")
         status = str(event.get("status") or "")
         group = str(event.get("group") or "")
         duration = float(event.get("duration_sec") or 0.0)
+        stage = progress_stage_for_event(event)
+        key = active_item_key(event)
+
+        if stage and event_name == "phase_started" and status == "running":
+            active_by_stage.setdefault(stage, {})[key] = {
+                "label": active_item_label(event),
+                "phase": phase,
+                "session_date": event.get("session_date"),
+                "timeframe": event.get("timeframe"),
+                "group": event.get("group"),
+                "started_at": event.get("emitted_at"),
+            }
 
         if event_name == "plan_complete" and status == "complete":
             scan_done = 1.0
             scan_elapsed += duration
+            active_by_stage["scan_source"].clear()
         elif event_name == "session_skipped" and phase == "reference_warmup":
             reference_done += 1.0
         elif event_name == "phase_complete" and status == "complete" and phase in {"raw_load", "canonicalize_1m", "aggregate", "aggregate_daily"}:
             bar_done += 1.0
             bar_elapsed += duration
+            active_by_stage["build_bars"].pop(key, None)
         elif event_name == "artifact_complete" and status == "complete" and group == "bars":
             bar_done += 1.0
             bar_elapsed += duration
+            active_by_stage["build_bars"].pop(key, None)
         elif event_name == "phase_complete" and status == "complete" and phase == "feature_compute":
             feature_done += 1.0
             feature_elapsed += duration
+            active_by_stage["build_features"].pop(key, None)
         elif event_name == "artifact_complete" and status == "complete" and group.startswith("features_"):
             feature_done += 1.0
             feature_elapsed += duration
@@ -152,20 +214,30 @@ def summarize_phases(
         elif event_name == "artifact_complete" and status == "complete" and group in SUPERVISION_ARTIFACT_GROUPS:
             supervision_done += 1.0
             supervision_elapsed += duration
+            active_by_stage["build_supervision"].pop(key, None)
+            active_by_stage["build_supervision"].pop((str(event.get("session_date") or ""), str(event.get("timeframe") or ""), "", phase), None)
             if group == "supervision_bar":
                 supervision_partials.pop((str(event.get("session_date") or ""), str(event.get("timeframe") or "")), None)
+        elif event_name == "phase_complete" and status == "complete" and phase in SUPERVISION_ARTIFACT_GROUPS:
+            active_by_stage["build_supervision"].pop(key, None)
         elif event_name == "run_complete" and status == "complete":
             finalize_done = 1.0
+            active_by_stage["finalize"].clear()
+
+    active_items = {
+        stage: sorted(items.values(), key=lambda item: str(item.get("label") or ""))[:8]
+        for stage, items in active_by_stage.items()
+    }
 
     rows = [
-        summary_stage("scan_source", "Scan source", scan_done, 1, scan_elapsed),
-        summary_stage("reference_window", "Reference window", reference_done, len(reference_rows)),
-        summary_stage("build_bars", "Build bars", bar_done, bar_total, bar_elapsed),
-        summary_stage("build_features", "Build features", feature_done, feature_total, feature_elapsed),
-        summary_stage("build_supervision", "Build supervision", supervision_done + sum(supervision_partials.values()), supervision_total, supervision_elapsed),
-        summary_stage("finalize", "Finalize build", finalize_done, 1),
+        summary_stage("scan_source", "Scan source", scan_done, 1, scan_elapsed, active_items["scan_source"]),
+        summary_stage("reference_window", "Reference window", reference_done, len(reference_rows), active_items=active_items["reference_window"]),
+        summary_stage("build_bars", "Build bars", bar_done, bar_total, bar_elapsed, active_items["build_bars"]),
+        summary_stage("build_features", "Build features", feature_done, feature_total, feature_elapsed, active_items["build_features"]),
+        summary_stage("build_supervision", "Build supervision", supervision_done + sum(supervision_partials.values()), supervision_total, supervision_elapsed, active_items["build_supervision"]),
+        summary_stage("finalize", "Finalize build", finalize_done, 1, active_items=active_items["finalize"]),
     ]
-    return [row for row in rows if row["total"] > 0]
+    return rows
 
 
 def stage_state(total: int) -> dict[str, Any]:

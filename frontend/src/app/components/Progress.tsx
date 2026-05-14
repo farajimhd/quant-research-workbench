@@ -2,11 +2,20 @@ import { formatDuration, formatNumber } from "../format";
 import { SemanticBadge, toneForStatus } from "./SemanticBadge";
 
 export type Stage = {
+  phase?: string;
   label: string;
   done: number;
   total: number;
   elapsed_sec: number;
   progress: number;
+  active_items?: Array<{
+    label?: string;
+    phase?: string;
+    session_date?: string;
+    timeframe?: string;
+    group?: string;
+    started_at?: string;
+  }>;
 };
 
 export type SessionCard = {

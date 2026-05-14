@@ -3130,6 +3130,167 @@ button {
   white-space: nowrap;
 }
 
+.build-summary-panel {
+  display: grid;
+  gap: 8px;
+  padding: 9px 12px 10px;
+}
+
+.build-summary-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+}
+
+.build-summary-main h2 {
+  margin: 0;
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-summary-main p {
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-summary-facts {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.build-fact {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.build-fact span {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-fact b {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-metric-strip {
+  display: grid;
+  grid-template-columns: minmax(18px, 0.35fr) repeat(8, minmax(0, 1fr)) minmax(18px, 0.35fr);
+  min-height: 70px;
+  padding: 7px 0 8px;
+}
+
+.build-metric-strip::before,
+.build-metric-strip::after {
+  content: "";
+}
+
+.build-metric-card {
+  --metric-tone: var(--muted-foreground);
+  display: grid;
+  grid-template-areas:
+    "icon label"
+    "value value";
+  grid-template-columns: 16px minmax(0, max-content);
+  align-content: center;
+  justify-content: center;
+  justify-items: center;
+  min-width: 0;
+  min-height: 52px;
+  column-gap: 6px;
+  row-gap: 5px;
+  overflow: hidden;
+  padding: 0 3px;
+  text-align: center;
+}
+
+.build-metric-card[data-tone="danger"] {
+  --metric-tone: var(--danger);
+}
+
+.build-metric-card[data-tone="info"] {
+  --metric-tone: var(--info);
+}
+
+.build-metric-card[data-tone="success"] {
+  --metric-tone: var(--success);
+}
+
+.build-metric-card[data-tone="warning"] {
+  --metric-tone: #f97316;
+}
+
+.build-metric-icon {
+  grid-area: icon;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  color: var(--metric-tone);
+}
+
+.build-metric-label {
+  grid-area: label;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-metric-value {
+  grid-area: value;
+  overflow: hidden;
+  color: var(--foreground);
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.08;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-metric-card[data-tone="danger"] .build-metric-value {
+  color: var(--danger);
+}
+
+.build-metric-card[data-tone="success"] .build-metric-value {
+  color: var(--success);
+}
+
+.build-metric-card[data-tone="warning"] .build-metric-value {
+  color: #f97316;
+}
+
+.build-metric-card[data-tone="info"] .build-metric-value {
+  color: var(--info);
+}
+
 .run-card-header .muted,
 .run-card-header .run-card-title,
 .session-card-header strong,
@@ -3260,6 +3421,136 @@ button {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.build-step-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.build-step-card {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--muted) 28%, transparent);
+  padding: 11px;
+}
+
+.build-step-card[data-status="running"] {
+  background: color-mix(in oklab, var(--info) 7%, var(--muted) 22%);
+}
+
+.build-step-card[data-status="complete"] {
+  background: color-mix(in oklab, var(--success) 8%, var(--muted) 20%);
+}
+
+.build-step-card[data-status="skipped"] {
+  opacity: 0.72;
+}
+
+.build-step-card .progress-meter {
+  margin: 0;
+}
+
+.build-step-card-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.build-step-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.build-step-card h3 {
+  margin: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-step-card p {
+  margin: 3px 0 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.build-step-mode {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1;
+  padding: 4px 7px;
+  white-space: nowrap;
+}
+
+.build-step-percent {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.build-step-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.build-step-active {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.build-step-active > span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.build-step-active-list {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.build-step-file {
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 5px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-step-active-empty {
+  color: var(--muted-foreground);
+  font-size: 11px;
 }
 
 .data-table-shell {
@@ -7006,6 +7297,12 @@ button {
 }
 
 @media (max-width: 680px) {
+  .build-step-grid,
+  .build-summary-facts,
+  .build-metric-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .run-card-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -7108,9 +7405,20 @@ button {
   }
 
   .metric-strip,
+  .build-step-grid,
   .phase-grid,
   .schema-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .build-summary-facts,
+  .build-metric-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .build-metric-strip::before,
+  .build-metric-strip::after {
+    display: none;
   }
 
   .parameter-editor-hero,

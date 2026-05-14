@@ -1,13 +1,12 @@
-import { AlertTriangle, CheckCircle2, Trash2 } from "lucide-react";
+import { Activity, AlertTriangle, Archive, CheckCircle2, Clock3, FileStack, FolderInput, HardDrive, Rows3, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, query } from "../api/client";
 import { DataTable } from "../app/components/DataTable";
 import { InlineNotice } from "../app/components/InlineNotice";
-import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
-import { ProgressMeter, StageRow, type Stage } from "../app/components/Progress";
+import { ProgressMeter, type Stage } from "../app/components/Progress";
 import { SemanticBadge, toneForStatus } from "../app/components/SemanticBadge";
 import { Tabs } from "../app/components/Tabs";
 import { formatBytes, formatDuration, formatNumber } from "../app/format";
@@ -78,6 +77,14 @@ type DeleteBuildResponse = {
   missing_files?: number;
   skipped_files?: string[];
   skipped_superseded_files?: string[];
+};
+
+type BuildMetric = {
+  label: string;
+  value: ReactNode;
+  detail: string;
+  icon: ReactNode;
+  tone?: "danger" | "info" | "neutral" | "success" | "warning";
 };
 
 const tabs = ["Build", "Build Timings", "Artifacts", "Plan", "Processed Store", "Manifest"];
@@ -249,33 +256,7 @@ export function MarketDataBuildPage() {
         <>
           {error ? <div className="error-panel">{error}</div> : null}
           <BuildRunHeader job={job} />
-          {metrics ? (
-            <MetricStrip
-              items={[
-                { label: "Output", value: metrics.output_sessions ?? metrics.raw, kind: "number" },
-                { label: "Reference", value: metrics.reference_sessions ?? 0, kind: "number" },
-                { label: "Miss", value: metrics.missing, kind: "number" },
-                { label: "Closed", value: metrics.closed, kind: "number" },
-                { label: "Rows", value: metrics.rows, kind: "number" },
-                { label: "Written", value: metrics.written_bytes, kind: "bytes" },
-                { label: "Elapsed", value: metrics.elapsed_sec, kind: "duration" },
-                { label: "Status", value: metrics.status, kind: "status" }
-              ]}
-            />
-          ) : (
-            <MetricStrip
-              items={[
-                { label: "Raw", value: scope?.raw_file_count ?? 0, kind: "number" },
-                { label: "Exp", value: "-", kind: "status" },
-                { label: "Miss", value: "-", kind: "status" },
-                { label: "Closed", value: "-", kind: "status" },
-                { label: "Rows", value: "-", kind: "status" },
-                { label: "Written", value: "-", kind: "status" },
-                { label: "Elapsed", value: "-", kind: "status" },
-                { label: "Status", value: "ready", kind: "status" }
-              ]}
-            />
-          )}
+          <BuildMetricStrip metrics={buildMetricsForDisplay(metrics, progress, scope)} />
           {missing.length ? (
             <InlineNotice tone="warning" icon={<AlertTriangle size={16} />} title="Missing raw market sessions">
               <span>
@@ -294,7 +275,7 @@ export function MarketDataBuildPage() {
               <span>{metrics.missing_reference_sessions} reference session raw file(s) are missing, so carry-over indicators may have a shorter warm-up.</span>
             </InlineNotice>
           ) : null}
-          <PhasePanel elapsedSec={metrics?.elapsed_sec ?? 0} phases={progress?.phases ?? []} status={metrics?.status ?? job?.status} />
+          <PhasePanel elapsedSec={metrics?.elapsed_sec ?? 0} phases={progress?.phases ?? []} status={metrics?.status ?? job?.status} workers={job.resources?.max_workers} />
           {job?.status === "failed" ? <div className="error-panel" style={{ marginTop: 18 }}>{job.error ?? "Build failed."}</div> : null}
         </>
         ) : null
@@ -448,36 +429,106 @@ function BuildRunHeader({ job }: { job: BuildJob }) {
   const request = job.request ?? {};
   const metrics = job.progress?.metrics;
   return (
-    <section className="panel">
-      <div className="section-heading-row">
+    <section className="panel build-summary-panel">
+      <div className="build-summary-main">
         <div>
           <h2>{buildDisplayName(job)}</h2>
-          <p>{buildDateRange(job)} | {String(request.processed_root ?? "-")}</p>
+          <p title={String(request.processed_root ?? "-")}>{buildDateRange(job)} | {String(request.processed_root ?? "-")}</p>
         </div>
         <SemanticBadge tone={toneForStatus(job.status)}>{job.status}</SemanticBadge>
       </div>
-      <div className="split-row">
-        <div>
-          <ScopeItem label="Build id" value={job.job_id} />
-          <ScopeItem label="Created" value={formatTimestamp(job.created_at)} />
-          <ScopeItem label="Started" value={formatTimestamp(job.started_at)} />
-          <ScopeItem label="Finished" value={formatTimestamp(job.finished_at)} />
-        </div>
-        <div>
-          <ScopeItem label="Raw root" value={String(request.raw_root ?? "-")} />
-          <ScopeItem label="Timeframes" value={asListText(request.timeframes)} />
-          <ScopeItem label="Feature groups" value={asListText(request.feature_groups)} />
-          <ScopeItem label="Resources" value={`workers=${job.resources?.max_workers ?? "-"}, polars=${job.resources?.polars_threads ?? "-"}`} />
-        </div>
-        <div>
-          <ScopeItem label="Warm-up sessions" value={formatNumber(metrics?.warmup_sessions ?? 13)} />
-          <ScopeItem label="Output starts" value={String(metrics?.output_start_date ?? "-")} />
-          <ScopeItem label="Output sessions" value={formatNumber(metrics?.output_sessions ?? 0)} />
-          <ScopeItem label="Carry-over TFs" value={asListText(metrics?.carryover_timeframes ?? ["1m", "5m", "15m", "30m"])} />
-        </div>
+      <div className="build-summary-facts">
+        <BuildFact label="Build id" value={job.job_id} />
+        <BuildFact label="Created" value={formatTimestamp(job.created_at)} />
+        <BuildFact label="Workers" value={`${job.resources?.max_workers ?? "-"} workers`} />
+        <BuildFact label="Polars" value={`${job.resources?.polars_threads ?? "-"} threads`} />
+        <BuildFact label="Output starts" value={String(metrics?.output_start_date ?? "-")} />
+        <BuildFact label="Warm-up" value={`${formatNumber(metrics?.warmup_sessions ?? 13)} sessions`} />
+        <BuildFact label="Carry-over" value={asListText(metrics?.carryover_timeframes ?? ["1m", "5m", "15m", "30m"])} />
       </div>
     </section>
   );
+}
+
+function BuildFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="build-fact" title={value}>
+      <span>{label}</span>
+      <b>{value}</b>
+    </div>
+  );
+}
+
+function BuildMetricStrip({ metrics }: { metrics: BuildMetric[] }) {
+  return (
+    <div aria-label="Build metrics" className="build-metric-strip" role="list">
+      {metrics.map((metric) => (
+        <article className="build-metric-card" data-tone={metric.tone ?? "neutral"} key={metric.label} role="listitem" title={metric.detail}>
+          <div className="build-metric-icon">{metric.icon}</div>
+          <span className="build-metric-label">{metric.label}</span>
+          <strong className="build-metric-value">{metric.value}</strong>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function buildMetricsForDisplay(metrics: BuildProgress["metrics"] | undefined, progress: BuildProgress | undefined, scope: Scope | null): BuildMetric[] {
+  const status = String(metrics?.status ?? "ready");
+  return [
+    {
+      label: "Output raw files",
+      value: formatNumber(metrics?.raw ?? scope?.raw_file_count ?? 0),
+      detail: "Raw files that will produce output artifacts.",
+      icon: <FolderInput size={16} />,
+      tone: "info",
+    },
+    {
+      label: "Reference files",
+      value: formatNumber(metrics?.reference_sessions ?? 0),
+      detail: "Warm-up files used as carry-over context.",
+      icon: <Archive size={16} />,
+    },
+    {
+      label: "Missing raw files",
+      value: formatNumber(metrics?.missing ?? 0),
+      detail: "Expected market-session raw files that were not found.",
+      icon: <AlertTriangle size={16} />,
+      tone: Number(metrics?.missing ?? 0) > 0 ? "warning" : "neutral",
+    },
+    {
+      label: "Artifacts written",
+      value: formatNumber(progress?.artifact_events?.length ?? 0),
+      detail: "Bar, feature, and supervision artifacts written by this build.",
+      icon: <FileStack size={16} />,
+      tone: "success",
+    },
+    {
+      label: "Rows written",
+      value: formatNumber(metrics?.rows ?? 0),
+      detail: "Total rows written across completed artifacts.",
+      icon: <Rows3 size={16} />,
+    },
+    {
+      label: "Data written",
+      value: formatBytes(metrics?.written_bytes ?? 0),
+      detail: "Total bytes written to the processed store.",
+      icon: <HardDrive size={16} />,
+    },
+    {
+      label: "Elapsed time",
+      value: formatDuration(metrics?.elapsed_sec ?? 0),
+      detail: "Wall-clock time reported by the build job.",
+      icon: <Clock3 size={16} />,
+    },
+    {
+      label: "Build status",
+      value: status,
+      detail: "Current lifecycle status of this build.",
+      icon: <Activity size={16} />,
+      tone: statusTone(status),
+    },
+  ];
 }
 
 function ScopeCard({ scope }: { scope: Scope }) {
@@ -521,19 +572,20 @@ function Field({ label, value, onChange, type = "text" }: { label: string; value
   );
 }
 
-function PhasePanel({ elapsedSec, phases, status }: { elapsedSec: number; phases: Stage[]; status?: string }) {
+function PhasePanel({ elapsedSec, phases, status, workers }: { elapsedSec: number; phases: Stage[]; status?: string; workers?: unknown }) {
   const done = phases.reduce((total, phase) => total + Number(phase.done || 0), 0);
   const total = phases.reduce((sum, phase) => sum + Number(phase.total || 0), 0);
   const progress = total > 0 ? (done / total) * 100 : 0;
+  const workerCount = Math.max(1, Number(workers || 1));
   return (
     <section className="panel phase-panel">
       <h2>Build Progress</h2>
       {phases.length ? (
         <>
           <ProgressMeter done={done} elapsed_sec={elapsedSec} label="Total build progress" progress={progress} status={status} total={total} />
-          <div className="phase-grid">
+          <div className="build-step-grid">
             {phases.map((phase) => (
-              <StageRow key={phase.label} stage={phase} />
+              <BuildStepCard key={phase.phase ?? phase.label} stage={phase} workerCount={workerCount} />
             ))}
           </div>
         </>
@@ -542,6 +594,95 @@ function PhasePanel({ elapsedSec, phases, status }: { elapsedSec: number; phases
       )}
     </section>
   );
+}
+
+function BuildStepCard({ stage, workerCount }: { stage: Stage; workerCount: number }) {
+  const description = buildStageDescription(stage.phase);
+  const isSkipped = Number(stage.total || 0) === 0;
+  const active = stage.active_items ?? [];
+  const mode = buildStageMode(stage.phase, workerCount, isSkipped);
+  return (
+    <article className="build-step-card" data-status={isSkipped ? "skipped" : progressStatus(stage.progress)}>
+      <header className="build-step-card-header">
+        <div>
+          <div className="build-step-title-row">
+            <h3>{stage.label}</h3>
+            <span className="build-step-mode">{mode}</span>
+          </div>
+          <p>{description}</p>
+        </div>
+        <span className="build-step-percent">{isSkipped ? "Skipped" : `${Math.round(stage.progress)}%`}</span>
+      </header>
+      <ProgressMeter
+        ariaLabel={`${stage.label} progress`}
+        done={stage.done}
+        elapsed_sec={stage.elapsed_sec}
+        label=""
+        progress={stage.progress}
+        showLabel={false}
+        status={isSkipped ? "queued" : progressStatus(stage.progress)}
+        total={stage.total}
+      />
+      <div className="build-step-meta">
+        <span>{formatNumber(stage.done, stage.done % 1 ? 1 : 0)} / {formatNumber(stage.total)} total</span>
+        <span>{formatDuration(stage.elapsed_sec)} elapsed</span>
+      </div>
+      <div className="build-step-active">
+        <span>Processing</span>
+        {active.length ? (
+          <div className="build-step-active-list">
+            {active.map((item, index) => (
+              <span className="build-step-file" key={`${item.label ?? "item"}-${index}`}>{item.label ?? "processing"}</span>
+            ))}
+          </div>
+        ) : (
+          <div className="build-step-active-empty">{isSkipped ? "Not requested" : stage.progress >= 100 ? "Completed" : "Waiting"}</div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function buildStageDescription(phase: string | undefined): string {
+  switch (phase) {
+    case "scan_source":
+      return "Checks raw files and classifies each market session.";
+    case "reference_window":
+      return "Marks warm-up sessions used only for carry-over context.";
+    case "build_bars":
+      return "Loads raw data, normalizes 1m bars, aggregates timeframes, and writes bar files.";
+    case "build_features":
+      return "Calculates feature groups, using carry-over context for lower timeframes.";
+    case "build_supervision":
+      return "Writes optional label and scanner supervision artifacts.";
+    case "finalize":
+      return "Records final status and closes the build run.";
+    default:
+      return "Build pipeline step.";
+  }
+}
+
+function buildStageMode(phase: string | undefined, workerCount: number, skipped: boolean): string {
+  if (skipped) return "Skipped";
+  if (phase === "build_bars" || phase === "build_features" || phase === "build_supervision") {
+    return `${formatNumber(workerCount)} Concurrent`;
+  }
+  if (phase === "reference_window") return "Reference";
+  return "Sequential";
+}
+
+function progressStatus(progress: number): string {
+  if (progress >= 100) return "complete";
+  if (progress <= 0) return "queued";
+  return "running";
+}
+
+function statusTone(status: string): BuildMetric["tone"] {
+  const normalized = status.toLowerCase();
+  if (["failed", "error", "canceled", "cancelled"].some((value) => normalized.includes(value))) return "danger";
+  if (["running", "queued", "canceling"].some((value) => normalized.includes(value))) return "warning";
+  if (["complete", "ready"].some((value) => normalized.includes(value))) return "success";
+  return "neutral";
 }
 
 function BuildTablePanel({ children, trigger }: { children: ReactNode; trigger: unknown }) {
