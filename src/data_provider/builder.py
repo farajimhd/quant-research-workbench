@@ -33,6 +33,12 @@ CARRYOVER_TIMEFRAMES = {"1m", "5m", "15m", "30m"}
 REFERENCE_LOOKBACK_SESSIONS = 13
 
 
+def build_process_pool(max_workers: int) -> ProcessPoolExecutor:
+    # Recycle workers after each session/artifact so Polars allocator high-water memory
+    # is returned to the OS instead of accumulating across reused worker processes.
+    return ProcessPoolExecutor(max_workers=max_workers, max_tasks_per_child=1)
+
+
 def emit(progress_callback: ProgressCallback | None, event: dict) -> None:
     if progress_callback:
         progress_callback(event)
@@ -1259,7 +1265,7 @@ def build_market_data_parallel(
 
     artifact_tasks: list[dict] = []
     if build_jobs:
-        executor = ProcessPoolExecutor(max_workers=worker_count)
+        executor = build_process_pool(worker_count)
         futures = {
             executor.submit(
                 _parallel_session_worker,
@@ -1336,7 +1342,7 @@ def build_market_data_parallel(
 
     artifact_results: list[dict] = []
     if artifact_tasks:
-        executor = ProcessPoolExecutor(max_workers=artifact_worker_count)
+        executor = build_process_pool(artifact_worker_count)
         futures = {
             executor.submit(
                 _parallel_artifact_worker,
