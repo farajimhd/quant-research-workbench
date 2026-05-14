@@ -196,7 +196,7 @@ def attach_job_summary(payload: dict[str, Any], events: list[dict[str, Any]] | N
 def submit_build_job(
     request: BuildRequest,
     *,
-    session_workers: int = 3,
+    session_workers: int = 5,
     polars_threads: int = 10,
 ) -> dict[str, Any]:
     job_id = uuid.uuid4().hex
