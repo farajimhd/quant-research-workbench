@@ -10,6 +10,9 @@ from src.strategies.adaptive_live_trend_rotation.v1.presentation import (
     chart_presentation as adaptive_live_trend_rotation_v1_chart_presentation,
 )
 from src.strategies.adaptive_live_trend_rotation.v1.strategy import AdaptiveLiveTrendRotationStrategy
+from src.strategies.break_of_vwap.v1.config import BreakOfVwapConfig as BreakOfVwapV1Config
+from src.strategies.break_of_vwap.v1.presentation import chart_presentation as break_of_vwap_v1_chart_presentation
+from src.strategies.break_of_vwap.v1.strategy import BreakOfVwapStrategy
 from src.strategies.liquidity_pullback_reversal.v1.config import (
     LiquidityPullbackReversalConfig as LiquidityPullbackReversalV1Config,
 )
@@ -62,6 +65,14 @@ def default_adaptive_live_trend_rotation_v1_params() -> dict:
     return AdaptiveLiveTrendRotationV1Config().to_dict()
 
 
+def create_break_of_vwap_v1(params: dict | None = None) -> BreakOfVwapStrategy:
+    return BreakOfVwapStrategy(BreakOfVwapV1Config.from_dict(params))
+
+
+def default_break_of_vwap_v1_params() -> dict:
+    return BreakOfVwapV1Config().to_dict()
+
+
 def create_liquidity_pullback_reversal_v1(params: dict | None = None) -> LiquidityPullbackReversalStrategy:
     return LiquidityPullbackReversalStrategy(LiquidityPullbackReversalV1Config.from_dict(params))
 
@@ -72,6 +83,7 @@ def default_liquidity_pullback_reversal_v1_params() -> dict:
 
 STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("adaptive_live_trend_rotation", "v1"): create_adaptive_live_trend_rotation_v1,
+    ("break_of_vwap", "v1"): create_break_of_vwap_v1,
     ("liquidity_pullback_reversal", "v1"): create_liquidity_pullback_reversal_v1,
     ("orb_5m_momentum", "v1"): create_orb_5m_momentum_v1,
     ("orb_5m_momentum", "v2"): create_orb_5m_momentum_v2,
@@ -80,6 +92,7 @@ STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
 
 STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("adaptive_live_trend_rotation", "v1"): default_adaptive_live_trend_rotation_v1_params,
+    ("break_of_vwap", "v1"): default_break_of_vwap_v1_params,
     ("liquidity_pullback_reversal", "v1"): default_liquidity_pullback_reversal_v1_params,
     ("orb_5m_momentum", "v1"): default_orb_5m_momentum_v1_params,
     ("orb_5m_momentum", "v2"): default_orb_5m_momentum_v2_params,
@@ -88,6 +101,7 @@ STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
 
 STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("adaptive_live_trend_rotation", "v1"): adaptive_live_trend_rotation_v1_chart_presentation,
+    ("break_of_vwap", "v1"): break_of_vwap_v1_chart_presentation,
     ("liquidity_pullback_reversal", "v1"): liquidity_pullback_reversal_v1_chart_presentation,
     ("orb_5m_momentum", "v1"): orb_5m_momentum_v1_chart_presentation,
     ("orb_5m_momentum", "v2"): orb_5m_momentum_v2_chart_presentation,
@@ -96,6 +110,7 @@ STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]]
 
 DEFAULT_STRATEGY_VERSIONS: dict[str, str] = {
     "adaptive_live_trend_rotation": "v1",
+    "break_of_vwap": "v1",
     "liquidity_pullback_reversal": "v1",
     "orb_5m_momentum": "v3",
 }
