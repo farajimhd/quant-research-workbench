@@ -1364,7 +1364,7 @@ def build_market_data_parallel(
     request: BuildRequest,
     *,
     job_path: Path | None,
-    session_workers: int = 5,
+    session_workers: int = 8,
     progress_callback: ProgressCallback | None = None,
 ) -> dict:
     if job_path is None:

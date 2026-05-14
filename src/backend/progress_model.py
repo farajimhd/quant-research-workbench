@@ -169,6 +169,7 @@ def summarize_phases(
         "build_stateful": {},
         "finalize": {},
     }
+    active_session_workers: dict[str, dict[str, Any]] = {}
     for event in events:
         phase = str(event.get("phase") or "")
         event_name = str(event.get("event") or "")
@@ -177,6 +178,7 @@ def summarize_phases(
         duration = float(event.get("duration_sec") or 0.0)
         stage = progress_stage_for_event(event)
         key = active_item_key(event)
+        session_key = str(event.get("session_date") or "")
 
         if stage and event_name == "phase_started" and status == "running":
             active_by_stage.setdefault(stage, {})[key] = {
@@ -187,6 +189,16 @@ def summarize_phases(
                 "group": event.get("group"),
                 "started_at": event.get("emitted_at"),
             }
+
+        if event_name == "session_started" and status == "running" and session_key:
+            active_session_workers[session_key] = {
+                "label": f"{session_key} | session worker",
+                "phase": "session_worker",
+                "session_date": event.get("session_date"),
+                "started_at": event.get("emitted_at"),
+            }
+        elif event_name in {"session_complete", "session_failed", "session_cancelled"} and session_key:
+            active_session_workers.pop(session_key, None)
 
         if event_name == "plan_complete" and status == "complete":
             scan_done = scan_total
@@ -225,7 +237,11 @@ def summarize_phases(
         stage: sorted(items.values(), key=lambda item: str(item.get("label") or ""))[:8]
         for stage, items in active_by_stage.items()
     }
+    if active_session_workers:
+        active_items["build_bars"] = sorted(active_session_workers.values(), key=lambda item: str(item.get("label") or ""))[:8]
     active_counts = {stage: len(items) for stage, items in active_by_stage.items()}
+    if active_session_workers:
+        active_counts["build_bars"] = len(active_session_workers)
 
     rows = [
         summary_stage("scan_source", "Scan source", scan_done, scan_total, scan_elapsed, active_items["scan_source"], "sessions", active_counts["scan_source"]),
