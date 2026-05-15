@@ -72,11 +72,10 @@ type BuildJob = {
 };
 
 type DeleteBuildResponse = {
-  deleted_files?: number;
-  deleted_artifacts?: number;
-  missing_files?: number;
-  skipped_files?: string[];
-  skipped_superseded_files?: string[];
+  deleted_data?: boolean;
+  job_id?: string;
+  orphaned_job?: boolean;
+  status?: string;
 };
 
 type BuildMetric = {
@@ -98,7 +97,6 @@ export function MarketDataBuildPage() {
   const [jobs, setJobs] = useState<BuildJob[]>([]);
   const [activeTab, setActiveTab] = useState(tabs[0]);
   const [deleteTarget, setDeleteTarget] = useState<BuildJob | null>(null);
-  const [deleteData, setDeleteData] = useState(true);
   const [deleteResult, setDeleteResult] = useState<string | null>(null);
   const [editingScope, setEditingScope] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -192,7 +190,6 @@ export function MarketDataBuildPage() {
   function requestDeleteBuild(target: BuildJob) {
     setError(null);
     setDeleteResult(null);
-    setDeleteData(true);
     setDeleteTarget(target);
   }
 
@@ -201,10 +198,10 @@ export function MarketDataBuildPage() {
     setError(null);
     try {
       const result = await api<DeleteBuildResponse>(
-        `/api/market-data/build/jobs/${deleteTarget.job_id}${query({ processed_root: scope.processed_root, delete_data: deleteData })}`,
+        `/api/market-data/build/jobs/${deleteTarget.job_id}${query({ processed_root: scope.processed_root })}`,
         { method: "DELETE" }
       );
-      setDeleteResult(deleteResultText(result, deleteData));
+      setDeleteResult(deleteResultText(result));
       if (job?.job_id === deleteTarget.job_id) {
         setJob(null);
       }
@@ -342,12 +339,8 @@ export function MarketDataBuildPage() {
             <p>
               Delete <b>{buildDisplayName(deleteTarget)}</b> from the build list?
             </p>
-            <label className="checkbox-row">
-              <input checked={deleteData} onChange={(event) => setDeleteData(event.target.checked)} type="checkbox" />
-              <span>Also delete generated artifacts owned by this build from the processed store.</span>
-            </label>
             <p className="muted">
-              Data deletion removes artifacts recorded by this build. Files currently owned by a newer build are left alone.
+              This only removes the build job record and logs. Market data artifacts in the processed store remain on disk.
             </p>
           </div>
           <div className="modal-actions">
@@ -809,17 +802,10 @@ function asListText(value: unknown): string {
   return String(value);
 }
 
-function deleteResultText(result: DeleteBuildResponse, deletedData: boolean): string {
-  if (!deletedData) return "Build record removed. Data deletion was not selected.";
-  const deleted = formatNumber(result.deleted_files ?? 0);
-  const missing = Number(result.missing_files ?? 0);
-  const superseded = Number(result.skipped_superseded_files?.length ?? 0);
-  const skipped = Number(result.skipped_files?.length ?? 0);
-  const details = [`${deleted} file(s) deleted`];
-  if (missing) details.push(`${formatNumber(missing)} already missing`);
-  if (superseded) details.push(`${formatNumber(superseded)} newer-owned file(s) left alone`);
-  if (skipped) details.push(`${formatNumber(skipped)} unsafe path(s) skipped`);
-  return details.join(", ") + ".";
+function deleteResultText(result: DeleteBuildResponse): string {
+  return result.orphaned_job
+    ? "Orphaned build record removed. Market data artifacts were left on disk."
+    : "Build record removed. Market data artifacts were left on disk.";
 }
 
 function scopeFromBuildJob(job: BuildJob | null, fallback: Scope | null): Scope | null {

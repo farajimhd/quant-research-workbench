@@ -13,7 +13,6 @@ from typing import Any
 
 from src.data_provider.config import BuildRequest
 from src.data_provider.file_lock import file_lock
-from src.data_provider.manifest import delete_artifacts_for_build
 
 
 JOB_DIR = "jobs"
@@ -230,20 +229,6 @@ def summarize_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def artifact_paths_from_events(events: list[dict[str, Any]]) -> list[str]:
-    paths: list[str] = []
-    seen: set[str] = set()
-    for event in events:
-        if event.get("event") != "artifact_complete":
-            continue
-        path = str(event.get("path") or "")
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        paths.append(path)
-    return paths
-
-
 def attach_job_summary(payload: dict[str, Any], events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     if not payload:
         return payload
@@ -351,7 +336,7 @@ def cancel_build_job(processed_root: Path, job_id: str) -> dict[str, Any]:
     )
 
 
-def delete_build_job(processed_root: Path, job_id: str, *, delete_data: bool = True) -> dict[str, Any]:
+def delete_build_job(processed_root: Path, job_id: str) -> dict[str, Any]:
     root = processed_root.resolve()
     root_jobs = jobs_root(root).resolve()
     path = job_dir(root, job_id).resolve()
@@ -359,29 +344,13 @@ def delete_build_job(processed_root: Path, job_id: str, *, delete_data: bool = T
         raise ValueError("Refusing to delete outside build jobs root")
     payload = read_job(path)
     if not payload:
-        events = read_events(path) if path.exists() else []
-        data_result = delete_artifacts_for_build(root, job_id, artifact_paths_from_events(events)) if delete_data else {
-            "deleted_artifacts": 0,
-            "deleted_files": 0,
-            "missing_files": 0,
-            "skipped_files": [],
-            "skipped_superseded_files": [],
-        }
         if path.exists():
             shutil.rmtree(path)
-        return {"status": "deleted", "job_id": job_id, "deleted_data": delete_data, "orphaned_job": True, **data_result}
+        return {"status": "deleted", "job_id": job_id, "deleted_data": False, "orphaned_job": True}
     if str(payload.get("status") or "").lower() in {"queued", "running", "canceling"}:
         raise ValueError("Stop the build before deleting it")
-    events = read_events(path)
-    data_result = delete_artifacts_for_build(root, job_id, artifact_paths_from_events(events)) if delete_data else {
-        "deleted_artifacts": 0,
-        "deleted_files": 0,
-        "missing_files": 0,
-        "skipped_files": [],
-        "skipped_superseded_files": [],
-    }
     shutil.rmtree(path)
-    return {"status": "deleted", "job_id": job_id, "deleted_data": delete_data, **data_result}
+    return {"status": "deleted", "job_id": job_id, "deleted_data": False}
 
 
 def get_build_status(processed_root: Path, job_id: str) -> dict[str, Any]:

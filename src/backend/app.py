@@ -859,9 +859,9 @@ def resume_build_stateful(job_id: str, processed_root: str = str(DEFAULT_PROCESS
 
 
 @app.delete("/api/market-data/build/jobs/{job_id}")
-def delete_market_data_build(job_id: str, processed_root: str = str(DEFAULT_PROCESSED_ROOT), delete_data: bool = True) -> dict[str, Any]:
+def delete_market_data_build(job_id: str, processed_root: str = str(DEFAULT_PROCESSED_ROOT)) -> dict[str, Any]:
     try:
-        return delete_build_job(Path(processed_root), job_id, delete_data=delete_data)
+        return delete_build_job(Path(processed_root), job_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
