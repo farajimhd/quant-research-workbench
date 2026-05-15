@@ -2813,6 +2813,7 @@ function StrategySymbolChart({
         periodMin={periodBounds.min}
         periodStart={period.start}
         reference={reference}
+        showReferenceLine={!selectedTrade}
         showIndicatorControls={false}
         showSupervisionControls={false}
         ticker={symbol || "Trade"}

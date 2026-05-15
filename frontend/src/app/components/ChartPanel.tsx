@@ -229,6 +229,7 @@ type ChartPanelProps = {
   periodMin?: string;
   periodStart?: string;
   reference?: ChartReference | null;
+  showReferenceLine?: boolean;
   showIndicatorControls?: boolean;
   showSupervisionControls?: boolean;
   ticker: string;
@@ -290,6 +291,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   periodStart,
   payload,
   reference = null,
+  showReferenceLine = true,
   showIndicatorControls = true,
   showSupervisionControls = false,
   ticker,
@@ -785,7 +787,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (!chart || !currentPayload) return;
     const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
     drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, chartSettingsRef.current);
-    drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, reference);
+    drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, showReferenceLine ? reference : null);
   }
 
   function scheduleOverlayRedraw() {

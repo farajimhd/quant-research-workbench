@@ -1732,18 +1732,11 @@ function markerBelongsToSelection(marker: ChartPayload["markers"][number], selec
   return !displayItemId || selectedItems.has(displayItemId.toLowerCase());
 }
 
-function previewChartDisplayItems(record: RecordRow, catalog: CatalogPayload | null) {
-  const recordFeatureGroup = artifactFeatureGroup(record.group);
-  const matching = (catalog?.displayItems ?? []).filter((item) => {
-    const featureGroups = item.featureGroups ?? [];
-    const sourceColumns = item.sourceColumns ?? [];
-    return (
-      item.presentation?.selectable !== false &&
-      ((recordFeatureGroup && featureGroups.includes(recordFeatureGroup)) || sourceColumns.some((column) => record.columns.includes(column)))
-    );
-  });
-  if (matching.length) return matching.map((item) => item.id);
-  const defaults = defaultCatalogDisplayItems(catalog);
+function previewChartDisplayItems(_record: RecordRow, catalog: CatalogPayload | null) {
+  const catalogItems = catalog?.displayItems ?? [];
+  const supportedDefaults = DEFAULT_CHART_DISPLAY_ITEMS.filter((itemId) => catalogItems.some((item) => item.id === itemId && item.presentation?.selectable !== false));
+  if (supportedDefaults.length) return supportedDefaults;
+  const defaults = defaultCatalogDisplayItems(catalog).filter((itemId) => DEFAULT_CHART_DISPLAY_ITEMS.includes(itemId));
   return defaults.length ? defaults : DEFAULT_CHART_DISPLAY_ITEMS;
 }
 
