@@ -7,7 +7,7 @@ from typing import Any, Iterable
 from src.data_provider.config import FEATURE_GROUPS, TIMEFRAMES
 
 
-CARRYOVER_TIMEFRAMES = {"1m", "5m", "15m", "30m"}
+CARRYOVER_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"}
 
 
 def is_output_row(row: dict[str, Any]) -> bool:
@@ -163,6 +163,9 @@ def summarize_phases(
     finalize_done = 0.0
     stateful_done = 0.0
     stateful_elapsed = 0.0
+    stateful_chunk_totals: dict[str, int] = {}
+    stateful_done_chunks: set[tuple[str, int]] = set()
+    complete_stateful_timeframes: set[str] = set()
     if resume_stage == "stateful_features":
         bar_done = float(bar_total)
         feature_done = float(feature_total)
@@ -233,7 +236,19 @@ def summarize_phases(
                 feature_done += 1.0
                 feature_elapsed += duration
         elif event_name == "phase_complete" and status == "complete" and phase == "stateful_features":
+            timeframe = str(event.get("timeframe") or "")
+            if timeframe:
+                complete_stateful_timeframes.add(timeframe)
             active_by_stage["build_stateful"].pop(key, None)
+        if event_name == "phase_started" and status == "running" and phase == "stateful_features":
+            timeframe = str(event.get("timeframe") or "")
+            chunk_total = int(event.get("chunk_count") or 0)
+            if timeframe and chunk_total:
+                stateful_chunk_totals[timeframe] = chunk_total
+        elif event_name == "phase_checkpoint" and phase == "stateful_features" and event.get("chunk_index") is not None:
+            timeframe = str(event.get("timeframe") or "")
+            if timeframe:
+                stateful_done_chunks.add((timeframe, int(event.get("chunk_index") or 0)))
         elif event_name == "run_complete" and status == "complete":
             finalize_done = 1.0
             active_by_stage["finalize"].clear()
@@ -248,12 +263,24 @@ def summarize_phases(
     if active_session_workers:
         active_counts["build_bars"] = len(active_session_workers)
 
+    stateful_unit_label = "feature files"
+    if stateful_chunk_totals:
+        completed_chunk_count = 0
+        for timeframe, chunk_total in stateful_chunk_totals.items():
+            if timeframe in complete_stateful_timeframes:
+                completed_chunk_count += chunk_total
+            else:
+                completed_chunk_count += len({chunk_index for done_timeframe, chunk_index in stateful_done_chunks if done_timeframe == timeframe})
+        stateful_done = float(completed_chunk_count)
+        stateful_total = sum(stateful_chunk_totals.values())
+        stateful_unit_label = "chunks"
+
     rows = [
         summary_stage("scan_source", "Scan source", scan_done, scan_total, scan_elapsed, active_items["scan_source"], "sessions", active_counts["scan_source"]),
         summary_stage("reference_window", "Reference window", reference_done, reference_total, active_items=active_items["reference_window"], unit_label="sessions", active_count=active_counts["reference_window"]),
         summary_stage("build_bars", "Build bars", bar_done, bar_total, bar_elapsed, active_items["build_bars"], "bar files", active_counts["build_bars"]),
         summary_stage("build_features", "Build session features", feature_done, feature_total, feature_elapsed, active_items["build_features"], "feature files", active_counts["build_features"]),
-        summary_stage("build_stateful", "Build stateful features", stateful_done, stateful_total, stateful_elapsed, active_items["build_stateful"], "feature files", active_counts["build_stateful"]),
+        summary_stage("build_stateful", "Build stateful features", stateful_done, stateful_total, stateful_elapsed, active_items["build_stateful"], stateful_unit_label, active_counts["build_stateful"]),
         summary_stage("finalize", "Finalize build", finalize_done, 1, active_items=active_items["finalize"], unit_label="step", active_count=active_counts["finalize"]),
     ]
     return rows

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gc
 import os
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import asdict
 from datetime import datetime
@@ -17,7 +17,7 @@ from src.data_provider.config import BuildRequest
 from src.data_provider.features import FEATURE_COLUMNS, add_feature_columns, select_feature_group
 from src.data_provider.manifest import ArtifactRecord, upsert_artifact
 from src.data_provider.raw_loader import load_raw_minute_bars, raw_minute_path
-from src.data_provider.store import partition_path, read_frame, scan_frame, write_frame
+from src.data_provider.store import partition_path, read_frame, write_frame
 from src.data_provider.supervision import (
     FIXED_HORIZON_BARS,
     build_method_supervision,
@@ -29,10 +29,31 @@ from src.data_provider.timeframes import aggregate_daily, aggregate_intraday, ca
 
 
 ProgressCallback = Callable[[dict], None]
-CARRYOVER_TIMEFRAMES = {"1m", "5m", "15m", "30m"}
+STATEFUL_TIMEFRAME_ORDER = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"]
+CARRYOVER_TIMEFRAMES = set(STATEFUL_TIMEFRAME_ORDER)
 REFERENCE_LOOKBACK_SESSIONS = 13
-STATEFUL_WORKERS = 1
-STATEFUL_CHUNK_SESSIONS = {"1m": 1, "5m": 2, "15m": 5, "30m": 10}
+STATEFUL_WORKERS = 2
+STATEFUL_LOOKBACK_SESSIONS = {
+    "1m": 1,
+    "5m": 2,
+    "15m": 4,
+    "30m": 7,
+    "1h": 13,
+    "2h": 25,
+    "4h": 50,
+    "1d": 200,
+}
+STATEFUL_OUTPUT_CHUNK_SESSIONS = {
+    "1m": 6,
+    "5m": 18,
+    "15m": 28,
+    "30m": 42,
+    "1h": 50,
+    "2h": 60,
+    "4h": 80,
+    "1d": 120,
+}
+STATEFUL_WRITE_QUEUE_LIMIT = 4
 
 
 def build_process_pool(max_workers: int) -> ProcessPoolExecutor:
@@ -302,7 +323,7 @@ def build_feature_groups(
             "artifact_session_date": artifact_session_date,
             "stateful": stateful,
             "calculation_mode": "session_local_and_carryover" if timeframe in CARRYOVER_TIMEFRAMES else "session_local",
-            "warmup_sessions": REFERENCE_LOOKBACK_SESSIONS if timeframe in CARRYOVER_TIMEFRAMES else 0,
+            "warmup_sessions": stateful_lookback_sessions(timeframe) if timeframe in CARRYOVER_TIMEFRAMES else 0,
             "work_completed": progress_state.get("completed_units") if progress_state else None,
             "work_total": progress_state.get("total_units") if progress_state else None,
         },
@@ -328,7 +349,7 @@ def build_feature_groups(
             "artifact_session_date": artifact_session_date,
             "stateful": stateful,
             "calculation_mode": "session_local_and_carryover" if timeframe in CARRYOVER_TIMEFRAMES else "session_local",
-            "warmup_sessions": REFERENCE_LOOKBACK_SESSIONS if timeframe in CARRYOVER_TIMEFRAMES else 0,
+            "warmup_sessions": stateful_lookback_sessions(timeframe) if timeframe in CARRYOVER_TIMEFRAMES else 0,
             "duration_sec": elapsed_since(started_at),
             "work_completed": progress_state.get("completed_units") if progress_state else None,
             "work_total": progress_state.get("total_units") if progress_state else None,
@@ -882,7 +903,7 @@ def read_timeframe_context_bars(
     session = datetime.fromisoformat(session_text).date()
     if timeframe in CARRYOVER_TIMEFRAMES:
         context_sessions = market_sessions(request.start_date, session)
-        prior_sessions = [item for item in context_sessions if item < session][-REFERENCE_LOOKBACK_SESSIONS:]
+        prior_sessions = [item for item in context_sessions if item < session][-stateful_lookback_sessions(timeframe):]
         frames = []
         for context_session in prior_sessions:
             raw = load_raw_minute_bars(request.raw_root, context_session, request.tickers)
@@ -1045,35 +1066,63 @@ def stateful_timeframe_tasks(tasks: list[dict]) -> list[dict]:
         timeframe = str(task["timeframe"])
         session = str(task["session_date"])
         sessions_by_timeframe.setdefault(timeframe, set()).add(session)
+    order = {timeframe: index for index, timeframe in enumerate(STATEFUL_TIMEFRAME_ORDER)}
     return [
         {"timeframe": timeframe, "sessions": sorted(sessions)}
-        for timeframe, sessions in sorted(sessions_by_timeframe.items())
+        for timeframe, sessions in sorted(sessions_by_timeframe.items(), key=lambda item: order.get(item[0], len(order)))
         if sessions
     ]
 
 
-def stateful_bar_paths(request: BuildRequest, timeframe: str, output_sessions: list[str]) -> list[Path]:
-    if not output_sessions:
-        return []
-    first_session = datetime.fromisoformat(output_sessions[0]).date()
-    last_session = datetime.fromisoformat(output_sessions[-1]).date()
-    sessions = market_sessions(request.start_date, last_session)
-    warmup = [session for session in sessions if session < first_session][-REFERENCE_LOOKBACK_SESSIONS:]
-    selected = [*warmup, *[datetime.fromisoformat(session).date() for session in output_sessions]]
-    return [
-        path
-        for session in selected
-        if (path := partition_path(request.processed_root, "bars", timeframe, session.isoformat())).exists()
-    ]
+def stateful_task_groups(timeframe_tasks: list[dict]) -> list[dict]:
+    low_latency = [task for task in timeframe_tasks if str(task["timeframe"]) in {"1m", "5m"}]
+    higher = [task for task in timeframe_tasks if str(task["timeframe"]) not in {"1m", "5m"}]
+    groups: list[dict] = []
+    if low_latency:
+        groups.append({"group": "1m_5m", "tasks": low_latency})
+    if higher:
+        groups.append({"group": "higher_timeframes", "tasks": higher})
+    return groups
+
+
+def stateful_lookback_sessions(timeframe: str) -> int:
+    return STATEFUL_LOOKBACK_SESSIONS.get(timeframe, REFERENCE_LOOKBACK_SESSIONS)
 
 
 def stateful_chunk_size(timeframe: str) -> int:
-    return STATEFUL_CHUNK_SESSIONS.get(timeframe, 10)
+    return STATEFUL_OUTPUT_CHUNK_SESSIONS.get(timeframe, 10)
 
 
 def iter_stateful_session_chunks(timeframe: str, sessions: list[str]) -> list[list[str]]:
     size = max(1, stateful_chunk_size(timeframe))
     return [sessions[index : index + size] for index in range(0, len(sessions), size)]
+
+
+def stateful_warmup_sessions(request: BuildRequest, first_output_session: str, lookback_sessions: int) -> list[str]:
+    first_session = datetime.fromisoformat(first_output_session).date()
+    sessions = market_sessions(request.start_date, first_session)
+    return [session.isoformat() for session in sessions if session < first_session][-lookback_sessions:]
+
+
+def read_stateful_bar_frames(request: BuildRequest, timeframe: str, sessions: list[str]) -> list[pl.DataFrame]:
+    frames: list[pl.DataFrame] = []
+    for session_text in sessions:
+        path = partition_path(request.processed_root, "bars", timeframe, session_text)
+        if not path.exists():
+            continue
+        frame = read_frame(path)
+        if not frame.is_empty():
+            frames.append(frame)
+        else:
+            del frame
+    return frames
+
+
+def stateful_tail_frame(bars: pl.DataFrame, tail_sessions: list[str]) -> pl.DataFrame | None:
+    if not tail_sessions or bars.is_empty() or "session_date" not in bars.columns:
+        return None
+    tail = bars.filter(pl.col("session_date").is_in(tail_sessions))
+    return tail if not tail.is_empty() else None
 
 
 def artifact_is_readable(path: Path) -> bool:
@@ -1096,6 +1145,72 @@ def stateful_session_outputs_complete(request: BuildRequest, timeframe: str, ses
     return True
 
 
+def write_stateful_feature_artifact(
+    *,
+    request: BuildRequest,
+    timeframe: str,
+    session_text: str,
+    group: str,
+    frame: pl.DataFrame,
+) -> dict:
+    source_path = partition_path(request.processed_root, "bars", timeframe, session_text)
+    path = write_artifact(
+        root=request.processed_root,
+        group=f"features_{group}",
+        timeframe=timeframe,
+        session_date=session_text,
+        frame=frame,
+        build_id=request.build_id,
+        build_name=request.build_name,
+        source_path=source_path,
+    )
+    return {
+        "path": str(path),
+        "size_bytes": artifact_size(path),
+        "rows_out": frame.height,
+        "session_date": session_text,
+        "timeframe": timeframe,
+        "group": f"features_{group}",
+    }
+
+
+def drain_stateful_writes(
+    *,
+    pending_writes: dict,
+    progress_callback: ProgressCallback | None,
+    progress_state: dict,
+    wait_all: bool = False,
+    queue_limit: int = STATEFUL_WRITE_QUEUE_LIMIT,
+) -> int:
+    completed = 0
+    while pending_writes and (wait_all or len(pending_writes) >= queue_limit):
+        done, _ = wait(set(pending_writes), return_when=FIRST_COMPLETED)
+        for future in done:
+            started_at = pending_writes.pop(future)
+            result = future.result()
+            progress_state["completed_units"] = progress_state.get("completed_units", 0) + 1
+            emit(
+                progress_callback,
+                {
+                    "event": "artifact_complete",
+                    "phase": "feature_write",
+                    "status": "complete",
+                    "session_date": result["session_date"],
+                    "timeframe": result["timeframe"],
+                    "group": result["group"],
+                    "stateful": True,
+                    "rows_out": result["rows_out"],
+                    "duration_sec": elapsed_since(started_at),
+                    "path": result["path"],
+                    "size_bytes": result["size_bytes"],
+                    "work_completed": progress_state.get("completed_units"),
+                    "work_total": progress_state.get("total_units"),
+                },
+            )
+            completed += 1
+    return completed
+
+
 def build_stateful_timeframe_artifacts(
     *,
     request: BuildRequest,
@@ -1107,12 +1222,13 @@ def build_stateful_timeframe_artifacts(
     if not output_sessions:
         return {"timeframe": timeframe, "status": "skipped", "sessions": 0, "rows": 0}
     started_at = perf_counter()
-    pending_sessions = [
+    pending_sessions = {
         session_text
         for session_text in output_sessions
         if not stateful_session_outputs_complete(request, timeframe, session_text)
-    ]
-    chunks = iter_stateful_session_chunks(timeframe, pending_sessions)
+    }
+    chunks = iter_stateful_session_chunks(timeframe, output_sessions)
+    lookback_sessions = stateful_lookback_sessions(timeframe)
     emit(
         progress_callback,
         {
@@ -1125,158 +1241,188 @@ def build_stateful_timeframe_artifacts(
             "pending_session_count": len(pending_sessions),
             "chunk_count": len(chunks),
             "chunk_size": stateful_chunk_size(timeframe),
+            "lookback_sessions": lookback_sessions,
+            "calculation_mode": "eager_rolling_timeframe_window",
             "work_total": progress_state.get("total_units"),
         },
     )
     total_rows = 0
     completed_sessions = len(output_sessions) - len(pending_sessions)
-    for chunk_index, chunk_sessions in enumerate(chunks, start=1):
-        chunk_started_at = perf_counter()
-        bar_paths = stateful_bar_paths(request, timeframe, chunk_sessions)
-        if not bar_paths:
-            continue
-        emit(
-            progress_callback,
-            {
-                "event": "phase_started",
-                "phase": "feature_compute",
-                "status": "running",
-                "timeframe": timeframe,
-                "stateful": True,
-                "session_count": len(chunk_sessions),
-                "completed_sessions": completed_sessions,
-                "pending_session_count": len(pending_sessions),
-                "chunk_index": chunk_index,
-                "chunk_total": len(chunks),
-                "bar_file_count": len(bar_paths),
-                "calculation_mode": "lazy_saved_bars_timeframe_chunked",
-                "warmup_sessions": REFERENCE_LOOKBACK_SESSIONS,
-                "work_total": progress_state.get("total_units"),
-            },
-        )
-        bars = pl.concat([scan_frame(path) for path in bar_paths], how="diagonal").sort(["ticker", "bar_time_utc"])
-        features = add_feature_columns(bars)
-        feature_columns = set(features.collect_schema().names()) if isinstance(features, pl.LazyFrame) else set(features.columns)
-        session_filter = pl.col("session_date").is_in(chunk_sessions) if "session_date" in feature_columns else pl.lit(True)
-        chunk_features = features.filter(session_filter)
-        progress_state["completed_units"] = progress_state.get("completed_units", 0) + 1
-        emit(
-            progress_callback,
-            {
-                "event": "phase_complete",
-                "phase": "feature_compute",
-                "status": "complete",
-                "timeframe": timeframe,
-                "stateful": True,
-                "rows_out": None,
-                "duration_sec": elapsed_since(chunk_started_at),
-                "calculation_mode": "lazy_saved_bars_timeframe_chunked",
-                "chunk_index": chunk_index,
-                "chunk_total": len(chunks),
-                "work_completed": progress_state.get("completed_units"),
-                "work_total": progress_state.get("total_units"),
-            },
-        )
-        for group in request.feature_groups:
-            if group not in FEATURE_COLUMNS:
+    tail_bars: pl.DataFrame | None = None
+    tail_sessions: list[str] = []
+    with ThreadPoolExecutor(max_workers=1) as writer:
+        pending_writes: dict = {}
+        for chunk_index, chunk_sessions in enumerate(chunks, start=1):
+            writable_sessions = [session_text for session_text in chunk_sessions if session_text in pending_sessions]
+            if not writable_sessions:
+                next_tail_sessions = chunk_sessions[-lookback_sessions:]
+                if len(next_tail_sessions) < lookback_sessions:
+                    next_tail_sessions = [*tail_sessions, *next_tail_sessions][-lookback_sessions:]
+                if next_tail_sessions:
+                    frames = read_stateful_bar_frames(request, timeframe, next_tail_sessions)
+                    tail_bars = pl.concat(frames, how="diagonal", rechunk=False) if frames else None
+                    tail_sessions = next_tail_sessions if frames else []
+                    del frames
+                    gc.collect()
                 continue
-            group_started_at = perf_counter()
+
+            chunk_started_at = perf_counter()
+            if tail_bars is None:
+                tail_sessions = stateful_warmup_sessions(request, chunk_sessions[0], lookback_sessions)
+                warmup_frames = read_stateful_bar_frames(request, timeframe, tail_sessions)
+            else:
+                warmup_frames = [tail_bars]
+            output_frames = read_stateful_bar_frames(request, timeframe, chunk_sessions)
+            bar_frames = [*warmup_frames, *output_frames]
+            if not bar_frames:
+                continue
             emit(
                 progress_callback,
                 {
-                    "event": "phase_checkpoint",
-                    "phase": "feature_write",
+                    "event": "phase_started",
+                    "phase": "feature_compute",
                     "status": "running",
                     "timeframe": timeframe,
-                    "group": f"features_{group}",
                     "stateful": True,
+                    "session_count": len(chunk_sessions),
+                    "write_session_count": len(writable_sessions),
+                    "completed_sessions": completed_sessions,
+                    "pending_session_count": len(pending_sessions),
                     "chunk_index": chunk_index,
                     "chunk_total": len(chunks),
-                    "session_count": len(chunk_sessions),
-                    "message": "Collecting one feature group for the current stateful chunk.",
+                    "bar_file_count": len(output_frames) + (0 if tail_bars is not None else len(warmup_frames)),
+                    "calculation_mode": "eager_rolling_timeframe_window",
+                    "lookback_sessions": lookback_sessions,
+                    "warmup_sessions": len(tail_sessions),
+                    "write_queue_limit": STATEFUL_WRITE_QUEUE_LIMIT,
+                    "work_total": progress_state.get("total_units"),
+                },
+            )
+            bars = pl.concat(bar_frames, how="diagonal", rechunk=False)
+            del warmup_frames, output_frames, bar_frames
+            gc.collect()
+            features = add_feature_columns(bars)
+            feature_columns = set(features.columns)
+            if "session_date" in feature_columns:
+                chunk_features = features.filter(pl.col("session_date").is_in(writable_sessions))
+            else:
+                chunk_features = features
+            progress_state["completed_units"] = progress_state.get("completed_units", 0) + 1
+            emit(
+                progress_callback,
+                {
+                    "event": "phase_complete",
+                    "phase": "feature_compute",
+                    "status": "complete",
+                    "timeframe": timeframe,
+                    "stateful": True,
+                    "rows_out": chunk_features.height,
+                    "duration_sec": elapsed_since(chunk_started_at),
+                    "calculation_mode": "eager_rolling_timeframe_window",
+                    "chunk_index": chunk_index,
+                    "chunk_total": len(chunks),
                     "work_completed": progress_state.get("completed_units"),
                     "work_total": progress_state.get("total_units"),
                 },
             )
-            chunk_columns = set(chunk_features.collect_schema().names()) if isinstance(chunk_features, pl.LazyFrame) else set(chunk_features.columns)
-            group_columns = [column for column in FEATURE_COLUMNS[group] if column in chunk_columns]
-            split_columns = group_columns if "session_date" in group_columns or "session_date" not in chunk_columns else [*group_columns, "session_date"]
-            group_chunk = chunk_features.select(split_columns).collect()
-            for session_text in chunk_sessions:
-                group_frame = group_chunk.filter(pl.col("session_date") == session_text) if "session_date" in group_chunk.columns else group_chunk
-                if "session_date" in group_frame.columns and "session_date" not in group_columns:
-                    group_frame = group_frame.drop("session_date")
-                source_path = partition_path(request.processed_root, "bars", timeframe, session_text)
-                path = write_artifact(
-                    root=request.processed_root,
-                    group=f"features_{group}",
-                    timeframe=timeframe,
-                    session_date=session_text,
-                    frame=group_frame,
-                    build_id=request.build_id,
-                    build_name=request.build_name,
-                    source_path=source_path,
-                )
-                total_rows += group_frame.height
-                progress_state["completed_units"] = progress_state.get("completed_units", 0) + 1
+            for group in request.feature_groups:
+                if group not in FEATURE_COLUMNS:
+                    continue
+                group_started_at = perf_counter()
                 emit(
                     progress_callback,
                     {
-                        "event": "artifact_complete",
+                        "event": "phase_checkpoint",
                         "phase": "feature_write",
-                        "status": "complete",
-                        "session_date": session_text,
+                        "status": "running",
                         "timeframe": timeframe,
                         "group": f"features_{group}",
                         "stateful": True,
-                        "rows_out": group_frame.height,
-                        "duration_sec": elapsed_since(group_started_at),
-                        "path": str(path),
-                        "size_bytes": artifact_size(path),
+                        "chunk_index": chunk_index,
+                        "chunk_total": len(chunks),
+                        "session_count": len(writable_sessions),
+                        "message": "Queueing feature artifacts from the current eager stateful window.",
                         "work_completed": progress_state.get("completed_units"),
                         "work_total": progress_state.get("total_units"),
                     },
                 )
-                del group_frame
-            del group_chunk
+                chunk_columns = set(chunk_features.columns)
+                group_columns = [column for column in FEATURE_COLUMNS[group] if column in chunk_columns]
+                split_columns = group_columns if "session_date" in group_columns or "session_date" not in chunk_columns else [*group_columns, "session_date"]
+                group_chunk = chunk_features.select(split_columns)
+                for session_text in writable_sessions:
+                    group_frame = group_chunk.filter(pl.col("session_date") == session_text) if "session_date" in group_chunk.columns else group_chunk
+                    if "session_date" in group_frame.columns and "session_date" not in group_columns:
+                        group_frame = group_frame.drop("session_date")
+                    pending_writes[
+                        writer.submit(
+                            write_stateful_feature_artifact,
+                            request=request,
+                            timeframe=timeframe,
+                            session_text=session_text,
+                            group=group,
+                            frame=group_frame,
+                        )
+                    ] = perf_counter()
+                    total_rows += group_frame.height
+                    del group_frame
+                    drain_stateful_writes(
+                        pending_writes=pending_writes,
+                        progress_callback=progress_callback,
+                        progress_state=progress_state,
+                    )
+                del group_chunk
+                gc.collect()
+                emit(
+                    progress_callback,
+                    {
+                        "event": "phase_checkpoint",
+                        "phase": "feature_write",
+                        "status": "queued",
+                        "timeframe": timeframe,
+                        "group": f"features_{group}",
+                        "stateful": True,
+                        "chunk_index": chunk_index,
+                        "chunk_total": len(chunks),
+                        "duration_sec": elapsed_since(group_started_at),
+                        "pending_writes": len(pending_writes),
+                        "work_completed": progress_state.get("completed_units"),
+                        "work_total": progress_state.get("total_units"),
+                    },
+                )
+            drain_stateful_writes(
+                pending_writes=pending_writes,
+                progress_callback=progress_callback,
+                progress_state=progress_state,
+                wait_all=True,
+            )
+            completed_sessions += len(writable_sessions)
+            combined_sessions = [*tail_sessions, *chunk_sessions]
+            tail_sessions = combined_sessions[-lookback_sessions:] if lookback_sessions else []
+            next_tail = stateful_tail_frame(bars, tail_sessions)
+            del tail_bars
+            tail_bars = next_tail
+            del chunk_features, features, bars
             gc.collect()
             emit(
                 progress_callback,
                 {
                     "event": "phase_checkpoint",
-                    "phase": "feature_write",
-                    "status": "complete",
+                    "phase": "stateful_features",
+                    "status": "running",
                     "timeframe": timeframe,
-                    "group": f"features_{group}",
                     "stateful": True,
+                    "completed_sessions": completed_sessions,
+                    "session_count": len(output_sessions),
                     "chunk_index": chunk_index,
                     "chunk_total": len(chunks),
-                    "duration_sec": elapsed_since(group_started_at),
+                    "duration_sec": elapsed_since(chunk_started_at),
+                    "lookback_sessions": lookback_sessions,
+                    "tail_sessions": tail_sessions,
                     "work_completed": progress_state.get("completed_units"),
                     "work_total": progress_state.get("total_units"),
                 },
             )
-        for _session_text in chunk_sessions:
-            completed_sessions += 1
-        del chunk_features, features, bars
-        gc.collect()
-        emit(
-            progress_callback,
-            {
-                "event": "phase_checkpoint",
-                "phase": "stateful_features",
-                "status": "running",
-                "timeframe": timeframe,
-                "stateful": True,
-                "completed_sessions": completed_sessions,
-                "session_count": len(output_sessions),
-                "chunk_index": chunk_index,
-                "chunk_total": len(chunks),
-                "duration_sec": elapsed_since(chunk_started_at),
-                "work_completed": progress_state.get("completed_units"),
-                "work_total": progress_state.get("total_units"),
-            },
-        )
     if not pending_sessions:
         emit(
             progress_callback,
@@ -1373,6 +1519,24 @@ def _stateful_artifact_worker(
         raise
 
 
+def _stateful_artifact_group_worker(
+    request: BuildRequest,
+    task_group: dict,
+    total_units: int,
+    job_path_text: str,
+) -> dict:
+    group_name = str(task_group.get("group") or "stateful")
+    results: list[dict] = []
+    for task in task_group.get("tasks", []):
+        results.append(_stateful_artifact_worker(request, task, total_units, job_path_text))
+    return {
+        "group": group_name,
+        "status": "complete",
+        "results": results,
+        "timeframes": [str(result.get("timeframe")) for result in results],
+    }
+
+
 def build_stateful_artifact_tasks(
     *,
     request: BuildRequest,
@@ -1387,20 +1551,23 @@ def build_stateful_artifact_tasks(
     timeframe_tasks = stateful_timeframe_tasks(tasks)
     if job_path is None:
         state = progress_state or {"completed_units": 0, "total_units": total_units}
-        return [
-            build_stateful_timeframe_artifacts(
+        results: list[dict] = []
+        for task in timeframe_tasks:
+            results.append(
+                build_stateful_timeframe_artifacts(
                 request=request,
                 timeframe=str(task["timeframe"]),
                 output_sessions=[str(session) for session in task.get("sessions", [])],
                 progress_callback=progress_callback,
                 progress_state=state,
             )
-            for task in timeframe_tasks
-        ]
+            )
+        return results
 
     from src.data_provider.jobs import check_cancelled
 
-    worker_count = min(STATEFUL_WORKERS, len(timeframe_tasks))
+    task_groups = stateful_task_groups(timeframe_tasks)
+    worker_count = min(STATEFUL_WORKERS, len(task_groups))
     emit(
         progress_callback,
         {
@@ -1410,6 +1577,7 @@ def build_stateful_artifact_tasks(
             "worker_count": worker_count,
             "requested_worker_count": STATEFUL_WORKERS,
             "artifact_jobs": len(timeframe_tasks),
+            "worker_groups": [group["group"] for group in task_groups],
             "polars_threads_per_worker": os.environ.get("POLARS_MAX_THREADS"),
             "work_total": total_units,
             "stateful": True,
@@ -1418,13 +1586,13 @@ def build_stateful_artifact_tasks(
     executor = build_process_pool(worker_count)
     futures = {
         executor.submit(
-            _stateful_artifact_worker,
+            _stateful_artifact_group_worker,
             request,
-            task,
+            task_group,
             total_units,
             str(job_path),
-        ): task
-        for task in timeframe_tasks
+        ): task_group
+        for task_group in task_groups
     }
     pending = set(futures)
     results: list[dict] = []
@@ -1435,7 +1603,8 @@ def build_stateful_artifact_tasks(
                 check_cancelled(job_path)
                 continue
             for future in done:
-                results.append(future.result())
+                group_result = future.result()
+                results.extend(group_result.get("results", []))
             check_cancelled(job_path)
     except BrokenProcessPool as exc:
         message = (
