@@ -20,6 +20,9 @@ from src.strategies.liquidity_pullback_reversal.v1.presentation import (
     chart_presentation as liquidity_pullback_reversal_v1_chart_presentation,
 )
 from src.strategies.liquidity_pullback_reversal.v1.strategy import LiquidityPullbackReversalStrategy
+from src.strategies.orb_5m_momentum.v10.config import OrbMomentumConfig as OrbMomentumV10Config
+from src.strategies.orb_5m_momentum.v10.presentation import chart_presentation as orb_5m_momentum_v10_chart_presentation
+from src.strategies.orb_5m_momentum.v10.strategy import OrbFiveMinuteMomentumV10Strategy
 from src.strategies.orb_5m_momentum.v1.config import OrbMomentumConfig as OrbMomentumV1Config
 from src.strategies.orb_5m_momentum.v1.presentation import chart_presentation as orb_5m_momentum_v1_chart_presentation
 from src.strategies.orb_5m_momentum.v1.strategy import OrbFiveMinuteMomentumStrategy
@@ -123,6 +126,14 @@ def default_orb_5m_momentum_v9_params() -> dict:
     return OrbMomentumV9Config().to_dict()
 
 
+def create_orb_5m_momentum_v10(params: dict | None = None) -> OrbFiveMinuteMomentumV10Strategy:
+    return OrbFiveMinuteMomentumV10Strategy(OrbMomentumV10Config.from_dict(params))
+
+
+def default_orb_5m_momentum_v10_params() -> dict:
+    return OrbMomentumV10Config().to_dict()
+
+
 def create_adaptive_live_trend_rotation_v1(params: dict | None = None) -> AdaptiveLiveTrendRotationStrategy:
     return AdaptiveLiveTrendRotationStrategy(AdaptiveLiveTrendRotationV1Config.from_dict(params))
 
@@ -151,6 +162,7 @@ STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("adaptive_live_trend_rotation", "v1"): create_adaptive_live_trend_rotation_v1,
     ("break_of_vwap", "v1"): create_break_of_vwap_v1,
     ("liquidity_pullback_reversal", "v1"): create_liquidity_pullback_reversal_v1,
+    ("orb_5m_momentum", "v10"): create_orb_5m_momentum_v10,
     ("orb_5m_momentum", "v1"): create_orb_5m_momentum_v1,
     ("orb_5m_momentum", "v2"): create_orb_5m_momentum_v2,
     ("orb_5m_momentum", "v3"): create_orb_5m_momentum_v3,
@@ -166,6 +178,7 @@ STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("adaptive_live_trend_rotation", "v1"): default_adaptive_live_trend_rotation_v1_params,
     ("break_of_vwap", "v1"): default_break_of_vwap_v1_params,
     ("liquidity_pullback_reversal", "v1"): default_liquidity_pullback_reversal_v1_params,
+    ("orb_5m_momentum", "v10"): default_orb_5m_momentum_v10_params,
     ("orb_5m_momentum", "v1"): default_orb_5m_momentum_v1_params,
     ("orb_5m_momentum", "v2"): default_orb_5m_momentum_v2_params,
     ("orb_5m_momentum", "v3"): default_orb_5m_momentum_v3_params,
@@ -181,6 +194,7 @@ STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]]
     ("adaptive_live_trend_rotation", "v1"): adaptive_live_trend_rotation_v1_chart_presentation,
     ("break_of_vwap", "v1"): break_of_vwap_v1_chart_presentation,
     ("liquidity_pullback_reversal", "v1"): liquidity_pullback_reversal_v1_chart_presentation,
+    ("orb_5m_momentum", "v10"): orb_5m_momentum_v10_chart_presentation,
     ("orb_5m_momentum", "v1"): orb_5m_momentum_v1_chart_presentation,
     ("orb_5m_momentum", "v2"): orb_5m_momentum_v2_chart_presentation,
     ("orb_5m_momentum", "v3"): orb_5m_momentum_v3_chart_presentation,
@@ -259,6 +273,10 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
         "Starts from v8 and adds a completed 1-minute MACD entry guard: skip entries when MACD line is below "
         "the MACD signal line."
     ),
+    ("orb_5m_momentum", "v10"): (
+        "Starts from v9 and tightens the completed 1-minute MACD guard: enter only when MACD line minus "
+        "MACD signal is greater than the configured buffer."
+    ),
 }
 
 DEFAULT_STRATEGY_VERSIONS: dict[str, str] = {
@@ -274,7 +292,13 @@ def available_strategies() -> list[str]:
 
 
 def available_strategy_versions(name: str) -> list[str]:
-    return sorted(version for strategy_name, version in STRATEGY_FACTORIES if strategy_name == name)
+    return sorted((version for strategy_name, version in STRATEGY_FACTORIES if strategy_name == name), key=strategy_version_sort_key)
+
+
+def strategy_version_sort_key(version: str) -> tuple[int, str]:
+    if version.startswith("v") and version[1:].isdigit():
+        return int(version[1:]), version
+    return 10_000, version
 
 
 def strategy_description(name: str) -> str:
