@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { BookOpen, CircleHelp, Database, Filter, Search, SlidersHorizontal, Tags } from "lucide-react";
+import { ArrowDown, ArrowUp, BookOpen, Calculator, CircleHelp, Database, Filter, Plus, Search, SlidersHorizontal, Tags, Trash2 } from "lucide-react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 
@@ -75,11 +75,23 @@ type ScannerQueryState = {
   backendQuery: BackendTableQuery;
   barTime: string;
   columns: string;
+  derivedColumns: ScannerFormulaColumn[];
   featureGroups: string;
   rowLimit: number;
   rowOffset: number;
   sessionDate: string;
   timeframe: string;
+};
+type ScannerFormulaColumn = {
+  enabled: boolean;
+  expression: string;
+  id: string;
+  name: string;
+};
+type ScannerFormulaPreset = {
+  columns: ScannerFormulaColumn[];
+  id: string;
+  name: string;
 };
 type ScannerSnapshot = {
   bar_time: string;
@@ -188,6 +200,7 @@ const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
 const CHART_DISPLAY_ITEMS_NONE = "__none__";
+const SCANNER_FORMULA_STORAGE_KEY = "qrw.scannerFormulaPresets.v1";
 const PREVIEW_PAGE_SIZE = 1000;
 const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "anchored_zone", "continuous_band", "background_state", "data_only", "other"];
 const PRESENTATION_TYPE_LABELS: Record<string, string> = {
@@ -654,6 +667,9 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
   const [rowLimit, setRowLimit] = useState(2000);
   const [backendQuery, setBackendQuery] = useState<BackendTableQuery>({ conditions: [], matchMode: "all", sortDirection: "asc" });
   const [filterOpen, setFilterOpen] = useState(false);
+  const [formulaOpen, setFormulaOpen] = useState(false);
+  const [formulaPresets, setFormulaPresets] = useState<ScannerFormulaPreset[]>(() => loadScannerFormulaPresets());
+  const [activeFormulaPresetId, setActiveFormulaPresetId] = useState(() => loadScannerFormulaPresets()[0]?.id ?? "");
   const [scannerRunId, setScannerRunId] = useState(0);
   const [appliedScannerQuery, setAppliedScannerQuery] = useState<ScannerQueryState | null>(null);
   const [snapshot, setSnapshot] = useState<ScannerSnapshot | null>(null);
@@ -661,7 +677,10 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const selectedFeatureGroups = useMemo(() => parseCommaList(featureGroups), [featureGroups]);
-  const availableColumns = useMemo(() => scannerAvailableColumns(records, sessionDate, timeframe, selectedFeatureGroups), [records, selectedFeatureGroups, sessionDate, timeframe]);
+  const activeFormulaPreset = useMemo(() => formulaPresets.find((preset) => preset.id === activeFormulaPresetId) ?? null, [activeFormulaPresetId, formulaPresets]);
+  const activeDerivedColumns = useMemo(() => cleanScannerFormulaColumns(activeFormulaPreset?.columns ?? []), [activeFormulaPreset]);
+  const baseAvailableColumns = useMemo(() => scannerAvailableColumns(records, sessionDate, timeframe, selectedFeatureGroups), [records, selectedFeatureGroups, sessionDate, timeframe]);
+  const availableColumns = useMemo(() => [...baseAvailableColumns, ...activeDerivedColumns.map((column) => column.name)], [activeDerivedColumns, baseAvailableColumns]);
   const queryKey = useMemo(
     () =>
       appliedScannerQuery
@@ -683,6 +702,9 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
     if (!featureGroups && defaultFeatures.length) setFeatureGroups(defaultFeatures.join(","));
   }, [defaultFeatures, featureGroups]);
   useEffect(() => {
+    saveScannerFormulaPresets(formulaPresets);
+  }, [formulaPresets]);
+  useEffect(() => {
     if (scannerRunId === 0 || !appliedScannerQuery) return;
     if (!appliedScannerQuery.sessionDate || !appliedScannerQuery.timeframe || !appliedScannerQuery.barTime) return;
     let active = true;
@@ -698,6 +720,7 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
         bar_time: appliedScannerQuery.barTime,
         feature_groups: appliedScannerQuery.featureGroups,
         columns: appliedScannerQuery.columns,
+        derived_columns: appliedScannerQuery.derivedColumns.length ? JSON.stringify(appliedScannerQuery.derivedColumns) : undefined,
         row_limit: appliedScannerQuery.rowLimit,
         row_offset: appliedScannerQuery.rowOffset,
         table_query: tableQuery,
@@ -725,18 +748,24 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
   const endRow = snapshot ? (snapshot.row_offset ?? 0) + snapshot.rows.length : 0;
   const timeframeStep = timeframeMinutes(timeframe);
   const scannerChartRecord = snapshot ? scannerSnapshotRecord(snapshot) : null;
-  const loadScannerSnapshot = () => {
+  const applyScannerSnapshotQuery = (nextBarTime = barTime, rowOffset = 0) => {
     setAppliedScannerQuery({
       backendQuery: cleanPreviewBackendQuery(backendQuery),
-      barTime,
+      barTime: nextBarTime,
       columns,
+      derivedColumns: activeDerivedColumns,
       featureGroups,
       rowLimit: Math.max(10, Math.min(5000, Math.round(Number(rowLimit) || 2000))),
-      rowOffset: 0,
+      rowOffset,
       sessionDate,
       timeframe,
     });
     setScannerRunId((value) => value + 1);
+  };
+  const shiftAndLoadScannerSnapshot = (minutes: number) => {
+    const nextBarTime = shiftBarTime(barTime, minutes);
+    setBarTime(nextBarTime);
+    applyScannerSnapshotQuery(nextBarTime);
   };
   return (
     <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
@@ -745,16 +774,22 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
           <InlineField label="Day" type="date" value={sessionDate} onChange={setSessionDate} />
           <Select label="Timeframe" value={timeframe} options={timeframes.length ? timeframes : [timeframe]} onChange={setTimeframe} />
           <InlineField label="Bar start" type="time" value={barTime} onChange={setBarTime} />
-          <button className="button" onClick={() => setBarTime((value) => shiftBarTime(value, -timeframeStep))} type="button">Previous</button>
-          <button className="button" onClick={() => setBarTime((value) => shiftBarTime(value, timeframeStep))} type="button">Next</button>
-          <button className="button primary" disabled={loading} onClick={loadScannerSnapshot} type="button">Load</button>
+          <button className="button" disabled={loading} onClick={() => shiftAndLoadScannerSnapshot(-timeframeStep)} type="button">Previous</button>
+          <button className="button" disabled={loading} onClick={() => shiftAndLoadScannerSnapshot(timeframeStep)} type="button">Next</button>
+          <button className="button primary" disabled={loading} onClick={() => applyScannerSnapshotQuery()} type="button">Load</button>
           <button className={filterOpen ? "button active" : "button"} onClick={() => setFilterOpen((value) => !value)} type="button">
             <Filter size={16} />
             Filters
           </button>
+          <button className={formulaOpen ? "button active" : "button"} onClick={() => setFormulaOpen((value) => !value)} type="button">
+            <Calculator size={16} />
+            Formulas
+          </button>
+          <Select label="Formula preset" value={activeFormulaPresetId} options={["", ...formulaPresets.map((preset) => preset.id)]} optionLabels={formulaPresetLabels(formulaPresets)} onChange={setActiveFormulaPresetId} />
           <div className="preview-query-summary">
             <span>{snapshot?.rows.length ?? 0} rows</span>
             <span>{snapshot?.feature_groups?.length ? snapshot.feature_groups.join(", ") : "bars only"}</span>
+            <span>{activeDerivedColumns.length.toLocaleString()} formulas</span>
             <span>{snapshot?.total_columns ?? 0} columns</span>
           </div>
         </div>
@@ -770,6 +805,15 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
             onFeatureGroupsChange={setFeatureGroups}
             onRowLimitChange={setRowLimit}
             rowLimit={rowLimit}
+          />
+        ) : null}
+        {formulaOpen ? (
+          <ScannerFormulaPanel
+            activePresetId={activeFormulaPresetId}
+            availableColumns={baseAvailableColumns}
+            onActivePresetChange={setActiveFormulaPresetId}
+            onPresetsChange={setFormulaPresets}
+            presets={formulaPresets}
           />
         ) : null}
       </div>
@@ -918,6 +962,167 @@ function ScannerFilterPanel({
         )}
       </div>
       {featureOptions.length ? <div className="preview-query-empty">Available feature groups: {featureOptions.join(", ")}</div> : null}
+    </div>
+  );
+}
+
+function ScannerFormulaPanel({
+  activePresetId,
+  availableColumns,
+  onActivePresetChange,
+  onPresetsChange,
+  presets,
+}: {
+  activePresetId: string;
+  availableColumns: string[];
+  onActivePresetChange: (value: string) => void;
+  onPresetsChange: (value: ScannerFormulaPreset[]) => void;
+  presets: ScannerFormulaPreset[];
+}) {
+  const activePreset = presets.find((preset) => preset.id === activePresetId) ?? null;
+
+  function createPreset() {
+    const preset: ScannerFormulaPreset = {
+      columns: [
+        {
+          enabled: true,
+          expression: "close - open",
+          id: newClientId("formula"),
+          name: uniqueFormulaName("price_change", []),
+        },
+      ],
+      id: newClientId("preset"),
+      name: `Scanner formulas ${presets.length + 1}`,
+    };
+    onPresetsChange([...presets, preset]);
+    onActivePresetChange(preset.id);
+  }
+
+  function updatePreset(patch: Partial<ScannerFormulaPreset>) {
+    if (!activePreset) return;
+    onPresetsChange(presets.map((preset) => (preset.id === activePreset.id ? { ...preset, ...patch } : preset)));
+  }
+
+  function updateFormula(id: string, patch: Partial<ScannerFormulaColumn>) {
+    if (!activePreset) return;
+    updatePreset({ columns: activePreset.columns.map((column) => (column.id === id ? { ...column, ...patch } : column)) });
+  }
+
+  function addFormula() {
+    if (!activePreset) {
+      createPreset();
+      return;
+    }
+    updatePreset({
+      columns: [
+        ...activePreset.columns,
+        {
+          enabled: true,
+          expression: "",
+          id: newClientId("formula"),
+          name: uniqueFormulaName("derived_column", activePreset.columns),
+        },
+      ],
+    });
+  }
+
+  function deleteFormula(id: string) {
+    if (!activePreset) return;
+    updatePreset({ columns: activePreset.columns.filter((column) => column.id !== id) });
+  }
+
+  function moveFormula(id: string, direction: -1 | 1) {
+    if (!activePreset) return;
+    const index = activePreset.columns.findIndex((column) => column.id === id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= activePreset.columns.length) return;
+    const columns = [...activePreset.columns];
+    const [item] = columns.splice(index, 1);
+    columns.splice(nextIndex, 0, item);
+    updatePreset({ columns });
+  }
+
+  function deletePreset() {
+    if (!activePreset) return;
+    const nextPresets = presets.filter((preset) => preset.id !== activePreset.id);
+    onPresetsChange(nextPresets);
+    onActivePresetChange(nextPresets[0]?.id ?? "");
+  }
+
+  const validationMessages = activePreset ? validateScannerFormulaColumns(activePreset.columns, availableColumns) : [];
+
+  return (
+    <div className="preview-query-panel scanner-formula-panel">
+      <div className="scanner-formula-toolbar">
+        <div className="preview-query-section-header">
+          <span>Formula presets</span>
+          <p>Saved automatically in this browser. Derived columns run in order and can reference columns created above them.</p>
+        </div>
+        <div className="scanner-formula-actions">
+          <button className="button" onClick={createPreset} type="button">
+            <Plus size={14} />
+            New preset
+          </button>
+          <button className="button" disabled={!activePreset} onClick={addFormula} type="button">
+            <Plus size={14} />
+            Add column
+          </button>
+          <button className="button danger" disabled={!activePreset} onClick={deletePreset} type="button">
+            <Trash2 size={14} />
+            Delete preset
+          </button>
+        </div>
+      </div>
+      {activePreset ? (
+        <>
+          <div className="preview-query-grid">
+            <InlineField label="Preset name" value={activePreset.name} onChange={(value) => updatePreset({ name: value })} />
+            <Select label="Active preset" value={activePresetId} options={presets.map((preset) => preset.id)} optionLabels={formulaPresetLabels(presets)} onChange={onActivePresetChange} />
+          </div>
+          {validationMessages.length ? (
+            <div className="preview-sample-status error">
+              {validationMessages.map((message) => (
+                <span key={message}>{message}</span>
+              ))}
+            </div>
+          ) : null}
+          <div className="scanner-formula-list">
+            {activePreset.columns.length ? (
+              activePreset.columns.map((column, index) => (
+                <div className="scanner-formula-row" key={column.id}>
+                  <label className="scanner-formula-toggle">
+                    <input checked={column.enabled} type="checkbox" onChange={(event) => updateFormula(column.id, { enabled: event.target.checked })} />
+                    On
+                  </label>
+                  <InlineField label="Column" value={column.name} onChange={(value) => updateFormula(column.id, { name: value })} />
+                  <div className="field scanner-formula-expression">
+                    <label>Expression</label>
+                    <input placeholder="zscore(macd_line - macd_signal)" value={column.expression} onChange={(event) => updateFormula(column.id, { expression: event.target.value })} />
+                  </div>
+                  <div className="scanner-formula-row-actions">
+                    <button className="icon-button" disabled={index === 0} onClick={() => moveFormula(column.id, -1)} title="Move formula up" type="button">
+                      <ArrowUp size={14} />
+                    </button>
+                    <button className="icon-button" disabled={index === activePreset.columns.length - 1} onClick={() => moveFormula(column.id, 1)} title="Move formula down" type="button">
+                      <ArrowDown size={14} />
+                    </button>
+                    <button className="icon-button danger" onClick={() => deleteFormula(column.id)} title="Delete formula" type="button">
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="preview-query-empty">No formulas in this preset. Add a column to start.</div>
+            )}
+          </div>
+          <div className="preview-query-empty">
+            Supported functions: abs, sqrt, log, log1p, clip, min, max, rank_asc, rank_desc, percentile_rank, zscore.
+          </div>
+        </>
+      ) : (
+        <div className="preview-query-empty">Create a preset to add scanner formulas. Saved presets stay available in this browser and apply to Load, Next, and Previous.</div>
+      )}
     </div>
   );
 }
@@ -1619,6 +1824,110 @@ function previewBackendQueryIsActive(queryValue: BackendTableQuery): boolean {
   return queryValue.conditions.length > 0 || Boolean(queryValue.sortColumn);
 }
 
+function loadScannerFormulaPresets(): ScannerFormulaPreset[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(SCANNER_FORMULA_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((preset) => normalizeScannerFormulaPreset(preset))
+      .filter((preset): preset is ScannerFormulaPreset => Boolean(preset));
+  } catch {
+    return [];
+  }
+}
+
+function saveScannerFormulaPresets(presets: ScannerFormulaPreset[]) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(SCANNER_FORMULA_STORAGE_KEY, JSON.stringify(presets));
+}
+
+function normalizeScannerFormulaPreset(value: unknown): ScannerFormulaPreset | null {
+  if (!value || typeof value !== "object") return null;
+  const preset = value as Partial<ScannerFormulaPreset>;
+  const id = String(preset.id || newClientId("preset"));
+  const name = String(preset.name || "Scanner formulas").trim() || "Scanner formulas";
+  const columns = Array.isArray(preset.columns)
+    ? preset.columns.map((column) => normalizeScannerFormulaColumn(column)).filter((column): column is ScannerFormulaColumn => Boolean(column))
+    : [];
+  return { columns, id, name };
+}
+
+function normalizeScannerFormulaColumn(value: unknown): ScannerFormulaColumn | null {
+  if (!value || typeof value !== "object") return null;
+  const column = value as Partial<ScannerFormulaColumn>;
+  return {
+    enabled: column.enabled !== false,
+    expression: String(column.expression ?? ""),
+    id: String(column.id || newClientId("formula")),
+    name: String(column.name ?? ""),
+  };
+}
+
+function cleanScannerFormulaColumns(columns: ScannerFormulaColumn[]): ScannerFormulaColumn[] {
+  const names = new Set<string>();
+  const cleaned: ScannerFormulaColumn[] = [];
+  for (const column of columns) {
+    const name = column.name.trim();
+    const expression = column.expression.trim();
+    if (!column.enabled || !name || !expression || names.has(name)) continue;
+    cleaned.push({ ...column, expression, name });
+    names.add(name);
+  }
+  return cleaned;
+}
+
+function validateScannerFormulaColumns(columns: ScannerFormulaColumn[], availableColumns: string[]) {
+  const messages: string[] = [];
+  const available = new Set(availableColumns);
+  const seen = new Set<string>();
+  for (const column of columns) {
+    const name = column.name.trim();
+    if (!name && column.expression.trim()) messages.push("A formula has an expression but no column name.");
+    if (name && !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) messages.push(`${name} is not a valid column name.`);
+    if (name && seen.has(name)) messages.push(`${name} is duplicated in this preset.`);
+    const references = formulaColumnReferences(column.expression);
+    for (const reference of references) {
+      if (!available.has(reference) && !seen.has(reference) && !SCANNER_FORMULA_FUNCTIONS.has(reference)) {
+        messages.push(`${name || "Formula"} references ${reference}, which is not available above it.`);
+      }
+    }
+    if (name) seen.add(name);
+  }
+  return Array.from(new Set(messages));
+}
+
+const SCANNER_FORMULA_FUNCTIONS = new Set(["abs", "sqrt", "log", "log1p", "clip", "min", "max", "rank_asc", "rank_desc", "percentile_rank", "zscore", "and", "or", "not"]);
+
+function formulaColumnReferences(expression: string) {
+  const references = expression.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? [];
+  return Array.from(new Set(references));
+}
+
+function formulaPresetLabels(presets: ScannerFormulaPreset[]) {
+  return {
+    "": "None",
+    ...Object.fromEntries(presets.map((preset) => [preset.id, preset.name || "Scanner formulas"])),
+  };
+}
+
+function newClientId(prefix: string) {
+  const random = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID().slice(0, 8) : Math.random().toString(16).slice(2, 10);
+  return `${prefix}_${random}`;
+}
+
+function uniqueFormulaName(base: string, columns: ScannerFormulaColumn[]) {
+  const existing = new Set(columns.map((column) => column.name));
+  if (!existing.has(base)) return base;
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `${base}_${index}`;
+    if (!existing.has(candidate)) return candidate;
+  }
+  return `${base}_${Date.now()}`;
+}
+
 function CatalogTab({
   catalog,
   catalogError,
@@ -2293,13 +2602,13 @@ function schemaKind(dtype: string): SchemaField["kind"] {
   return "other";
 }
 
-function Select({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
+function Select({ label, value, options, optionLabels, onChange }: { label: string; value: string; options: string[]; optionLabels?: Record<string, string>; onChange: (value: string) => void }) {
   return (
     <div className="field" style={{ width: 220 }}>
       <label>{label}</label>
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         {options.map((option) => (
-          <option key={option} value={option}>{option}</option>
+          <option key={option} value={option}>{optionLabels?.[option] ?? option}</option>
         ))}
       </select>
     </div>

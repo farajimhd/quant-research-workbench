@@ -5558,6 +5558,78 @@ button {
   padding: 9px 10px;
 }
 
+.scanner-formula-panel {
+  background: color-mix(in oklab, var(--surface-alt) 46%, var(--surface));
+}
+
+.scanner-formula-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.scanner-formula-toolbar .preview-query-section-header {
+  display: grid;
+  justify-content: start;
+  gap: 2px;
+}
+
+.scanner-formula-toolbar .preview-query-section-header p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.scanner-formula-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.scanner-formula-list {
+  display: grid;
+  gap: 8px;
+}
+
+.scanner-formula-row {
+  display: grid;
+  grid-template-columns: 58px minmax(150px, 0.5fr) minmax(280px, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 9px;
+}
+
+.scanner-formula-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.scanner-formula-expression {
+  min-width: 0;
+}
+
+.scanner-formula-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 36px;
+}
+
+.scanner-formula-row-actions .icon-button {
+  min-height: 32px;
+  width: 32px;
+}
+
 @media (max-width: 900px) {
   .preview-query-condition {
     grid-template-columns: 1fr;

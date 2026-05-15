@@ -647,6 +647,18 @@ def parse_table_query(value: str | None) -> dict[str, Any] | None:
     return payload
 
 
+def parse_derived_columns(value: str | None) -> list[dict[str, Any]]:
+    if not value:
+        return []
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid derived columns JSON") from exc
+    if not isinstance(payload, list):
+        raise HTTPException(status_code=400, detail="Derived columns must be a list")
+    return [item for item in payload if isinstance(item, dict)]
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {"status": "ok", "app": "quant-research-workbench"}
@@ -1043,12 +1055,13 @@ def market_scanner_snapshot(
     feature_groups: str | None = None,
     columns: str | None = None,
     table_query: str | None = None,
+    derived_columns: str | None = None,
     row_limit: int = Query(default=2000, ge=1, le=5000),
     row_offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     selected_feature_groups = parse_csv_list(feature_groups) or ["core", "session", "momentum"]
-    return {
-        "snapshot": load_scanner_snapshot(
+    try:
+        snapshot = load_scanner_snapshot(
             artifact_records(Path(processed_root)),
             session_date=session_date,
             timeframe=timeframe,
@@ -1058,8 +1071,11 @@ def market_scanner_snapshot(
             row_limit=row_limit,
             row_offset=row_offset,
             table_query=parse_table_query(table_query),
+            derived_columns=parse_derived_columns(derived_columns),
         )
-    }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"snapshot": snapshot}
 
 
 @app.get("/api/market-data/catalog")

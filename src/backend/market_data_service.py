@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import asdict
 from datetime import date, datetime, time
@@ -330,7 +331,9 @@ def load_scanner_snapshot(
     row_limit: int,
     row_offset: int = 0,
     table_query: dict[str, Any] | None = None,
+    derived_columns: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    derived_column_names = requested_derived_column_names(derived_columns)
     bars_record = first_matching_artifact(records, "bars", timeframe, session_date.isoformat())
     if not bars_record or not bars_record.get("exists"):
         return scanner_empty_payload(timeframe, session_date, bar_time, row_limit, row_offset, "Bars artifact not found")
@@ -363,11 +366,16 @@ def load_scanner_snapshot(
         joined_groups.append(group)
 
     joined_schema = scan.collect_schema()
+    scan = apply_derived_columns(scan, joined_schema, derived_columns)
+    joined_schema = scan.collect_schema()
     joined_columns = joined_schema.names()
     scan = apply_table_query(scan, joined_schema, table_query)
     selected_columns = [column for column in columns if column in joined_columns]
     if not selected_columns:
         selected_columns = default_scanner_columns(joined_columns)
+    for column in derived_column_names:
+        if column in joined_columns and column not in selected_columns:
+            selected_columns.append(column)
     if selected_columns:
         scan = scan.select(selected_columns)
 
@@ -392,6 +400,163 @@ def load_scanner_snapshot(
         "timeframe": timeframe,
         "total_columns": len(joined_columns),
     }
+
+
+def requested_derived_column_names(derived_columns: list[dict[str, Any]] | None) -> list[str]:
+    names: list[str] = []
+    for item in derived_columns or []:
+        if not isinstance(item, dict) or item.get("enabled") is False:
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def apply_derived_columns(scan: pl.LazyFrame, schema: pl.Schema, derived_columns: list[dict[str, Any]] | None) -> pl.LazyFrame:
+    if not derived_columns:
+        return scan
+    schema_by_name = dict(schema.items())
+    for index, item in enumerate(derived_columns, start=1):
+        if not isinstance(item, dict):
+            continue
+        if item.get("enabled") is False:
+            continue
+        name = normalize_derived_column_name(item.get("name"))
+        expression_text = str(item.get("expression") or "").strip()
+        if not name or not expression_text:
+            continue
+        if name in schema_by_name:
+            raise ValueError(f"Derived column '{name}' already exists")
+        expression = build_derived_column_expression(expression_text, schema_by_name).alias(name)
+        scan = scan.with_columns(expression)
+        schema_by_name[name] = pl.Float64
+        if index > 50:
+            raise ValueError("Too many derived columns; limit is 50")
+    return scan
+
+
+def normalize_derived_column_name(value: Any) -> str:
+    name = str(value or "").strip()
+    if not name:
+        return ""
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$", name):
+        raise ValueError(f"Invalid derived column name '{name}'")
+    return name
+
+
+def build_derived_column_expression(expression_text: str, schema_by_name: dict[str, pl.DataType]) -> pl.Expr:
+    if len(expression_text) > 500:
+        raise ValueError("Derived expression is too long")
+    try:
+        parsed = ast.parse(expression_text, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"Invalid derived expression: {expression_text}") from exc
+    return build_derived_ast_expression(parsed.body, schema_by_name)
+
+
+def build_derived_ast_expression(node: ast.AST, schema_by_name: dict[str, pl.DataType]) -> pl.Expr:
+    if isinstance(node, ast.Name):
+        if node.id not in schema_by_name:
+            raise ValueError(f"Unknown column '{node.id}' in derived expression")
+        return pl.col(node.id)
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool):
+            return pl.lit(node.value)
+        if isinstance(node.value, (int, float)):
+            return pl.lit(node.value)
+        raise ValueError("Derived expressions only support numeric and boolean literals")
+    if isinstance(node, ast.UnaryOp):
+        operand = build_derived_ast_expression(node.operand, schema_by_name)
+        if isinstance(node.op, ast.USub):
+            return -operand
+        if isinstance(node.op, ast.UAdd):
+            return operand
+        if isinstance(node.op, ast.Not):
+            return ~operand
+    if isinstance(node, ast.BinOp):
+        left = build_derived_ast_expression(node.left, schema_by_name)
+        right = build_derived_ast_expression(node.right, schema_by_name)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Div):
+            return left / right
+        if isinstance(node.op, ast.Pow):
+            return left.pow(right)
+    if isinstance(node, ast.BoolOp):
+        values = [build_derived_ast_expression(value, schema_by_name) for value in node.values]
+        if not values:
+            raise ValueError("Boolean expression needs at least one value")
+        combined = values[0]
+        for value in values[1:]:
+            combined = combined & value if isinstance(node.op, ast.And) else combined | value
+        return combined
+    if isinstance(node, ast.Compare):
+        left = build_derived_ast_expression(node.left, schema_by_name)
+        comparisons: list[pl.Expr] = []
+        current_left = left
+        for operator, comparator in zip(node.ops, node.comparators):
+            right = build_derived_ast_expression(comparator, schema_by_name)
+            comparisons.append(build_derived_comparison(current_left, operator, right))
+            current_left = right
+        combined = comparisons[0]
+        for comparison in comparisons[1:]:
+            combined = combined & comparison
+        return combined
+    if isinstance(node, ast.Call):
+        return build_derived_call_expression(node, schema_by_name)
+    raise ValueError("Unsupported derived expression syntax")
+
+
+def build_derived_comparison(left: pl.Expr, operator: ast.cmpop, right: pl.Expr) -> pl.Expr:
+    if isinstance(operator, ast.Eq):
+        return left == right
+    if isinstance(operator, ast.NotEq):
+        return left != right
+    if isinstance(operator, ast.Gt):
+        return left > right
+    if isinstance(operator, ast.GtE):
+        return left >= right
+    if isinstance(operator, ast.Lt):
+        return left < right
+    if isinstance(operator, ast.LtE):
+        return left <= right
+    raise ValueError("Unsupported comparison operator")
+
+
+def build_derived_call_expression(node: ast.Call, schema_by_name: dict[str, pl.DataType]) -> pl.Expr:
+    if not isinstance(node.func, ast.Name) or node.keywords:
+        raise ValueError("Derived expressions only support simple function calls")
+    function = node.func.id.lower()
+    args = [build_derived_ast_expression(arg, schema_by_name) for arg in node.args]
+    if function == "abs" and len(args) == 1:
+        return args[0].abs()
+    if function == "sqrt" and len(args) == 1:
+        return args[0].sqrt()
+    if function == "log" and len(args) == 1:
+        return args[0].log()
+    if function == "log1p" and len(args) == 1:
+        return (args[0] + 1).log()
+    if function == "clip" and len(args) == 3:
+        return args[0].clip(args[1], args[2])
+    if function == "min" and len(args) >= 2:
+        return pl.min_horizontal(args)
+    if function == "max" and len(args) >= 2:
+        return pl.max_horizontal(args)
+    if function == "rank_desc" and len(args) == 1:
+        return args[0].rank(method="dense", descending=True)
+    if function == "rank_asc" and len(args) == 1:
+        return args[0].rank(method="dense")
+    if function == "percentile_rank" and len(args) == 1:
+        return args[0].rank(method="average") / pl.len()
+    if function == "zscore" and len(args) == 1:
+        std = args[0].std()
+        return pl.when(std > 0).then((args[0] - args[0].mean()) / std).otherwise(0.0)
+    raise ValueError(f"Unsupported derived expression function '{function}'")
 
 
 def scanner_empty_payload(timeframe: str, session_date: date, bar_time: str, row_limit: int, row_offset: int, reason: str) -> dict[str, Any]:
