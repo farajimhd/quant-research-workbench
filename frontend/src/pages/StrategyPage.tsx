@@ -3187,7 +3187,17 @@ function candleInPeriod(candle: PortfolioCandle, periodStart: string, periodEnd:
 
 function dateStringFromTimestamp(timestamp: number) {
   if (!Number.isFinite(timestamp)) return "";
-  return new Date(timestamp * 1000).toISOString().slice(0, 10);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "America/New_York",
+    year: "numeric"
+  }).formatToParts(new Date(timestamp * 1000));
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? "";
+  const year = part("year");
+  const month = part("month");
+  const day = part("day");
+  return year && month && day ? `${year}-${month}-${day}` : "";
 }
 
 type RunDetailPayload = {

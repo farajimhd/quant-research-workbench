@@ -25,10 +25,12 @@ from src.backend.market_data_service import (
     artifact_records,
     artifact_schema,
     catalog_preview_payload,
+    chart_timestamp_seconds,
     chart_payload,
     coverage_rows,
     display_item_settings,
     display_price_zones,
+    extended_session_regions,
     first_matching_artifact,
     first_ticker_in_range,
     load_artifact_sample,
@@ -306,7 +308,7 @@ def symbol_timeframe_chart_payload(
     if not required_columns.issubset(set(frame.columns)):
         return empty_symbol_timeframe_payload()
     rows = frame.sort("bar_time_market").to_dicts()
-    timed_rows = [(timestamp_seconds(row.get("bar_time_market")), row) for row in rows]
+    timed_rows = [(chart_timestamp_seconds(row, timeframe), row) for row in rows]
     timed_rows = [(timestamp, row) for timestamp, row in timed_rows if timestamp is not None]
     selected_items = strategy_display_items(processed_root, presentation, timeframe)
     candles, volume = symbol_candles_and_volume(timed_rows)
@@ -316,7 +318,7 @@ def symbol_timeframe_chart_payload(
         "overlay_series": symbol_overlay_series(timed_rows, selected_items, timeframe),
         "oscillator_series": symbol_oscillator_series(timed_rows, selected_items, timeframe),
         "price_zones": display_price_zones([row for _, row in timed_rows], timeframe, selected_items),
-        "regions": [],
+        "regions": extended_session_regions([row for _, row in timed_rows], timeframe),
     }
 
 
