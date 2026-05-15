@@ -184,19 +184,38 @@ def load_daily_context(config: BacktestConfig, session_date: date, requirements:
             f"lookback_days={requirements.daily_lookback_days} under {config.processed_data_root}."
         )
 
-    if "atr14" not in daily.columns:
-        daily = daily.with_columns((pl.col("high") - pl.col("low")).alias("atr14"))
+    daily = daily.sort(["ticker", "session_date"]).with_columns(
+        pl.col("close").shift(1).over("ticker").alias("_previous_daily_close")
+    )
+    daily = daily.with_columns(
+        pl.max_horizontal(
+            pl.col("high") - pl.col("low"),
+            (pl.col("high") - pl.col("_previous_daily_close")).abs(),
+            (pl.col("low") - pl.col("_previous_daily_close")).abs(),
+        ).alias("_qc_true_range")
+    )
 
-    return (
-        daily.sort(["ticker", "session_date"])
-        .group_by("ticker")
+    # Match the QuantConnect ORB port: average volume uses the last 14 daily
+    # bars, previous close is the latest daily close, and ATR is the simple
+    # average of the last 14 true ranges after at least 15 daily closes exist.
+    context = (
+        daily.group_by("ticker")
         .agg(
-            pl.col("volume").tail(14).mean().alias("avg_daily_volume_14"),
-            pl.col("atr14").tail(14).mean().alias("atr_14"),
+            pl.col("volume").tail(14).mean().alias("_avg_daily_volume_14"),
+            pl.col("_qc_true_range").drop_nulls().tail(14).mean().alias("_atr_14"),
             pl.col("close").last().alias("previous_close"),
             pl.len().alias("daily_rows"),
         )
+        .with_columns(
+            pl.when(pl.col("daily_rows") >= 14)
+            .then(pl.col("_avg_daily_volume_14"))
+            .otherwise(None)
+            .alias("avg_daily_volume_14"),
+            pl.when(pl.col("daily_rows") >= 15).then(pl.col("_atr_14")).otherwise(None).alias("atr_14"),
+        )
+        .drop("_avg_daily_volume_14", "_atr_14")
     )
+    return context.select("ticker", "avg_daily_volume_14", "atr_14", "previous_close", "daily_rows")
 
 
 def attach_daily_context(event_frame: pl.DataFrame, daily_context: pl.DataFrame) -> pl.DataFrame:

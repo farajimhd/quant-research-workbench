@@ -8,8 +8,10 @@ engine.
 
 The strategy is a single-position opening-range breakout:
 
+- apply the QuantConnect universe prefilter for price, daily dollar volume,
+  symbol denylist/suffix denylist, and top 500 daily dollar-volume names
 - build the opening range from completed 1-minute bars 09:31 through 09:35 ET
-- rank once at 09:35 ET
+- rank once the opening range is available to the local engine at 09:36 ET
 - select up to `max_candidates` by opening relative volume
 - submit one stop-entry order at a time
 - after an exit or canceled entry, try the next ranked candidate if there is
@@ -25,12 +27,14 @@ daily volume, and previous close.
 - Event bars: `1m`
 - Event feature groups: `core`, `session`
 - Daily context: provider-built `1d` bars plus `volatility` features, default
-  `daily_lookback_days = 20`
+  `daily_lookback_days = 30` calendar days to approximate QuantConnect's
+  20 daily-history bars
 
 The strategy uses the engine's provider daily context for:
 
 - `avg_daily_volume_14`
-- `atr_14`
+- `atr_14`, computed from the last 14 daily true ranges to match the attached
+  QuantConnect `UpdateDailyStats` logic
 - `previous_close`
 
 If the requested daily lookback has not been built in the provider store, the
@@ -39,9 +43,17 @@ backtest should fail before simulation. For short local smoke tests, reduce
 
 ## Setup Filters
 
-A symbol must pass:
+A symbol first passes the QuantConnect-style universe prefilter:
 
-- price between `min_price` and `max_price`
+- previous price between `min_universe_price` and `max_price`
+- average daily dollar volume at least `min_daily_dollar_volume`
+- denylisted fund/leveraged ETF symbols and warrant/unit/preferred suffixes are
+  excluded
+- top `max_universe_size` names by average daily dollar volume
+
+A universe symbol must then pass the ORB setup:
+
+- opening-range close at least `min_price`
 - average daily volume at least `min_avg_daily_volume`
 - ATR at least `min_atr`
 - opening relative volume at least `min_opening_relative_volume`

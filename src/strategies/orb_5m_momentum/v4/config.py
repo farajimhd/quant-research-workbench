@@ -6,11 +6,15 @@ from typing import Any
 
 @dataclass(slots=True)
 class OrbMomentumConfig:
+    min_universe_price: float = 0.75
     min_price: float = 5.0
     max_price: float = 50.0
+    min_daily_dollar_volume: float = 2_000_000.0
+    max_float_or_shares: float = 500_000_000.0
+    max_universe_size: int = 500
     min_avg_daily_volume: float = 1_000_000.0
     min_atr: float = 0.50
-    daily_lookback_days: int = 20
+    daily_lookback_days: int = 30
 
     relative_volume_daily_share: float = 0.02
     min_opening_relative_volume: float = 1.0

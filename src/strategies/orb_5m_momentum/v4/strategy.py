@@ -12,6 +12,26 @@ from src.strategies.orb_5m_momentum.v4.config import OrbMomentumConfig
 from src.strategies.orb_5m_momentum.v4.presentation import chart_presentation
 
 
+BLOCKED_SYMBOLS = {
+    "KWEB",
+    "YINN",
+    "CWEB",
+    "NUGT",
+    "JNUG",
+    "GDXU",
+    "AGQ",
+    "SCO",
+    "TNA",
+    "URTY",
+    "DRN",
+    "CONL",
+    "ARKG",
+    "MSOS",
+    "URA",
+}
+BLOCKED_SUFFIXES = (".U", ".WS", ".WT", ".W", ".P", ".PR", ".R", "-U", "-WS", "-WT", "-W", "-P", "-PR", "-R")
+
+
 class OrbFiveMinuteMomentumV4Strategy:
     name = "orb_5m_momentum"
 
@@ -69,7 +89,7 @@ class OrbFiveMinuteMomentumV4Strategy:
         self.scanner_snapshots.append(
             {
                 "session_date": frames.session_date.isoformat(),
-                "timestamp": f"{frames.session_date.isoformat()} 09:35:00",
+                "timestamp": self.opening_range_available_timestamp(frames.session_date),
                 "candidate_count": candidates.height,
                 "selected_count": selected.height,
                 "watchlist_size": self.config.max_candidates,
@@ -102,7 +122,7 @@ class OrbFiveMinuteMomentumV4Strategy:
             self.rejection_events.append(
                 {
                     "session_date": frames.session_date.isoformat(),
-                    "timestamp": f"{frames.session_date.isoformat()} 09:35:00",
+                    "timestamp": self.opening_range_available_timestamp(frames.session_date),
                     **row,
                 }
             )
@@ -182,6 +202,7 @@ class OrbFiveMinuteMomentumV4Strategy:
             )
             .join(frames.daily_context, on="ticker", how="left")
             .with_columns(
+                (pl.col("avg_daily_volume_14") * pl.col("previous_close")).alias("avg_daily_dollar_volume_14"),
                 pl.when(pl.col("avg_daily_volume_14") > 0)
                 .then(pl.col("box_volume") / (pl.col("avg_daily_volume_14") * cfg.relative_volume_daily_share))
                 .otherwise(0.0)
@@ -205,8 +226,26 @@ class OrbFiveMinuteMomentumV4Strategy:
             )
         )
 
-        return box.with_columns(self._setup_pass_expr().alias("passes_setup_filter")).with_columns(
+        universe = self._apply_universe_selection(box)
+        return universe.with_columns(self._setup_pass_expr().alias("passes_setup_filter")).with_columns(
             self._reject_reason_expr().alias("reject_reason")
+        )
+
+    def _apply_universe_selection(self, frame: pl.DataFrame) -> pl.DataFrame:
+        cfg = self.config
+        suffix_filter = pl.lit(True)
+        for suffix in BLOCKED_SUFFIXES:
+            suffix_filter = suffix_filter & ~pl.col("ticker").str.ends_with(suffix)
+        return (
+            frame.filter(
+                ~pl.col("ticker").is_in(BLOCKED_SYMBOLS)
+                & suffix_filter
+                & (pl.col("previous_close") >= cfg.min_universe_price)
+                & (pl.col("previous_close") <= cfg.max_price)
+                & (pl.col("avg_daily_dollar_volume_14") >= cfg.min_daily_dollar_volume)
+            )
+            .sort("avg_daily_dollar_volume_14", descending=True)
+            .head(cfg.max_universe_size)
         )
 
     def _setup_pass_expr(self) -> pl.Expr:
@@ -214,8 +253,9 @@ class OrbFiveMinuteMomentumV4Strategy:
         return (
             (pl.col("box_open").is_not_null())
             & (pl.col("box_close") >= cfg.min_price)
-            & (pl.col("box_close") <= cfg.max_price)
+            & (pl.col("avg_daily_volume_14").is_not_null())
             & (pl.col("avg_daily_volume_14") >= cfg.min_avg_daily_volume)
+            & (pl.col("atr_14").is_not_null())
             & (pl.col("atr_14") >= cfg.min_atr)
             & (pl.col("orb_relative_volume") >= cfg.min_opening_relative_volume)
             & (pl.col("gap_pct") >= cfg.min_gap_up_pct)
@@ -232,8 +272,9 @@ class OrbFiveMinuteMomentumV4Strategy:
         return (
             pl.when(pl.col("box_open").is_null()).then(pl.lit("base"))
             .when(pl.col("box_close") < cfg.min_price).then(pl.lit("price_low"))
-            .when(pl.col("box_close") > cfg.max_price).then(pl.lit("price_high"))
+            .when(pl.col("avg_daily_volume_14").is_null()).then(pl.lit("liquidity"))
             .when(pl.col("avg_daily_volume_14") < cfg.min_avg_daily_volume).then(pl.lit("liquidity"))
+            .when(pl.col("atr_14").is_null()).then(pl.lit("atr"))
             .when(pl.col("atr_14") < cfg.min_atr).then(pl.lit("atr"))
             .when(pl.col("orb_relative_volume") < cfg.min_opening_relative_volume).then(pl.lit("relative_volume"))
             .when(pl.col("gap_pct") < cfg.min_gap_up_pct).then(pl.lit("gap"))
@@ -409,7 +450,11 @@ class OrbFiveMinuteMomentumV4Strategy:
         )
 
     def first_entry_action_minute(self) -> int:
-        return self.config.opening_box_end_minute
+        return self.config.opening_box_end_minute + 1
+
+    def opening_range_available_timestamp(self, session_date) -> str:
+        minute = self.first_entry_action_minute()
+        return f"{session_date.isoformat()} {minute // 60:02d}:{minute % 60:02d}:00"
 
     def _reject(self, timestamp: datetime, ticker: str, reason: str, setup: dict) -> None:
         self.rejection_events.append(
@@ -450,7 +495,7 @@ class OrbFiveMinuteMomentumV4Strategy:
     ) -> None:
         if not self.observability:
             return
-        scan_time = f"{frames.session_date.isoformat()} 09:35:00"
+        scan_time = self.opening_range_available_timestamp(frames.session_date)
         rows = (
             setup_df.with_columns(
                 pl.when(pl.col("passes_setup_filter")).then(pl.lit("candidate")).otherwise(pl.lit("filtered_out")).alias("scanner_status"),
