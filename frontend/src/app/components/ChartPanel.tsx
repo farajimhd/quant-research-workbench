@@ -97,9 +97,11 @@ export type ChartCatalogKnowledge = {
   equations?: Array<{ markdown: string; title: string; variables: Record<string, string> }>;
 };
 export type ChartReference = {
+  endTime?: number;
   label?: string;
   minuteOfDay?: number;
   sessionDate?: string;
+  startTime?: number;
   time?: number;
 };
 export type ChartCatalogItem = {
@@ -349,7 +351,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const oscillatorPaneGroups = buildOscillatorPaneGroups(displayedOscillatorSeries);
   const priceLegendItems = buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings);
   const hasChartData = Boolean(payload?.candles.length);
-  const referenceKey = reference ? `${reference.time ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
+  const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
 
   const updateChartSettings = <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => {
     setChartSettings((current) => {
@@ -395,7 +397,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       fitFirstDay(priceChartRef.current, fitCandles(payload));
     },
     fitRecent() {
-      fitRecent(priceChartRef.current, fitCandles(payload));
+      fitReferenceOrRecent(priceChartRef.current, fitCandles(payload), reference, timeframe);
     },
     toggleFullscreen() {
       setFullscreen((value) => !value);
@@ -520,7 +522,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         const currentPayload = payloadRef.current;
         if (!currentPayload || !priceChartRef.current) return;
         if (reference) {
-          fitAroundReference(priceChartRef.current, currentPayload.candles, reference);
+          fitAroundReference(priceChartRef.current, currentPayload.candles, reference, timeframe);
         } else {
           fitInitialRange(priceChartRef.current, currentPayload.candles);
         }
@@ -535,9 +537,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   useEffect(() => {
     if (!priceChartRef.current || !payload?.candles.length || !reference) return;
-    fitAroundReference(priceChartRef.current, payload.candles, reference);
+    fitAroundReference(priceChartRef.current, payload.candles, reference, timeframe);
     drawCurrentRegions();
-  }, [referenceKey]);
+  }, [referenceKey, timeframe]);
 
   useEffect(() => {
     if (!priceChartRef.current) return;
@@ -954,7 +956,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         </button>
         <span className="toolbar-divider" />
         <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, fitCandles(payload))}><CalendarRange size={15} /></button>
-        <button className="toolbar-button" type="button" title="Fit recent" onClick={() => fitRecent(priceChartRef.current, fitCandles(payload))}><LocateFixed size={15} /></button>
+        <button className="toolbar-button" type="button" title={reference ? "Fit selected trade" : "Fit recent"} onClick={() => fitReferenceOrRecent(priceChartRef.current, fitCandles(payload), reference, timeframe)}><LocateFixed size={15} /></button>
         <span className="toolbar-divider" />
         <button
           className="toolbar-button"
@@ -2346,20 +2348,53 @@ function fitRecent(chart: IChartApi | null, candles: Candle[]) {
   chart.timeScale().setVisibleLogicalRange({ from: Math.max(-1, last - halfSpan), to: last + halfSpan });
 }
 
-function fitAroundReference(chart: IChartApi | null, candles: Candle[], reference: ChartReference) {
+function fitReferenceOrRecent(chart: IChartApi | null, candles: Candle[], reference: ChartReference | null | undefined, timeframe: string) {
+  if (reference) {
+    fitAroundReference(chart, candles, reference, timeframe);
+    return;
+  }
+  fitRecent(chart, candles);
+}
+
+function fitAroundReference(chart: IChartApi | null, candles: Candle[], reference: ChartReference, timeframe: string) {
   if (!chart || !candles.length) return;
-  const referenceTime = resolveReferenceTime(reference, candles);
+  const referenceTime = resolveFitReferenceTime(reference, candles);
   if (referenceTime === null) {
     fitInitialRange(chart, candles);
     return;
   }
-  const referenceIndex = nearestCandleIndex(candles, referenceTime);
-  const span = Math.min(candles.length, Math.max(60, Math.min(220, Math.ceil(candles.length * 0.35))));
+  const timeline = candleDataForTimeframe(candles, timeframe);
+  const referenceIndex = nearestTimelineIndex(timeline, referenceTime);
+  const startIndex = typeof reference.startTime === "number" ? nearestTimelineIndex(timeline, reference.startTime) : referenceIndex;
+  const endIndex = typeof reference.endTime === "number" ? nearestTimelineIndex(timeline, reference.endTime) : referenceIndex;
+  const tradeSpan = Math.max(1, Math.abs(endIndex - startIndex));
+  const span = Math.min(timeline.length, Math.max(60, Math.min(240, tradeSpan * 5)));
   const halfSpan = Math.ceil(span / 2);
   chart.timeScale().setVisibleLogicalRange({
     from: Math.max(-1, referenceIndex - halfSpan),
-    to: Math.min(candles.length + halfSpan, referenceIndex + halfSpan),
+    to: Math.min(timeline.length + halfSpan, referenceIndex + halfSpan),
   });
+}
+
+function resolveFitReferenceTime(reference: ChartReference, candles: Candle[]) {
+  if (typeof reference.time === "number" && Number.isFinite(reference.time)) {
+    return reference.time;
+  }
+  return resolveReferenceTime(reference, candles);
+}
+
+function nearestTimelineIndex(timeline: CandleSeriesDatum[], targetTime: number) {
+  if (!timeline.length) return 0;
+  let nearest = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  timeline.forEach((item, index) => {
+    const distance = Math.abs(item.time - targetTime);
+    if (distance < nearestDistance) {
+      nearest = index;
+      nearestDistance = distance;
+    }
+  });
+  return nearest;
 }
 
 function buildCandleDataSignature(candles: Candle[]) {

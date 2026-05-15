@@ -3022,8 +3022,8 @@ function tradeExitLabelParts(trade: DataRow, exitPrice: number, pnl: number) {
 function selectedTradeReference(trade: DataRow) {
   const entryTime = tradeTimestampSeconds(trade.entry_time);
   const exitTime = tradeTimestampSeconds(trade.exit_time);
-  const time = entryTime !== null && exitTime !== null ? Math.round((entryTime + exitTime) / 2) : entryTime ?? exitTime;
-  return time === null ? null : { label: "Selected trade", time };
+  const time = entryTime !== null && exitTime !== null ? Math.round(((entryTime + exitTime) / 2) / 60) * 60 : entryTime ?? exitTime;
+  return time === null ? null : { endTime: exitTime ?? undefined, label: "Selected trade", startTime: entryTime ?? undefined, time };
 }
 
 function selectedSymbolReference(target: ObservationChartTarget, selectedTrade?: DataRow) {
