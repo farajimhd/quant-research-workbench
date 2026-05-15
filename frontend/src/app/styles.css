@@ -5131,13 +5131,30 @@ button {
   margin-bottom: 12px;
 }
 
+.scanner-query-shell {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
 .preview-query-bar {
   align-items: flex-end;
   border-bottom: 1px solid var(--border);
   padding-bottom: 10px;
 }
 
+.scanner-query-bar {
+  align-items: flex-end;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+
 .preview-query-bar .button {
+  min-height: 36px;
+  gap: 7px;
+}
+
+.scanner-query-bar .button {
   min-height: 36px;
   gap: 7px;
 }

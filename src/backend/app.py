@@ -35,6 +35,7 @@ from src.backend.market_data_service import (
     first_ticker_in_range,
     load_artifact_query_sample,
     load_artifact_sample,
+    load_scanner_snapshot,
     review_payload,
     scope_defaults,
     source_scan,
@@ -1031,6 +1032,34 @@ def market_schema(processed_root: str, group: str, timeframe: str, session_date:
     if not record:
         raise HTTPException(status_code=404, detail="Artifact not found")
     return {"record": record, "schema": artifact_schema(record)}
+
+
+@app.get("/api/market-data/scanner-snapshot")
+def market_scanner_snapshot(
+    processed_root: str,
+    session_date: date,
+    timeframe: str,
+    bar_time: str,
+    feature_groups: str | None = None,
+    columns: str | None = None,
+    table_query: str | None = None,
+    row_limit: int = Query(default=2000, ge=1, le=5000),
+    row_offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    selected_feature_groups = parse_csv_list(feature_groups) or ["core", "session", "momentum"]
+    return {
+        "snapshot": load_scanner_snapshot(
+            artifact_records(Path(processed_root)),
+            session_date=session_date,
+            timeframe=timeframe,
+            bar_time=bar_time,
+            feature_groups=selected_feature_groups,
+            columns=parse_csv_list(columns),
+            row_limit=row_limit,
+            row_offset=row_offset,
+            table_query=parse_table_query(table_query),
+        )
+    }
 
 
 @app.get("/api/market-data/catalog")

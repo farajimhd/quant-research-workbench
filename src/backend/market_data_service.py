@@ -319,6 +319,142 @@ def default_preview_columns(schema_names: list[str]) -> list[str]:
     return schema_names[:24]
 
 
+def load_scanner_snapshot(
+    records: list[dict[str, Any]],
+    *,
+    session_date: date,
+    timeframe: str,
+    bar_time: str,
+    feature_groups: list[str],
+    columns: list[str],
+    row_limit: int,
+    row_offset: int = 0,
+    table_query: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    bars_record = first_matching_artifact(records, "bars", timeframe, session_date.isoformat())
+    if not bars_record or not bars_record.get("exists"):
+        return scanner_empty_payload(timeframe, session_date, bar_time, row_limit, row_offset, "Bars artifact not found")
+    minute = parse_bar_start_minute(bar_time)
+    if minute is None:
+        return scanner_empty_payload(timeframe, session_date, bar_time, row_limit, row_offset, "Invalid bar time")
+
+    scan = pl.scan_parquet(str(record_path(bars_record)))
+    schema = scan.collect_schema()
+    schema_names = schema.names()
+    if "minute_of_day" in schema_names:
+        scan = scan.filter(pl.col("minute_of_day") == minute)
+    elif "bar_time_market" in schema_names:
+        start = datetime.combine(session_date, time(minute // 60, minute % 60))
+        scan = scan.filter(pl.col("bar_time_market").dt.replace_time_zone(None) == start)
+
+    joined_groups: list[str] = []
+    for group in feature_groups:
+        feature_record = first_matching_artifact(records, f"features_{group}", timeframe, session_date.isoformat())
+        if not feature_record or not feature_record.get("exists"):
+            continue
+        feature_scan = pl.scan_parquet(str(record_path(feature_record)))
+        feature_schema = feature_scan.collect_schema()
+        if "bar_id" not in feature_schema.names():
+            continue
+        duplicate_columns = [column for column in feature_schema.names() if column != "bar_id" and column in scan.collect_schema().names()]
+        if duplicate_columns:
+            feature_scan = feature_scan.drop(duplicate_columns)
+        scan = scan.join(feature_scan, on="bar_id", how="left", coalesce=True)
+        joined_groups.append(group)
+
+    joined_schema = scan.collect_schema()
+    joined_columns = joined_schema.names()
+    scan = apply_table_query(scan, joined_schema, table_query)
+    selected_columns = [column for column in columns if column in joined_columns]
+    if not selected_columns:
+        selected_columns = default_scanner_columns(joined_columns)
+    if selected_columns:
+        scan = scan.select(selected_columns)
+
+    row_limit = max(1, min(row_limit, 5000))
+    row_offset = max(0, row_offset)
+    frame = scan.slice(row_offset, row_limit + 1).collect()
+    has_more = frame.height > row_limit
+    if has_more:
+        frame = frame.head(row_limit)
+    rows = frame.to_dicts()
+    return {
+        "bar_time": bar_time,
+        "columns": frame.columns,
+        "feature_groups": joined_groups,
+        "has_more": has_more,
+        "reason": "",
+        "row_count": row_offset + len(rows) + (1 if has_more else 0),
+        "row_limit": row_limit,
+        "row_offset": row_offset,
+        "rows": json_safe(rows),
+        "session_date": session_date.isoformat(),
+        "timeframe": timeframe,
+        "total_columns": len(joined_columns),
+    }
+
+
+def scanner_empty_payload(timeframe: str, session_date: date, bar_time: str, row_limit: int, row_offset: int, reason: str) -> dict[str, Any]:
+    return {
+        "bar_time": bar_time,
+        "columns": [],
+        "feature_groups": [],
+        "has_more": False,
+        "reason": reason,
+        "row_count": 0,
+        "row_limit": row_limit,
+        "row_offset": row_offset,
+        "rows": [],
+        "session_date": session_date.isoformat(),
+        "timeframe": timeframe,
+        "total_columns": 0,
+    }
+
+
+def parse_bar_start_minute(value: str) -> int | None:
+    text = str(value or "").strip()
+    match = re.match(r"^(\d{1,2}):(\d{2})", text)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def default_scanner_columns(schema_names: list[str]) -> list[str]:
+    preferred = [
+        "ticker",
+        "bar_time_market",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "transactions",
+        "dollar_volume",
+        "return_1",
+        "close_location",
+        "is_green",
+        "is_red",
+        "vwap",
+        "day_volume_so_far",
+        "gap_pct",
+        "or_5m_high",
+        "or_5m_low",
+        "or_5m_range",
+        "tema9",
+        "tema20",
+        "macd_line",
+        "macd_signal",
+        "macd_hist",
+        "rsi14",
+    ]
+    selected = [column for column in preferred if column in schema_names]
+    return selected or schema_names[:32]
+
+
 def apply_table_query(scan: pl.LazyFrame, schema: pl.Schema, table_query: dict[str, Any] | None) -> pl.LazyFrame:
     if not table_query:
         return scan

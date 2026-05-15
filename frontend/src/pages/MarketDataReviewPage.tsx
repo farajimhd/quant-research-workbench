@@ -71,6 +71,20 @@ type PreviewQueryState = {
   tickers: string;
   timeframe: string;
 };
+type ScannerSnapshot = {
+  bar_time: string;
+  columns: string[];
+  feature_groups: string[];
+  has_more?: boolean;
+  reason?: string;
+  row_count: number;
+  row_limit: number;
+  row_offset: number;
+  rows: Record<string, unknown>[];
+  session_date: string;
+  timeframe: string;
+  total_columns: number;
+};
 type CatalogKnowledge = {
   shortDescription: string;
   detailedDescription: string;
@@ -158,7 +172,7 @@ type PreviewBarContext = {
 };
 type ParsedProviderBarId = Pick<PreviewBarContext, "barId" | "ticker" | "time" | "timeframe" | "utcText">;
 
-const tabs = ["Overview", "Preview", "Chart", "Coverage", "Artifacts", "Schema", "Catalog"];
+const tabs = ["Overview", "Preview", "Scanner", "Chart", "Coverage", "Artifacts", "Schema", "Catalog"];
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
@@ -334,6 +348,7 @@ export function MarketDataReviewPage() {
       {activeTab === "Chart" && scope && review ? <ChartTab catalog={catalog} scope={scope} records={review.records} /> : null}
       {activeTab === "Artifacts" && review ? <Artifacts records={review.records} /> : null}
       {activeTab === "Preview" && scope && review ? <Preview catalog={catalog} scope={scope} records={review.records} /> : null}
+      {activeTab === "Scanner" && scope && review ? <ScannerTab scope={scope} records={review.records} /> : null}
       {activeTab === "Schema" && scope && review ? <Schema scope={scope} records={review.records} /> : null}
       {activeTab === "Catalog" && scope ? <CatalogTab catalog={catalog} catalogError={catalogError} catalogLoading={catalogLoading} scope={scope} onCatalogChange={setCatalog} /> : null}
       {editingScope && draft ? (
@@ -598,6 +613,238 @@ function Artifacts({ records }: { records: RecordRow[] }) {
       </div>
       <DataTable rows={rows} columns={["group", "timeframe", "session_date", "rows", "column_count", "size", "built_at", "exists", "path"]} />
     </section>
+  );
+}
+
+function ScannerTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
+  const barRecords = useMemo(() => records.filter((record) => record.exists && record.group === "bars" && record.timeframe !== "1d"), [records]);
+  const sessions = useMemo(() => Array.from(new Set(barRecords.map((record) => record.session_date))).sort(), [barRecords]);
+  const [sessionDate, setSessionDate] = useState(sessions.find((item) => item >= scope.start_date && item <= scope.end_date) ?? sessions[0] ?? scope.start_date);
+  const timeframes = useMemo(
+    () => Array.from(new Set(barRecords.filter((record) => record.session_date === sessionDate).map((record) => record.timeframe))).sort(timeframeSort),
+    [barRecords, sessionDate]
+  );
+  const [timeframe, setTimeframe] = useState(timeframes[0] ?? "1m");
+  const featureOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          records
+            .filter((record) => record.exists && record.group.startsWith("features_") && record.timeframe === timeframe && record.session_date === sessionDate)
+            .map((record) => record.group.replace(/^features_/, ""))
+        )
+      ).sort(),
+    [records, sessionDate, timeframe]
+  );
+  const defaultFeatures = useMemo(() => featureOptions.filter((group) => ["core", "session", "momentum"].includes(group)), [featureOptions]);
+  const [barTime, setBarTime] = useState("09:30");
+  const [featureGroups, setFeatureGroups] = useState(defaultFeatures.join(","));
+  const [columns, setColumns] = useState("");
+  const [rowLimit, setRowLimit] = useState(2000);
+  const [rowOffset, setRowOffset] = useState(0);
+  const [backendQuery, setBackendQuery] = useState<BackendTableQuery>({ conditions: [], matchMode: "all", sortDirection: "asc" });
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [snapshot, setSnapshot] = useState<ScannerSnapshot | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const selectedFeatureGroups = useMemo(() => parseCommaList(featureGroups), [featureGroups]);
+  const availableColumns = useMemo(() => scannerAvailableColumns(records, sessionDate, timeframe, selectedFeatureGroups), [records, selectedFeatureGroups, sessionDate, timeframe]);
+  const queryKey = useMemo(
+    () => JSON.stringify({ backendQuery: cleanPreviewBackendQuery(backendQuery), barTime, columns, featureGroups, rowLimit, rowOffset, sessionDate, timeframe }),
+    [backendQuery, barTime, columns, featureGroups, rowLimit, rowOffset, sessionDate, timeframe]
+  );
+  const fillPanel = useViewportFillPanel(`${queryKey}:${snapshot?.rows.length ?? 0}`);
+
+  useEffect(() => {
+    if (!sessions.length) return;
+    setSessionDate((current) => (sessions.includes(current) ? current : sessions[0]));
+  }, [sessions]);
+  useEffect(() => {
+    if (!timeframes.length) return;
+    setTimeframe((current) => (timeframes.includes(current) ? current : timeframes[0]));
+  }, [timeframes]);
+  useEffect(() => {
+    if (!featureGroups && defaultFeatures.length) setFeatureGroups(defaultFeatures.join(","));
+  }, [defaultFeatures, featureGroups]);
+  useEffect(() => {
+    setRowOffset(0);
+  }, [backendQuery, barTime, columns, featureGroups, rowLimit, sessionDate, timeframe]);
+  useEffect(() => {
+    if (!sessionDate || !timeframe || !barTime) return;
+    let active = true;
+    const cleanedQuery = cleanPreviewBackendQuery(backendQuery);
+    const tableQuery = previewBackendQueryIsActive(cleanedQuery) ? JSON.stringify(cleanedQuery) : undefined;
+    setLoading(true);
+    setError("");
+    api<{ snapshot: ScannerSnapshot }>(
+      `/api/market-data/scanner-snapshot${query({
+        processed_root: scope.processed_root,
+        session_date: sessionDate,
+        timeframe,
+        bar_time: barTime,
+        feature_groups: featureGroups,
+        columns,
+        row_limit: rowLimit,
+        row_offset: rowOffset,
+        table_query: tableQuery,
+      })}`
+    )
+      .then((payload) => {
+        if (!active) return;
+        setSnapshot(payload.snapshot);
+      })
+      .catch((requestError: Error) => {
+        if (!active) return;
+        setSnapshot(null);
+        setError(requestError.message || "Scanner request failed.");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [backendQuery, barTime, columns, featureGroups, rowLimit, rowOffset, scope.processed_root, sessionDate, timeframe]);
+
+  if (!barRecords.length) return <div className="empty-state panel">No intraday bar artifacts are available for scanner review.</div>;
+  const startRow = snapshot?.rows.length ? (snapshot.row_offset ?? 0) + 1 : 0;
+  const endRow = snapshot ? (snapshot.row_offset ?? 0) + snapshot.rows.length : 0;
+  const timeframeStep = timeframeMinutes(timeframe);
+  return (
+    <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
+      <div className="scanner-query-shell">
+        <div className="toolbar scanner-query-bar">
+          <Select label="Day" value={sessionDate} options={sessions} onChange={setSessionDate} />
+          <Select label="Timeframe" value={timeframe} options={timeframes.length ? timeframes : [timeframe]} onChange={setTimeframe} />
+          <InlineField label="Bar start" type="time" value={barTime} onChange={setBarTime} />
+          <button className="button" onClick={() => setBarTime((value) => shiftBarTime(value, -timeframeStep))} type="button">Previous</button>
+          <button className="button" onClick={() => setBarTime((value) => shiftBarTime(value, timeframeStep))} type="button">Next</button>
+          <button className={filterOpen ? "button active" : "button"} onClick={() => setFilterOpen((value) => !value)} type="button">
+            <Filter size={16} />
+            Filters
+          </button>
+          <div className="preview-query-summary">
+            <span>{snapshot?.rows.length ?? 0} rows</span>
+            <span>{snapshot?.feature_groups?.length ? snapshot.feature_groups.join(", ") : "bars only"}</span>
+            <span>{snapshot?.total_columns ?? 0} columns</span>
+          </div>
+        </div>
+        {filterOpen ? (
+          <ScannerFilterPanel
+            availableColumns={availableColumns}
+            backendQuery={backendQuery}
+            columns={columns}
+            featureGroups={featureGroups}
+            featureOptions={featureOptions}
+            onBackendQueryChange={setBackendQuery}
+            onColumnsChange={setColumns}
+            onFeatureGroupsChange={setFeatureGroups}
+            onRowLimitChange={setRowLimit}
+            rowLimit={rowLimit}
+          />
+        ) : null}
+      </div>
+      {error ? <div className="preview-sample-status error">Scanner request failed: {error}</div> : null}
+      {snapshot?.reason ? <div className="preview-sample-status error">{snapshot.reason}</div> : null}
+      {loading ? (
+        <div className="preview-sample-status">
+          <span className="loading-spinner" aria-hidden="true" />
+          Loading scanner snapshot...
+        </div>
+      ) : null}
+      {snapshot ? (
+        <div className="preview-page-status">
+          <span>
+            Showing {startRow.toLocaleString()}-{endRow.toLocaleString()}
+            {snapshot.has_more ? " with more rows available" : ""}
+          </span>
+          <button className="table-text-button" disabled={rowOffset <= 0 || loading} onClick={() => setRowOffset((value) => Math.max(0, value - rowLimit))} type="button">Previous page</button>
+          <button className="table-text-button" disabled={!snapshot.has_more || loading} onClick={() => setRowOffset((value) => value + rowLimit)} type="button">Next page</button>
+        </div>
+      ) : null}
+      <DataTable rows={snapshot?.rows ?? []} columns={snapshot?.columns} />
+    </section>
+  );
+}
+
+function ScannerFilterPanel({
+  availableColumns,
+  backendQuery,
+  columns,
+  featureGroups,
+  featureOptions,
+  onBackendQueryChange,
+  onColumnsChange,
+  onFeatureGroupsChange,
+  onRowLimitChange,
+  rowLimit,
+}: {
+  availableColumns: string[];
+  backendQuery: BackendTableQuery;
+  columns: string;
+  featureGroups: string;
+  featureOptions: string[];
+  onBackendQueryChange: (value: BackendTableQuery) => void;
+  onColumnsChange: (value: string) => void;
+  onFeatureGroupsChange: (value: string) => void;
+  onRowLimitChange: (value: number) => void;
+  rowLimit: number;
+}) {
+  const conditions = backendQuery.conditions;
+  function updateConditions(next: BackendTableQuery) {
+    onBackendQueryChange(next);
+  }
+  return (
+    <div className="preview-query-panel">
+      <div className="preview-query-grid">
+        <InlineField label="Feature groups" value={featureGroups} onChange={onFeatureGroupsChange} />
+        <InlineField label="Rows" type="number" value={String(rowLimit)} onChange={(value) => onRowLimitChange(Math.max(10, Math.min(5000, Math.round(Number(value) || 2000))))} />
+        <Select label="Sort column" value={backendQuery.sortColumn ?? ""} options={["", ...availableColumns]} onChange={(value) => updateConditions({ ...backendQuery, sortColumn: value || undefined })} />
+        <Select label="Sort direction" value={backendQuery.sortDirection ?? "asc"} options={["asc", "desc"]} onChange={(value) => updateConditions({ ...backendQuery, sortDirection: value === "desc" ? "desc" : "asc" })} />
+        <Select label="Match" value={backendQuery.matchMode ?? "all"} options={["all", "any"]} onChange={(value) => updateConditions({ ...backendQuery, matchMode: value === "any" ? "any" : "all" })} />
+      </div>
+      <div className="field preview-columns-field">
+        <label>Columns</label>
+        <textarea
+          placeholder={availableColumns.slice(0, 14).join(", ") || "Leave blank for scanner defaults"}
+          value={columns}
+          onChange={(event) => onColumnsChange(event.target.value)}
+        />
+      </div>
+      <div className="preview-query-conditions">
+        <div className="preview-query-section-header">
+          <span>Conditions</span>
+          <button className="table-text-button" onClick={() => updateConditions({ ...backendQuery, conditions: [...conditions, newPreviewCondition(availableColumns)] })} type="button">
+            Add condition
+          </button>
+        </div>
+        {conditions.length ? (
+          conditions.map((condition) => {
+            const operator = PREVIEW_QUERY_OPERATORS.find((item) => item.value === condition.operator) ?? PREVIEW_QUERY_OPERATORS[0];
+            return (
+              <div className="preview-query-condition" key={condition.id}>
+                <select value={condition.column} onChange={(event) => updateConditions(updatePreviewCondition(backendQuery, condition.id, { column: event.target.value }))}>
+                  {availableColumns.map((column) => (
+                    <option key={column} value={column}>{displayName(column)}</option>
+                  ))}
+                </select>
+                <select value={condition.operator} onChange={(event) => updateConditions(updatePreviewCondition(backendQuery, condition.id, { operator: event.target.value as BackendTableQuery["conditions"][number]["operator"] }))}>
+                  {PREVIEW_QUERY_OPERATORS.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
+                {operator.needsValue ? <input value={condition.value} onChange={(event) => updateConditions(updatePreviewCondition(backendQuery, condition.id, { value: event.target.value }))} /> : null}
+                {operator.needsSecondValue ? <input value={condition.valueSecondary ?? ""} onChange={(event) => updateConditions(updatePreviewCondition(backendQuery, condition.id, { valueSecondary: event.target.value }))} /> : null}
+                <button className="table-text-button danger" onClick={() => updateConditions({ ...backendQuery, conditions: conditions.filter((item) => item.id !== condition.id) })} type="button">Remove</button>
+              </div>
+            );
+          })
+        ) : (
+          <div className="preview-query-empty">No scanner filters. The snapshot will show all tickers available at that bar time.</div>
+        )}
+      </div>
+      {featureOptions.length ? <div className="preview-query-empty">Available feature groups: {featureOptions.join(", ")}</div> : null}
+    </div>
   );
 }
 
@@ -3247,6 +3494,39 @@ function chartRequestErrorMessage(error: Error) {
     return "The running backend is still using the old single-session chart API. Restart the backend, then refresh this page.";
   }
   return error.message || "Unknown chart API error.";
+}
+
+function parseCommaList(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function scannerAvailableColumns(records: RecordRow[], sessionDate: string, timeframe: string, featureGroups: string[]) {
+  const groups = new Set(["bars", ...featureGroups.map((group) => `features_${group}`)]);
+  return Array.from(
+    new Set(
+      records
+        .filter((record) => record.exists && record.session_date === sessionDate && record.timeframe === timeframe && groups.has(record.group))
+        .flatMap((record) => record.columns)
+    )
+  ).sort();
+}
+
+function shiftBarTime(value: string, minutes: number) {
+  const [hourText, minuteText] = value.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const current = Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : 9 * 60 + 30;
+  const next = Math.max(0, Math.min(23 * 60 + 59, current + minutes));
+  return `${String(Math.floor(next / 60)).padStart(2, "0")}:${String(next % 60).padStart(2, "0")}`;
+}
+
+function timeframeMinutes(value: string) {
+  if (value.endsWith("m")) return Math.max(1, Number(value.slice(0, -1)) || 1);
+  if (value.endsWith("h")) return Math.max(1, (Number(value.slice(0, -1)) || 1) * 60);
+  return 1;
 }
 
 function timeframeSort(left: string, right: string) {
