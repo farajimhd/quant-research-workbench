@@ -389,11 +389,6 @@ export function StrategyPage() {
   return (
     <>
       <PageIntro
-        actions={
-          <button className="button secondary" onClick={changeSelection} type="button">
-            <SlidersHorizontal size={15} /> Change Strategy
-          </button>
-        }
         groupLabel="Backtest"
         title={`${activeStrategy?.display_name ?? activeSelection.strategyName.replaceAll("_", " ")} ${activeSelection.version}`}
         description={activeStrategy?.description ?? "Opening range momentum research strategy."}
@@ -417,6 +412,7 @@ export function StrategyPage() {
             key={config.strategy_version}
             onConfigChange={setConfig}
             onComplete={() => loadRuns(config.output_root, activeSelection.strategyName, activeSelection.version)}
+            onChangeStrategy={changeSelection}
             versions={activeStrategy?.versions ?? [activeSelection.version]}
           />
         )
@@ -571,11 +567,13 @@ function runCreatedAtMs(run: RunRow) {
 
 function NewRunPanel({
   config,
+  onChangeStrategy,
   onConfigChange,
   onComplete,
   versions
 }: {
   config: StrategyConfig;
+  onChangeStrategy: () => void;
   onConfigChange: (config: StrategyConfig) => void;
   onComplete: () => void;
   versions: string[];
@@ -656,6 +654,9 @@ function NewRunPanel({
         </button>
         <button className="button secondary" onClick={() => openEditor("strategy")} type="button">
           <SlidersHorizontal size={15} /> Update Strategy Parameters
+        </button>
+        <button className="button secondary" onClick={onChangeStrategy} type="button">
+          <SlidersHorizontal size={15} /> Change Strategy
         </button>
       </div>
 
