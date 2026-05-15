@@ -21,9 +21,13 @@ class BarFillModel:
         if order.order_type == "MARKET":
             base_price = float(bar["close"])
         elif order.order_type == "STOP" and order.stop_price is not None:
-            base_price = float(order.stop_price)
+            stop_price = float(order.stop_price)
+            open_price = float(bar["open"])
+            base_price = max(stop_price, open_price) if order.side == "BUY" else min(stop_price, open_price)
         elif order.order_type == "LIMIT" and order.limit_price is not None:
-            base_price = float(order.limit_price)
+            limit_price = float(order.limit_price)
+            open_price = float(bar["open"])
+            base_price = min(limit_price, open_price) if order.side == "BUY" else max(limit_price, open_price)
         else:
             base_price = float(bar["close"])
 

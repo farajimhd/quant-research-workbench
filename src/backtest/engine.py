@@ -428,15 +428,7 @@ class BacktestEngine:
                 still_open.append(order)
         self.pending_orders = still_open
 
-    def _bar_fill_timestamp(self, timestamp: datetime, bar: dict) -> datetime:
-        bar_time = bar.get("bar_time_market")
-        if isinstance(bar_time, datetime):
-            return bar_time
-        if isinstance(bar_time, str):
-            try:
-                return datetime.fromisoformat(bar_time)
-            except ValueError:
-                return timestamp
+    def _bar_fill_timestamp(self, timestamp: datetime, _bar: dict) -> datetime:
         return timestamp
 
     def _order_bar_filter_passes(self, order: Order, bar: dict) -> bool:
