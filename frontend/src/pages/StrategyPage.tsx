@@ -2917,17 +2917,17 @@ function symbolTradeChartPayload(payload: RunSymbolChartPayload | null | undefin
     overlay_series: source?.overlay_series ?? [],
     price_zones: source?.price_zones ?? [],
     regions: source?.regions ?? [],
-    trade_annotations: tradeAnnotations(trades, selectedKey, candleTimes),
+    trade_annotations: tradeAnnotations(trades, selectedKey),
     volume: (source?.volume ?? []).filter((point) => candleTimes.has(Number(point.time)))
   };
 }
 
-function tradeAnnotations(trades: DataRow[], selectedKey: string, candleTimes: Set<number>): NonNullable<ChartPayload["trade_annotations"]> {
+function tradeAnnotations(trades: DataRow[], selectedKey: string): NonNullable<ChartPayload["trade_annotations"]> {
   return trades.flatMap((trade, index) => {
     const key = tradeRowKey(trade);
     const selected = key === selectedKey;
-    const entryTime = nearestAvailableTime(tradeTimestampSeconds(trade.entry_time), candleTimes);
-    const exitTime = nearestAvailableTime(tradeTimestampSeconds(trade.exit_time), candleTimes);
+    const entryTime = tradeTimestampSeconds(trade.entry_time);
+    const exitTime = tradeTimestampSeconds(trade.exit_time);
     const entryPrice = numericTradeValue(trade.entry_price);
     const exitPrice = numericTradeValue(trade.exit_price);
     if (entryTime === null || exitTime === null || entryPrice === null || exitPrice === null) return [];
@@ -3140,21 +3140,6 @@ function zonedTimestampSeconds(year: number, month: number, day: number, hour: n
   const zonedAsUtc = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"));
   const offset = zonedAsUtc - utcGuess;
   return Math.round((utcGuess - offset) / 1000);
-}
-
-function nearestAvailableTime(time: number | null, candleTimes: Set<number>) {
-  if (time === null) return null;
-  if (candleTimes.has(time)) return time;
-  let nearest: number | null = null;
-  let nearestDistance = Number.POSITIVE_INFINITY;
-  candleTimes.forEach((candidate) => {
-    const distance = Math.abs(candidate - time);
-    if (distance < nearestDistance) {
-      nearest = candidate;
-      nearestDistance = distance;
-    }
-  });
-  return nearestDistance <= 15 * 60 ? nearest : time;
 }
 
 function observationTargetMarketDate(target: ObservationChartTarget | null | undefined) {
