@@ -11,11 +11,20 @@ export type Stage = {
   unit_label?: string;
   active_count?: number;
   active_items?: Array<{
+    bar_file_count?: number;
+    chunk_index?: number;
+    chunk_total?: number;
+    detail?: string;
     label?: string;
     phase?: string;
+    pending_writes?: number;
     session_date?: string;
     timeframe?: string;
     group?: string;
+    output_start?: string;
+    output_end?: string;
+    warmup_start?: string;
+    warmup_end?: string;
     started_at?: string;
   }>;
 };

@@ -1125,6 +1125,14 @@ def stateful_tail_frame(bars: pl.DataFrame, tail_sessions: list[str]) -> pl.Data
     return tail if not tail.is_empty() else None
 
 
+def session_period_fields(prefix: str, sessions: list[str]) -> dict[str, str | None | int]:
+    return {
+        f"{prefix}_start": sessions[0] if sessions else None,
+        f"{prefix}_end": sessions[-1] if sessions else None,
+        f"{prefix}_count": len(sessions),
+    }
+
+
 def artifact_is_readable(path: Path) -> bool:
     if not path.exists() or path.stat().st_size <= 0:
         return False
@@ -1243,6 +1251,7 @@ def build_stateful_timeframe_artifacts(
             "chunk_size": stateful_chunk_size(timeframe),
             "lookback_sessions": lookback_sessions,
             "calculation_mode": "eager_rolling_timeframe_window",
+            **session_period_fields("output", output_sessions),
             "work_total": progress_state.get("total_units"),
         },
     )
@@ -1276,6 +1285,7 @@ def build_stateful_timeframe_artifacts(
             bar_frames = [*warmup_frames, *output_frames]
             if not bar_frames:
                 continue
+            window_sessions = [*tail_sessions, *chunk_sessions]
             emit(
                 progress_callback,
                 {
@@ -1295,6 +1305,10 @@ def build_stateful_timeframe_artifacts(
                     "lookback_sessions": lookback_sessions,
                     "warmup_sessions": len(tail_sessions),
                     "write_queue_limit": STATEFUL_WRITE_QUEUE_LIMIT,
+                    **session_period_fields("warmup", tail_sessions),
+                    **session_period_fields("output", chunk_sessions),
+                    **session_period_fields("write", writable_sessions),
+                    **session_period_fields("window", window_sessions),
                     "work_total": progress_state.get("total_units"),
                 },
             )
@@ -1321,6 +1335,10 @@ def build_stateful_timeframe_artifacts(
                     "calculation_mode": "eager_rolling_timeframe_window",
                     "chunk_index": chunk_index,
                     "chunk_total": len(chunks),
+                    **session_period_fields("warmup", tail_sessions),
+                    **session_period_fields("output", chunk_sessions),
+                    **session_period_fields("write", writable_sessions),
+                    **session_period_fields("window", window_sessions),
                     "work_completed": progress_state.get("completed_units"),
                     "work_total": progress_state.get("total_units"),
                 },
@@ -1342,6 +1360,8 @@ def build_stateful_timeframe_artifacts(
                         "chunk_total": len(chunks),
                         "session_count": len(writable_sessions),
                         "message": "Queueing feature artifacts from the current eager stateful window.",
+                        **session_period_fields("write", writable_sessions),
+                        **session_period_fields("output", chunk_sessions),
                         "work_completed": progress_state.get("completed_units"),
                         "work_total": progress_state.get("total_units"),
                     },
@@ -1386,6 +1406,8 @@ def build_stateful_timeframe_artifacts(
                         "chunk_total": len(chunks),
                         "duration_sec": elapsed_since(group_started_at),
                         "pending_writes": len(pending_writes),
+                        **session_period_fields("write", writable_sessions),
+                        **session_period_fields("output", chunk_sessions),
                         "work_completed": progress_state.get("completed_units"),
                         "work_total": progress_state.get("total_units"),
                     },
@@ -1419,6 +1441,9 @@ def build_stateful_timeframe_artifacts(
                     "duration_sec": elapsed_since(chunk_started_at),
                     "lookback_sessions": lookback_sessions,
                     "tail_sessions": tail_sessions,
+                    **session_period_fields("warmup", tail_sessions),
+                    **session_period_fields("output", chunk_sessions),
+                    **session_period_fields("write", writable_sessions),
                     "work_completed": progress_state.get("completed_units"),
                     "work_total": progress_state.get("total_units"),
                 },

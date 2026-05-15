@@ -111,6 +111,13 @@ def progress_stage_for_event(event: dict[str, Any]) -> str | None:
 
 
 def active_item_key(event: dict[str, Any]) -> tuple[str, str, str, str]:
+    if bool(event.get("stateful")) and event.get("chunk_index") is not None:
+        return (
+            "",
+            str(event.get("timeframe") or ""),
+            str(event.get("chunk_index") or ""),
+            "stateful_chunk",
+        )
     return (
         str(event.get("session_date") or ""),
         str(event.get("timeframe") or ""),
@@ -119,13 +126,54 @@ def active_item_key(event: dict[str, Any]) -> tuple[str, str, str, str]:
     )
 
 
+def compact_period(start: Any, end: Any) -> str:
+    start_text = str(start or "")
+    end_text = str(end or "")
+    if start_text and end_text and start_text != end_text:
+        return f"{start_text} to {end_text}"
+    return start_text or end_text
+
+
 def active_item_label(event: dict[str, Any]) -> str:
     session = str(event.get("session_date") or "")
     timeframe = str(event.get("timeframe") or "")
     group = str(event.get("group") or "")
     phase = str(event.get("phase") or "").replace("_", " ")
+    if bool(event.get("stateful")):
+        chunk_index = event.get("chunk_index")
+        chunk_total = event.get("chunk_total") or event.get("chunk_count")
+        write_period = compact_period(event.get("write_start"), event.get("write_end"))
+        output_period = compact_period(event.get("output_start"), event.get("output_end"))
+        period = write_period or output_period
+        if chunk_index and chunk_total:
+            base = f"{timeframe} | chunk {chunk_index}/{chunk_total}"
+            return f"{base} | {period}" if period else base
+        pending = event.get("pending_session_count")
+        session_count = event.get("session_count")
+        if pending is not None and session_count is not None:
+            return f"{timeframe} | {pending}/{session_count} sessions pending"
+        return f"{timeframe} | {phase or 'stateful'}"
     parts = [item for item in [session, timeframe, group or phase] if item]
     return " | ".join(parts) if parts else phase or "processing"
+
+
+def active_item_detail(event: dict[str, Any]) -> str:
+    if not bool(event.get("stateful")):
+        return ""
+    details: list[str] = []
+    warmup_period = compact_period(event.get("warmup_start"), event.get("warmup_end"))
+    window_period = compact_period(event.get("window_start"), event.get("window_end"))
+    if warmup_period:
+        details.append(f"warmup {warmup_period}")
+    if window_period:
+        details.append(f"window {window_period}")
+    if event.get("bar_file_count") is not None:
+        details.append(f"{event.get('bar_file_count')} bar files")
+    if event.get("pending_writes") is not None:
+        details.append(f"{event.get('pending_writes')} writes queued")
+    if event.get("group"):
+        details.append(str(event.get("group")))
+    return " | ".join(details)
 
 
 def summarize_phases(
@@ -188,13 +236,24 @@ def summarize_phases(
         key = active_item_key(event)
         session_key = str(event.get("session_date") or "")
 
-        if stage and event_name == "phase_started" and status == "running":
+        if stage and status in {"running", "queued"} and (
+            event_name == "phase_started" or (stage == "build_stateful" and event_name == "phase_checkpoint")
+        ):
             active_by_stage.setdefault(stage, {})[key] = {
                 "label": active_item_label(event),
+                "detail": active_item_detail(event),
                 "phase": phase,
                 "session_date": event.get("session_date"),
                 "timeframe": event.get("timeframe"),
                 "group": event.get("group"),
+                "chunk_index": event.get("chunk_index"),
+                "chunk_total": event.get("chunk_total") or event.get("chunk_count"),
+                "output_start": event.get("output_start"),
+                "output_end": event.get("output_end"),
+                "warmup_start": event.get("warmup_start"),
+                "warmup_end": event.get("warmup_end"),
+                "bar_file_count": event.get("bar_file_count"),
+                "pending_writes": event.get("pending_writes"),
                 "started_at": event.get("emitted_at"),
             }
 
@@ -253,10 +312,17 @@ def summarize_phases(
             finalize_done = 1.0
             active_by_stage["finalize"].clear()
 
-    active_items = {
-        stage: sorted(items.values(), key=lambda item: str(item.get("label") or ""))[:8]
-        for stage, items in active_by_stage.items()
-    }
+    active_items = {}
+    for stage, items in active_by_stage.items():
+        values = list(items.values())
+        if stage == "build_stateful":
+            chunk_timeframes = {str(item.get("timeframe") or "") for item in values if item.get("chunk_index") is not None}
+            values = [
+                item
+                for item in values
+                if item.get("chunk_index") is not None or str(item.get("timeframe") or "") not in chunk_timeframes
+            ]
+        active_items[stage] = sorted(values, key=lambda item: str(item.get("label") or ""))[:8]
     if active_session_workers:
         active_items["build_bars"] = sorted(active_session_workers.values(), key=lambda item: str(item.get("label") or ""))[:8]
     active_counts = {stage: len(items) for stage, items in active_by_stage.items()}

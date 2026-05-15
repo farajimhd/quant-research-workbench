@@ -3532,20 +3532,32 @@ button {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 6px;
 }
 
 .build-step-file {
+  display: grid;
+  gap: 3px;
   max-width: 100%;
   overflow: hidden;
-  border-radius: 999px;
-  background: var(--card);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--card) 86%, var(--muted) 14%);
   color: var(--foreground);
   font-size: 10.5px;
-  line-height: 1;
-  padding: 5px 7px;
+  line-height: 1.2;
+  padding: 6px 8px;
+  text-overflow: ellipsis;
+}
+
+.build-step-file > span {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.build-step-file-detail {
+  color: var(--muted-foreground);
+  font-size: 9.5px;
 }
 
 .build-step-active-empty {

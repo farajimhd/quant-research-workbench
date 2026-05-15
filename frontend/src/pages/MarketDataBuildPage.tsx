@@ -654,7 +654,10 @@ function BuildStepCard({ stage }: { stage: Stage }) {
         {active.length ? (
           <div className="build-step-active-list">
             {active.map((item, index) => (
-              <span className="build-step-file" key={`${item.label ?? "item"}-${index}`}>{item.label ?? "processing"}</span>
+              <span className="build-step-file" key={`${item.label ?? "item"}-${index}`}>
+                <span>{item.label ?? "processing"}</span>
+                {item.detail ? <span className="build-step-file-detail">{String(item.detail)}</span> : null}
+              </span>
             ))}
           </div>
         ) : (
