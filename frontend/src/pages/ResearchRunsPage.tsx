@@ -35,6 +35,16 @@ const RUN_TABLE_COLUMNS = [
   "created_at",
 ];
 
+const RETURN_HISTOGRAM_METRICS = [
+  {
+    color: "var(--foreground)",
+    format: formatPct,
+    id: "return_pct",
+    label: "Total return",
+    value: (run: RunComparisonRow) => numberValue(run.return_pct),
+  },
+];
+
 export function ResearchRunsPage() {
   const [runs, setRuns] = useState<RunComparisonRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -103,7 +113,6 @@ export function ResearchRunsPage() {
     version: run.strategy_version ?? "-",
   }));
   const chartRuns = completeRuns.slice(0, 18);
-  const maxAbsReturn = Math.max(0.01, ...chartRuns.map((run) => Math.abs(numberValue(run.return_pct))));
 
   return (
     <div className="research-runs-page">
@@ -153,14 +162,12 @@ export function ResearchRunsPage() {
       <section className="panel research-chart-panel">
         <div className="research-section-header">
           <div>
-            <h2>Return Distribution</h2>
-            <p>Completed runs shown after the current filters, sorted by the selected order.</p>
+            <h2>Run Result Histogram</h2>
+            <p>Completed runs after the current filters, sorted by the selected order.</p>
           </div>
           <span>{chartRuns.length.toLocaleString()} runs</span>
         </div>
-        <div className="research-return-list">
-          {chartRuns.length ? chartRuns.map((run) => <ReturnBar key={run.run_id} maxAbsReturn={maxAbsReturn} run={run} />) : <div className="empty-state">No completed runs match the current filters.</div>}
-        </div>
+        {chartRuns.length ? <RunHistogramChart runs={chartRuns} /> : <div className="empty-state">No completed runs match the current filters.</div>}
       </section>
 
       <section className="panel research-table-panel">
@@ -223,19 +230,88 @@ function RunLeaderCard({ label, run, value }: { label: string; run?: RunComparis
   );
 }
 
-function ReturnBar({ maxAbsReturn, run }: { maxAbsReturn: number; run: RunComparisonRow }) {
-  const value = numberValue(run.return_pct);
-  const width = `${Math.max(3, Math.min(100, (Math.abs(value) / maxAbsReturn) * 100))}%`;
+function RunHistogramChart({ runs }: { runs: RunComparisonRow[] }) {
+  const metrics = RETURN_HISTOGRAM_METRICS;
+  const plotLeft = 56;
+  const plotTop = 18;
+  const plotHeight = 190;
+  const labelHeight = 104;
+  const plotBottom = plotTop + plotHeight;
+  const chartHeight = plotBottom + labelHeight;
+  const groupWidth = Math.max(52, metrics.length * 18 + 34);
+  const chartWidth = Math.max(860, plotLeft + 24 + runs.length * groupWidth);
+  const barWidth = Math.min(16, Math.max(8, (groupWidth - 20) / metrics.length - 3));
+  const values = runs.flatMap((run) => metrics.map((metric) => metric.value(run)));
+  const minValue = Math.min(0, ...values);
+  const maxValue = Math.max(0, ...values);
+  const span = maxValue - minValue || 0.01;
+  const yForValue = (value: number) => plotTop + ((maxValue - value) / span) * plotHeight;
+  const zeroY = yForValue(0);
+  const gridValues = Array.from({ length: 5 }, (_, index) => maxValue - (span * index) / 4);
+
   return (
-    <div className="research-return-row" data-tone={value >= 0 ? "success" : "danger"}>
-      <div>
-        <strong>{run.run_name}</strong>
-        <span>{displayName(run.strategy_name ?? "")} {run.strategy_version ?? ""}</span>
+    <div className="research-histogram-shell">
+      <div className="research-histogram-toolbar">
+        <div className="research-histogram-legend">
+          {metrics.map((metric) => (
+            <span className="research-histogram-legend-item" key={metric.id}>
+              <i style={{ background: metric.color }} />
+              {metric.label}
+            </span>
+          ))}
+        </div>
+        <span>{runs.length.toLocaleString()} plotted runs</span>
       </div>
-      <div className="research-return-track">
-        <span style={{ width }} />
+      <div className="research-histogram-scroll" role="img" aria-label="Run result histogram">
+        <svg className="research-histogram-svg" height={chartHeight} viewBox={`0 0 ${chartWidth} ${chartHeight}`} width={chartWidth}>
+          {gridValues.map((value) => {
+            const y = yForValue(value);
+            return (
+              <g key={value.toFixed(6)}>
+                <line className="research-histogram-grid" x1={plotLeft} x2={chartWidth - 12} y1={y} y2={y} />
+                <text className="research-histogram-y-label" dominantBaseline="middle" textAnchor="end" x={plotLeft - 10} y={y}>
+                  {formatPct(value)}
+                </text>
+              </g>
+            );
+          })}
+          <line className="research-histogram-axis" x1={plotLeft} x2={chartWidth - 12} y1={plotBottom} y2={plotBottom} />
+          <line className="research-histogram-axis" x1={plotLeft} x2={plotLeft} y1={plotTop} y2={plotBottom} />
+          <line className="research-histogram-zero" x1={plotLeft} x2={chartWidth - 12} y1={zeroY} y2={zeroY} />
+          {runs.map((run, runIndex) => {
+            const groupX = plotLeft + 12 + runIndex * groupWidth;
+            const labelX = groupX + groupWidth / 2;
+            return (
+              <g key={run.run_id}>
+                {metrics.map((metric, metricIndex) => {
+                  const value = metric.value(run);
+                  const y = yForValue(value);
+                  const barX = groupX + 10 + metricIndex * (barWidth + 4);
+                  const barY = Math.min(y, zeroY);
+                  const barHeight = Math.max(1, Math.abs(zeroY - y));
+                  return (
+                    <rect
+                      className="research-histogram-bar"
+                      data-tone={value >= 0 ? "success" : "danger"}
+                      height={barHeight}
+                      key={metric.id}
+                      rx={3}
+                      width={barWidth}
+                      x={barX}
+                      y={barY}
+                    >
+                      <title>{`${run.run_name} | ${metric.label}: ${metric.format(value)}`}</title>
+                    </rect>
+                  );
+                })}
+                <text className="research-histogram-x-label" textAnchor="start" transform={`translate(${labelX - 5} ${plotBottom + 12}) rotate(90)`}>
+                  {histogramRunLabel(run)}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
       </div>
-      <b>{formatPct(value)}</b>
     </div>
   );
 }
@@ -265,6 +341,11 @@ function normalizeStatus(status: unknown) {
 function numberValue(value: unknown) {
   const numeric = Number(value ?? 0);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function histogramRunLabel(run: RunComparisonRow) {
+  const label = run.run_name || `${displayName(run.strategy_name ?? "")} ${run.strategy_version ?? ""}`.trim();
+  return label.length > 28 ? `${label.slice(0, 25)}...` : label;
 }
 
 function formatDateTime(value: unknown) {

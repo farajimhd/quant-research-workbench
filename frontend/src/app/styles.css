@@ -3534,67 +3534,90 @@ button {
   font-size: 12px;
 }
 
-.research-return-list {
+.research-histogram-shell {
   display: grid;
-  gap: 7px;
+  gap: 10px;
+  min-width: 0;
 }
 
-.research-return-row {
-  --return-tone: var(--success);
-  display: grid;
-  grid-template-columns: minmax(180px, 1.1fr) minmax(160px, 2fr) 88px;
+.research-histogram-toolbar {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  min-height: 38px;
+  color: var(--muted-foreground);
+  font-size: 12px;
 }
 
-.research-return-row[data-tone="danger"] {
-  --return-tone: var(--danger);
+.research-histogram-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
-.research-return-row > div:first-child {
-  display: grid;
-  min-width: 0;
-}
-
-.research-return-row strong,
-.research-return-row span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.research-return-row strong {
+.research-histogram-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   color: var(--foreground);
   font-size: 12px;
   font-weight: 500;
 }
 
-.research-return-row span {
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
-
-.research-return-row b {
-  color: var(--return-tone);
-  font-size: 13px;
-  font-weight: 500;
-  text-align: right;
-}
-
-.research-return-track {
-  overflow: hidden;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--muted) 60%, transparent);
-  height: 9px;
-}
-
-.research-return-track span {
+.research-histogram-legend-item i {
   display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--return-tone);
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.research-histogram-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-alt) 42%, var(--surface));
+  padding: 10px 8px 4px;
+}
+
+.research-histogram-svg {
+  display: block;
+  min-width: 100%;
+}
+
+.research-histogram-grid {
+  stroke: color-mix(in oklab, var(--surface-border) 72%, transparent);
+  stroke-width: 1;
+}
+
+.research-histogram-axis {
+  stroke: color-mix(in oklab, var(--surface-border) 88%, transparent);
+  stroke-width: 1;
+}
+
+.research-histogram-zero {
+  stroke: color-mix(in oklab, var(--muted-foreground) 65%, transparent);
+  stroke-dasharray: 4 4;
+  stroke-width: 1;
+}
+
+.research-histogram-bar {
+  fill: var(--success);
+  transition: opacity 0.15s ease;
+}
+
+.research-histogram-bar[data-tone="danger"] {
+  fill: var(--danger);
+}
+
+.research-histogram-bar:hover {
+  opacity: 0.72;
+}
+
+.research-histogram-x-label,
+.research-histogram-y-label {
+  fill: var(--muted-foreground);
+  font-size: 10px;
 }
 
 .session-percent {
@@ -7889,12 +7912,7 @@ button {
 @media (max-width: 680px) {
   .research-filter-bar,
   .research-leader-grid,
-  .research-metric-strip,
-  .research-return-row {
+  .research-metric-strip {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .research-return-row b {
-    text-align: left;
   }
 }
