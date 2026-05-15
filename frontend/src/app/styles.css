@@ -5125,6 +5125,112 @@ button {
   font-weight: 500;
 }
 
+.preview-query-shell {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.preview-query-bar {
+  align-items: flex-end;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+
+.preview-query-bar .button {
+  min-height: 36px;
+  gap: 7px;
+}
+
+.preview-query-summary {
+  display: flex;
+  min-width: 240px;
+  flex: 1 1 360px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 2px;
+}
+
+.preview-query-summary span {
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1;
+  padding: 6px 9px;
+}
+
+.preview-query-panel {
+  display: grid;
+  gap: 12px;
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px;
+}
+
+.preview-query-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.preview-query-grid .field {
+  width: auto !important;
+}
+
+.preview-columns-field textarea {
+  min-height: 58px;
+  padding: 9px 10px;
+  resize: vertical;
+}
+
+.preview-query-conditions {
+  display: grid;
+  gap: 8px;
+}
+
+.preview-query-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.preview-query-condition {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.3fr) minmax(130px, 0.9fr) minmax(130px, 1fr) minmax(130px, 1fr) auto;
+  gap: 8px;
+}
+
+.preview-query-condition select,
+.preview-query-condition input {
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--foreground);
+  padding: 0 9px;
+}
+
+.preview-query-empty {
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-size: 12px;
+  padding: 9px 10px;
+}
+
+@media (max-width: 900px) {
+  .preview-query-condition {
+    grid-template-columns: 1fr;
+  }
+}
+
 .preview-sample-status {
   display: inline-flex;
   align-items: center;

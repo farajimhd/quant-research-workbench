@@ -55,10 +55,21 @@ type SchemaField = {
 };
 type PreviewSample = {
   columns: string[];
+  has_more?: boolean;
   row_count: number;
   row_limit: number;
   row_offset: number;
   rows: Record<string, unknown>[];
+  scanned_artifacts?: number;
+};
+type PreviewQueryState = {
+  columns: string;
+  conditions: BackendTableQuery;
+  endDate: string;
+  rowLimit: number;
+  startDate: string;
+  tickers: string;
+  timeframe: string;
 };
 type CatalogKnowledge = {
   shortDescription: string;
@@ -591,40 +602,85 @@ function Artifacts({ records }: { records: RecordRow[] }) {
 }
 
 function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; scope: Scope; records: RecordRow[] }) {
-  const [recordKey, setRecordKey] = useState(records[0]?.key ?? "");
-  const record = records.find((item) => item.key === recordKey) ?? records[0];
-  const [rowLimit, setRowLimit] = useState(1000);
-  const [loadAllRows, setLoadAllRows] = useState(false);
+  const groups = useMemo(() => Array.from(new Set(records.filter((record) => record.exists).map((record) => record.group))).sort(), [records]);
+  const [group, setGroup] = useState(groups[0] ?? "bars");
+  const [appliedGroup, setAppliedGroup] = useState(groups[0] ?? "bars");
+  const groupRecords = useMemo(() => records.filter((record) => record.exists && record.group === group), [group, records]);
+  const timeframes = useMemo(() => Array.from(new Set(groupRecords.map((record) => record.timeframe))).sort(timeframeSort), [groupRecords]);
+  const defaultTimeframe = timeframes[0] ?? "1m";
+  const defaultQuery = useMemo<PreviewQueryState>(
+    () => ({
+      columns: "",
+      conditions: { conditions: [], matchMode: "all", sortDirection: "asc" },
+      endDate: scope.end_date,
+      rowLimit: PREVIEW_PAGE_SIZE,
+      startDate: scope.start_date,
+      tickers: "",
+      timeframe: defaultTimeframe,
+    }),
+    [defaultTimeframe, scope.end_date, scope.start_date]
+  );
+  const [queryDraft, setQueryDraft] = useState<PreviewQueryState>(defaultQuery);
+  const [appliedQuery, setAppliedQuery] = useState<PreviewQueryState>(defaultQuery);
+  const [queryOpen, setQueryOpen] = useState(false);
   const [previewOffset, setPreviewOffset] = useState(0);
-  const [tickers, setTickers] = useState("");
-  const [backendQuery, setBackendQuery] = useState<BackendTableQuery>({ conditions: [], matchMode: "all", sortDirection: "asc" });
   const [sample, setSample] = useState<PreviewSample | null>(null);
   const [sampleError, setSampleError] = useState("");
   const [sampleLoading, setSampleLoading] = useState(false);
   const [chartTarget, setChartTarget] = useState<PreviewChartTarget | null>(null);
-  const backendQueryKey = useMemo(() => JSON.stringify(cleanPreviewBackendQuery(backendQuery)), [backendQuery]);
-  const fillPanel = useViewportFillPanel(`${recordKey}:${rowLimit}:${loadAllRows}:${previewOffset}:${tickers}:${backendQueryKey}:${sample?.rows.length ?? 0}`);
+  const availableColumns = useMemo(
+    () => Array.from(new Set(groupRecords.filter((record) => record.timeframe === queryDraft.timeframe).flatMap((record) => record.columns))).sort(),
+    [groupRecords, queryDraft.timeframe]
+  );
+  const appliedQueryKey = useMemo(() => JSON.stringify({ group: appliedGroup, previewOffset, ...appliedQuery, conditions: cleanPreviewBackendQuery(appliedQuery.conditions) }), [appliedGroup, appliedQuery, previewOffset]);
+  const activeRecord = useMemo<RecordRow>(
+    () => ({
+      built_at: "",
+      column_count: sample?.columns.length ?? availableColumns.length,
+      columns: sample?.columns ?? availableColumns,
+      exists: true,
+      group: appliedGroup,
+      key: `${appliedGroup}|${appliedQuery.timeframe}|${appliedQuery.startDate}..${appliedQuery.endDate}`,
+      path: "",
+      rows: sample?.row_count ?? 0,
+      session_date: appliedQuery.startDate,
+      size: "",
+      timeframe: appliedQuery.timeframe,
+    }),
+    [appliedGroup, appliedQuery.endDate, appliedQuery.startDate, appliedQuery.timeframe, availableColumns, sample]
+  );
+  const fillPanel = useViewportFillPanel(`${appliedQueryKey}:${sample?.rows.length ?? 0}`);
   useEffect(() => {
+    if (!groups.length) return;
+    setGroup((current) => (groups.includes(current) ? current : groups[0]));
+    setAppliedGroup((current) => (groups.includes(current) ? current : groups[0]));
+  }, [groups]);
+  useEffect(() => {
+    setQueryDraft((current) => {
+      const nextTimeframe = timeframes.includes(current.timeframe) ? current.timeframe : defaultTimeframe;
+      return { ...current, timeframe: nextTimeframe };
+    });
     setPreviewOffset(0);
-  }, [record?.key, loadAllRows, rowLimit, tickers, backendQueryKey]);
+  }, [defaultTimeframe, group, timeframes]);
   useEffect(() => {
-    if (!record) return;
+    if (!appliedGroup || !appliedQuery.timeframe || !appliedQuery.startDate || !appliedQuery.endDate) return;
     let active = true;
-    const cleanedQuery = cleanPreviewBackendQuery(backendQuery);
+    const cleanedQuery = cleanPreviewBackendQuery(appliedQuery.conditions);
     const tableQuery = previewBackendQueryIsActive(cleanedQuery) ? JSON.stringify(cleanedQuery) : undefined;
     setSampleError("");
     setSampleLoading(true);
     api<{ sample: PreviewSample }>(
       `/api/market-data/preview${query({
         processed_root: scope.processed_root,
-        group: record.group,
-        timeframe: record.timeframe,
-        session_date: record.session_date,
-        all_rows: loadAllRows,
-        row_limit: loadAllRows ? PREVIEW_PAGE_SIZE : rowLimit,
-        row_offset: loadAllRows ? previewOffset : 0,
+        group: appliedGroup,
+        timeframe: appliedQuery.timeframe,
+        start_date: appliedQuery.startDate,
+        end_date: appliedQuery.endDate,
+        columns: appliedQuery.columns,
+        row_limit: appliedQuery.rowLimit,
+        row_offset: previewOffset,
         table_query: tableQuery,
-        tickers
+        tickers: appliedQuery.tickers
       })}`
     )
       .then((payload) => {
@@ -633,7 +689,7 @@ function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; 
       })
       .catch((error: Error) => {
         if (!active) return;
-        setSample({ columns: record.columns, row_count: 0, row_limit: loadAllRows ? PREVIEW_PAGE_SIZE : rowLimit, row_offset: 0, rows: [] });
+        setSample({ columns: availableColumns, row_count: 0, row_limit: appliedQuery.rowLimit, row_offset: previewOffset, rows: [] });
         setSampleError(error.message);
       })
       .finally(() => {
@@ -642,84 +698,77 @@ function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; 
     return () => {
       active = false;
     };
-  }, [scope.processed_root, record?.key, loadAllRows, previewOffset, rowLimit, tickers, backendQuery, backendQueryKey]);
-  if (!record) return <div className="empty-state">No records available.</div>;
-  const previewTotalRows = sample?.row_count ?? 0;
+  }, [appliedGroup, appliedQueryKey, availableColumns, scope.processed_root]);
+  if (!groups.length) return <div className="empty-state">No records available.</div>;
   const previewStartRow = sample?.rows.length ? (sample.row_offset ?? 0) + 1 : 0;
   const previewEndRow = sample ? (sample.row_offset ?? 0) + sample.rows.length : 0;
-  const canPageBack = loadAllRows && previewOffset > 0 && !sampleLoading;
-  const canPageForward = loadAllRows && previewEndRow < previewTotalRows && !sampleLoading;
+  const canPageBack = previewOffset > 0 && !sampleLoading;
+  const canPageForward = Boolean(sample?.has_more) && !sampleLoading;
+  function runPreviewQuery() {
+    setAppliedGroup(group);
+    setAppliedQuery({
+      ...queryDraft,
+      conditions: cleanPreviewBackendQuery(queryDraft.conditions),
+      endDate: queryDraft.endDate >= queryDraft.startDate ? queryDraft.endDate : queryDraft.startDate,
+      rowLimit: Math.max(10, Math.min(5000, Math.round(Number(queryDraft.rowLimit) || PREVIEW_PAGE_SIZE))),
+      startDate: queryDraft.startDate <= queryDraft.endDate ? queryDraft.startDate : queryDraft.endDate,
+    });
+    setPreviewOffset(0);
+    setQueryOpen(false);
+  }
   return (
     <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
-      <div className="toolbar">
-        <div className="field" style={{ flex: "1 1 360px", minWidth: 280 }}>
-          <label>Artifact</label>
-          <select value={recordKey} onChange={(event) => setRecordKey(event.target.value)}>
-            {records.map((item) => (
-              <option key={item.key} value={item.key}>
-                {item.group} | {item.timeframe} | {item.session_date}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="preview-row-limit">
-          <div className="field preview-row-limit-field">
-            <div className="preview-row-limit-header">
-              <label htmlFor="preview-row-limit-input">Rows</label>
-              <label className="preview-all-rows-radio">
-                <input checked={loadAllRows} onChange={(event) => setLoadAllRows(event.target.checked)} type="checkbox" />
-                <span aria-hidden="true" />
-                <b>All rows</b>
-              </label>
-            </div>
-            <input
-              disabled={loadAllRows}
-              id="preview-row-limit-input"
-              type="number"
-              value={String(rowLimit)}
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                if (Number.isFinite(next)) {
-                  setRowLimit(Math.max(10, Math.round(next)));
-                  setLoadAllRows(false);
-                }
-              }}
-            />
+      <div className="preview-query-shell">
+        <div className="toolbar preview-query-bar">
+          <Select label="Artifact group" value={group} options={groups} onChange={(value) => { setGroup(value); setPreviewOffset(0); }} />
+          <button className={queryOpen ? "button active" : "button"} onClick={() => setQueryOpen((value) => !value)} type="button">
+            <SlidersHorizontal size={16} />
+            Query
+          </button>
+          <button className="button primary" disabled={sampleLoading} onClick={runPreviewQuery} type="button">Run Query</button>
+          <div className="preview-query-summary">
+            <span>{appliedGroup}</span>
+            <span>{appliedQuery.timeframe}</span>
+            <span>{appliedQuery.startDate} to {appliedQuery.endDate}</span>
+            <span>{appliedQuery.tickers.trim() ? appliedQuery.tickers.trim().toUpperCase() : "All tickers"}</span>
+            <span>{sample?.scanned_artifacts ?? 0} files</span>
           </div>
         </div>
-        <InlineField label="Tickers" value={tickers} onChange={setTickers} />
+        {queryOpen ? (
+          <PreviewQueryPanel
+            availableColumns={availableColumns}
+            onChange={setQueryDraft}
+            query={queryDraft}
+            timeframes={timeframes}
+          />
+        ) : null}
       </div>
       {sampleError ? <div className="preview-sample-status error">Preview request failed: {sampleError}</div> : null}
       {sampleLoading ? (
         <div className="preview-sample-status">
           <span className="loading-spinner" aria-hidden="true" />
-          Loading preview rows...
+          Running lazy preview query...
         </div>
       ) : null}
-      {loadAllRows && sample && !sampleError ? (
+      {sample && !sampleError ? (
         <div className="preview-page-status">
           <span>
-            Showing {previewStartRow.toLocaleString()}-{previewEndRow.toLocaleString()} of {previewTotalRows.toLocaleString()} rows
+            Showing {previewStartRow.toLocaleString()}-{previewEndRow.toLocaleString()}
+            {sample.has_more ? " with more rows available" : ""}
           </span>
-          <button className="table-text-button" disabled={!canPageBack} onClick={() => setPreviewOffset((value) => Math.max(0, value - PREVIEW_PAGE_SIZE))} type="button">
+          <button className="table-text-button" disabled={!canPageBack} onClick={() => setPreviewOffset((value) => Math.max(0, value - appliedQuery.rowLimit))} type="button">
             Previous
           </button>
-          <button className="table-text-button" disabled={!canPageForward} onClick={() => setPreviewOffset((value) => value + PREVIEW_PAGE_SIZE)} type="button">
+          <button className="table-text-button" disabled={!canPageForward} onClick={() => setPreviewOffset((value) => value + appliedQuery.rowLimit)} type="button">
             Next
           </button>
         </div>
       ) : null}
       <DataTable
-        backendQuery={{
-          columns: record.columns,
-          loading: sampleLoading,
-          onChange: setBackendQuery,
-          value: backendQuery,
-        }}
         rowAction={{
-          isAvailable: (row) => rowHasChartContext(row, record),
+          isAvailable: (row) => rowHasChartContext(row, activeRecord),
           label: "Open row in chart",
-          onSelect: (row) => setChartTarget({ record, row }),
+          onSelect: (row) => setChartTarget({ record: activeRecord, row }),
         }}
         rows={sample?.rows ?? []}
         columns={sample?.columns}
@@ -736,6 +785,112 @@ function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; 
       ) : null}
     </section>
   );
+}
+
+const PREVIEW_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean; needsValue?: boolean; value: BackendTableQuery["conditions"][number]["operator"] }> = [
+  { label: "Contains", needsValue: true, value: "contains" },
+  { label: "Equals", needsValue: true, value: "eq" },
+  { label: "Greater than", needsValue: true, value: "gt" },
+  { label: "Greater or equal", needsValue: true, value: "gte" },
+  { label: "Less than", needsValue: true, value: "lt" },
+  { label: "Less or equal", needsValue: true, value: "lte" },
+  { label: "Between", needsSecondValue: true, needsValue: true, value: "between" },
+  { label: "Is blank", value: "is_null" },
+  { label: "Is not blank", value: "is_not_null" },
+];
+
+function PreviewQueryPanel({
+  availableColumns,
+  onChange,
+  query,
+  timeframes,
+}: {
+  availableColumns: string[];
+  onChange: (query: PreviewQueryState) => void;
+  query: PreviewQueryState;
+  timeframes: string[];
+}) {
+  const columnsText = availableColumns.slice(0, 12).join(", ");
+  const conditions = query.conditions.conditions;
+  function updateConditions(next: BackendTableQuery) {
+    onChange({ ...query, conditions: next });
+  }
+  return (
+    <div className="preview-query-panel">
+      <div className="preview-query-grid">
+        <InlineField label="Start" type="date" value={query.startDate} onChange={(value) => onChange({ ...query, startDate: value })} />
+        <InlineField label="End" type="date" value={query.endDate} onChange={(value) => onChange({ ...query, endDate: value })} />
+        <Select label="Timeframe" value={query.timeframe} options={timeframes.length ? timeframes : [query.timeframe]} onChange={(value) => onChange({ ...query, timeframe: value })} />
+        <InlineField label="Tickers" value={query.tickers} onChange={(value) => onChange({ ...query, tickers: value })} />
+        <InlineField label="Rows" type="number" value={String(query.rowLimit)} onChange={(value) => onChange({ ...query, rowLimit: Math.max(10, Math.min(5000, Math.round(Number(value) || PREVIEW_PAGE_SIZE))) })} />
+        <Select label="Sort column" value={query.conditions.sortColumn ?? ""} options={["", ...availableColumns]} onChange={(value) => updateConditions({ ...query.conditions, sortColumn: value || undefined })} />
+        <Select label="Sort direction" value={query.conditions.sortDirection ?? "asc"} options={["asc", "desc"]} onChange={(value) => updateConditions({ ...query.conditions, sortDirection: value === "desc" ? "desc" : "asc" })} />
+        <Select label="Match" value={query.conditions.matchMode ?? "all"} options={["all", "any"]} onChange={(value) => updateConditions({ ...query.conditions, matchMode: value === "any" ? "any" : "all" })} />
+      </div>
+      <div className="field preview-columns-field">
+        <label>Columns</label>
+        <textarea
+          placeholder={columnsText ? `Default: ${columnsText}` : "Leave blank for default preview columns"}
+          value={query.columns}
+          onChange={(event) => onChange({ ...query, columns: event.target.value })}
+        />
+      </div>
+      <div className="preview-query-conditions">
+        <div className="preview-query-section-header">
+          <span>Conditions</span>
+          <button className="table-text-button" onClick={() => updateConditions({ ...query.conditions, conditions: [...conditions, newPreviewCondition(availableColumns)] })} type="button">
+            Add condition
+          </button>
+        </div>
+        {conditions.length ? (
+          conditions.map((condition) => {
+            const operator = PREVIEW_QUERY_OPERATORS.find((item) => item.value === condition.operator) ?? PREVIEW_QUERY_OPERATORS[0];
+            return (
+              <div className="preview-query-condition" key={condition.id}>
+                <select value={condition.column} onChange={(event) => updateConditions(updatePreviewCondition(query.conditions, condition.id, { column: event.target.value }))}>
+                  {availableColumns.map((column) => (
+                    <option key={column} value={column}>{displayName(column)}</option>
+                  ))}
+                </select>
+                <select value={condition.operator} onChange={(event) => updateConditions(updatePreviewCondition(query.conditions, condition.id, { operator: event.target.value as BackendTableQuery["conditions"][number]["operator"] }))}>
+                  {PREVIEW_QUERY_OPERATORS.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
+                {operator.needsValue ? (
+                  <input value={condition.value} onChange={(event) => updateConditions(updatePreviewCondition(query.conditions, condition.id, { value: event.target.value }))} />
+                ) : null}
+                {operator.needsSecondValue ? (
+                  <input value={condition.valueSecondary ?? ""} onChange={(event) => updateConditions(updatePreviewCondition(query.conditions, condition.id, { valueSecondary: event.target.value }))} />
+                ) : null}
+                <button className="table-text-button danger" onClick={() => updateConditions({ ...query.conditions, conditions: conditions.filter((item) => item.id !== condition.id) })} type="button">
+                  Remove
+                </button>
+              </div>
+            );
+          })
+        ) : (
+          <div className="preview-query-empty">No conditions. The query will use only group, timeframe, date range, ticker, and selected columns.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function newPreviewCondition(columns: string[]): BackendTableQuery["conditions"][number] {
+  return {
+    column: columns[0] ?? "",
+    id: `preview-condition-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    operator: "contains",
+    value: "",
+  };
+}
+
+function updatePreviewCondition(query: BackendTableQuery, id: string, patch: Partial<BackendTableQuery["conditions"][number]>): BackendTableQuery {
+  return {
+    ...query,
+    conditions: query.conditions.map((condition) => (condition.id === id ? { ...condition, ...patch } : condition)),
+  };
 }
 
 function PreviewRowChartModal({

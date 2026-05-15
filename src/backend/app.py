@@ -33,6 +33,7 @@ from src.backend.market_data_service import (
     extended_session_regions,
     first_matching_artifact,
     first_ticker_in_range,
+    load_artifact_query_sample,
     load_artifact_sample,
     review_payload,
     scope_defaults,
@@ -963,7 +964,9 @@ def market_preview(
     processed_root: str,
     group: str,
     timeframe: str,
-    session_date: date,
+    session_date: date | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     all_rows: bool = False,
     columns: str | None = None,
     tickers: str | None = None,
@@ -971,7 +974,40 @@ def market_preview(
     row_limit: int = Query(default=1000, ge=1, le=5000),
     row_offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    record = first_matching_artifact(artifact_records(Path(processed_root)), group, timeframe, session_date.isoformat())
+    records = artifact_records(Path(processed_root))
+    if start_date or end_date:
+        range_start = start_date or end_date
+        range_end = end_date or start_date
+        if range_start is None or range_end is None:
+            raise HTTPException(status_code=400, detail="Both start_date and end_date are required for range preview")
+        if range_start > range_end:
+            range_start, range_end = range_end, range_start
+        selected_columns = parse_csv_list(columns)
+        selected_tickers = parse_csv_list(tickers)
+        return {
+            "record": {
+                "key": f"{group}|{timeframe}|{range_start.isoformat()}..{range_end.isoformat()}",
+                "group": group,
+                "timeframe": timeframe,
+                "session_date": range_start.isoformat(),
+                "path": "",
+            },
+            "sample": load_artifact_query_sample(
+                records,
+                group=group,
+                timeframe=timeframe,
+                start_date=range_start,
+                end_date=range_end,
+                columns=selected_columns,
+                row_limit=row_limit,
+                tickers=selected_tickers,
+                row_offset=row_offset,
+                table_query=parse_table_query(table_query),
+            ),
+        }
+    if session_date is None:
+        raise HTTPException(status_code=400, detail="session_date or start_date/end_date is required")
+    record = first_matching_artifact(records, group, timeframe, session_date.isoformat())
     if not record:
         raise HTTPException(status_code=404, detail="Artifact not found")
     selected_columns = parse_csv_list(columns)

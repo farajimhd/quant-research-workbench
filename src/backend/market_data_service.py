@@ -243,6 +243,82 @@ def load_artifact_sample(
     }
 
 
+def load_artifact_query_sample(
+    records: list[dict[str, Any]],
+    *,
+    group: str,
+    timeframe: str,
+    start_date: date,
+    end_date: date,
+    columns: list[str],
+    row_limit: int,
+    tickers: list[str],
+    row_offset: int = 0,
+    table_query: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    artifacts = matching_artifacts(records, group, timeframe, start_date, end_date)
+    if not artifacts:
+        return {
+            "columns": [],
+            "has_more": False,
+            "row_count": 0,
+            "row_limit": row_limit,
+            "row_offset": row_offset,
+            "rows": [],
+            "scanned_artifacts": 0,
+        }
+    paths = [str(record_path(record)) for record in artifacts]
+    scan = pl.scan_parquet(paths)
+    schema = scan.collect_schema()
+    schema_names = schema.names()
+    if tickers and "ticker" in schema_names:
+        scan = scan.filter(pl.col("ticker").is_in([ticker.upper() for ticker in tickers]))
+    scan = apply_table_query(scan, schema, table_query)
+    selected_columns = [column for column in columns if column in schema_names]
+    if not selected_columns:
+        selected_columns = default_preview_columns(schema_names)
+    if selected_columns:
+        scan = scan.select(selected_columns)
+    row_offset = max(0, row_offset)
+    row_limit = max(1, min(row_limit, 5000))
+    frame = scan.slice(row_offset, row_limit + 1).collect()
+    has_more = frame.height > row_limit
+    if has_more:
+        frame = frame.head(row_limit)
+    rows = frame.to_dicts()
+    return {
+        "columns": frame.columns,
+        "has_more": has_more,
+        "row_count": row_offset + len(rows) + (1 if has_more else 0),
+        "row_limit": row_limit,
+        "row_offset": row_offset,
+        "rows": json_safe(rows),
+        "scanned_artifacts": len(artifacts),
+    }
+
+
+def default_preview_columns(schema_names: list[str]) -> list[str]:
+    preferred = [
+        "bar_id",
+        "ticker",
+        "session_date",
+        "timeframe",
+        "bar_time_market",
+        "bar_time_utc",
+        "minute_of_day",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "transactions",
+    ]
+    selected = [column for column in preferred if column in schema_names]
+    if selected:
+        return selected[:16]
+    return schema_names[:24]
+
+
 def apply_table_query(scan: pl.LazyFrame, schema: pl.Schema, table_query: dict[str, Any] | None) -> pl.LazyFrame:
     if not table_query:
         return scan
