@@ -3617,7 +3617,11 @@ button {
 .research-histogram-x-label,
 .research-histogram-y-label {
   fill: var(--muted-foreground);
-  font-size: 10px;
+  font-size: 11px;
+}
+
+.research-histogram-x-label {
+  fill: var(--foreground);
 }
 
 .session-percent {

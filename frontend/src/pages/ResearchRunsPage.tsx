@@ -235,10 +235,10 @@ function RunHistogramChart({ runs }: { runs: RunComparisonRow[] }) {
   const plotLeft = 56;
   const plotTop = 18;
   const plotHeight = 190;
-  const labelHeight = 104;
+  const labelHeight = 120;
   const plotBottom = plotTop + plotHeight;
   const chartHeight = plotBottom + labelHeight;
-  const groupWidth = Math.max(52, metrics.length * 18 + 34);
+  const groupWidth = Math.max(72, metrics.length * 18 + 54);
   const chartWidth = Math.max(860, plotLeft + 24 + runs.length * groupWidth);
   const barWidth = Math.min(16, Math.max(8, (groupWidth - 20) / metrics.length - 3));
   const values = runs.flatMap((run) => metrics.map((metric) => metric.value(run)));
@@ -281,6 +281,7 @@ function RunHistogramChart({ runs }: { runs: RunComparisonRow[] }) {
           {runs.map((run, runIndex) => {
             const groupX = plotLeft + 12 + runIndex * groupWidth;
             const labelX = groupX + groupWidth / 2;
+            const axisLabel = histogramRunAxisLabel(run, runIndex);
             return (
               <g key={run.run_id}>
                 {metrics.map((metric, metricIndex) => {
@@ -300,12 +301,13 @@ function RunHistogramChart({ runs }: { runs: RunComparisonRow[] }) {
                       x={barX}
                       y={barY}
                     >
-                      <title>{`${run.run_name} | ${metric.label}: ${metric.format(value)}`}</title>
+                      <title>{`${axisLabel} | ${run.run_name} | ${metric.label}: ${metric.format(value)}`}</title>
                     </rect>
                   );
                 })}
-                <text className="research-histogram-x-label" textAnchor="start" transform={`translate(${labelX - 5} ${plotBottom + 12}) rotate(90)`}>
-                  {histogramRunLabel(run)}
+                <text className="research-histogram-x-label" textAnchor="start" transform={`translate(${labelX - 6} ${plotBottom + 14}) rotate(90)`}>
+                  <title>{run.run_name}</title>
+                  {axisLabel}
                 </text>
               </g>
             );
@@ -343,9 +345,34 @@ function numberValue(value: unknown) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
-function histogramRunLabel(run: RunComparisonRow) {
-  const label = run.run_name || `${displayName(run.strategy_name ?? "")} ${run.strategy_version ?? ""}`.trim();
-  return label.length > 28 ? `${label.slice(0, 25)}...` : label;
+function histogramRunAxisLabel(run: RunComparisonRow, index: number) {
+  const version = run.strategy_version || strategyVersionFromRunName(run.run_name) || "run";
+  const timestamp = shortRunTimestamp(run.created_at) || shortRunTimestampFromName(run.run_name);
+  const label = timestamp ? `${version} ${timestamp}` : `${version} #${index + 1}`;
+  return label.length > 18 ? `${label.slice(0, 15)}...` : label;
+}
+
+function strategyVersionFromRunName(runName: string) {
+  const match = runName.match(/_(v\d+)(?:_|$)/i);
+  return match ? match[1] : "";
+}
+
+function shortRunTimestamp(value: unknown) {
+  const timestamp = Date.parse(String(value ?? ""));
+  if (!Number.isFinite(timestamp)) return "";
+  const date = new Date(timestamp);
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  const hour = `${date.getHours()}`.padStart(2, "0");
+  const minute = `${date.getMinutes()}`.padStart(2, "0");
+  return `${month}/${day} ${hour}:${minute}`;
+}
+
+function shortRunTimestampFromName(runName: string) {
+  const match = runName.match(/_(\d{8})_(\d{6})(?:_|$)/);
+  if (!match) return "";
+  const [, datePart, timePart] = match;
+  return `${datePart.slice(4, 6)}/${datePart.slice(6, 8)} ${timePart.slice(0, 2)}:${timePart.slice(2, 4)}`;
 }
 
 function formatDateTime(value: unknown) {
