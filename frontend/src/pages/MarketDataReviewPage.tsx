@@ -71,6 +71,16 @@ type PreviewQueryState = {
   tickers: string;
   timeframe: string;
 };
+type ScannerQueryState = {
+  backendQuery: BackendTableQuery;
+  barTime: string;
+  columns: string;
+  featureGroups: string;
+  rowLimit: number;
+  rowOffset: number;
+  sessionDate: string;
+  timeframe: string;
+};
 type ScannerSnapshot = {
   bar_time: string;
   columns: string[];
@@ -641,17 +651,21 @@ function ScannerTab({ scope, records }: { scope: Scope; records: RecordRow[] }) 
   const [featureGroups, setFeatureGroups] = useState(defaultFeatures.join(","));
   const [columns, setColumns] = useState("");
   const [rowLimit, setRowLimit] = useState(2000);
-  const [rowOffset, setRowOffset] = useState(0);
   const [backendQuery, setBackendQuery] = useState<BackendTableQuery>({ conditions: [], matchMode: "all", sortDirection: "asc" });
   const [filterOpen, setFilterOpen] = useState(false);
+  const [scannerRunId, setScannerRunId] = useState(0);
+  const [appliedScannerQuery, setAppliedScannerQuery] = useState<ScannerQueryState | null>(null);
   const [snapshot, setSnapshot] = useState<ScannerSnapshot | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const selectedFeatureGroups = useMemo(() => parseCommaList(featureGroups), [featureGroups]);
   const availableColumns = useMemo(() => scannerAvailableColumns(records, sessionDate, timeframe, selectedFeatureGroups), [records, selectedFeatureGroups, sessionDate, timeframe]);
   const queryKey = useMemo(
-    () => JSON.stringify({ backendQuery: cleanPreviewBackendQuery(backendQuery), barTime, columns, featureGroups, rowLimit, rowOffset, sessionDate, timeframe }),
-    [backendQuery, barTime, columns, featureGroups, rowLimit, rowOffset, sessionDate, timeframe]
+    () =>
+      appliedScannerQuery
+        ? JSON.stringify({ ...appliedScannerQuery, backendQuery: cleanPreviewBackendQuery(appliedScannerQuery.backendQuery) })
+        : "scanner-idle",
+    [appliedScannerQuery]
   );
   const fillPanel = useViewportFillPanel(`${queryKey}:${snapshot?.rows.length ?? 0}`);
 
@@ -667,25 +681,23 @@ function ScannerTab({ scope, records }: { scope: Scope; records: RecordRow[] }) 
     if (!featureGroups && defaultFeatures.length) setFeatureGroups(defaultFeatures.join(","));
   }, [defaultFeatures, featureGroups]);
   useEffect(() => {
-    setRowOffset(0);
-  }, [backendQuery, barTime, columns, featureGroups, rowLimit, sessionDate, timeframe]);
-  useEffect(() => {
-    if (!sessionDate || !timeframe || !barTime) return;
+    if (scannerRunId === 0 || !appliedScannerQuery) return;
+    if (!appliedScannerQuery.sessionDate || !appliedScannerQuery.timeframe || !appliedScannerQuery.barTime) return;
     let active = true;
-    const cleanedQuery = cleanPreviewBackendQuery(backendQuery);
+    const cleanedQuery = cleanPreviewBackendQuery(appliedScannerQuery.backendQuery);
     const tableQuery = previewBackendQueryIsActive(cleanedQuery) ? JSON.stringify(cleanedQuery) : undefined;
     setLoading(true);
     setError("");
     api<{ snapshot: ScannerSnapshot }>(
       `/api/market-data/scanner-snapshot${query({
         processed_root: scope.processed_root,
-        session_date: sessionDate,
-        timeframe,
-        bar_time: barTime,
-        feature_groups: featureGroups,
-        columns,
-        row_limit: rowLimit,
-        row_offset: rowOffset,
+        session_date: appliedScannerQuery.sessionDate,
+        timeframe: appliedScannerQuery.timeframe,
+        bar_time: appliedScannerQuery.barTime,
+        feature_groups: appliedScannerQuery.featureGroups,
+        columns: appliedScannerQuery.columns,
+        row_limit: appliedScannerQuery.rowLimit,
+        row_offset: appliedScannerQuery.rowOffset,
         table_query: tableQuery,
       })}`
     )
@@ -704,21 +716,35 @@ function ScannerTab({ scope, records }: { scope: Scope; records: RecordRow[] }) 
     return () => {
       active = false;
     };
-  }, [backendQuery, barTime, columns, featureGroups, rowLimit, rowOffset, scope.processed_root, sessionDate, timeframe]);
+  }, [appliedScannerQuery, scannerRunId, scope.processed_root]);
 
   if (!barRecords.length) return <div className="empty-state panel">No intraday bar artifacts are available for scanner review.</div>;
   const startRow = snapshot?.rows.length ? (snapshot.row_offset ?? 0) + 1 : 0;
   const endRow = snapshot ? (snapshot.row_offset ?? 0) + snapshot.rows.length : 0;
   const timeframeStep = timeframeMinutes(timeframe);
+  const loadScannerSnapshot = () => {
+    setAppliedScannerQuery({
+      backendQuery: cleanPreviewBackendQuery(backendQuery),
+      barTime,
+      columns,
+      featureGroups,
+      rowLimit: Math.max(10, Math.min(5000, Math.round(Number(rowLimit) || 2000))),
+      rowOffset: 0,
+      sessionDate,
+      timeframe,
+    });
+    setScannerRunId((value) => value + 1);
+  };
   return (
     <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
       <div className="scanner-query-shell">
         <div className="toolbar scanner-query-bar">
-          <Select label="Day" value={sessionDate} options={sessions} onChange={setSessionDate} />
+          <InlineField label="Day" type="date" value={sessionDate} onChange={setSessionDate} />
           <Select label="Timeframe" value={timeframe} options={timeframes.length ? timeframes : [timeframe]} onChange={setTimeframe} />
           <InlineField label="Bar start" type="time" value={barTime} onChange={setBarTime} />
           <button className="button" onClick={() => setBarTime((value) => shiftBarTime(value, -timeframeStep))} type="button">Previous</button>
           <button className="button" onClick={() => setBarTime((value) => shiftBarTime(value, timeframeStep))} type="button">Next</button>
+          <button className="button primary" disabled={loading} onClick={loadScannerSnapshot} type="button">Load</button>
           <button className={filterOpen ? "button active" : "button"} onClick={() => setFilterOpen((value) => !value)} type="button">
             <Filter size={16} />
             Filters
@@ -752,17 +778,34 @@ function ScannerTab({ scope, records }: { scope: Scope; records: RecordRow[] }) 
           Loading scanner snapshot...
         </div>
       ) : null}
+      {!snapshot && !loading && !error ? (
+        <div className="preview-sample-status">Set the scanner query and press Load to fetch rows.</div>
+      ) : null}
       {snapshot ? (
         <div className="preview-page-status">
           <span>
             Showing {startRow.toLocaleString()}-{endRow.toLocaleString()}
             {snapshot.has_more ? " with more rows available" : ""}
           </span>
-          <button className="table-text-button" disabled={rowOffset <= 0 || loading} onClick={() => setRowOffset((value) => Math.max(0, value - rowLimit))} type="button">Previous page</button>
-          <button className="table-text-button" disabled={!snapshot.has_more || loading} onClick={() => setRowOffset((value) => value + rowLimit)} type="button">Next page</button>
+          <button
+            className="table-text-button"
+            disabled={!appliedScannerQuery || appliedScannerQuery.rowOffset <= 0 || loading}
+            onClick={() => setAppliedScannerQuery((current) => (current ? { ...current, rowOffset: Math.max(0, current.rowOffset - current.rowLimit) } : current))}
+            type="button"
+          >
+            Previous page
+          </button>
+          <button
+            className="table-text-button"
+            disabled={!appliedScannerQuery || !snapshot.has_more || loading}
+            onClick={() => setAppliedScannerQuery((current) => (current ? { ...current, rowOffset: current.rowOffset + current.rowLimit } : current))}
+            type="button"
+          >
+            Next page
+          </button>
         </div>
       ) : null}
-      <DataTable rows={snapshot?.rows ?? []} columns={snapshot?.columns} />
+      <DataTable rows={snapshot?.rows ?? []} columns={snapshot?.columns} empty={scannerRunId === 0 ? "Load a scanner snapshot to show rows." : "No rows."} />
     </section>
   );
 }
