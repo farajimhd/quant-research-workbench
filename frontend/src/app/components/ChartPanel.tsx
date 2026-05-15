@@ -132,6 +132,7 @@ export type ChartLabelOption = {
   title: string;
 };
 type AnySeriesApi = ISeriesApi<SeriesType>;
+type CandleSeriesDatum = Candle | { time: number };
 type ChartMarker = SeriesMarker<Time> & { displayItemId?: string };
 type LegendPane = "price" | "oscillator";
 type OscillatorPaneRuntime = {
@@ -506,7 +507,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     payloadRef.current = payload;
     if (!payload || !priceChartRef.current || !candleRef.current || !volumeRef.current) return;
-    candleRef.current.setData(payload.candles as never);
+    candleRef.current.setData(candleDataForTimeframe(payload.candles, timeframe) as never);
     volumeRef.current.setData(volumeDataForSettings(payload, chartSettingsRef.current) as never);
     updateCandleMarkers();
     const nextSignature = buildCandleDataSignature(payload.candles);
@@ -530,7 +531,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       drawCurrentRegions();
     }
     refreshInteractionSync();
-  }, [payload, reference]);
+  }, [payload, reference, timeframe]);
 
   useEffect(() => {
     if (!priceChartRef.current || !payload?.candles.length || !reference) return;
@@ -2043,6 +2044,39 @@ function candleSeriesOptions(settings: ChartAppearanceSettings) {
     wickUpColor: settings.wickUpColor,
     wickVisible: settings.wickVisible
   };
+}
+
+function candleDataForTimeframe(candles: Candle[], timeframe: string): CandleSeriesDatum[] {
+  const stepSeconds = chartTimeframeSeconds(timeframe);
+  if (!stepSeconds || stepSeconds >= 24 * 60 * 60 || candles.length < 2) return candles;
+  const sortedCandles = [...candles].sort((left, right) => left.time - right.time);
+  const data: CandleSeriesDatum[] = [];
+  const maxFillGapSeconds = 12 * 60 * 60;
+  for (let index = 0; index < sortedCandles.length; index += 1) {
+    const candle = sortedCandles[index];
+    if (index > 0) {
+      const previous = sortedCandles[index - 1];
+      const gap = candle.time - previous.time;
+      if (gap > stepSeconds && gap <= maxFillGapSeconds) {
+        for (let time = previous.time + stepSeconds; time < candle.time; time += stepSeconds) {
+          data.push({ time });
+        }
+      }
+    }
+    data.push(candle);
+  }
+  return data;
+}
+
+function chartTimeframeSeconds(timeframe: string) {
+  const normalized = timeframe.trim().toLowerCase();
+  const match = normalized.match(/^(\d+)(m|h|d)$/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  if (match[2] === "m") return value * 60;
+  if (match[2] === "h") return value * 60 * 60;
+  return value * 24 * 60 * 60;
 }
 
 function volumeDataForSettings(payload: ChartPayload, settings: ChartAppearanceSettings) {
