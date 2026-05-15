@@ -1002,7 +1002,7 @@ def _parallel_session_worker(
     job_path_text: str,
     artifact_timeframes: set[str] | None = None,
 ) -> dict:
-    from src.data_provider.jobs import BuildCancelled, append_event, check_cancelled
+    from src.data_provider.jobs import BuildCancelled, BuildPaused, append_event, check_stopped
 
     job_path = Path(job_path_text)
     session_text = str(status["session_date"])
@@ -1015,10 +1015,10 @@ def _parallel_session_worker(
         payload.setdefault("work_total", total_units)
         payload.pop("work_completed", None)
         append_event(job_path, payload)
-        check_cancelled(job_path)
+        check_stopped(job_path)
 
     try:
-        check_cancelled(job_path)
+        check_stopped(job_path)
         return build_session_bars(
             request=request,
             status=status,
@@ -1036,6 +1036,20 @@ def _parallel_session_worker(
                 "event": "session_cancelled",
                 "phase": "cancel",
                 "status": "cancelled",
+                "session_date": session_text,
+                "index": index,
+                "total": total,
+                "worker_pid": os.getpid(),
+            },
+        )
+        raise
+    except BuildPaused:
+        append_event(
+            job_path,
+            {
+                "event": "session_paused",
+                "phase": "pause",
+                "status": "paused",
                 "session_date": session_text,
                 "index": index,
                 "total": total,
@@ -1488,7 +1502,7 @@ def _stateful_artifact_worker(
     total_units: int,
     job_path_text: str,
 ) -> dict:
-    from src.data_provider.jobs import BuildCancelled, append_event, check_cancelled
+    from src.data_provider.jobs import BuildCancelled, BuildPaused, append_event, check_stopped
 
     job_path = Path(job_path_text)
     timeframe = str(task["timeframe"])
@@ -1503,10 +1517,10 @@ def _stateful_artifact_worker(
         payload.setdefault("work_total", total_units)
         payload.pop("work_completed", None)
         append_event(job_path, payload)
-        check_cancelled(job_path)
+        check_stopped(job_path, resume_stage="stateful_features")
 
     try:
-        check_cancelled(job_path)
+        check_stopped(job_path, resume_stage="stateful_features")
         result = build_stateful_timeframe_artifacts(
             request=request,
             timeframe=timeframe,
@@ -1525,6 +1539,20 @@ def _stateful_artifact_worker(
                 "timeframe": timeframe,
                 "worker_pid": os.getpid(),
                 "stateful": True,
+            },
+        )
+        raise
+    except BuildPaused:
+        append_event(
+            job_path,
+            {
+                "event": "stateful_job_paused",
+                "phase": "pause",
+                "status": "paused",
+                "timeframe": timeframe,
+                "worker_pid": os.getpid(),
+                "stateful": True,
+                "resume_stage": "stateful_features",
             },
         )
         raise
@@ -1550,9 +1578,13 @@ def _stateful_artifact_group_worker(
     total_units: int,
     job_path_text: str,
 ) -> dict:
+    from src.data_provider.jobs import check_stopped
+
+    job_path = Path(job_path_text)
     group_name = str(task_group.get("group") or "stateful")
     results: list[dict] = []
     for task in task_group.get("tasks", []):
+        check_stopped(job_path, resume_stage="stateful_features")
         results.append(_stateful_artifact_worker(request, task, total_units, job_path_text))
     return {
         "group": group_name,
@@ -1560,6 +1592,13 @@ def _stateful_artifact_group_worker(
         "results": results,
         "timeframes": [str(result.get("timeframe")) for result in results],
     }
+
+
+def cancel_queued_futures(futures: set) -> bool:
+    cancelled_any = False
+    for future in list(futures):
+        cancelled_any = future.cancel() or cancelled_any
+    return cancelled_any
 
 
 def build_stateful_artifact_tasks(
@@ -1589,7 +1628,7 @@ def build_stateful_artifact_tasks(
             )
         return results
 
-    from src.data_provider.jobs import check_cancelled
+    from src.data_provider.jobs import BuildPaused, check_cancelled, is_pause_requested
 
     task_groups = stateful_task_groups(timeframe_tasks)
     worker_count = min(STATEFUL_WORKERS, len(task_groups))
@@ -1621,16 +1660,37 @@ def build_stateful_artifact_tasks(
     }
     pending = set(futures)
     results: list[dict] = []
+    pause_requested = False
     try:
         while pending:
             done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             if not done:
                 check_cancelled(job_path)
+                if is_pause_requested(job_path):
+                    pause_requested = True
+                    cancel_queued_futures(pending)
                 continue
             for future in done:
-                group_result = future.result()
+                if future.cancelled():
+                    pause_requested = True
+                    continue
+                try:
+                    group_result = future.result()
+                except BuildPaused:
+                    pause_requested = True
+                    continue
                 results.extend(group_result.get("results", []))
             check_cancelled(job_path)
+            if is_pause_requested(job_path):
+                pause_requested = True
+                cancel_queued_futures(pending)
+        if pause_requested:
+            raise BuildPaused("Build job was paused.", resume_stage="stateful_features")
+    except BuildPaused:
+        for future in pending:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
     except BrokenProcessPool as exc:
         message = (
             "A stateful feature worker terminated abruptly, usually because the worker exceeded available memory while "
@@ -1828,7 +1888,7 @@ def build_market_data_parallel(
     if request.start_date > request.end_date:
         raise ValueError("start_date must be on or before end_date")
 
-    from src.data_provider.jobs import check_cancelled
+    from src.data_provider.jobs import BuildPaused, check_cancelled, is_pause_requested
 
     run_started_at = perf_counter()
     scan_started_at = perf_counter()
@@ -1942,14 +2002,25 @@ def build_market_data_parallel(
             for index, status in build_jobs
         }
         pending = set(futures)
+        pause_requested = False
         try:
             while pending:
                 done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
                 if not done:
                     check_cancelled(job_path)
+                    if is_pause_requested(job_path):
+                        pause_requested = True
+                        cancel_queued_futures(pending)
                     continue
                 for future in done:
-                    result = future.result()
+                    if future.cancelled():
+                        pause_requested = True
+                        continue
+                    try:
+                        result = future.result()
+                    except BuildPaused:
+                        pause_requested = True
+                        continue
                     for artifact_result in result.get("artifacts", []):
                         artifact_tasks.append(
                             {
@@ -1969,6 +2040,11 @@ def build_market_data_parallel(
                         }
                     )
                 check_cancelled(job_path)
+                if is_pause_requested(job_path):
+                    pause_requested = True
+                    cancel_queued_futures(pending)
+            if pause_requested:
+                raise BuildPaused("Build job was paused.")
         except BrokenProcessPool as exc:
             message = (
                 "A session build worker terminated abruptly, usually because the worker exceeded available memory while "
@@ -1988,6 +2064,11 @@ def build_market_data_parallel(
                 future.cancel()
             executor.shutdown(wait=False, cancel_futures=True)
             raise RuntimeError(message) from exc
+        except BuildPaused:
+            for future in pending:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
+            raise
         except Exception:
             for future in pending:
                 future.cancel()

@@ -19,11 +19,18 @@ JOB_DIR = "jobs"
 JOB_FILE = "job.json"
 EVENTS_FILE = "events.jsonl"
 CANCEL_FILE = "cancel.requested"
+PAUSE_FILE = "pause.requested"
 LOG_FILE = "worker.log"
 
 
 class BuildCancelled(RuntimeError):
     pass
+
+
+class BuildPaused(RuntimeError):
+    def __init__(self, message: str = "Build job was paused.", *, resume_stage: str | None = None) -> None:
+        super().__init__(message)
+        self.resume_stage = resume_stage
 
 
 TERMINAL_STATUSES = {"complete", "failed", "error", "cancelled", "canceled"}
@@ -51,6 +58,10 @@ def events_lock_file(path: Path) -> Path:
 
 def cancel_file(path: Path) -> Path:
     return path / CANCEL_FILE
+
+
+def pause_file(path: Path) -> Path:
+    return path / PAUSE_FILE
 
 
 def log_file(path: Path) -> Path:
@@ -126,9 +137,23 @@ def is_cancel_requested(path: Path) -> bool:
     return cancel_file(path).exists()
 
 
+def is_pause_requested(path: Path) -> bool:
+    return pause_file(path).exists()
+
+
 def check_cancelled(path: Path) -> None:
     if is_cancel_requested(path):
         raise BuildCancelled("Build job was cancelled.")
+
+
+def check_paused(path: Path, *, resume_stage: str | None = None) -> None:
+    if is_pause_requested(path):
+        raise BuildPaused("Build job was paused.", resume_stage=resume_stage)
+
+
+def check_stopped(path: Path, *, resume_stage: str | None = None) -> None:
+    check_cancelled(path)
+    check_paused(path, resume_stage=resume_stage)
 
 
 def terminate_process_tree(pid: int | None) -> dict[str, Any]:
@@ -265,6 +290,12 @@ def submit_build_job(
         "resources": {"session_workers": session_workers, "polars_threads": polars_threads},
     }
     write_job(path, payload)
+    return start_build_worker(path, payload, polars_threads=polars_threads)
+
+
+def start_build_worker(path: Path, payload: dict[str, Any], *, polars_threads: int) -> dict[str, Any]:
+    cancel_file(path).unlink(missing_ok=True)
+    pause_file(path).unlink(missing_ok=True)
     env = os.environ.copy()
     env["POLARS_MAX_THREADS"] = str(polars_threads)
     with log_file(path).open("a", encoding="utf-8") as log:
@@ -278,7 +309,11 @@ def submit_build_job(
         )
     payload["pid"] = process.pid
     payload["status"] = "running"
-    payload["started_at"] = utc_now()
+    payload["started_at"] = payload.get("started_at") or utc_now()
+    payload["finished_at"] = None
+    payload["error"] = None
+    payload["traceback"] = None
+    payload["paused_at"] = None
     write_job(path, payload)
     return payload
 
@@ -302,6 +337,48 @@ def resume_build_job(processed_root: Path, job_id: str, *, session_workers: int 
         session_workers=int(session_workers or source_resources.get("session_workers") or 8),
         polars_threads=int(polars_threads or source_resources.get("polars_threads") or 10),
     )
+
+
+def resume_paused_build_job(processed_root: Path, job_id: str, *, polars_threads: int | None = None) -> dict[str, Any]:
+    path = job_dir(processed_root, job_id)
+    payload = read_job(path)
+    if not payload:
+        return {"status": "not_found", "job_id": job_id}
+    status = str(payload.get("status") or "").lower()
+    if status != "paused":
+        raise ValueError("Only paused builds can be resumed in place")
+    resources = payload.get("resources") or {}
+    append_event(path, {"event": "resume_requested", "phase": "pause", "status": "running"})
+    return attach_job_summary(
+        start_build_worker(
+            path,
+            payload,
+            polars_threads=int(polars_threads or resources.get("polars_threads") or 10),
+        )
+    )
+
+
+def pause_build_job(processed_root: Path, job_id: str) -> dict[str, Any]:
+    path = job_dir(processed_root, job_id)
+    payload = read_job(path)
+    if not payload:
+        return {"status": "not_found", "job_id": job_id}
+    status = str(payload.get("status") or "").lower()
+    if status == "paused":
+        return attach_job_summary(payload)
+    if status in TERMINAL_STATUSES:
+        raise ValueError("Completed, failed, or cancelled builds cannot be paused")
+    pause_file(path).write_text(utc_now(), encoding="utf-8")
+    append_event(
+        path,
+        {
+            "event": "pause_requested",
+            "phase": "pause",
+            "status": "pausing",
+            "message": "Build pause requested; workers will stop at the next safe boundary.",
+        },
+    )
+    return attach_job_summary(update_job(path, status="pausing", paused_at=None))
 
 
 def cancel_build_job(processed_root: Path, job_id: str) -> dict[str, Any]:
@@ -347,7 +424,7 @@ def delete_build_job(processed_root: Path, job_id: str) -> dict[str, Any]:
         if path.exists():
             shutil.rmtree(path)
         return {"status": "deleted", "job_id": job_id, "deleted_data": False, "orphaned_job": True}
-    if str(payload.get("status") or "").lower() in {"queued", "running", "canceling"}:
+    if str(payload.get("status") or "").lower() in {"queued", "running", "canceling", "pausing"}:
         raise ValueError("Stop the build before deleting it")
     shutil.rmtree(path)
     return {"status": "deleted", "job_id": job_id, "deleted_data": False}

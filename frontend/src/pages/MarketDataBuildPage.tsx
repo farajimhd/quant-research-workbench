@@ -87,7 +87,9 @@ type BuildMetric = {
 };
 
 const tabs = ["Build", "Build Timings", "Artifacts", "Plan", "Processed Store", "Manifest"];
-const activeBuildStatuses = new Set(["queued", "running", "canceling", "cancelling"]);
+const activeBuildStatuses = new Set(["queued", "running", "canceling", "cancelling", "pausing"]);
+const pauseableBuildStatuses = new Set(["queued", "running"]);
+const pausedBuildStatuses = new Set(["paused"]);
 const resumableBuildStatuses = new Set(["cancelled", "canceled", "failed", "error"]);
 
 export function MarketDataBuildPage() {
@@ -100,6 +102,7 @@ export function MarketDataBuildPage() {
   const [deleteResult, setDeleteResult] = useState<string | null>(null);
   const [editingScope, setEditingScope] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [jobAction, setJobAction] = useState<"pause" | "resume" | "resume-stateful" | "start" | "stop" | null>(null);
 
   useEffect(() => {
     loadScope();
@@ -133,7 +136,17 @@ export function MarketDataBuildPage() {
     setJobs(payload.jobs);
     if (job) {
       const current = payload.jobs.find((item) => item.job_id === job.job_id);
-      if (current) setJob((value) => (value ? { ...value, ...current } : current));
+      if (current) {
+        setJob((value) => {
+          if (!value) return current;
+          const currentUpdated = Date.parse(String(current.updated_at ?? ""));
+          const selectedUpdated = Date.parse(String(value.updated_at ?? ""));
+          if (!Number.isNaN(currentUpdated) && !Number.isNaN(selectedUpdated) && currentUpdated < selectedUpdated) {
+            return value;
+          }
+          return { ...value, ...current };
+        });
+      }
     }
   }
 
@@ -152,6 +165,7 @@ export function MarketDataBuildPage() {
   async function startBuild() {
     if (!scope) return;
     setError(null);
+    setJobAction("start");
     try {
       const payload = await api<BuildJob>("/api/market-data/build/jobs", {
         method: "POST",
@@ -163,19 +177,63 @@ export function MarketDataBuildPage() {
       setActiveTab(tabs[0]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setJobAction(null);
     }
   }
 
   async function stopBuild() {
     if (!scope || !job) return;
-    const payload = await api<BuildJob>(`/api/market-data/build/jobs/${job.job_id}/cancel${query({ processed_root: scope.processed_root })}`, { method: "POST" });
-    setJob(payload);
-    await loadJobs(scope);
+    setError(null);
+    setJobAction("stop");
+    try {
+      const payload = await api<BuildJob>(`/api/market-data/build/jobs/${job.job_id}/cancel${query({ processed_root: scope.processed_root })}`, { method: "POST" });
+      setJob(payload);
+      await loadJobs(scope);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setJobAction(null);
+    }
+  }
+
+  async function pauseBuild() {
+    if (!scope || !job) return;
+    setError(null);
+    setJobAction("pause");
+    try {
+      const payload = await api<BuildJob>(`/api/market-data/build/jobs/${job.job_id}/pause${query({ processed_root: scope.processed_root })}`, { method: "POST" });
+      setJob(payload);
+      await loadJobs(scope);
+      await loadJob(scope, job.job_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setJobAction(null);
+    }
+  }
+
+  async function resumePausedBuild() {
+    if (!scope || !job) return;
+    setError(null);
+    setJobAction("resume");
+    try {
+      const payload = await api<BuildJob>(`/api/market-data/build/jobs/${job.job_id}/resume${query({ processed_root: scope.processed_root })}`, { method: "POST" });
+      setJob(payload);
+      await loadJobs(scope);
+      await loadJob(scope, payload.job_id);
+      setActiveTab(tabs[0]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setJobAction(null);
+    }
   }
 
   async function resumeStatefulBuild() {
     if (!scope || !job) return;
     setError(null);
+    setJobAction("resume-stateful");
     try {
       const payload = await api<BuildJob>(`/api/market-data/build/jobs/${job.job_id}/resume-stateful${query({ processed_root: scope.processed_root })}`, { method: "POST" });
       setJob(payload);
@@ -184,6 +242,8 @@ export function MarketDataBuildPage() {
       setActiveTab(tabs[0]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setJobAction(null);
     }
   }
 
@@ -221,8 +281,12 @@ export function MarketDataBuildPage() {
     setJobs([]);
   }
 
-  const running = Boolean(job && activeBuildStatuses.has(String(job.status).toLowerCase()));
-  const resumable = Boolean(job && !running && resumableBuildStatuses.has(String(job.status).toLowerCase()));
+  const jobStatus = String(job?.status ?? "").toLowerCase();
+  const running = Boolean(job && activeBuildStatuses.has(jobStatus));
+  const pausing = jobStatus === "pausing";
+  const paused = Boolean(job && pausedBuildStatuses.has(jobStatus));
+  const pauseable = Boolean(job && pauseableBuildStatuses.has(jobStatus));
+  const resumable = Boolean(job && !running && !paused && resumableBuildStatuses.has(jobStatus));
   const progress = job?.progress;
   const metrics = progress?.metrics;
   const missing = useMemo(() => (progress?.plan ?? []).filter((row) => row.expected_market_session && !row.exists), [progress?.plan]);
@@ -241,12 +305,28 @@ export function MarketDataBuildPage() {
           <button className="button" onClick={() => setJob(null)} type="button">
             Back to builds
           </button>
-          <button className={running ? "button danger" : "button primary"} onClick={running ? stopBuild : startBuild} type="button">
-            {running ? "Stop build" : "New build"}
-          </button>
+          {running ? (
+            <>
+              <button className="button danger" disabled={jobAction !== null} onClick={stopBuild} type="button">
+                {jobAction === "stop" ? "Stopping..." : "Stop build"}
+              </button>
+              <button className="button" disabled={!pauseable || pausing || jobAction !== null} onClick={pauseBuild} type="button">
+                {pausing || jobAction === "pause" ? "Pausing..." : "Pause build"}
+              </button>
+            </>
+          ) : (
+            <button className="button primary" disabled={jobAction !== null} onClick={startBuild} type="button">
+              {jobAction === "start" ? "Starting..." : "New build"}
+            </button>
+          )}
+          {paused ? (
+            <button className="button primary" disabled={jobAction !== null} onClick={resumePausedBuild} type="button">
+              {jobAction === "resume" ? "Resuming..." : "Resume build"}
+            </button>
+          ) : null}
           {resumable ? (
-            <button className="button primary" onClick={resumeStatefulBuild} type="button">
-              Resume stateful
+            <button className="button primary" disabled={jobAction !== null} onClick={resumeStatefulBuild} type="button">
+              {jobAction === "resume-stateful" ? "Resuming..." : "Resume stateful"}
             </button>
           ) : null}
           <button className="button" onClick={() => setEditingScope(true)} type="button">
@@ -700,7 +780,8 @@ function progressStatus(progress: number): string {
 function statusTone(status: string): BuildMetric["tone"] {
   const normalized = status.toLowerCase();
   if (["failed", "error", "canceled", "cancelled"].some((value) => normalized.includes(value))) return "danger";
-  if (["running", "queued", "canceling"].some((value) => normalized.includes(value))) return "warning";
+  if (["running", "queued", "canceling", "pausing"].some((value) => normalized.includes(value))) return "warning";
+  if (normalized.includes("paused")) return "info";
   if (["complete", "ready"].some((value) => normalized.includes(value))) return "success";
   return "neutral";
 }
