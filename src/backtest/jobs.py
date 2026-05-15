@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +46,10 @@ def events_lock_file(path: Path) -> Path:
     return path / f"{EVENTS_FILE}.lock"
 
 
+def job_lock_file(path: Path) -> Path:
+    return path / f"{JOB_FILE}.lock"
+
+
 def log_file(path: Path) -> Path:
     return path / LOG_FILE
 
@@ -54,24 +59,48 @@ def cancel_file(path: Path) -> Path:
 
 
 def read_job(path: Path) -> dict[str, Any]:
+    with file_lock(job_lock_file(path)):
+        return _read_job_unlocked(path)
+
+
+def _read_job_unlocked(path: Path) -> dict[str, Any]:
     if not job_file(path).exists():
         return {}
     return json.loads(job_file(path).read_text(encoding="utf-8"))
 
 
 def write_job(path: Path, payload: dict[str, Any]) -> None:
+    with file_lock(job_lock_file(path)):
+        _write_job_unlocked(path, payload)
+
+
+def _write_job_unlocked(path: Path, payload: dict[str, Any]) -> None:
     path.mkdir(parents=True, exist_ok=True)
-    tmp = job_file(path).with_suffix(".json.tmp")
+    tmp = path / f"{JOB_FILE}.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(job_file(path))
+    replace_with_retry(tmp, job_file(path))
+
+
+def replace_with_retry(tmp: Path, target: Path, attempts: int = 20, delay_seconds: float = 0.05) -> None:
+    last_error: OSError | None = None
+    for _ in range(attempts):
+        try:
+            tmp.replace(target)
+            return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(delay_seconds)
+    if last_error is not None:
+        raise last_error
 
 
 def update_job(path: Path, **updates: Any) -> dict[str, Any]:
-    payload = read_job(path)
-    payload.update(updates)
-    payload["updated_at"] = utc_now()
-    write_job(path, payload)
-    return payload
+    with file_lock(job_lock_file(path)):
+        payload = _read_job_unlocked(path)
+        payload.update(updates)
+        payload["updated_at"] = utc_now()
+        _write_job_unlocked(path, payload)
+        return payload
 
 
 def append_event(path: Path, event: dict[str, Any]) -> None:
@@ -130,11 +159,7 @@ def submit_backtest_job(config: BacktestConfig) -> dict[str, Any]:
             stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-    payload["pid"] = process.pid
-    payload["status"] = "running"
-    payload["started_at"] = utc_now()
-    write_job(path, payload)
-    return payload
+    return update_job(path, pid=process.pid, status="running", started_at=utc_now())
 
 
 def cancel_backtest_job(output_root: Path, job_id: str) -> dict[str, Any]:
