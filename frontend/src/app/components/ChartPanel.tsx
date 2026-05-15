@@ -511,7 +511,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     payloadRef.current = payload;
     if (!payload || !priceChartRef.current || !candleRef.current || !volumeRef.current) return;
-    candleRef.current.setData(candleDataForTimeframe(payload.candles, timeframe) as never);
+    const timeline = chartTimelineData(payload.candles, timeframe);
+    candleRef.current.setData(timeline as never);
     volumeRef.current.setData(volumeDataForSettings(payload, chartSettingsRef.current) as never);
     updateCandleMarkers();
     const nextSignature = buildCandleDataSignature(payload.candles);
@@ -554,7 +555,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     if (!priceChartRef.current) return;
     updateOscillatorPanes(oscillatorPaneGroups);
     refreshInteractionSync();
-  }, [payload, visibleColumnKey]);
+  }, [payload, visibleColumnKey, timeframe]);
 
   function applyChartAppearance() {
     const palette = readChartPalette();
@@ -568,7 +569,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     }
     oscillatorChartRefs.current.forEach((chart, key) => {
       const pane = oscillatorPaneRefs.current.get(key);
-      if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, true, palette, chartSettingsRef.current));
+      if (pane) chart.applyOptions(chartOptions(pane.clientWidth, pane.clientHeight, false, palette, chartSettingsRef.current));
     });
     drawCurrentRegions();
   }
@@ -627,7 +628,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       if (!pane) return;
       let runtime = oscillatorPaneRuntimesRef.current.get(group.key);
       if (!runtime) {
-        const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, true, readChartPalette(), chartSettingsRef.current));
+        const chart = createChart(pane, chartOptions(pane.clientWidth, pane.clientHeight, false, readChartPalette(), chartSettingsRef.current));
         runtime = {
           chart,
           primaryKey: "",
@@ -643,13 +644,13 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         oscillatorPaneRuntimesRef.current.set(group.key, runtime);
         oscillatorChartRefs.current.set(group.key, chart);
       }
-      updateOscillatorPaneTimeline(runtime, payloadRef.current?.candles ?? []);
+      updateOscillatorPaneTimeline(runtime, chartTimelineData(payloadRef.current?.candles ?? [], timeframe));
       updateOscillatorPaneSeries(runtime, group.series);
     });
   }
 
-  function updateOscillatorPaneTimeline(runtime: OscillatorPaneRuntime, candles: Candle[]) {
-    const signature = buildCandleDataSignature(candles);
+  function updateOscillatorPaneTimeline(runtime: OscillatorPaneRuntime, timeline: CandleSeriesDatum[]) {
+    const signature = buildTimelineDataSignature(timeline);
     if (!runtime.timelineRenderer) {
       runtime.timelineRenderer = runtime.chart.addLineSeries({
         autoscaleInfoProvider: () => null,
@@ -663,7 +664,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       });
     }
     if (runtime.timelineSignature === signature) return;
-    runtime.timelineRenderer.setData(candles.map((candle) => ({ time: candle.time, value: 0 })) as never);
+    runtime.timelineRenderer.setData(timeline.map((item) => ({ time: item.time, value: 0 })) as never);
     runtime.timelineSignature = signature;
   }
 
@@ -2093,6 +2094,17 @@ function candleDataForTimeframe(candles: Candle[], timeframe: string): CandleSer
     data.push(candle);
   }
   return data;
+}
+
+function chartTimelineData(candles: Candle[], timeframe: string): CandleSeriesDatum[] {
+  return candleDataForTimeframe(candles, timeframe);
+}
+
+function buildTimelineDataSignature(timeline: CandleSeriesDatum[]) {
+  if (!timeline.length) return "empty";
+  const first = timeline[0];
+  const last = timeline[timeline.length - 1];
+  return `${timeline.length}:${first.time}:${last.time}`;
 }
 
 function chartTimeframeSeconds(timeframe: string) {
