@@ -58,6 +58,7 @@ from src.strategies.registry import (
     create_strategy,
     default_strategy_params,
     default_strategy_version,
+    strategy_description,
     strategy_readme_path,
     strategy_chart_presentation,
 )
@@ -636,7 +637,7 @@ def strategies() -> dict[str, Any]:
             {
                 "name": name,
                 "display_name": name.replace("_", " ").title(),
-                "description": "Opening-range momentum strategy with versioned scanner, entry, and exit rules.",
+                "description": strategy_description(name),
                 "versions": available_strategy_versions(name),
                 "default_version": default_strategy_version(name),
             }

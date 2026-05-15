@@ -38,6 +38,9 @@ from src.strategies.orb_5m_momentum.v5.strategy import OrbFiveMinuteMomentumV5St
 from src.strategies.orb_5m_momentum.v6.config import OrbMomentumConfig as OrbMomentumV6Config
 from src.strategies.orb_5m_momentum.v6.presentation import chart_presentation as orb_5m_momentum_v6_chart_presentation
 from src.strategies.orb_5m_momentum.v6.strategy import OrbFiveMinuteMomentumV6Strategy
+from src.strategies.orb_5m_momentum.v7.config import OrbMomentumConfig as OrbMomentumV7Config
+from src.strategies.orb_5m_momentum.v7.presentation import chart_presentation as orb_5m_momentum_v7_chart_presentation
+from src.strategies.orb_5m_momentum.v7.strategy import OrbFiveMinuteMomentumV7Strategy
 
 STRATEGIES_ROOT = Path(__file__).resolve().parent
 
@@ -90,6 +93,14 @@ def default_orb_5m_momentum_v6_params() -> dict:
     return OrbMomentumV6Config().to_dict()
 
 
+def create_orb_5m_momentum_v7(params: dict | None = None) -> OrbFiveMinuteMomentumV7Strategy:
+    return OrbFiveMinuteMomentumV7Strategy(OrbMomentumV7Config.from_dict(params))
+
+
+def default_orb_5m_momentum_v7_params() -> dict:
+    return OrbMomentumV7Config().to_dict()
+
+
 def create_adaptive_live_trend_rotation_v1(params: dict | None = None) -> AdaptiveLiveTrendRotationStrategy:
     return AdaptiveLiveTrendRotationStrategy(AdaptiveLiveTrendRotationV1Config.from_dict(params))
 
@@ -124,6 +135,7 @@ STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("orb_5m_momentum", "v4"): create_orb_5m_momentum_v4,
     ("orb_5m_momentum", "v5"): create_orb_5m_momentum_v5,
     ("orb_5m_momentum", "v6"): create_orb_5m_momentum_v6,
+    ("orb_5m_momentum", "v7"): create_orb_5m_momentum_v7,
 }
 
 STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
@@ -136,6 +148,7 @@ STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("orb_5m_momentum", "v4"): default_orb_5m_momentum_v4_params,
     ("orb_5m_momentum", "v5"): default_orb_5m_momentum_v5_params,
     ("orb_5m_momentum", "v6"): default_orb_5m_momentum_v6_params,
+    ("orb_5m_momentum", "v7"): default_orb_5m_momentum_v7_params,
 }
 
 STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
@@ -148,6 +161,26 @@ STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]]
     ("orb_5m_momentum", "v4"): orb_5m_momentum_v4_chart_presentation,
     ("orb_5m_momentum", "v5"): orb_5m_momentum_v5_chart_presentation,
     ("orb_5m_momentum", "v6"): orb_5m_momentum_v6_chart_presentation,
+    ("orb_5m_momentum", "v7"): orb_5m_momentum_v7_chart_presentation,
+}
+
+STRATEGY_DESCRIPTIONS: dict[str, str] = {
+    "adaptive_live_trend_rotation": (
+        "Ranks live upward momentum every minute, enters the strongest open names, "
+        "and rotates capital away from weaker holdings."
+    ),
+    "break_of_vwap": (
+        "Trades long when a liquid symbol reclaims VWAP with momentum confirmation "
+        "and exits through the shared risk and trend rules."
+    ),
+    "liquidity_pullback_reversal": (
+        "Looks for liquid symbols that pull back into support, recover with momentum, "
+        "and offer asymmetric long continuation."
+    ),
+    "orb_5m_momentum": (
+        "Versioned 5-minute opening-range breakout family, evolving scanner, entry, "
+        "profit-reentry, and risk rules incrementally across versions."
+    ),
 }
 
 DEFAULT_STRATEGY_VERSIONS: dict[str, str] = {
@@ -164,6 +197,10 @@ def available_strategies() -> list[str]:
 
 def available_strategy_versions(name: str) -> list[str]:
     return sorted(version for strategy_name, version in STRATEGY_FACTORIES if strategy_name == name)
+
+
+def strategy_description(name: str) -> str:
+    return STRATEGY_DESCRIPTIONS.get(name, name.replace("_", " ").title())
 
 
 def default_strategy_version(name: str) -> str:
