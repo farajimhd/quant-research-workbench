@@ -716,7 +716,7 @@ def strategy_default_config(strategy_name: str, version: str | None = None) -> d
         "chart_presentation": strategy_chart_presentation(strategy_name, selected_version),
         "run_name": generated_run_name(strategy_name, selected_version),
         "start_date": "2024-05-01",
-        "end_date": "2024-05-02",
+        "end_date": "2024-05-09",
         "data_root": str(DEFAULT_RAW_ROOT),
         "processed_data_root": str(DEFAULT_PROCESSED_ROOT),
         "output_root": str(DEFAULT_OUTPUT_ROOT),
