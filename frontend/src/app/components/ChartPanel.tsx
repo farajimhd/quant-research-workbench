@@ -142,6 +142,8 @@ type OscillatorPaneRuntime = {
   primaryKey: string;
   renderer: AnySeriesApi | null;
   seriesKeys: Set<string>;
+  timelineRenderer: AnySeriesApi | null;
+  timelineSignature: string;
   valuesByTime: Map<number, number>;
   zeroLine: IPriceLine | null;
   zeroLineRenderer: AnySeriesApi | null;
@@ -631,6 +633,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           primaryKey: "",
           renderer: null,
           seriesKeys: new Set<string>(),
+          timelineRenderer: null,
+          timelineSignature: "",
           valuesByTime: new Map<number, number>(),
           zeroLine: null,
           zeroLineRenderer: null,
@@ -639,8 +643,28 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         oscillatorPaneRuntimesRef.current.set(group.key, runtime);
         oscillatorChartRefs.current.set(group.key, chart);
       }
+      updateOscillatorPaneTimeline(runtime, payloadRef.current?.candles ?? []);
       updateOscillatorPaneSeries(runtime, group.series);
     });
+  }
+
+  function updateOscillatorPaneTimeline(runtime: OscillatorPaneRuntime, candles: Candle[]) {
+    const signature = buildCandleDataSignature(candles);
+    if (!runtime.timelineRenderer) {
+      runtime.timelineRenderer = runtime.chart.addLineSeries({
+        autoscaleInfoProvider: () => null,
+        color: "rgba(0, 0, 0, 0)",
+        crosshairMarkerVisible: false,
+        lastValueVisible: false,
+        lineWidth: 1,
+        priceLineVisible: false,
+        visible: true,
+        title: "",
+      });
+    }
+    if (runtime.timelineSignature === signature) return;
+    runtime.timelineRenderer.setData(candles.map((candle) => ({ time: candle.time, value: 0 })) as never);
+    runtime.timelineSignature = signature;
   }
 
   function updateOscillatorPaneSeries(runtime: OscillatorPaneRuntime, seriesList: ChartSeries[]) {
@@ -733,6 +757,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       indicatorSeriesRef.current.delete(seriesKey);
       indicatorSourceRef.current.delete(seriesKey);
     });
+    runtime.timelineRenderer = null;
     runtime.chart.remove();
     oscillatorPaneRuntimesRef.current.delete(key);
     oscillatorChartRefs.current.delete(key);
@@ -2413,6 +2438,10 @@ function hasMultipleMarketDates(candles: Candle[]) {
 function syncChartRanges(charts: IChartApi[]) {
   if (charts.length < 2) return () => undefined;
   let syncing = false;
+  const initialRange = charts[0].timeScale().getVisibleLogicalRange();
+  if (initialRange) {
+    charts.slice(1).forEach((target) => target.timeScale().setVisibleLogicalRange(initialRange));
+  }
   const handlers = charts.map((source) => {
     const handler = (range: LogicalRange | null) => {
       if (syncing || !range) return;
@@ -2447,6 +2476,8 @@ function syncCrosshairs(
       const value = pane.valuesByTime.get(Number(time));
       if (pane.renderer && typeof value === "number" && Number.isFinite(value)) {
         pane.chart.setCrosshairPosition(value, time, pane.renderer);
+      } else if (pane.timelineRenderer) {
+        pane.chart.setCrosshairPosition(0, time, pane.timelineRenderer);
       } else {
         pane.chart.clearCrosshairPosition();
       }
