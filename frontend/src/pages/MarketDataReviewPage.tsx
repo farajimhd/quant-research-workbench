@@ -168,6 +168,7 @@ type CatalogCardItem = CatalogItem & {
   summary: string;
 };
 type PreviewChartTarget = {
+  rangeMode?: "session" | "surrounding";
   record: RecordRow;
   row: Record<string, unknown>;
 };
@@ -358,7 +359,7 @@ export function MarketDataReviewPage() {
       {activeTab === "Chart" && scope && review ? <ChartTab catalog={catalog} scope={scope} records={review.records} /> : null}
       {activeTab === "Artifacts" && review ? <Artifacts records={review.records} /> : null}
       {activeTab === "Preview" && scope && review ? <Preview catalog={catalog} scope={scope} records={review.records} /> : null}
-      {activeTab === "Scanner" && scope && review ? <ScannerTab scope={scope} records={review.records} /> : null}
+      {activeTab === "Scanner" && scope && review ? <ScannerTab catalog={catalog} scope={scope} records={review.records} /> : null}
       {activeTab === "Schema" && scope && review ? <Schema scope={scope} records={review.records} /> : null}
       {activeTab === "Catalog" && scope ? <CatalogTab catalog={catalog} catalogError={catalogError} catalogLoading={catalogLoading} scope={scope} onCatalogChange={setCatalog} /> : null}
       {editingScope && draft ? (
@@ -626,7 +627,7 @@ function Artifacts({ records }: { records: RecordRow[] }) {
   );
 }
 
-function ScannerTab({ scope, records }: { scope: Scope; records: RecordRow[] }) {
+function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | null; scope: Scope; records: RecordRow[] }) {
   const barRecords = useMemo(() => records.filter((record) => record.exists && record.group === "bars" && record.timeframe !== "1d"), [records]);
   const sessions = useMemo(() => Array.from(new Set(barRecords.map((record) => record.session_date))).sort(), [barRecords]);
   const [sessionDate, setSessionDate] = useState(sessions.find((item) => item >= scope.start_date && item <= scope.end_date) ?? sessions[0] ?? scope.start_date);
@@ -656,6 +657,7 @@ function ScannerTab({ scope, records }: { scope: Scope; records: RecordRow[] }) 
   const [scannerRunId, setScannerRunId] = useState(0);
   const [appliedScannerQuery, setAppliedScannerQuery] = useState<ScannerQueryState | null>(null);
   const [snapshot, setSnapshot] = useState<ScannerSnapshot | null>(null);
+  const [chartTarget, setChartTarget] = useState<PreviewChartTarget | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const selectedFeatureGroups = useMemo(() => parseCommaList(featureGroups), [featureGroups]);
@@ -722,6 +724,7 @@ function ScannerTab({ scope, records }: { scope: Scope; records: RecordRow[] }) 
   const startRow = snapshot?.rows.length ? (snapshot.row_offset ?? 0) + 1 : 0;
   const endRow = snapshot ? (snapshot.row_offset ?? 0) + snapshot.rows.length : 0;
   const timeframeStep = timeframeMinutes(timeframe);
+  const scannerChartRecord = snapshot ? scannerSnapshotRecord(snapshot) : null;
   const loadScannerSnapshot = () => {
     setAppliedScannerQuery({
       backendQuery: cleanPreviewBackendQuery(backendQuery),
@@ -805,7 +808,35 @@ function ScannerTab({ scope, records }: { scope: Scope; records: RecordRow[] }) 
           </button>
         </div>
       ) : null}
-      <DataTable rows={snapshot?.rows ?? []} columns={snapshot?.columns} empty={scannerRunId === 0 ? "Load a scanner snapshot to show rows." : "No rows."} />
+      <DataTable
+        columns={snapshot?.columns}
+        empty={scannerRunId === 0 ? "Load a scanner snapshot to show rows." : "No rows."}
+        onRowClick={
+          scannerChartRecord && snapshot
+            ? (row) => setChartTarget({ rangeMode: "session", record: scannerChartRecord, row: scannerChartRow(row, snapshot) })
+            : undefined
+        }
+        rowAction={
+          scannerChartRecord && snapshot
+            ? {
+                isAvailable: (row) => rowHasChartContext(scannerChartRow(row, snapshot), scannerChartRecord),
+                label: "Open scanner row in chart",
+                onSelect: (row) => setChartTarget({ rangeMode: "session", record: scannerChartRecord, row: scannerChartRow(row, snapshot) }),
+              }
+            : undefined
+        }
+        rows={snapshot?.rows ?? []}
+      />
+      {chartTarget ? (
+        <PreviewRowChartModal
+          catalog={catalog}
+          key={`${chartTarget.record.key}:${rowStringValue(chartTarget.row, "ticker")}:${rowStringValue(chartTarget.row, "bar_time_market")}:${rowStringValue(chartTarget.row, "minute_of_day")}`}
+          onClose={() => setChartTarget(null)}
+          records={records}
+          scope={scope}
+          target={chartTarget}
+        />
+      ) : null}
     </section>
   );
 }
@@ -889,6 +920,33 @@ function ScannerFilterPanel({
       {featureOptions.length ? <div className="preview-query-empty">Available feature groups: {featureOptions.join(", ")}</div> : null}
     </div>
   );
+}
+
+function scannerSnapshotRecord(snapshot: ScannerSnapshot): RecordRow {
+  return {
+    built_at: "",
+    column_count: snapshot.columns.length,
+    columns: snapshot.columns,
+    exists: true,
+    group: "bars",
+    key: `scanner|${snapshot.timeframe}|${snapshot.session_date}|${snapshot.bar_time}`,
+    path: "",
+    rows: snapshot.row_count,
+    session_date: snapshot.session_date,
+    size: "",
+    timeframe: snapshot.timeframe,
+  };
+}
+
+function scannerChartRow(row: Record<string, unknown>, snapshot: ScannerSnapshot): Record<string, unknown> {
+  const minuteOfDay = rowNumberValue(row, "minute_of_day") ?? barTimeMinuteOfDay(snapshot.bar_time);
+  return {
+    ...row,
+    bar_time_market: rowStringValue(row, "bar_time_market") || `${snapshot.session_date} ${snapshot.bar_time}`,
+    minute_of_day: minuteOfDay,
+    session_date: rowStringValue(row, "session_date") || snapshot.session_date,
+    timeframe: rowStringValue(row, "timeframe") || snapshot.timeframe,
+  };
 }
 
 function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; scope: Scope; records: RecordRow[] }) {
@@ -1326,7 +1384,7 @@ function previewChartInitialState(target: PreviewChartTarget, records: RecordRow
   const timeframe = barContext.timeframe;
   const ticker = barContext.ticker.toUpperCase();
   const sessionDate = barContext.sessionDate;
-  const range = surroundingChartRange(records, timeframe, sessionDate);
+  const range = target.rangeMode === "session" ? { start: sessionDate, end: sessionDate } : surroundingChartRange(records, timeframe, sessionDate);
   const visibleColumns = previewChartDisplayItems(target.record, catalog);
   return {
     featureGroups: previewFeatureGroups(target.record, catalog, visibleColumns),
@@ -3565,12 +3623,17 @@ function scannerAvailableColumns(records: RecordRow[], sessionDate: string, time
 }
 
 function shiftBarTime(value: string, minutes: number) {
+  const current = barTimeMinuteOfDay(value) ?? 9 * 60 + 30;
+  const next = Math.max(0, Math.min(23 * 60 + 59, current + minutes));
+  return `${String(Math.floor(next / 60)).padStart(2, "0")}:${String(next % 60).padStart(2, "0")}`;
+}
+
+function barTimeMinuteOfDay(value: string) {
   const [hourText, minuteText] = value.split(":");
   const hour = Number(hourText);
   const minute = Number(minuteText);
-  const current = Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : 9 * 60 + 30;
-  const next = Math.max(0, Math.min(23 * 60 + 59, current + minutes));
-  return `${String(Math.floor(next / 60)).padStart(2, "0")}:${String(next % 60).padStart(2, "0")}`;
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return undefined;
+  return Math.max(0, Math.min(23 * 60 + 59, hour * 60 + minute));
 }
 
 function timeframeMinutes(value: string) {
