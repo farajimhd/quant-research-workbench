@@ -41,6 +41,9 @@ from src.strategies.orb_5m_momentum.v6.strategy import OrbFiveMinuteMomentumV6St
 from src.strategies.orb_5m_momentum.v7.config import OrbMomentumConfig as OrbMomentumV7Config
 from src.strategies.orb_5m_momentum.v7.presentation import chart_presentation as orb_5m_momentum_v7_chart_presentation
 from src.strategies.orb_5m_momentum.v7.strategy import OrbFiveMinuteMomentumV7Strategy
+from src.strategies.orb_5m_momentum.v8.config import OrbMomentumConfig as OrbMomentumV8Config
+from src.strategies.orb_5m_momentum.v8.presentation import chart_presentation as orb_5m_momentum_v8_chart_presentation
+from src.strategies.orb_5m_momentum.v8.strategy import OrbFiveMinuteMomentumV8Strategy
 
 STRATEGIES_ROOT = Path(__file__).resolve().parent
 
@@ -101,6 +104,14 @@ def default_orb_5m_momentum_v7_params() -> dict:
     return OrbMomentumV7Config().to_dict()
 
 
+def create_orb_5m_momentum_v8(params: dict | None = None) -> OrbFiveMinuteMomentumV8Strategy:
+    return OrbFiveMinuteMomentumV8Strategy(OrbMomentumV8Config.from_dict(params))
+
+
+def default_orb_5m_momentum_v8_params() -> dict:
+    return OrbMomentumV8Config().to_dict()
+
+
 def create_adaptive_live_trend_rotation_v1(params: dict | None = None) -> AdaptiveLiveTrendRotationStrategy:
     return AdaptiveLiveTrendRotationStrategy(AdaptiveLiveTrendRotationV1Config.from_dict(params))
 
@@ -136,6 +147,7 @@ STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("orb_5m_momentum", "v5"): create_orb_5m_momentum_v5,
     ("orb_5m_momentum", "v6"): create_orb_5m_momentum_v6,
     ("orb_5m_momentum", "v7"): create_orb_5m_momentum_v7,
+    ("orb_5m_momentum", "v8"): create_orb_5m_momentum_v8,
 }
 
 STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
@@ -149,6 +161,7 @@ STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("orb_5m_momentum", "v5"): default_orb_5m_momentum_v5_params,
     ("orb_5m_momentum", "v6"): default_orb_5m_momentum_v6_params,
     ("orb_5m_momentum", "v7"): default_orb_5m_momentum_v7_params,
+    ("orb_5m_momentum", "v8"): default_orb_5m_momentum_v8_params,
 }
 
 STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
@@ -162,6 +175,7 @@ STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]]
     ("orb_5m_momentum", "v5"): orb_5m_momentum_v5_chart_presentation,
     ("orb_5m_momentum", "v6"): orb_5m_momentum_v6_chart_presentation,
     ("orb_5m_momentum", "v7"): orb_5m_momentum_v7_chart_presentation,
+    ("orb_5m_momentum", "v8"): orb_5m_momentum_v8_chart_presentation,
 }
 
 STRATEGY_DESCRIPTIONS: dict[str, str] = {
@@ -222,6 +236,10 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
         "Starts from v6 and adds a green-candle entry rule: stop entries keep the v6 structure but only fill on non-red "
         "completed 1-minute triggering candles, profit reentries are blocked on red candles, and red scanner candidates "
         "are removed from consideration."
+    ),
+    ("orb_5m_momentum", "v8"): (
+        "Starts from v7 and changes profit handling: when the pocketing threshold is reached, the strategy exits with "
+        "POCKETING and does not immediately reenter; the scanner chooses the next opportunity."
     ),
 }
 

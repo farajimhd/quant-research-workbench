@@ -27,3 +27,6 @@ The root folder describes the shared idea only. Exact rules, indicators, data re
   entries and profit reentries are not allowed on red completed `1m` candles,
   and scanner candidates that turn red during entry evaluation are removed from
   consideration from that point forward.
+- `v8`: Starts from v7 and removes the immediate profit reentry. When a
+  position reaches the pocketing threshold, it exits with `POCKETING` and lets
+  the scanner choose the next opportunity.
