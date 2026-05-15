@@ -3308,6 +3308,295 @@ button {
   gap: 5px;
 }
 
+.research-runs-page {
+  display: grid;
+  gap: 14px;
+}
+
+.research-filter-bar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 180px)) minmax(240px, 1fr);
+  gap: 10px;
+  align-items: end;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--muted) 34%, transparent);
+  padding: 12px;
+}
+
+.research-select-field,
+.research-search-field {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.research-select-field > span,
+.research-search-field > span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.research-select-field select,
+.research-search-field input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+  min-height: 34px;
+  padding: 0 10px;
+  font: inherit;
+}
+
+.research-search-field div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  min-height: 34px;
+  padding: 0 9px;
+  color: var(--muted-foreground);
+}
+
+.research-search-field input {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  outline: 0;
+}
+
+.research-metric-strip {
+  display: grid;
+  grid-template-columns: minmax(20px, 0.25fr) repeat(5, minmax(0, 1fr)) minmax(20px, 0.25fr);
+  gap: 0;
+  min-height: 78px;
+  padding: 6px 0 8px;
+}
+
+.research-metric-strip::before,
+.research-metric-strip::after {
+  content: "";
+}
+
+.research-metric-card {
+  --metric-tone: var(--muted-foreground);
+  display: grid;
+  grid-template-areas:
+    "icon label"
+    "value value";
+  grid-template-columns: 17px minmax(0, max-content);
+  align-content: center;
+  justify-content: center;
+  justify-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 5px;
+  text-align: center;
+}
+
+.research-metric-card[data-tone="danger"] {
+  --metric-tone: var(--danger);
+}
+
+.research-metric-card[data-tone="info"] {
+  --metric-tone: var(--info);
+}
+
+.research-metric-card[data-tone="success"] {
+  --metric-tone: var(--success);
+}
+
+.research-metric-card[data-tone="neutral"] {
+  --metric-tone: var(--muted-foreground);
+}
+
+.research-metric-icon {
+  grid-area: icon;
+  display: inline-flex;
+  align-items: center;
+  color: var(--metric-tone);
+}
+
+.research-metric-label {
+  grid-area: label;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-metric-value {
+  grid-area: value;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--metric-tone);
+  font-family: var(--font-display);
+  font-size: 27px;
+  font-weight: 500;
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-leader-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.research-leader-card {
+  --leader-tone: var(--muted-foreground);
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--muted) 26%, transparent);
+  padding: 12px;
+}
+
+.research-leader-card[data-tone="danger"] {
+  --leader-tone: var(--danger);
+}
+
+.research-leader-card[data-tone="success"] {
+  --leader-tone: var(--success);
+}
+
+.research-leader-card div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.research-leader-card span,
+.research-leader-card small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.research-leader-card strong {
+  color: var(--leader-tone);
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.research-leader-card p,
+.research-leader-card small {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-leader-card p {
+  color: var(--foreground);
+  font-size: 13px;
+}
+
+.research-chart-panel,
+.research-table-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.research-section-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--muted) 22%, transparent);
+  padding: 10px 12px;
+}
+
+.research-section-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.research-section-header p,
+.research-section-header span {
+  margin: 2px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.research-return-list {
+  display: grid;
+  gap: 7px;
+}
+
+.research-return-row {
+  --return-tone: var(--success);
+  display: grid;
+  grid-template-columns: minmax(180px, 1.1fr) minmax(160px, 2fr) 88px;
+  align-items: center;
+  gap: 12px;
+  min-height: 38px;
+}
+
+.research-return-row[data-tone="danger"] {
+  --return-tone: var(--danger);
+}
+
+.research-return-row > div:first-child {
+  display: grid;
+  min-width: 0;
+}
+
+.research-return-row strong,
+.research-return-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-return-row strong {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.research-return-row span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.research-return-row b {
+  color: var(--return-tone);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: right;
+}
+
+.research-return-track {
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
+  height: 9px;
+}
+
+.research-return-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--return-tone);
+}
+
 .session-percent {
   font-size: 15px;
   font-weight: 800;
@@ -7578,5 +7867,34 @@ button {
 
   .schema-card-grid {
     grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  }
+}
+
+@media (max-width: 1100px) {
+  .research-filter-bar,
+  .research-leader-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .research-metric-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .research-metric-strip::before,
+  .research-metric-strip::after {
+    display: none;
+  }
+}
+
+@media (max-width: 680px) {
+  .research-filter-bar,
+  .research-leader-grid,
+  .research-metric-strip,
+  .research-return-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .research-return-row b {
+    text-align: left;
   }
 }

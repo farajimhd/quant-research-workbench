@@ -3,9 +3,10 @@ import { useEffect, useState } from "react";
 import { Layout, type PageKey } from "./app/components/Layout";
 import { MarketDataBuildPage } from "./pages/MarketDataBuildPage";
 import { MarketDataReviewPage } from "./pages/MarketDataReviewPage";
+import { ResearchRunsPage } from "./pages/ResearchRunsPage";
 import { StrategyPage } from "./pages/StrategyPage";
 
-const validPages: PageKey[] = ["strategy", "build-data", "review-data"];
+const validPages: PageKey[] = ["strategy", "research-runs", "build-data", "review-data"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -26,6 +27,9 @@ export function App() {
     <Layout page={page} onPageChange={setPage}>
       <div aria-hidden={page !== "strategy"} className={page === "strategy" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "strategy" || visitedPages.has("strategy") ? <StrategyPage /> : null}
+      </div>
+      <div aria-hidden={page !== "research-runs"} className={page === "research-runs" ? "page-cache-panel active" : "page-cache-panel"}>
+        {page === "research-runs" || visitedPages.has("research-runs") ? <ResearchRunsPage /> : null}
       </div>
       <div aria-hidden={page !== "build-data"} className={page === "build-data" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "build-data" || visitedPages.has("build-data") ? <MarketDataBuildPage /> : null}
