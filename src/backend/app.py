@@ -61,6 +61,7 @@ from src.strategies.registry import (
     strategy_description,
     strategy_readme_path,
     strategy_chart_presentation,
+    strategy_version_description,
 )
 
 
@@ -638,6 +639,7 @@ def strategies() -> dict[str, Any]:
                 "name": name,
                 "display_name": name.replace("_", " ").title(),
                 "description": strategy_description(name),
+                "version_descriptions": {version: strategy_version_description(name, version) for version in available_strategy_versions(name)},
                 "versions": available_strategy_versions(name),
                 "default_version": default_strategy_version(name),
             }
@@ -654,7 +656,14 @@ def strategy_readme(strategy_name: str, version: str | None = None) -> dict[str,
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not path.exists():
         return {"content": "No README exists for this strategy."}
-    return {"content": path.read_text(encoding="utf-8"), "version": version or default_strategy_version(strategy_name)}
+    selected_version = version or default_strategy_version(strategy_name)
+    overview = (
+        "## Strategy Summary\n\n"
+        f"{strategy_description(strategy_name)}\n\n"
+        f"**{selected_version}**: {strategy_version_description(strategy_name, selected_version)}\n\n"
+        "---\n\n"
+    )
+    return {"content": overview + path.read_text(encoding="utf-8"), "version": selected_version}
 
 
 @app.get("/api/strategies/{strategy_name}/default-config")
@@ -669,6 +678,8 @@ def strategy_default_config(strategy_name: str, version: str | None = None) -> d
     return {
         "strategy_name": strategy_name,
         "strategy_version": selected_version,
+        "strategy_description": strategy_description(strategy_name),
+        "strategy_version_description": strategy_version_description(strategy_name, selected_version),
         "chart_presentation": strategy_chart_presentation(strategy_name, selected_version),
         "run_name": generated_run_name(strategy_name, selected_version),
         "start_date": "2024-05-01",

@@ -183,6 +183,47 @@ STRATEGY_DESCRIPTIONS: dict[str, str] = {
     ),
 }
 
+STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
+    ("adaptive_live_trend_rotation", "v1"): (
+        "Continuous live trend-rotation baseline: rank upward momentum every minute, enter the strongest open names, "
+        "and rotate out of holdings that stop progressing."
+    ),
+    ("break_of_vwap", "v1"): (
+        "VWAP reclaim baseline: enter liquid stocks that break back above VWAP with trend confirmation and manage exits "
+        "with the shared risk model."
+    ),
+    ("liquidity_pullback_reversal", "v1"): (
+        "Pullback-reversal baseline: search liquid names for controlled pullbacks into support followed by a momentum recovery."
+    ),
+    ("orb_5m_momentum", "v1"): (
+        "Baseline provider-backed ORB momentum version with daily context, opening-range setup scoring, 5-minute momentum "
+        "confirmation, and multi-position portfolio rotation."
+    ),
+    ("orb_5m_momentum", "v2"): (
+        "Removes the 60-day daily setup dependency from v1, keeps same-session opening-range logic, trades on completed "
+        "1-minute closes, and uses 5-minute momentum confirmation."
+    ),
+    ("orb_5m_momentum", "v3"): (
+        "Simplifies the scanner toward liquidity and opening-box strength, then keeps the v2-style entry, exit, and stop behavior."
+    ),
+    ("orb_5m_momentum", "v4"): (
+        "Rebuilds the family around the saved QuantConnect ORB implementation with one active position, QuantConnect-style "
+        "universe filters, opening relative-volume ranking, daily ATR/volume context, and ORB stop/flatten exits."
+    ),
+    ("orb_5m_momentum", "v5"): (
+        "Starts from v4 and adds profit-pocket behavior: a configured favorable move exits the trade and schedules a same-size "
+        "reentry attempt on the next bar."
+    ),
+    ("orb_5m_momentum", "v6"): (
+        "Starts from v5 and adds reentry confirmation: after pocketing profit, the next bar must have 1-minute TEMA9 above "
+        "the TEMA9 value at the profit-pocket exit."
+    ),
+    ("orb_5m_momentum", "v7"): (
+        "Starts from v6 and adds a green-candle entry rule: initial entries and profit reentries are blocked on red completed "
+        "1-minute candles, and red scanner candidates are removed from consideration."
+    ),
+}
+
 DEFAULT_STRATEGY_VERSIONS: dict[str, str] = {
     "adaptive_live_trend_rotation": "v1",
     "break_of_vwap": "v1",
@@ -201,6 +242,11 @@ def available_strategy_versions(name: str) -> list[str]:
 
 def strategy_description(name: str) -> str:
     return STRATEGY_DESCRIPTIONS.get(name, name.replace("_", " ").title())
+
+
+def strategy_version_description(name: str, version: str | None = None) -> str:
+    selected_version = version or default_strategy_version(name)
+    return STRATEGY_VERSION_DESCRIPTIONS.get((name, selected_version), strategy_description(name))
 
 
 def default_strategy_version(name: str) -> str:

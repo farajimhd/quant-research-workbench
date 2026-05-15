@@ -16,6 +16,7 @@ type Strategy = {
   name: string;
   display_name: string;
   description: string;
+  version_descriptions?: Record<string, string>;
   versions?: string[];
   default_version?: string;
 };
@@ -36,6 +37,8 @@ type RunRow = {
 type StrategyConfig = {
   strategy_name: string;
   strategy_version: string;
+  strategy_description?: string;
+  strategy_version_description?: string;
   run_name: string;
   start_date: string;
   end_date: string;
@@ -451,6 +454,7 @@ function BacktestSelectionPanel({
   strategy: Strategy | null;
 }) {
   const versions = strategy?.versions?.length ? strategy.versions : draftSelection?.version ? [draftSelection.version] : [];
+  const selectedVersionDescription = draftSelection?.version ? strategy?.version_descriptions?.[draftSelection.version] : "";
 
   return (
     <section className="panel backtest-selection-panel">
@@ -488,6 +492,7 @@ function BacktestSelectionPanel({
         <div>
           <h2>{strategy?.display_name ?? "Strategy"}</h2>
           <p>{strategy?.description ?? "Strategy catalog is loading."}</p>
+          {selectedVersionDescription ? <p>{selectedVersionDescription}</p> : null}
         </div>
         <button className="button primary" disabled={!draftSelection} onClick={onOpen} type="button">
           <Play size={15} /> Open Backtest
@@ -800,6 +805,7 @@ function StrategyParameterEditor({ config, onChange }: { config: StrategyConfig;
   const importantKeys = IMPORTANT_STRATEGY_PARAMETER_KEYS.filter((key) => key in params);
   const importantKeySet = new Set(importantKeys);
   const remaining = Object.keys(params).filter((key) => !knownKeys.has(key));
+  const strategySummary = [config.strategy_description, config.strategy_version_description].filter(Boolean).join(" ");
 
   function updateParam(key: string, value: StrategyParamValue) {
     onChange({ ...config, strategy_params: { ...params, [key]: value } });
@@ -807,7 +813,7 @@ function StrategyParameterEditor({ config, onChange }: { config: StrategyConfig;
 
   return (
     <ParameterEditorShell
-      description="Tune the active strategy version. Capacity, scoring, timing, and risk controls are kept at the top because they change results the most."
+      description={strategySummary || "Tune the active strategy version. Capacity, scoring, timing, and risk controls are kept at the top because they change results the most."}
       icon={<SlidersHorizontal size={18} />}
       meta={[
         { label: "Strategy", value: config.strategy_name.replaceAll("_", " ") },
