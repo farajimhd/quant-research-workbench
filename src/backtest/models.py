@@ -28,6 +28,7 @@ class OrderRequest:
     limit_price: float | None = None
     tag: str = ""
     allow_same_bar_fill: bool = False
+    fill_requires_green_bar: bool = False
 
 
 @dataclass(slots=True)
@@ -50,6 +51,7 @@ class Order:
     fee_tax: float = 0.0
     fee_model: str = ""
     tag: str = ""
+    fill_requires_green_bar: bool = False
 
 
 @dataclass(slots=True)

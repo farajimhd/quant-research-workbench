@@ -219,8 +219,9 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
         "the TEMA9 value at the profit-pocket exit."
     ),
     ("orb_5m_momentum", "v7"): (
-        "Starts from v6 and adds a green-candle entry rule: initial entries and profit reentries are blocked on red completed "
-        "1-minute candles, and red scanner candidates are removed from consideration."
+        "Starts from v6 and adds a green-candle entry rule: stop entries keep the v6 structure but only fill on non-red "
+        "completed 1-minute triggering candles, profit reentries are blocked on red candles, and red scanner candidates "
+        "are removed from consideration."
     ),
 }
 

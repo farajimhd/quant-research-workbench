@@ -380,6 +380,7 @@ class BacktestEngine:
                 stop_price=request.stop_price,
                 limit_price=request.limit_price,
                 tag=request.tag,
+                fill_requires_green_bar=request.fill_requires_green_bar,
             )
             self.next_order_id += 1
 
@@ -392,8 +393,8 @@ class BacktestEngine:
                     self._fill_order(order, timestamp, bar, order.reason)
             else:
                 bar = bars_by_symbol.get(order.symbol)
-                if request.allow_same_bar_fill and bar is not None and self.fill_model.crossed(order, bar):
-                    self._fill_order(order, timestamp, bar, order.reason)
+                if request.allow_same_bar_fill and bar is not None and self.fill_model.crossed(order, bar) and self._order_bar_filter_passes(order, bar):
+                    self._fill_order(order, self._bar_fill_timestamp(timestamp, bar), bar, order.reason)
                 else:
                     self.pending_orders.append(order)
                     self.orders.append(asdict(order))
@@ -419,14 +420,32 @@ class BacktestEngine:
                 still_open.append(order)
                 continue
 
-            should_fill = False
-            should_fill = self.fill_model.crossed(order, bar)
+            should_fill = self.fill_model.crossed(order, bar) and self._order_bar_filter_passes(order, bar)
 
             if should_fill:
-                self._fill_order(order, timestamp, bar, order.reason)
+                self._fill_order(order, self._bar_fill_timestamp(timestamp, bar), bar, order.reason)
             else:
                 still_open.append(order)
         self.pending_orders = still_open
+
+    def _bar_fill_timestamp(self, timestamp: datetime, bar: dict) -> datetime:
+        bar_time = bar.get("bar_time_market")
+        if isinstance(bar_time, datetime):
+            return bar_time
+        if isinstance(bar_time, str):
+            try:
+                return datetime.fromisoformat(bar_time)
+            except ValueError:
+                return timestamp
+        return timestamp
+
+    def _order_bar_filter_passes(self, order: Order, bar: dict) -> bool:
+        if order.fill_requires_green_bar:
+            try:
+                return float(bar.get("close")) >= float(bar.get("open"))
+            except (TypeError, ValueError):
+                return False
+        return True
 
     def _fill_market_exits(self, timestamp: datetime, bars_by_symbol: dict[str, dict]) -> None:
         for order in list(self.pending_orders):

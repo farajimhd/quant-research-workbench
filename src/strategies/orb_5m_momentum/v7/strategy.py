@@ -301,27 +301,18 @@ class OrbFiveMinuteMomentumV7Strategy:
         exiting_symbols: set[str],
     ) -> OrderRequest | None:
         pending_symbols = {order.symbol for order in pending_orders if order.status == "OPEN"}
-        deferred_candidates: list[dict] = []
         while self.pending_candidates:
             candidate = self.pending_candidates.pop(0)
             symbol = candidate["ticker"]
             if symbol in portfolio.positions or symbol in pending_symbols or symbol in exiting_symbols:
                 continue
             bar = context.updates_by_symbol.get(symbol)
-            if bar is None:
-                deferred_candidates.append(candidate)
-                continue
-            if self._is_red_bar(bar):
+            if bar is not None and self._is_red_bar(bar):
                 self._reject(context.timestamp, symbol, "red_entry_bar", candidate)
                 continue
-            if float(bar["close"]) < self.entry_trigger(candidate):
-                deferred_candidates.append(candidate)
-                continue
-            request = self._entry_request(candidate, context, portfolio, bar)
+            request = self._entry_request(candidate, context, portfolio)
             if request is not None:
-                self.pending_candidates = deferred_candidates + self.pending_candidates
                 return request
-        self.pending_candidates = deferred_candidates
         return None
 
     def _next_reentry_request(
@@ -367,20 +358,14 @@ class OrbFiveMinuteMomentumV7Strategy:
             return False
         return True
 
-    def _entry_request(self, candidate: dict, context: BarContext, portfolio: Portfolio, bar: dict | None = None) -> OrderRequest | None:
-        bar = bar or context.updates_by_symbol.get(candidate["ticker"])
-        if bar is None or self._is_red_bar(bar):
-            return None
+    def _entry_request(self, candidate: dict, context: BarContext, portfolio: Portfolio) -> OrderRequest | None:
         entry = self.entry_trigger(candidate)
-        if float(bar["close"]) < entry:
-            return None
         stop = self.protective_stop_price(candidate)
-        entry_price = float(bar["close"])
-        quantity = self.calculate_quantity(entry_price, stop, portfolio)
+        quantity = self.calculate_quantity(entry, stop, portfolio)
         if quantity <= 0:
             self._reject(context.timestamp, candidate["ticker"], "quantity", candidate)
             return None
-        if not self.has_minimum_trade_economics(quantity, entry_price, stop):
+        if not self.has_minimum_trade_economics(quantity, entry, stop):
             self._reject(context.timestamp, candidate["ticker"], "economics", candidate)
             return None
 
@@ -396,9 +381,9 @@ class OrbFiveMinuteMomentumV7Strategy:
             {
                 "timestamp": context.timestamp,
                 "ticker": candidate["ticker"],
-                "event": "ORB_GREEN_BREAKOUT_SUBMITTED",
+                "event": "ORB_GREEN_STOP_SUBMITTED",
                 "rank": candidate["rank"],
-                "entry": entry_price,
+                "entry": entry,
                 "trigger": entry,
                 "stop": stop,
                 "quantity": quantity,
@@ -406,18 +391,20 @@ class OrbFiveMinuteMomentumV7Strategy:
                 "atr_14": candidate["atr_14"],
             }
         )
-        self._trace_entry(context.timestamp, candidate, quantity, entry_price, stop)
+        self._trace_entry(context.timestamp, candidate, quantity, entry, stop)
         return OrderRequest(
             symbol=candidate["ticker"],
             side="BUY",
             quantity=quantity,
-            order_type="MARKET",
-            reason="ORB_GREEN_BREAKOUT",
+            order_type="STOP",
+            stop_price=entry,
+            reason="ORB_GREEN_STOP_ENTRY",
             tag=(
-                f"ENTRY|type=MARKET|rule=GREEN_ORB_BREAKOUT|rank={candidate['rank']}|qty={quantity}"
-                f"|entry={entry_price:.2f}|trigger={entry:.2f}|stop={stop:.2f}|rv={candidate['orb_relative_volume']:.1f}"
+                f"ENTRY|type=STOP|rule=GREEN_ORB_STOP|rank={candidate['rank']}|qty={quantity}"
+                f"|trigger={entry:.2f}|stop={stop:.2f}|rv={candidate['orb_relative_volume']:.1f}"
                 f"|atr={candidate['atr_14']:.2f}|or={candidate['box_low']:.2f}-{candidate['box_high']:.2f}"
             ),
+            fill_requires_green_bar=True,
         )
 
     def _reentry_request(self, reentry: dict, context: BarContext, bar: dict) -> OrderRequest:
@@ -749,8 +736,8 @@ class OrbFiveMinuteMomentumV7Strategy:
             stage="order_request",
             event_type="entry_intent",
             decision="submit_order",
-            reason_code="ORB_GREEN_BREAKOUT",
-            reason="Ranked ORB candidate submitted after a green completed breakout candle",
+            reason_code="ORB_GREEN_STOP_ENTRY",
+            reason="Ranked ORB candidate submitted as a buy stop that can only fill on a non-red triggering candle",
             values={
                 "rank": candidate.get("rank"),
                 "quantity": quantity,

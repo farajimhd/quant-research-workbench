@@ -2933,8 +2933,8 @@ function tradeAnnotations(trades: DataRow[], selectedKey: string): NonNullable<C
   return trades.flatMap((trade, index) => {
     const key = tradeRowKey(trade);
     const selected = key === selectedKey;
-    const entryTime = tradeTimestampSeconds(trade.entry_time);
-    const exitTime = tradeTimestampSeconds(trade.exit_time);
+    const entryTime = tradeTimestampSeconds(trade.entry_bar_time ?? trade.entry_time);
+    const exitTime = tradeTimestampSeconds(trade.exit_bar_time ?? trade.exit_time);
     const entryPrice = numericTradeValue(trade.entry_price);
     const exitPrice = numericTradeValue(trade.exit_price);
     if (entryTime === null || exitTime === null || entryPrice === null || exitPrice === null) return [];
@@ -3021,8 +3021,8 @@ function tradeExitLabelParts(trade: DataRow, exitPrice: number, pnl: number) {
 }
 
 function selectedTradeReference(trade: DataRow) {
-  const entryTime = tradeTimestampSeconds(trade.entry_time);
-  const exitTime = tradeTimestampSeconds(trade.exit_time);
+  const entryTime = tradeTimestampSeconds(trade.entry_bar_time ?? trade.entry_time);
+  const exitTime = tradeTimestampSeconds(trade.exit_bar_time ?? trade.exit_time);
   const time = entryTime !== null && exitTime !== null ? Math.round(((entryTime + exitTime) / 2) / 60) * 60 : entryTime ?? exitTime;
   return time === null ? null : { endTime: exitTime ?? undefined, label: "Selected trade", startTime: entryTime ?? undefined, time };
 }

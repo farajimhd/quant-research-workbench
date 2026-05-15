@@ -13,8 +13,8 @@ The strategy is a single-position opening-range breakout:
 - build the opening range from completed 1-minute bars 09:31 through 09:35 ET
 - rank once the opening range is available to the local engine at 09:36 ET
 - select up to `max_candidates` by opening relative volume
-- enter only on completed green `1m` candles that close at or above the
-  buffered opening-range trigger
+- submit the same stop-entry structure as v6, but allow the stop to fill only
+  when the completed triggering `1m` candle is not red
 - remove pending scanner candidates once their current entry-evaluation candle
   is red
 - once a position has been open for at least one completed bar, take profit when
@@ -75,12 +75,15 @@ A universe symbol must then pass the ORB setup:
 
 ## Orders and Exits
 
-Initial entry is a market buy after a completed green `1m` bar closes at or
-above:
+Initial entry is a buy stop at:
 
 ```text
-trigger = opening_range_high * (1 + entry_buffer_pct)
+entry = opening_range_high * (1 + entry_buffer_pct)
 ```
+
+Unlike v6, the stop is ignored on completed red `1m` candles. If the bar high
+crosses the stop but the bar closes below its open, the order stays pending
+instead of filling.
 
 Stop is:
 

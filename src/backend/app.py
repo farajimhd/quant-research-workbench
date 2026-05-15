@@ -427,7 +427,8 @@ def run_symbol_trades(run_dir: Path, symbol: str) -> list[dict[str, Any]]:
         return []
     rows = frame.filter(pl.col("symbol").cast(pl.Utf8).str.to_uppercase() == symbol).sort("entry_time").to_dicts()
     orders_by_id = run_orders_by_id(run_dir)
-    return json_safe([enrich_trade_with_order_context(row, orders_by_id) for row in rows])
+    fills = run_symbol_fills(run_dir, symbol)
+    return json_safe([enrich_trade_with_order_context(row, orders_by_id, fills) for row in rows])
 
 
 def empty_symbol_timeframe_payload() -> dict[str, Any]:
@@ -468,7 +469,17 @@ def run_orders_by_id(run_dir: Path) -> dict[int, dict[str, Any]]:
     return {int(row["order_id"]): row for row in rows if row.get("order_id") is not None}
 
 
-def enrich_trade_with_order_context(trade: dict[str, Any], orders_by_id: dict[int, dict[str, Any]]) -> dict[str, Any]:
+def run_symbol_fills(run_dir: Path, symbol: str) -> list[dict[str, Any]]:
+    path = run_dir / "fills.parquet"
+    if not path.exists():
+        return []
+    frame = pl.read_parquet(path)
+    if "symbol" not in frame.columns:
+        return []
+    return frame.filter(pl.col("symbol").cast(pl.Utf8).str.to_uppercase() == symbol).to_dicts()
+
+
+def enrich_trade_with_order_context(trade: dict[str, Any], orders_by_id: dict[int, dict[str, Any]], fills: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     enriched = dict(trade)
     entry_order_id = trade.get("entry_order_id")
     entry_order = orders_by_id.get(int(entry_order_id)) if entry_order_id is not None else None
@@ -481,7 +492,27 @@ def enrich_trade_with_order_context(trade: dict[str, Any], orders_by_id: dict[in
                 enriched[f"entry_{key}"] = value
         if "entry_stop" in enriched:
             enriched["stop_price"] = enriched["entry_stop"]
+    fills = fills or []
+    entry_fill = matching_trade_fill(trade, fills, "BUY", "entry_time", "entry_price")
+    exit_fill = matching_trade_fill(trade, fills, "SELL", "exit_time", "exit_price")
+    if entry_fill and entry_fill.get("bar_time_market"):
+        enriched["entry_bar_time"] = entry_fill.get("bar_time_market")
+    if exit_fill and exit_fill.get("bar_time_market"):
+        enriched["exit_bar_time"] = exit_fill.get("bar_time_market")
     return enriched
+
+
+def matching_trade_fill(trade: dict[str, Any], fills: list[dict[str, Any]], side: str, time_key: str, price_key: str) -> dict[str, Any] | None:
+    trade_time = str(trade.get(time_key) or "")
+    trade_price = float(trade.get(price_key) or 0.0)
+    candidates = [
+        fill
+        for fill in fills
+        if str(fill.get("side") or "").upper() == side and str(fill.get("filled_at") or "") == trade_time
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda fill: abs(float(fill.get("fill_price") or 0.0) - trade_price))
 
 
 def parse_pipe_tag(tag: str) -> dict[str, Any]:
