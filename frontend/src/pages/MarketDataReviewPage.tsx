@@ -871,6 +871,7 @@ function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; 
   const [appliedQuery, setAppliedQuery] = useState<PreviewQueryState>(defaultQuery);
   const [queryOpen, setQueryOpen] = useState(false);
   const [previewOffset, setPreviewOffset] = useState(0);
+  const [queryRunId, setQueryRunId] = useState(0);
   const [sample, setSample] = useState<PreviewSample | null>(null);
   const [sampleError, setSampleError] = useState("");
   const [sampleLoading, setSampleLoading] = useState(false);
@@ -910,6 +911,7 @@ function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; 
     setPreviewOffset(0);
   }, [defaultTimeframe, group, timeframes]);
   useEffect(() => {
+    if (queryRunId === 0) return;
     if (!appliedGroup || !appliedQuery.timeframe || !appliedQuery.startDate || !appliedQuery.endDate) return;
     let active = true;
     const cleanedQuery = cleanPreviewBackendQuery(appliedQuery.conditions);
@@ -945,7 +947,7 @@ function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; 
     return () => {
       active = false;
     };
-  }, [appliedGroup, appliedQueryKey, availableColumns, scope.processed_root]);
+  }, [appliedGroup, appliedQueryKey, availableColumns, queryRunId, scope.processed_root]);
   if (!groups.length) return <div className="empty-state">No records available.</div>;
   const previewStartRow = sample?.rows.length ? (sample.row_offset ?? 0) + 1 : 0;
   const previewEndRow = sample ? (sample.row_offset ?? 0) + sample.rows.length : 0;
@@ -961,6 +963,7 @@ function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; 
       startDate: queryDraft.startDate <= queryDraft.endDate ? queryDraft.startDate : queryDraft.endDate,
     });
     setPreviewOffset(0);
+    setQueryRunId((value) => value + 1);
     setQueryOpen(false);
   }
   return (
@@ -997,6 +1000,9 @@ function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; 
           Running lazy preview query...
         </div>
       ) : null}
+      {!sample && !sampleLoading && !sampleError ? (
+        <div className="preview-sample-status">Set the query and press Run Query to load rows.</div>
+      ) : null}
       {sample && !sampleError ? (
         <div className="preview-page-status">
           <span>
@@ -1019,6 +1025,7 @@ function Preview({ catalog, scope, records }: { catalog: CatalogPayload | null; 
         }}
         rows={sample?.rows ?? []}
         columns={sample?.columns}
+        empty={queryRunId === 0 ? "Run a query to load preview rows." : "No rows."}
       />
       {chartTarget ? (
         <PreviewRowChartModal
