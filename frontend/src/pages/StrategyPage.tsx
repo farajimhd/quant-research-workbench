@@ -716,7 +716,12 @@ function SavedRunPanel({
 
 function NewRunMetricStrip({ metrics }: { metrics: NewRunMetric[] }) {
   return (
-    <div aria-label="Backtest metrics" className="new-run-metric-strip" role="list">
+    <div
+      aria-label="Backtest metrics"
+      className="new-run-metric-strip"
+      role="list"
+      style={{ gridTemplateColumns: `repeat(${Math.max(metrics.length, 1)}, minmax(106px, 1fr))` }}
+    >
       {metrics.map((metric) => (
         <article
           aria-label={`${metric.label}: ${typeof metric.value === "string" ? metric.value : metric.detail}`}
