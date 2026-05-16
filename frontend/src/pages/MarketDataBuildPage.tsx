@@ -8,7 +8,7 @@ import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { ProgressMeter, type Stage } from "../app/components/Progress";
 import { SemanticBadge, toneForStatus } from "../app/components/SemanticBadge";
-import { Tabs } from "../app/components/Tabs";
+import { CachedTabPanel, Tabs, useCachedTabState } from "../app/components/Tabs";
 import { formatBytes, formatDuration, formatNumber } from "../app/format";
 import { useViewportFillPanel } from "../app/hooks/useViewportFillPanel";
 
@@ -97,7 +97,7 @@ export function MarketDataBuildPage() {
   const [draft, setDraft] = useState<Scope | null>(null);
   const [job, setJob] = useState<BuildJob | null>(null);
   const [jobs, setJobs] = useState<BuildJob[]>([]);
-  const [activeTab, setActiveTab] = useState(tabs[0]);
+  const { activeTab, isTabMounted, setActiveTab } = useCachedTabState(tabs[0]);
   const [deleteTarget, setDeleteTarget] = useState<BuildJob | null>(null);
   const [deleteResult, setDeleteResult] = useState<string | null>(null);
   const [editingScope, setEditingScope] = useState(false);
@@ -350,8 +350,8 @@ export function MarketDataBuildPage() {
         />
       ) : null}
       {job ? <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} /> : null}
-      {activeTab === "Build" ? (
-        job ? (
+      <CachedTabPanel active={activeTab === "Build"} mounted={isTabMounted("Build") && Boolean(job)}>
+        {job ? (
         <>
           {error ? <div className="error-panel">{error}</div> : null}
           <BuildRunHeader job={job} />
@@ -377,28 +377,32 @@ export function MarketDataBuildPage() {
           <PhasePanel elapsedSec={metrics?.elapsed_sec ?? 0} phases={progress?.phases ?? []} status={metrics?.status ?? job?.status} />
           {job?.status === "failed" ? <div className="error-panel" style={{ marginTop: 18 }}>{job.error ?? "Build failed."}</div> : null}
         </>
-        ) : null
-      ) : null}
-      {job && activeTab === "Build Timings" ? (
+        ) : null}
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Build Timings"} mounted={isTabMounted("Build Timings") && Boolean(job)}>
         <BuildTablePanel trigger={`timings:${job?.job_id ?? ""}:${progress?.phase_events?.length ?? 0}`}>
           <DataTable rows={progress?.phase_events ?? []} />
         </BuildTablePanel>
-      ) : null}
-      {job && activeTab === "Artifacts" ? (
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Artifacts"} mounted={isTabMounted("Artifacts") && Boolean(job)}>
         <BuildTablePanel trigger={`artifacts:${job?.job_id ?? ""}:${progress?.artifact_events?.length ?? 0}`}>
           <DataTable rows={progress?.artifact_events ?? []} />
         </BuildTablePanel>
-      ) : null}
-      {job && activeTab === "Plan" ? (
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Plan"} mounted={isTabMounted("Plan") && Boolean(job)}>
         <BuildTablePanel trigger={`plan:${job?.job_id ?? ""}:${progress?.plan?.length ?? 0}`}>
           <DataTable
             rows={progress?.plan ?? []}
             columns={["session_date", "build_role", "status", "exists", "write_output", "reference_only", "reason", "path", "size_bytes", "modified_at"]}
           />
         </BuildTablePanel>
-      ) : null}
-      {job && activeTab === "Processed Store" ? <ProcessedStore scope={viewScope} /> : null}
-      {job && activeTab === "Manifest" ? <ManifestCard scope={viewScope} job={job} /> : null}
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Processed Store"} mounted={isTabMounted("Processed Store") && Boolean(job)}>
+        <ProcessedStore scope={viewScope} />
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Manifest"} mounted={isTabMounted("Manifest") && Boolean(job)}>
+        {job ? <ManifestCard scope={viewScope} job={job} /> : null}
+      </CachedTabPanel>
       {editingScope && draft ? (
         <Modal title="Update Data Scope" onClose={() => setEditingScope(false)}>
           <div className="form-grid">

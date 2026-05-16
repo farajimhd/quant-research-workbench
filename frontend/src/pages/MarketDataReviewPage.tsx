@@ -10,7 +10,7 @@ import { DataTable, type BackendTableQuery, type DataTableFilterPreset } from ".
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
-import { Tabs } from "../app/components/Tabs";
+import { CachedTabPanel, Tabs, useCachedTabState } from "../app/components/Tabs";
 import { displayName } from "../app/format";
 import { useViewportFillPanel } from "../app/hooks/useViewportFillPanel";
 
@@ -364,7 +364,7 @@ export function MarketDataReviewPage() {
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState("");
-  const [activeTab, setActiveTab] = useState(tabs[0]);
+  const { activeTab, isTabMounted, setActiveTab } = useCachedTabState(tabs[0]);
   const [editingScope, setEditingScope] = useState(false);
 
   useEffect(() => {
@@ -426,14 +426,30 @@ export function MarketDataReviewPage() {
         ]}
       />
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
-      {activeTab === "Overview" ? <Overview review={review} /> : null}
-      {activeTab === "Coverage" && scope && review ? <Coverage scope={scope} records={review.records} /> : null}
-      {activeTab === "Chart" && scope && review ? <ChartTab catalog={catalog} scope={scope} records={review.records} /> : null}
-      {activeTab === "Artifacts" && review ? <Artifacts records={review.records} /> : null}
-      {activeTab === "Preview" && scope && review ? <Preview catalog={catalog} scope={scope} records={review.records} /> : null}
-      {activeTab === "Scanner" && scope && review ? <ScannerTab catalog={catalog} scope={scope} records={review.records} /> : null}
-      {activeTab === "Schema" && scope && review ? <Schema scope={scope} records={review.records} /> : null}
-      {activeTab === "Catalog" && scope ? <CatalogTab catalog={catalog} catalogError={catalogError} catalogLoading={catalogLoading} scope={scope} onCatalogChange={setCatalog} /> : null}
+      <CachedTabPanel active={activeTab === "Overview"} mounted={isTabMounted("Overview")}>
+        <Overview review={review} />
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Coverage"} mounted={isTabMounted("Coverage") && Boolean(scope && review)}>
+        {scope && review ? <Coverage scope={scope} records={review.records} /> : null}
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Chart"} mounted={isTabMounted("Chart") && Boolean(scope && review)}>
+        {scope && review ? <ChartTab catalog={catalog} scope={scope} records={review.records} /> : null}
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Artifacts"} mounted={isTabMounted("Artifacts") && Boolean(review)}>
+        {review ? <Artifacts records={review.records} /> : null}
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Preview"} mounted={isTabMounted("Preview") && Boolean(scope && review)}>
+        {scope && review ? <Preview catalog={catalog} scope={scope} records={review.records} /> : null}
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Scanner"} mounted={isTabMounted("Scanner") && Boolean(scope && review)}>
+        {scope && review ? <ScannerTab catalog={catalog} scope={scope} records={review.records} /> : null}
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Schema"} mounted={isTabMounted("Schema") && Boolean(scope && review)}>
+        {scope && review ? <Schema scope={scope} records={review.records} /> : null}
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Catalog"} mounted={isTabMounted("Catalog") && Boolean(scope)}>
+        {scope ? <CatalogTab catalog={catalog} catalogError={catalogError} catalogLoading={catalogLoading} scope={scope} onCatalogChange={setCatalog} /> : null}
+      </CachedTabPanel>
       {editingScope && draft ? (
         <Modal title="Update Review Scope" onClose={() => setEditingScope(false)}>
           <div className="form-grid">

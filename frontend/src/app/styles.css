@@ -341,6 +341,14 @@ button {
   display: block;
 }
 
+.tab-cache-panel {
+  display: none;
+}
+
+.tab-cache-panel.active {
+  display: block;
+}
+
 .page-intro {
   display: flex;
   align-items: flex-start;

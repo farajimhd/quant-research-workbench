@@ -9,7 +9,7 @@ import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { ProgressMeter } from "../app/components/Progress";
 import { SemanticBadge, toneForStatus, type SemanticTone } from "../app/components/SemanticBadge";
-import { Tabs } from "../app/components/Tabs";
+import { CachedTabPanel, Tabs, useCachedTabState } from "../app/components/Tabs";
 import { formatMoney, formatNumber, formatPct } from "../app/format";
 
 type Strategy = {
@@ -295,7 +295,7 @@ export function StrategyPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [draftSelection, setDraftSelection] = useState<StrategySelection | null>(null);
   const [activeSelection, setActiveSelection] = useState<StrategySelection | null>(null);
-  const [activeTab, setActiveTab] = useState(tabs[0]);
+  const { activeTab, isTabMounted, setActiveTab } = useCachedTabState(tabs[0]);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [readme, setReadme] = useState("");
   const [config, setConfig] = useState<StrategyConfig | null>(null);
@@ -396,7 +396,8 @@ export function StrategyPage() {
         description={activeStrategy?.description ?? "Opening range momentum research strategy."}
       />
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
-      {activeTab === "Backtest" && config ? (
+      <CachedTabPanel active={activeTab === "Backtest"} mounted={isTabMounted("Backtest") && Boolean(config)}>
+        {config ? (
         selectedRun ? (
           <SavedRunPanel
             config={config}
@@ -419,19 +420,22 @@ export function StrategyPage() {
           />
         )
       ) : null}
-      {activeTab === "Runs" && config ? (
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Runs"} mounted={isTabMounted("Runs") && Boolean(config)}>
+        {config ? (
         <RunsPanel
           runs={runs}
           outputRoot={config.output_root}
           onOpen={openSavedRun}
           onDeleted={() => loadRuns(config.output_root, activeSelection.strategyName, activeSelection.version)}
         />
-      ) : null}
-      {activeTab === "Strategy README" ? (
+        ) : null}
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Strategy README"} mounted={isTabMounted("Strategy README")}>
         <div className="markdown-panel">
           <ReactMarkdown>{readme}</ReactMarkdown>
         </div>
-      ) : null}
+      </CachedTabPanel>
     </>
   );
 }
@@ -1104,7 +1108,7 @@ function BacktestJobPanel({
   const jobConfig = job?.config && typeof job.config === "object" ? job.config as Record<string, unknown> : null;
   const [detail, setDetail] = useState<RunDetailPayload | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [tab, setTab] = useState("Backtest Results");
+  const { activeTab: tab, isTabMounted, setActiveTab: setTab } = useCachedTabState("Backtest Results");
   const [selectedObservationChart, setSelectedObservationChart] = useState<ObservationChartTarget | null>(null);
   const [selectedTrade, setSelectedTrade] = useState<DataRow | null>(null);
   const shouldLoadTables = tab !== "Backtest Results";
@@ -1174,7 +1178,7 @@ function BacktestJobPanel({
         </Modal>
       ) : null}
       <div className="backtest-results-tab-content">
-        {tab === "Backtest Results" ? (
+        <CachedTabPanel active={tab === "Backtest Results"} mounted={isTabMounted("Backtest Results")}>
           <>
             <ProgressMeter
               ariaLabel="Backtest progress"
@@ -1189,10 +1193,14 @@ function BacktestJobPanel({
             {detailError ? <div className="error-panel">{detailError}</div> : null}
             <PnlCandleChart payload={detail?.portfolio_candles} runName={activeRunName} title="Portfolio P/L Candles" />
           </>
-        ) : null}
-        {tab === "Daily" ? <DataTable rows={detail?.tables.daily.rows ?? []} /> : null}
-        {tab === "Observability" ? <ObservabilityPanel detail={detail} events={events} logs={detail?.logs ?? ""} onOpenChart={setSelectedObservationChart} /> : null}
-        {tab === "Trades" ? (
+        </CachedTabPanel>
+        <CachedTabPanel active={tab === "Daily"} mounted={isTabMounted("Daily")}>
+          <DataTable rows={detail?.tables.daily.rows ?? []} />
+        </CachedTabPanel>
+        <CachedTabPanel active={tab === "Observability"} mounted={isTabMounted("Observability")}>
+          <ObservabilityPanel detail={detail} events={events} logs={detail?.logs ?? ""} onOpenChart={setSelectedObservationChart} />
+        </CachedTabPanel>
+        <CachedTabPanel active={tab === "Trades"} mounted={isTabMounted("Trades")}>
           <>
             {selectedTrade ? (
               <Modal className="trade-chart-modal-panel" title={`${tradeSymbol(selectedTrade) || "Trade"} Chart`} onClose={() => setSelectedTrade(null)}>
@@ -1210,10 +1218,16 @@ function BacktestJobPanel({
               rows={detail?.tables.trades.rows ?? []}
             />
           </>
-        ) : null}
-        {tab === "Orders" ? <DataTable rows={detail?.tables.orders.rows ?? []} /> : null}
-        {tab === "Fills" ? <DataTable rows={detail?.tables.fills.rows ?? []} /> : null}
-        {tab === "Positions" ? <DataTable rows={detail?.tables.positions.rows ?? []} /> : null}
+        </CachedTabPanel>
+        <CachedTabPanel active={tab === "Orders"} mounted={isTabMounted("Orders")}>
+          <DataTable rows={detail?.tables.orders.rows ?? []} />
+        </CachedTabPanel>
+        <CachedTabPanel active={tab === "Fills"} mounted={isTabMounted("Fills")}>
+          <DataTable rows={detail?.tables.fills.rows ?? []} />
+        </CachedTabPanel>
+        <CachedTabPanel active={tab === "Positions"} mounted={isTabMounted("Positions")}>
+          <DataTable rows={detail?.tables.positions.rows ?? []} />
+        </CachedTabPanel>
         {job?.error ? <div className="error-panel">{String(job.error)}</div> : null}
       </div>
     </section>
