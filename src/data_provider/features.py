@@ -34,6 +34,12 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "bar_id",
         "day_open",
         "session_bar_count",
+        "minutes_since_premarket_start",
+        "ideal_bars_since_premarket_start",
+        "session_bar_coverage_ratio",
+        "premarket_open",
+        "change_since_premarket_open",
+        "change_since_premarket_open_pct",
         "day_high_so_far",
         "day_low_so_far",
         "day_volume_so_far",
@@ -230,6 +236,21 @@ def ema_expr(column: str, span: int, alias: str) -> pl.Expr:
     return pl.col(column).ewm_mean(span=span, adjust=False).over("ticker").alias(alias)
 
 
+def timeframe_step_minutes_expr() -> pl.Expr:
+    return (
+        pl.when(pl.col("timeframe").str.ends_with("m"))
+        .then(pl.col("timeframe").str.strip_suffix("m").cast(pl.Int32, strict=False))
+        .when(pl.col("timeframe").str.ends_with("h"))
+        .then(pl.col("timeframe").str.strip_suffix("h").cast(pl.Int32, strict=False) * 60)
+        .when(pl.col("timeframe") == "1d")
+        .then(pl.lit(390))
+        .when(pl.col("timeframe") == "1mo")
+        .then(pl.lit(8190))
+        .otherwise(pl.lit(1))
+        .fill_null(1)
+    )
+
+
 def add_tema(frame: FeatureFrame, period: int, alias: str) -> FeatureFrame:
     ema1 = f"_{alias}_ema1"
     ema2 = f"_{alias}_ema2"
@@ -297,6 +318,7 @@ def add_previous_session_close(frame: FeatureFrame) -> FeatureFrame:
 def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
     if isinstance(frame, pl.DataFrame) and frame.is_empty():
         return frame
+    premarket_start_minute = 4 * 60
     frame = frame.sort(["ticker", "bar_time_utc"])
     prior_bar_close = pl.col("close").shift(1).over("ticker")
     frame = (
@@ -321,7 +343,10 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
         .with_columns(
             (pl.col("dollar_volume").cum_sum().over(["ticker", "session_date"]) / pl.col("volume").cum_sum().over(["ticker", "session_date"])).alias("vwap"),
             pl.col("open").first().over(["ticker", "session_date"]).alias("day_open"),
+            pl.col("open").first().over(["ticker", "session_date"]).alias("premarket_open"),
             pl.cum_count("close").over(["ticker", "session_date"]).alias("session_bar_count"),
+            timeframe_step_minutes_expr().alias("_timeframe_step_minutes"),
+            pl.max_horizontal(pl.col("minute_of_day") - premarket_start_minute, pl.lit(0)).alias("minutes_since_premarket_start"),
             pl.col("high").cum_max().over(["ticker", "session_date"]).alias("day_high_so_far"),
             pl.col("low").cum_min().over(["ticker", "session_date"]).alias("day_low_so_far"),
             pl.col("volume").cum_sum().over(["ticker", "session_date"]).alias("day_volume_so_far"),
@@ -329,10 +354,21 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
         )
         .pipe(add_previous_session_close)
         .with_columns(
+            ((pl.col("minutes_since_premarket_start") / pl.col("_timeframe_step_minutes")).floor() + 1)
+            .cast(pl.Int32)
+            .alias("ideal_bars_since_premarket_start"),
             pl.when(pl.col("prev_close") > 0).then((pl.col("day_open") / pl.col("prev_close")) - 1.0).otherwise(0.0).alias("gap_pct"),
+            pl.when(pl.col("premarket_open") > 0).then(pl.col("close") - pl.col("premarket_open")).otherwise(None).alias("change_since_premarket_open"),
+            pl.when(pl.col("premarket_open") > 0).then((pl.col("close") / pl.col("premarket_open")) - 1.0).otherwise(None).alias("change_since_premarket_open_pct"),
             pl.when(pl.col("day_open") > 0).then((pl.col("close") / pl.col("day_open")) - 1.0).otherwise(0.0).alias("distance_to_day_open_pct"),
             pl.when(pl.col("day_high_so_far") > 0).then((pl.col("close") / pl.col("day_high_so_far")) - 1.0).otherwise(0.0).alias("distance_to_day_high_pct"),
             pl.when(pl.col("day_low_so_far") > 0).then((pl.col("close") / pl.col("day_low_so_far")) - 1.0).otherwise(0.0).alias("distance_to_day_low_pct"),
+        )
+        .with_columns(
+            pl.when(pl.col("ideal_bars_since_premarket_start") > 0)
+            .then(pl.col("session_bar_count") / pl.col("ideal_bars_since_premarket_start"))
+            .otherwise(0.0)
+            .alias("session_bar_coverage_ratio")
         )
     )
     frame = add_session_reference_features(frame)
@@ -603,17 +639,7 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
                 + (pl.max_horizontal(pl.col("transactions_z20"), pl.lit(0.0)) / 5.0 * 0.20),
             ).alias("volume_shock_score"),
             pl.cum_count("close").over("ticker").cast(pl.Int32).alias("_bar_seq"),
-            pl.when(pl.col("timeframe").str.ends_with("m"))
-            .then(pl.col("timeframe").str.strip_suffix("m").cast(pl.Int32, strict=False))
-            .when(pl.col("timeframe").str.ends_with("h"))
-            .then(pl.col("timeframe").str.strip_suffix("h").cast(pl.Int32, strict=False) * 60)
-            .when(pl.col("timeframe") == "1d")
-            .then(pl.lit(390))
-            .when(pl.col("timeframe") == "1mo")
-            .then(pl.lit(8190))
-            .otherwise(pl.lit(1))
-            .fill_null(1)
-            .alias("_timeframe_step_minutes"),
+            timeframe_step_minutes_expr().alias("_timeframe_step_minutes"),
         )
         .with_columns(
             pl.when(pl.col("price_shock")).then(pl.col("_bar_seq")).otherwise(None).forward_fill().over("ticker").alias("_last_price_shock_seq"),

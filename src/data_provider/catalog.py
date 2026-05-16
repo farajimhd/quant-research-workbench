@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 10
+CATALOG_VERSION = 11
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -263,6 +263,8 @@ STRING_COLUMNS = {
 INTEGER_COLUMNS = {
     "window_start",
     "minute_of_day",
+    "minutes_since_premarket_start",
+    "ideal_bars_since_premarket_start",
     "horizon_bars",
     "horizon_minutes",
     "future_bar_count",
@@ -2043,6 +2045,42 @@ def session_feature_knowledge(lower: str, group: str, category: str, title: str)
             "Session bar count is a cumulative count over the same ticker and session_date. It starts at 1 for the first available bar and increments by one for each later bar in that session.",
             "$$SessionBarCount_t=\\sum_{i\\le t, session_i=session_t}1$$",
             {"session_i": "Session date for bar i"},
+        ),
+        "minutes_since_premarket_start": (
+            "Clock minutes elapsed since 04:00 ET.",
+            "Minutes since premarket start compares the current bar's market-clock minute with the 04:00 ET extended-hours start. It is a time-clock measure, not a count of bars that actually traded.",
+            "$$MinutesSincePremarketStart_t=\\max(MinuteOfDay_t-240,0)$$",
+            {"MinuteOfDay_t": "New York hour * 60 + minute; 240 is 04:00 ET"},
+        ),
+        "ideal_bars_since_premarket_start": (
+            "Ideal number of bars that should have elapsed since 04:00 ET.",
+            "Ideal bars since premarket start divides elapsed clock minutes by the artifact timeframe and adds one for the current bar. This is the denominator for stale-symbol coverage checks.",
+            "$$IdealBars_t=\\left\\lfloor\\frac{MinutesSincePremarketStart_t}{TimeframeMinutes}\\right\\rfloor+1$$",
+            {"TimeframeMinutes": "Minutes represented by one bar in the current artifact timeframe"},
+        ),
+        "session_bar_coverage_ratio": (
+            "Observed bars divided by ideal bars since 04:00 ET.",
+            "Session bar coverage ratio compares actual bars observed for the ticker/session with the number of bars that should exist from premarket start through the current bar. Low values identify stale or rarely-updated symbols.",
+            "$$Coverage_t=\\frac{SessionBarCount_t}{IdealBarsSincePremarketStart_t}$$",
+            {"SessionBarCount_t": "Observed bars so far", "IdealBarsSincePremarketStart_t": "Expected bars from 04:00 ET through t"},
+        ),
+        "premarket_open": (
+            "First available open for the ticker/session.",
+            "Premarket open is the first open price observed for the ticker/session. For full extended-hours data this is usually the first available 04:00 ET bar, and it anchors change since premarket.",
+            "$$PremarketOpen_t=Open_{first(ticker,session)}$$",
+            {"Open_{first(ticker,session)}": "First available open in the same ticker/session"},
+        ),
+        "change_since_premarket_open": (
+            "Dollar change from first available premarket open.",
+            "Change since premarket open subtracts the first available session open from the current close. Positive values mean price is above its first extended-hours print.",
+            "$$ChangeSincePremarketOpen_t=Close_t-PremarketOpen_t$$",
+            {"Close_t": "Current close", "PremarketOpen_t": "First available open for the ticker/session"},
+        ),
+        "change_since_premarket_open_pct": (
+            "Percent change from first available premarket open.",
+            "Percent change since premarket open normalizes the dollar change by the first available session open.",
+            "$$ChangeSincePremarketOpenPct_t=\\frac{Close_t}{PremarketOpen_t}-1$$",
+            {"Close_t": "Current close", "PremarketOpen_t": "First available open for the ticker/session"},
         ),
         "day_high_so_far": (
             "Session high up to the current bar.",

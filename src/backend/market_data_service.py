@@ -416,11 +416,77 @@ def apply_scanner_compatibility_columns(scan: pl.LazyFrame, schema: pl.Schema) -
     if order_columns:
         scan = scan.sort(order_columns)
 
-    scan = apply_scanner_volume_compatibility_columns(scan, names)
+    scan = apply_scanner_session_compatibility_columns(scan, names)
+    schema = scan.collect_schema()
+    scan = apply_scanner_volume_compatibility_columns(scan, schema.names())
     schema = scan.collect_schema()
     scan = apply_scanner_momentum_compatibility_columns(scan, schema.names())
     schema = scan.collect_schema()
     return apply_scanner_price_action_compatibility_columns(scan, schema.names())
+
+
+def scanner_timeframe_step_minutes_expr(names: list[str]) -> pl.Expr:
+    if "timeframe" not in names:
+        return pl.lit(1)
+    return (
+        pl.when(pl.col("timeframe").str.ends_with("m"))
+        .then(pl.col("timeframe").str.strip_suffix("m").cast(pl.Int32, strict=False))
+        .when(pl.col("timeframe").str.ends_with("h"))
+        .then(pl.col("timeframe").str.strip_suffix("h").cast(pl.Int32, strict=False) * 60)
+        .when(pl.col("timeframe") == "1d")
+        .then(pl.lit(390))
+        .otherwise(pl.lit(1))
+        .fill_null(1)
+    )
+
+
+def apply_scanner_session_compatibility_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
+    group_columns = scanner_session_group_columns(names)
+    if not group_columns or not {"open", "close"}.issubset(names):
+        return scan
+
+    premarket_start_minute = 4 * 60
+    exprs: list[pl.Expr] = []
+    if "session_bar_count" not in names:
+        exprs.append(pl.cum_count("ticker").over(group_columns).alias("session_bar_count"))
+    if "premarket_open" not in names:
+        exprs.append(pl.col("open").first().over(group_columns).alias("premarket_open"))
+    if "minutes_since_premarket_start" not in names and "minute_of_day" in names:
+        exprs.append(pl.max_horizontal(pl.col("minute_of_day") - premarket_start_minute, pl.lit(0)).alias("minutes_since_premarket_start"))
+    if exprs:
+        scan = scan.with_columns(exprs)
+        names = scan.collect_schema().names()
+
+    derived_exprs: list[pl.Expr] = []
+    if "ideal_bars_since_premarket_start" not in names and "minutes_since_premarket_start" in names:
+        derived_exprs.append(
+            ((pl.col("minutes_since_premarket_start") / scanner_timeframe_step_minutes_expr(names)).floor() + 1)
+            .cast(pl.Int32)
+            .alias("ideal_bars_since_premarket_start")
+        )
+    if "change_since_premarket_open" not in names and "premarket_open" in names:
+        derived_exprs.append(
+            pl.when(pl.col("premarket_open") > 0).then(pl.col("close") - pl.col("premarket_open")).otherwise(None).alias("change_since_premarket_open")
+        )
+    if "change_since_premarket_open_pct" not in names and "premarket_open" in names:
+        derived_exprs.append(
+            pl.when(pl.col("premarket_open") > 0)
+            .then((pl.col("close") / pl.col("premarket_open")) - 1.0)
+            .otherwise(None)
+            .alias("change_since_premarket_open_pct")
+        )
+    if derived_exprs:
+        scan = scan.with_columns(derived_exprs)
+        names = scan.collect_schema().names()
+
+    if "session_bar_coverage_ratio" not in names and {"session_bar_count", "ideal_bars_since_premarket_start"}.issubset(names):
+        scan = scan.with_columns(
+            pl.when(pl.col("ideal_bars_since_premarket_start") > 0)
+            .then(pl.col("session_bar_count") / pl.col("ideal_bars_since_premarket_start"))
+            .otherwise(0.0)
+            .alias("session_bar_coverage_ratio")
+        )
+    return scan
 
 
 def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
@@ -780,6 +846,12 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "is_red",
         "vwap",
         "session_bar_count",
+        "minutes_since_premarket_start",
+        "ideal_bars_since_premarket_start",
+        "session_bar_coverage_ratio",
+        "premarket_open",
+        "change_since_premarket_open",
+        "change_since_premarket_open_pct",
         "day_high_so_far",
         "day_low_so_far",
         "day_volume_so_far",
