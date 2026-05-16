@@ -143,6 +143,18 @@ The order book should be indexed so the engine checks pending orders only for
 symbols with fresh updates at the current timestamp. This keeps the event loop
 small even when the provider frame contains many symbols.
 
+## Global Symbol Exclusions
+
+Backtest configuration can point to an excluded-symbol CSV. The engine loads the
+file once at run start, normalizes symbols to uppercase, and records the file
+path, row count, SHA-256 hash, and a sample in run metadata.
+
+This is a backtest-layer rule. Provider-built market data remains canonical and
+unchanged on disk. Before the strategy sees a session, the engine removes
+excluded tickers from the event frame, daily context, and all context frames.
+The engine also rejects any order request for an excluded symbol as a final
+guard, writing the rejected order and a rejection event into the run artifacts.
+
 ## Run Artifacts
 
 Backtests should persist execution state as structured artifacts so every signal,

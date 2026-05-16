@@ -16,7 +16,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from src.backtest.config import DEFAULT_OUTPUT_ROOT, BacktestConfig, generated_run_name, submitted_run_name
+from src.backtest.config import (
+    DEFAULT_EXCLUDED_SYMBOLS_FILE,
+    DEFAULT_OUTPUT_ROOT,
+    BacktestConfig,
+    generated_run_name,
+    submitted_run_name,
+)
 from src.backtest.equity_candles import default_portfolio_candle_timeframe
 from src.backtest.jobs import cancel_backtest_job, get_backtest_status, list_backtest_jobs, submit_backtest_job
 from src.backtest.metrics import portfolio_pnl_breakdown
@@ -105,6 +111,7 @@ class BacktestSubmit(BaseModel):
     data_root: str = Field(default=str(DEFAULT_RAW_ROOT))
     processed_data_root: str = Field(default=str(DEFAULT_PROCESSED_ROOT))
     output_root: str = Field(default=str(DEFAULT_OUTPUT_ROOT))
+    excluded_symbols_file: str = Field(default=str(DEFAULT_EXCLUDED_SYMBOLS_FILE))
     initial_cash: float = 10_000.0
     slippage_bps: float = 2.0
     fee_model: str = "ibkr_ca_us_stock_fixed"
@@ -749,6 +756,7 @@ def strategy_default_config(strategy_name: str, version: str | None = None) -> d
         "data_root": str(DEFAULT_RAW_ROOT),
         "processed_data_root": str(DEFAULT_PROCESSED_ROOT),
         "output_root": str(DEFAULT_OUTPUT_ROOT),
+        "excluded_symbols_file": str(DEFAULT_EXCLUDED_SYMBOLS_FILE),
         "initial_cash": 10_000.0,
         "slippage_bps": 2.0,
         "fee_model": "ibkr_ca_us_stock_fixed",

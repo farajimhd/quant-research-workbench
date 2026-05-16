@@ -10,6 +10,7 @@ import re
 DEFAULT_DATA_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1")
 DEFAULT_OUTPUT_ROOT = Path("D:/TradingData/quant-research-workbench/runs")
 DEFAULT_PROCESSED_DATA_ROOT = Path("D:/TradingData/quant-research-workbench/market_data")
+DEFAULT_EXCLUDED_SYMBOLS_FILE = DEFAULT_PROCESSED_DATA_ROOT / "stocks_with_high_floats_price_half_to_10_2026-05-16.csv"
 DEFAULT_RUN_NAME_PLACEHOLDERS = {"", "react app run", "untitled run"}
 
 
@@ -60,6 +61,7 @@ class BacktestConfig:
     data_root: Path = DEFAULT_DATA_ROOT
     processed_data_root: Path = DEFAULT_PROCESSED_DATA_ROOT
     output_root: Path = DEFAULT_OUTPUT_ROOT
+    excluded_symbols_file: Path | None = DEFAULT_EXCLUDED_SYMBOLS_FILE
     initial_cash: float = 10_000.0
     market_utc_offset_hours: float = -4.0
     session_start_minute: int = 9 * 60 + 30
@@ -85,6 +87,8 @@ class BacktestConfig:
         data["data_root"] = Path(data.get("data_root", DEFAULT_DATA_ROOT))
         data["processed_data_root"] = Path(data.get("processed_data_root", DEFAULT_PROCESSED_DATA_ROOT))
         data["output_root"] = Path(data.get("output_root", DEFAULT_OUTPUT_ROOT))
+        excluded_symbols_file = str(data.get("excluded_symbols_file", DEFAULT_EXCLUDED_SYMBOLS_FILE) or "").strip()
+        data["excluded_symbols_file"] = Path(excluded_symbols_file) if excluded_symbols_file else None
         data["strategy_params"] = dict(data.get("strategy_params", {}))
         data["strategy_version"] = str(data.get("strategy_version") or "v3").strip()
         data["run_name"] = str(data.get("run_name") or "Untitled run").strip()
@@ -107,6 +111,7 @@ class BacktestConfig:
             "data_root": str(self.data_root),
             "processed_data_root": str(self.processed_data_root),
             "output_root": str(self.output_root),
+            "excluded_symbols_file": str(self.excluded_symbols_file or ""),
             "initial_cash": self.initial_cash,
             "market_utc_offset_hours": self.market_utc_offset_hours,
             "session_start_minute": self.session_start_minute,

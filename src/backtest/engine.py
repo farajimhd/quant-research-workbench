@@ -13,6 +13,7 @@ from src.backtest.cancel import BacktestCancelled
 from src.backtest.config import BacktestConfig
 from src.backtest.data.minute_bars import DayFrames, available_session_dates, load_day_frames, timeframe_minutes
 from src.backtest.equity_candles import default_portfolio_candle_timeframe
+from src.backtest.exclusions import load_symbol_exclusions, normalize_symbol
 from src.backtest.fees import FeeBreakdown, fee_model_for_name
 from src.backtest.fills import BarFillModel
 from src.backtest.metrics import compute_summary
@@ -60,12 +61,14 @@ class BacktestEngine:
         self.trades: list[dict] = []
         self.portfolio_rows: list[dict] = []
         self.position_rows: list[dict] = []
+        self.engine_rejection_events: list[dict] = []
         self.daily_rows: list[dict] = []
         self.logs: list[str] = []
         self.symbol_bar_rows: list[dict] = []
         self.symbol_bar_5m_rows: list[dict] = []
         self.fill_model = BarFillModel()
         self.fee_model = fee_model_for_name(config.fee_model, tax_rate=config.fee_tax_rate)
+        self.symbol_exclusions = load_symbol_exclusions(config.excluded_symbols_file)
         self.observability = ObservabilityRecorder(config)
         self._attach_observability()
 
@@ -73,6 +76,7 @@ class BacktestEngine:
         run_dir = create_run_dir(self.config)
         metadata = base_metadata(self.config, run_dir, "running")
         metadata["strategy_chart_presentation"] = self._strategy_chart_presentation()
+        metadata["symbol_exclusions"] = self.symbol_exclusions.metadata()
 
         with ArtifactWriter() as artifact_writer:
             self._write_metadata(run_dir, metadata, artifact_writer)
@@ -127,7 +131,9 @@ class BacktestEngine:
                     self.observability.start_session(session_date, index)
                     day_start_equity = self.portfolio.total_equity()
                     frames = load_day_frames(self.config, session_date, requirements)
+                    frames = self._apply_symbol_exclusions(frames)
                     event_frame = self.strategy.prepare_day(frames, self.portfolio)
+                    event_frame = self._filter_excluded_frame(event_frame)
                     self._check_cancelled(cancel_check)
                     event_frame = event_frame.sort(["bar_time_market", "ticker"])
                     session_total_bars = self._event_bar_count(event_frame)
@@ -369,6 +375,9 @@ class BacktestEngine:
                 continue
             if request.quantity <= 0:
                 continue
+            if self.symbol_exclusions.contains(request.symbol):
+                self._reject_excluded_order(timestamp, request)
+                continue
             order = Order(
                 order_id=self.next_order_id,
                 symbol=request.symbol,
@@ -438,6 +447,38 @@ class BacktestEngine:
             except (TypeError, ValueError):
                 return False
         return True
+
+    def _reject_excluded_order(self, timestamp: datetime, request: OrderRequest) -> None:
+        order = Order(
+            order_id=self.next_order_id,
+            symbol=normalize_symbol(request.symbol),
+            side=request.side,
+            quantity=request.quantity,
+            order_type=request.order_type,
+            reason="EXCLUDED_SYMBOL",
+            created_at=timestamp,
+            stop_price=request.stop_price,
+            limit_price=request.limit_price,
+            status="REJECTED_EXCLUDED_SYMBOL",
+            tag=request.tag,
+            fill_requires_green_bar=request.fill_requires_green_bar,
+        )
+        self.next_order_id += 1
+        self.orders.append(asdict(order))
+        self.engine_rejection_events.append(
+            {
+                "timestamp": timestamp,
+                "ticker": order.symbol,
+                "event_type": "order_rejected",
+                "reject_reason": "excluded_symbol",
+                "reason_code": "excluded_symbol",
+                "stage": "engine_order_guard",
+                "side": order.side,
+                "quantity": order.quantity,
+                "order_type": order.order_type,
+                "tag": order.tag,
+            }
+        )
 
     def _fill_market_exits(self, timestamp: datetime, bars_by_symbol: dict[str, dict]) -> None:
         for order in list(self.pending_orders):
@@ -596,6 +637,21 @@ class BacktestEngine:
             return []
         return frame.with_columns(pl.lit(session_date.isoformat()).alias("session_date")).to_dicts()
 
+    def _apply_symbol_exclusions(self, frames: DayFrames) -> DayFrames:
+        if not self.symbol_exclusions.symbols:
+            return frames
+        return DayFrames(
+            session_date=frames.session_date,
+            event_frame=self._filter_excluded_frame(frames.event_frame),
+            daily_context=self._filter_excluded_frame(frames.daily_context),
+            context_frames={timeframe: self._filter_excluded_frame(frame) for timeframe, frame in frames.context_frames.items()},
+        )
+
+    def _filter_excluded_frame(self, frame: pl.DataFrame) -> pl.DataFrame:
+        if frame.is_empty() or "ticker" not in frame.columns or not self.symbol_exclusions.symbols:
+            return frame
+        return frame.filter(~pl.col("ticker").cast(pl.Utf8).str.to_uppercase().is_in(list(self.symbol_exclusions.symbols)))
+
     def _strategy_chart_presentation(self) -> dict:
         presenter = getattr(self.strategy, "chart_presentation", None)
         if callable(presenter):
@@ -631,7 +687,9 @@ class BacktestEngine:
 
     def _rejection_count_for_day(self, session_date) -> int:
         day = session_date.isoformat()
-        return len([row for row in self.strategy.artifacts().get("rejection_events", []) if str(row.get("timestamp", "")).startswith(day)])
+        strategy_rejections = self.strategy.artifacts().get("rejection_events", [])
+        all_rejections = strategy_rejections + self.engine_rejection_events
+        return len([row for row in all_rejections if str(row.get("timestamp", "")).startswith(day)])
 
     def _write_artifacts(self, run_dir, summary: dict, artifact_writer: ArtifactWriter) -> None:
         artifacts = self.strategy.artifacts()
@@ -648,7 +706,7 @@ class BacktestEngine:
         artifact_writer.write_table(run_dir / "candidate_rankings.parquet", artifacts.get("candidate_rankings", []))
         artifact_writer.write_table(run_dir / "live_rankings.parquet", artifacts.get("live_rankings", []))
         artifact_writer.write_table(run_dir / "signal_events.parquet", artifacts.get("signal_events", []))
-        artifact_writer.write_table(run_dir / "rejection_events.parquet", artifacts.get("rejection_events", []))
+        artifact_writer.write_table(run_dir / "rejection_events.parquet", artifacts.get("rejection_events", []) + self.engine_rejection_events)
         artifact_writer.write_table(run_dir / "observability_scanner.parquet", observability_artifacts.get("observability_scanner", []))
         artifact_writer.write_table(run_dir / "observability_trace.parquet", observability_artifacts.get("observability_trace", []))
         artifact_writer.write_table(run_dir / "observability_state.parquet", observability_artifacts.get("observability_state", []))

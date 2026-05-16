@@ -45,6 +45,7 @@ type StrategyConfig = {
   data_root: string;
   processed_data_root: string;
   output_root: string;
+  excluded_symbols_file: string;
   initial_cash: number;
   slippage_bps: number;
   fee_model: string;
@@ -94,6 +95,7 @@ const RUN_PARAMETER_HELP: Record<string, string> = {
   end_date: "Last market session included in the backtest range.",
   data_root: "Raw source data root used by older or fallback data readers.",
   processed_data_root: "Canonical provider-built market data root used by the backtest.",
+  excluded_symbols_file: "CSV of tickers that the backtest engine removes before strategy evaluation and rejects at order submission.",
   initial_cash: "Starting portfolio cash used to size positions and calculate return.",
   slippage_bps: "Per-fill slippage in basis points. One basis point is 0.01 percent.",
   fee_model: "Commission and regulatory fee model applied at each fill. The default estimates IBKR Canada fixed pricing for US stocks.",
@@ -770,6 +772,7 @@ function BacktestParameterEditor({
         <EditField help={RUN_PARAMETER_HELP.processed_data_root} label="Processed data root" value={config.processed_data_root} onChange={(value) => onChange({ ...config, processed_data_root: value })} />
         <EditField help={RUN_PARAMETER_HELP.data_root} label="Raw data root" value={config.data_root} onChange={(value) => onChange({ ...config, data_root: value })} />
         <EditField help={RUN_PARAMETER_HELP.output_root} label="Output root" value={config.output_root} onChange={(value) => onChange({ ...config, output_root: value })} />
+        <EditField help={RUN_PARAMETER_HELP.excluded_symbols_file} label="Excluded symbols CSV" value={config.excluded_symbols_file ?? ""} onChange={(value) => onChange({ ...config, excluded_symbols_file: value })} />
         <EditBooleanField help={RUN_PARAMETER_HELP.save_symbol_bars} label="Save symbol bars" value={config.save_symbol_bars} onChange={(value) => onChange({ ...config, save_symbol_bars: value })} />
       </EditSection>
       <EditSection description="Profile the first sessions deeply without turning every long backtest into a huge artifact set." title="Observability">
