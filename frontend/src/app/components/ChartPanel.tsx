@@ -471,7 +471,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const source = indicatorSourceRef.current.get(key);
       if (!source) return;
       const settings = resolveLegendSettings(legendSettings, key, source);
-      applySeriesSettings(renderer, source, settings);
+      applySeriesSettings(renderer, source, settings, key.startsWith("oscillator:"));
     });
   }, [legendSettings]);
 
@@ -602,7 +602,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const settings = resolveLegendSettings(legendSettings, key, series);
       const existing = indicatorSeriesRef.current.get(key);
       if (existing) {
-        applySeriesSettings(existing, series, settings);
+        applySeriesSettings(existing, series, settings, false);
       } else {
         const renderer = priceChart.addLineSeries({
           color: seriesColorWithOpacity(series, settings.color),
@@ -696,7 +696,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       const settings = resolveLegendSettings(legendSettings, key, series);
       let renderer = indicatorSeriesRef.current.get(key);
       if (renderer) {
-        applySeriesSettings(renderer, series, settings);
+        applySeriesSettings(renderer, series, settings, true);
       } else {
         renderer = addChartSeries(runtime.chart, series, settings);
         renderer.setData(seriesDataForSettings(series, settings) as never);
@@ -2200,14 +2200,16 @@ function resolveLegendSettings(settingsMap: LegendSettingsMap, key: string, seri
   };
 }
 
-function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settings: Required<LegendSeriesSettings>) {
+function applySeriesSettings(renderer: AnySeriesApi, source: ChartSeries, settings: Required<LegendSeriesSettings>, useAdaptivePriceFormat: boolean) {
+  const priceFormatOptions = useAdaptivePriceFormat ? { priceFormat: adaptiveSeriesPriceFormat(source) } : {};
   if (source.style === "histogram") {
-    renderer.applyOptions({ color: settings.color, visible: settings.visible } as never);
+    renderer.applyOptions({ color: settings.color, ...priceFormatOptions, visible: settings.visible } as never);
   } else {
     renderer.applyOptions({
       color: seriesColorWithOpacity(source, settings.color),
       lineStyle: toChartLineStyle(settings.lineStyle),
       lineWidth: toLineWidth(settings.lineWidth),
+      ...priceFormatOptions,
       visible: settings.visible
     } as never);
   }
@@ -2219,6 +2221,7 @@ function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Require
     return chart.addHistogramSeries({
       autoscaleInfoProvider: includeZeroInAutoscale,
       color: settings.color,
+      priceFormat: adaptiveSeriesPriceFormat(series),
       priceLineVisible: false,
       title: series.label,
       visible: settings.visible
@@ -2229,10 +2232,27 @@ function addChartSeries(chart: IChartApi, series: ChartSeries, settings: Require
     color: seriesColorWithOpacity(series, settings.color),
     lineStyle: toChartLineStyle(settings.lineStyle),
     lineWidth: toLineWidth(settings.lineWidth),
+    priceFormat: adaptiveSeriesPriceFormat(series),
     priceLineVisible: false,
     title: series.label,
     visible: settings.visible
   });
+}
+
+function adaptiveSeriesPriceFormat(series: ChartSeries) {
+  const values = series.data.map((point) => Math.abs(Number(point.value))).filter((value) => Number.isFinite(value));
+  const maxAbs = values.length ? Math.max(...values) : 0;
+  if (maxAbs > 0 && maxAbs < 0.0001) return seriesPriceFormat(8, 0.00000001);
+  if (maxAbs > 0 && maxAbs < 0.001) return seriesPriceFormat(7, 0.0000001);
+  if (maxAbs > 0 && maxAbs < 0.01) return seriesPriceFormat(6, 0.000001);
+  if (maxAbs > 0 && maxAbs < 0.1) return seriesPriceFormat(5, 0.00001);
+  if (maxAbs > 0 && maxAbs < 1) return seriesPriceFormat(4, 0.0001);
+  if (maxAbs > 0 && maxAbs < 10) return seriesPriceFormat(3, 0.001);
+  return seriesPriceFormat(2, 0.01);
+}
+
+function seriesPriceFormat(precision: number, minMove: number) {
+  return { type: "price" as const, precision, minMove };
 }
 
 function includeZeroInAutoscale(baseImplementation: () => AutoscaleInfo | null): AutoscaleInfo | null {
