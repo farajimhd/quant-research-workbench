@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 12
+CATALOG_VERSION = 13
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -30,6 +30,24 @@ BAR_COLUMNS = [
     "close",
     "volume",
     "transactions",
+    "quote_bid_price",
+    "quote_ask_price",
+    "actual_spread",
+    "quote_midpoint",
+    "actual_spread_bps",
+    "actual_spread_bps_abs",
+    "quote_bid_size",
+    "quote_ask_size",
+    "quote_sip_timestamp",
+    "quote_missing",
+    "spread_is_locked_or_crossed",
+    "actual_spread_bps_avg",
+    "actual_spread_bps_median",
+    "actual_spread_bps_max",
+    "quote_valid_ratio",
+    "locked_or_crossed_count",
+    "quoted_share_depth",
+    "quoted_dollar_depth",
 ]
 
 BAR_SUPERVISION_COLUMNS = [
@@ -242,6 +260,8 @@ BOOLEAN_COLUMNS = {
     "is_top_10",
     "is_top_1pct",
     "is_top_5pct",
+    "quote_missing",
+    "spread_is_locked_or_crossed",
 }
 STRING_COLUMNS = {
     "bar_id",
@@ -273,6 +293,7 @@ INTEGER_COLUMNS = {
     "time_to_mfe_minutes",
     "time_to_mae_minutes",
     "indicator_bar_count",
+    "quote_sip_timestamp",
     "bars_since_price_shock",
     "bars_since_volume_shock",
     "minutes_since_price_shock",
@@ -2358,6 +2379,72 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
                 "RangeProxyBps_t": "Five-bar median range pressure",
                 "IlliquidityProxyBps_t": "Dollar-volume-scaled price impact proxy",
             },
+        ),
+        "actual_spread": (
+            "Observed bid/ask spread from the quote sample matched to the bar.",
+            "Actual spread is quote_ask_price minus quote_bid_price from the spread source joined to the provider bar by ticker and window_start.",
+            "$$ActualSpread_t=Ask_t-Bid_t$$",
+            {"Ask_t": "Quote ask price", "Bid_t": "Quote bid price"},
+        ),
+        "actual_spread_bps": (
+            "Observed bid/ask spread in basis points.",
+            "Actual spread bps converts the joined quote spread to basis points. Locked or crossed quotes can be zero or negative, so pair this field with locked_or_crossed_count or actual_spread_bps_abs when filtering.",
+            "$$ActualSpreadBps_t=\\frac{Ask_t-Bid_t}{Midpoint_t}\\cdot10000$$",
+            {"Ask_t": "Quote ask price", "Bid_t": "Quote bid price", "Midpoint_t": "Quote midpoint"},
+        ),
+        "actual_spread_bps_abs": (
+            "Absolute observed spread in basis points.",
+            "Actual spread bps abs is the absolute value of actual_spread_bps. It is the safest scalar for scanner filters because it treats crossed quotes as abnormal instead of cheap.",
+            "$$ActualSpreadBpsAbs_t=|ActualSpreadBps_t|$$",
+            {"ActualSpreadBps_t": "Observed spread in bps"},
+        ),
+        "actual_spread_bps_avg": (
+            "Average observed spread bps inside the bar bucket.",
+            "For 1m bars this equals actual_spread_bps_abs. For higher timeframes it averages valid one-minute absolute spread values inside the aggregate bucket.",
+            "$$AvgSpreadBps_t=Mean(ActualSpreadBpsAbs_i)$$",
+            {"ActualSpreadBpsAbs_i": "One-minute absolute spread values inside the bucket"},
+        ),
+        "actual_spread_bps_median": (
+            "Median observed spread bps inside the bar bucket.",
+            "For higher timeframes this is the median of valid one-minute absolute spread values. It is usually more robust than max when one quote is stale or unusual.",
+            "$$MedianSpreadBps_t=Median(ActualSpreadBpsAbs_i)$$",
+            {"ActualSpreadBpsAbs_i": "One-minute absolute spread values inside the bucket"},
+        ),
+        "actual_spread_bps_max": (
+            "Maximum observed spread bps inside the bar bucket.",
+            "Actual spread bps max is a conservative bucket-level execution-risk check. A high max can reveal a brief quote-quality failure even if the close quote looks fine.",
+            "$$MaxSpreadBps_t=max(ActualSpreadBpsAbs_i)$$",
+            {"ActualSpreadBpsAbs_i": "One-minute absolute spread values inside the bucket"},
+        ),
+        "quote_valid_ratio": (
+            "Share of valid quote samples inside the bar bucket.",
+            "Quote valid ratio is one for a valid 1m quote and the mean valid fraction for higher timeframes. Low values mean the spread data is sparse or unreliable for that bucket.",
+            "$$QuoteValidRatio_t=\\frac{ValidQuoteCount_t}{BarCount_t}$$",
+            {"ValidQuoteCount_t": "Valid quote samples", "BarCount_t": "One-minute rows inside the bucket"},
+        ),
+        "locked_or_crossed_count": (
+            "Count of locked or crossed quote samples in the bar bucket.",
+            "Locked or crossed count sums quote samples where the spread source flagged bid greater than or equal to ask. Use zero as a strict scanner gate.",
+            "$$LockedOrCrossedCount_t=\\sum I(LockedOrCrossed_i)$$",
+            {"LockedOrCrossed_i": "Quote source locked/crossed flag"},
+        ),
+        "quoted_share_depth": (
+            "Displayed bid plus ask quote size.",
+            "Quoted share depth sums the bid and ask sizes on the joined quote. It is a quote-side capacity diagnostic, not a guarantee of executable liquidity.",
+            "$$QuotedShareDepth_t=BidSize_t+AskSize_t$$",
+            {"BidSize_t": "Quote bid size", "AskSize_t": "Quote ask size"},
+        ),
+        "quoted_dollar_depth": (
+            "Displayed quote depth converted to dollars.",
+            "Quoted dollar depth multiplies quote midpoint by bid plus ask size. It helps reject quotes that are tight but too shallow.",
+            "$$QuotedDollarDepth_t=Midpoint_t\\cdot(BidSize_t+AskSize_t)$$",
+            {"Midpoint_t": "Quote midpoint", "BidSize_t": "Quote bid size", "AskSize_t": "Quote ask size"},
+        ),
+        "actual_vs_estimated_spread_bps": (
+            "Actual spread minus the old spread-risk estimate.",
+            "Actual versus estimated spread bps compares observed bid/ask cost with the provider's OHLCV-only proxy. Positive values mean the proxy understated spread risk.",
+            "$$ActualVsEstimatedSpreadBps_t=ActualSpreadBpsAbs_t-EstimatedSpreadBps_t$$",
+            {"ActualSpreadBpsAbs_t": "Observed absolute spread bps", "EstimatedSpreadBps_t": "OHLCV proxy spread bps"},
         ),
     }
     if lower in spread_risk:

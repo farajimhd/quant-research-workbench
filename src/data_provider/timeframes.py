@@ -56,6 +56,39 @@ def canonicalize_1m(raw_frame: pl.DataFrame, exchange_timezone: str) -> pl.DataF
     )
 
 
+def enrich_1m_with_spread(frame_1m: pl.DataFrame, spread_frame: pl.DataFrame) -> pl.DataFrame:
+    if frame_1m.is_empty():
+        return frame_1m
+    if spread_frame.is_empty():
+        return frame_1m
+    enriched = frame_1m.join(spread_frame, on=["ticker", "window_start"], how="left")
+    return add_spread_quality_columns(enriched)
+
+
+def add_spread_quality_columns(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty() or "actual_spread_bps" not in frame.columns:
+        return frame
+    quote_valid_expr = (
+        pl.col("actual_spread_bps").is_not_null()
+        & (pl.col("quote_missing").fill_null(True) == False)
+        & (pl.col("quote_bid_price").fill_null(0.0) > 0)
+        & (pl.col("quote_ask_price").fill_null(0.0) > 0)
+    )
+    result = frame.with_columns(
+        pl.col("actual_spread_bps").abs().alias("actual_spread_bps_abs"),
+        quote_valid_expr.cast(pl.Float64).alias("quote_valid_ratio"),
+        pl.col("spread_is_locked_or_crossed").fill_null(False).cast(pl.Int64).alias("locked_or_crossed_count"),
+        (pl.col("quote_bid_size").fill_null(0) + pl.col("quote_ask_size").fill_null(0)).cast(pl.Float64).alias("quoted_share_depth"),
+    )
+    if "quote_midpoint" in result.columns:
+        result = result.with_columns((pl.col("quote_midpoint") * pl.col("quoted_share_depth")).alias("quoted_dollar_depth"))
+    return result.with_columns(
+        pl.col("actual_spread_bps_abs").alias("actual_spread_bps_avg"),
+        pl.col("actual_spread_bps_abs").alias("actual_spread_bps_median"),
+        pl.col("actual_spread_bps_abs").alias("actual_spread_bps_max"),
+    )
+
+
 def timeframe_minutes(timeframe: str) -> int | None:
     value = TIMEFRAMES.get(timeframe)
     return value if isinstance(value, int) else None
@@ -70,19 +103,7 @@ def aggregate_intraday(frame_1m: pl.DataFrame, timeframe: str) -> pl.DataFrame:
     return (
         frame_1m.with_columns(((pl.col("minute_of_day") // minutes) * minutes).alias("_bucket_minute"))
         .group_by(["ticker", "session_date", "_bucket_minute"])
-        .agg(
-            pl.col("open").first().alias("open"),
-            pl.col("high").max().alias("high"),
-            pl.col("low").min().alias("low"),
-            pl.col("close").last().alias("close"),
-            pl.col("volume").sum().alias("volume"),
-            pl.col("transactions").sum().alias("transactions"),
-            pl.col("window_start").min().alias("window_start"),
-            pl.col("bar_time_utc").min().alias("bar_time_utc"),
-            pl.col("bar_time_market").min().alias("bar_time_market"),
-            pl.col("minute_of_day").min().alias("minute_of_day"),
-            pl.col("session_month").first().alias("session_month"),
-        )
+        .agg(*intraday_aggregation_expressions(frame_1m))
         .drop("_bucket_minute")
         .sort(["ticker", "bar_time_utc"])
         .pipe(add_bar_id, timeframe)
@@ -94,22 +115,57 @@ def aggregate_daily(frame_1m: pl.DataFrame) -> pl.DataFrame:
         return frame_1m
     return (
         frame_1m.group_by(["ticker", "session_date"])
-        .agg(
-            pl.col("open").first().alias("open"),
-            pl.col("high").max().alias("high"),
-            pl.col("low").min().alias("low"),
-            pl.col("close").last().alias("close"),
-            pl.col("volume").sum().alias("volume"),
-            pl.col("transactions").sum().alias("transactions"),
-            pl.col("window_start").min().alias("window_start"),
-            pl.col("bar_time_utc").min().alias("bar_time_utc"),
-            pl.col("bar_time_market").min().alias("bar_time_market"),
-            pl.col("minute_of_day").min().alias("minute_of_day"),
-            pl.col("session_month").first().alias("session_month"),
-        )
+        .agg(*intraday_aggregation_expressions(frame_1m))
         .sort(["ticker", "bar_time_utc"])
         .pipe(add_bar_id, "1d")
     )
+
+
+def intraday_aggregation_expressions(frame: pl.DataFrame) -> list[pl.Expr]:
+    columns = set(frame.columns)
+    exprs: list[pl.Expr] = [
+        pl.col("open").first().alias("open"),
+        pl.col("high").max().alias("high"),
+        pl.col("low").min().alias("low"),
+        pl.col("close").last().alias("close"),
+        pl.col("volume").sum().alias("volume"),
+        pl.col("transactions").sum().alias("transactions"),
+        pl.col("window_start").min().alias("window_start"),
+        pl.col("bar_time_utc").min().alias("bar_time_utc"),
+        pl.col("bar_time_market").min().alias("bar_time_market"),
+        pl.col("minute_of_day").min().alias("minute_of_day"),
+        pl.col("session_month").first().alias("session_month"),
+    ]
+    for column in [
+        "quote_bid_price",
+        "quote_ask_price",
+        "actual_spread",
+        "quote_midpoint",
+        "actual_spread_bps",
+        "actual_spread_bps_abs",
+        "quote_bid_size",
+        "quote_ask_size",
+        "quote_sip_timestamp",
+        "quote_missing",
+        "spread_is_locked_or_crossed",
+        "quoted_share_depth",
+        "quoted_dollar_depth",
+    ]:
+        if column in columns:
+            exprs.append(pl.col(column).drop_nulls().last().alias(column))
+    if "actual_spread_bps_abs" in columns:
+        exprs.extend(
+            [
+                pl.col("actual_spread_bps_abs").drop_nulls().mean().alias("actual_spread_bps_avg"),
+                pl.col("actual_spread_bps_abs").drop_nulls().median().alias("actual_spread_bps_median"),
+                pl.col("actual_spread_bps_abs").drop_nulls().max().alias("actual_spread_bps_max"),
+            ]
+        )
+    if "quote_valid_ratio" in columns:
+        exprs.append(pl.col("quote_valid_ratio").mean().alias("quote_valid_ratio"))
+    if "locked_or_crossed_count" in columns:
+        exprs.append(pl.col("locked_or_crossed_count").sum().alias("locked_or_crossed_count"))
+    return exprs
 
 
 def aggregate_monthly(daily_frame: pl.DataFrame) -> pl.DataFrame:

@@ -1,5 +1,6 @@
 from src.data_provider.config import (
     DEFAULT_PROCESSED_ROOT,
+    DEFAULT_SPREAD_ROOT,
     FEATURE_GROUPS,
     SUPERVISION_GROUPS,
     TIMEFRAMES,
@@ -12,6 +13,7 @@ __all__ = [
     "BuildRequest",
     "DataProviderConfig",
     "DEFAULT_PROCESSED_ROOT",
+    "DEFAULT_SPREAD_ROOT",
     "FEATURE_GROUPS",
     "SUPERVISION_GROUPS",
     "TIMEFRAMES",

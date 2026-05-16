@@ -16,6 +16,7 @@ import { useViewportFillPanel } from "../app/hooks/useViewportFillPanel";
 
 type Scope = {
   raw_root: string;
+  spread_root: string;
   processed_root: string;
   start_date: string;
   end_date: string;
@@ -211,6 +212,16 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
   "range_proxy_bps",
   "illiquidity_proxy_bps",
   "estimated_spread_bps",
+  "actual_spread_bps",
+  "actual_spread_bps_abs",
+  "actual_spread_bps_avg",
+  "actual_spread_bps_median",
+  "actual_spread_bps_max",
+  "quote_valid_ratio",
+  "locked_or_crossed_count",
+  "quoted_share_depth",
+  "quoted_dollar_depth",
+  "actual_vs_estimated_spread_bps",
   "body",
   "body_abs",
   "is_green",
@@ -251,14 +262,14 @@ const SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
 };
 const SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
   filters: {
-    estimated_spread_bps: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
-    range_proxy_bps: { operator: "lte", presetLabel: "<= 150 bps", valueText: "150" },
-    illiquidity_proxy_bps: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
-    tick_floor_bps: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
+    actual_spread_bps_abs: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
+    actual_spread_bps_max: { operator: "lte", presetLabel: "<= 150 bps", valueText: "150" },
+    quote_valid_ratio: { operator: "gte", presetLabel: ">= 0.8", valueText: "0.8" },
+    locked_or_crossed_count: { operator: "eq", presetLabel: "Zero", valueText: "0" },
     recent_dollar_volume_5: { operator: "gte", presetLabel: ">= $100k", valueText: "100000" },
   },
   label: "Spread Quality",
-  title: "Apply spread-risk and recent dollar-volume filters to avoid high-cost fills.",
+  title: "Apply actual bid/ask spread and recent dollar-volume filters to avoid high-cost fills.",
 };
 const PREVIEW_PAGE_SIZE = 1000;
 const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "anchored_zone", "continuous_band", "background_state", "data_only", "other"];
@@ -455,6 +466,7 @@ export function MarketDataReviewPage() {
           <div className="form-grid">
             <Field label="Processed root" value={draft.processed_root} onChange={(value) => setDraft({ ...draft, processed_root: value })} />
             <Field label="Raw root" value={draft.raw_root} onChange={(value) => setDraft({ ...draft, raw_root: value })} />
+            <Field label="Spread root" value={draft.spread_root} onChange={(value) => setDraft({ ...draft, spread_root: value })} />
             <Field label="Start" type="date" value={draft.start_date} onChange={(value) => setDraft({ ...draft, start_date: value })} />
             <Field label="End" type="date" value={draft.end_date} onChange={(value) => setDraft({ ...draft, end_date: value })} />
           </div>
@@ -481,6 +493,7 @@ function ReviewScopeCard({ scope, manifest, onEdit }: { scope: Scope; manifest?:
         <ScopeItem className="scope-item-small" label="End" value={scope.end_date} />
         <ScopeItem className="scope-item-small" label="Artifacts" value={String(manifest?.artifact_count ?? "-")} />
         <ScopeItem className="scope-item-root" label="Raw root" value={scope.raw_root} />
+        <ScopeItem className="scope-item-root" label="Spread root" value={scope.spread_root} />
         <ScopeItem className="scope-item-root" label="Processed root" value={scope.processed_root} />
       </div>
     </div>

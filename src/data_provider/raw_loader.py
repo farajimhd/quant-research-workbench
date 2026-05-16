@@ -8,6 +8,20 @@ import polars as pl
 
 
 RAW_COLUMNS = ["ticker", "volume", "open", "close", "high", "low", "window_start", "transactions"]
+SPREAD_COLUMNS = [
+    "ticker",
+    "window_start",
+    "quote_bid_price",
+    "quote_ask_price",
+    "spread",
+    "spread_midpoint",
+    "spread_bps",
+    "quote_bid_size",
+    "quote_ask_size",
+    "quote_sip_timestamp",
+    "quote_missing",
+    "spread_is_locked_or_crossed",
+]
 
 
 @dataclass(slots=True)
@@ -30,6 +44,10 @@ def date_range(start: date, end: date) -> list[date]:
 
 def raw_minute_path(raw_root: Path, session: date) -> Path:
     return raw_root / f"{session.year:04d}" / f"{session.month:02d}" / f"{session.isoformat()}.csv.gz"
+
+
+def spread_minute_path(spread_root: Path, session: date) -> Path:
+    return spread_root / f"{session.year:04d}" / f"{session.month:02d}" / f"{session.isoformat()}.parquet"
 
 
 def scan_source(raw_root: Path, start: date, end: date) -> list[SourceFileStatus]:
@@ -57,3 +75,31 @@ def load_raw_minute_bars(raw_root: Path, session: date, tickers: list[str] | Non
     if tickers:
         scan = scan.filter(pl.col("ticker").is_in(tickers))
     return scan.collect()
+
+
+def load_minute_spreads(spread_root: Path, session: date, tickers: list[str] | None = None) -> pl.DataFrame:
+    source = spread_minute_path(spread_root, session)
+    if not source.exists():
+        return pl.DataFrame()
+    scan = pl.scan_parquet(source)
+    schema = scan.collect_schema()
+    scan = scan.select([column for column in SPREAD_COLUMNS if column in schema])
+    rename_map = {
+        source_name: target_name
+        for source_name, target_name in {
+            "spread": "actual_spread",
+            "spread_midpoint": "quote_midpoint",
+            "spread_bps": "actual_spread_bps",
+        }.items()
+        if source_name in schema
+    }
+    if tickers:
+        scan = scan.filter(pl.col("ticker").is_in(tickers))
+    return (
+        scan.with_columns(
+            pl.col("ticker").cast(pl.Utf8),
+            pl.col("window_start").cast(pl.Int64),
+        )
+        .rename(rename_map)
+        .collect()
+    )

@@ -14,6 +14,7 @@ import { useViewportFillPanel } from "../app/hooks/useViewportFillPanel";
 
 type Scope = {
   raw_root: string;
+  spread_root: string;
   processed_root: string;
   start_date: string;
   end_date: string;
@@ -102,7 +103,7 @@ export function MarketDataBuildPage() {
   const [deleteResult, setDeleteResult] = useState<string | null>(null);
   const [editingScope, setEditingScope] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [jobAction, setJobAction] = useState<"pause" | "resume" | "resume-stateful" | "start" | "stop" | null>(null);
+  const [jobAction, setJobAction] = useState<"pause" | "resume" | "resume-stateful" | "spread-backfill" | "start" | "stop" | null>(null);
 
   useEffect(() => {
     loadScope();
@@ -168,6 +169,26 @@ export function MarketDataBuildPage() {
     setJobAction("start");
     try {
       const payload = await api<BuildJob>("/api/market-data/build/jobs", {
+        method: "POST",
+        body: JSON.stringify(scope)
+      });
+      setJob(payload);
+      await loadJobs(scope);
+      await loadJob(scope, payload.job_id);
+      setActiveTab(tabs[0]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setJobAction(null);
+    }
+  }
+
+  async function startSpreadBackfill() {
+    if (!scope) return;
+    setError(null);
+    setJobAction("spread-backfill");
+    try {
+      const payload = await api<BuildJob>("/api/market-data/build/spread-backfill/jobs", {
         method: "POST",
         body: JSON.stringify(scope)
       });
@@ -345,7 +366,10 @@ export function MarketDataBuildPage() {
           onEditScope={() => setEditingScope(true)}
           onDeleteRequest={requestDeleteBuild}
           onOpenJob={(jobId) => scope && openJob(scope, jobId)}
+          onSpreadBackfill={startSpreadBackfill}
           onStartBuild={startBuild}
+          spreadBackfillRunning={jobAction === "spread-backfill"}
+          startRunning={jobAction === "start"}
           scope={scope}
         />
       ) : null}
@@ -407,6 +431,7 @@ export function MarketDataBuildPage() {
         <Modal title="Update Data Scope" onClose={() => setEditingScope(false)}>
           <div className="form-grid">
             <Field label="Raw root" value={draft.raw_root} onChange={(value) => setDraft({ ...draft, raw_root: value })} />
+            <Field label="Spread root" value={draft.spread_root} onChange={(value) => setDraft({ ...draft, spread_root: value })} />
             <Field label="Processed root" value={draft.processed_root} onChange={(value) => setDraft({ ...draft, processed_root: value })} />
             <Field label="Start" type="date" value={draft.start_date} onChange={(value) => setDraft({ ...draft, start_date: value })} />
             <Field label="End" type="date" value={draft.end_date} onChange={(value) => setDraft({ ...draft, end_date: value })} />
@@ -444,7 +469,10 @@ function BuildStartPage({
   onEditScope,
   onDeleteRequest,
   onOpenJob,
+  onSpreadBackfill,
   onStartBuild,
+  spreadBackfillRunning,
+  startRunning,
   scope,
 }: {
   deleteResult: string | null;
@@ -453,7 +481,10 @@ function BuildStartPage({
   onEditScope: () => void;
   onDeleteRequest: (job: BuildJob) => void;
   onOpenJob: (jobId: string) => void;
+  onSpreadBackfill: () => void;
   onStartBuild: () => void;
+  spreadBackfillRunning: boolean;
+  startRunning: boolean;
   scope: Scope | null;
 }) {
   return (
@@ -464,8 +495,11 @@ function BuildStartPage({
           <p>Start a provider build or open an earlier build record. The market-data artifacts stay integrated in the shared processed store.</p>
         </div>
         <div className="button-row">
-          <button className="button primary" disabled={!scope} onClick={onStartBuild} type="button">
-            New build
+          <button className="button primary" disabled={!scope || startRunning || spreadBackfillRunning} onClick={onStartBuild} type="button">
+            {startRunning ? "Starting..." : "New build"}
+          </button>
+          <button className="button" disabled={!scope || startRunning || spreadBackfillRunning} onClick={onSpreadBackfill} type="button">
+            {spreadBackfillRunning ? "Starting..." : "Backfill spread"}
           </button>
           <button className="button" disabled={!scope} onClick={onEditScope} type="button">
             Edit scope
@@ -539,6 +573,7 @@ function BuildRunHeader({ job }: { job: BuildJob }) {
       <div className="build-summary-facts">
         <BuildFact label="Build id" value={job.job_id} />
         <BuildFact label="Created" value={formatTimestamp(job.created_at)} />
+        <BuildFact label="Mode" value={String(request.resume_stage ?? request.rebuild_mode ?? "force_rebuild")} />
         <BuildFact label="Session workers" value={`${job.resources?.session_workers ?? job.resources?.bar_workers ?? job.resources?.max_workers ?? "-"} workers`} />
         <BuildFact label="Polars" value={`${job.resources?.polars_threads ?? "-"} threads`} />
         <BuildFact label="Output starts" value={String(metrics?.output_start_date ?? "-")} />
@@ -646,6 +681,7 @@ function ScopeCard({ scope }: { scope: Scope }) {
         </div>
         <div>
           <ScopeItem label="Raw root" value={scope.raw_root} />
+          <ScopeItem label="Spread root" value={scope.spread_root} />
           <ScopeItem label="Processed root" value={scope.processed_root} />
         </div>
       </div>
@@ -898,6 +934,7 @@ function scopeFromBuildJob(job: BuildJob | null, fallback: Scope | null): Scope 
   const request = job.request;
   return {
     raw_root: String(request.raw_root ?? fallback?.raw_root ?? ""),
+    spread_root: String(request.spread_root ?? fallback?.spread_root ?? ""),
     processed_root: String(request.processed_root ?? fallback?.processed_root ?? ""),
     start_date: String(request.start_date ?? fallback?.start_date ?? ""),
     end_date: String(request.end_date ?? fallback?.end_date ?? ""),

@@ -53,6 +53,7 @@ from src.data_provider.catalog import provider_catalog, save_presentation_overri
 from src.data_provider.config import (
     DEFAULT_PROCESSED_ROOT,
     DEFAULT_RAW_ROOT,
+    DEFAULT_SPREAD_ROOT,
     DataProviderConfig,
     FEATURE_GROUPS,
     TIMEFRAMES,
@@ -92,6 +93,7 @@ app.add_middleware(
 
 class ScopeUpdate(BaseModel):
     raw_root: str = Field(default=str(DEFAULT_RAW_ROOT))
+    spread_root: str = Field(default=str(DEFAULT_SPREAD_ROOT))
     processed_root: str = Field(default=str(DEFAULT_PROCESSED_ROOT))
     start_date: date
     end_date: date
@@ -884,8 +886,12 @@ def delete_backtest_run(run_id: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)
 
 
 @app.get("/api/market-data/scope")
-def market_scope(raw_root: str = str(DEFAULT_RAW_ROOT), processed_root: str = str(DEFAULT_PROCESSED_ROOT)) -> dict[str, Any]:
-    return scope_defaults(Path(raw_root), Path(processed_root))
+def market_scope(
+    raw_root: str = str(DEFAULT_RAW_ROOT),
+    processed_root: str = str(DEFAULT_PROCESSED_ROOT),
+    spread_root: str = str(DEFAULT_SPREAD_ROOT),
+) -> dict[str, Any]:
+    return scope_defaults(Path(raw_root), Path(processed_root), Path(spread_root))
 
 
 @app.get("/api/market-data/source")
@@ -897,6 +903,7 @@ def market_source(raw_root: str, start_date: date, end_date: date) -> dict[str, 
 def start_build(payload: BuildSubmit) -> dict[str, Any]:
     request = BuildRequest(
         raw_root=Path(payload.raw_root),
+        spread_root=Path(payload.spread_root),
         processed_root=Path(payload.processed_root),
         start_date=payload.start_date,
         end_date=payload.end_date,
@@ -906,6 +913,29 @@ def start_build(payload: BuildSubmit) -> dict[str, Any]:
         rebuild_mode="force_rebuild",
         tickers=None,
     )
+    return submit_build_job(
+        request,
+        session_workers=payload.session_workers,
+        polars_threads=payload.polars_threads,
+    )
+
+
+@app.post("/api/market-data/build/spread-backfill/jobs")
+def start_spread_backfill(payload: BuildSubmit) -> dict[str, Any]:
+    request = BuildRequest(
+        raw_root=Path(payload.raw_root),
+        spread_root=Path(payload.spread_root),
+        processed_root=Path(payload.processed_root),
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        timeframes=list(TIMEFRAMES),
+        feature_groups=list(FEATURE_GROUPS),
+        supervision_groups=[],
+        rebuild_mode="force_rebuild",
+        tickers=None,
+        resume_stage="spread_backfill",
+    )
+    request.build_name = f"spread_backfill_{payload.start_date.isoformat()}_{payload.end_date.isoformat()}"
     return submit_build_job(
         request,
         session_workers=payload.session_workers,

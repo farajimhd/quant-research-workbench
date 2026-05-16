@@ -7,10 +7,11 @@ from typing import Any
 
 
 DEFAULT_RAW_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_agg_v1")
+DEFAULT_SPREAD_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minute_agg_spread")
 DEFAULT_PROCESSED_ROOT = Path("D:/TradingData/quant-research-workbench/market_data")
 EXCHANGE_TIME_ZONE = "America/New_York"
-SCHEMA_VERSION = 1
-FEATURE_VERSION = 11
+SCHEMA_VERSION = 2
+FEATURE_VERSION = 12
 SUPERVISION_VERSION = 3
 
 TIMEFRAMES: dict[str, int | str] = {
@@ -61,6 +62,7 @@ def list_from_dict(raw: dict[str, Any], key: str, default: list[str] | dict[str,
 @dataclass(slots=True)
 class DataProviderConfig:
     raw_root: Path = DEFAULT_RAW_ROOT
+    spread_root: Path = DEFAULT_SPREAD_ROOT
     processed_root: Path = DEFAULT_PROCESSED_ROOT
     exchange_timezone: str = EXCHANGE_TIME_ZONE
     schema_version: int = SCHEMA_VERSION
@@ -72,6 +74,7 @@ class DataProviderConfig:
         raw = raw or {}
         return cls(
             raw_root=Path(raw.get("raw_root") or raw.get("data_root") or DEFAULT_RAW_ROOT),
+            spread_root=Path(raw.get("spread_root") or DEFAULT_SPREAD_ROOT),
             processed_root=Path(raw.get("processed_root") or raw.get("processed_data_root") or DEFAULT_PROCESSED_ROOT),
             exchange_timezone=str(raw.get("exchange_timezone") or EXCHANGE_TIME_ZONE),
         )
@@ -79,6 +82,7 @@ class DataProviderConfig:
     def to_dict(self) -> dict[str, Any]:
         return {
             "raw_root": str(self.raw_root),
+            "spread_root": str(self.spread_root),
             "processed_root": str(self.processed_root),
             "exchange_timezone": self.exchange_timezone,
             "schema_version": self.schema_version,
@@ -90,6 +94,7 @@ class DataProviderConfig:
 @dataclass(slots=True)
 class BuildRequest:
     raw_root: Path = DEFAULT_RAW_ROOT
+    spread_root: Path = DEFAULT_SPREAD_ROOT
     processed_root: Path = DEFAULT_PROCESSED_ROOT
     start_date: date = date(2024, 5, 1)
     end_date: date = date(2024, 5, 1)
@@ -108,6 +113,7 @@ class BuildRequest:
     def from_dict(cls, raw: dict[str, Any]) -> "BuildRequest":
         return cls(
             raw_root=Path(raw.get("raw_root") or raw.get("data_root") or DEFAULT_RAW_ROOT),
+            spread_root=Path(raw.get("spread_root") or DEFAULT_SPREAD_ROOT),
             processed_root=Path(raw.get("processed_root") or raw.get("processed_data_root") or DEFAULT_PROCESSED_ROOT),
             start_date=parse_date(raw["start_date"]),
             end_date=parse_date(raw["end_date"]),
@@ -126,6 +132,7 @@ class BuildRequest:
     def to_config(self) -> DataProviderConfig:
         return DataProviderConfig(
             raw_root=self.raw_root,
+            spread_root=self.spread_root,
             processed_root=self.processed_root,
             exchange_timezone=self.exchange_timezone,
         )

@@ -16,6 +16,11 @@ Default paths:
 - `config.py`: versions, default paths, supported timeframes, feature groups, supervision groups, and build request objects.
 - `raw_loader.py`: scans and loads raw Massive CSV/GZIP minute files.
 - `timeframes.py`: canonical timestamp conversion, `bar_id` creation, and timeframe aggregation.
+
+The provider can also join observed quote spread data from
+`D:/TradingData/massive_flatfiles/us_stock_sip/minute_agg_spread`. Spread files
+are daily Parquet files partitioned as `YYYY/MM/YYYY-MM-DD.parquet` and are
+joined to canonical `1m` bars by `ticker` and `window_start`.
 - `features.py`: deterministic feature and indicator calculations.
 - `supervision.py`: future-looking research labels for learning and diagnostics.
 - `builder.py`: orchestrates offline builds and writes artifacts.
@@ -80,6 +85,12 @@ Supported timeframes:
 - `1d`
 
 `1m` bars are canonicalized directly from raw rows. Intraday aggregations bucket by New York `minute_of_day`, grouped by ticker and session date. Daily bars aggregate every available raw bar for the New York session date, including extended hours. Weekly and monthly artifacts are intentionally out of the active build path for now.
+
+When spread files are available, `1m` bars include observed quote fields such as
+`quote_bid_price`, `quote_ask_price`, `actual_spread`, `actual_spread_bps`,
+`quote_valid_ratio`, and `locked_or_crossed_count`. Higher timeframes aggregate
+these fields from the enriched `1m` bars, including average, median, and maximum
+absolute spread bps for the bucket.
 
 Base OHLCV aggregation:
 

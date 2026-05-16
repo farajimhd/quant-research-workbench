@@ -22,6 +22,7 @@ from src.data_provider.catalog import (
 from src.data_provider.config import (
     DEFAULT_PROCESSED_ROOT,
     DEFAULT_RAW_ROOT,
+    DEFAULT_SPREAD_ROOT,
     EXCHANGE_TIME_ZONE,
     FEATURE_GROUPS,
     TIMEFRAMES,
@@ -102,7 +103,7 @@ def artifact_records(root: Path) -> list[dict[str, Any]]:
     return sorted(records, key=lambda row: (str(row.get("group")), timeframe_sort_key(str(row.get("timeframe") or "")), str(row.get("session_date"))))
 
 
-def scope_defaults(raw_root: Path = DEFAULT_RAW_ROOT, processed_root: Path = DEFAULT_PROCESSED_ROOT) -> dict[str, Any]:
+def scope_defaults(raw_root: Path = DEFAULT_RAW_ROOT, processed_root: Path = DEFAULT_PROCESSED_ROOT, spread_root: Path = DEFAULT_SPREAD_ROOT) -> dict[str, Any]:
     first_raw, last_raw, raw_count = discover_raw_bounds(raw_root)
     records = artifact_records(processed_root)
     dates = [date.fromisoformat(str(record["session_date"])) for record in records if record.get("session_date")]
@@ -110,6 +111,7 @@ def scope_defaults(raw_root: Path = DEFAULT_RAW_ROOT, processed_root: Path = DEF
     end = last_raw or (max(dates) if dates else date(2024, 5, 31))
     return {
         "raw_root": str(raw_root),
+        "spread_root": str(spread_root),
         "processed_root": str(processed_root),
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
@@ -533,6 +535,9 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
 
     if "estimated_spread_bps" not in names and {"tick_floor_bps", "range_proxy_bps", "illiquidity_proxy_bps"}.issubset(names):
         scan = scan.with_columns(pl.max_horizontal("tick_floor_bps", "range_proxy_bps", "illiquidity_proxy_bps").alias("estimated_spread_bps"))
+        names = scan.collect_schema().names()
+    if "actual_vs_estimated_spread_bps" not in names and {"actual_spread_bps_abs", "estimated_spread_bps"}.issubset(names):
+        scan = scan.with_columns((pl.col("actual_spread_bps_abs") - pl.col("estimated_spread_bps")).alias("actual_vs_estimated_spread_bps"))
     return scan
 
 
@@ -872,6 +877,16 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "range_proxy_bps",
         "illiquidity_proxy_bps",
         "estimated_spread_bps",
+        "actual_spread_bps",
+        "actual_spread_bps_abs",
+        "actual_spread_bps_avg",
+        "actual_spread_bps_median",
+        "actual_spread_bps_max",
+        "quote_valid_ratio",
+        "locked_or_crossed_count",
+        "quoted_share_depth",
+        "quoted_dollar_depth",
+        "actual_vs_estimated_spread_bps",
         "intraday_rvol13",
         "intraday_dollar_rvol13",
         "tod_cum_volume_avg13",

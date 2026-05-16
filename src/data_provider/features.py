@@ -121,6 +121,17 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "range_proxy_bps",
         "illiquidity_proxy_bps",
         "estimated_spread_bps",
+        "actual_spread",
+        "actual_spread_bps",
+        "actual_spread_bps_abs",
+        "actual_spread_bps_avg",
+        "actual_spread_bps_median",
+        "actual_spread_bps_max",
+        "quote_valid_ratio",
+        "locked_or_crossed_count",
+        "quoted_share_depth",
+        "quoted_dollar_depth",
+        "actual_vs_estimated_spread_bps",
         "tod_cum_volume_avg13",
         "intraday_rvol13",
         "tod_cum_dollar_volume_avg13",
@@ -510,6 +521,8 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             pl.max_horizontal("tick_floor_bps", "range_proxy_bps", "illiquidity_proxy_bps").alias("estimated_spread_bps")
         )
     )
+    if "actual_spread_bps_abs" in frame.columns:
+        frame = frame.with_columns((pl.col("actual_spread_bps_abs") - pl.col("estimated_spread_bps")).alias("actual_vs_estimated_spread_bps"))
     typical_money_flow = pl.col("hlc3") * pl.col("volume")
     positive_flow = pl.when(pl.col("hlc3") > pl.col("hlc3").shift(1).over("ticker")).then(typical_money_flow).otherwise(0.0)
     negative_flow = pl.when(pl.col("hlc3") < pl.col("hlc3").shift(1).over("ticker")).then(typical_money_flow).otherwise(0.0)

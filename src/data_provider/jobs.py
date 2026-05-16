@@ -80,6 +80,7 @@ def generated_build_name(request: BuildRequest, job_id: str) -> str:
 def request_to_dict(request: BuildRequest) -> dict[str, Any]:
     raw = asdict(request)
     raw["raw_root"] = str(request.raw_root)
+    raw["spread_root"] = str(request.spread_root)
     raw["processed_root"] = str(request.processed_root)
     raw["start_date"] = request.start_date.isoformat()
     raw["end_date"] = request.end_date.isoformat()

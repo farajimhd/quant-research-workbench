@@ -16,7 +16,7 @@ from src.data_provider.calendar import market_sessions, scan_market_source
 from src.data_provider.config import BuildRequest
 from src.data_provider.features import FEATURE_COLUMNS, add_feature_columns, select_feature_group
 from src.data_provider.manifest import ArtifactRecord, upsert_artifact
-from src.data_provider.raw_loader import load_raw_minute_bars, raw_minute_path
+from src.data_provider.raw_loader import load_minute_spreads, load_raw_minute_bars, raw_minute_path, spread_minute_path
 from src.data_provider.store import partition_path, read_frame, write_frame
 from src.data_provider.supervision import (
     FIXED_HORIZON_BARS,
@@ -25,7 +25,7 @@ from src.data_provider.supervision import (
     iter_bar_supervision_frames,
     method_windows_for_timeframe,
 )
-from src.data_provider.timeframes import aggregate_daily, aggregate_intraday, canonicalize_1m
+from src.data_provider.timeframes import aggregate_daily, aggregate_intraday, canonicalize_1m, enrich_1m_with_spread
 
 
 ProgressCallback = Callable[[dict], None]
@@ -81,6 +81,10 @@ def session_timeframes(request: BuildRequest) -> list[str]:
 
 def is_stateful_resume(request: BuildRequest) -> bool:
     return str(request.resume_stage or "").lower() == "stateful_features"
+
+
+def is_spread_backfill(request: BuildRequest) -> bool:
+    return str(request.resume_stage or "").lower() == "spread_backfill"
 
 
 def estimate_session_units(request: BuildRequest, output_sessions: int, monthly_periods: int = 0) -> int:
@@ -139,6 +143,24 @@ def build_plan(statuses: list) -> list[dict]:
 def output_start_date(plan_rows: list[dict]) -> str | None:
     output_rows = [row for row in plan_rows if row.get("build_role") == "output"]
     return str(output_rows[0]["session_date"]) if output_rows else None
+
+
+def enrich_plan_with_spread(plan_rows: list[dict], request: BuildRequest) -> list[dict]:
+    for row in plan_rows:
+        try:
+            session = datetime.fromisoformat(str(row["session_date"])).date()
+        except (KeyError, ValueError):
+            continue
+        path = spread_minute_path(request.spread_root, session)
+        exists = path.exists()
+        row["spread_path"] = str(path)
+        row["spread_exists"] = exists
+        row["spread_size_bytes"] = path.stat().st_size if exists else 0
+        row["spread_modified_at"] = path.stat().st_mtime if exists else None
+        if row.get("build_role") == "output" and not exists:
+            row["status"] = "missing_spread"
+            row["reason"] = "Output session spread file is missing."
+    return plan_rows
 
 
 def plan_metadata(plan_rows: list[dict]) -> dict:
@@ -725,6 +747,46 @@ def build_session_bars(
             "work_total": progress_state["total_units"],
         },
     )
+    spread_source_path = spread_minute_path(request.spread_root, session_date)
+    if not spread_source_path.exists():
+        raise FileNotFoundError(f"Spread source file is missing for {session_text}: {spread_source_path}")
+    started_at = perf_counter()
+    emit(
+        progress_callback,
+        {
+            "event": "phase_started",
+            "phase": "spread_join",
+            "status": "running",
+            "session_date": session_text,
+            "timeframe": "1m",
+            "source_path": str(spread_source_path),
+            "work_completed": progress_state.get("completed_units"),
+            "work_total": progress_state.get("total_units"),
+        },
+    )
+    spread = load_minute_spreads(request.spread_root, session_date, request.tickers)
+    bars_1m = enrich_1m_with_spread(bars_1m, spread)
+    spread_rows = spread.height
+    del spread
+    gc.collect()
+    emit(
+        progress_callback,
+        {
+            "event": "phase_complete",
+            "phase": "spread_join",
+            "status": "complete",
+            "session_date": session_text,
+            "timeframe": "1m",
+            "rows_in": raw_rows,
+            "spread_rows": spread_rows,
+            "rows_out": bars_1m.height,
+            "duration_sec": elapsed_since(started_at),
+            "source_path": str(spread_source_path),
+            "source_size_bytes": artifact_size(spread_source_path),
+            "work_completed": progress_state.get("completed_units"),
+            "work_total": progress_state.get("total_units"),
+        },
+    )
     built_timeframes: list[str] = []
     artifact_results: list[dict] = []
     should_build_artifacts = artifact_timeframes if artifact_timeframes is not None else set(selected_timeframes)
@@ -993,6 +1055,191 @@ def build_timeframe_artifacts(
     return {"session_date": session_text, "timeframe": timeframe, "status": "complete", "rows": rows}
 
 
+def build_spread_backfill(
+    request: BuildRequest,
+    *,
+    job_path: Path | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict:
+    if request.start_date > request.end_date:
+        raise ValueError("start_date must be on or before end_date")
+    check_stopped = None
+    if job_path is not None:
+        from src.data_provider.jobs import check_stopped as job_check_stopped
+
+        check_stopped = job_check_stopped
+    run_started_at = perf_counter()
+    ordered_timeframes = session_timeframes(request)
+    sessions = market_sessions(request.start_date, request.end_date)
+    existing_sessions = [
+        session
+        for session in sessions
+        if partition_path(request.processed_root, "bars", "1m", session.isoformat()).exists()
+    ]
+    valid_feature_groups = [group for group in request.feature_groups if group in FEATURE_COLUMNS]
+    total_units = max(1, len(existing_sessions) * (1 + len(ordered_timeframes) * (1 + len(valid_feature_groups))))
+    progress_state = {"completed_units": 0, "total_units": total_units}
+    plan_rows = [
+        {
+            "session_date": session.isoformat(),
+            "build_role": "spread_backfill" if session in existing_sessions else "missing_bars",
+            "write_output": session in existing_sessions,
+            "reference_only": False,
+            "path": str(partition_path(request.processed_root, "bars", "1m", session.isoformat())),
+            "exists": session in existing_sessions,
+        }
+        for session in sessions
+    ]
+    plan_rows = enrich_plan_with_spread(plan_rows, request)
+    emit(
+        progress_callback,
+        {
+            "event": "plan_complete",
+            "phase": "spread_backfill_plan",
+            "status": "complete",
+            "calendar_days": len(sessions),
+            "buildable_sessions": len(existing_sessions),
+            "spread_files_found": len([row for row in plan_rows if row.get("write_output") and row.get("spread_exists")]),
+            "work_total": total_units,
+            "plan": plan_rows,
+            "resume_stage": request.resume_stage,
+        },
+    )
+    completed: list[dict] = []
+    stateful_tasks: list[dict] = []
+    for index, session in enumerate(existing_sessions, start=1):
+        if check_stopped and job_path is not None:
+            check_stopped(job_path, resume_stage="spread_backfill")
+        session_text = session.isoformat()
+        spread_path = spread_minute_path(request.spread_root, session)
+        if not spread_path.exists():
+            completed.append({"session_date": session_text, "status": "missing_spread", "rows": 0})
+            emit(
+                progress_callback,
+                {
+                    "event": "session_skipped",
+                    "phase": "missing_spread",
+                    "status": "missing_spread",
+                    "session_date": session_text,
+                    "index": index,
+                    "total": len(existing_sessions),
+                    "spread_path": str(spread_path),
+                },
+            )
+            continue
+        bars_1m_path = partition_path(request.processed_root, "bars", "1m", session_text)
+        started_at = perf_counter()
+        emit(
+            progress_callback,
+            {
+                "event": "phase_started",
+                "phase": "spread_backfill",
+                "status": "running",
+                "session_date": session_text,
+                "timeframe": "1m",
+                "path": str(bars_1m_path),
+                "spread_path": str(spread_path),
+                "index": index,
+                "total": len(existing_sessions),
+                "work_completed": progress_state["completed_units"],
+                "work_total": progress_state["total_units"],
+            },
+        )
+        bars_1m = read_frame(bars_1m_path)
+        spread = load_minute_spreads(request.spread_root, session, request.tickers)
+        bars_1m = enrich_1m_with_spread(bars_1m, spread)
+        del spread
+        gc.collect()
+        progress_state["completed_units"] += 1
+        emit(
+            progress_callback,
+            {
+                "event": "phase_complete",
+                "phase": "spread_backfill",
+                "status": "complete",
+                "session_date": session_text,
+                "timeframe": "1m",
+                "rows_out": bars_1m.height,
+                "duration_sec": elapsed_since(started_at),
+                "work_completed": progress_state["completed_units"],
+                "work_total": progress_state["total_units"],
+            },
+        )
+        for timeframe in ordered_timeframes:
+            if timeframe == "1m":
+                bars = bars_1m
+            elif timeframe in {"5m", "15m", "30m", "1h", "2h", "4h"}:
+                bars = aggregate_intraday(bars_1m, timeframe)
+            elif timeframe == "1d":
+                bars = aggregate_daily(bars_1m)
+            else:
+                continue
+            source_path = spread_path if timeframe == "1m" else bars_1m_path
+            write_bars_artifact(
+                request=request,
+                timeframe=timeframe,
+                session_date=session_text,
+                bars=bars,
+                source_path=source_path,
+                progress_callback=progress_callback,
+                progress_state=progress_state,
+            )
+            stateful_tasks.append({"session_date": session_text, "timeframe": timeframe})
+            if timeframe != "1m":
+                del bars
+                gc.collect()
+        rows_out = bars_1m.height
+        if "bars" in locals():
+            del bars
+        del bars_1m
+        gc.collect()
+        completed.append({"session_date": session_text, "status": "bars_complete", "rows": rows_out})
+
+    stateful_results = build_stateful_artifact_tasks(
+        request=request,
+        tasks=stateful_tasks,
+        total_units=progress_state["total_units"],
+        job_path=job_path,
+        progress_callback=progress_callback,
+        progress_state=progress_state,
+    )
+    complete_stateful_timeframes = {str(result.get("timeframe")) for result in stateful_results if str(result.get("status")) == "complete"}
+    for row in completed:
+        session_key = str(row.get("session_date"))
+        expected = [task for task in stateful_tasks if str(task["session_date"]) == session_key]
+        if expected and all(str(task["timeframe"]) in complete_stateful_timeframes for task in expected):
+            row["status"] = "complete"
+    emit(
+        progress_callback,
+        {
+            "event": "run_complete",
+            "phase": "spread_backfill",
+            "status": "complete",
+            "duration_sec": elapsed_since(run_started_at),
+            "work_completed": progress_state["completed_units"],
+            "work_total": progress_state["total_units"],
+        },
+    )
+    return {
+        "processed_root": str(request.processed_root),
+        "completed": completed,
+        "plan": plan_rows,
+        "request": {
+            "raw_root": str(request.raw_root),
+            "spread_root": str(request.spread_root),
+            "processed_root": str(request.processed_root),
+            "start_date": request.start_date.isoformat(),
+            "end_date": request.end_date.isoformat(),
+            "timeframes": request.timeframes,
+            "feature_groups": request.feature_groups,
+            "supervision_groups": request.supervision_groups,
+            "rebuild_mode": "spread_backfill",
+            "resume_from_build_id": request.resume_from_build_id,
+            "resume_stage": request.resume_stage,
+        },
+    }
+
+
 def _parallel_session_worker(
     request: BuildRequest,
     status: dict,
@@ -1240,15 +1487,19 @@ def build_stateful_timeframe_artifacts(
     output_sessions: list[str],
     progress_callback: ProgressCallback | None,
     progress_state: dict,
+    force_rebuild: bool = False,
 ) -> dict:
     if not output_sessions:
         return {"timeframe": timeframe, "status": "skipped", "sessions": 0, "rows": 0}
     started_at = perf_counter()
-    pending_sessions = {
-        session_text
-        for session_text in output_sessions
-        if not stateful_session_outputs_complete(request, timeframe, session_text)
-    }
+    if force_rebuild:
+        pending_sessions = set(output_sessions)
+    else:
+        pending_sessions = {
+            session_text
+            for session_text in output_sessions
+            if not stateful_session_outputs_complete(request, timeframe, session_text)
+        }
     chunks = iter_stateful_session_chunks(timeframe, output_sessions)
     lookback_sessions = stateful_lookback_sessions(timeframe)
     emit(
@@ -1527,6 +1778,7 @@ def _stateful_artifact_worker(
             output_sessions=output_sessions,
             progress_callback=on_progress,
             progress_state=progress_state,
+            force_rebuild=is_spread_backfill(request),
         )
         return result
     except BuildCancelled:
@@ -1619,12 +1871,13 @@ def build_stateful_artifact_tasks(
         for task in timeframe_tasks:
             results.append(
                 build_stateful_timeframe_artifacts(
-                request=request,
-                timeframe=str(task["timeframe"]),
-                output_sessions=[str(session) for session in task.get("sessions", [])],
-                progress_callback=progress_callback,
-                progress_state=state,
-            )
+                    request=request,
+                    timeframe=str(task["timeframe"]),
+                    output_sessions=[str(session) for session in task.get("sessions", [])],
+                    progress_callback=progress_callback,
+                    progress_state=state,
+                    force_rebuild=is_spread_backfill(request),
+                )
             )
         return results
 
@@ -1724,14 +1977,24 @@ def build_stateful_artifact_tasks(
 def build_market_data(request: BuildRequest, progress_callback: ProgressCallback | None = None) -> dict:
     if request.start_date > request.end_date:
         raise ValueError("start_date must be on or before end_date")
+    if is_spread_backfill(request):
+        return build_spread_backfill(request, progress_callback=progress_callback)
     run_started_at = perf_counter()
     scan_started_at = perf_counter()
     statuses = scan_market_source(request.raw_root, request.start_date, request.end_date)
-    plan_rows = build_plan(statuses)
+    plan_rows = enrich_plan_with_spread(build_plan(statuses), request)
     plan_by_session = {str(row["session_date"]): row for row in plan_rows}
     output_statuses = [status for status in statuses if plan_by_session[status.session_date].get("build_role") == "output"]
-    buildable_statuses = [status for status in output_statuses if status.expected_market_session and status.exists]
-    missing_statuses = [status for status in output_statuses if status.expected_market_session and not status.exists]
+    buildable_statuses = [
+        status
+        for status in output_statuses
+        if status.expected_market_session and status.exists and plan_by_session[status.session_date].get("spread_exists")
+    ]
+    missing_statuses = [
+        status
+        for status in output_statuses
+        if status.expected_market_session and (not status.exists or not plan_by_session[status.session_date].get("spread_exists"))
+    ]
     progress_state = {"completed_units": 0, "total_units": estimate_session_units(request, len(buildable_statuses))}
     metadata = plan_metadata(plan_rows)
     emit(
@@ -1741,7 +2004,8 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
             "phase": "scan_source",
             "status": "complete",
             "duration_sec": elapsed_since(scan_started_at),
-            "raw_files_found": len(buildable_statuses),
+            "raw_files_found": len([status for status in output_statuses if status.expected_market_session and status.exists]),
+            "spread_files_found": len([status for status in output_statuses if status.expected_market_session and plan_by_session[status.session_date].get("spread_exists")]),
             "missing_sessions": len(missing_statuses),
             "calendar_days": len(statuses),
             "work_total": progress_state["total_units"],
@@ -1790,6 +2054,21 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
                     "session_date": status.session_date,
                     "index": index,
                     "total": len(statuses),
+                },
+            )
+            continue
+        if not resume_stateful and not plan_row.get("spread_exists"):
+            completed.append({"session_date": status.session_date, "status": "missing_spread", "rows": 0})
+            emit(
+                progress_callback,
+                {
+                    "event": "session_skipped",
+                    "phase": "missing_spread",
+                    "status": "missing_spread",
+                    "session_date": status.session_date,
+                    "index": index,
+                    "total": len(statuses),
+                    "spread_path": plan_row.get("spread_path"),
                 },
             )
             continue
@@ -1887,17 +2166,27 @@ def build_market_data_parallel(
         return build_market_data(request, progress_callback=progress_callback)
     if request.start_date > request.end_date:
         raise ValueError("start_date must be on or before end_date")
+    if is_spread_backfill(request):
+        return build_spread_backfill(request, job_path=job_path, progress_callback=progress_callback)
 
     from src.data_provider.jobs import BuildPaused, check_cancelled, is_pause_requested
 
     run_started_at = perf_counter()
     scan_started_at = perf_counter()
     statuses = scan_market_source(request.raw_root, request.start_date, request.end_date)
-    plan_rows = build_plan(statuses)
+    plan_rows = enrich_plan_with_spread(build_plan(statuses), request)
     plan_by_session = {str(row["session_date"]): row for row in plan_rows}
     output_statuses = [status for status in statuses if plan_by_session[status.session_date].get("build_role") == "output"]
-    buildable_statuses = [status for status in output_statuses if status.expected_market_session and status.exists]
-    missing_statuses = [status for status in output_statuses if status.expected_market_session and not status.exists]
+    buildable_statuses = [
+        status
+        for status in output_statuses
+        if status.expected_market_session and status.exists and plan_by_session[status.session_date].get("spread_exists")
+    ]
+    missing_statuses = [
+        status
+        for status in output_statuses
+        if status.expected_market_session and (not status.exists or not plan_by_session[status.session_date].get("spread_exists"))
+    ]
     total_units = estimate_session_units(request, len(buildable_statuses))
     metadata = plan_metadata(plan_rows)
     emit(
@@ -1907,7 +2196,8 @@ def build_market_data_parallel(
             "phase": "scan_source",
             "status": "complete",
             "duration_sec": elapsed_since(scan_started_at),
-            "raw_files_found": len(buildable_statuses),
+            "raw_files_found": len([status for status in output_statuses if status.expected_market_session and status.exists]),
+            "spread_files_found": len([status for status in output_statuses if status.expected_market_session and plan_by_session[status.session_date].get("spread_exists")]),
             "missing_sessions": len(missing_statuses),
             "calendar_days": len(statuses),
             "work_total": total_units,
@@ -1919,6 +2209,10 @@ def build_market_data_parallel(
     )
 
     completed: list[dict] = []
+    selected_timeframes = set(session_timeframes(request))
+    local_artifact_timeframes = selected_timeframes - CARRYOVER_TIMEFRAMES
+    stateful_tasks: list[dict] = []
+    resume_stateful = is_stateful_resume(request)
     build_jobs: list[tuple[int, dict]] = []
     for index, status in enumerate(statuses, start=1):
         plan_row = plan_by_session[status.session_date]
@@ -1954,14 +2248,25 @@ def build_market_data_parallel(
                 },
             )
             continue
+        if not resume_stateful and not plan_row.get("spread_exists"):
+            completed.append({"session_date": status.session_date, "status": "missing_spread", "rows": 0})
+            emit(
+                progress_callback,
+                {
+                    "event": "session_skipped",
+                    "phase": "missing_spread",
+                    "status": "missing_spread",
+                    "session_date": status.session_date,
+                    "index": index,
+                    "total": len(statuses),
+                    "spread_path": plan_row.get("spread_path"),
+                },
+            )
+            continue
         build_jobs.append((index, asdict(status)))
 
     artifact_tasks: list[dict] = []
     artifact_results: list[dict] = []
-    selected_timeframes = set(session_timeframes(request))
-    local_artifact_timeframes = selected_timeframes - CARRYOVER_TIMEFRAMES
-    stateful_tasks: list[dict] = []
-    resume_stateful = is_stateful_resume(request)
     if resume_stateful:
         for _, status in build_jobs:
             session_text = str(status["session_date"])
