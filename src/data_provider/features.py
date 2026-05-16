@@ -76,6 +76,7 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "macd_line",
         "macd_signal",
         "macd_hist",
+        "macd_hist_z_since_open",
         "rsi14",
         "roc10",
         "indicator_bar_count",
@@ -355,6 +356,30 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
         .with_columns(
             (pl.col("tema9") > pl.col("tema20")).alias("tema_open"),
             (pl.col("macd_line") - pl.col("macd_signal")).alias("macd_hist"),
+        )
+        .with_columns(
+            pl.col("macd_hist").fill_null(0.0).alias("_macd_hist_value"),
+            pl.cum_count("close").over(["ticker", "session_date"]).cast(pl.Float64).alias("_macd_hist_session_n"),
+        )
+        .with_columns(
+            pl.col("_macd_hist_value").cum_sum().over(["ticker", "session_date"]).alias("_macd_hist_session_sum"),
+            (pl.col("_macd_hist_value") * pl.col("_macd_hist_value")).cum_sum().over(["ticker", "session_date"]).alias("_macd_hist_session_sum_sq"),
+        )
+        .with_columns((pl.col("_macd_hist_session_sum") / pl.col("_macd_hist_session_n")).alias("_macd_hist_session_mean"))
+        .with_columns(
+            (
+                (pl.col("_macd_hist_session_sum_sq") / pl.col("_macd_hist_session_n"))
+                - (pl.col("_macd_hist_session_mean") * pl.col("_macd_hist_session_mean"))
+            )
+            .clip(0.0)
+            .sqrt()
+            .alias("_macd_hist_session_std")
+        )
+        .with_columns(
+            pl.when(pl.col("_macd_hist_session_std") > 0)
+            .then((pl.col("_macd_hist_value") - pl.col("_macd_hist_session_mean")) / pl.col("_macd_hist_session_std"))
+            .otherwise(0.0)
+            .alias("macd_hist_z_since_open")
         )
         .with_columns(
             pl.cum_count("close").over("ticker").alias("indicator_bar_count"),

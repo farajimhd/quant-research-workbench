@@ -1489,7 +1489,7 @@ def dtype_for_column(column: str) -> str:
         return "bool"
     if lower in STRING_COLUMNS or lower.endswith("_bar_id"):
         return "string"
-    if lower in {"macd_line", "macd_signal", "macd_hist"}:
+    if lower in {"macd_line", "macd_signal", "macd_hist", "macd_hist_z_since_open"}:
         return "float"
     if lower.endswith("_utc") or lower.endswith("_market") or lower.endswith("_time"):
         return "datetime"
@@ -1736,6 +1736,7 @@ def color_for_column(column: str) -> str:
         "macd_line": "#1E3A5F",
         "macd_signal": "#B54708",
         "macd_hist": "inherit_candle_direction",
+        "macd_hist_z_since_open": "#0E7490",
         "rsi14": "#7C3AED",
         "atr14": "#0E7490",
     }
@@ -1986,7 +1987,7 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
 
     if lower.startswith("day_") or lower.startswith("premarket_") or lower.startswith("or_") or lower.startswith("distance_to_day_") or lower in {"prev_close", "gap_pct"}:
         return session_feature_knowledge(lower, group, category, title)
-    if lower in {"roc10", "indicator_bar_count", "macd_ready", "tema_ready", "tema_open"}:
+    if lower in {"roc10", "indicator_bar_count", "macd_ready", "tema_ready", "tema_open", "macd_hist_z_since_open"}:
         return momentum_extra_knowledge(lower, group, category, title)
     if lower.startswith("donchian_") or lower.startswith("keltner_") or lower.endswith("_z20"):
         return volatility_feature_knowledge(lower, group, category, title)
@@ -2156,6 +2157,16 @@ def momentum_extra_knowledge(lower: str, group: str, category: str, title: str) 
             "TEMA open is a boolean trend-state helper. It is true when the faster TEMA9 is above the slower TEMA20, matching the common entry-open condition used in the ORB strategy family.",
             "$$TEMAOpen_t=I(TEMA9_t>TEMA20_t)$$",
             {"I": "Indicator function"},
+        ),
+        "macd_hist_z_since_open": (
+            "Session-relative MACD histogram z-score.",
+            "MACD histogram z since open compares the current MACD histogram with the same ticker's own MACD histogram distribution from the start of the session through the current completed bar. Positive values mean current MACD pressure is above that ticker's session average so far.",
+            "$$Z_t=\\frac{MACDHist_t-\\mu_{session,t}}{\\sigma_{session,t}}$$",
+            {
+                "MACDHist_t": "Current MACD histogram",
+                "\\mu_{session,t}": "Mean MACD histogram for this ticker/session up to t",
+                "\\sigma_{session,t}": "Population standard deviation for this ticker/session up to t",
+            },
         ),
         "indicator_bar_count": (
             "Operational helper: bars available for indicator warm-up.",

@@ -447,6 +447,49 @@ def apply_scanner_momentum_compatibility_columns(scan: pl.LazyFrame, names: list
         exprs.append((pl.col("tema9") > pl.col("tema20")).alias("tema_open"))
     if exprs:
         scan = scan.with_columns(exprs)
+        names = scan.collect_schema().names()
+    if "macd_hist_z_since_open" not in names and {"macd_hist", "ticker"}.issubset(names):
+        group_columns = scanner_session_group_columns(names)
+        if group_columns:
+            scan = (
+                scan.with_columns(
+                    pl.col("macd_hist").fill_null(0.0).alias("_scanner_macd_hist_value"),
+                    pl.cum_count("ticker").over(group_columns).cast(pl.Float64).alias("_scanner_macd_hist_n"),
+                )
+                .with_columns(
+                    pl.col("_scanner_macd_hist_value").cum_sum().over(group_columns).alias("_scanner_macd_hist_sum"),
+                    (pl.col("_scanner_macd_hist_value") * pl.col("_scanner_macd_hist_value"))
+                    .cum_sum()
+                    .over(group_columns)
+                    .alias("_scanner_macd_hist_sum_sq"),
+                )
+                .with_columns((pl.col("_scanner_macd_hist_sum") / pl.col("_scanner_macd_hist_n")).alias("_scanner_macd_hist_mean"))
+                .with_columns(
+                    (
+                        (pl.col("_scanner_macd_hist_sum_sq") / pl.col("_scanner_macd_hist_n"))
+                        - (pl.col("_scanner_macd_hist_mean") * pl.col("_scanner_macd_hist_mean"))
+                    )
+                    .clip(0.0)
+                    .sqrt()
+                    .alias("_scanner_macd_hist_std")
+                )
+                .with_columns(
+                    pl.when(pl.col("_scanner_macd_hist_std") > 0)
+                    .then((pl.col("_scanner_macd_hist_value") - pl.col("_scanner_macd_hist_mean")) / pl.col("_scanner_macd_hist_std"))
+                    .otherwise(0.0)
+                    .alias("macd_hist_z_since_open")
+                )
+                .drop(
+                    [
+                        "_scanner_macd_hist_value",
+                        "_scanner_macd_hist_n",
+                        "_scanner_macd_hist_sum",
+                        "_scanner_macd_hist_sum_sq",
+                        "_scanner_macd_hist_mean",
+                        "_scanner_macd_hist_std",
+                    ]
+                )
+            )
     return scan
 
 
@@ -761,6 +804,7 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "macd_line",
         "macd_signal",
         "macd_hist",
+        "macd_hist_z_since_open",
         "rsi14",
     ]
     selected = [column for column in preferred if column in schema_names]

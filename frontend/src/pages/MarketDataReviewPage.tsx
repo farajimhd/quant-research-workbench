@@ -221,6 +221,7 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
   "red_range_sum_so_far",
   "net_body_sum_so_far",
   "tema_open",
+  "macd_hist_z_since_open",
 ];
 const PREVIEW_PAGE_SIZE = 1000;
 const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "anchored_zone", "continuous_band", "background_state", "data_only", "other"];
