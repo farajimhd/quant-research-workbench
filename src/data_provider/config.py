@@ -10,8 +10,8 @@ DEFAULT_RAW_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minutes_a
 DEFAULT_SPREAD_ROOT = Path("D:/TradingData/massive_flatfiles/us_stock_sip/minute_agg_spread")
 DEFAULT_PROCESSED_ROOT = Path("D:/TradingData/quant-research-workbench/market_data")
 EXCHANGE_TIME_ZONE = "America/New_York"
-SCHEMA_VERSION = 2
-FEATURE_VERSION = 13
+SCHEMA_VERSION = 3
+FEATURE_VERSION = 14
 SUPERVISION_VERSION = 3
 
 TIMEFRAMES: dict[str, int | str] = {

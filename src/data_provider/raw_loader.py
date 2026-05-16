@@ -87,9 +87,7 @@ def load_minute_spreads(spread_root: Path, session: date, tickers: list[str] | N
     rename_map = {
         source_name: target_name
         for source_name, target_name in {
-            "spread": "actual_spread",
             "spread_midpoint": "quote_midpoint",
-            "spread_bps": "actual_spread_bps",
         }.items()
         if source_name in schema
     }

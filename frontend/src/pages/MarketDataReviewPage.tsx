@@ -209,13 +209,13 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
   "recent_transactions_5",
   "quote_bid_price",
   "quote_ask_price",
-  "actual_spread",
+  "spread",
   "quote_midpoint",
-  "actual_spread_bps",
-  "actual_spread_bps_abs",
-  "actual_spread_bps_avg",
-  "actual_spread_bps_median",
-  "actual_spread_bps_max",
+  "spread_bps",
+  "spread_bps_abs",
+  "spread_bps_avg",
+  "spread_bps_median",
+  "spread_bps_max",
   "quote_bid_size",
   "quote_ask_size",
   "quote_missing",
@@ -264,14 +264,14 @@ const SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
 };
 const SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
   filters: {
-    actual_spread_bps_abs: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
-    actual_spread_bps_max: { operator: "lte", presetLabel: "<= 150 bps", valueText: "150" },
+    spread_bps_abs: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
+    spread_bps_max: { operator: "lte", presetLabel: "<= 150 bps", valueText: "150" },
     quote_valid_ratio: { operator: "gte", presetLabel: ">= 0.8", valueText: "0.8" },
     locked_or_crossed_count: { operator: "eq", presetLabel: "Zero", valueText: "0" },
     recent_dollar_volume_5: { operator: "gte", presetLabel: ">= $100k", valueText: "100000" },
   },
   label: "Spread Quality",
-  title: "Apply actual bid/ask spread and recent dollar-volume filters to avoid high-cost fills.",
+  title: "Apply bid/ask spread and recent dollar-volume filters to avoid high-cost fills.",
 };
 const PREVIEW_PAGE_SIZE = 1000;
 const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "anchored_zone", "continuous_band", "background_state", "data_only", "other"];

@@ -92,6 +92,7 @@ const activeBuildStatuses = new Set(["queued", "running", "canceling", "cancelli
 const pauseableBuildStatuses = new Set(["queued", "running"]);
 const pausedBuildStatuses = new Set(["paused"]);
 const resumableBuildStatuses = new Set(["cancelled", "canceled", "failed", "error"]);
+type BuildStartMode = "normal" | "spread";
 
 export function MarketDataBuildPage() {
   const [scope, setScope] = useState<Scope | null>(null);
@@ -104,6 +105,7 @@ export function MarketDataBuildPage() {
   const [editingScope, setEditingScope] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jobAction, setJobAction] = useState<"pause" | "resume" | "resume-stateful" | "spread-backfill" | "start" | "stop" | null>(null);
+  const [startMode, setStartMode] = useState<BuildStartMode>("normal");
 
   useEffect(() => {
     loadScope();
@@ -312,6 +314,7 @@ export function MarketDataBuildPage() {
   const metrics = progress?.metrics;
   const missing = useMemo(() => (progress?.plan ?? []).filter((row) => row.expected_market_session && !row.exists), [progress?.plan]);
   const viewScope = scopeFromBuildJob(job, scope);
+  const spreadBuild = isSpreadBuildJob(job);
 
   return (
     <>
@@ -366,9 +369,12 @@ export function MarketDataBuildPage() {
           onEditScope={() => setEditingScope(true)}
           onDeleteRequest={requestDeleteBuild}
           onOpenJob={(jobId) => scope && openJob(scope, jobId)}
+          onSelectNormal={() => setStartMode("normal")}
+          onSelectSpread={() => setStartMode("spread")}
           onSpreadBackfill={startSpreadBackfill}
           onStartBuild={startBuild}
           spreadBackfillRunning={jobAction === "spread-backfill"}
+          startMode={startMode}
           startRunning={jobAction === "start"}
           scope={scope}
         />
@@ -378,9 +384,9 @@ export function MarketDataBuildPage() {
         {job ? (
         <>
           {error ? <div className="error-panel">{error}</div> : null}
-          <BuildRunHeader job={job} />
-          <BuildMetricStrip metrics={buildMetricsForDisplay(metrics, progress, scope)} />
-          {missing.length ? (
+          {spreadBuild ? <SpreadBuildRunHeader job={job} /> : <BuildRunHeader job={job} />}
+          <BuildMetricStrip metrics={spreadBuild ? spreadMetricsForDisplay(metrics, progress, scope) : buildMetricsForDisplay(metrics, progress, scope)} />
+          {!spreadBuild && missing.length ? (
             <InlineNotice tone="warning" icon={<AlertTriangle size={16} />} title="Missing raw market sessions">
               <span>
                 {missing.map((row) => String(row.session_date)).slice(0, 16).join(", ")}
@@ -388,17 +394,17 @@ export function MarketDataBuildPage() {
               </span>
             </InlineNotice>
           ) : null}
-          {metrics && Number(metrics.output_sessions ?? 0) === 0 ? (
+          {!spreadBuild && metrics && Number(metrics.output_sessions ?? 0) === 0 ? (
             <InlineNotice tone="warning" icon={<AlertTriangle size={16} />} title="Reference-only build range">
               <span>This range does not contain an output session after the {metrics.warmup_sessions ?? 13} trading-session warm-up window, so no artifacts will be written.</span>
             </InlineNotice>
           ) : null}
-          {metrics && Number(metrics.missing_reference_sessions ?? 0) > 0 ? (
+          {!spreadBuild && metrics && Number(metrics.missing_reference_sessions ?? 0) > 0 ? (
             <InlineNotice tone="warning" icon={<AlertTriangle size={16} />} title="Incomplete warm-up context">
               <span>{metrics.missing_reference_sessions} reference session raw file(s) are missing, so carry-over indicators may have a shorter warm-up.</span>
             </InlineNotice>
           ) : null}
-          <PhasePanel elapsedSec={metrics?.elapsed_sec ?? 0} phases={progress?.phases ?? []} status={metrics?.status ?? job?.status} />
+          <PhasePanel elapsedSec={metrics?.elapsed_sec ?? 0} phases={progress?.phases ?? []} status={metrics?.status ?? job?.status} title={spreadBuild ? "Spread Build Progress" : "Build Progress"} />
           {job?.status === "failed" ? <div className="error-panel" style={{ marginTop: 18 }}>{job.error ?? "Build failed."}</div> : null}
         </>
         ) : null}
@@ -417,7 +423,7 @@ export function MarketDataBuildPage() {
         <BuildTablePanel trigger={`plan:${job?.job_id ?? ""}:${progress?.plan?.length ?? 0}`}>
           <DataTable
             rows={progress?.plan ?? []}
-            columns={["session_date", "build_role", "status", "exists", "write_output", "reference_only", "reason", "path", "size_bytes", "modified_at"]}
+            columns={["session_date", "build_role", "status", "exists", "spread_exists", "write_output", "reference_only", "reason", "path", "spread_path", "size_bytes", "spread_size_bytes", "modified_at", "spread_modified_at"]}
           />
         </BuildTablePanel>
       </CachedTabPanel>
@@ -469,9 +475,12 @@ function BuildStartPage({
   onEditScope,
   onDeleteRequest,
   onOpenJob,
+  onSelectNormal,
+  onSelectSpread,
   onSpreadBackfill,
   onStartBuild,
   spreadBackfillRunning,
+  startMode,
   startRunning,
   scope,
 }: {
@@ -481,12 +490,52 @@ function BuildStartPage({
   onEditScope: () => void;
   onDeleteRequest: (job: BuildJob) => void;
   onOpenJob: (jobId: string) => void;
+  onSelectNormal: () => void;
+  onSelectSpread: () => void;
   onSpreadBackfill: () => void;
   onStartBuild: () => void;
   spreadBackfillRunning: boolean;
+  startMode: BuildStartMode;
   startRunning: boolean;
   scope: Scope | null;
 }) {
+  if (startMode === "spread") {
+    return (
+      <section className="panel">
+        <div className="section-heading-row">
+          <div>
+            <h2>Build Spread Columns</h2>
+            <p>Join quote spread files to existing bars, rewrite all selected bar timeframes, and patch volume/liquidity feature files. The job starts only after you press Start spread build.</p>
+          </div>
+          <div className="button-row">
+            <button className="button primary" disabled={!scope || spreadBackfillRunning || startRunning} onClick={onSpreadBackfill} type="button">
+              {spreadBackfillRunning ? "Starting..." : "Start spread build"}
+            </button>
+            <button className="button" disabled={!scope || spreadBackfillRunning || startRunning} onClick={onEditScope} type="button">
+              Edit scope
+            </button>
+            <button className="button" disabled={spreadBackfillRunning || startRunning} onClick={onSelectNormal} type="button">
+              Back to build runs
+            </button>
+          </div>
+        </div>
+        {error ? <div className="error-panel">{error}</div> : null}
+        {scope ? (
+          <div className="build-summary-facts">
+            <BuildFact label="Start" value={scope.start_date} />
+            <BuildFact label="End" value={scope.end_date} />
+            <BuildFact label="Spread root" value={scope.spread_root} />
+            <BuildFact label="Processed root" value={scope.processed_root} />
+          </div>
+        ) : null}
+        <div className="build-step-grid" style={{ marginTop: 16 }}>
+          {spreadBuildPreviewStages().map((stage) => (
+            <BuildStepCard key={stage.phase ?? stage.label} stage={stage} />
+          ))}
+        </div>
+      </section>
+    );
+  }
   return (
     <section className="panel">
       <div className="section-heading-row">
@@ -498,8 +547,8 @@ function BuildStartPage({
           <button className="button primary" disabled={!scope || startRunning || spreadBackfillRunning} onClick={onStartBuild} type="button">
             {startRunning ? "Starting..." : "New build"}
           </button>
-          <button className="button" disabled={!scope || startRunning || spreadBackfillRunning} onClick={onSpreadBackfill} type="button">
-            {spreadBackfillRunning ? "Starting..." : "Backfill spread"}
+          <button className="button" disabled={!scope || startRunning || spreadBackfillRunning} onClick={onSelectSpread} type="button">
+            Build spread columns
           </button>
           <button className="button" disabled={!scope} onClick={onEditScope} type="button">
             Edit scope
@@ -579,6 +628,30 @@ function BuildRunHeader({ job }: { job: BuildJob }) {
         <BuildFact label="Output starts" value={String(metrics?.output_start_date ?? "-")} />
         <BuildFact label="Warm-up" value={`${formatNumber(metrics?.warmup_sessions ?? 13)} sessions`} />
         <BuildFact label="Carry-over" value={asListText(metrics?.carryover_timeframes ?? ["1m", "5m", "15m", "30m"])} />
+      </div>
+    </section>
+  );
+}
+
+function SpreadBuildRunHeader({ job }: { job: BuildJob }) {
+  const request = job.request ?? {};
+  const metrics = job.progress?.metrics;
+  return (
+    <section className="panel build-summary-panel">
+      <div className="build-summary-main">
+        <div>
+          <h2>{buildDisplayName(job)}</h2>
+          <p title={String(request.processed_root ?? "-")}>{buildDateRange(job)} | Spread columns only</p>
+        </div>
+        <SemanticBadge tone={toneForStatus(job.status)}>{job.status}</SemanticBadge>
+      </div>
+      <div className="build-summary-facts">
+        <BuildFact label="Build id" value={job.job_id} />
+        <BuildFact label="Created" value={formatTimestamp(job.created_at)} />
+        <BuildFact label="Mode" value="spread_backfill" />
+        <BuildFact label="Spread root" value={String(request.spread_root ?? "-")} />
+        <BuildFact label="Sessions" value={formatNumber(metrics?.output_sessions ?? 0)} />
+        <BuildFact label="Processed root" value={String(request.processed_root ?? "-")} />
       </div>
     </section>
   );
@@ -665,6 +738,58 @@ function buildMetricsForDisplay(metrics: BuildProgress["metrics"] | undefined, p
   ];
 }
 
+function spreadMetricsForDisplay(metrics: BuildProgress["metrics"] | undefined, progress: BuildProgress | undefined, scope: Scope | null): BuildMetric[] {
+  const status = String(metrics?.status ?? "ready");
+  return [
+    {
+      label: "Sessions",
+      value: formatNumber(metrics?.raw ?? scope?.raw_file_count ?? 0),
+      detail: "Existing bar sessions that will receive spread columns.",
+      icon: <FolderInput size={16} />,
+      tone: "info",
+    },
+    {
+      label: "Missing spread",
+      value: formatNumber(metrics?.missing ?? 0),
+      detail: "Sessions without a matching quote spread source file.",
+      icon: <AlertTriangle size={16} />,
+      tone: Number(metrics?.missing ?? 0) > 0 ? "warning" : "neutral",
+    },
+    {
+      label: "Artifacts patched",
+      value: formatNumber(progress?.artifact_events?.length ?? 0),
+      detail: "Bars and volume/liquidity feature files rewritten by the spread build.",
+      icon: <FileStack size={16} />,
+      tone: "success",
+    },
+    {
+      label: "Rows written",
+      value: formatNumber(metrics?.rows ?? 0),
+      detail: "Total rows written across patched artifacts.",
+      icon: <Rows3 size={16} />,
+    },
+    {
+      label: "Data written",
+      value: formatBytes(metrics?.written_bytes ?? 0),
+      detail: "Total bytes written to the processed store.",
+      icon: <HardDrive size={16} />,
+    },
+    {
+      label: "Elapsed time",
+      value: formatDuration(metrics?.elapsed_sec ?? 0),
+      detail: "Wall-clock time reported by the spread build job.",
+      icon: <Clock3 size={16} />,
+    },
+    {
+      label: "Status",
+      value: status,
+      detail: "Current lifecycle status of this spread build.",
+      icon: <Activity size={16} />,
+      tone: statusTone(status),
+    },
+  ];
+}
+
 function ScopeCard({ scope }: { scope: Scope }) {
   return (
     <div className="scope-card">
@@ -707,13 +832,13 @@ function Field({ label, value, onChange, type = "text" }: { label: string; value
   );
 }
 
-function PhasePanel({ elapsedSec, phases, status }: { elapsedSec: number; phases: Stage[]; status?: string }) {
+function PhasePanel({ elapsedSec, phases, status, title = "Build Progress" }: { elapsedSec: number; phases: Stage[]; status?: string; title?: string }) {
   const done = phases.reduce((total, phase) => total + Number(phase.done || 0), 0);
   const total = phases.reduce((sum, phase) => sum + Number(phase.total || 0), 0);
   const progress = total > 0 ? (done / total) * 100 : 0;
   return (
     <section className="panel phase-panel">
-      <h2>Build Progress</h2>
+      <h2>{title}</h2>
       {phases.length ? (
         <>
           <ProgressMeter done={done} elapsed_sec={elapsedSec} label="Total build progress" progress={progress} status={status} total={total} />
@@ -731,7 +856,7 @@ function PhasePanel({ elapsedSec, phases, status }: { elapsedSec: number; phases
 }
 
 function BuildStepCard({ stage }: { stage: Stage }) {
-  const description = buildStageDescription(stage.phase);
+  const description = buildStageDescription(stage.phase, stage.label);
   const isSkipped = Number(stage.total || 0) === 0;
   const active = stage.active_items ?? [];
   const activeCount = Number(stage.active_count ?? active.length);
@@ -781,7 +906,11 @@ function BuildStepCard({ stage }: { stage: Stage }) {
   );
 }
 
-function buildStageDescription(phase: string | undefined): string {
+function buildStageDescription(phase: string | undefined, label?: string): string {
+  if (label === "Plan spread source") return "Checks spread source files and existing bar sessions before any write starts.";
+  if (label === "Add spread columns to bars") return "Drops old quote/spread columns, joins spread by ticker and window_start, and rewrites bar artifacts.";
+  if (label === "Patch spread feature files") return "Updates only volume/liquidity feature files with the quote-derived spread fields.";
+  if (label === "Finalize spread build") return "Records final spread build status and closes the job.";
   switch (phase) {
     case "scan_source":
       return "Checks raw files and classifies each market session.";
@@ -798,6 +927,19 @@ function buildStageDescription(phase: string | undefined): string {
     default:
       return "Build pipeline step.";
   }
+}
+
+function spreadBuildPreviewStages(): Stage[] {
+  return [
+    { phase: "scan_source", label: "Plan spread source", done: 0, total: 1, elapsed_sec: 0, progress: 0, unit_label: "step", active_items: [], active_count: 0 },
+    { phase: "build_bars", label: "Add spread columns to bars", done: 0, total: 1, elapsed_sec: 0, progress: 0, unit_label: "step", active_items: [], active_count: 0 },
+    { phase: "build_features", label: "Patch spread feature files", done: 0, total: 1, elapsed_sec: 0, progress: 0, unit_label: "step", active_items: [], active_count: 0 },
+    { phase: "finalize", label: "Finalize spread build", done: 0, total: 1, elapsed_sec: 0, progress: 0, unit_label: "step", active_items: [], active_count: 0 },
+  ];
+}
+
+function isSpreadBuildJob(job: BuildJob | null): boolean {
+  return String(job?.request?.resume_stage ?? job?.request?.rebuild_mode ?? "").toLowerCase() === "spread_backfill";
 }
 
 function buildStageMode(phase: string | undefined, activeCount: number, skipped: boolean, progress: number): string {

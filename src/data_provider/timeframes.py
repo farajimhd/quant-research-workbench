@@ -7,6 +7,36 @@ import polars as pl
 from src.data_provider.config import TIMEFRAMES
 
 
+SPREAD_COLUMNS = [
+    "quote_bid_price",
+    "quote_ask_price",
+    "spread",
+    "quote_midpoint",
+    "spread_bps",
+    "spread_bps_abs",
+    "quote_bid_size",
+    "quote_ask_size",
+    "quote_sip_timestamp",
+    "quote_missing",
+    "spread_is_locked_or_crossed",
+    "spread_bps_avg",
+    "spread_bps_median",
+    "spread_bps_max",
+    "quote_valid_ratio",
+    "locked_or_crossed_count",
+    "quoted_share_depth",
+    "quoted_dollar_depth",
+]
+LEGACY_SPREAD_COLUMNS = [
+    "actual_spread",
+    "actual_spread_bps",
+    "actual_spread_bps_abs",
+    "actual_spread_bps_avg",
+    "actual_spread_bps_median",
+    "actual_spread_bps_max",
+]
+
+
 def add_exchange_time_columns(frame: pl.DataFrame, exchange_timezone: str) -> pl.DataFrame:
     return (
         frame.with_columns(pl.from_epoch("window_start", time_unit="ns").dt.replace_time_zone("UTC").alias("bar_time_utc"))
@@ -60,22 +90,27 @@ def enrich_1m_with_spread(frame_1m: pl.DataFrame, spread_frame: pl.DataFrame) ->
     if frame_1m.is_empty():
         return frame_1m
     if spread_frame.is_empty():
-        return frame_1m
-    enriched = frame_1m.join(spread_frame, on=["ticker", "window_start"], how="left")
+        return drop_existing_spread_columns(frame_1m)
+    enriched = drop_existing_spread_columns(frame_1m).join(spread_frame, on=["ticker", "window_start"], how="left")
     return add_spread_quality_columns(enriched)
 
 
+def drop_existing_spread_columns(frame: pl.DataFrame) -> pl.DataFrame:
+    drop_columns = [column for column in [*SPREAD_COLUMNS, *LEGACY_SPREAD_COLUMNS] if column in frame.columns]
+    return frame.drop(drop_columns) if drop_columns else frame
+
+
 def add_spread_quality_columns(frame: pl.DataFrame) -> pl.DataFrame:
-    if frame.is_empty() or "actual_spread_bps" not in frame.columns:
+    if frame.is_empty() or "spread_bps" not in frame.columns:
         return frame
     quote_valid_expr = (
-        pl.col("actual_spread_bps").is_not_null()
+        pl.col("spread_bps").is_not_null()
         & (pl.col("quote_missing").fill_null(True) == False)
         & (pl.col("quote_bid_price").fill_null(0.0) > 0)
         & (pl.col("quote_ask_price").fill_null(0.0) > 0)
     )
     result = frame.with_columns(
-        pl.col("actual_spread_bps").abs().alias("actual_spread_bps_abs"),
+        pl.col("spread_bps").abs().alias("spread_bps_abs"),
         quote_valid_expr.cast(pl.Float64).alias("quote_valid_ratio"),
         pl.col("spread_is_locked_or_crossed").fill_null(False).cast(pl.Int64).alias("locked_or_crossed_count"),
         (pl.col("quote_bid_size").fill_null(0) + pl.col("quote_ask_size").fill_null(0)).cast(pl.Float64).alias("quoted_share_depth"),
@@ -83,9 +118,9 @@ def add_spread_quality_columns(frame: pl.DataFrame) -> pl.DataFrame:
     if "quote_midpoint" in result.columns:
         result = result.with_columns((pl.col("quote_midpoint") * pl.col("quoted_share_depth")).alias("quoted_dollar_depth"))
     return result.with_columns(
-        pl.col("actual_spread_bps_abs").alias("actual_spread_bps_avg"),
-        pl.col("actual_spread_bps_abs").alias("actual_spread_bps_median"),
-        pl.col("actual_spread_bps_abs").alias("actual_spread_bps_max"),
+        pl.col("spread_bps_abs").alias("spread_bps_avg"),
+        pl.col("spread_bps_abs").alias("spread_bps_median"),
+        pl.col("spread_bps_abs").alias("spread_bps_max"),
     )
 
 
@@ -139,10 +174,10 @@ def intraday_aggregation_expressions(frame: pl.DataFrame) -> list[pl.Expr]:
     for column in [
         "quote_bid_price",
         "quote_ask_price",
-        "actual_spread",
+        "spread",
         "quote_midpoint",
-        "actual_spread_bps",
-        "actual_spread_bps_abs",
+        "spread_bps",
+        "spread_bps_abs",
         "quote_bid_size",
         "quote_ask_size",
         "quote_sip_timestamp",
@@ -153,12 +188,12 @@ def intraday_aggregation_expressions(frame: pl.DataFrame) -> list[pl.Expr]:
     ]:
         if column in columns:
             exprs.append(pl.col(column).drop_nulls().last().alias(column))
-    if "actual_spread_bps_abs" in columns:
+    if "spread_bps_abs" in columns:
         exprs.extend(
             [
-                pl.col("actual_spread_bps_abs").drop_nulls().mean().alias("actual_spread_bps_avg"),
-                pl.col("actual_spread_bps_abs").drop_nulls().median().alias("actual_spread_bps_median"),
-                pl.col("actual_spread_bps_abs").drop_nulls().max().alias("actual_spread_bps_max"),
+                pl.col("spread_bps_abs").drop_nulls().mean().alias("spread_bps_avg"),
+                pl.col("spread_bps_abs").drop_nulls().median().alias("spread_bps_median"),
+                pl.col("spread_bps_abs").drop_nulls().max().alias("spread_bps_max"),
             ]
         )
     if "quote_valid_ratio" in columns:

@@ -425,6 +425,14 @@ def summarize_phases(
         summary_stage("build_stateful", "Build stateful features", stateful_done, stateful_total, stateful_elapsed, active_items["build_stateful"], stateful_unit_label, active_counts["build_stateful"]),
         summary_stage("finalize", "Finalize build", finalize_done, 1, active_items=active_items["finalize"], unit_label="step", active_count=active_counts["finalize"]),
     ]
+    if spread_backfill:
+        label_overrides = {
+            "scan_source": "Plan spread source",
+            "build_bars": "Add spread columns to bars",
+            "build_features": "Patch spread feature files",
+            "finalize": "Finalize spread build",
+        }
+        return [{**row, "label": label_overrides.get(str(row.get("phase")), str(row.get("label")))} for row in rows if row["phase"] in label_overrides]
     return rows
 
 

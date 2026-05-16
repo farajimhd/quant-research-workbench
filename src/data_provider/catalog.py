@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 14
+CATALOG_VERSION = 15
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -32,18 +32,18 @@ BAR_COLUMNS = [
     "transactions",
     "quote_bid_price",
     "quote_ask_price",
-    "actual_spread",
+    "spread",
     "quote_midpoint",
-    "actual_spread_bps",
-    "actual_spread_bps_abs",
+    "spread_bps",
+    "spread_bps_abs",
     "quote_bid_size",
     "quote_ask_size",
     "quote_sip_timestamp",
     "quote_missing",
     "spread_is_locked_or_crossed",
-    "actual_spread_bps_avg",
-    "actual_spread_bps_median",
-    "actual_spread_bps_max",
+    "spread_bps_avg",
+    "spread_bps_median",
+    "spread_bps_max",
     "quote_valid_ratio",
     "locked_or_crossed_count",
     "quoted_share_depth",
@@ -2331,7 +2331,7 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
     spread_risk = {
         "recent_dollar_volume_5": (
             "Five-bar recent dollar volume.",
-            "Recent dollar volume 5 sums close times volume over the last five bars for the same ticker. It gives actual spread filters local participation context.",
+            "Recent dollar volume 5 sums close times volume over the last five bars for the same ticker. It gives spread filters local participation context.",
             "$$RecentDollarVolume5_t=\\sum_{i=0}^{4}Close_{t-i}\\cdot Volume_{t-i}$$",
             {"Close": "Bar close", "Volume": "Share volume"},
         ),
@@ -2341,41 +2341,41 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
             "$$RecentTransactions5_t=\\sum_{i=0}^{4}Transactions_{t-i}$$",
             {"Transactions": "Bar transaction count"},
         ),
-        "actual_spread": (
+        "spread": (
             "Observed bid/ask spread from the quote sample matched to the bar.",
-            "Actual spread is quote_ask_price minus quote_bid_price from the spread source joined to the provider bar by ticker and window_start.",
-            "$$ActualSpread_t=Ask_t-Bid_t$$",
+            "Spread is quote_ask_price minus quote_bid_price from the spread source joined to the provider bar by ticker and window_start.",
+            "$$Spread_t=Ask_t-Bid_t$$",
             {"Ask_t": "Quote ask price", "Bid_t": "Quote bid price"},
         ),
-        "actual_spread_bps": (
+        "spread_bps": (
             "Observed bid/ask spread in basis points.",
-            "Actual spread bps converts the joined quote spread to basis points. Locked or crossed quotes can be zero or negative, so pair this field with locked_or_crossed_count or actual_spread_bps_abs when filtering.",
-            "$$ActualSpreadBps_t=\\frac{Ask_t-Bid_t}{Midpoint_t}\\cdot10000$$",
+            "Spread bps converts the joined quote spread to basis points. Locked or crossed quotes can be zero or negative, so pair this field with locked_or_crossed_count or spread_bps_abs when filtering.",
+            "$$SpreadBps_t=\\frac{Ask_t-Bid_t}{Midpoint_t}\\cdot10000$$",
             {"Ask_t": "Quote ask price", "Bid_t": "Quote bid price", "Midpoint_t": "Quote midpoint"},
         ),
-        "actual_spread_bps_abs": (
+        "spread_bps_abs": (
             "Absolute observed spread in basis points.",
-            "Actual spread bps abs is the absolute value of actual_spread_bps. It is the safest scalar for scanner filters because it treats crossed quotes as abnormal instead of cheap.",
-            "$$ActualSpreadBpsAbs_t=|ActualSpreadBps_t|$$",
-            {"ActualSpreadBps_t": "Observed spread in bps"},
+            "Spread bps abs is the absolute value of spread_bps. It is the safest scalar for scanner filters because it treats crossed quotes as abnormal instead of cheap.",
+            "$$SpreadBpsAbs_t=|SpreadBps_t|$$",
+            {"SpreadBps_t": "Observed spread in bps"},
         ),
-        "actual_spread_bps_avg": (
+        "spread_bps_avg": (
             "Average observed spread bps inside the bar bucket.",
-            "For 1m bars this equals actual_spread_bps_abs. For higher timeframes it averages valid one-minute absolute spread values inside the aggregate bucket.",
-            "$$AvgSpreadBps_t=Mean(ActualSpreadBpsAbs_i)$$",
-            {"ActualSpreadBpsAbs_i": "One-minute absolute spread values inside the bucket"},
+            "For 1m bars this equals spread_bps_abs. For higher timeframes it averages valid one-minute absolute spread values inside the aggregate bucket.",
+            "$$AvgSpreadBps_t=Mean(SpreadBpsAbs_i)$$",
+            {"SpreadBpsAbs_i": "One-minute absolute spread values inside the bucket"},
         ),
-        "actual_spread_bps_median": (
+        "spread_bps_median": (
             "Median observed spread bps inside the bar bucket.",
             "For higher timeframes this is the median of valid one-minute absolute spread values. It is usually more robust than max when one quote is stale or unusual.",
-            "$$MedianSpreadBps_t=Median(ActualSpreadBpsAbs_i)$$",
-            {"ActualSpreadBpsAbs_i": "One-minute absolute spread values inside the bucket"},
+            "$$MedianSpreadBps_t=Median(SpreadBpsAbs_i)$$",
+            {"SpreadBpsAbs_i": "One-minute absolute spread values inside the bucket"},
         ),
-        "actual_spread_bps_max": (
+        "spread_bps_max": (
             "Maximum observed spread bps inside the bar bucket.",
-            "Actual spread bps max is a conservative bucket-level execution-risk check. A high max can reveal a brief quote-quality failure even if the close quote looks fine.",
-            "$$MaxSpreadBps_t=max(ActualSpreadBpsAbs_i)$$",
-            {"ActualSpreadBpsAbs_i": "One-minute absolute spread values inside the bucket"},
+            "Spread bps max is a conservative bucket-level execution-risk check. A high max can reveal a brief quote-quality failure even if the close quote looks fine.",
+            "$$MaxSpreadBps_t=max(SpreadBpsAbs_i)$$",
+            {"SpreadBpsAbs_i": "One-minute absolute spread values inside the bucket"},
         ),
         "quote_valid_ratio": (
             "Share of valid quote samples inside the bar bucket.",

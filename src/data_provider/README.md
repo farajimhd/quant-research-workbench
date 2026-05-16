@@ -87,7 +87,7 @@ Supported timeframes:
 `1m` bars are canonicalized directly from raw rows. Intraday aggregations bucket by New York `minute_of_day`, grouped by ticker and session date. Daily bars aggregate every available raw bar for the New York session date, including extended hours. Weekly and monthly artifacts are intentionally out of the active build path for now.
 
 When spread files are available, `1m` bars include observed quote fields such as
-`quote_bid_price`, `quote_ask_price`, `actual_spread`, `actual_spread_bps`,
+`quote_bid_price`, `quote_ask_price`, `spread`, `spread_bps`,
 `quote_valid_ratio`, and `locked_or_crossed_count`. Higher timeframes aggregate
 these fields from the enriched `1m` bars, including average, median, and maximum
 absolute spread bps for the bucket.
