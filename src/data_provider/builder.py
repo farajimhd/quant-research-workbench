@@ -1056,16 +1056,33 @@ def build_timeframe_artifacts(
 
 
 SPREAD_FEATURE_COLUMNS = [
+    "quote_bid_price",
+    "quote_ask_price",
     "actual_spread",
+    "quote_midpoint",
     "actual_spread_bps",
     "actual_spread_bps_abs",
     "actual_spread_bps_avg",
     "actual_spread_bps_median",
     "actual_spread_bps_max",
+    "quote_bid_size",
+    "quote_ask_size",
+    "quote_sip_timestamp",
+    "quote_missing",
+    "spread_is_locked_or_crossed",
     "quote_valid_ratio",
     "locked_or_crossed_count",
     "quoted_share_depth",
     "quoted_dollar_depth",
+]
+
+REMOVED_SPREAD_ESTIMATE_COLUMNS = [
+    "tick_floor_bps",
+    "bar_range_bps",
+    "range_proxy_bps",
+    "illiquidity_proxy_bps",
+    "estimated_spread_bps",
+    "actual_vs_estimated_spread_bps",
 ]
 
 
@@ -1121,12 +1138,10 @@ def patch_spread_feature_artifact(
         raise ValueError(f"Cannot patch spread features for {timeframe} {session_text}: enriched bars have no spread columns.")
     patch_columns = [join_key, *available_spread_columns]
     patch = bars.select(patch_columns)
-    drop_columns = [column for column in [*available_spread_columns, "actual_vs_estimated_spread_bps"] if column in features.columns]
+    drop_columns = [column for column in [*available_spread_columns, *REMOVED_SPREAD_ESTIMATE_COLUMNS] if column in features.columns]
     if drop_columns:
         features = features.drop(drop_columns)
     features = features.join(patch, on=join_key, how="left")
-    if "actual_spread_bps_abs" in features.columns and "estimated_spread_bps" in features.columns:
-        features = features.with_columns((pl.col("actual_spread_bps_abs") - pl.col("estimated_spread_bps")).alias("actual_vs_estimated_spread_bps"))
     source_path = partition_path(request.processed_root, "bars", timeframe, session_text)
     path = write_artifact(
         root=request.processed_root,

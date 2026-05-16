@@ -504,22 +504,11 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
         exprs.append(dollar_volume_expr.rolling_sum(5, min_samples=1).over("ticker").alias("recent_dollar_volume_5"))
     if "recent_transactions_5" not in names and "transactions" in names:
         exprs.append(pl.col("transactions").rolling_sum(5, min_samples=1).over("ticker").alias("recent_transactions_5"))
-    if "tick_floor_bps" not in names and "close" in names:
-        exprs.append(pl.when(pl.col("close") > 0).then(0.01 / pl.col("close") * 10_000.0).otherwise(10_000.0).alias("tick_floor_bps"))
-    if "bar_range_bps" not in names and {"high", "low", "close"}.issubset(names):
-        exprs.append(pl.when(pl.col("close") > 0).then((pl.col("high") - pl.col("low")) / pl.col("close") * 10_000.0).otherwise(10_000.0).alias("bar_range_bps"))
     if exprs:
         scan = scan.with_columns(exprs)
         names = scan.collect_schema().names()
 
     derived_exprs: list[pl.Expr] = []
-    if "illiquidity_proxy_bps" not in names and {"return_1", "dollar_volume"}.issubset(names):
-        derived_exprs.append(
-            pl.when(pl.col("dollar_volume") > 0)
-            .then(pl.col("return_1").abs() * 10_000.0 * (100_000.0 / pl.col("dollar_volume")))
-            .otherwise(10_000.0)
-            .alias("illiquidity_proxy_bps")
-        )
     if "relative_volume10" not in names and {"volume", "volume_sma10"}.issubset(names):
         derived_exprs.append(
             pl.when(pl.col("volume_sma10") > 0)
@@ -527,17 +516,8 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
             .otherwise(0.0)
             .alias("relative_volume10")
         )
-    if "range_proxy_bps" not in names and "bar_range_bps" in names:
-        derived_exprs.append(pl.col("bar_range_bps").rolling_median(5, min_samples=1).over("ticker").alias("range_proxy_bps"))
     if derived_exprs:
         scan = scan.with_columns(derived_exprs)
-        names = scan.collect_schema().names()
-
-    if "estimated_spread_bps" not in names and {"tick_floor_bps", "range_proxy_bps", "illiquidity_proxy_bps"}.issubset(names):
-        scan = scan.with_columns(pl.max_horizontal("tick_floor_bps", "range_proxy_bps", "illiquidity_proxy_bps").alias("estimated_spread_bps"))
-        names = scan.collect_schema().names()
-    if "actual_vs_estimated_spread_bps" not in names and {"actual_spread_bps_abs", "estimated_spread_bps"}.issubset(names):
-        scan = scan.with_columns((pl.col("actual_spread_bps_abs") - pl.col("estimated_spread_bps")).alias("actual_vs_estimated_spread_bps"))
     return scan
 
 
@@ -872,21 +852,23 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "relative_dollar_volume20",
         "recent_dollar_volume_5",
         "recent_transactions_5",
-        "tick_floor_bps",
-        "bar_range_bps",
-        "range_proxy_bps",
-        "illiquidity_proxy_bps",
-        "estimated_spread_bps",
+        "quote_bid_price",
+        "quote_ask_price",
+        "actual_spread",
+        "quote_midpoint",
         "actual_spread_bps",
         "actual_spread_bps_abs",
         "actual_spread_bps_avg",
         "actual_spread_bps_median",
         "actual_spread_bps_max",
+        "quote_bid_size",
+        "quote_ask_size",
+        "quote_missing",
+        "spread_is_locked_or_crossed",
         "quote_valid_ratio",
         "locked_or_crossed_count",
         "quoted_share_depth",
         "quoted_dollar_depth",
-        "actual_vs_estimated_spread_bps",
         "intraday_rvol13",
         "intraday_dollar_rvol13",
         "tod_cum_volume_avg13",

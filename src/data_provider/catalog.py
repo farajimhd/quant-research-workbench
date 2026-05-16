@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 13
+CATALOG_VERSION = 14
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -2028,11 +2028,6 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
             "relative_dollar_volume20",
             "recent_dollar_volume_5",
             "recent_transactions_5",
-            "tick_floor_bps",
-            "bar_range_bps",
-            "range_proxy_bps",
-            "illiquidity_proxy_bps",
-            "estimated_spread_bps",
             "obv",
             "mfi14",
             "cmf20",
@@ -2336,7 +2331,7 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
     spread_risk = {
         "recent_dollar_volume_5": (
             "Five-bar recent dollar volume.",
-            "Recent dollar volume 5 sums close times volume over the last five bars for the same ticker. It gives the spread-risk estimate local participation context.",
+            "Recent dollar volume 5 sums close times volume over the last five bars for the same ticker. It gives actual spread filters local participation context.",
             "$$RecentDollarVolume5_t=\\sum_{i=0}^{4}Close_{t-i}\\cdot Volume_{t-i}$$",
             {"Close": "Bar close", "Volume": "Share volume"},
         ),
@@ -2345,40 +2340,6 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
             "Recent transactions 5 sums transaction count over the last five bars for the same ticker. Low values warn that the bar may be thin even if price moved.",
             "$$RecentTransactions5_t=\\sum_{i=0}^{4}Transactions_{t-i}$$",
             {"Transactions": "Bar transaction count"},
-        ),
-        "tick_floor_bps": (
-            "Minimum one-cent tick spread as basis points of price.",
-            "Tick floor bps is the best-case spread floor implied by one cent of price granularity. It does not estimate the actual bid/ask spread, but it blocks the assumption that very low-priced stocks can trade with tiny percentage spreads.",
-            "$$TickFloorBps_t=\\frac{0.01}{Close_t}\\cdot10000$$",
-            {"Close_t": "Current close"},
-        ),
-        "bar_range_bps": (
-            "Current high-low bar range in basis points.",
-            "Bar range bps converts the current candle high-low range into basis points of close. Wide values show that the bar itself was jumpy or thin.",
-            "$$BarRangeBps_t=\\frac{High_t-Low_t}{Close_t}\\cdot10000$$",
-            {"High_t": "Current high", "Low_t": "Current low", "Close_t": "Current close"},
-        ),
-        "range_proxy_bps": (
-            "Five-bar median range pressure in basis points.",
-            "Range proxy bps is the five-bar rolling median of bar_range_bps for the same ticker. It smooths one-off candles while still reacting to locally wide bars.",
-            "$$RangeProxyBps_t=Median5(BarRangeBps_t)$$",
-            {"BarRangeBps_t": "Current high-low range in bps"},
-        ),
-        "illiquidity_proxy_bps": (
-            "Amihud-style price impact proxy scaled to a 100k dollar bar.",
-            "Illiquidity proxy bps scales the current absolute one-bar return by dollar volume. It estimates how many basis points of price movement occurred per 100,000 dollars of bar volume; high values suggest poor effective liquidity.",
-            "$$IlliquidityProxyBps_t=|Return1_t|\\cdot10000\\cdot\\frac{100000}{DollarVolume_t}$$",
-            {"Return1_t": "One-bar close-to-close return", "DollarVolume_t": "Close times volume"},
-        ),
-        "estimated_spread_bps": (
-            "Conservative spread-risk proxy in basis points.",
-            "Estimated spread bps is the maximum of tick_floor_bps, range_proxy_bps, and illiquidity_proxy_bps. It is not true bid/ask spread; it is a conservative scanner diagnostic for avoiding high-spread or poor-fill candidates.",
-            "$$EstimatedSpreadBps_t=max(TickFloorBps_t,RangeProxyBps_t,IlliquidityProxyBps_t)$$",
-            {
-                "TickFloorBps_t": "Minimum one-cent tick spread floor",
-                "RangeProxyBps_t": "Five-bar median range pressure",
-                "IlliquidityProxyBps_t": "Dollar-volume-scaled price impact proxy",
-            },
         ),
         "actual_spread": (
             "Observed bid/ask spread from the quote sample matched to the bar.",
@@ -2440,12 +2401,6 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
             "$$QuotedDollarDepth_t=Midpoint_t\\cdot(BidSize_t+AskSize_t)$$",
             {"Midpoint_t": "Quote midpoint", "BidSize_t": "Quote bid size", "AskSize_t": "Quote ask size"},
         ),
-        "actual_vs_estimated_spread_bps": (
-            "Actual spread minus the old spread-risk estimate.",
-            "Actual versus estimated spread bps compares observed bid/ask cost with the provider's OHLCV-only proxy. Positive values mean the proxy understated spread risk.",
-            "$$ActualVsEstimatedSpreadBps_t=ActualSpreadBpsAbs_t-EstimatedSpreadBps_t$$",
-            {"ActualSpreadBpsAbs_t": "Observed absolute spread bps", "EstimatedSpreadBps_t": "OHLCV proxy spread bps"},
-        ),
     }
     if lower in spread_risk:
         short, detailed, equation, variables = spread_risk[lower]
@@ -2453,7 +2408,7 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
             short=short,
             detailed=detailed,
             theory=theory_for_group(group, category),
-            interpretation="Use these fields as diagnostics or gates for likely bad fills. They are proxies from OHLCV/trade-count data, not actual bid/ask measurements.",
+            interpretation="Use these fields as diagnostics or gates for likely bad fills. The spread fields come from matched bid/ask quote data.",
             equation=equation,
             variables=variables,
         )

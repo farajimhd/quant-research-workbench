@@ -116,11 +116,6 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "relative_dollar_volume20",
         "recent_dollar_volume_5",
         "recent_transactions_5",
-        "tick_floor_bps",
-        "bar_range_bps",
-        "range_proxy_bps",
-        "illiquidity_proxy_bps",
-        "estimated_spread_bps",
         "actual_spread",
         "actual_spread_bps",
         "actual_spread_bps_abs",
@@ -131,7 +126,6 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "locked_or_crossed_count",
         "quoted_share_depth",
         "quoted_dollar_depth",
-        "actual_vs_estimated_spread_bps",
         "tod_cum_volume_avg13",
         "intraday_rvol13",
         "tod_cum_dollar_volume_avg13",
@@ -489,12 +483,6 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             pl.when(pl.col("dollar_volume_sma20") > 0).then(pl.col("dollar_volume") / pl.col("dollar_volume_sma20")).otherwise(0.0).alias("relative_dollar_volume20"),
             pl.col("dollar_volume").rolling_sum(5, min_samples=1).over("ticker").alias("recent_dollar_volume_5"),
             pl.col("transactions").rolling_sum(5, min_samples=1).over("ticker").alias("recent_transactions_5"),
-            pl.when(pl.col("close") > 0).then(0.01 / pl.col("close") * 10_000.0).otherwise(10_000.0).alias("tick_floor_bps"),
-            pl.when(pl.col("close") > 0).then(pl.col("bar_range") / pl.col("close") * 10_000.0).otherwise(10_000.0).alias("bar_range_bps"),
-            pl.when(pl.col("dollar_volume") > 0)
-            .then(pl.col("return_1").abs() * 10_000.0 * (100_000.0 / pl.col("dollar_volume")))
-            .otherwise(10_000.0)
-            .alias("illiquidity_proxy_bps"),
             pl.col("day_volume_so_far")
             .shift(1)
             .rolling_mean(13, min_samples=1)
@@ -516,13 +504,7 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             .otherwise(None)
             .alias("intraday_dollar_rvol13"),
         )
-        .with_columns(pl.col("bar_range_bps").rolling_median(5, min_samples=1).over("ticker").alias("range_proxy_bps"))
-        .with_columns(
-            pl.max_horizontal("tick_floor_bps", "range_proxy_bps", "illiquidity_proxy_bps").alias("estimated_spread_bps")
-        )
     )
-    if "actual_spread_bps_abs" in frame.columns:
-        frame = frame.with_columns((pl.col("actual_spread_bps_abs") - pl.col("estimated_spread_bps")).alias("actual_vs_estimated_spread_bps"))
     typical_money_flow = pl.col("hlc3") * pl.col("volume")
     positive_flow = pl.when(pl.col("hlc3") > pl.col("hlc3").shift(1).over("ticker")).then(typical_money_flow).otherwise(0.0)
     negative_flow = pl.when(pl.col("hlc3") < pl.col("hlc3").shift(1).over("ticker")).then(typical_money_flow).otherwise(0.0)
