@@ -662,11 +662,10 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
   );
   const defaultFeatures = useMemo(() => featureOptions.filter((group) => ["core", "session", "momentum"].includes(group)), [featureOptions]);
   const [barTime, setBarTime] = useState("09:30");
-  const [featureGroups, setFeatureGroups] = useState(defaultFeatures.join(","));
-  const [columns, setColumns] = useState("");
-  const [rowLimit, setRowLimit] = useState(2000);
-  const [backendQuery, setBackendQuery] = useState<BackendTableQuery>({ conditions: [], matchMode: "all", sortDirection: "asc" });
-  const [filterOpen, setFilterOpen] = useState(false);
+  const featureGroups = defaultFeatures.join(",");
+  const columns = "";
+  const rowLimit = 2000;
+  const backendQuery = useMemo<BackendTableQuery>(() => ({ conditions: [], matchMode: "all", sortDirection: "asc" }), []);
   const [formulaOpen, setFormulaOpen] = useState(false);
   const [formulaPresets, setFormulaPresets] = useState<ScannerFormulaPreset[]>(() => loadScannerFormulaPresets());
   const [activeFormulaPresetId, setActiveFormulaPresetId] = useState(() => loadScannerFormulaPresets()[0]?.id ?? "");
@@ -680,7 +679,6 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
   const activeFormulaPreset = useMemo(() => formulaPresets.find((preset) => preset.id === activeFormulaPresetId) ?? null, [activeFormulaPresetId, formulaPresets]);
   const activeDerivedColumns = useMemo(() => cleanScannerFormulaColumns(activeFormulaPreset?.columns ?? []), [activeFormulaPreset]);
   const baseAvailableColumns = useMemo(() => scannerAvailableColumns(records, sessionDate, timeframe, selectedFeatureGroups), [records, selectedFeatureGroups, sessionDate, timeframe]);
-  const availableColumns = useMemo(() => [...baseAvailableColumns, ...activeDerivedColumns.map((column) => column.name)], [activeDerivedColumns, baseAvailableColumns]);
   const queryKey = useMemo(
     () =>
       appliedScannerQuery
@@ -698,9 +696,6 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
     if (!timeframes.length) return;
     setTimeframe((current) => (timeframes.includes(current) ? current : timeframes[0]));
   }, [timeframes]);
-  useEffect(() => {
-    if (!featureGroups && defaultFeatures.length) setFeatureGroups(defaultFeatures.join(","));
-  }, [defaultFeatures, featureGroups]);
   useEffect(() => {
     saveScannerFormulaPresets(formulaPresets);
   }, [formulaPresets]);
@@ -777,10 +772,6 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
           <button className="button" disabled={loading} onClick={() => shiftAndLoadScannerSnapshot(-timeframeStep)} type="button">Previous</button>
           <button className="button" disabled={loading} onClick={() => shiftAndLoadScannerSnapshot(timeframeStep)} type="button">Next</button>
           <button className="button primary" disabled={loading} onClick={() => applyScannerSnapshotQuery()} type="button">Load</button>
-          <button className={filterOpen ? "button active" : "button"} onClick={() => setFilterOpen((value) => !value)} type="button">
-            <Filter size={16} />
-            Filters
-          </button>
           <button className={formulaOpen ? "button active" : "button"} onClick={() => setFormulaOpen((value) => !value)} type="button">
             <Calculator size={16} />
             Formulas
@@ -793,20 +784,6 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
             <span>{snapshot?.total_columns ?? 0} columns</span>
           </div>
         </div>
-        {filterOpen ? (
-          <ScannerFilterPanel
-            availableColumns={availableColumns}
-            backendQuery={backendQuery}
-            columns={columns}
-            featureGroups={featureGroups}
-            featureOptions={featureOptions}
-            onBackendQueryChange={setBackendQuery}
-            onColumnsChange={setColumns}
-            onFeatureGroupsChange={setFeatureGroups}
-            onRowLimitChange={setRowLimit}
-            rowLimit={rowLimit}
-          />
-        ) : null}
         {formulaOpen ? (
           <ScannerFormulaPanel
             activePresetId={activeFormulaPresetId}
@@ -882,87 +859,6 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
         />
       ) : null}
     </section>
-  );
-}
-
-function ScannerFilterPanel({
-  availableColumns,
-  backendQuery,
-  columns,
-  featureGroups,
-  featureOptions,
-  onBackendQueryChange,
-  onColumnsChange,
-  onFeatureGroupsChange,
-  onRowLimitChange,
-  rowLimit,
-}: {
-  availableColumns: string[];
-  backendQuery: BackendTableQuery;
-  columns: string;
-  featureGroups: string;
-  featureOptions: string[];
-  onBackendQueryChange: (value: BackendTableQuery) => void;
-  onColumnsChange: (value: string) => void;
-  onFeatureGroupsChange: (value: string) => void;
-  onRowLimitChange: (value: number) => void;
-  rowLimit: number;
-}) {
-  const conditions = backendQuery.conditions;
-  function updateConditions(next: BackendTableQuery) {
-    onBackendQueryChange(next);
-  }
-  return (
-    <div className="preview-query-panel">
-      <div className="preview-query-grid">
-        <InlineField label="Feature groups" value={featureGroups} onChange={onFeatureGroupsChange} />
-        <InlineField label="Rows" type="number" value={String(rowLimit)} onChange={(value) => onRowLimitChange(Math.max(10, Math.min(5000, Math.round(Number(value) || 2000))))} />
-        <Select label="Sort column" value={backendQuery.sortColumn ?? ""} options={["", ...availableColumns]} onChange={(value) => updateConditions({ ...backendQuery, sortColumn: value || undefined })} />
-        <Select label="Sort direction" value={backendQuery.sortDirection ?? "asc"} options={["asc", "desc"]} onChange={(value) => updateConditions({ ...backendQuery, sortDirection: value === "desc" ? "desc" : "asc" })} />
-        <Select label="Match" value={backendQuery.matchMode ?? "all"} options={["all", "any"]} onChange={(value) => updateConditions({ ...backendQuery, matchMode: value === "any" ? "any" : "all" })} />
-      </div>
-      <div className="field preview-columns-field">
-        <label>Columns</label>
-        <textarea
-          placeholder={availableColumns.slice(0, 14).join(", ") || "Leave blank for scanner defaults"}
-          value={columns}
-          onChange={(event) => onColumnsChange(event.target.value)}
-        />
-      </div>
-      <div className="preview-query-conditions">
-        <div className="preview-query-section-header">
-          <span>Conditions</span>
-          <button className="table-text-button" onClick={() => updateConditions({ ...backendQuery, conditions: [...conditions, newPreviewCondition(availableColumns)] })} type="button">
-            Add condition
-          </button>
-        </div>
-        {conditions.length ? (
-          conditions.map((condition) => {
-            const operator = PREVIEW_QUERY_OPERATORS.find((item) => item.value === condition.operator) ?? PREVIEW_QUERY_OPERATORS[0];
-            return (
-              <div className="preview-query-condition" key={condition.id}>
-                <select value={condition.column} onChange={(event) => updateConditions(updatePreviewCondition(backendQuery, condition.id, { column: event.target.value }))}>
-                  {availableColumns.map((column) => (
-                    <option key={column} value={column}>{displayName(column)}</option>
-                  ))}
-                </select>
-                <select value={condition.operator} onChange={(event) => updateConditions(updatePreviewCondition(backendQuery, condition.id, { operator: event.target.value as BackendTableQuery["conditions"][number]["operator"] }))}>
-                  {PREVIEW_QUERY_OPERATORS.map((item) => (
-                    <option key={item.value} value={item.value}>{item.label}</option>
-                  ))}
-                </select>
-                {operator.needsValue ? <input value={condition.value} onChange={(event) => updateConditions(updatePreviewCondition(backendQuery, condition.id, { value: event.target.value }))} /> : null}
-                {operator.needsSecondValue ? <input value={condition.valueSecondary ?? ""} onChange={(event) => updateConditions(updatePreviewCondition(backendQuery, condition.id, { valueSecondary: event.target.value }))} /> : null}
-                <button className="table-text-button danger" onClick={() => updateConditions({ ...backendQuery, conditions: conditions.filter((item) => item.id !== condition.id) })} type="button">Remove</button>
-              </div>
-            );
-          })
-        ) : (
-          <div className="preview-query-empty">No scanner filters. The snapshot will show all tickers available at that bar time.</div>
-        )}
-      </div>
-      {featureOptions.length ? <div className="preview-query-empty">Available feature groups: {featureOptions.join(", ")}</div> : null}
-    </div>
   );
 }
 
