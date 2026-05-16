@@ -33,9 +33,11 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
     "session": [
         "bar_id",
         "day_open",
+        "session_bar_count",
         "day_high_so_far",
         "day_low_so_far",
         "day_volume_so_far",
+        "day_dollar_volume_so_far",
         "prev_close",
         "gap_pct",
         "premarket_high",
@@ -128,6 +130,15 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "nr7",
         "consecutive_green",
         "consecutive_red",
+        "green_bar_count_so_far",
+        "red_bar_count_so_far",
+        "green_body_sum_so_far",
+        "red_body_sum_so_far",
+        "green_body_avg",
+        "red_body_avg",
+        "green_range_sum_so_far",
+        "red_range_sum_so_far",
+        "net_body_sum_so_far",
         "breaks_high20",
         "breaks_low20",
         "pullback_from_high20_pct",
@@ -305,10 +316,11 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
         .with_columns(
             (pl.col("dollar_volume").cum_sum().over(["ticker", "session_date"]) / pl.col("volume").cum_sum().over(["ticker", "session_date"])).alias("vwap"),
             pl.col("open").first().over(["ticker", "session_date"]).alias("day_open"),
+            pl.cum_count("close").over(["ticker", "session_date"]).alias("session_bar_count"),
             pl.col("high").cum_max().over(["ticker", "session_date"]).alias("day_high_so_far"),
             pl.col("low").cum_min().over(["ticker", "session_date"]).alias("day_low_so_far"),
             pl.col("volume").cum_sum().over(["ticker", "session_date"]).alias("day_volume_so_far"),
-            pl.col("dollar_volume").cum_sum().over(["ticker", "session_date"]).alias("_day_dollar_volume_so_far"),
+            pl.col("dollar_volume").cum_sum().over(["ticker", "session_date"]).alias("day_dollar_volume_so_far"),
         )
         .pipe(add_previous_session_close)
         .with_columns(
@@ -392,7 +404,7 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             .rolling_mean(13, min_samples=1)
             .over(["ticker", "minute_of_day"])
             .alias("tod_cum_volume_avg13"),
-            pl.col("_day_dollar_volume_so_far")
+            pl.col("day_dollar_volume_so_far")
             .shift(1)
             .rolling_mean(13, min_samples=1)
             .over(["ticker", "minute_of_day"])
@@ -404,7 +416,7 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             .otherwise(None)
             .alias("intraday_rvol13"),
             pl.when(pl.col("tod_cum_dollar_volume_avg13") > 0)
-            .then(pl.col("_day_dollar_volume_so_far") / pl.col("tod_cum_dollar_volume_avg13"))
+            .then(pl.col("day_dollar_volume_so_far") / pl.col("tod_cum_dollar_volume_avg13"))
             .otherwise(None)
             .alias("intraday_dollar_rvol13"),
         )
@@ -446,11 +458,28 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             (pl.col("bar_range") <= pl.col("bar_range").rolling_min(7).over("ticker")).alias("nr7"),
             pl.when(pl.col("is_green")).then(pl.col("is_green").cast(pl.Int32).cum_sum().over(["ticker", "_green_reset"])).otherwise(0).alias("consecutive_green"),
             pl.when(pl.col("is_red")).then(pl.col("is_red").cast(pl.Int32).cum_sum().over(["ticker", "_red_reset"])).otherwise(0).alias("consecutive_red"),
+            pl.when(pl.col("is_green")).then(1).otherwise(0).cum_sum().over(["ticker", "session_date"]).alias("green_bar_count_so_far"),
+            pl.when(pl.col("is_red")).then(1).otherwise(0).cum_sum().over(["ticker", "session_date"]).alias("red_bar_count_so_far"),
+            pl.when(pl.col("is_green")).then(pl.col("body_abs")).otherwise(0.0).cum_sum().over(["ticker", "session_date"]).alias("green_body_sum_so_far"),
+            pl.when(pl.col("is_red")).then(pl.col("body_abs")).otherwise(0.0).cum_sum().over(["ticker", "session_date"]).alias("red_body_sum_so_far"),
+            pl.when(pl.col("is_green")).then(pl.col("bar_range")).otherwise(0.0).cum_sum().over(["ticker", "session_date"]).alias("green_range_sum_so_far"),
+            pl.when(pl.col("is_red")).then(pl.col("bar_range")).otherwise(0.0).cum_sum().over(["ticker", "session_date"]).alias("red_range_sum_so_far"),
+            pl.col("body").cum_sum().over(["ticker", "session_date"]).alias("net_body_sum_so_far"),
             (pl.col("high") > pl.col("high").shift(1).rolling_max(20).over("ticker")).fill_null(False).alias("breaks_high20"),
             (pl.col("low") < pl.col("low").shift(1).rolling_min(20).over("ticker")).fill_null(False).alias("breaks_low20"),
             pl.when(pl.col("donchian_high20") > 0).then((pl.col("close") / pl.col("donchian_high20")) - 1.0).otherwise(0.0).alias("pullback_from_high20_pct"),
             ((pl.col("close") > pl.col("vwap")) & (pl.col("close").shift(1).over("ticker") <= pl.col("vwap").shift(1).over("ticker"))).alias("reclaim_vwap"),
             ((pl.col("close") < pl.col("vwap")) & (pl.col("close").shift(1).over("ticker") >= pl.col("vwap").shift(1).over("ticker"))).alias("breakdown_vwap"),
+        )
+        .with_columns(
+            pl.when(pl.col("session_bar_count") > 0)
+            .then(pl.col("green_body_sum_so_far") / pl.col("session_bar_count"))
+            .otherwise(0.0)
+            .alias("green_body_avg"),
+            pl.when(pl.col("session_bar_count") > 0)
+            .then(pl.col("red_body_sum_so_far") / pl.col("session_bar_count"))
+            .otherwise(0.0)
+            .alias("red_body_avg"),
         )
         .with_columns(
             ((pl.col("low") > pl.col("high").shift(2).over("ticker"))).alias("bullish_fvg"),

@@ -1059,7 +1059,7 @@ def market_scanner_snapshot(
     row_limit: int = Query(default=2000, ge=1, le=5000),
     row_offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    selected_feature_groups = parse_csv_list(feature_groups) or ["core", "session", "momentum", "volume_liquidity"]
+    selected_feature_groups = parse_csv_list(feature_groups) or ["core", "session", "momentum", "volume_liquidity", "price_action"]
     try:
         snapshot = load_scanner_snapshot(
             artifact_records(Path(processed_root)),
