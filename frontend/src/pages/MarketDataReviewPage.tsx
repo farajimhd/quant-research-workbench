@@ -6,7 +6,7 @@ import "katex/dist/katex.min.css";
 
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload, type ChartReference } from "../app/components/ChartPanel";
-import { DataTable, type BackendTableQuery } from "../app/components/DataTable";
+import { DataTable, type BackendTableQuery, type DataTableFilterPreset } from "../app/components/DataTable";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
@@ -236,6 +236,19 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
   "tema_open",
   "macd_hist_z_since_open",
 ];
+const SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
+  filters: {
+    close: { operator: "between", presetLabel: "between 1 and 10", valueText: "1", valueTextSecondary: "10" },
+    volume: { operator: "gte", presetLabel: ">= 8,000", valueText: "8000" },
+    is_green: { operator: "eq", presetLabel: "Is true", valueText: "true" },
+    tema_open: { operator: "eq", presetLabel: "Is true", valueText: "true" },
+    macd_line: { operator: "gt", presetLabel: "Positive", valueText: "0" },
+    macd_signal: { operator: "gt", presetLabel: "Positive", valueText: "0" },
+    macd_hist_z_since_open: { operator: "gte", presetLabel: ">= 0.1", valueText: "0.1" },
+  },
+  label: "Momentum Filters",
+  title: "Apply close, volume, green bar, TEMA, MACD, and MACD z-score filters.",
+};
 const PREVIEW_PAGE_SIZE = 1000;
 const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "anchored_zone", "continuous_band", "background_state", "data_only", "other"];
 const PRESENTATION_TYPE_LABELS: Record<string, string> = {
@@ -867,6 +880,7 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
       <DataTable
         columns={snapshot?.columns}
         empty={scannerRunId === 0 ? "Load a scanner snapshot to show rows." : "No rows."}
+        filterPresets={[SCANNER_MOMENTUM_FILTER_PRESET]}
         onRowClick={
           scannerChartRecord && snapshot
             ? (row) => setChartTarget({ rangeMode: "session", record: scannerChartRecord, row: scannerChartRow(row, snapshot) })

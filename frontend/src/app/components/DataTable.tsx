@@ -81,6 +81,12 @@ type ColumnManualFilterState = {
   valueText: string;
   valueTextSecondary: string;
 };
+export type DataTableManualFilterState = Partial<ColumnManualFilterState> & { operator: string };
+export type DataTableFilterPreset = {
+  filters: Record<string, DataTableManualFilterState>;
+  label: string;
+  title?: string;
+};
 
 type ColumnProfile = {
   average?: number;
@@ -126,6 +132,7 @@ type DataTableProps = {
   columns?: string[];
   defaultSort?: SortState;
   empty?: string;
+  filterPresets?: DataTableFilterPreset[];
   isRowSelected?: (row: DataRow) => boolean;
   onRowClick?: (row: DataRow) => void;
   preserveFiltersOnDataChange?: boolean;
@@ -151,7 +158,7 @@ const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean
 ];
 let backendQueryConditionSequence = 0;
 
-export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows.", isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title }: DataTableProps) {
+export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows.", filterPresets = [], isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title }: DataTableProps) {
   const resolvedColumns = useMemo(() => {
     if (columns?.length) return columns;
     return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -386,6 +393,24 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
     });
   };
 
+  const applyFilterPreset = (preset: DataTableFilterPreset) => {
+    const validColumns = new Set(resolvedColumns);
+    const presetFilters = Object.fromEntries(
+      Object.entries(preset.filters)
+        .filter(([column]) => validColumns.has(column))
+        .map(([column, filter]) => [column, normalizeManualFilterPreset(filter)]),
+    );
+    if (!Object.keys(presetFilters).length) return;
+    setManualFiltersByColumn((current) => ({ ...current, ...presetFilters }));
+    setActiveValueFiltersByColumn((current) => {
+      const next = { ...current };
+      Object.keys(presetFilters).forEach((column) => delete next[column]);
+      return next;
+    });
+    setOpenPopover(null);
+    setToolbarMenuOpen(false);
+  };
+
   const clearActiveFilters = () => {
     setActiveValueFiltersByColumn({});
     setManualFiltersByColumn({});
@@ -475,6 +500,20 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
       </button>
     </>
   );
+
+  const renderFilterPresetButtons = () =>
+    filterPresets.map((preset) => (
+      <button
+        className="table-text-button"
+        key={preset.label}
+        onClick={() => applyFilterPreset(preset)}
+        title={preset.title ?? preset.label}
+        type="button"
+      >
+        <Filter size={13} />
+        {preset.label}
+      </button>
+    ));
 
   const renderColumnToggles = () =>
     filteredColumnOptions.length ? (
@@ -704,6 +743,7 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
           </div>
         </div>
         <div className="data-table-toolbar-actions data-table-toolbar-actions-wide">
+          {renderFilterPresetButtons()}
           <span className="data-table-sort-chip">Sort: {activeSortLabel}</span>
           <div className="data-table-toolbar-control" aria-label="Table density">
             {renderDensityControls()}
@@ -766,6 +806,11 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
                 <div className="data-table-popover-title">Table options</div>
                 <span className="data-table-sort-chip">Sort: {activeSortLabel}</span>
               </div>
+              {filterPresets.length ? (
+                <div className="data-table-toolbar-menu-section actions">
+                  {renderFilterPresetButtons()}
+                </div>
+              ) : null}
               <div className="data-table-toolbar-menu-section">
                 <div className="table-popover-section-title">Density</div>
                 <div className="data-table-toolbar-control menu-control" aria-label="Table density">
@@ -1812,6 +1857,17 @@ function presetFilter(label: string, operator: string, valueText = "", valueText
     timeZoneName: "UTC",
     valueText,
     valueTextSecondary,
+  };
+}
+
+function normalizeManualFilterPreset(filter: DataTableManualFilterState): ColumnManualFilterState {
+  return {
+    caseSensitive: filter.caseSensitive ?? false,
+    operator: filter.operator,
+    presetLabel: filter.presetLabel,
+    timeZoneName: filter.timeZoneName ?? "UTC",
+    valueText: filter.valueText ?? "",
+    valueTextSecondary: filter.valueTextSecondary ?? "",
   };
 }
 
