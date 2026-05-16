@@ -128,6 +128,8 @@ def progress_stage_for_event(event: dict[str, Any]) -> str | None:
         return "reference_window"
     if phase in {"raw_load", "canonicalize_1m", "spread_join", "spread_backfill", "aggregate", "aggregate_daily", "bars_write"} or group == "bars":
         return "build_bars"
+    if phase == "spread_feature_patch":
+        return "build_features"
     if stateful and (phase in {"feature_compute", "feature_write", "stateful_features"} or group.startswith("features_")):
         return "build_stateful"
     if phase in {"feature_compute", "feature_write"} or group.startswith("features_"):
@@ -234,6 +236,13 @@ def summarize_phases(
     expected_stateful_chunks = sum(chunk_count_for_sessions(buildable_count, timeframe) for timeframe in stateful_timeframes)
     plan_event = next((event for event in reversed(events) if event.get("event") == "plan_complete"), {})
     resume_stage = str(plan_event.get("resume_stage") or "").lower()
+    spread_backfill = resume_stage == "spread_backfill"
+    if spread_backfill:
+        local_timeframes = selected_timeframes
+        stateful_timeframes = []
+        feature_total = buildable_count * len(selected_timeframes) if "volume_liquidity" in feature_groups else 0
+        stateful_total = 0
+        expected_stateful_chunks = 0
 
     scan_done = 0.0
     scan_elapsed = 0.0

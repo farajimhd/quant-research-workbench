@@ -1055,6 +1055,114 @@ def build_timeframe_artifacts(
     return {"session_date": session_text, "timeframe": timeframe, "status": "complete", "rows": rows}
 
 
+SPREAD_FEATURE_COLUMNS = [
+    "actual_spread",
+    "actual_spread_bps",
+    "actual_spread_bps_abs",
+    "actual_spread_bps_avg",
+    "actual_spread_bps_median",
+    "actual_spread_bps_max",
+    "quote_valid_ratio",
+    "locked_or_crossed_count",
+    "quoted_share_depth",
+    "quoted_dollar_depth",
+]
+
+
+def patch_spread_feature_artifact(
+    *,
+    request: BuildRequest,
+    timeframe: str,
+    session_text: str,
+    bars: pl.DataFrame,
+    progress_callback: ProgressCallback | None,
+    progress_state: dict,
+) -> dict:
+    feature_path = partition_path(request.processed_root, "features_volume_liquidity", timeframe, session_text)
+    if not feature_path.exists():
+        progress_state["completed_units"] += 1
+        emit(
+            progress_callback,
+            {
+                "event": "artifact_skipped",
+                "phase": "spread_feature_patch",
+                "status": "missing_feature",
+                "session_date": session_text,
+                "timeframe": timeframe,
+                "group": "features_volume_liquidity",
+                "path": str(feature_path),
+                "message": "Existing volume/liquidity feature file was not found, so only bars were backfilled.",
+                "work_completed": progress_state.get("completed_units"),
+                "work_total": progress_state.get("total_units"),
+            },
+        )
+        return {"session_date": session_text, "timeframe": timeframe, "status": "missing_feature", "rows": 0}
+    started_at = perf_counter()
+    emit(
+        progress_callback,
+        {
+            "event": "phase_started",
+            "phase": "spread_feature_patch",
+            "status": "running",
+            "session_date": session_text,
+            "timeframe": timeframe,
+            "group": "features_volume_liquidity",
+            "path": str(feature_path),
+            "work_completed": progress_state.get("completed_units"),
+            "work_total": progress_state.get("total_units"),
+        },
+    )
+    features = read_frame(feature_path)
+    join_key = "bar_id" if "bar_id" in features.columns and "bar_id" in bars.columns else None
+    if join_key is None:
+        raise ValueError(f"Cannot patch spread features for {timeframe} {session_text}: bar_id is missing.")
+    available_spread_columns = [column for column in SPREAD_FEATURE_COLUMNS if column in bars.columns]
+    if not available_spread_columns:
+        raise ValueError(f"Cannot patch spread features for {timeframe} {session_text}: enriched bars have no spread columns.")
+    patch_columns = [join_key, *available_spread_columns]
+    patch = bars.select(patch_columns)
+    drop_columns = [column for column in [*available_spread_columns, "actual_vs_estimated_spread_bps"] if column in features.columns]
+    if drop_columns:
+        features = features.drop(drop_columns)
+    features = features.join(patch, on=join_key, how="left")
+    if "actual_spread_bps_abs" in features.columns and "estimated_spread_bps" in features.columns:
+        features = features.with_columns((pl.col("actual_spread_bps_abs") - pl.col("estimated_spread_bps")).alias("actual_vs_estimated_spread_bps"))
+    source_path = partition_path(request.processed_root, "bars", timeframe, session_text)
+    path = write_artifact(
+        root=request.processed_root,
+        group="features_volume_liquidity",
+        timeframe=timeframe,
+        session_date=session_text,
+        frame=features,
+        build_id=request.build_id,
+        build_name=request.build_name,
+        source_path=source_path,
+    )
+    rows_out = features.height
+    del features, patch
+    gc.collect()
+    progress_state["completed_units"] += 1
+    emit(
+        progress_callback,
+        {
+            "event": "artifact_complete",
+            "phase": "spread_feature_patch",
+            "status": "complete",
+            "session_date": session_text,
+            "timeframe": timeframe,
+            "group": "features_volume_liquidity",
+            "rows_out": rows_out,
+            "duration_sec": elapsed_since(started_at),
+            "path": str(path),
+            "size_bytes": artifact_size(path),
+            "source_path": str(source_path),
+            "work_completed": progress_state.get("completed_units"),
+            "work_total": progress_state.get("total_units"),
+        },
+    )
+    return {"session_date": session_text, "timeframe": timeframe, "status": "complete", "rows": rows_out}
+
+
 def build_spread_backfill(
     request: BuildRequest,
     *,
@@ -1077,7 +1185,9 @@ def build_spread_backfill(
         if partition_path(request.processed_root, "bars", "1m", session.isoformat()).exists()
     ]
     valid_feature_groups = [group for group in request.feature_groups if group in FEATURE_COLUMNS]
-    total_units = max(1, len(existing_sessions) * (1 + len(ordered_timeframes) * (1 + len(valid_feature_groups))))
+    patch_volume_features = "volume_liquidity" in valid_feature_groups
+    per_session_units = 1 + len(ordered_timeframes) + (len(ordered_timeframes) if patch_volume_features else 0)
+    total_units = max(1, len(existing_sessions) * per_session_units)
     progress_state = {"completed_units": 0, "total_units": total_units}
     plan_rows = [
         {
@@ -1106,7 +1216,6 @@ def build_spread_backfill(
         },
     )
     completed: list[dict] = []
-    stateful_tasks: list[dict] = []
     for index, session in enumerate(existing_sessions, start=1):
         if check_stopped and job_path is not None:
             check_stopped(job_path, resume_stage="spread_backfill")
@@ -1184,7 +1293,15 @@ def build_spread_backfill(
                 progress_callback=progress_callback,
                 progress_state=progress_state,
             )
-            stateful_tasks.append({"session_date": session_text, "timeframe": timeframe})
+            if patch_volume_features:
+                patch_spread_feature_artifact(
+                    request=request,
+                    timeframe=timeframe,
+                    session_text=session_text,
+                    bars=bars,
+                    progress_callback=progress_callback,
+                    progress_state=progress_state,
+                )
             if timeframe != "1m":
                 del bars
                 gc.collect()
@@ -1193,22 +1310,7 @@ def build_spread_backfill(
             del bars
         del bars_1m
         gc.collect()
-        completed.append({"session_date": session_text, "status": "bars_complete", "rows": rows_out})
-
-    stateful_results = build_stateful_artifact_tasks(
-        request=request,
-        tasks=stateful_tasks,
-        total_units=progress_state["total_units"],
-        job_path=job_path,
-        progress_callback=progress_callback,
-        progress_state=progress_state,
-    )
-    complete_stateful_timeframes = {str(result.get("timeframe")) for result in stateful_results if str(result.get("status")) == "complete"}
-    for row in completed:
-        session_key = str(row.get("session_date"))
-        expected = [task for task in stateful_tasks if str(task["session_date"]) == session_key]
-        if expected and all(str(task["timeframe"]) in complete_stateful_timeframes for task in expected):
-            row["status"] = "complete"
+        completed.append({"session_date": session_text, "status": "complete", "rows": rows_out})
     emit(
         progress_callback,
         {
