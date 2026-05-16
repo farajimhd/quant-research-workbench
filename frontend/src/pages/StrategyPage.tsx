@@ -2391,6 +2391,11 @@ function normalizedTicker(value: string): string {
 function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: RunDetailPayload | null): NewRunMetric[] {
   const summary = liveSummary(job, detail);
   const totalPnl = finiteNumber(summary.total_pnl);
+  const avgDailyPnl = finiteNumber(summary.avg_daily_pnl);
+  const avgMonthlyPnl = finiteNumber(summary.avg_monthly_pnl);
+  const premarketPnl = finiteNumber(summary.premarket_pnl);
+  const marketOpenPnl = finiteNumber(summary.market_open_pnl);
+  const afterMarketPnl = finiteNumber(summary.after_market_pnl);
   const returnPct = finiteNumber(summary.return_pct);
   const sharpe = finiteNumber(summary.sharpe_ratio);
   const maxDrawdownPct = finiteNumber(summary.max_drawdown_pct);
@@ -2412,6 +2417,20 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
       value: formatMoney(totalPnl)
     },
     {
+      detail: "Average mark-to-market P/L per completed session",
+      icon: <BarChart3 size={15} />,
+      label: "Avg Day",
+      tone: signedTone(avgDailyPnl),
+      value: formatMoney(avgDailyPnl)
+    },
+    {
+      detail: "Average mark-to-market P/L per calendar month in this run",
+      icon: <BarChart3 size={15} />,
+      label: "Avg Month",
+      tone: signedTone(avgMonthlyPnl),
+      value: formatMoney(avgMonthlyPnl)
+    },
+    {
       detail: "Total return on equity",
       icon: <Percent size={15} />,
       label: "Return",
@@ -2431,6 +2450,27 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
       label: "Max DD",
       tone: drawdownTone(maxDrawdownPct),
       value: formatPct(maxDrawdownPct)
+    },
+    {
+      detail: sessionPnlDetail(summary, "premarket"),
+      icon: <Activity size={15} />,
+      label: "Premkt P/L",
+      tone: signedTone(premarketPnl),
+      value: formatMoney(premarketPnl)
+    },
+    {
+      detail: sessionPnlDetail(summary, "market_open"),
+      icon: <Activity size={15} />,
+      label: "Market P/L",
+      tone: signedTone(marketOpenPnl),
+      value: formatMoney(marketOpenPnl)
+    },
+    {
+      detail: sessionPnlDetail(summary, "after_market"),
+      icon: <Activity size={15} />,
+      label: "After P/L",
+      tone: signedTone(afterMarketPnl),
+      value: formatMoney(afterMarketPnl)
     },
     {
       detail: "Closed trades",
@@ -2475,6 +2515,11 @@ function buildLiveBacktestMetrics(job: Record<string, unknown> | null, detail: R
       value: <UnrealizedRangeValue gain={maxUnrealizedGain} loss={maxUnrealizedLoss} />
     }
   ];
+}
+
+function sessionPnlDetail(summary: Record<string, unknown>, segment: "after_market" | "market_open" | "premarket") {
+  const label = segment === "premarket" ? "Premarket" : segment === "market_open" ? "Market hours" : "After-hours";
+  return `${label} mark-to-market P/L. Avg/day ${formatMoney(finiteNumber(summary[`${segment}_avg_daily_pnl`]))}; avg/month ${formatMoney(finiteNumber(summary[`${segment}_avg_monthly_pnl`]))}.`;
 }
 
 function UnrealizedRangeValue({ gain, loss }: { gain: number; loss: number }) {

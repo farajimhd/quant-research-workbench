@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import math
 import statistics
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any
+
+
+MARKET_OPEN = time(9, 30)
+MARKET_CLOSE = time(16, 0)
+PNL_SEGMENTS = ("premarket", "market_open", "after_market")
 
 
 def parse_dt(value: Any) -> datetime | None:
@@ -116,6 +121,63 @@ def percentile(values: list[float], q: float) -> float:
     sorted_values = sorted(values)
     index = min(len(sorted_values) - 1, max(0, int(math.floor(q * (len(sorted_values) - 1)))))
     return sorted_values[index]
+
+
+def pnl_segment_for_timestamp(timestamp: datetime) -> str:
+    local_time = timestamp.timetz().replace(tzinfo=None)
+    if local_time < MARKET_OPEN:
+        return "premarket"
+    if local_time < MARKET_CLOSE:
+        return "market_open"
+    return "after_market"
+
+
+def add_to_bucket(bucket: dict[str, float], key: str, value: float) -> None:
+    bucket[key] = bucket.get(key, 0.0) + value
+
+
+def portfolio_pnl_breakdown(initial_cash: float, portfolio_rows: list[dict], daily_rows: list[dict]) -> dict[str, float | int]:
+    day_totals: dict[str, float] = {}
+    month_totals: dict[str, float] = {}
+    segment_totals = {segment: 0.0 for segment in PNL_SEGMENTS}
+
+    prior_equity = float(initial_cash)
+    for row in portfolio_rows:
+        timestamp = parse_dt(row.get("timestamp"))
+        equity = float(row.get("equity") or prior_equity)
+        delta = equity - prior_equity
+        prior_equity = equity
+        if timestamp is None:
+            continue
+        day_key = timestamp.date().isoformat()
+        month_key = timestamp.strftime("%Y-%m")
+        segment = pnl_segment_for_timestamp(timestamp)
+        add_to_bucket(day_totals, day_key, delta)
+        add_to_bucket(month_totals, month_key, delta)
+        segment_totals[segment] += delta
+
+    for row in daily_rows:
+        day_key = str(row.get("session_date") or "")
+        if day_key and day_key not in day_totals:
+            pnl = float(row.get("pnl") or 0.0)
+            day_totals[day_key] = pnl
+            month_key = day_key[:7]
+            add_to_bucket(month_totals, month_key, pnl)
+
+    day_count = len(day_totals)
+    month_count = len(month_totals)
+    breakdown: dict[str, float | int] = {
+        "pnl_day_count": day_count,
+        "pnl_month_count": month_count,
+        "avg_daily_pnl": sum(day_totals.values()) / day_count if day_count else 0.0,
+        "avg_monthly_pnl": sum(month_totals.values()) / month_count if month_count else 0.0,
+    }
+    for segment in PNL_SEGMENTS:
+        total = segment_totals[segment]
+        breakdown[f"{segment}_pnl"] = total
+        breakdown[f"{segment}_avg_daily_pnl"] = total / day_count if day_count else 0.0
+        breakdown[f"{segment}_avg_monthly_pnl"] = total / month_count if month_count else 0.0
+    return breakdown
 
 
 def compute_summary(
@@ -285,6 +347,8 @@ def compute_summary(
         "Volume": traded_value,
     }
 
+    pnl_breakdown = portfolio_pnl_breakdown(initial_cash, portfolio_rows, daily_rows)
+
     flat = {
         "run_dir": run_dir,
         "strategy_name": strategy_name,
@@ -317,6 +381,7 @@ def compute_summary(
         "total_fee_tax": total_fee_tax,
         "total_orders": len(orders),
         "total_fills": len(fills),
+        **pnl_breakdown,
     }
 
     return {

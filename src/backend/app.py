@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from src.backtest.config import DEFAULT_OUTPUT_ROOT, BacktestConfig, generated_run_name, submitted_run_name
 from src.backtest.equity_candles import default_portfolio_candle_timeframe
 from src.backtest.jobs import cancel_backtest_job, get_backtest_status, list_backtest_jobs, submit_backtest_job
+from src.backtest.metrics import portfolio_pnl_breakdown
 from src.backtest.results import list_runs, read_run_metadata
 from src.backend.json_utils import json_safe, parse_csv_list
 from src.backend.market_data_service import (
@@ -167,6 +168,22 @@ def backtest_tables_payload(run_dir: Path) -> dict[str, dict[str, Any]]:
         "positions": read_table(run_dir / "positions.parquet"),
         "portfolio": read_table(run_dir / "portfolio.parquet"),
     }
+
+
+def enriched_backtest_summary(run_dir: Path, metadata: dict[str, Any]) -> dict[str, Any]:
+    summary = dict(metadata.get("summary") or {})
+    if "avg_daily_pnl" in summary:
+        return summary
+    portfolio_path = run_dir / "portfolio.parquet"
+    daily_path = run_dir / "daily_summary.parquet"
+    if not portfolio_path.exists():
+        return summary
+    config = metadata.get("config") or {}
+    initial_cash = float(config.get("initial_cash") or summary.get("initial_cash") or 0.0)
+    portfolio_rows = pl.read_parquet(portfolio_path).to_dicts()
+    daily_rows = pl.read_parquet(daily_path).to_dicts() if daily_path.exists() else []
+    summary.update(portfolio_pnl_breakdown(initial_cash, portfolio_rows, daily_rows))
+    return summary
 
 
 def read_json_file(path: Path) -> dict[str, Any]:
@@ -823,9 +840,11 @@ def backtest_run_detail(
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail="Run not found")
     metadata = read_run_metadata(run_dir) or {}
+    summary = enriched_backtest_summary(run_dir, metadata)
+    metadata = {**metadata, "summary": summary}
     return {
         "metadata": json_safe(metadata),
-        "summary": json_safe(metadata.get("summary") or {}),
+        "summary": json_safe(summary),
         "tables": backtest_tables_payload(run_dir) if include_tables else empty_backtest_tables(),
         "portfolio_candles": json_safe(portfolio_candle_payload(run_dir, metadata)),
         "logs": (run_dir / "logs.txt").read_text(encoding="utf-8") if include_logs and (run_dir / "logs.txt").exists() else "",
