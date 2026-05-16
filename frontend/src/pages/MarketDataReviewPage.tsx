@@ -837,6 +837,7 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
             ? (row) => setChartTarget({ rangeMode: "session", record: scannerChartRecord, row: scannerChartRow(row, snapshot) })
             : undefined
         }
+        preserveFiltersOnDataChange
         rowAction={
           scannerChartRecord && snapshot
             ? {

@@ -128,6 +128,7 @@ type DataTableProps = {
   empty?: string;
   isRowSelected?: (row: DataRow) => boolean;
   onRowClick?: (row: DataRow) => void;
+  preserveFiltersOnDataChange?: boolean;
   rowAction?: RowActionConfig;
   rows: DataRow[];
   title?: string;
@@ -150,7 +151,7 @@ const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean
 ];
 let backendQueryConditionSequence = 0;
 
-export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows.", isRowSelected, onRowClick, rowAction, rows, title }: DataTableProps) {
+export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows.", isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title }: DataTableProps) {
   const resolvedColumns = useMemo(() => {
     if (columns?.length) return columns;
     return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -343,13 +344,21 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
     }
     if (tableIdentityRef.current === tableIdentityKey) return;
     tableIdentityRef.current = tableIdentityKey;
+    if (preserveFiltersOnDataChange) {
+      const validColumns = new Set(resolvedColumns);
+      setActiveValueFiltersByColumn((current) => keepExistingColumnFilters(current, validColumns));
+      setManualFiltersByColumn((current) => keepExistingColumnFilters(current, validColumns));
+      setOpenPopover(null);
+      setRowMenu(null);
+      return;
+    }
     setActiveValueFiltersByColumn({});
     setBackendQueryOpen(false);
     setColumnsSearch("");
     setManualFiltersByColumn({});
     setOpenPopover(null);
     setRowMenu(null);
-  }, [tableIdentityKey]);
+  }, [preserveFiltersOnDataChange, resolvedColumns, tableIdentityKey]);
 
   const toggleSort = (column: string) => {
     setSort((current) => {
@@ -963,6 +972,19 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
 
 function emptyBackendTableQuery(): BackendTableQuery {
   return { conditions: [], matchMode: "all", sortDirection: "asc" };
+}
+
+function keepExistingColumnFilters<T>(filters: Record<string, T>, validColumns: Set<string>): Record<string, T> {
+  let changed = false;
+  const next: Record<string, T> = {};
+  Object.entries(filters).forEach(([column, filter]) => {
+    if (validColumns.has(column)) {
+      next[column] = filter;
+    } else {
+      changed = true;
+    }
+  });
+  return changed ? next : filters;
 }
 
 function normalizeBackendQuery(query?: BackendTableQuery): BackendTableQuery {
