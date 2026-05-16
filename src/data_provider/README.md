@@ -157,6 +157,7 @@ Feature artifacts are split by group so consumers can load only what they need. 
 - `sma9`, `sma20`, `sma50`, `sma200`: simple moving averages of close.
 - `ema9`, `ema20`, `ema50`, `ema200`: exponential moving averages of close.
 - `tema9`, `tema20`: triple exponential moving averages.
+- `tema_open`: `tema9 > tema20`.
 - `macd_line`: EMA12 - EMA26.
 - `macd_signal`: EMA9 of `macd_line`.
 - `macd_hist`: `macd_line - macd_signal`.

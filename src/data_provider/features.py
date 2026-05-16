@@ -72,6 +72,7 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "ema200",
         "tema9",
         "tema20",
+        "tema_open",
         "macd_line",
         "macd_signal",
         "macd_hist",
@@ -351,7 +352,10 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
         .pipe(add_tema, 20, "tema20")
         .with_columns((pl.col("_macd_fast") - pl.col("_macd_slow")).alias("macd_line"))
         .with_columns(pl.col("macd_line").ewm_mean(span=9, adjust=False).over("ticker").alias("macd_signal"))
-        .with_columns((pl.col("macd_line") - pl.col("macd_signal")).alias("macd_hist"))
+        .with_columns(
+            (pl.col("tema9") > pl.col("tema20")).alias("tema_open"),
+            (pl.col("macd_line") - pl.col("macd_signal")).alias("macd_hist"),
+        )
         .with_columns(
             pl.cum_count("close").over("ticker").alias("indicator_bar_count"),
             (pl.cum_count("close").over("ticker") >= 35).alias("macd_ready"),

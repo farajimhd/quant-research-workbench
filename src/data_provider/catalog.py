@@ -224,6 +224,7 @@ BOOLEAN_COLUMNS = {
     "confirmed_price_volume_shock",
     "macd_ready",
     "tema_ready",
+    "tema_open",
     "valid_future_window",
     "mfe_before_mae",
     "oracle_long_entry_signal",
@@ -1985,7 +1986,7 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
 
     if lower.startswith("day_") or lower.startswith("premarket_") or lower.startswith("or_") or lower.startswith("distance_to_day_") or lower in {"prev_close", "gap_pct"}:
         return session_feature_knowledge(lower, group, category, title)
-    if lower in {"roc10", "indicator_bar_count", "macd_ready", "tema_ready"}:
+    if lower in {"roc10", "indicator_bar_count", "macd_ready", "tema_ready", "tema_open"}:
         return momentum_extra_knowledge(lower, group, category, title)
     if lower.startswith("donchian_") or lower.startswith("keltner_") or lower.endswith("_z20"):
         return volatility_feature_knowledge(lower, group, category, title)
@@ -2149,6 +2150,12 @@ def momentum_extra_knowledge(lower: str, group: str, category: str, title: str) 
             "ROC10 is implemented as the rolling 10-bar sum of one-bar simple returns. It measures recent directional persistence in the same units as return, with zero meaning no net summed pressure.",
             "$$ROC10_t=\\sum_{i=0}^{9}Return1_{t-i}$$",
             {"Return1": "One-bar simple return"},
+        ),
+        "tema_open": (
+            "True when TEMA9 is above TEMA20.",
+            "TEMA open is a boolean trend-state helper. It is true when the faster TEMA9 is above the slower TEMA20, matching the common entry-open condition used in the ORB strategy family.",
+            "$$TEMAOpen_t=I(TEMA9_t>TEMA20_t)$$",
+            {"I": "Indicator function"},
         ),
         "indicator_bar_count": (
             "Operational helper: bars available for indicator warm-up.",

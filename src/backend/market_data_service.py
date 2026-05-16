@@ -418,6 +418,8 @@ def apply_scanner_compatibility_columns(scan: pl.LazyFrame, schema: pl.Schema) -
 
     scan = apply_scanner_volume_compatibility_columns(scan, names)
     schema = scan.collect_schema()
+    scan = apply_scanner_momentum_compatibility_columns(scan, schema.names())
+    schema = scan.collect_schema()
     return apply_scanner_price_action_compatibility_columns(scan, schema.names())
 
 
@@ -436,6 +438,15 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
             .otherwise(0.0)
             .alias("relative_volume10")
         )
+    return scan
+
+
+def apply_scanner_momentum_compatibility_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
+    exprs: list[pl.Expr] = []
+    if "tema_open" not in names and {"tema9", "tema20"}.issubset(names):
+        exprs.append((pl.col("tema9") > pl.col("tema20")).alias("tema_open"))
+    if exprs:
+        scan = scan.with_columns(exprs)
     return scan
 
 
@@ -746,6 +757,7 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "or_5m_range",
         "tema9",
         "tema20",
+        "tema_open",
         "macd_line",
         "macd_signal",
         "macd_hist",
