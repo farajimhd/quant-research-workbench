@@ -412,14 +412,21 @@ def scanner_minute_filter(schema_names: list[str], session_date: date, minute: i
 
 def apply_scanner_compatibility_columns(scan: pl.LazyFrame, schema: pl.Schema) -> pl.LazyFrame:
     names = schema.names()
+    order_columns = [column for column in ["ticker", "bar_time_utc", "bar_time_market", "minute_of_day"] if column in names]
+    if order_columns:
+        scan = scan.sort(order_columns)
+
+    scan = apply_scanner_volume_compatibility_columns(scan, names)
+    schema = scan.collect_schema()
+    return apply_scanner_price_action_compatibility_columns(scan, schema.names())
+
+
+def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
     missing_volume_sma10 = "volume_sma10" not in names
     missing_relative_volume10 = "relative_volume10" not in names
     if "volume" not in names or not (missing_volume_sma10 or missing_relative_volume10):
         return scan
 
-    order_columns = [column for column in ["ticker", "bar_time_utc", "bar_time_market", "minute_of_day"] if column in names]
-    if order_columns:
-        scan = scan.sort(order_columns)
     if missing_volume_sma10:
         scan = scan.with_columns(pl.col("volume").rolling_mean(10).over("ticker").alias("volume_sma10"))
     if missing_relative_volume10:
@@ -430,6 +437,76 @@ def apply_scanner_compatibility_columns(scan: pl.LazyFrame, schema: pl.Schema) -
             .alias("relative_volume10")
         )
     return scan
+
+
+def apply_scanner_price_action_compatibility_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
+    group_columns = scanner_session_group_columns(names)
+    if not group_columns or not {"open", "close"}.issubset(names):
+        return scan
+
+    base_exprs: list[pl.Expr] = []
+    if "body" not in names:
+        base_exprs.append((pl.col("close") - pl.col("open")).alias("body"))
+    if "body_abs" not in names:
+        body_expr = pl.col("body") if "body" in names else pl.col("close") - pl.col("open")
+        base_exprs.append(body_expr.abs().alias("body_abs"))
+    if "is_green" not in names:
+        base_exprs.append((pl.col("close") > pl.col("open")).alias("is_green"))
+    if "is_red" not in names:
+        base_exprs.append((pl.col("close") < pl.col("open")).alias("is_red"))
+    if "bar_range" not in names and {"high", "low"}.issubset(names):
+        base_exprs.append((pl.col("high") - pl.col("low")).alias("bar_range"))
+    if "session_bar_count" not in names:
+        base_exprs.append(pl.cum_count("close").over(group_columns).alias("session_bar_count"))
+    if base_exprs:
+        scan = scan.with_columns(base_exprs)
+        names = scan.collect_schema().names()
+
+    cumulative_exprs: list[pl.Expr] = []
+    if "green_bar_count_so_far" not in names and "is_green" in names:
+        cumulative_exprs.append(pl.when(pl.col("is_green")).then(1).otherwise(0).cum_sum().over(group_columns).alias("green_bar_count_so_far"))
+    if "red_bar_count_so_far" not in names and "is_red" in names:
+        cumulative_exprs.append(pl.when(pl.col("is_red")).then(1).otherwise(0).cum_sum().over(group_columns).alias("red_bar_count_so_far"))
+    if "green_body_sum_so_far" not in names and {"is_green", "body_abs"}.issubset(names):
+        cumulative_exprs.append(pl.when(pl.col("is_green")).then(pl.col("body_abs")).otherwise(0.0).cum_sum().over(group_columns).alias("green_body_sum_so_far"))
+    if "red_body_sum_so_far" not in names and {"is_red", "body_abs"}.issubset(names):
+        cumulative_exprs.append(pl.when(pl.col("is_red")).then(pl.col("body_abs")).otherwise(0.0).cum_sum().over(group_columns).alias("red_body_sum_so_far"))
+    if "green_range_sum_so_far" not in names and {"is_green", "bar_range"}.issubset(names):
+        cumulative_exprs.append(pl.when(pl.col("is_green")).then(pl.col("bar_range")).otherwise(0.0).cum_sum().over(group_columns).alias("green_range_sum_so_far"))
+    if "red_range_sum_so_far" not in names and {"is_red", "bar_range"}.issubset(names):
+        cumulative_exprs.append(pl.when(pl.col("is_red")).then(pl.col("bar_range")).otherwise(0.0).cum_sum().over(group_columns).alias("red_range_sum_so_far"))
+    if "net_body_sum_so_far" not in names and "body" in names:
+        cumulative_exprs.append(pl.col("body").cum_sum().over(group_columns).alias("net_body_sum_so_far"))
+    if cumulative_exprs:
+        scan = scan.with_columns(cumulative_exprs)
+        names = scan.collect_schema().names()
+
+    average_exprs: list[pl.Expr] = []
+    if "green_body_avg" not in names and {"green_body_sum_so_far", "session_bar_count"}.issubset(names):
+        average_exprs.append(
+            pl.when(pl.col("session_bar_count") > 0)
+            .then(pl.col("green_body_sum_so_far") / pl.col("session_bar_count"))
+            .otherwise(0.0)
+            .alias("green_body_avg")
+        )
+    if "red_body_avg" not in names and {"red_body_sum_so_far", "session_bar_count"}.issubset(names):
+        average_exprs.append(
+            pl.when(pl.col("session_bar_count") > 0)
+            .then(pl.col("red_body_sum_so_far") / pl.col("session_bar_count"))
+            .otherwise(0.0)
+            .alias("red_body_avg")
+        )
+    if average_exprs:
+        scan = scan.with_columns(average_exprs)
+    return scan
+
+
+def scanner_session_group_columns(names: list[str]) -> list[str]:
+    if "ticker" not in names:
+        return []
+    if "session_date" in names:
+        return ["ticker", "session_date"]
+    return ["ticker"]
 
 
 def requested_derived_column_names(derived_columns: list[dict[str, Any]] | None) -> list[str]:
