@@ -343,12 +343,6 @@ def load_scanner_snapshot(
 
     scan = pl.scan_parquet(str(record_path(bars_record)))
     schema = scan.collect_schema()
-    schema_names = schema.names()
-    if "minute_of_day" in schema_names:
-        scan = scan.filter(pl.col("minute_of_day") == minute)
-    elif "bar_time_market" in schema_names:
-        start = datetime.combine(session_date, time(minute // 60, minute % 60))
-        scan = scan.filter(pl.col("bar_time_market").dt.replace_time_zone(None) == start)
 
     joined_groups: list[str] = []
     for group in feature_groups:
@@ -366,6 +360,11 @@ def load_scanner_snapshot(
         joined_groups.append(group)
 
     joined_schema = scan.collect_schema()
+    scan = apply_scanner_compatibility_columns(scan, joined_schema)
+    joined_schema = scan.collect_schema()
+    minute_filter = scanner_minute_filter(joined_schema.names(), session_date, minute)
+    if minute_filter is not None:
+        scan = scan.filter(minute_filter)
     scan = apply_derived_columns(scan, joined_schema, derived_columns)
     joined_schema = scan.collect_schema()
     joined_columns = joined_schema.names()
@@ -400,6 +399,37 @@ def load_scanner_snapshot(
         "timeframe": timeframe,
         "total_columns": len(joined_columns),
     }
+
+
+def scanner_minute_filter(schema_names: list[str], session_date: date, minute: int) -> pl.Expr | None:
+    if "minute_of_day" in schema_names:
+        return pl.col("minute_of_day") == minute
+    if "bar_time_market" in schema_names:
+        start = datetime.combine(session_date, time(minute // 60, minute % 60))
+        return pl.col("bar_time_market").dt.replace_time_zone(None) == start
+    return None
+
+
+def apply_scanner_compatibility_columns(scan: pl.LazyFrame, schema: pl.Schema) -> pl.LazyFrame:
+    names = schema.names()
+    missing_volume_sma10 = "volume_sma10" not in names
+    missing_relative_volume10 = "relative_volume10" not in names
+    if "volume" not in names or not (missing_volume_sma10 or missing_relative_volume10):
+        return scan
+
+    order_columns = [column for column in ["ticker", "bar_time_utc", "bar_time_market", "minute_of_day"] if column in names]
+    if order_columns:
+        scan = scan.sort(order_columns)
+    if missing_volume_sma10:
+        scan = scan.with_columns(pl.col("volume").rolling_mean(10).over("ticker").alias("volume_sma10"))
+    if missing_relative_volume10:
+        scan = scan.with_columns(
+            pl.when(pl.col("volume_sma10") > 0)
+            .then(pl.col("volume") / pl.col("volume_sma10"))
+            .otherwise(0.0)
+            .alias("relative_volume10")
+        )
+    return scan
 
 
 def requested_derived_column_names(derived_columns: list[dict[str, Any]] | None) -> list[str]:
