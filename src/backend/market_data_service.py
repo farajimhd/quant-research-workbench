@@ -490,20 +490,49 @@ def apply_scanner_session_compatibility_columns(scan: pl.LazyFrame, names: list[
 
 
 def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
-    missing_volume_sma10 = "volume_sma10" not in names
-    missing_relative_volume10 = "relative_volume10" not in names
-    if "volume" not in names or not (missing_volume_sma10 or missing_relative_volume10):
-        return scan
+    exprs: list[pl.Expr] = []
+    if "dollar_volume" not in names and {"close", "volume"}.issubset(names):
+        exprs.append((pl.col("close") * pl.col("volume")).alias("dollar_volume"))
+    if "return_1" not in names and "close" in names:
+        exprs.append(((pl.col("close") / pl.col("close").shift(1).over("ticker")) - 1.0).fill_null(0.0).alias("return_1"))
+    if "volume_sma10" not in names and "volume" in names:
+        exprs.append(pl.col("volume").rolling_mean(10).over("ticker").alias("volume_sma10"))
+    if "recent_dollar_volume_5" not in names and ("dollar_volume" in names or {"close", "volume"}.issubset(names)):
+        dollar_volume_expr = pl.col("dollar_volume") if "dollar_volume" in names else pl.col("close") * pl.col("volume")
+        exprs.append(dollar_volume_expr.rolling_sum(5, min_samples=1).over("ticker").alias("recent_dollar_volume_5"))
+    if "recent_transactions_5" not in names and "transactions" in names:
+        exprs.append(pl.col("transactions").rolling_sum(5, min_samples=1).over("ticker").alias("recent_transactions_5"))
+    if "tick_floor_bps" not in names and "close" in names:
+        exprs.append(pl.when(pl.col("close") > 0).then(0.01 / pl.col("close") * 10_000.0).otherwise(10_000.0).alias("tick_floor_bps"))
+    if "bar_range_bps" not in names and {"high", "low", "close"}.issubset(names):
+        exprs.append(pl.when(pl.col("close") > 0).then((pl.col("high") - pl.col("low")) / pl.col("close") * 10_000.0).otherwise(10_000.0).alias("bar_range_bps"))
+    if exprs:
+        scan = scan.with_columns(exprs)
+        names = scan.collect_schema().names()
 
-    if missing_volume_sma10:
-        scan = scan.with_columns(pl.col("volume").rolling_mean(10).over("ticker").alias("volume_sma10"))
-    if missing_relative_volume10:
-        scan = scan.with_columns(
+    derived_exprs: list[pl.Expr] = []
+    if "illiquidity_proxy_bps" not in names and {"return_1", "dollar_volume"}.issubset(names):
+        derived_exprs.append(
+            pl.when(pl.col("dollar_volume") > 0)
+            .then(pl.col("return_1").abs() * 10_000.0 * (100_000.0 / pl.col("dollar_volume")))
+            .otherwise(10_000.0)
+            .alias("illiquidity_proxy_bps")
+        )
+    if "relative_volume10" not in names and {"volume", "volume_sma10"}.issubset(names):
+        derived_exprs.append(
             pl.when(pl.col("volume_sma10") > 0)
             .then(pl.col("volume") / pl.col("volume_sma10"))
             .otherwise(0.0)
             .alias("relative_volume10")
         )
+    if "range_proxy_bps" not in names and "bar_range_bps" in names:
+        derived_exprs.append(pl.col("bar_range_bps").rolling_median(5, min_samples=1).over("ticker").alias("range_proxy_bps"))
+    if derived_exprs:
+        scan = scan.with_columns(derived_exprs)
+        names = scan.collect_schema().names()
+
+    if "estimated_spread_bps" not in names and {"tick_floor_bps", "range_proxy_bps", "illiquidity_proxy_bps"}.issubset(names):
+        scan = scan.with_columns(pl.max_horizontal("tick_floor_bps", "range_proxy_bps", "illiquidity_proxy_bps").alias("estimated_spread_bps"))
     return scan
 
 
@@ -836,6 +865,13 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "relative_volume10",
         "relative_volume20",
         "relative_dollar_volume20",
+        "recent_dollar_volume_5",
+        "recent_transactions_5",
+        "tick_floor_bps",
+        "bar_range_bps",
+        "range_proxy_bps",
+        "illiquidity_proxy_bps",
+        "estimated_spread_bps",
         "intraday_rvol13",
         "intraday_dollar_rvol13",
         "tod_cum_volume_avg13",

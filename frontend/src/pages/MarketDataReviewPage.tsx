@@ -204,6 +204,13 @@ const SCANNER_FORMULA_STORAGE_KEY = "qrw.scannerFormulaPresets.v1";
 const SCANNER_COMPATIBILITY_COLUMNS = [
   "volume_sma10",
   "relative_volume10",
+  "recent_dollar_volume_5",
+  "recent_transactions_5",
+  "tick_floor_bps",
+  "bar_range_bps",
+  "range_proxy_bps",
+  "illiquidity_proxy_bps",
+  "estimated_spread_bps",
   "body",
   "body_abs",
   "is_green",

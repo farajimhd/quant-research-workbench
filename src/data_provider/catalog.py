@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 11
+CATALOG_VERSION = 12
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -1529,6 +1529,8 @@ def semantics_for_column(column: str) -> dict[str, Any]:
         unit = dtype_for_column(column)
     elif lower.endswith("_return") or lower.endswith("_pct") or "percentile" in lower:
         unit = "percent"
+    elif lower.endswith("_bps"):
+        unit = "bps"
     elif lower.endswith("_minutes") or lower.startswith("minutes_since"):
         unit = "minutes"
     elif lower.endswith("_bars") or lower.startswith("bars_since"):
@@ -1541,7 +1543,7 @@ def semantics_for_column(column: str) -> dict[str, Any]:
         unit = "price"
     else:
         unit = "number"
-    direction = "higher_better" if any(term in lower for term in ("confidence", "score", "quality", "return", "percentile")) else "neutral"
+    direction = "lower_better" if lower.endswith("_bps") else "higher_better" if any(term in lower for term in ("confidence", "score", "quality", "return", "percentile")) else "neutral"
     role = "operational_helper" if lower in OPERATIONAL_HELPER_COLUMNS else "analysis_field"
     return {"unit": unit, "direction": direction, "nullable": column not in KEY_COLUMNS, "role": role}
 
@@ -1993,7 +1995,30 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
         return momentum_extra_knowledge(lower, group, category, title)
     if lower.startswith("donchian_") or lower.startswith("keltner_") or lower.endswith("_z20"):
         return volatility_feature_knowledge(lower, group, category, title)
-    if lower in {"volume_sma10", "volume_sma20", "dollar_volume_sma20", "transactions_sma20", "relative_volume10", "relative_volume20", "relative_dollar_volume20", "obv", "mfi14", "cmf20"} or lower.startswith("liquidity_band_") or lower in {"hvn_price_proxy20", "lvn_price_proxy20"}:
+    if (
+        lower
+        in {
+            "volume_sma10",
+            "volume_sma20",
+            "dollar_volume_sma20",
+            "transactions_sma20",
+            "relative_volume10",
+            "relative_volume20",
+            "relative_dollar_volume20",
+            "recent_dollar_volume_5",
+            "recent_transactions_5",
+            "tick_floor_bps",
+            "bar_range_bps",
+            "range_proxy_bps",
+            "illiquidity_proxy_bps",
+            "estimated_spread_bps",
+            "obv",
+            "mfi14",
+            "cmf20",
+        }
+        or lower.startswith("liquidity_band_")
+        or lower in {"hvn_price_proxy20", "lvn_price_proxy20"}
+    ):
         return volume_feature_knowledge(lower, group, category, title)
     if lower in {
         "inside_bar",
@@ -2287,6 +2312,65 @@ def volatility_feature_knowledge(lower: str, group: str, category: str, title: s
 
 
 def volume_feature_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
+    spread_risk = {
+        "recent_dollar_volume_5": (
+            "Five-bar recent dollar volume.",
+            "Recent dollar volume 5 sums close times volume over the last five bars for the same ticker. It gives the spread-risk estimate local participation context.",
+            "$$RecentDollarVolume5_t=\\sum_{i=0}^{4}Close_{t-i}\\cdot Volume_{t-i}$$",
+            {"Close": "Bar close", "Volume": "Share volume"},
+        ),
+        "recent_transactions_5": (
+            "Five-bar recent transaction count.",
+            "Recent transactions 5 sums transaction count over the last five bars for the same ticker. Low values warn that the bar may be thin even if price moved.",
+            "$$RecentTransactions5_t=\\sum_{i=0}^{4}Transactions_{t-i}$$",
+            {"Transactions": "Bar transaction count"},
+        ),
+        "tick_floor_bps": (
+            "Minimum one-cent tick spread as basis points of price.",
+            "Tick floor bps is the best-case spread floor implied by one cent of price granularity. It does not estimate the actual bid/ask spread, but it blocks the assumption that very low-priced stocks can trade with tiny percentage spreads.",
+            "$$TickFloorBps_t=\\frac{0.01}{Close_t}\\cdot10000$$",
+            {"Close_t": "Current close"},
+        ),
+        "bar_range_bps": (
+            "Current high-low bar range in basis points.",
+            "Bar range bps converts the current candle high-low range into basis points of close. Wide values show that the bar itself was jumpy or thin.",
+            "$$BarRangeBps_t=\\frac{High_t-Low_t}{Close_t}\\cdot10000$$",
+            {"High_t": "Current high", "Low_t": "Current low", "Close_t": "Current close"},
+        ),
+        "range_proxy_bps": (
+            "Five-bar median range pressure in basis points.",
+            "Range proxy bps is the five-bar rolling median of bar_range_bps for the same ticker. It smooths one-off candles while still reacting to locally wide bars.",
+            "$$RangeProxyBps_t=Median5(BarRangeBps_t)$$",
+            {"BarRangeBps_t": "Current high-low range in bps"},
+        ),
+        "illiquidity_proxy_bps": (
+            "Amihud-style price impact proxy scaled to a 100k dollar bar.",
+            "Illiquidity proxy bps scales the current absolute one-bar return by dollar volume. It estimates how many basis points of price movement occurred per 100,000 dollars of bar volume; high values suggest poor effective liquidity.",
+            "$$IlliquidityProxyBps_t=|Return1_t|\\cdot10000\\cdot\\frac{100000}{DollarVolume_t}$$",
+            {"Return1_t": "One-bar close-to-close return", "DollarVolume_t": "Close times volume"},
+        ),
+        "estimated_spread_bps": (
+            "Conservative spread-risk proxy in basis points.",
+            "Estimated spread bps is the maximum of tick_floor_bps, range_proxy_bps, and illiquidity_proxy_bps. It is not true bid/ask spread; it is a conservative scanner diagnostic for avoiding high-spread or poor-fill candidates.",
+            "$$EstimatedSpreadBps_t=max(TickFloorBps_t,RangeProxyBps_t,IlliquidityProxyBps_t)$$",
+            {
+                "TickFloorBps_t": "Minimum one-cent tick spread floor",
+                "RangeProxyBps_t": "Five-bar median range pressure",
+                "IlliquidityProxyBps_t": "Dollar-volume-scaled price impact proxy",
+            },
+        ),
+    }
+    if lower in spread_risk:
+        short, detailed, equation, variables = spread_risk[lower]
+        return knowledge_block(
+            short=short,
+            detailed=detailed,
+            theory=theory_for_group(group, category),
+            interpretation="Use these fields as diagnostics or gates for likely bad fills. They are proxies from OHLCV/trade-count data, not actual bid/ask measurements.",
+            equation=equation,
+            variables=variables,
+        )
+
     rolling = {
         "volume_sma10": ("Volume", "share volume", 10),
         "volume_sma20": ("Volume", "share volume"),
