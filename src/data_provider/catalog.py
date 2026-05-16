@@ -1989,7 +1989,7 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
         return momentum_extra_knowledge(lower, group, category, title)
     if lower.startswith("donchian_") or lower.startswith("keltner_") or lower.endswith("_z20"):
         return volatility_feature_knowledge(lower, group, category, title)
-    if lower in {"volume_sma20", "dollar_volume_sma20", "transactions_sma20", "relative_volume20", "relative_dollar_volume20", "obv", "mfi14", "cmf20"} or lower.startswith("liquidity_band_") or lower in {"hvn_price_proxy20", "lvn_price_proxy20"}:
+    if lower in {"volume_sma10", "volume_sma20", "dollar_volume_sma20", "transactions_sma20", "relative_volume10", "relative_volume20", "relative_dollar_volume20", "obv", "mfi14", "cmf20"} or lower.startswith("liquidity_band_") or lower in {"hvn_price_proxy20", "lvn_price_proxy20"}:
         return volume_feature_knowledge(lower, group, category, title)
     if lower in {
         "inside_bar",
@@ -2232,33 +2232,39 @@ def volatility_feature_knowledge(lower: str, group: str, category: str, title: s
 
 def volume_feature_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
     rolling = {
+        "volume_sma10": ("Volume", "share volume", 10),
         "volume_sma20": ("Volume", "share volume"),
         "dollar_volume_sma20": ("DollarVolume", "dollar volume"),
         "transactions_sma20": ("Transactions", "transaction count"),
     }
     if lower in rolling:
-        symbol, description = rolling[lower]
+        item = rolling[lower]
+        symbol, description = item[:2]
+        window = int(item[2]) if len(item) > 2 else 20
         return knowledge_block(
-            short=f"20-bar average {description}.",
-            detailed=f"{title} is the 20-bar rolling average of {description} for the same ticker. It defines the local baseline used by relative activity features.",
+            short=f"{window}-bar average {description}.",
+            detailed=f"{title} is the {window}-bar rolling average of {description} for the same ticker. It defines the local baseline used by relative activity features.",
             theory=theory_for_group(group, category),
             interpretation="Use the rolling average as a baseline, not as a signal by itself. Its usefulness increases when paired with current activity and price movement.",
-            equation=f"$$SMA20({symbol})_t=\\frac{{1}}{{20}}\\sum_{{i=0}}^{{19}}{symbol}_{{t-i}}$$",
+            equation=f"$$SMA{window}({symbol})_t=\\frac{{1}}{{{window}}}\\sum_{{i=0}}^{{{window - 1}}}{symbol}_{{t-i}}$$",
             variables={symbol: description},
         )
     relative = {
+        "relative_volume10": ("Volume", "VolumeSMA10", 10),
         "relative_volume20": ("Volume", "VolumeSMA20"),
         "relative_dollar_volume20": ("DollarVolume", "DollarVolumeSMA20"),
     }
     if lower in relative:
-        numerator, denominator = relative[lower]
+        item = relative[lower]
+        numerator, denominator = item[:2]
+        window = int(item[2]) if len(item) > 2 else 20
         return knowledge_block(
-            short="Current activity divided by its 20-bar baseline.",
-            detailed=f"{title} compares current {numerator.lower()} with its 20-bar moving average. The Polars expression returns 0 when the denominator baseline is not positive. A value of 3 means the current bar is trading at roughly three times its recent average activity.",
+            short=f"Current activity divided by its {window}-bar baseline.",
+            detailed=f"{title} compares current {numerator.lower()} with its {window}-bar moving average. The Polars expression returns 0 when the denominator baseline is not positive. A value of 3 means the current bar is trading at roughly three times its recent average activity.",
             theory=theory_for_group(group, category),
             interpretation="High relative activity is more meaningful when price is also moving directionally or breaking structure.",
-            equation=f"$$Relative{numerator}20_t=\\begin{{cases}}\\frac{{{numerator}_t}}{{{denominator}_t}},&{denominator}_t>0\\\\0,&otherwise\\end{{cases}}$$",
-            variables={numerator: "Current activity", denominator: "20-bar activity baseline"},
+            equation=f"$$Relative{numerator}{window}_t=\\begin{{cases}}\\frac{{{numerator}_t}}{{{denominator}_t}},&{denominator}_t>0\\\\0,&otherwise\\end{{cases}}$$",
+            variables={numerator: "Current activity", denominator: f"{window}-bar activity baseline"},
         )
     tod_baselines = {
         "tod_cum_volume_avg13": ("DayVolumeSoFar", "share volume"),

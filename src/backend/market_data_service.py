@@ -599,6 +599,7 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "volume",
         "transactions",
         "dollar_volume",
+        "relative_volume10",
         "relative_volume20",
         "relative_dollar_volume20",
         "intraday_rvol13",

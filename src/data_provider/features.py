@@ -100,6 +100,8 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
     ],
     "volume_liquidity": [
         "bar_id",
+        "volume_sma10",
+        "relative_volume10",
         "volume_sma20",
         "relative_volume20",
         "dollar_volume_sma20",
@@ -381,6 +383,7 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             pl.col("close").rolling_std(20).over("ticker").alias("_bb_std20"),
             pl.col("high").rolling_max(20).over("ticker").alias("donchian_high20"),
             pl.col("low").rolling_min(20).over("ticker").alias("donchian_low20"),
+            pl.col("volume").rolling_mean(10).over("ticker").alias("volume_sma10"),
             pl.col("volume").rolling_mean(20).over("ticker").alias("volume_sma20"),
             pl.col("dollar_volume").rolling_mean(20).over("ticker").alias("dollar_volume_sma20"),
             pl.col("transactions").rolling_mean(20).over("ticker").alias("transactions_sma20"),
@@ -397,6 +400,7 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             pl.col("ema20").alias("keltner_mid20"),
             (pl.col("ema20") + 2.0 * pl.col("atr14")).alias("keltner_upper20"),
             (pl.col("ema20") - 2.0 * pl.col("atr14")).alias("keltner_lower20"),
+            pl.when(pl.col("volume_sma10") > 0).then(pl.col("volume") / pl.col("volume_sma10")).otherwise(0.0).alias("relative_volume10"),
             pl.when(pl.col("volume_sma20") > 0).then(pl.col("volume") / pl.col("volume_sma20")).otherwise(0.0).alias("relative_volume20"),
             pl.when(pl.col("dollar_volume_sma20") > 0).then(pl.col("dollar_volume") / pl.col("dollar_volume_sma20")).otherwise(0.0).alias("relative_dollar_volume20"),
             pl.col("day_volume_so_far")
