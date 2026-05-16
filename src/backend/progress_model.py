@@ -22,7 +22,17 @@ STATEFUL_OUTPUT_CHUNK_SESSIONS = {
 
 def is_output_row(row: dict[str, Any]) -> bool:
     role = row.get("build_role")
-    return role == "output" or role is None
+    return role in {"output", "spread_backfill"} or (role is None and row.get("write_output") is not False)
+
+
+def is_expected_row(row: dict[str, Any]) -> bool:
+    if "expected_market_session" in row:
+        return bool(row.get("expected_market_session"))
+    return row.get("build_role") not in {"closed", "reference_only"}
+
+
+def has_required_sources(row: dict[str, Any]) -> bool:
+    return bool(row.get("exists")) and row.get("spread_exists") is not False
 
 
 def session_timeframes(timeframes: Iterable[str] | None = None) -> list[str]:
@@ -116,7 +126,7 @@ def progress_stage_for_event(event: dict[str, Any]) -> str | None:
         return "scan_source"
     if phase == "reference_warmup":
         return "reference_window"
-    if phase in {"raw_load", "canonicalize_1m", "aggregate", "aggregate_daily", "bars_write"} or group == "bars":
+    if phase in {"raw_load", "canonicalize_1m", "spread_join", "spread_backfill", "aggregate", "aggregate_daily", "bars_write"} or group == "bars":
         return "build_bars"
     if stateful and (phase in {"feature_compute", "feature_write", "stateful_features"} or group.startswith("features_")):
         return "build_stateful"
@@ -207,10 +217,10 @@ def summarize_phases(
     supervision_groups: list[str],
 ) -> list[dict[str, Any]]:
     selected_timeframes = session_timeframes(timeframes)
-    output_rows = [row for row in plan_rows if is_output_row(row) and row.get("expected_market_session")]
-    buildable_rows = [row for row in output_rows if row.get("exists")]
-    reference_rows = [row for row in plan_rows if row.get("build_role") == "reference_only" and row.get("expected_market_session")]
-    expected_rows = [row for row in plan_rows if row.get("expected_market_session")]
+    output_rows = [row for row in plan_rows if is_output_row(row) and is_expected_row(row)]
+    buildable_rows = [row for row in output_rows if has_required_sources(row)]
+    reference_rows = [row for row in plan_rows if row.get("build_role") == "reference_only" and is_expected_row(row)]
+    expected_rows = [row for row in plan_rows if is_expected_row(row)]
     buildable_count = len(buildable_rows)
     local_timeframes = [timeframe for timeframe in selected_timeframes if timeframe not in CARRYOVER_TIMEFRAMES]
     stateful_timeframes = [timeframe for timeframe in selected_timeframes if timeframe in CARRYOVER_TIMEFRAMES]
@@ -295,7 +305,7 @@ def summarize_phases(
             active_by_stage["scan_source"].clear()
         elif event_name == "session_skipped" and phase == "reference_warmup":
             reference_done += 1.0
-        elif event_name == "phase_complete" and status == "complete" and phase in {"raw_load", "canonicalize_1m", "aggregate", "aggregate_daily"}:
+        elif event_name == "phase_complete" and status == "complete" and phase in {"raw_load", "canonicalize_1m", "spread_join", "spread_backfill", "aggregate", "aggregate_daily"}:
             bar_elapsed += duration
             active_by_stage["build_bars"].pop(key, None)
         elif event_name == "artifact_complete" and status == "complete" and group == "bars":
@@ -495,9 +505,10 @@ def build_session_cards(
             continue
         session_rows[row["session_date"]] = {
             "session_date": row["session_date"],
-            "expected_market_session": row.get("expected_market_session"),
+            "expected_market_session": is_expected_row(row),
             "exists": row.get("exists"),
-            "status": "queued" if row.get("exists") and row.get("expected_market_session") else row.get("status", "closed"),
+            "spread_exists": row.get("spread_exists"),
+            "status": "queued" if has_required_sources(row) and is_expected_row(row) else row.get("status", "closed"),
             "phase": row.get("status", "queued"),
             "duration_sec": 0.0,
             "step_done": 0.0,
@@ -641,9 +652,9 @@ def build_session_cards(
         row["step_total"] = total
         row["duration_sec"] = round(elapsed, 3)
         if row.get("status") != "failed":
-            if row.get("expected_market_session") and row.get("exists") and total and done >= total:
+            if row.get("expected_market_session") and has_required_sources(row) and total and done >= total:
                 row["status"] = "complete"
-            elif row.get("expected_market_session") and row.get("exists") and done > 0:
+            elif row.get("expected_market_session") and has_required_sources(row) and done > 0:
                 row["status"] = "running"
         materialized.append(
             {
@@ -668,13 +679,13 @@ def build_session_cards(
 
 
 def build_metrics(plan_rows: list[dict[str, Any]], events: list[dict[str, Any]], job_status: dict[str, Any] | None) -> dict[str, Any]:
-    expected = [row for row in plan_rows if row.get("expected_market_session")]
+    expected = [row for row in plan_rows if is_expected_row(row)]
     output = [row for row in expected if is_output_row(row)]
     reference = [row for row in expected if row.get("build_role") == "reference_only"]
-    buildable = [row for row in output if row.get("exists")]
-    missing = [row for row in expected if not row.get("exists")]
+    buildable = [row for row in output if has_required_sources(row)]
+    missing = [row for row in expected if not has_required_sources(row)]
     missing_reference = [row for row in reference if not row.get("exists")]
-    closed = [row for row in plan_rows if not row.get("expected_market_session")]
+    closed = [row for row in plan_rows if not is_expected_row(row)]
     artifact_events = [event for event in events if event.get("event") == "artifact_complete"]
     run_complete = next((event for event in reversed(events) if event.get("event") == "run_complete"), None)
     elapsed = float(run_complete.get("duration_sec") or 0.0) if run_complete else started_at_seconds((job_status or {}).get("started_at"))

@@ -239,10 +239,13 @@ def build_duration_seconds(payload: dict[str, Any]) -> float | None:
 def summarize_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     artifact_events = [event for event in events if event.get("event") == "artifact_complete"]
     plan = next((event.get("plan") for event in reversed(events) if event.get("event") == "plan_complete" and isinstance(event.get("plan"), list)), [])
-    expected = [row for row in plan if row.get("expected_market_session")] if isinstance(plan, list) else []
-    output = [row for row in expected if row.get("build_role") in {None, "output"}]
+    if not isinstance(plan, list):
+        plan = []
+    has_expected_flag = any("expected_market_session" in row for row in plan if isinstance(row, dict))
+    expected = [row for row in plan if row.get("expected_market_session")] if has_expected_flag else [row for row in plan if isinstance(row, dict)]
+    output = [row for row in expected if row.get("build_role") in {None, "output", "spread_backfill"} or row.get("write_output") is True]
     reference = [row for row in expected if row.get("build_role") == "reference_only"]
-    missing = [row for row in expected if not row.get("exists")]
+    missing = [row for row in expected if not row.get("exists") or row.get("spread_exists") is False]
     return {
         "artifact_count": len(artifact_events),
         "rows_written": sum(int(event.get("rows_out") or 0) for event in artifact_events),
