@@ -249,6 +249,17 @@ const SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
   label: "Momentum Filters",
   title: "Apply close, volume, green bar, TEMA, MACD, and MACD z-score filters.",
 };
+const SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
+  filters: {
+    estimated_spread_bps: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
+    range_proxy_bps: { operator: "lte", presetLabel: "<= 150 bps", valueText: "150" },
+    illiquidity_proxy_bps: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
+    tick_floor_bps: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
+    recent_dollar_volume_5: { operator: "gte", presetLabel: ">= $100k", valueText: "100000" },
+  },
+  label: "Spread Quality",
+  title: "Apply spread-risk and recent dollar-volume filters to avoid high-cost fills.",
+};
 const PREVIEW_PAGE_SIZE = 1000;
 const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "anchored_zone", "continuous_band", "background_state", "data_only", "other"];
 const PRESENTATION_TYPE_LABELS: Record<string, string> = {
@@ -880,7 +891,7 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
       <DataTable
         columns={snapshot?.columns}
         empty={scannerRunId === 0 ? "Load a scanner snapshot to show rows." : "No rows."}
-        filterPresets={[SCANNER_MOMENTUM_FILTER_PRESET]}
+        filterPresets={[SCANNER_MOMENTUM_FILTER_PRESET, SCANNER_SPREAD_FILTER_PRESET]}
         onRowClick={
           scannerChartRecord && snapshot
             ? (row) => setChartTarget({ rangeMode: "session", record: scannerChartRecord, row: scannerChartRow(row, snapshot) })
