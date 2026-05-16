@@ -134,6 +134,7 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "consecutive_red",
         "green_bar_count_so_far",
         "red_bar_count_so_far",
+        "green_bars_occurrence",
         "green_body_sum_so_far",
         "red_body_sum_so_far",
         "green_body_avg",
@@ -476,6 +477,10 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             ((pl.col("close") < pl.col("vwap")) & (pl.col("close").shift(1).over("ticker") >= pl.col("vwap").shift(1).over("ticker"))).alias("breakdown_vwap"),
         )
         .with_columns(
+            pl.when(pl.col("session_bar_count") > 0)
+            .then(pl.col("green_bar_count_so_far") / pl.col("session_bar_count"))
+            .otherwise(0.0)
+            .alias("green_bars_occurrence"),
             pl.when(pl.col("green_bar_count_so_far") > 0)
             .then(pl.col("green_body_sum_so_far") / pl.col("green_bar_count_so_far"))
             .otherwise(0.0)

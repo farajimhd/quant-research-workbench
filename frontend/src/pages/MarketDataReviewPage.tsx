@@ -201,6 +201,26 @@ const DEFAULT_CHART_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
 const CHART_DISPLAY_ITEMS_NONE = "__none__";
 const SCANNER_FORMULA_STORAGE_KEY = "qrw.scannerFormulaPresets.v1";
+const SCANNER_COMPATIBILITY_COLUMNS = [
+  "volume_sma10",
+  "relative_volume10",
+  "body",
+  "body_abs",
+  "is_green",
+  "is_red",
+  "bar_range",
+  "session_bar_count",
+  "green_bar_count_so_far",
+  "red_bar_count_so_far",
+  "green_bars_occurrence",
+  "green_body_sum_so_far",
+  "red_body_sum_so_far",
+  "green_body_avg",
+  "red_body_avg",
+  "green_range_sum_so_far",
+  "red_range_sum_so_far",
+  "net_body_sum_so_far",
+];
 const PREVIEW_PAGE_SIZE = 1000;
 const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "anchored_zone", "continuous_band", "background_state", "data_only", "other"];
 const PRESENTATION_TYPE_LABELS: Record<string, string> = {
@@ -3814,9 +3834,12 @@ function scannerAvailableColumns(records: RecordRow[], sessionDate: string, time
   const groups = new Set(["bars", ...featureGroups.map((group) => `features_${group}`)]);
   return Array.from(
     new Set(
-      records
-        .filter((record) => record.exists && record.session_date === sessionDate && record.timeframe === timeframe && groups.has(record.group))
-        .flatMap((record) => record.columns)
+      [
+        ...records
+          .filter((record) => record.exists && record.session_date === sessionDate && record.timeframe === timeframe && groups.has(record.group))
+          .flatMap((record) => record.columns),
+        ...SCANNER_COMPATIBILITY_COLUMNS,
+      ]
     )
   ).sort();
 }

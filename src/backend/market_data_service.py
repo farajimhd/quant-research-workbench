@@ -482,6 +482,13 @@ def apply_scanner_price_action_compatibility_columns(scan: pl.LazyFrame, names: 
         names = scan.collect_schema().names()
 
     average_exprs: list[pl.Expr] = []
+    if {"green_bar_count_so_far", "session_bar_count"}.issubset(names):
+        average_exprs.append(
+            pl.when(pl.col("session_bar_count") > 0)
+            .then(pl.col("green_bar_count_so_far") / pl.col("session_bar_count"))
+            .otherwise(0.0)
+            .alias("green_bars_occurrence")
+        )
     if {"green_body_sum_so_far", "green_bar_count_so_far"}.issubset(names):
         average_exprs.append(
             pl.when(pl.col("green_bar_count_so_far") > 0)
@@ -725,6 +732,7 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "day_dollar_volume_so_far",
         "green_bar_count_so_far",
         "red_bar_count_so_far",
+        "green_bars_occurrence",
         "green_body_sum_so_far",
         "red_body_sum_so_far",
         "green_body_avg",
