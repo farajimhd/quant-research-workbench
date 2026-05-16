@@ -5595,6 +5595,10 @@ button {
   gap: 8px;
 }
 
+.scanner-formula-preset-name {
+  max-width: 360px;
+}
+
 .scanner-formula-row {
   display: grid;
   grid-template-columns: 58px minmax(150px, 0.5fr) minmax(280px, 1fr) auto;

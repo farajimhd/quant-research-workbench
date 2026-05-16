@@ -785,7 +785,7 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
             <Calculator size={16} />
             Formulas
           </button>
-          <Select label="Formula preset" value={activeFormulaPresetId} options={["", ...formulaPresets.map((preset) => preset.id)]} optionLabels={formulaPresetLabels(formulaPresets)} onChange={setActiveFormulaPresetId} />
+          <Select label="Active formula set" value={activeFormulaPresetId} options={["", ...formulaPresets.map((preset) => preset.id)]} optionLabels={formulaPresetLabels(formulaPresets)} onChange={setActiveFormulaPresetId} />
           <div className="preview-query-summary">
             <span>{snapshot?.rows.length ?? 0} rows</span>
             <span>{snapshot?.feature_groups?.length ? snapshot.feature_groups.join(", ") : "bars only"}</span>
@@ -811,7 +811,7 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
           <ScannerFormulaPanel
             activePresetId={activeFormulaPresetId}
             availableColumns={baseAvailableColumns}
-            onActivePresetChange={setActiveFormulaPresetId}
+            onSelectPreset={setActiveFormulaPresetId}
             onPresetsChange={setFormulaPresets}
             presets={formulaPresets}
           />
@@ -969,13 +969,13 @@ function ScannerFilterPanel({
 function ScannerFormulaPanel({
   activePresetId,
   availableColumns,
-  onActivePresetChange,
+  onSelectPreset,
   onPresetsChange,
   presets,
 }: {
   activePresetId: string;
   availableColumns: string[];
-  onActivePresetChange: (value: string) => void;
+  onSelectPreset: (value: string) => void;
   onPresetsChange: (value: ScannerFormulaPreset[]) => void;
   presets: ScannerFormulaPreset[];
 }) {
@@ -995,7 +995,7 @@ function ScannerFormulaPanel({
       name: `Scanner formulas ${presets.length + 1}`,
     };
     onPresetsChange([...presets, preset]);
-    onActivePresetChange(preset.id);
+    onSelectPreset(preset.id);
   }
 
   function updatePreset(patch: Partial<ScannerFormulaPreset>) {
@@ -1046,7 +1046,7 @@ function ScannerFormulaPanel({
     if (!activePreset) return;
     const nextPresets = presets.filter((preset) => preset.id !== activePreset.id);
     onPresetsChange(nextPresets);
-    onActivePresetChange(nextPresets[0]?.id ?? "");
+    onSelectPreset(nextPresets[0]?.id ?? "");
   }
 
   const validationMessages = activePreset ? validateScannerFormulaColumns(activePreset.columns, availableColumns) : [];
@@ -1075,9 +1075,9 @@ function ScannerFormulaPanel({
       </div>
       {activePreset ? (
         <>
-          <div className="preview-query-grid">
-            <InlineField label="Preset name" value={activePreset.name} onChange={(value) => updatePreset({ name: value })} />
-            <Select label="Active preset" value={activePresetId} options={presets.map((preset) => preset.id)} optionLabels={formulaPresetLabels(presets)} onChange={onActivePresetChange} />
+          <div className="scanner-formula-preset-name field">
+            <label>Formula set name</label>
+            <input value={activePreset.name} onChange={(event) => updatePreset({ name: event.target.value })} />
           </div>
           {validationMessages.length ? (
             <div className="preview-sample-status error">
@@ -1094,7 +1094,7 @@ function ScannerFormulaPanel({
                     <input checked={column.enabled} type="checkbox" onChange={(event) => updateFormula(column.id, { enabled: event.target.checked })} />
                     On
                   </label>
-                  <InlineField label="Column" value={column.name} onChange={(value) => updateFormula(column.id, { name: value })} />
+                  <InlineField label="New column" value={column.name} onChange={(value) => updateFormula(column.id, { name: value })} />
                   <div className="field scanner-formula-expression">
                     <label>Expression</label>
                     <input placeholder="zscore(macd_line - macd_signal)" value={column.expression} onChange={(event) => updateFormula(column.id, { expression: event.target.value })} />
