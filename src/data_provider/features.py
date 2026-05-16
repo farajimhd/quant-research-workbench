@@ -102,6 +102,10 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "relative_volume20",
         "dollar_volume_sma20",
         "relative_dollar_volume20",
+        "tod_cum_volume_avg13",
+        "intraday_rvol13",
+        "tod_cum_dollar_volume_avg13",
+        "intraday_dollar_rvol13",
         "obv",
         "mfi14",
         "cmf20",
@@ -304,6 +308,7 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             pl.col("high").cum_max().over(["ticker", "session_date"]).alias("day_high_so_far"),
             pl.col("low").cum_min().over(["ticker", "session_date"]).alias("day_low_so_far"),
             pl.col("volume").cum_sum().over(["ticker", "session_date"]).alias("day_volume_so_far"),
+            pl.col("dollar_volume").cum_sum().over(["ticker", "session_date"]).alias("_day_dollar_volume_so_far"),
         )
         .pipe(add_previous_session_close)
         .with_columns(
@@ -382,6 +387,26 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             (pl.col("ema20") - 2.0 * pl.col("atr14")).alias("keltner_lower20"),
             pl.when(pl.col("volume_sma20") > 0).then(pl.col("volume") / pl.col("volume_sma20")).otherwise(0.0).alias("relative_volume20"),
             pl.when(pl.col("dollar_volume_sma20") > 0).then(pl.col("dollar_volume") / pl.col("dollar_volume_sma20")).otherwise(0.0).alias("relative_dollar_volume20"),
+            pl.col("day_volume_so_far")
+            .shift(1)
+            .rolling_mean(13, min_samples=1)
+            .over(["ticker", "minute_of_day"])
+            .alias("tod_cum_volume_avg13"),
+            pl.col("_day_dollar_volume_so_far")
+            .shift(1)
+            .rolling_mean(13, min_samples=1)
+            .over(["ticker", "minute_of_day"])
+            .alias("tod_cum_dollar_volume_avg13"),
+        )
+        .with_columns(
+            pl.when(pl.col("tod_cum_volume_avg13") > 0)
+            .then(pl.col("day_volume_so_far") / pl.col("tod_cum_volume_avg13"))
+            .otherwise(None)
+            .alias("intraday_rvol13"),
+            pl.when(pl.col("tod_cum_dollar_volume_avg13") > 0)
+            .then(pl.col("_day_dollar_volume_so_far") / pl.col("tod_cum_dollar_volume_avg13"))
+            .otherwise(None)
+            .alias("intraday_dollar_rvol13"),
         )
     )
     typical_money_flow = pl.col("hlc3") * pl.col("volume")

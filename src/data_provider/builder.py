@@ -34,10 +34,10 @@ CARRYOVER_TIMEFRAMES = set(STATEFUL_TIMEFRAME_ORDER)
 REFERENCE_LOOKBACK_SESSIONS = 13
 STATEFUL_WORKERS = 2
 STATEFUL_LOOKBACK_SESSIONS = {
-    "1m": 1,
-    "5m": 2,
-    "15m": 4,
-    "30m": 7,
+    "1m": 13,
+    "5m": 13,
+    "15m": 13,
+    "30m": 13,
     "1h": 13,
     "2h": 25,
     "4h": 50,

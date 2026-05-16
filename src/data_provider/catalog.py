@@ -477,9 +477,11 @@ TITLE_ACRONYMS = {
     "orb": "ORB",
     "pct": "pct",
     "roc": "ROC",
+    "rvol": "RVOL",
     "rsi": "RSI",
     "sma": "SMA",
     "tema": "TEMA",
+    "tod": "TOD",
     "utc": "UTC",
     "vwap": "VWAP",
 }
@@ -2245,6 +2247,34 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
             interpretation="High relative activity is more meaningful when price is also moving directionally or breaking structure.",
             equation=f"$$Relative{numerator}20_t=\\begin{{cases}}\\frac{{{numerator}_t}}{{{denominator}_t}},&{denominator}_t>0\\\\0,&otherwise\\end{{cases}}$$",
             variables={numerator: "Current activity", denominator: "20-bar activity baseline"},
+        )
+    tod_baselines = {
+        "tod_cum_volume_avg13": ("DayVolumeSoFar", "share volume"),
+        "tod_cum_dollar_volume_avg13": ("DayDollarVolumeSoFar", "dollar volume"),
+    }
+    if lower in tod_baselines:
+        symbol, description = tod_baselines[lower]
+        return knowledge_block(
+            short=f"Prior-session same-time cumulative {description} baseline.",
+            detailed=f"{title} is the average cumulative {description} observed at the same minute of day over up to 13 prior sessions for the same ticker. The current session is shifted out before the rolling average, so this baseline is available without lookahead.",
+            theory=theory_for_group(group, category),
+            interpretation="Use this as the denominator for intraday relative volume. It respects the normal time-of-day volume curve better than comparing the open, midday, and close against one generic volume average.",
+            equation=f"$$TODAvg13_t=\\frac{{1}}{{N}}\\sum_{{s=1}}^{{N}}{symbol}_{{same\\ minute,prior\\ session\\ s}},\\quad N\\le13$$",
+            variables={symbol: f"Cumulative {description} up to the current minute"},
+        )
+    intraday_relative = {
+        "intraday_rvol13": ("DayVolumeSoFar", "TODCumVolumeAvg13"),
+        "intraday_dollar_rvol13": ("DayDollarVolumeSoFar", "TODCumDollarVolumeAvg13"),
+    }
+    if lower in intraday_relative:
+        numerator, denominator = intraday_relative[lower]
+        return knowledge_block(
+            short="Time-of-day cumulative relative volume.",
+            detailed=f"{title} compares today's cumulative activity at the current minute with the ticker's prior-session same-minute baseline. A value of 2 means the ticker has traded about twice its normal cumulative activity for this time of day.",
+            theory=theory_for_group(group, category),
+            interpretation="Use high values as evidence that participation is abnormal for the exact point in the session. It is especially useful for scanners because it compares 9:35 with prior 9:35 behavior and 12:35 with prior 12:35 behavior.",
+            equation=f"$$IntradayRVOL13_t=\\begin{{cases}}\\frac{{{numerator}_t}}{{{denominator}_t}},&{denominator}_t>0\\\\null,&otherwise\\end{{cases}}$$",
+            variables={numerator: "Current session cumulative activity", denominator: "Up to 13 prior sessions same-minute baseline"},
         )
     details = {
         "obv": (

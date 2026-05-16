@@ -660,7 +660,7 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
       ).sort(),
     [records, sessionDate, timeframe]
   );
-  const defaultFeatures = useMemo(() => featureOptions.filter((group) => ["core", "session", "momentum"].includes(group)), [featureOptions]);
+  const defaultFeatures = useMemo(() => featureOptions.filter((group) => ["core", "session", "momentum", "volume_liquidity"].includes(group)), [featureOptions]);
   const [barTime, setBarTime] = useState("09:30");
   const featureGroups = defaultFeatures.join(",");
   const columns = "";
