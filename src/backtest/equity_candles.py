@@ -6,19 +6,12 @@ from zoneinfo import ZoneInfo
 import polars as pl
 
 
-PORTFOLIO_CANDLE_TIMEFRAMES = ("1h", "2h", "4h", "1d")
+PORTFOLIO_CANDLE_TIMEFRAMES = ("30m", "1h", "2h", "4h", "1d")
 EXCHANGE_TIME_ZONE = "America/New_York"
 
 
 def default_portfolio_candle_timeframe(start_date: date, end_date: date) -> str:
-    days = max(1, (end_date - start_date).days + 1)
-    if days <= 5:
-        return "1h"
-    if days <= 15:
-        return "2h"
-    if days <= 45:
-        return "1d"
-    return "1d"
+    return "30m"
 
 
 def build_portfolio_candles(
@@ -170,6 +163,8 @@ def aggregate_candles(frame: pl.DataFrame, timeframe: str) -> pl.DataFrame:
 def polars_duration(timeframe: str) -> str:
     if timeframe == "1m":
         return "1m"
+    if timeframe == "30m":
+        return "30m"
     if timeframe == "1h":
         return "1h"
     if timeframe == "2h":

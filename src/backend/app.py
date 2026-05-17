@@ -79,7 +79,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 CHART_DISPLAY_ITEMS_NONE = "__none__"
 EXCHANGE_TIME_ZONE = "America/New_York"
-PORTFOLIO_CHART_TIMEFRAMES = ["1h", "2h", "4h", "1d"]
+PORTFOLIO_CHART_TIMEFRAMES = ["30m", "1h", "2h", "4h", "1d"]
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
 app.add_middleware(
@@ -235,7 +235,7 @@ def portfolio_candle_payload(run_dir: Path, metadata: dict[str, Any]) -> dict[st
                 date.fromisoformat(str(config.get("end_date"))),
             )
         except (TypeError, ValueError):
-            default_timeframe = "1h"
+            default_timeframe = "30m"
     if not path.exists():
         return {"timeframes": available_timeframes, "default_timeframe": default_timeframe, "candles": {}}
     frame = pl.read_parquet(path)

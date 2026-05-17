@@ -725,7 +725,7 @@ class BacktestEngine:
         artifact_writer.write_json(
             run_dir / "chart_metadata.json",
             {
-                "portfolio_candle_timeframes": ["1h", "2h", "4h", "1d"],
+                "portfolio_candle_timeframes": ["30m", "1h", "2h", "4h", "1d"],
                 "default_portfolio_candle_timeframe": default_portfolio_candle_timeframe(
                     self.config.start_date,
                     self.config.end_date,

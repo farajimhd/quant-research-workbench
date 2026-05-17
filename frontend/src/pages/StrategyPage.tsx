@@ -2896,10 +2896,10 @@ function StrategySymbolChart({
 }
 
 function portfolioChartTimeframes(payload?: PortfolioCandlePayload | null) {
-  const allowed = ["1h", "2h", "4h", "1d"];
+  const allowed = ["30m", "1h", "2h", "4h", "1d"];
   const provided = payload?.timeframes?.length ? payload.timeframes.map(String) : allowed;
   const filtered = allowed.filter((timeframe) => provided.includes(timeframe));
-  return filtered.length ? filtered : ["1h"];
+  return filtered.length ? filtered : ["30m"];
 }
 
 function portfolioChartPeriodBounds(payload: PortfolioCandlePayload | null | undefined, timeframes: string[]) {

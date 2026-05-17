@@ -20,6 +20,9 @@ from src.strategies.liquidity_pullback_reversal.v1.presentation import (
     chart_presentation as liquidity_pullback_reversal_v1_chart_presentation,
 )
 from src.strategies.liquidity_pullback_reversal.v1.strategy import LiquidityPullbackReversalStrategy
+from src.strategies.long_momentum.v1.config import LongMomentumConfig as LongMomentumV1Config
+from src.strategies.long_momentum.v1.presentation import chart_presentation as long_momentum_v1_chart_presentation
+from src.strategies.long_momentum.v1.strategy import LongMomentumStrategy
 from src.strategies.orb_5m_momentum.v10.config import OrbMomentumConfig as OrbMomentumV10Config
 from src.strategies.orb_5m_momentum.v10.presentation import chart_presentation as orb_5m_momentum_v10_chart_presentation
 from src.strategies.orb_5m_momentum.v10.strategy import OrbFiveMinuteMomentumV10Strategy
@@ -158,10 +161,19 @@ def default_liquidity_pullback_reversal_v1_params() -> dict:
     return LiquidityPullbackReversalV1Config().to_dict()
 
 
+def create_long_momentum_v1(params: dict | None = None) -> LongMomentumStrategy:
+    return LongMomentumStrategy(LongMomentumV1Config.from_dict(params))
+
+
+def default_long_momentum_v1_params() -> dict:
+    return LongMomentumV1Config().to_dict()
+
+
 STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("adaptive_live_trend_rotation", "v1"): create_adaptive_live_trend_rotation_v1,
     ("break_of_vwap", "v1"): create_break_of_vwap_v1,
     ("liquidity_pullback_reversal", "v1"): create_liquidity_pullback_reversal_v1,
+    ("long_momentum", "v1"): create_long_momentum_v1,
     ("orb_5m_momentum", "v10"): create_orb_5m_momentum_v10,
     ("orb_5m_momentum", "v1"): create_orb_5m_momentum_v1,
     ("orb_5m_momentum", "v2"): create_orb_5m_momentum_v2,
@@ -178,6 +190,7 @@ STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("adaptive_live_trend_rotation", "v1"): default_adaptive_live_trend_rotation_v1_params,
     ("break_of_vwap", "v1"): default_break_of_vwap_v1_params,
     ("liquidity_pullback_reversal", "v1"): default_liquidity_pullback_reversal_v1_params,
+    ("long_momentum", "v1"): default_long_momentum_v1_params,
     ("orb_5m_momentum", "v10"): default_orb_5m_momentum_v10_params,
     ("orb_5m_momentum", "v1"): default_orb_5m_momentum_v1_params,
     ("orb_5m_momentum", "v2"): default_orb_5m_momentum_v2_params,
@@ -194,6 +207,7 @@ STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]]
     ("adaptive_live_trend_rotation", "v1"): adaptive_live_trend_rotation_v1_chart_presentation,
     ("break_of_vwap", "v1"): break_of_vwap_v1_chart_presentation,
     ("liquidity_pullback_reversal", "v1"): liquidity_pullback_reversal_v1_chart_presentation,
+    ("long_momentum", "v1"): long_momentum_v1_chart_presentation,
     ("orb_5m_momentum", "v10"): orb_5m_momentum_v10_chart_presentation,
     ("orb_5m_momentum", "v1"): orb_5m_momentum_v1_chart_presentation,
     ("orb_5m_momentum", "v2"): orb_5m_momentum_v2_chart_presentation,
@@ -219,6 +233,10 @@ STRATEGY_DESCRIPTIONS: dict[str, str] = {
         "Looks for liquid symbols that pull back into support, recover with momentum, "
         "and offer asymmetric long continuation."
     ),
+    "long_momentum": (
+        "Extended-hours long-only momentum scanner that deploys into the strongest "
+        "eligible candidate and exits through adaptive profit protection."
+    ),
     "orb_5m_momentum": (
         "Versioned 5-minute opening-range breakout family, evolving scanner, entry, "
         "profit-reentry, and risk rules incrementally across versions."
@@ -236,6 +254,11 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ),
     ("liquidity_pullback_reversal", "v1"): (
         "Pullback-reversal baseline: search liquid names for controlled pullbacks into support followed by a momentum recovery."
+    ),
+    ("long_momentum", "v1"): (
+        "Extended-hours Long Momentum baseline: filter liquid green momentum bars from 04:00 to 20:00 ET, rank by one-bar "
+        "return, deploy into the top candidate, fully rotate when a stronger candidate appears, and protect profits with "
+        "R floors, TEMA deterioration, velocity, shrinking-body, and red-giveback exits."
     ),
     ("orb_5m_momentum", "v1"): (
         "Baseline provider-backed ORB momentum version with daily context, opening-range setup scoring, 5-minute momentum "
@@ -283,6 +306,7 @@ DEFAULT_STRATEGY_VERSIONS: dict[str, str] = {
     "adaptive_live_trend_rotation": "v1",
     "break_of_vwap": "v1",
     "liquidity_pullback_reversal": "v1",
+    "long_momentum": "v1",
     "orb_5m_momentum": "v3",
 }
 
