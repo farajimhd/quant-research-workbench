@@ -371,7 +371,14 @@ class BacktestEngine:
             for column in frame.columns
             if column not in current_columns
         ]
-        return frame.with_columns(shifted_exprs) if shifted_exprs else frame
+        decision = frame.with_columns(shifted_exprs) if shifted_exprs else frame
+        alias_exprs = [pl.col("open").alias("current_open"), pl.col("open").shift(1).over("ticker").alias("last_open")]
+        alias_exprs.extend(
+            pl.col(column).alias(f"last_{column}")
+            for column in frame.columns
+            if column not in current_columns and f"last_{column}" not in decision.columns
+        )
+        return decision.with_columns(alias_exprs)
 
     def _execution_frame_for_decisions(self, execution_frame: pl.DataFrame, decision_frame: pl.DataFrame) -> pl.DataFrame:
         if execution_frame.is_empty() or decision_frame.is_empty():

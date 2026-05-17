@@ -2,31 +2,32 @@
 
 Long Momentum v1 is an extended-hours scanner strategy that trades long from
 04:00 ET through 20:00 ET. It evaluates each 1-minute event at the current bar
-open. The strategy row keeps the current bar's `open` and timestamp, while
-`high`, `low`, `close`, volume, transactions, spread, and indicators come from
-the previous completed bar.
+open. The strategy row exposes `current_open` for the actionable bar's open and
+uses `last_*` columns for the previous completed bar, such as `last_high`,
+`last_low`, `last_close`, `last_volume`, `last_spread`, and indicator values.
 
 ## Scanner
 
 At each bar open the strategy filters the current cross-section using the
 strategy-time row:
 
-- `close` between `min_price` and `max_price`, default 1 to 10
-- `volume >= min_volume`, default 10,000
-- `transactions >= min_transactions`, default 100
-- `is_red == false`
-- current close is above the previous completed candle close
-- `tema9 > tema20`
-- `macd_line > 0`
-- `macd_hist_z_since_open >= min_macd_hist_z_since_open`, default 0.1
-- `max_fill_qty` is available from the provider as the known entry capacity.
-  When quote size is present, it is based on the prior bar's `quote_ask_size`;
+- `last_close` between `min_price` and `max_price`, default 1 to 10
+- `last_volume >= min_volume`, default 10,000
+- `last_transactions >= min_transactions`, default 100
+- `last_is_red == false`
+- `last_return_1 > 0`
+- `last_tema9 > last_tema20`
+- `last_macd_line > 0`
+- `last_macd_hist_z_since_open >= min_macd_hist_z_since_open`, default 0.1
+- `last_max_fill_qty` is available from the provider as the known entry
+  capacity. When quote size is present, it is based on the prior bar's
+  `quote_ask_size`;
   otherwise it falls back to a 3-bar volume/transaction estimate.
 - spread gate:
-  - price from 1 through 4.9999: `spread <= 0.02`
-  - price from 5 through 10: `spread <= 0.05`
+  - price from 1 through 4.9999: `last_spread <= 0.02`
+  - price from 5 through 10: `last_spread <= 0.05`
 
-Eligible rows are ranked by `return_1` descending. The top eligible candidate is
+Eligible rows are ranked by `last_return_1` descending. The top eligible candidate is
 the entry candidate.
 
 ## Entry And Rotation
@@ -37,8 +38,8 @@ configured slippage and per-share fee estimate. If the top candidate is already
 held, it is ignored.
 
 An eligible scanner row is only an intent. The strategy submits a one-bar-valid
-buy stop at `max(open, close)` of the strategy-time row, which means the current
-open or previous completed close, whichever is higher. The initial stop is one
+buy stop at `max(current_open, last_close)` of the strategy-time row. The
+initial stop is one
 cent below the actual entry fill by default. The stop-entry fills when the
 current execution bar trades through the trigger. If the trigger is not touched
 on that bar, the order expires and the scanner is evaluated again on the next
@@ -50,7 +51,7 @@ When the new one-bar return is stronger, the strategy fully rotates: it exits
 the current position and enters the new candidate. There is no partial rotation
 in v1.
 
-If the all-cash entry size is larger than provider-estimated `max_fill_qty`, or
+If the all-cash entry size is larger than provider-estimated `last_max_fill_qty`, or
 if quote capacity is zero, the strategy skips the entry before submitting an
 order. The backtest engine still applies its execution-bar liquidity guard at
 fill time. Entries use ask-side quote size as capacity, while exits use bid-side
@@ -68,7 +69,7 @@ entry trigger.
 
 Additional exits:
 
-- `TEMA_CLOSE`: `tema9 < tema20 + offset`
+- `TEMA_CLOSE`: `last_tema9 < last_tema20 + offset`
 - `TAKE_PROFIT`: target exit when the current bar high reaches at least
   `take_profit_pct`, default 10%, above the entry price
 - `EOD`: flatten at the end of the available extended-hours session

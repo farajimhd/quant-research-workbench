@@ -465,47 +465,63 @@ def apply_strategy_decision_view(scan: pl.LazyFrame, schema: pl.Schema) -> pl.La
         for column in names
         if column not in current_columns
     ]
-    return scan.with_columns(shifted_exprs) if shifted_exprs else scan
+    decision = scan.with_columns(shifted_exprs) if shifted_exprs else scan
+    alias_exprs = [pl.col("open").alias("current_open"), pl.col("open").shift(1).over("ticker").alias("last_open")]
+    alias_exprs.extend(
+        pl.col(column).alias(f"last_{column}")
+        for column in names
+        if column not in current_columns and f"last_{column}" not in names
+    )
+    return decision.with_columns(alias_exprs)
 
 
 def apply_strategy_decision_price_action_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
-    if not {"open", "close"}.issubset(names):
+    if not {"last_open", "last_close"}.issubset(names):
         return scan
-    body = pl.col("close") - pl.col("open")
+    body = pl.col("last_close") - pl.col("last_open")
     exprs: list[pl.Expr] = [
+        body.alias("last_body"),
         body.alias("body"),
+        body.abs().alias("last_body_abs"),
         body.abs().alias("body_abs"),
-        (pl.col("close") > pl.col("open")).alias("is_green"),
-        (pl.col("close") < pl.col("open")).alias("is_red"),
+        (pl.col("last_close") > pl.col("last_open")).alias("last_is_green"),
+        (pl.col("last_close") > pl.col("last_open")).alias("is_green"),
+        (pl.col("last_close") < pl.col("last_open")).alias("last_is_red"),
+        (pl.col("last_close") < pl.col("last_open")).alias("is_red"),
     ]
-    if {"high", "low"}.issubset(names):
-        exprs.append((pl.col("high") - pl.col("low")).alias("bar_range"))
+    if {"last_high", "last_low"}.issubset(names):
+        exprs.extend(
+            [
+                (pl.col("last_high") - pl.col("last_low")).alias("last_bar_range"),
+                (pl.col("last_high") - pl.col("last_low")).alias("bar_range"),
+            ]
+        )
     return scan.with_columns(exprs)
 
 
 def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
-    if not {"close", "spread"}.issubset(names):
+    if not {"last_close", "last_spread"}.issubset(names):
         return scan
     spread_ok = (
-        pl.when(pl.col("close") < 5.0)
-        .then(pl.col("spread") <= 0.02)
-        .otherwise(pl.col("spread") <= 0.05)
+        pl.when(pl.col("last_close") < 5.0)
+        .then(pl.col("last_spread") <= 0.02)
+        .otherwise(pl.col("last_spread") <= 0.05)
         .fill_null(False)
     )
     exprs: list[pl.Expr] = [spread_ok.alias("long_momentum_spread_ok")]
-    required = {"close", "volume", "transactions", "is_red", "return_1", "tema_open", "macd_line", "macd_hist_z_since_open"}
+    required = {"last_close", "last_volume", "last_transactions", "last_is_red", "last_return_1", "last_tema_open", "last_macd_line", "last_macd_hist_z_since_open"}
     if required.issubset(names):
         exprs.append(
             (
-                (pl.col("close") >= 1.0)
-                & (pl.col("close") <= 10.0)
-                & (pl.col("volume") >= 10_000)
-                & (pl.col("transactions") >= 100)
-                & (~pl.col("is_red"))
-                & (pl.col("return_1") > 0)
-                & pl.col("tema_open")
-                & (pl.col("macd_line") > 0)
-                & (pl.col("macd_hist_z_since_open") >= 0.1)
+                (pl.col("last_close") >= 1.0)
+                & (pl.col("last_close") <= 10.0)
+                & (pl.col("last_volume") >= 10_000)
+                & (pl.col("last_transactions") >= 100)
+                & (~pl.col("last_is_red"))
+                & (pl.col("last_return_1") > 0)
+                & pl.col("last_tema_open")
+                & (pl.col("last_macd_line") > 0)
+                & (pl.col("last_macd_hist_z_since_open") >= 0.1)
                 & spread_ok
             )
             .fill_null(False)
@@ -927,94 +943,95 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
     preferred = [
         "ticker",
         "bar_time_market",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "transactions",
-        "dollar_volume",
-        "relative_volume10",
-        "relative_volume20",
-        "relative_dollar_volume20",
-        "recent_dollar_volume_5",
-        "recent_transactions_5",
-        "avg_trade_size",
-        "max_fill_qty",
-        "max_entry_qty",
-        "max_exit_qty",
-        "max_fill_qty_quote_ask",
-        "max_fill_qty_quote_bid",
-        "max_fill_qty_volume",
-        "max_fill_qty_volume_last_bar",
-        "max_fill_qty_volume_3bar",
-        "max_fill_notional",
-        "max_entry_notional",
-        "max_exit_notional",
-        "max_fill_notional_volume",
-        "max_fill_notional_volume_last_bar",
-        "max_fill_notional_volume_3bar",
-        "quote_bid_price",
-        "quote_ask_price",
-        "spread",
-        "quote_midpoint",
-        "spread_bps",
-        "spread_bps_abs",
-        "spread_bps_avg",
-        "spread_bps_median",
-        "spread_bps_max",
+        "current_open",
+        "last_open",
+        "last_high",
+        "last_low",
+        "last_close",
+        "last_volume",
+        "last_transactions",
+        "last_dollar_volume",
+        "last_relative_volume10",
+        "last_relative_volume20",
+        "last_relative_dollar_volume20",
+        "last_recent_dollar_volume_5",
+        "last_recent_transactions_5",
+        "last_avg_trade_size",
+        "last_max_fill_qty",
+        "last_max_entry_qty",
+        "last_max_exit_qty",
+        "last_max_fill_qty_quote_ask",
+        "last_max_fill_qty_quote_bid",
+        "last_max_fill_qty_volume",
+        "last_max_fill_qty_volume_last_bar",
+        "last_max_fill_qty_volume_3bar",
+        "last_max_fill_notional",
+        "last_max_entry_notional",
+        "last_max_exit_notional",
+        "last_max_fill_notional_volume",
+        "last_max_fill_notional_volume_last_bar",
+        "last_max_fill_notional_volume_3bar",
+        "last_quote_bid_price",
+        "last_quote_ask_price",
+        "last_spread",
+        "last_quote_midpoint",
+        "last_spread_bps",
+        "last_spread_bps_abs",
+        "last_spread_bps_avg",
+        "last_spread_bps_median",
+        "last_spread_bps_max",
         "long_momentum_spread_ok",
         "long_momentum_entry_open",
-        "quote_bid_size",
-        "quote_ask_size",
-        "quote_missing",
-        "spread_is_locked_or_crossed",
-        "quote_valid_ratio",
-        "locked_or_crossed_count",
-        "quoted_share_depth",
-        "quoted_dollar_depth",
-        "intraday_rvol13",
-        "intraday_dollar_rvol13",
-        "tod_cum_volume_avg13",
-        "tod_cum_dollar_volume_avg13",
-        "return_1",
-        "close_location",
-        "is_green",
-        "is_red",
-        "vwap",
-        "session_bar_count",
-        "minutes_since_premarket_start",
-        "ideal_bars_since_premarket_start",
-        "session_bar_coverage_ratio",
-        "premarket_open",
-        "change_since_premarket_open",
-        "change_since_premarket_open_pct",
-        "day_high_so_far",
-        "day_low_so_far",
-        "day_volume_so_far",
-        "day_dollar_volume_so_far",
-        "green_bar_count_so_far",
-        "red_bar_count_so_far",
-        "green_bars_occurrence",
-        "green_body_sum_so_far",
-        "red_body_sum_so_far",
-        "green_body_avg",
-        "red_body_avg",
-        "green_range_sum_so_far",
-        "red_range_sum_so_far",
-        "net_body_sum_so_far",
-        "gap_pct",
-        "or_5m_high",
-        "or_5m_low",
-        "or_5m_range",
-        "tema9",
-        "tema20",
-        "tema_open",
-        "macd_line",
-        "macd_signal",
-        "macd_hist",
-        "macd_hist_z_since_open",
-        "rsi14",
+        "last_quote_bid_size",
+        "last_quote_ask_size",
+        "last_quote_missing",
+        "last_spread_is_locked_or_crossed",
+        "last_quote_valid_ratio",
+        "last_locked_or_crossed_count",
+        "last_quoted_share_depth",
+        "last_quoted_dollar_depth",
+        "last_intraday_rvol13",
+        "last_intraday_dollar_rvol13",
+        "last_tod_cum_volume_avg13",
+        "last_tod_cum_dollar_volume_avg13",
+        "last_return_1",
+        "last_close_location",
+        "last_is_green",
+        "last_is_red",
+        "last_vwap",
+        "last_session_bar_count",
+        "last_minutes_since_premarket_start",
+        "last_ideal_bars_since_premarket_start",
+        "last_session_bar_coverage_ratio",
+        "last_premarket_open",
+        "last_change_since_premarket_open",
+        "last_change_since_premarket_open_pct",
+        "last_day_high_so_far",
+        "last_day_low_so_far",
+        "last_day_volume_so_far",
+        "last_day_dollar_volume_so_far",
+        "last_green_bar_count_so_far",
+        "last_red_bar_count_so_far",
+        "last_green_bars_occurrence",
+        "last_green_body_sum_so_far",
+        "last_red_body_sum_so_far",
+        "last_green_body_avg",
+        "last_red_body_avg",
+        "last_green_range_sum_so_far",
+        "last_red_range_sum_so_far",
+        "last_net_body_sum_so_far",
+        "last_gap_pct",
+        "last_or_5m_high",
+        "last_or_5m_low",
+        "last_or_5m_range",
+        "last_tema9",
+        "last_tema20",
+        "last_tema_open",
+        "last_macd_line",
+        "last_macd_signal",
+        "last_macd_hist",
+        "last_macd_hist_z_since_open",
+        "last_rsi14",
     ]
     selected = [column for column in preferred if column in schema_names]
     return selected or schema_names[:32]

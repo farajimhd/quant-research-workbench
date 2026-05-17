@@ -72,6 +72,16 @@ engine sends a timestamp slice containing all current ticker updates, and the
 strategy uses Polars expressions for filtering, scoring, ranking, and selecting
 candidates.
 
+At strategy time, the row is named to avoid lookahead ambiguity:
+
+- `current_open` is the open of the actionable bar at the engine timestamp.
+- `last_*` columns are values known from the previous completed bar, for
+  example `last_open`, `last_high`, `last_low`, `last_close`,
+  `last_volume`, `last_spread`, `last_tema9`, and `last_macd_line`.
+
+Raw provider artifacts still keep normal OHLC names; the strategy-time view and
+Review Data scanner use the explicit `current_` / `last_` names.
+
 The strategy may return a small number of order requests as Python objects. It
 is acceptable to convert only selected candidates or held positions to Python
 dicts; avoid iterating every ticker row in Python.

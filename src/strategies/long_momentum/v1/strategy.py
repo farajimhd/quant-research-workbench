@@ -160,51 +160,52 @@ class LongMomentumStrategy:
 
         pending_symbols = {order.symbol for order in pending_orders if order.status == "OPEN"}
         frame = context.updates.with_columns(
-            pl.col("close").cast(pl.Float64).alias("_lm_close"),
-            pl.col("open").cast(pl.Float64).alias("_lm_open"),
-            pl.col("volume").cast(pl.Float64).alias("_lm_volume"),
-            pl.col("transactions").cast(pl.Float64).alias("_lm_transactions"),
-            pl.col("spread").cast(pl.Float64).alias("_lm_spread"),
-            pl.col("return_1").cast(pl.Float64).fill_null(0.0).alias("_lm_return_1"),
-            pl.col("macd_line").cast(pl.Float64).alias("_lm_macd_line"),
-            pl.col("macd_hist_z_since_open").cast(pl.Float64).alias("_lm_macd_hist_z"),
-            pl.col("tema9").cast(pl.Float64).alias("_lm_tema9"),
-            pl.col("tema20").cast(pl.Float64).alias("_lm_tema20"),
+            pl.col("last_close").cast(pl.Float64).alias("_lm_last_close"),
+            pl.col("last_open").cast(pl.Float64).alias("_lm_last_open"),
+            pl.col("current_open").cast(pl.Float64).alias("_lm_current_open"),
+            pl.col("last_volume").cast(pl.Float64).alias("_lm_last_volume"),
+            pl.col("last_transactions").cast(pl.Float64).alias("_lm_last_transactions"),
+            pl.col("last_spread").cast(pl.Float64).alias("_lm_last_spread"),
+            pl.col("last_return_1").cast(pl.Float64).fill_null(0.0).alias("_lm_last_return_1"),
+            pl.col("last_macd_line").cast(pl.Float64).alias("_lm_last_macd_line"),
+            pl.col("last_macd_hist_z_since_open").cast(pl.Float64).alias("_lm_last_macd_hist_z"),
+            pl.col("last_tema9").cast(pl.Float64).alias("_lm_last_tema9"),
+            pl.col("last_tema20").cast(pl.Float64).alias("_lm_last_tema20"),
         ).with_columns(
-            (pl.col("_lm_close") < pl.col("_lm_open")).alias("_lm_is_red"),
-            (pl.col("_lm_return_1") > 0).alias("_lm_close_above_previous"),
+            (pl.col("_lm_last_close") < pl.col("_lm_last_open")).alias("_lm_last_is_red"),
+            (pl.col("_lm_last_return_1") > 0).alias("_lm_last_close_above_previous"),
             (
-                pl.when(pl.col("_lm_close") < 5.0)
-                .then(pl.col("_lm_spread") <= self.config.max_spread_below_5)
-                .otherwise(pl.col("_lm_spread") <= self.config.max_spread_5_to_10)
+                pl.when(pl.col("_lm_last_close") < 5.0)
+                .then(pl.col("_lm_last_spread") <= self.config.max_spread_below_5)
+                .otherwise(pl.col("_lm_last_spread") <= self.config.max_spread_5_to_10)
             ).alias("_lm_spread_ok"),
         ).with_columns(
             (
-                (pl.col("_lm_close") >= self.config.min_price)
-                & (pl.col("_lm_close") <= self.config.max_price)
-                & (pl.col("_lm_volume") >= self.config.min_volume)
-                & (pl.col("_lm_transactions") >= self.config.min_transactions)
-                & (~pl.col("_lm_is_red"))
-                & pl.col("_lm_close_above_previous")
-                & (pl.col("_lm_tema9") > pl.col("_lm_tema20"))
-                & (pl.col("_lm_macd_line") > 0)
-                & (pl.col("_lm_macd_hist_z") >= self.config.min_macd_hist_z_since_open)
+                (pl.col("_lm_last_close") >= self.config.min_price)
+                & (pl.col("_lm_last_close") <= self.config.max_price)
+                & (pl.col("_lm_last_volume") >= self.config.min_volume)
+                & (pl.col("_lm_last_transactions") >= self.config.min_transactions)
+                & (~pl.col("_lm_last_is_red"))
+                & pl.col("_lm_last_close_above_previous")
+                & (pl.col("_lm_last_tema9") > pl.col("_lm_last_tema20"))
+                & (pl.col("_lm_last_macd_line") > 0)
+                & (pl.col("_lm_last_macd_hist_z") >= self.config.min_macd_hist_z_since_open)
                 & pl.col("_lm_spread_ok")
             ).fill_null(False).alias("entry_open"),
             pl.col("_lm_spread_ok").fill_null(False).alias("long_momentum_spread_ok"),
-            (pl.col("_lm_return_1") * 10_000.0).alias("return_1_bps"),
-            (pl.col("_lm_return_1") * 10_000.0).alias("scanner_score"),
+            (pl.col("_lm_last_return_1") * 10_000.0).alias("return_1_bps"),
+            (pl.col("_lm_last_return_1") * 10_000.0).alias("scanner_score"),
         ).with_columns(
             pl.col("entry_open").alias("long_momentum_entry_open"),
         )
 
-        rows = frame.sort(["entry_open", "return_1_bps", "macd_hist_z_since_open"], descending=[True, True, True]).to_dicts()
+        rows = frame.sort(["entry_open", "return_1_bps", "last_macd_hist_z_since_open"], descending=[True, True, True]).to_dicts()
         for rank, row in enumerate(rows, start=1):
             ticker = str(row["ticker"])
             row["timestamp"] = context.timestamp
             row["session_date"] = self.session_date.isoformat() if self.session_date else ""
             row["ticker"] = ticker
-            row["price"] = self._float(row.get("close"))
+            row["price"] = self._float(row.get("last_close"))
             row["held_quantity"] = portfolio.positions[ticker].quantity if ticker in portfolio.positions else 0
             row["open_positions"] = len(portfolio.positions)
             row["rank"] = rank
@@ -228,24 +229,24 @@ class LongMomentumStrategy:
         return "eligible" if row.get("entry_open") else "blocked"
 
     def _entry_block_reason(self, row: dict) -> str:
-        close = self._float(row.get("close"))
+        close = self._float(row.get("last_close"))
         if close < self.config.min_price:
             return "price_low"
         if close > self.config.max_price:
             return "price_high"
-        if self._float(row.get("volume")) < self.config.min_volume:
+        if self._float(row.get("last_volume")) < self.config.min_volume:
             return "volume"
-        if self._float(row.get("transactions")) < self.config.min_transactions:
+        if self._float(row.get("last_transactions")) < self.config.min_transactions:
             return "transactions"
-        if bool(row.get("_lm_is_red") if "_lm_is_red" in row else row.get("is_red")):
+        if bool(row.get("_lm_last_is_red") if "_lm_last_is_red" in row else row.get("last_is_red")):
             return "red_candle"
-        if not bool(row.get("_lm_close_above_previous")):
+        if not bool(row.get("_lm_last_close_above_previous")):
             return "close_not_above_previous"
-        if self._float(row.get("tema9")) <= self._float(row.get("tema20")):
+        if self._float(row.get("last_tema9")) <= self._float(row.get("last_tema20")):
             return "tema_closed"
-        if self._float(row.get("macd_line")) <= 0:
+        if self._float(row.get("last_macd_line")) <= 0:
             return "macd_line"
-        if self._float(row.get("macd_hist_z_since_open")) < self.config.min_macd_hist_z_since_open:
+        if self._float(row.get("last_macd_hist_z_since_open")) < self.config.min_macd_hist_z_since_open:
             return "macd_hist_z"
         if not bool(row.get("_lm_spread_ok")):
             return "spread"
@@ -278,7 +279,7 @@ class LongMomentumStrategy:
             held_bar = context.updates_by_symbol.get(held_symbol)
             if held_bar is None:
                 return None
-            held_profit_bps = ((self._float(held_bar.get("close")) / position.entry_price) - 1.0) * 10_000.0 if position.entry_price > 0 else 0.0
+            held_profit_bps = ((self._float(held_bar.get("last_close")) / position.entry_price) - 1.0) * 10_000.0 if position.entry_price > 0 else 0.0
             if self._float(candidate.get("return_1_bps")) <= held_profit_bps:
                 return None
             requests.append(
@@ -302,14 +303,14 @@ class LongMomentumStrategy:
         if quantity <= 0:
             self._reject(context.timestamp, symbol, "quantity", candidate)
             return None
-        raw_max_fill_qty = candidate.get("max_fill_qty")
+        raw_max_fill_qty = candidate.get("last_max_fill_qty")
         max_fill_qty = int(self._float(raw_max_fill_qty))
         if raw_max_fill_qty is not None:
             if max_fill_qty <= 0:
-                self._reject(context.timestamp, symbol, "no_quote_liquidity", candidate | {"quantity": quantity, "max_fill_qty": max_fill_qty})
+                self._reject(context.timestamp, symbol, "no_quote_liquidity", candidate | {"quantity": quantity, "last_max_fill_qty": max_fill_qty})
                 return None
             if quantity > max_fill_qty:
-                self._reject(context.timestamp, symbol, "liquidity_capacity", candidate | {"quantity": quantity, "max_fill_qty": max_fill_qty})
+                self._reject(context.timestamp, symbol, "liquidity_capacity", candidate | {"quantity": quantity, "last_max_fill_qty": max_fill_qty})
                 return None
         self.entry_order_metadata[symbol] = {
             "setup_rank": int(candidate.get("rank") or 0),
@@ -337,9 +338,9 @@ class LongMomentumStrategy:
             tag=(
                 f"ENTRY|rule=LONG_MOMENTUM|rank={candidate.get('entry_rank') or candidate.get('rank')}"
                 f"|qty={quantity}|trigger={trigger_price:.2f}|stop={stop_price:.2f}|R={initial_r:.4f}"
-                f"|signal_open={self._float(candidate.get('open')):.2f}|signal_close={self._float(candidate.get('close')):.2f}"
-                f"|ret1={self._float(candidate.get('return_1_bps')):.1f}|macdz={self._float(candidate.get('macd_hist_z_since_open')):.2f}"
-                f"|spread={self._float(candidate.get('spread')):.4f}|maxfill={max_fill_qty}"
+                f"|current_open={self._float(candidate.get('current_open')):.2f}|last_close={self._float(candidate.get('last_close')):.2f}"
+                f"|ret1={self._float(candidate.get('return_1_bps')):.1f}|macdz={self._float(candidate.get('last_macd_hist_z_since_open')):.2f}"
+                f"|spread={self._float(candidate.get('last_spread')):.4f}|maxfill={max_fill_qty}"
             ),
         )
 
@@ -414,8 +415,8 @@ class LongMomentumStrategy:
         return requests
 
     def _entry_levels(self, candidate: dict) -> tuple[float, float, float]:
-        open_price = self._float(candidate.get("open"))
-        close = self._float(candidate.get("close"))
+        open_price = self._float(candidate.get("current_open"))
+        close = self._float(candidate.get("last_close"))
         trigger = max(open_price, close)
         stop = trigger - self.config.min_initial_risk_dollars
         if trigger <= 0:
@@ -424,11 +425,11 @@ class LongMomentumStrategy:
         return trigger, stop, max(self.config.min_initial_risk_dollars, trigger - stop)
 
     def _tema_closed(self, bar: dict) -> bool:
-        close = self._float(bar.get("close"))
+        close = self._float(bar.get("last_close"))
         return (
-            bar.get("tema9") is not None
-            and bar.get("tema20") is not None
-            and self._float(bar.get("tema9")) < self._float(bar.get("tema20")) + (close * self.config.tema_exit_offset_pct)
+            bar.get("last_tema9") is not None
+            and bar.get("last_tema20") is not None
+            and self._float(bar.get("last_tema9")) < self._float(bar.get("last_tema20")) + (close * self.config.tema_exit_offset_pct)
         )
 
     def _take_profit_price(self, position) -> float:
@@ -459,7 +460,7 @@ class LongMomentumStrategy:
             position = portfolio.positions.get(symbol)
             bar = context.latest_by_symbol.get(symbol)
             if position is not None and bar is not None:
-                total += position.quantity * self._float(bar.get("close")) * 0.98
+                total += position.quantity * self._float(bar.get("last_close")) * 0.98
         return total
 
     def _record_scanner(
@@ -520,14 +521,14 @@ class LongMomentumStrategy:
             reason="Top eligible long momentum scanner candidate",
             values={
                 "quantity": quantity,
-                "signal_open": candidate.get("open"),
-                "signal_close": candidate.get("close"),
+                "current_open": candidate.get("current_open"),
+                "last_close": candidate.get("last_close"),
                 "trigger": trigger_price,
                 "stop": stop_price,
                 "initial_r": initial_r,
                 "return_1_bps": candidate.get("return_1_bps"),
-                "macd_hist_z_since_open": candidate.get("macd_hist_z_since_open"),
-                "spread": candidate.get("spread"),
+                "last_macd_hist_z_since_open": candidate.get("last_macd_hist_z_since_open"),
+                "last_spread": candidate.get("last_spread"),
                 "rank": candidate.get("entry_rank") or candidate.get("rank"),
             },
             force=self._force_trade_trace(),
@@ -536,7 +537,7 @@ class LongMomentumStrategy:
     def _trace_exit(self, timestamp: datetime, symbol: str, reason: str, position, bar: dict, meta: dict) -> None:
         if not self.observability:
             return
-        close = self._float(bar.get("close"))
+        close = self._float(bar.get("last_close"))
         self.observability.trace(
             timestamp=timestamp,
             ticker=symbol,
@@ -568,7 +569,7 @@ class LongMomentumStrategy:
         )
 
     def _exit_tag(self, reason: str, position, bar: dict | None, meta: dict) -> str:
-        price = self._float(bar.get("close")) if bar is not None else position.entry_price
+        price = self._float(bar.get("last_close")) if bar is not None else position.entry_price
         stop = self._float(meta.get("initial_stop")) or position.stop_price
         return (
             f"EXIT|reason={reason}|price={price:.2f}|stop={stop:.2f}"
