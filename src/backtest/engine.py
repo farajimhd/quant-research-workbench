@@ -389,7 +389,11 @@ class BacktestEngine:
         decision = decision.with_columns(alias_exprs)
         if {"current_open", "last_open", "last_close"}.issubset(decision.columns):
             decision = decision.with_columns(
-                (pl.col("current_open") > pl.max_horizontal("last_open", "last_close")).alias("current_open_above_last_body_high")
+                (
+                    pl.when(pl.col("last_close") < pl.col("last_open"))
+                    .then(pl.col("current_open") > pl.max_horizontal("last_open", "last_close"))
+                    .otherwise(True)
+                ).alias("current_open_above_last_body_high")
             )
         return decision
 
