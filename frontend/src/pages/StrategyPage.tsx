@@ -2758,7 +2758,7 @@ function PnlCandleChart({ payload, runName, title }: { payload?: PortfolioCandle
         tickerMaxLength={64}
         timeframe={timeframe}
         timeframes={availableTimeframes}
-        visibleColumns={["portfolio_drawdown", "open_unrealized_pnl"]}
+        visibleColumns={[]}
         visibleSupervisionGroups={[]}
       />
     </section>
@@ -2944,50 +2944,11 @@ function portfolioChartPayload(payload: PortfolioCandlePayload | null | undefine
   return {
     candles,
     markers: [],
-    oscillator_series: portfolioRiskSeries(sourceCandles),
+    oscillator_series: [],
     overlay_series: [],
     regions: [],
     volume: []
   };
-}
-
-function portfolioRiskSeries(candles: PortfolioCandle[]): ChartPayload["oscillator_series"] {
-  const drawdownData = candles
-    .map((candle) => ({
-      color: "#dc2626",
-      time: Number(candle.time),
-      value: Number(candle.drawdown_close ?? 0)
-    }))
-    .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value));
-  const unrealizedData = candles
-    .map((candle) => ({
-      time: Number(candle.time),
-      value: Number(candle.open_unrealized_close ?? 0)
-    }))
-    .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value));
-  return [
-    {
-      color: "#dc2626",
-      column: "portfolio_drawdown",
-      data: drawdownData,
-      displayItemId: "portfolio_drawdown",
-      label: "Drawdown",
-      lineWidth: 2,
-      paneKey: "portfolio_risk",
-      style: "histogram"
-    },
-    {
-      color: "#2563eb",
-      column: "open_unrealized_pnl",
-      data: unrealizedData,
-      displayItemId: "open_unrealized_pnl",
-      label: "Open Unrealized P/L",
-      lineStyle: "solid",
-      lineWidth: 2,
-      paneKey: "portfolio_risk",
-      style: "line"
-    }
-  ];
 }
 
 function symbolTradeChartPayload(payload: RunSymbolChartPayload | null | undefined, trades: DataRow[], selectedKey: string, timeframe: string): ChartPayload | null {
