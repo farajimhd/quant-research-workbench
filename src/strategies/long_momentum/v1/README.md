@@ -11,10 +11,10 @@ At each completed bar the strategy filters the current cross-section:
 - `close` between `min_price` and `max_price`, default 1 to 10
 - `volume >= min_volume`, default 10,000
 - `transactions >= min_transactions`, default 100
-- green candle only
+- `is_red == false`
+- current close is above the previous completed candle close
 - `tema9 > tema20`
 - `macd_line > 0`
-- `macd_signal > 0`
 - `macd_hist_z_since_open >= min_macd_hist_z_since_open`, default 0.1
 - spread gate:
   - price from 1 through 4.9999: `spread <= 0.02`

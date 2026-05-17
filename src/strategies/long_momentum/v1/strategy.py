@@ -150,12 +150,12 @@ class LongMomentumStrategy:
             pl.col("spread").cast(pl.Float64).alias("_lm_spread"),
             pl.col("return_1").cast(pl.Float64).fill_null(0.0).alias("_lm_return_1"),
             pl.col("macd_line").cast(pl.Float64).alias("_lm_macd_line"),
-            pl.col("macd_signal").cast(pl.Float64).alias("_lm_macd_signal"),
             pl.col("macd_hist_z_since_open").cast(pl.Float64).alias("_lm_macd_hist_z"),
             pl.col("tema9").cast(pl.Float64).alias("_lm_tema9"),
             pl.col("tema20").cast(pl.Float64).alias("_lm_tema20"),
         ).with_columns(
-            (pl.col("_lm_close") > pl.col("_lm_open")).alias("_lm_is_green"),
+            (pl.col("_lm_close") < pl.col("_lm_open")).alias("_lm_is_red"),
+            (pl.col("_lm_return_1") > 0).alias("_lm_close_above_previous"),
             (
                 pl.when(pl.col("_lm_close") < 5.0)
                 .then(pl.col("_lm_spread") <= self.config.max_spread_below_5)
@@ -167,10 +167,10 @@ class LongMomentumStrategy:
                 & (pl.col("_lm_close") <= self.config.max_price)
                 & (pl.col("_lm_volume") >= self.config.min_volume)
                 & (pl.col("_lm_transactions") >= self.config.min_transactions)
-                & pl.col("_lm_is_green")
+                & (~pl.col("_lm_is_red"))
+                & pl.col("_lm_close_above_previous")
                 & (pl.col("_lm_tema9") > pl.col("_lm_tema20"))
                 & (pl.col("_lm_macd_line") > 0)
-                & (pl.col("_lm_macd_signal") > 0)
                 & (pl.col("_lm_macd_hist_z") >= self.config.min_macd_hist_z_since_open)
                 & pl.col("_lm_spread_ok")
             ).fill_null(False).alias("entry_open"),
@@ -217,14 +217,14 @@ class LongMomentumStrategy:
             return "volume"
         if self._float(row.get("transactions")) < self.config.min_transactions:
             return "transactions"
-        if not bool(row.get("_lm_is_green") if "_lm_is_green" in row else row.get("is_green")):
+        if bool(row.get("_lm_is_red") if "_lm_is_red" in row else row.get("is_red")):
             return "red_candle"
+        if not bool(row.get("_lm_close_above_previous")):
+            return "close_not_above_previous"
         if self._float(row.get("tema9")) <= self._float(row.get("tema20")):
             return "tema_closed"
         if self._float(row.get("macd_line")) <= 0:
             return "macd_line"
-        if self._float(row.get("macd_signal")) <= 0:
-            return "macd_signal"
         if self._float(row.get("macd_hist_z_since_open")) < self.config.min_macd_hist_z_since_open:
             return "macd_hist_z"
         if not bool(row.get("_lm_spread_ok")):

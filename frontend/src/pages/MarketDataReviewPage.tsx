@@ -229,6 +229,7 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
   "is_green",
   "is_red",
   "bar_range",
+  "return_1",
   "session_bar_count",
   "minutes_since_premarket_start",
   "ideal_bars_since_premarket_start",
@@ -253,14 +254,14 @@ const SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
   filters: {
     close: { operator: "between", presetLabel: "between 1 and 10", valueText: "1", valueTextSecondary: "10" },
     volume: { operator: "gte", presetLabel: ">= 8,000", valueText: "8000" },
-    is_green: { operator: "eq", presetLabel: "Is true", valueText: "true" },
+    is_red: { operator: "eq", presetLabel: "Is false", valueText: "false" },
+    return_1: { operator: "gt", presetLabel: "> 0", valueText: "0" },
     tema_open: { operator: "eq", presetLabel: "Is true", valueText: "true" },
     macd_line: { operator: "gt", presetLabel: "Positive", valueText: "0" },
-    macd_signal: { operator: "gt", presetLabel: "Positive", valueText: "0" },
     macd_hist_z_since_open: { operator: "gte", presetLabel: ">= 0.1", valueText: "0.1" },
   },
   label: "Momentum Filters",
-  title: "Apply close, volume, green bar, TEMA, MACD, and MACD z-score filters.",
+  title: "Apply close, volume, non-red candle, prior-close momentum, TEMA, MACD, and MACD z-score filters.",
 };
 const SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
   filters: {
