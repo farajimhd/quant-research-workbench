@@ -904,6 +904,13 @@ button {
   overflow: hidden;
 }
 
+.backtest-results-tab-content > .tab-cache-panel.active {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
 .backtest-results-tab-content > .data-table-shell {
   height: 100%;
 }
@@ -928,18 +935,18 @@ button {
 
 .pnl-candle-chart > .chart-shell {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 520px;
 }
 
 .pnl-candle-chart .chart-canvas-stack {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 470px;
 }
 
 .pnl-candle-chart .chart-price {
   flex: 1 1 auto;
   height: auto;
-  min-height: 0;
+  min-height: 470px;
 }
 
 .modal-panel.trade-chart-modal-panel {
