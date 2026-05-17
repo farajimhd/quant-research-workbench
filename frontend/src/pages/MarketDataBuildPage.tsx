@@ -94,6 +94,10 @@ const pausedBuildStatuses = new Set(["paused"]);
 const resumableBuildStatuses = new Set(["cancelled", "canceled", "failed", "error"]);
 type BuildStartMode = "normal" | "spread";
 
+function isActiveBuildStatus(status: unknown) {
+  return activeBuildStatuses.has(String(status ?? "").toLowerCase());
+}
+
 export function MarketDataBuildPage() {
   const [scope, setScope] = useState<Scope | null>(null);
   const [draft, setDraft] = useState<Scope | null>(null);
@@ -117,16 +121,19 @@ export function MarketDataBuildPage() {
   }, [scope]);
 
   useEffect(() => {
-    if (!scope || !jobs.some((item) => activeBuildStatuses.has(String(item.status).toLowerCase()))) return;
+    if (!scope || !jobs.some((item) => isActiveBuildStatus(item.status))) return;
     const timer = window.setInterval(() => loadJobs(scope), 3000);
     return () => window.clearInterval(timer);
   }, [scope, jobs]);
 
   useEffect(() => {
-    if (!scope || !job || !activeBuildStatuses.has(String(job.status).toLowerCase())) return;
+    if (!scope || !job) return;
+    const jobActive = isActiveBuildStatus(job.status);
+    const progressActive = isActiveBuildStatus(job.progress?.metrics?.status);
+    if (!jobActive && !progressActive) return;
     const timer = window.setInterval(() => loadJob(scope, job.job_id), 1000);
     return () => window.clearInterval(timer);
-  }, [scope, job?.job_id, job?.status]);
+  }, [scope, job?.job_id, job?.status, job?.progress?.metrics?.status]);
 
   async function loadScope() {
     const payload = await api<Scope>("/api/market-data/scope");
@@ -140,6 +147,12 @@ export function MarketDataBuildPage() {
     if (job) {
       const current = payload.jobs.find((item) => item.job_id === job.job_id);
       if (current) {
+        const currentTerminal = !isActiveBuildStatus(current.status);
+        const selectedLooksActive = isActiveBuildStatus(job.status) || isActiveBuildStatus(job.progress?.metrics?.status);
+        if (currentTerminal && selectedLooksActive) {
+          await loadJob(currentScope, current.job_id);
+          return;
+        }
         setJob((value) => {
           if (!value) return current;
           const currentUpdated = Date.parse(String(current.updated_at ?? ""));
@@ -305,7 +318,7 @@ export function MarketDataBuildPage() {
   }
 
   const jobStatus = String(job?.status ?? "").toLowerCase();
-  const running = Boolean(job && activeBuildStatuses.has(jobStatus));
+  const running = Boolean(job && isActiveBuildStatus(jobStatus));
   const pausing = jobStatus === "pausing";
   const paused = Boolean(job && pausedBuildStatuses.has(jobStatus));
   const pauseable = Boolean(job && pauseableBuildStatuses.has(jobStatus));
@@ -582,7 +595,7 @@ function BuildStartPage({
                   <SemanticBadge tone={toneForStatus(item.status)}>{item.status}</SemanticBadge>
                   <button
                     className="icon-button"
-                    disabled={activeBuildStatuses.has(String(item.status).toLowerCase())}
+                    disabled={isActiveBuildStatus(item.status)}
                     onClick={() => onDeleteRequest(item)}
                     title="Delete build"
                     type="button"
