@@ -381,7 +381,7 @@ def provider_symbol_frame(
             tickers=[normalized_symbol],
             feature_groups=strategy_timeframe_feature_groups(presentation, timeframe),
         )
-    except (FileNotFoundError, OSError, ValueError):
+    except (FileNotFoundError, OSError, ValueError, pl.exceptions.PolarsError):
         return None
     return frame if not frame.is_empty() else None
 

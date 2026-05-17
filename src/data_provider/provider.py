@@ -63,7 +63,7 @@ class MarketDataProvider:
         paths = self._paths("bars", timeframe, start_date, end_date)
         if not paths:
             return pl.DataFrame()
-        scan = pl.scan_parquet([str(path) for path in paths])
+        scan = pl.scan_parquet([str(path) for path in paths], missing_columns="insert", extra_columns="ignore")
         if tickers:
             scan = scan.filter(pl.col("ticker").is_in(tickers))
         base = scan.collect()
@@ -71,7 +71,7 @@ class MarketDataProvider:
             feature_paths = self._paths(f"features_{group}", timeframe, start_date, end_date)
             if not feature_paths:
                 continue
-            feature_scan = pl.scan_parquet([str(path) for path in feature_paths])
+            feature_scan = pl.scan_parquet([str(path) for path in feature_paths], missing_columns="insert", extra_columns="ignore")
             if tickers and "ticker" in feature_scan.collect_schema().names():
                 feature_scan = feature_scan.filter(pl.col("ticker").is_in(tickers))
             features = feature_scan.collect()
