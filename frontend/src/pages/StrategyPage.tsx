@@ -1130,6 +1130,7 @@ function BacktestJobPanel({
   const [selectedTrade, setSelectedTrade] = useState<DataRow | null>(null);
   const shouldLoadTables = tab !== "Backtest Results";
   const isLiveRun = !runId && ["running", "queued"].includes(String(job?.status ?? "").toLowerCase());
+  const shouldPollLiveDetail = isLiveRun && (!shouldLoadTables || tab === "Trades");
   const metadataRunDir = String(detail?.metadata.run_dir ?? "");
   const latestRunDir = resultRunDir || jobRunDir || metadataRunDir || [...events].reverse().map((event) => String(event.run_dir ?? "")).find(Boolean) || "";
   const latestRunId = runId || (latestRunDir ? latestRunDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "" : "");
@@ -1161,7 +1162,7 @@ function BacktestJobPanel({
         });
     };
     loadDetail();
-    if (!isLiveRun || shouldLoadTables) {
+    if (!shouldPollLiveDetail) {
       return () => {
         canceled = true;
       };
@@ -1171,7 +1172,7 @@ function BacktestJobPanel({
       canceled = true;
       window.clearInterval(timer);
     };
-  }, [latestRunId, outputRoot, shouldLoadTables, isLiveRun, `${job?.status ?? "not-started"}-${events.length}`]);
+  }, [latestRunId, outputRoot, shouldLoadTables, shouldPollLiveDetail, `${job?.status ?? "not-started"}-${events.length}`]);
 
   const progress = buildBacktestProgress(job, detail, config);
   const activeRunName = String(detail?.metadata.run_name ?? jobConfig?.run_name ?? config.run_name ?? "Backtest Results");

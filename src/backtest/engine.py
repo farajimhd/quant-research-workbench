@@ -126,6 +126,7 @@ class BacktestEngine:
                 processed_event_bars = 0
                 total_event_bars = int(metadata["total_event_bars"])
                 live_chart_bar_interval = self._live_chart_bar_interval(requirements)
+                live_trade_count = 0
                 for index, session_date in enumerate(sessions, start=1):
                     self._check_cancelled(cancel_check)
                     self.observability.start_session(session_date, index)
@@ -179,6 +180,7 @@ class BacktestEngine:
                         latest = pl.DataFrame(list(latest_bars.values()), infer_schema_length=None) if latest_bars else pl.DataFrame()
 
                         self._fill_pending_orders(timestamp, fresh_bars)
+                        live_trade_count = self._write_live_trades_if_needed(run_dir, artifact_writer, live_trade_count)
                         self.portfolio.update_peaks(fresh_bars)
 
                         requests = self.strategy.on_bar(
@@ -194,6 +196,7 @@ class BacktestEngine:
                             list(self.pending_orders),
                         )
                         self._handle_requests(timestamp, requests, fresh_bars)
+                        live_trade_count = self._write_live_trades_if_needed(run_dir, artifact_writer, live_trade_count)
                         self._record_portfolio(timestamp, latest_bars)
                         processed_event_bars += 1
                         session_processed_bars += 1
@@ -230,6 +233,7 @@ class BacktestEngine:
                             latest_bars,
                         )
                         self._fill_market_exits(last_timestamp, latest_bars)
+                        live_trade_count = self._write_live_trades_if_needed(run_dir, artifact_writer, live_trade_count)
                         self._record_portfolio(last_timestamp, latest_bars)
 
                     day_end_equity = self.portfolio.total_equity(latest_bars)
@@ -359,6 +363,12 @@ class BacktestEngine:
         if session_processed_bars <= 0:
             return False
         return session_processed_bars == session_total_bars or session_processed_bars % interval == 0
+
+    def _write_live_trades_if_needed(self, run_dir, artifact_writer: ArtifactWriter, previous_count: int) -> int:
+        current_count = len(self.trades)
+        if current_count > previous_count:
+            artifact_writer.write_table(run_dir / "trades.parquet", self.trades)
+        return current_count
 
     def _emit_progress(self, progress_callback, payload: dict) -> None:
         if progress_callback:
