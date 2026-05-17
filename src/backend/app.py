@@ -115,7 +115,7 @@ class BacktestSubmit(BaseModel):
     output_root: str = Field(default=str(DEFAULT_OUTPUT_ROOT))
     excluded_symbols_file: str = Field(default=str(DEFAULT_EXCLUDED_SYMBOLS_FILE))
     initial_cash: float = 10_000.0
-    slippage_bps: float = 2.0
+    slippage_bps: float = 0.0
     fee_model: str = "ibkr_ca_us_stock_fixed"
     fee_tax_rate: float = 0.0
     save_symbol_bars: bool = True
@@ -760,7 +760,7 @@ def strategy_default_config(strategy_name: str, version: str | None = None) -> d
         "output_root": str(DEFAULT_OUTPUT_ROOT),
         "excluded_symbols_file": str(DEFAULT_EXCLUDED_SYMBOLS_FILE),
         "initial_cash": 10_000.0,
-        "slippage_bps": 2.0,
+        "slippage_bps": 0.0,
         "fee_model": "ibkr_ca_us_stock_fixed",
         "fee_tax_rate": 0.0,
         "save_symbol_bars": True,

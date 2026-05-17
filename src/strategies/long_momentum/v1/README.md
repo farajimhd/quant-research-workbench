@@ -56,7 +56,6 @@ Additional exits:
 - `VELOCITY_TAKE_PROFIT`: unusually large fast green move after profit
 - `GREEN_BODY_CONTRACTION`: consecutive green candle bodies shrink after profit
 - `SMALL_RED_TOP`: small red candle appears near the best price after profit
-- `RED_PROFIT_GIVEBACK`: red body gives back too much of open dollar profit
 - `EOD`: flatten at the end of the available extended-hours session
 
 ## Data Requirements

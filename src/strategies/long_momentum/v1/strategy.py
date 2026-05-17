@@ -368,8 +368,6 @@ class LongMomentumStrategy:
             return "GREEN_BODY_CONTRACTION"
         if self._small_red_top(symbol, position, bar, meta, r_multiple):
             return "SMALL_RED_TOP"
-        if self._red_profit_giveback(position, bar):
-            return "RED_PROFIT_GIVEBACK"
         return None
 
     def _initial_stop(self, candidate: dict, symbol: str) -> tuple[float, float]:
@@ -449,17 +447,6 @@ class LongMomentumStrategy:
         initial_r = self._float(meta.get("initial_r")) or abs(position.entry_price - position.stop_price)
         near_high = close >= max(position.max_price, self._float(bar.get("high"))) - self.config.small_red_near_high_r * initial_r
         return avg_green > 0 and body <= avg_green * self.config.small_red_body_multiple and near_high
-
-    def _red_profit_giveback(self, position, bar: dict) -> bool:
-        open_price = self._float(bar.get("open"))
-        close = self._float(bar.get("close"))
-        if close >= open_price:
-            return False
-        pre_candle_profit = max(0.0, (open_price - position.entry_price) * position.quantity)
-        if pre_candle_profit <= 0:
-            return False
-        red_body_dollars = (open_price - close) * position.quantity
-        return red_body_dollars >= pre_candle_profit * self.config.red_profit_giveback_pct
 
     def _position_meta(self, symbol: str, position) -> dict:
         meta = self.position_meta.get(symbol)

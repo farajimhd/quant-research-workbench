@@ -66,7 +66,7 @@ class BacktestConfig:
     market_utc_offset_hours: float = -4.0
     session_start_minute: int = 9 * 60 + 30
     session_end_minute: int = 16 * 60
-    slippage_bps: float = 2.0
+    slippage_bps: float = 0.0
     fee_model: str = "ibkr_ca_us_stock_fixed"
     fee_tax_rate: float = 0.0
     save_symbol_bars: bool = True

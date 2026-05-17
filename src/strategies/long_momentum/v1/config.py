@@ -18,7 +18,7 @@ class LongMomentumConfig:
     max_spread_5_to_10: float = 0.05
 
     cash_buffer_dollars: float = 5.0
-    sizing_slippage_bps: float = 2.0
+    sizing_slippage_bps: float = 0.0
     sizing_fee_per_share: float = 0.005
     sizing_min_fee: float = 1.0
     max_initial_stop_pct: float = 0.02
@@ -34,7 +34,6 @@ class LongMomentumConfig:
     small_red_min_r: float = 0.75
     small_red_body_multiple: float = 0.5
     small_red_near_high_r: float = 0.25
-    red_profit_giveback_pct: float = 0.30
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "LongMomentumConfig":
