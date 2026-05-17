@@ -490,7 +490,7 @@ def apply_strategy_decision_price_action_columns(scan: pl.LazyFrame, names: list
         (pl.col("last_close") < pl.col("last_open")).alias("is_red"),
         (
             pl.when(pl.col("last_close") < pl.col("last_open"))
-            .then(pl.col("current_open") > pl.max_horizontal("last_open", "last_close"))
+            .then(pl.col("current_open") >= pl.max_horizontal("last_open", "last_close"))
             .otherwise(True)
         ).alias("current_open_above_last_body_high"),
     ]
