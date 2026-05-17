@@ -26,7 +26,8 @@ the entry candidate.
 ## Entry And Rotation
 
 The strategy keeps one long position. If there is no open position, it deploys
-available cash into the top scanner candidate. If the top candidate is already
+available cash into the top scanner candidate while reserving enough for the
+configured slippage and per-share fee estimate. If the top candidate is already
 held, it is ignored.
 
 If a different candidate appears while a position is open, the strategy compares
@@ -66,4 +67,3 @@ Additional exits:
 - Event bars: `1m`
 - Event feature groups: `core`, `momentum`, `session`, `volume_liquidity`
 - No daily context dependency
-

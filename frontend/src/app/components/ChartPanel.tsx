@@ -491,6 +491,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     priceChartRef.current = priceChart;
     const candleSeries = priceChart.addCandlestickSeries({
       ...candleSeriesOptions(chartSettingsRef.current),
+      autoscaleInfoProvider: padFlatAutoscale,
       priceLineVisible: true
     });
     candleRef.current = candleSeries;
@@ -2263,6 +2264,22 @@ function includeZeroInAutoscale(baseImplementation: () => AutoscaleInfo | null):
     priceRange: {
       minValue: Math.min(autoscale.priceRange.minValue, 0),
       maxValue: Math.max(autoscale.priceRange.maxValue, 0)
+    }
+  };
+}
+
+function padFlatAutoscale(baseImplementation: () => AutoscaleInfo | null): AutoscaleInfo | null {
+  const autoscale = baseImplementation();
+  if (!autoscale) return autoscale;
+  const minValue = autoscale.priceRange.minValue;
+  const maxValue = autoscale.priceRange.maxValue;
+  if (maxValue !== minValue) return autoscale;
+  const padding = Math.max(0.01, Math.abs(maxValue) * 0.01);
+  return {
+    ...autoscale,
+    priceRange: {
+      minValue: minValue - padding,
+      maxValue: maxValue + padding
     }
   };
 }

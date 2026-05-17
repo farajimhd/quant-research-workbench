@@ -125,6 +125,14 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_recent_dollar_volume: "Minimum rolling recent dollar volume required before entry.",
   min_recent_volume: "Minimum rolling recent share volume required before entry.",
   min_recent_transactions: "Minimum rolling recent transaction count required before entry.",
+  min_volume: "Minimum current bar share volume required before a Long Momentum entry.",
+  min_transactions: "Minimum current bar transaction count required before a Long Momentum entry.",
+  min_macd_hist_z_since_open: "Minimum MACD histogram z-score since the open required before a Long Momentum entry.",
+  max_spread_below_5: "Maximum observed dollar spread allowed for Long Momentum candidates priced below $5.",
+  max_spread_5_to_10: "Maximum observed dollar spread allowed for Long Momentum candidates priced from $5 to $10.",
+  sizing_slippage_bps: "Slippage estimate used by Long Momentum sizing so all-cash entries do not exceed cash after fill friction.",
+  sizing_fee_per_share: "Per-share fee estimate used by Long Momentum sizing.",
+  sizing_min_fee: "Minimum order fee estimate used by Long Momentum sizing.",
   liquidity_window_minutes: "Rolling minute window used for recent liquidity checks.",
   recent_return_lookback_minutes: "Minute lookback used to score recent price momentum.",
   min_recent_return_bps: "Minimum recent return in basis points required before entry.",
@@ -193,6 +201,10 @@ const STRATEGY_PARAMETER_GROUPS = [
       "min_recent_dollar_volume",
       "min_recent_volume",
       "min_recent_transactions",
+      "min_volume",
+      "min_transactions",
+      "max_spread_below_5",
+      "max_spread_5_to_10",
       "liquidity_window_minutes"
     ]
   },
@@ -203,6 +215,7 @@ const STRATEGY_PARAMETER_GROUPS = [
       "min_setup_score",
       "min_live_score",
       "min_momentum_score",
+      "min_macd_hist_z_since_open",
       "top_n",
       "trend_macd_weight",
       "trend_price_weight",
@@ -234,7 +247,11 @@ const STRATEGY_PARAMETER_GROUPS = [
       "min_risk_pct",
       "max_risk_pct",
       "max_capital_per_trade_pct",
-      "cash_reserve_pct"
+      "cash_reserve_pct",
+      "cash_buffer_dollars",
+      "sizing_slippage_bps",
+      "sizing_fee_per_share",
+      "sizing_min_fee"
     ]
   },
   {

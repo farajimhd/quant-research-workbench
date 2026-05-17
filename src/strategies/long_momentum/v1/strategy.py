@@ -253,7 +253,7 @@ class LongMomentumStrategy:
             held_symbol, position = active_positions[0]
             if symbol == held_symbol:
                 return None
-            held_bar = context.latest_by_symbol.get(held_symbol)
+            held_bar = context.updates_by_symbol.get(held_symbol)
             if held_bar is None:
                 return None
             held_profit_bps = ((self._float(held_bar.get("close")) / position.entry_price) - 1.0) * 10_000.0 if position.entry_price > 0 else 0.0
@@ -276,7 +276,7 @@ class LongMomentumStrategy:
     def _entry_request(self, candidate: dict, context: BarContext, portfolio: Portfolio, expected_cash: float) -> OrderRequest | None:
         symbol = str(candidate["ticker"])
         price = self._float(candidate.get("close"))
-        quantity = int(max(0.0, expected_cash - self.config.cash_buffer_dollars) / price) if price > 0 else 0
+        quantity = self._entry_quantity(price, expected_cash)
         if quantity <= 0:
             self._reject(context.timestamp, symbol, "quantity", candidate)
             return None
@@ -308,6 +308,20 @@ class LongMomentumStrategy:
                 f"|spread={self._float(candidate.get('spread')):.4f}"
             ),
         )
+
+    def _entry_quantity(self, price: float, expected_cash: float) -> int:
+        if price <= 0 or expected_cash <= self.config.cash_buffer_dollars:
+            return 0
+        fill_price_estimate = price * (1.0 + max(0.0, self.config.sizing_slippage_bps) / 10_000.0)
+        per_share_cost = fill_price_estimate + max(0.0, self.config.sizing_fee_per_share)
+        budget = max(0.0, expected_cash - self.config.cash_buffer_dollars)
+        quantity = int((budget - self.config.sizing_min_fee) / per_share_cost) if per_share_cost > 0 else 0
+        while quantity > 0:
+            estimated_fee = max(self.config.sizing_min_fee, quantity * self.config.sizing_fee_per_share)
+            if quantity * fill_price_estimate + estimated_fee <= budget:
+                return quantity
+            quantity -= 1
+        return 0
 
     def _exit_requests(self, context: BarContext, portfolio: Portfolio) -> list[OrderRequest]:
         requests = []
