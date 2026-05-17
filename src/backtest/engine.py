@@ -473,6 +473,7 @@ class BacktestEngine:
                 fill_requires_green_bar=request.fill_requires_green_bar,
                 fill_requires_close_through_stop=request.fill_requires_close_through_stop,
                 expire_on_bar_close=request.expire_on_bar_close,
+                protective_stop_price=request.protective_stop_price,
             )
             self.next_order_id += 1
 
@@ -566,6 +567,7 @@ class BacktestEngine:
             fill_requires_green_bar=request.fill_requires_green_bar,
             fill_requires_close_through_stop=request.fill_requires_close_through_stop,
             expire_on_bar_close=request.expire_on_bar_close,
+            protective_stop_price=request.protective_stop_price,
         )
         self.next_order_id += 1
         self.orders.append(asdict(order))
@@ -693,8 +695,49 @@ class BacktestEngine:
             if trade is not None:
                 self.trades.append(asdict(trade))
 
+        should_check_attached_stop = (
+            order.side == "BUY"
+            and order.status in {"FILLED", "PARTIALLY_FILLED"}
+            and order.protective_stop_price is not None
+        )
         self.orders.append(asdict(order))
         self._record_strategy_order_event(order)
+        if should_check_attached_stop:
+            self._fill_entry_attached_stop(order, timestamp, bar)
+
+    def _fill_entry_attached_stop(self, entry_order: Order, timestamp: datetime, bar: dict) -> None:
+        if entry_order.protective_stop_price is None:
+            return
+        position = self.portfolio.positions.get(entry_order.symbol)
+        if position is None:
+            return
+        try:
+            low = float(bar.get("low"))
+            stop_price = float(entry_order.protective_stop_price)
+        except (TypeError, ValueError):
+            return
+        if low > stop_price:
+            return
+        quantity = min(entry_order.quantity, position.quantity)
+        if quantity <= 0:
+            return
+        stop_order = Order(
+            order_id=self.next_order_id,
+            symbol=entry_order.symbol,
+            side="SELL",
+            quantity=quantity,
+            order_type="STOP",
+            reason="INITIAL_STOP",
+            created_at=timestamp,
+            stop_price=stop_price,
+            tag=(
+                f"EXIT|reason=INITIAL_STOP|source_entry_order_id={entry_order.order_id}"
+                f"|entry={float(entry_order.fill_price or 0.0):.2f}|stop={stop_price:.2f}"
+            ),
+            expire_on_bar_close=True,
+        )
+        self.next_order_id += 1
+        self._fill_order(stop_order, timestamp, bar, stop_order.reason)
 
     def _entry_stop_price(self, metadata: dict, order: Order, fill_price: float) -> float:
         if "stop_offset_dollars" in metadata:

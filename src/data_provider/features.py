@@ -114,6 +114,7 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "relative_volume20",
         "dollar_volume_sma20",
         "relative_dollar_volume20",
+        "recent_volume_5",
         "recent_dollar_volume_5",
         "recent_transactions_5",
         "spread",
@@ -481,6 +482,7 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             pl.when(pl.col("volume_sma10") > 0).then(pl.col("volume") / pl.col("volume_sma10")).otherwise(0.0).alias("relative_volume10"),
             pl.when(pl.col("volume_sma20") > 0).then(pl.col("volume") / pl.col("volume_sma20")).otherwise(0.0).alias("relative_volume20"),
             pl.when(pl.col("dollar_volume_sma20") > 0).then(pl.col("dollar_volume") / pl.col("dollar_volume_sma20")).otherwise(0.0).alias("relative_dollar_volume20"),
+            pl.col("volume").rolling_sum(5, min_samples=1).over("ticker").alias("recent_volume_5"),
             pl.col("dollar_volume").rolling_sum(5, min_samples=1).over("ticker").alias("recent_dollar_volume_5"),
             pl.col("transactions").rolling_sum(5, min_samples=1).over("ticker").alias("recent_transactions_5"),
             pl.col("day_volume_so_far")

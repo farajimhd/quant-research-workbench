@@ -213,6 +213,7 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
   "last_transactions",
   "last_volume_sma10",
   "last_relative_volume10",
+  "last_recent_volume_5",
   "last_recent_dollar_volume_5",
   "last_recent_transactions_5",
   "last_avg_trade_size",
@@ -281,11 +282,11 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
 const SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
   filters: {
     last_close: { operator: "between", presetLabel: "between 1 and 10", valueText: "1", valueTextSecondary: "10" },
+    current_open_above_last_body_high: { operator: "eq", presetLabel: "Is true", valueText: "true" },
     last_volume: { operator: "gte", presetLabel: ">= 10,000", valueText: "10000" },
     last_transactions: { operator: "gte", presetLabel: ">= 100", valueText: "100" },
     long_momentum_spread_ok: { operator: "eq", presetLabel: "Is true", valueText: "true" },
     last_tema_open: { operator: "eq", presetLabel: "Is true", valueText: "true" },
-    last_macd_line: { operator: "gt", presetLabel: "Positive", valueText: "0" },
     last_macd_hist_z_since_open: { operator: "gte", presetLabel: ">= 0.1", valueText: "0.1" },
   },
   label: "Momentum Filters",

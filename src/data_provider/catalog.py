@@ -2026,6 +2026,7 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
             "relative_volume10",
             "relative_volume20",
             "relative_dollar_volume20",
+            "recent_volume_5",
             "recent_dollar_volume_5",
             "recent_transactions_5",
             "obv",
@@ -2329,6 +2330,12 @@ def volatility_feature_knowledge(lower: str, group: str, category: str, title: s
 
 def volume_feature_knowledge(lower: str, group: str, category: str, title: str) -> dict[str, Any]:
     spread_risk = {
+        "recent_volume_5": (
+            "Five-bar recent share volume.",
+            "Recent volume 5 sums share volume over the last five bars for the same ticker. It ranks short-term participation without multiplying by price.",
+            "$$RecentVolume5_t=\\sum_{i=0}^{4}Volume_{t-i}$$",
+            {"Volume": "Share volume"},
+        ),
         "recent_dollar_volume_5": (
             "Five-bar recent dollar volume.",
             "Recent dollar volume 5 sums close times volume over the last five bars for the same ticker. It gives spread filters local participation context.",

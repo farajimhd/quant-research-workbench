@@ -162,6 +162,9 @@ def liquidity_capacity_expressions(names: list[str]) -> list[pl.Expr]:
         exit_capacity.fill_null(0).floor().clip(0).cast(pl.Int64).alias("max_exit_qty"),
         entry_capacity.fill_null(0).floor().clip(0).cast(pl.Int64).alias("max_fill_qty"),
     ]
+    if "recent_volume_5" not in names:
+        recent_volume = volume.rolling_sum(5, min_samples=1).over(group_columns) if group_columns else volume.rolling_sum(5, min_samples=1)
+        exprs.append(recent_volume.alias("recent_volume_5"))
     if quote_ask_size is not None:
         exprs.append(quote_ask_size.fill_null(0).floor().clip(0).cast(pl.Int64).alias("max_fill_qty_quote_ask"))
     if quote_bid_size is not None:

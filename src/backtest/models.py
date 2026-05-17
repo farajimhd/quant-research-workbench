@@ -31,6 +31,7 @@ class OrderRequest:
     fill_requires_green_bar: bool = False
     fill_requires_close_through_stop: bool = False
     expire_on_bar_close: bool = False
+    protective_stop_price: float | None = None
 
 
 @dataclass(slots=True)
@@ -56,6 +57,7 @@ class Order:
     fill_requires_green_bar: bool = False
     fill_requires_close_through_stop: bool = False
     expire_on_bar_close: bool = False
+    protective_stop_price: float | None = None
 
 
 @dataclass(slots=True)
