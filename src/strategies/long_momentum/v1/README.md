@@ -30,6 +30,13 @@ available cash into the top scanner candidate while reserving enough for the
 configured slippage and per-share fee estimate. If the top candidate is already
 held, it is ignored.
 
+An eligible scanner row is only an intent. The strategy submits a one-bar-valid
+buy stop at `max(open, close)` of the completed signal bar. The initial stop is
+`min(open, close)` of that same signal bar. If the trigger is not touched on the
+next bar, the pending entry is canceled and the scanner is evaluated again from
+the newly completed bar. Doji-style signal bars use `min_initial_risk_dollars`
+as the minimum risk distance so the stop remains below the trigger.
+
 If a different candidate appears while a position is open, the strategy compares
 the candidate's one-bar return with the open position's total unrealized return.
 When the new one-bar return is stronger, the strategy fully rotates: it exits
@@ -38,16 +45,10 @@ in v1.
 
 ## Stop And Exits
 
-The initial stop is structure based:
-
-- if the entry candle is green, use the midpoint of the entry candle body
-- also consider the most recent red-candle low for that ticker
-- cap maximum risk with `max_initial_stop_pct`, default 2%
-
-After entry, the active stop is evaluated on completed 1-minute closes. The
-stop that existed before the just-completed bar is the only stop that can
-trigger on that bar. If a new red candle creates a higher structural stop, that
-stop becomes active from the next bar forward.
+After entry, the active stop is treated as a resting stop: if the current bar's
+low trades through it, the strategy submits a stop sell that can fill on that
+same bar. If no stop is hit and a new red candle creates a higher structural
+stop, that stop becomes active from the next bar forward.
 
 Additional exits:
 

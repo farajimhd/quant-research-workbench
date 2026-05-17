@@ -79,8 +79,14 @@ class LongMomentumStrategy:
         candidates = [row for row in rows if row["entry_open"]]
         self._record_scanner(context, rows, candidates, portfolio, pending_orders)
 
-        requests = self._exit_requests(context, portfolio)
-        pending_symbols = {order.symbol for order in pending_orders if order.status == "OPEN"}
+        stale_entry_cancels = self._cancel_stale_entry_requests(pending_orders)
+        active_pending_orders = [
+            order
+            for order in pending_orders
+            if not self._is_pending_entry_order(order)
+        ]
+        requests = stale_entry_cancels + self._exit_requests(context, portfolio)
+        pending_symbols = {order.symbol for order in active_pending_orders if order.status == "OPEN"}
         exiting_symbols = {request.symbol for request in requests if request.side == "SELL"}
         entry_request = self._entry_or_rotation_request(
             context=context,
@@ -93,6 +99,28 @@ class LongMomentumStrategy:
         if entry_request is not None:
             requests.append(entry_request)
         return requests
+
+    def _cancel_stale_entry_requests(self, pending_orders: list[Order]) -> list[OrderRequest]:
+        return [
+            OrderRequest(
+                symbol=order.symbol,
+                side=order.side,
+                quantity=order.quantity,
+                order_type="CANCEL",
+                reason="ENTRY_EXPIRED",
+                tag=f"CANCEL|reason=ENTRY_EXPIRED|order_id={order.order_id}",
+            )
+            for order in pending_orders
+            if self._is_pending_entry_order(order)
+        ]
+
+    def _is_pending_entry_order(self, order: Order) -> bool:
+        return (
+            order.status == "OPEN"
+            and order.side == "BUY"
+            and order.order_type == "STOP"
+            and order.reason == "LONG_MOMENTUM"
+        )
 
     def on_day_end(self, timestamp: datetime, portfolio: Portfolio) -> list[OrderRequest]:
         return [
@@ -275,18 +303,18 @@ class LongMomentumStrategy:
 
     def _entry_request(self, candidate: dict, context: BarContext, portfolio: Portfolio, expected_cash: float) -> OrderRequest | None:
         symbol = str(candidate["ticker"])
-        price = self._float(candidate.get("close"))
-        quantity = self._entry_quantity(price, expected_cash)
+        trigger_price, stop_price, initial_r = self._entry_levels(candidate)
+        quantity = self._entry_quantity(trigger_price, expected_cash)
         if quantity <= 0:
             self._reject(context.timestamp, symbol, "quantity", candidate)
             return None
-        stop_price, initial_r = self._initial_stop(candidate, symbol)
         self.entry_order_metadata[symbol] = {
             "setup_rank": int(candidate.get("rank") or 0),
             "live_rank": int(candidate.get("entry_rank") or candidate.get("rank") or 0),
             "setup_score": self._float(candidate.get("scanner_score")),
             "live_score": self._float(candidate.get("scanner_score")),
             "stop_price": stop_price,
+            "trigger_price": trigger_price,
         }
         self.position_meta[symbol] = {
             "initial_r": initial_r,
@@ -294,17 +322,18 @@ class LongMomentumStrategy:
             "structure_stop": stop_price,
             "entry_score": self._float(candidate.get("scanner_score")),
         }
-        self._trace_entry(context.timestamp, candidate, quantity, stop_price, initial_r)
+        self._trace_entry(context.timestamp, candidate, quantity, trigger_price, stop_price, initial_r)
         return OrderRequest(
             symbol=symbol,
             side="BUY",
             quantity=quantity,
-            order_type="MARKET",
+            order_type="STOP",
             reason="LONG_MOMENTUM",
-            stop_price=stop_price,
+            stop_price=trigger_price,
             tag=(
                 f"ENTRY|rule=LONG_MOMENTUM|rank={candidate.get('entry_rank') or candidate.get('rank')}"
-                f"|qty={quantity}|entry={price:.2f}|stop={stop_price:.2f}|R={initial_r:.4f}"
+                f"|qty={quantity}|trigger={trigger_price:.2f}|stop={stop_price:.2f}|R={initial_r:.4f}"
+                f"|signal_open={self._float(candidate.get('open')):.2f}|signal_close={self._float(candidate.get('close')):.2f}"
                 f"|ret1={self._float(candidate.get('return_1_bps')):.1f}|macdz={self._float(candidate.get('macd_hist_z_since_open')):.2f}"
                 f"|spread={self._float(candidate.get('spread')):.4f}"
             ),
@@ -340,23 +369,25 @@ class LongMomentumStrategy:
                 position.stop_price = max(position.stop_price, next_stop)
                 continue
             self._trace_exit(context.timestamp, symbol, reason, position, bar, meta)
+            is_stop_exit = reason in {"INITIAL_STOP", "STRUCTURE_STOP"}
             requests.append(
                 OrderRequest(
                     symbol=symbol,
                     side="SELL",
                     quantity=position.quantity,
-                    order_type="MARKET",
+                    order_type="STOP" if is_stop_exit else "MARKET",
                     reason=reason,
-                    stop_price=None,
+                    stop_price=active_stop if is_stop_exit else None,
                     tag=self._exit_tag(reason, position, bar, meta),
-                    allow_same_bar_fill=False,
+                    allow_same_bar_fill=is_stop_exit,
                 )
             )
         return requests
 
     def _exit_reason(self, symbol: str, position, bar: dict, meta: dict, active_stop: float) -> str | None:
         close = self._float(bar.get("close"))
-        if close <= active_stop:
+        low = self._float(bar.get("low"))
+        if low <= active_stop:
             initial_stop = self._float(meta.get("initial_stop")) or position.stop_price
             return "INITIAL_STOP" if active_stop <= initial_stop + 1e-9 else "STRUCTURE_STOP"
         if self._tema_closed(bar):
@@ -370,22 +401,17 @@ class LongMomentumStrategy:
             return "SMALL_RED_TOP"
         return None
 
-    def _initial_stop(self, candidate: dict, symbol: str) -> tuple[float, float]:
-        entry = self._float(candidate.get("close"))
+    def _entry_levels(self, candidate: dict) -> tuple[float, float, float]:
         open_price = self._float(candidate.get("open"))
-        low = self._float(candidate.get("low"))
-        max_risk_stop = entry * (1.0 - self.config.max_initial_stop_pct)
-        candidates = [max_risk_stop]
-        if entry > open_price:
-            candidates.append(open_price + ((entry - open_price) * 0.5))
-        else:
-            candidates.append(low)
-        last_red_low = self.states.get(symbol).last_red_low if self.states.get(symbol) else None
-        if last_red_low is not None:
-            candidates.append(float(last_red_low))
-        stop = max(value for value in candidates if value < entry) if any(value < entry for value in candidates) else entry - self.config.min_initial_risk_dollars
-        stop = max(0.01, min(stop, entry - self.config.min_initial_risk_dollars))
-        return stop, max(self.config.min_initial_risk_dollars, entry - stop)
+        close = self._float(candidate.get("close"))
+        trigger = max(open_price, close)
+        stop = min(open_price, close)
+        if trigger <= 0:
+            return 0.0, 0.0, 0.0
+        if trigger - stop < self.config.min_initial_risk_dollars:
+            stop = trigger - self.config.min_initial_risk_dollars
+        stop = max(0.01, stop)
+        return trigger, stop, max(self.config.min_initial_risk_dollars, trigger - stop)
 
     def _next_structure_stop(self, symbol: str, bar: dict, active_stop: float) -> float:
         close = self._float(bar.get("close"))
@@ -507,7 +533,7 @@ class LongMomentumStrategy:
             },
         )
 
-    def _trace_entry(self, timestamp: datetime, candidate: dict, quantity: int, stop_price: float, initial_r: float) -> None:
+    def _trace_entry(self, timestamp: datetime, candidate: dict, quantity: int, trigger_price: float, stop_price: float, initial_r: float) -> None:
         self.signal_events.append(
             {
                 "timestamp": timestamp,
@@ -516,6 +542,7 @@ class LongMomentumStrategy:
                 "rank": candidate.get("entry_rank") or candidate.get("rank"),
                 "return_1_bps": candidate.get("return_1_bps"),
                 "quantity": quantity,
+                "trigger": trigger_price,
                 "stop": stop_price,
             }
         )
@@ -531,7 +558,9 @@ class LongMomentumStrategy:
             reason="Top eligible long momentum scanner candidate",
             values={
                 "quantity": quantity,
-                "price": candidate.get("close"),
+                "signal_open": candidate.get("open"),
+                "signal_close": candidate.get("close"),
+                "trigger": trigger_price,
                 "stop": stop_price,
                 "initial_r": initial_r,
                 "return_1_bps": candidate.get("return_1_bps"),
