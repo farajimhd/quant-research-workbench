@@ -44,18 +44,15 @@ The initial stop is structure based:
 - also consider the most recent red-candle low for that ticker
 - cap maximum risk with `max_initial_stop_pct`, default 2%
 
-The active stop ratchets with R:
-
-```text
-1.0R reached: floor = entry + 0.25R
-+1.5R reached: floor = entry + 0.75R
-+2.0R reached: floor = entry + 1.25R
-+3.0R reached: floor = max_price_seen - 1.0R
-```
+After entry, the active stop is evaluated on completed 1-minute closes. The
+stop that existed before the just-completed bar is the only stop that can
+trigger on that bar. If a new red candle creates a higher structural stop, that
+stop becomes active from the next bar forward.
 
 Additional exits:
 
 - `TEMA_CLOSE`: `tema9 < tema20 + offset`
+- `STRUCTURE_STOP`: close breaks the current raised structural stop
 - `VELOCITY_TAKE_PROFIT`: unusually large fast green move after profit
 - `GREEN_BODY_CONTRACTION`: consecutive green candle bodies shrink after profit
 - `SMALL_RED_TOP`: small red candle appears near the best price after profit

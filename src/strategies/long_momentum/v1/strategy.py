@@ -290,7 +290,8 @@ class LongMomentumStrategy:
         }
         self.position_meta[symbol] = {
             "initial_r": initial_r,
-            "trailing_stop": stop_price,
+            "initial_stop": stop_price,
+            "structure_stop": stop_price,
             "entry_score": self._float(candidate.get("scanner_score")),
         }
         self._trace_entry(context.timestamp, candidate, quantity, stop_price, initial_r)
@@ -330,34 +331,34 @@ class LongMomentumStrategy:
             if bar is None:
                 continue
             meta = self._position_meta(symbol, position)
-            active_stop = self._active_stop(symbol, position, bar, meta)
-            meta["trailing_stop"] = active_stop
-            position.stop_price = max(position.stop_price, active_stop)
+            active_stop = max(self._float(meta.get("structure_stop")), position.stop_price)
 
             reason = self._exit_reason(symbol, position, bar, meta, active_stop)
             if reason is None:
+                next_stop = self._next_structure_stop(symbol, bar, active_stop)
+                meta["structure_stop"] = next_stop
+                position.stop_price = max(position.stop_price, next_stop)
                 continue
             self._trace_exit(context.timestamp, symbol, reason, position, bar, meta)
-            order_type = "STOP" if reason in {"TRAILING_STOP", "INITIAL_STOP"} and self._float(bar.get("low")) <= active_stop else "MARKET"
             requests.append(
                 OrderRequest(
                     symbol=symbol,
                     side="SELL",
                     quantity=position.quantity,
-                    order_type=order_type,
+                    order_type="MARKET",
                     reason=reason,
-                    stop_price=active_stop if order_type == "STOP" else None,
+                    stop_price=None,
                     tag=self._exit_tag(reason, position, bar, meta),
-                    allow_same_bar_fill=order_type == "STOP",
+                    allow_same_bar_fill=False,
                 )
             )
         return requests
 
     def _exit_reason(self, symbol: str, position, bar: dict, meta: dict, active_stop: float) -> str | None:
         close = self._float(bar.get("close"))
-        low = self._float(bar.get("low"))
-        if low <= active_stop:
-            return "INITIAL_STOP" if active_stop <= position.entry_price else "TRAILING_STOP"
+        if close <= active_stop:
+            initial_stop = self._float(meta.get("initial_stop")) or position.stop_price
+            return "INITIAL_STOP" if active_stop <= initial_stop + 1e-9 else "STRUCTURE_STOP"
         if self._tema_closed(bar):
             return "TEMA_CLOSE"
         r_multiple = self._open_r_multiple(position, close, meta)
@@ -388,24 +389,15 @@ class LongMomentumStrategy:
         stop = max(0.01, min(stop, entry - self.config.min_initial_risk_dollars))
         return stop, max(self.config.min_initial_risk_dollars, entry - stop)
 
-    def _active_stop(self, symbol: str, position, bar: dict, meta: dict) -> float:
-        initial_r = self._float(meta.get("initial_r")) or abs(position.entry_price - position.stop_price)
-        current_stop = max(self._float(meta.get("trailing_stop")), position.stop_price)
-        max_price = max(position.max_price, self._float(bar.get("high")), self._float(bar.get("close")))
-        max_r_seen = (max_price - position.entry_price) / initial_r if initial_r > 0 else 0.0
-        floor = current_stop
-        if max_r_seen >= 1.0:
-            floor = max(floor, position.entry_price + 0.25 * initial_r)
-        if max_r_seen >= 1.5:
-            floor = max(floor, position.entry_price + 0.75 * initial_r)
-        if max_r_seen >= 2.0:
-            floor = max(floor, position.entry_price + 1.25 * initial_r)
-        if max_r_seen >= 3.0:
-            floor = max(floor, max_price - 1.0 * initial_r)
+    def _next_structure_stop(self, symbol: str, bar: dict, active_stop: float) -> float:
+        close = self._float(bar.get("close"))
+        next_stop = active_stop
         state = self.states.get(symbol)
-        if state and state.last_red_low is not None and max_r_seen >= 1.0:
-            floor = max(floor, min(float(state.last_red_low), self._float(bar.get("close")) - self.config.min_initial_risk_dollars))
-        return max(0.01, floor)
+        if state and state.last_red_low is not None:
+            red_low = float(state.last_red_low)
+            if active_stop < red_low < close:
+                next_stop = red_low
+        return max(0.01, min(next_stop, close - self.config.min_initial_risk_dollars))
 
     def _tema_closed(self, bar: dict) -> bool:
         close = self._float(bar.get("close"))
@@ -473,7 +465,12 @@ class LongMomentumStrategy:
         meta = self.position_meta.get(symbol)
         if meta is None:
             risk = max(self.config.min_initial_risk_dollars, abs(position.entry_price - position.stop_price))
-            meta = {"initial_r": risk, "trailing_stop": position.stop_price, "entry_score": position.live_score}
+            meta = {
+                "initial_r": risk,
+                "initial_stop": position.stop_price,
+                "structure_stop": position.stop_price,
+                "entry_score": position.live_score,
+            }
             self.position_meta[symbol] = meta
         return meta
 
@@ -574,7 +571,7 @@ class LongMomentumStrategy:
                 "quantity": position.quantity,
                 "price": close,
                 "entry_price": position.entry_price,
-                "trailing_stop": meta.get("trailing_stop"),
+                "structure_stop": meta.get("structure_stop"),
                 "initial_r": meta.get("initial_r"),
                 "open_r": self._open_r_multiple(position, close, meta),
             },
@@ -594,8 +591,9 @@ class LongMomentumStrategy:
 
     def _exit_tag(self, reason: str, position, bar: dict | None, meta: dict) -> str:
         price = self._float(bar.get("close")) if bar is not None else position.entry_price
+        stop = self._float(meta.get("structure_stop")) or self._float(meta.get("initial_stop")) or position.stop_price
         return (
-            f"EXIT|reason={reason}|price={price:.2f}|stop={self._float(meta.get('trailing_stop')):.2f}"
+            f"EXIT|reason={reason}|price={price:.2f}|stop={stop:.2f}"
             f"|R={self._float(meta.get('initial_r')):.4f}|maxp={position.max_price:.2f}"
             f"|maxR={position.max_r_multiple:.2f}"
         )
