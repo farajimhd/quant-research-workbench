@@ -484,8 +484,9 @@ class BacktestEngine:
         self.pending_orders = still_open
 
     def _fill_pending_orders(self, timestamp: datetime, bars_by_symbol: dict[str, dict], eligible_order_ids: set[int] | None = None) -> None:
+        starting_pending_ids = {order.order_id for order in self.pending_orders}
         still_open = []
-        for order in self.pending_orders:
+        for order in list(self.pending_orders):
             if eligible_order_ids is not None and order.order_id not in eligible_order_ids:
                 still_open.append(order)
                 continue
@@ -500,7 +501,8 @@ class BacktestEngine:
                 self._fill_order(order, self._bar_fill_timestamp(timestamp, bar), bar, order.reason)
             else:
                 still_open.append(order)
-        self.pending_orders = still_open
+        new_pending_orders = [order for order in self.pending_orders if order.order_id not in starting_pending_ids]
+        self.pending_orders = still_open + new_pending_orders
 
     def _bar_fill_timestamp(self, timestamp: datetime, _bar: dict) -> datetime:
         return timestamp
@@ -589,11 +591,10 @@ class BacktestEngine:
         if liquidity_slippage_bps > 0:
             fill_price *= 1.0 - (liquidity_slippage_bps / 10_000.0)
         effective_slippage_bps = self.config.slippage_bps + liquidity_slippage_bps
-        fee = self.fee_model.estimate(side=order.side, quantity=order.quantity, fill_price=fill_price)
 
         if order.side == "BUY":
             metadata = self.strategy.entry_metadata(order)
-            max_fill_quantity = self._max_fill_quantity(bar)
+            max_fill_quantity = self._max_fill_quantity(order, bar)
             if max_fill_quantity is not None and order.quantity > max_fill_quantity:
                 order.status = "REJECTED_LIQUIDITY"
                 order.filled_at = timestamp
@@ -602,6 +603,7 @@ class BacktestEngine:
                 self.orders.append(asdict(order))
                 self._record_engine_rejection(timestamp, order, "entry_liquidity")
                 return
+            fee = self.fee_model.estimate(side=order.side, quantity=order.quantity, fill_price=fill_price)
             if not self.portfolio.can_afford(fill_price, order.quantity, fee.total):
                 order.status = "REJECTED_CASH"
                 order.filled_at = timestamp
@@ -624,6 +626,25 @@ class BacktestEngine:
                     fee=fee.total,
                 )
         else:
+            max_fill_quantity = self._max_fill_quantity(order, bar)
+            requested_quantity = order.quantity
+            if max_fill_quantity is not None and requested_quantity > max_fill_quantity:
+                fill_quantity = max(0, max_fill_quantity)
+                if fill_quantity <= 0:
+                    order.status = "REJECTED_LIQUIDITY"
+                    order.filled_at = timestamp
+                    order.fill_price = fill_price
+                    order.reason = reason
+                    self.orders.append(asdict(order))
+                    self._record_engine_rejection(timestamp, order, "exit_liquidity")
+                    self._queue_residual_sell_limit(order, requested_quantity, timestamp, bar, requested_quantity, 0)
+                    return
+                order.quantity = fill_quantity
+                order.status = "PARTIALLY_FILLED"
+                order.tag = self._tag_with_partial_fill(order.tag, requested_quantity, fill_quantity)
+            else:
+                order.status = "FILLED"
+            fee = self.fee_model.estimate(side=order.side, quantity=order.quantity, fill_price=fill_price)
             if order.symbol not in self.portfolio.positions:
                 order.status = "REJECTED_NO_POSITION"
                 order.filled_at = timestamp
@@ -631,7 +652,6 @@ class BacktestEngine:
                 order.reason = reason
                 self.orders.append(asdict(order))
                 return
-            order.status = "FILLED"
             order.filled_at = timestamp
             order.fill_price = fill_price
             order.reason = reason
@@ -640,6 +660,9 @@ class BacktestEngine:
             trade = self.portfolio.close_position(order, fee=fee.total)
             if trade is not None:
                 self.trades.append(asdict(trade))
+            remaining_quantity = requested_quantity - order.quantity
+            if remaining_quantity > 0:
+                self._queue_residual_sell_limit(order, remaining_quantity, timestamp, bar, requested_quantity, order.quantity)
 
         self.orders.append(asdict(order))
 
@@ -648,7 +671,18 @@ class BacktestEngine:
             return max(0.01, fill_price - float(metadata["stop_offset_dollars"]))
         return float(metadata.get("stop_price", order.stop_price or fill_price))
 
-    def _max_fill_quantity(self, bar: dict) -> int | None:
+    def _max_fill_quantity(self, order: Order, bar: dict) -> int | None:
+        quote_column = "quote_ask_size" if order.side == "BUY" else "quote_bid_size"
+        quote_quantity = self._nonnegative_int(bar.get(quote_column))
+        if quote_quantity is not None:
+            return quote_quantity
+        if order.side == "BUY":
+            provider_column = "max_entry_qty"
+        else:
+            provider_column = "max_exit_qty"
+        provider_quantity = self._nonnegative_int(bar.get(provider_column))
+        if provider_quantity is not None:
+            return provider_quantity
         try:
             volume = float(bar.get("volume"))
         except (TypeError, ValueError):
@@ -671,11 +705,62 @@ class BacktestEngine:
     def _exit_liquidity_slippage_bps(self, order: Order, bar: dict) -> float:
         if order.side != "SELL":
             return 0.0
-        max_fill_quantity = self._max_fill_quantity(bar)
+        if bar.get("quote_bid_size") is not None:
+            return 0.0
+        max_fill_quantity = self._max_fill_quantity(order, bar)
         if max_fill_quantity is None or max_fill_quantity <= 0 or order.quantity <= max_fill_quantity:
             return 0.0
         excess_multiple = (order.quantity / max_fill_quantity) - 1.0
         return max(0.0, excess_multiple * self.config.exit_liquidity_slippage_bps_per_excess_multiple)
+
+    def _nonnegative_int(self, value) -> int | None:
+        try:
+            if value is None:
+                return None
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if number < 0:
+            return 0
+        return int(number)
+
+    def _tag_with_partial_fill(self, tag: str, requested_quantity: int, fill_quantity: int) -> str:
+        suffix = f"PARTIAL|requested={requested_quantity}|filled={fill_quantity}|remaining={requested_quantity - fill_quantity}"
+        return f"{tag}|{suffix}" if tag else suffix
+
+    def _queue_residual_sell_limit(
+        self,
+        source_order: Order,
+        remaining_quantity: int,
+        timestamp: datetime,
+        bar: dict,
+        requested_quantity: int | None = None,
+        filled_quantity: int | None = None,
+    ) -> None:
+        if remaining_quantity <= 0:
+            return
+        try:
+            limit_price = float(bar.get("close"))
+        except (TypeError, ValueError):
+            return
+        residual = Order(
+            order_id=self.next_order_id,
+            symbol=source_order.symbol,
+            side="SELL",
+            quantity=remaining_quantity,
+            order_type="LIMIT",
+            reason=f"{source_order.reason}_RESIDUAL",
+            created_at=timestamp,
+            limit_price=limit_price,
+            tag=self._tag_with_partial_fill(
+                source_order.tag,
+                requested_quantity if requested_quantity is not None else source_order.quantity + remaining_quantity,
+                filled_quantity if filled_quantity is not None else source_order.quantity,
+            ),
+        )
+        self.next_order_id += 1
+        self.pending_orders.append(residual)
+        self.orders.append(asdict(residual))
 
     def _apply_fee_to_order(self, order: Order, fee: FeeBreakdown) -> None:
         order.fill_fee = fee.total

@@ -19,8 +19,9 @@ strategy-time row:
 - `tema9 > tema20`
 - `macd_line > 0`
 - `macd_hist_z_since_open >= min_macd_hist_z_since_open`, default 0.1
-- `max_fill_qty` is available from the provider as a 3-bar liquidity estimate
-  based on prior completed bars
+- `max_fill_qty` is available from the provider as the known entry capacity.
+  When quote size is present, it is based on the prior bar's `quote_ask_size`;
+  otherwise it falls back to a 3-bar volume/transaction estimate.
 - spread gate:
   - price from 1 through 4.9999: `spread <= 0.02`
   - price from 5 through 10: `spread <= 0.05`
@@ -49,9 +50,12 @@ When the new one-bar return is stronger, the strategy fully rotates: it exits
 the current position and enters the new candidate. There is no partial rotation
 in v1.
 
-If the all-cash entry size is larger than provider-estimated `max_fill_qty`, the
-strategy skips the entry before submitting an order. The backtest engine still
-applies its execution-bar liquidity guard at fill time.
+If the all-cash entry size is larger than provider-estimated `max_fill_qty`, or
+if quote capacity is zero, the strategy skips the entry before submitting an
+order. The backtest engine still applies its execution-bar liquidity guard at
+fill time. Entries use ask-side quote size as capacity, while exits use bid-side
+quote size and can partially fill if the displayed bid size is smaller than the
+sell quantity.
 
 ## Stop And Exits
 

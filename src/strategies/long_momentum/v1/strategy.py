@@ -82,7 +82,7 @@ class LongMomentumStrategy:
             for order in pending_orders
             if not self._is_pending_entry_order(order)
         ]
-        requests = stale_entry_cancels + self._exit_requests(context, portfolio)
+        requests = stale_entry_cancels + self._exit_requests(context, portfolio, active_pending_orders)
         pending_symbols = {order.symbol for order in active_pending_orders if order.status == "OPEN"}
         exiting_symbols = {request.symbol for request in requests if request.side == "SELL"}
         entry_request = self._entry_or_rotation_request(
@@ -302,10 +302,15 @@ class LongMomentumStrategy:
         if quantity <= 0:
             self._reject(context.timestamp, symbol, "quantity", candidate)
             return None
-        max_fill_qty = int(self._float(candidate.get("max_fill_qty")))
-        if max_fill_qty > 0 and quantity > max_fill_qty:
-            self._reject(context.timestamp, symbol, "liquidity_capacity", candidate | {"quantity": quantity, "max_fill_qty": max_fill_qty})
-            return None
+        raw_max_fill_qty = candidate.get("max_fill_qty")
+        max_fill_qty = int(self._float(raw_max_fill_qty))
+        if raw_max_fill_qty is not None:
+            if max_fill_qty <= 0:
+                self._reject(context.timestamp, symbol, "no_quote_liquidity", candidate | {"quantity": quantity, "max_fill_qty": max_fill_qty})
+                return None
+            if quantity > max_fill_qty:
+                self._reject(context.timestamp, symbol, "liquidity_capacity", candidate | {"quantity": quantity, "max_fill_qty": max_fill_qty})
+                return None
         self.entry_order_metadata[symbol] = {
             "setup_rank": int(candidate.get("rank") or 0),
             "live_rank": int(candidate.get("entry_rank") or candidate.get("rank") or 0),
@@ -352,9 +357,12 @@ class LongMomentumStrategy:
             quantity -= 1
         return 0
 
-    def _exit_requests(self, context: BarContext, portfolio: Portfolio) -> list[OrderRequest]:
+    def _exit_requests(self, context: BarContext, portfolio: Portfolio, pending_orders: list[Order]) -> list[OrderRequest]:
         requests = []
+        pending_sell_symbols = {order.symbol for order in pending_orders if order.status == "OPEN" and order.side == "SELL"}
         for symbol, position in list(portfolio.positions.items()):
+            if symbol in pending_sell_symbols:
+                continue
             bar = context.updates_by_symbol.get(symbol)
             if bar is None:
                 continue

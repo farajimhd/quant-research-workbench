@@ -148,19 +148,34 @@ def liquidity_capacity_expressions(names: list[str]) -> list[pl.Expr]:
     else:
         rolling_capacity = rolling_participation_capacity
 
+    quote_ask_size = pl.col("quote_ask_size").cast(pl.Float64, strict=False) if "quote_ask_size" in names else None
+    quote_bid_size = pl.col("quote_bid_size").cast(pl.Float64, strict=False) if "quote_bid_size" in names else None
+    entry_capacity = quote_ask_size if quote_ask_size is not None else rolling_capacity.fill_null(last_capacity)
+    exit_capacity = quote_bid_size if quote_bid_size is not None else rolling_capacity.fill_null(last_capacity)
+
     exprs = [
         average_trade_size.alias("avg_trade_size"),
-        last_capacity.floor().clip(0).cast(pl.Int64).alias("max_fill_qty_last_bar"),
-        rolling_capacity.floor().clip(0).cast(pl.Int64).alias("max_fill_qty_3bar"),
-        rolling_capacity.fill_null(last_capacity).floor().clip(0).cast(pl.Int64).alias("max_fill_qty"),
+        last_capacity.floor().clip(0).cast(pl.Int64).alias("max_fill_qty_volume_last_bar"),
+        rolling_capacity.floor().clip(0).cast(pl.Int64).alias("max_fill_qty_volume_3bar"),
+        rolling_capacity.fill_null(last_capacity).floor().clip(0).cast(pl.Int64).alias("max_fill_qty_volume"),
+        entry_capacity.fill_null(0).floor().clip(0).cast(pl.Int64).alias("max_entry_qty"),
+        exit_capacity.fill_null(0).floor().clip(0).cast(pl.Int64).alias("max_exit_qty"),
+        entry_capacity.fill_null(0).floor().clip(0).cast(pl.Int64).alias("max_fill_qty"),
     ]
+    if quote_ask_size is not None:
+        exprs.append(quote_ask_size.fill_null(0).floor().clip(0).cast(pl.Int64).alias("max_fill_qty_quote_ask"))
+    if quote_bid_size is not None:
+        exprs.append(quote_bid_size.fill_null(0).floor().clip(0).cast(pl.Int64).alias("max_fill_qty_quote_bid"))
     if "close" in names:
         close = pl.col("close").cast(pl.Float64, strict=False)
         exprs.extend(
             [
-                (last_capacity * close).alias("max_fill_notional_last_bar"),
-                (rolling_capacity * close).alias("max_fill_notional_3bar"),
-                (rolling_capacity.fill_null(last_capacity) * close).alias("max_fill_notional"),
+                (last_capacity * close).alias("max_fill_notional_volume_last_bar"),
+                (rolling_capacity * close).alias("max_fill_notional_volume_3bar"),
+                (rolling_capacity.fill_null(last_capacity) * close).alias("max_fill_notional_volume"),
+                (entry_capacity * close).alias("max_entry_notional"),
+                (exit_capacity * close).alias("max_exit_notional"),
+                (entry_capacity * close).alias("max_fill_notional"),
             ]
         )
     return exprs
