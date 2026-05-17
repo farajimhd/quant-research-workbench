@@ -364,6 +364,12 @@ def load_scanner_snapshot(
     joined_schema = scan.collect_schema()
     scan = apply_scanner_compatibility_columns(scan, joined_schema)
     joined_schema = scan.collect_schema()
+    scan = apply_strategy_decision_view(scan, joined_schema)
+    joined_schema = scan.collect_schema()
+    scan = apply_strategy_decision_price_action_columns(scan, joined_schema.names())
+    joined_schema = scan.collect_schema()
+    scan = apply_long_momentum_scanner_columns(scan, joined_schema.names())
+    joined_schema = scan.collect_schema()
     minute_filter = scanner_minute_filter(joined_schema.names(), session_date, minute)
     if minute_filter is not None:
         scan = scan.filter(minute_filter)
@@ -425,6 +431,77 @@ def apply_scanner_compatibility_columns(scan: pl.LazyFrame, schema: pl.Schema) -
     scan = apply_scanner_momentum_compatibility_columns(scan, schema.names())
     schema = scan.collect_schema()
     return apply_scanner_price_action_compatibility_columns(scan, schema.names())
+
+
+def apply_strategy_decision_view(scan: pl.LazyFrame, schema: pl.Schema) -> pl.LazyFrame:
+    names = schema.names()
+    if "ticker" not in names:
+        return scan
+    current_columns = {
+        "ticker",
+        "bar_id",
+        "session_date",
+        "timeframe",
+        "bar_time_market",
+        "bar_time_utc",
+        "minute_of_day",
+        "open",
+    }
+    order_columns = [column for column in ["ticker", "bar_time_market"] if column in names]
+    if order_columns:
+        scan = scan.sort(order_columns)
+    shifted_exprs = [
+        pl.col(column).shift(1).over("ticker").alias(column)
+        for column in names
+        if column not in current_columns
+    ]
+    return scan.with_columns(shifted_exprs) if shifted_exprs else scan
+
+
+def apply_strategy_decision_price_action_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
+    if not {"open", "close"}.issubset(names):
+        return scan
+    body = pl.col("close") - pl.col("open")
+    exprs: list[pl.Expr] = [
+        body.alias("body"),
+        body.abs().alias("body_abs"),
+        (pl.col("close") > pl.col("open")).alias("is_green"),
+        (pl.col("close") < pl.col("open")).alias("is_red"),
+    ]
+    if {"high", "low"}.issubset(names):
+        exprs.append((pl.col("high") - pl.col("low")).alias("bar_range"))
+    return scan.with_columns(exprs)
+
+
+def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
+    if not {"close", "spread"}.issubset(names):
+        return scan
+    spread_ok = (
+        pl.when(pl.col("close") < 5.0)
+        .then(pl.col("spread") <= 0.02)
+        .otherwise(pl.col("spread") <= 0.05)
+        .fill_null(False)
+    )
+    exprs: list[pl.Expr] = [spread_ok.alias("long_momentum_spread_ok")]
+    required = {"close", "volume", "transactions", "is_red", "return_1", "tema_open", "macd_line", "macd_hist_z_since_open"}
+    if required.issubset(names):
+        exprs.append(
+            (
+                (pl.col("close") >= 1.0)
+                & (pl.col("close") <= 10.0)
+                & (pl.col("volume") >= 10_000)
+                & (pl.col("transactions") >= 100)
+                & (~pl.col("is_red"))
+                & (pl.col("return_1") > 0)
+                & pl.col("tema_open")
+                & (pl.col("macd_line") > 0)
+                & (pl.col("macd_hist_z_since_open") >= 0.1)
+                & spread_ok
+            )
+            .fill_null(False)
+            .alias("long_momentum_entry_open")
+        )
+    return scan.with_columns(exprs)
 
 
 def scanner_timeframe_step_minutes_expr(names: list[str]) -> pl.Expr:
@@ -861,6 +938,8 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "spread_bps_avg",
         "spread_bps_median",
         "spread_bps_max",
+        "long_momentum_spread_ok",
+        "long_momentum_entry_open",
         "quote_bid_size",
         "quote_ask_size",
         "quote_missing",

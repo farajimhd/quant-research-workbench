@@ -67,6 +67,9 @@ class BacktestConfig:
     session_start_minute: int = 9 * 60 + 30
     session_end_minute: int = 16 * 60
     slippage_bps: float = 0.0
+    max_entry_participation_rate: float = 0.05
+    max_entry_trade_multiple: float = 3.0
+    exit_liquidity_slippage_bps_per_excess_multiple: float = 10.0
     fee_model: str = "ibkr_ca_us_stock_fixed"
     fee_tax_rate: float = 0.0
     save_symbol_bars: bool = True
@@ -117,6 +120,9 @@ class BacktestConfig:
             "session_start_minute": self.session_start_minute,
             "session_end_minute": self.session_end_minute,
             "slippage_bps": self.slippage_bps,
+            "max_entry_participation_rate": self.max_entry_participation_rate,
+            "max_entry_trade_multiple": self.max_entry_trade_multiple,
+            "exit_liquidity_slippage_bps_per_excess_multiple": self.exit_liquidity_slippage_bps_per_excess_multiple,
             "fee_model": self.fee_model,
             "fee_tax_rate": self.fee_tax_rate,
             "save_symbol_bars": self.save_symbol_bars,

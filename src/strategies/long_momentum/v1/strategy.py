@@ -321,8 +321,7 @@ class LongMomentumStrategy:
             order_type="STOP",
             reason="LONG_MOMENTUM",
             stop_price=trigger_price,
-            fill_requires_green_bar=True,
-            fill_requires_close_through_stop=True,
+            allow_same_bar_fill=True,
             tag=(
                 f"ENTRY|rule=LONG_MOMENTUM|rank={candidate.get('entry_rank') or candidate.get('rank')}"
                 f"|qty={quantity}|trigger={trigger_price:.2f}|stop={stop_price:.2f}|R={initial_r:.4f}"
@@ -357,37 +356,47 @@ class LongMomentumStrategy:
                 continue
             active_stop = position.stop_price
 
-            reason = self._exit_reason(symbol, position, bar, meta, active_stop)
-            if reason is None:
-                continue
-            self._trace_exit(context.timestamp, symbol, reason, position, bar, meta)
-            is_stop_exit = reason == "INITIAL_STOP"
-            is_take_profit = reason == "TAKE_PROFIT"
-            requests.append(
-                OrderRequest(
-                    symbol=symbol,
-                    side="SELL",
-                    quantity=position.quantity,
-                    order_type="STOP" if is_stop_exit else "LIMIT" if is_take_profit else "MARKET",
-                    reason=reason,
-                    stop_price=active_stop if is_stop_exit else None,
-                    limit_price=self._take_profit_price(position) if is_take_profit else None,
-                    tag=self._exit_tag(reason, position, bar, meta),
-                    allow_same_bar_fill=is_stop_exit or is_take_profit,
+            if self._tema_closed(bar):
+                self._trace_exit(context.timestamp, symbol, "TEMA_CLOSE", position, bar, meta)
+                requests.append(
+                    OrderRequest(
+                        symbol=symbol,
+                        side="SELL",
+                        quantity=position.quantity,
+                        order_type="MARKET",
+                        reason="TEMA_CLOSE",
+                        tag=self._exit_tag("TEMA_CLOSE", position, bar, meta),
+                    )
                 )
+                continue
+
+            requests.extend(
+                [
+                    OrderRequest(
+                        symbol=symbol,
+                        side="SELL",
+                        quantity=position.quantity,
+                        order_type="STOP",
+                        reason="INITIAL_STOP",
+                        stop_price=active_stop,
+                        tag=self._exit_tag("INITIAL_STOP", position, bar, meta),
+                        allow_same_bar_fill=True,
+                        expire_on_bar_close=True,
+                    ),
+                    OrderRequest(
+                        symbol=symbol,
+                        side="SELL",
+                        quantity=position.quantity,
+                        order_type="LIMIT",
+                        reason="TAKE_PROFIT",
+                        limit_price=self._take_profit_price(position),
+                        tag=self._exit_tag("TAKE_PROFIT", position, bar, meta),
+                        allow_same_bar_fill=True,
+                        expire_on_bar_close=True,
+                    ),
+                ]
             )
         return requests
-
-    def _exit_reason(self, symbol: str, position, bar: dict, meta: dict, active_stop: float) -> str | None:
-        close = self._float(bar.get("close"))
-        low = self._float(bar.get("low"))
-        if low <= active_stop:
-            return "INITIAL_STOP"
-        if self._tema_closed(bar):
-            return "TEMA_CLOSE"
-        if self._take_profit(position, bar):
-            return "TAKE_PROFIT"
-        return None
 
     def _entry_levels(self, candidate: dict) -> tuple[float, float, float]:
         open_price = self._float(candidate.get("open"))
@@ -406,9 +415,6 @@ class LongMomentumStrategy:
             and bar.get("tema20") is not None
             and self._float(bar.get("tema9")) < self._float(bar.get("tema20")) + (close * self.config.tema_exit_offset_pct)
         )
-
-    def _take_profit(self, position, bar: dict) -> bool:
-        return position.entry_price > 0 and self._float(bar.get("high")) >= self._take_profit_price(position)
 
     def _take_profit_price(self, position) -> float:
         return position.entry_price * (1.0 + self.config.take_profit_pct)

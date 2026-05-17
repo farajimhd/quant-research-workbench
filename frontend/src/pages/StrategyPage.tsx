@@ -48,6 +48,9 @@ type StrategyConfig = {
   excluded_symbols_file: string;
   initial_cash: number;
   slippage_bps: number;
+  max_entry_participation_rate: number;
+  max_entry_trade_multiple: number;
+  exit_liquidity_slippage_bps_per_excess_multiple: number;
   fee_model: string;
   fee_tax_rate: number;
   save_symbol_bars: boolean;
@@ -98,6 +101,9 @@ const RUN_PARAMETER_HELP: Record<string, string> = {
   excluded_symbols_file: "CSV of tickers that the backtest engine removes before strategy evaluation and rejects at order submission.",
   initial_cash: "Starting portfolio cash used to size positions and calculate return.",
   slippage_bps: "Per-fill slippage in basis points. One basis point is 0.01 percent.",
+  max_entry_participation_rate: "Maximum share of a bar's volume allowed for a new entry fill.",
+  max_entry_trade_multiple: "Maximum entry size relative to the bar's average shares per transaction.",
+  exit_liquidity_slippage_bps_per_excess_multiple: "Extra sell-side slippage per multiple above the estimated fill capacity.",
   fee_model: "Commission and regulatory fee model applied at each fill. The default estimates IBKR Canada fixed pricing for US stocks.",
   fee_tax_rate: "Optional tax rate applied to estimated commissions. Leave 0 unless you want to explicitly model GST/PST/HST.",
   save_symbol_bars: "When enabled, the run saves per-symbol bar snapshots for diagnostics.",
@@ -791,6 +797,9 @@ function BacktestParameterEditor({
         <EditField help={RUN_PARAMETER_HELP.end_date} label="End" type="date" value={config.end_date} onChange={(value) => onChange({ ...config, end_date: value })} />
         <EditNumberField help={RUN_PARAMETER_HELP.initial_cash} label="Initial cash" value={config.initial_cash} onChange={(value) => onChange({ ...config, initial_cash: value })} />
         <EditNumberField help={RUN_PARAMETER_HELP.slippage_bps} label="Slippage bps" value={config.slippage_bps} onChange={(value) => onChange({ ...config, slippage_bps: value })} />
+        <EditNumberField help={RUN_PARAMETER_HELP.max_entry_participation_rate} label="Entry max volume share" value={config.max_entry_participation_rate ?? 0.05} onChange={(value) => onChange({ ...config, max_entry_participation_rate: value })} />
+        <EditNumberField help={RUN_PARAMETER_HELP.max_entry_trade_multiple} label="Entry trade multiple" value={config.max_entry_trade_multiple ?? 3} onChange={(value) => onChange({ ...config, max_entry_trade_multiple: value })} />
+        <EditNumberField help={RUN_PARAMETER_HELP.exit_liquidity_slippage_bps_per_excess_multiple} label="Exit liquidity bps" value={config.exit_liquidity_slippage_bps_per_excess_multiple ?? 10} onChange={(value) => onChange({ ...config, exit_liquidity_slippage_bps_per_excess_multiple: value })} />
         <EditReadonlyField help={RUN_PARAMETER_HELP.fee_model} label="Fee model" value={config.fee_model || "ibkr_ca_us_stock_fixed"} />
         <EditNumberField help={RUN_PARAMETER_HELP.fee_tax_rate} label="Fee tax rate" value={config.fee_tax_rate ?? 0} onChange={(value) => onChange({ ...config, fee_tax_rate: value })} />
       </EditSection>

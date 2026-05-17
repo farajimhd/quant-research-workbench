@@ -30,6 +30,7 @@ class OrderRequest:
     allow_same_bar_fill: bool = False
     fill_requires_green_bar: bool = False
     fill_requires_close_through_stop: bool = False
+    expire_on_bar_close: bool = False
 
 
 @dataclass(slots=True)
@@ -54,6 +55,7 @@ class Order:
     tag: str = ""
     fill_requires_green_bar: bool = False
     fill_requires_close_through_stop: bool = False
+    expire_on_bar_close: bool = False
 
 
 @dataclass(slots=True)

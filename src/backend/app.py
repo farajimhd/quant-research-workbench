@@ -116,6 +116,9 @@ class BacktestSubmit(BaseModel):
     excluded_symbols_file: str = Field(default=str(DEFAULT_EXCLUDED_SYMBOLS_FILE))
     initial_cash: float = 10_000.0
     slippage_bps: float = 0.0
+    max_entry_participation_rate: float = 0.05
+    max_entry_trade_multiple: float = 3.0
+    exit_liquidity_slippage_bps_per_excess_multiple: float = 10.0
     fee_model: str = "ibkr_ca_us_stock_fixed"
     fee_tax_rate: float = 0.0
     save_symbol_bars: bool = True

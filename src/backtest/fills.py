@@ -4,7 +4,7 @@ from src.backtest.models import Order
 
 
 class BarFillModel:
-    """Phase 1 fill approximation from OHLC minute bars."""
+    """OHLC fill approximation for orders submitted at the current bar open."""
 
     def crossed(self, order: Order, bar: dict) -> bool:
         if order.order_type == "STOP" and order.side == "BUY" and order.stop_price is not None:
@@ -19,7 +19,7 @@ class BarFillModel:
 
     def fill_price(self, order: Order, bar: dict, slippage_bps: float) -> float:
         if order.order_type == "MARKET":
-            base_price = float(bar["close"])
+            base_price = float(bar["open"])
         elif order.order_type == "STOP" and order.stop_price is not None:
             stop_price = float(order.stop_price)
             open_price = float(bar["open"])

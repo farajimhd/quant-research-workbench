@@ -1,12 +1,15 @@
 # Long Momentum v1
 
 Long Momentum v1 is an extended-hours scanner strategy that trades long from
-04:00 ET through 20:00 ET. It uses completed 1-minute bars as the actionable
-event stream.
+04:00 ET through 20:00 ET. It evaluates each 1-minute event at the current bar
+open. The strategy row keeps the current bar's `open` and timestamp, while
+`high`, `low`, `close`, volume, transactions, spread, and indicators come from
+the previous completed bar.
 
 ## Scanner
 
-At each completed bar the strategy filters the current cross-section:
+At each bar open the strategy filters the current cross-section using the
+strategy-time row:
 
 - `close` between `min_price` and `max_price`, default 1 to 10
 - `volume >= min_volume`, default 10,000
@@ -31,11 +34,12 @@ configured slippage and per-share fee estimate. If the top candidate is already
 held, it is ignored.
 
 An eligible scanner row is only an intent. The strategy submits a one-bar-valid
-buy stop at `max(open, close)` of the completed signal bar. The initial stop is
-one cent below the actual entry fill by default. A stop-entry fill also requires
-the execution bar to close green and close at or above the stop trigger. If the
-trigger is not confirmed on the next bar, the pending entry is canceled and the
-scanner is evaluated again from the newly completed bar.
+buy stop at `max(open, close)` of the strategy-time row, which means the current
+open or previous completed close, whichever is higher. The initial stop is one
+cent below the actual entry fill by default. The stop-entry fills when the
+current execution bar trades through the trigger. If the trigger is not touched
+on that bar, the order expires and the scanner is evaluated again on the next
+bar open.
 
 If a different candidate appears while a position is open, the strategy compares
 the candidate's one-bar return with the open position's total unrealized return.
@@ -45,11 +49,12 @@ in v1.
 
 ## Stop And Exits
 
-After entry, the active stop is treated as a resting stop: if the current bar's
-low trades through it, the strategy submits a stop sell that can fill on that
-same bar. Exits are not evaluated on the same 1-minute bar that just filled the
-entry, because OHLC bars do not reveal whether the low happened before or after
-the entry trigger.
+After entry, the active stop and take-profit target are submitted as
+one-bar-valid protective orders. If both stop and target are touched inside the
+same OHLC bar, the stop is evaluated first as the conservative assumption.
+Exits are not evaluated on the same 1-minute bar that just filled the entry,
+because OHLC bars do not reveal whether the low happened before or after the
+entry trigger.
 
 Additional exits:
 

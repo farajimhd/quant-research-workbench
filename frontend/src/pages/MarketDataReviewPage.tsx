@@ -216,6 +216,8 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
   "spread_bps_avg",
   "spread_bps_median",
   "spread_bps_max",
+  "long_momentum_spread_ok",
+  "long_momentum_entry_open",
   "quote_bid_size",
   "quote_ask_size",
   "quote_missing",
@@ -253,15 +255,17 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
 const SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
   filters: {
     close: { operator: "between", presetLabel: "between 1 and 10", valueText: "1", valueTextSecondary: "10" },
-    volume: { operator: "gte", presetLabel: ">= 8,000", valueText: "8000" },
+    volume: { operator: "gte", presetLabel: ">= 10,000", valueText: "10000" },
+    transactions: { operator: "gte", presetLabel: ">= 100", valueText: "100" },
     is_red: { operator: "eq", presetLabel: "Is false", valueText: "false" },
     return_1: { operator: "gt", presetLabel: "> 0", valueText: "0" },
     tema_open: { operator: "eq", presetLabel: "Is true", valueText: "true" },
     macd_line: { operator: "gt", presetLabel: "Positive", valueText: "0" },
     macd_hist_z_since_open: { operator: "gte", presetLabel: ">= 0.1", valueText: "0.1" },
+    long_momentum_spread_ok: { operator: "eq", presetLabel: "Is true", valueText: "true" },
   },
   label: "Momentum Filters",
-  title: "Apply close, volume, non-red candle, prior-close momentum, TEMA, MACD, and MACD z-score filters.",
+  title: "Apply the Long Momentum scanner filters to the strategy-time row view.",
 };
 const SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
   filters: {

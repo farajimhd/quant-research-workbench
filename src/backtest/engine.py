@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from math import ceil
 from typing import Callable, Protocol
 
@@ -133,10 +133,19 @@ class BacktestEngine:
                     day_start_equity = self.portfolio.total_equity()
                     frames = load_day_frames(self.config, session_date, requirements)
                     frames = self._apply_symbol_exclusions(frames)
-                    event_frame = self.strategy.prepare_day(frames, self.portfolio)
+                    execution_frame = frames.event_frame
+                    decision_frames = DayFrames(
+                        session_date=frames.session_date,
+                        event_frame=self._strategy_decision_frame(execution_frame),
+                        daily_context=frames.daily_context,
+                        context_frames=frames.context_frames,
+                    )
+                    event_frame = self.strategy.prepare_day(decision_frames, self.portfolio)
                     event_frame = self._filter_excluded_frame(event_frame)
+                    execution_frame = self._execution_frame_for_decisions(execution_frame, event_frame)
                     self._check_cancelled(cancel_check)
                     event_frame = event_frame.sort(["bar_time_market", "ticker"])
+                    execution_frame = execution_frame.sort(["bar_time_market", "ticker"])
                     session_total_bars = self._event_bar_count(event_frame)
                     remaining_sessions = len(sessions) - index
                     total_event_bars = max(
@@ -150,6 +159,7 @@ class BacktestEngine:
 
                     last_timestamp = None
                     latest_bars: dict[str, dict] = {}
+                    latest_execution_bars: dict[str, dict] = {}
                     session_processed_bars = 0
                     self._emit_progress(
                         progress_callback,
@@ -171,18 +181,23 @@ class BacktestEngine:
                         },
                     )
 
+                    execution_by_timestamp = {
+                        timestamp: frame
+                        for timestamp, frame in self._timestamp_slices(execution_frame, requirements.event_timeframe)
+                    }
                     for timestamp, updates in self._timestamp_slices(event_frame, requirements.event_timeframe):
                         self._check_cancelled(cancel_check)
                         last_timestamp = timestamp
                         update_rows = updates.to_dicts()
                         fresh_bars = {row["ticker"]: row for row in update_rows}
+                        execution_updates = execution_by_timestamp.get(timestamp, pl.DataFrame())
+                        execution_rows = execution_updates.to_dicts() if not execution_updates.is_empty() else []
+                        execution_fresh_bars = {row["ticker"]: row for row in execution_rows}
                         latest_bars.update(fresh_bars)
+                        latest_execution_bars.update(execution_fresh_bars)
                         latest = pl.DataFrame(list(latest_bars.values()), infer_schema_length=None) if latest_bars else pl.DataFrame()
 
-                        self._fill_pending_orders(timestamp, fresh_bars)
-                        live_trade_count = self._write_live_trades_if_needed(run_dir, artifact_writer, live_trade_count)
-                        self.portfolio.update_peaks(fresh_bars)
-
+                        pending_order_ids_at_open = {order.order_id for order in self.pending_orders}
                         requests = self.strategy.on_bar(
                             BarContext(
                                 timestamp=timestamp,
@@ -195,9 +210,11 @@ class BacktestEngine:
                             self.portfolio,
                             list(self.pending_orders),
                         )
-                        self._handle_requests(timestamp, requests, fresh_bars)
+                        self._handle_requests(timestamp, requests, execution_fresh_bars)
+                        self._fill_pending_orders(timestamp, execution_fresh_bars, eligible_order_ids=pending_order_ids_at_open)
                         live_trade_count = self._write_live_trades_if_needed(run_dir, artifact_writer, live_trade_count)
-                        self._record_portfolio(timestamp, latest_bars)
+                        self.portfolio.update_peaks(execution_fresh_bars)
+                        self._record_portfolio(timestamp, latest_execution_bars)
                         processed_event_bars += 1
                         session_processed_bars += 1
                         total_event_bars = max(total_event_bars, processed_event_bars)
@@ -230,13 +247,13 @@ class BacktestEngine:
                         self._handle_requests(
                             last_timestamp,
                             self.strategy.on_day_end(last_timestamp, self.portfolio),
-                            latest_bars,
+                            latest_execution_bars,
                         )
-                        self._fill_market_exits(last_timestamp, latest_bars)
+                        self._fill_market_exits(last_timestamp, latest_execution_bars)
                         live_trade_count = self._write_live_trades_if_needed(run_dir, artifact_writer, live_trade_count)
-                        self._record_portfolio(last_timestamp, latest_bars)
+                        self._record_portfolio(last_timestamp, latest_execution_bars)
 
-                    day_end_equity = self.portfolio.total_equity(latest_bars)
+                    day_end_equity = self.portfolio.total_equity(latest_execution_bars)
                     self.daily_rows.append(
                         {
                             "session_date": session_date.isoformat(),
@@ -330,10 +347,40 @@ class BacktestEngine:
     def _timestamp_slices(self, event_frame: pl.DataFrame, event_timeframe: str):
         if event_frame.is_empty():
             return
-        bar_duration = timedelta(minutes=timeframe_minutes(event_timeframe))
         for key, frame in event_frame.partition_by("bar_time_market", as_dict=True, maintain_order=True).items():
             bar_start = key[0] if isinstance(key, tuple) else key
-            yield bar_start + bar_duration, frame
+            yield bar_start, frame
+
+    def _strategy_decision_frame(self, execution_frame: pl.DataFrame) -> pl.DataFrame:
+        if execution_frame.is_empty() or "ticker" not in execution_frame.columns:
+            return execution_frame
+        current_columns = {
+            "ticker",
+            "bar_id",
+            "session_date",
+            "timeframe",
+            "bar_time_market",
+            "bar_time_utc",
+            "minute_of_day",
+            "open",
+        }
+        order_columns = [column for column in ["ticker", "bar_time_market"] if column in execution_frame.columns]
+        frame = execution_frame.sort(order_columns) if order_columns else execution_frame
+        shifted_exprs = [
+            pl.col(column).shift(1).over("ticker").alias(column)
+            for column in frame.columns
+            if column not in current_columns
+        ]
+        return frame.with_columns(shifted_exprs) if shifted_exprs else frame
+
+    def _execution_frame_for_decisions(self, execution_frame: pl.DataFrame, decision_frame: pl.DataFrame) -> pl.DataFrame:
+        if execution_frame.is_empty() or decision_frame.is_empty():
+            return execution_frame.head(0)
+        key_columns = [column for column in ["ticker", "bar_time_market"] if column in execution_frame.columns and column in decision_frame.columns]
+        if not key_columns:
+            return execution_frame
+        keys = decision_frame.select(key_columns).unique()
+        return execution_frame.join(keys, on=key_columns, how="semi")
 
     def _expected_event_bar_count(self, sessions: list, requirements: DataRequirements) -> int:
         return max(1, len(sessions) * self._expected_bars_per_session(requirements))
@@ -401,6 +448,7 @@ class BacktestEngine:
                 tag=request.tag,
                 fill_requires_green_bar=request.fill_requires_green_bar,
                 fill_requires_close_through_stop=request.fill_requires_close_through_stop,
+                expire_on_bar_close=request.expire_on_bar_close,
             )
             self.next_order_id += 1
 
@@ -415,6 +463,9 @@ class BacktestEngine:
                 bar = bars_by_symbol.get(order.symbol)
                 if request.allow_same_bar_fill and bar is not None and self.fill_model.crossed(order, bar) and self._order_bar_filter_passes(order, bar):
                     self._fill_order(order, self._bar_fill_timestamp(timestamp, bar), bar, order.reason)
+                elif request.allow_same_bar_fill and request.expire_on_bar_close:
+                    order.status = "EXPIRED"
+                    self.orders.append(asdict(order))
                 else:
                     self.pending_orders.append(order)
                     self.orders.append(asdict(order))
@@ -432,9 +483,12 @@ class BacktestEngine:
                 still_open.append(order)
         self.pending_orders = still_open
 
-    def _fill_pending_orders(self, timestamp: datetime, bars_by_symbol: dict[str, dict]) -> None:
+    def _fill_pending_orders(self, timestamp: datetime, bars_by_symbol: dict[str, dict], eligible_order_ids: set[int] | None = None) -> None:
         still_open = []
         for order in self.pending_orders:
+            if eligible_order_ids is not None and order.order_id not in eligible_order_ids:
+                still_open.append(order)
+                continue
             bar = bars_by_symbol.get(order.symbol)
             if bar is None:
                 still_open.append(order)
@@ -485,6 +539,7 @@ class BacktestEngine:
             tag=request.tag,
             fill_requires_green_bar=request.fill_requires_green_bar,
             fill_requires_close_through_stop=request.fill_requires_close_through_stop,
+            expire_on_bar_close=request.expire_on_bar_close,
         )
         self.next_order_id += 1
         self.orders.append(asdict(order))
@@ -495,6 +550,22 @@ class BacktestEngine:
                 "event_type": "order_rejected",
                 "reject_reason": "excluded_symbol",
                 "reason_code": "excluded_symbol",
+                "stage": "engine_order_guard",
+                "side": order.side,
+                "quantity": order.quantity,
+                "order_type": order.order_type,
+                "tag": order.tag,
+            }
+        )
+
+    def _record_engine_rejection(self, timestamp: datetime, order: Order, reason: str) -> None:
+        self.engine_rejection_events.append(
+            {
+                "timestamp": timestamp,
+                "ticker": order.symbol,
+                "event_type": "order_rejected",
+                "reject_reason": reason,
+                "reason_code": reason,
                 "stage": "engine_order_guard",
                 "side": order.side,
                 "quantity": order.quantity,
@@ -514,10 +585,23 @@ class BacktestEngine:
 
     def _fill_order(self, order: Order, timestamp: datetime, bar: dict, reason: str) -> None:
         fill_price = self.fill_model.fill_price(order, bar, self.config.slippage_bps)
+        liquidity_slippage_bps = self._exit_liquidity_slippage_bps(order, bar)
+        if liquidity_slippage_bps > 0:
+            fill_price *= 1.0 - (liquidity_slippage_bps / 10_000.0)
+        effective_slippage_bps = self.config.slippage_bps + liquidity_slippage_bps
         fee = self.fee_model.estimate(side=order.side, quantity=order.quantity, fill_price=fill_price)
 
         if order.side == "BUY":
             metadata = self.strategy.entry_metadata(order)
+            max_fill_quantity = self._max_fill_quantity(bar)
+            if max_fill_quantity is not None and order.quantity > max_fill_quantity:
+                order.status = "REJECTED_LIQUIDITY"
+                order.filled_at = timestamp
+                order.fill_price = fill_price
+                order.reason = reason
+                self.orders.append(asdict(order))
+                self._record_engine_rejection(timestamp, order, "entry_liquidity")
+                return
             if not self.portfolio.can_afford(fill_price, order.quantity, fee.total):
                 order.status = "REJECTED_CASH"
                 order.filled_at = timestamp
@@ -529,7 +613,7 @@ class BacktestEngine:
                 order.fill_price = fill_price
                 order.reason = reason
                 self._apply_fee_to_order(order, fee)
-                self._record_fill(order, timestamp, bar, fill_price, fee)
+                self._record_fill(order, timestamp, bar, fill_price, fee, effective_slippage_bps)
                 self.portfolio.open_position(
                     order,
                     setup_rank=int(metadata.get("setup_rank", 0)),
@@ -552,7 +636,7 @@ class BacktestEngine:
             order.fill_price = fill_price
             order.reason = reason
             self._apply_fee_to_order(order, fee)
-            self._record_fill(order, timestamp, bar, fill_price, fee)
+            self._record_fill(order, timestamp, bar, fill_price, fee, effective_slippage_bps)
             trade = self.portfolio.close_position(order, fee=fee.total)
             if trade is not None:
                 self.trades.append(asdict(trade))
@@ -564,6 +648,35 @@ class BacktestEngine:
             return max(0.01, fill_price - float(metadata["stop_offset_dollars"]))
         return float(metadata.get("stop_price", order.stop_price or fill_price))
 
+    def _max_fill_quantity(self, bar: dict) -> int | None:
+        try:
+            volume = float(bar.get("volume"))
+        except (TypeError, ValueError):
+            return None
+        if volume <= 0:
+            return 0
+        try:
+            transactions = float(bar.get("transactions"))
+        except (TypeError, ValueError):
+            transactions = 0.0
+        participation_capacity = volume * max(0.0, self.config.max_entry_participation_rate)
+        if transactions > 0:
+            average_trade_size = volume / transactions
+            print_capacity = average_trade_size * max(0.0, self.config.max_entry_trade_multiple)
+            capacity = min(participation_capacity, print_capacity)
+        else:
+            capacity = participation_capacity
+        return max(0, int(capacity))
+
+    def _exit_liquidity_slippage_bps(self, order: Order, bar: dict) -> float:
+        if order.side != "SELL":
+            return 0.0
+        max_fill_quantity = self._max_fill_quantity(bar)
+        if max_fill_quantity is None or max_fill_quantity <= 0 or order.quantity <= max_fill_quantity:
+            return 0.0
+        excess_multiple = (order.quantity / max_fill_quantity) - 1.0
+        return max(0.0, excess_multiple * self.config.exit_liquidity_slippage_bps_per_excess_multiple)
+
     def _apply_fee_to_order(self, order: Order, fee: FeeBreakdown) -> None:
         order.fill_fee = fee.total
         order.commission = fee.commission
@@ -571,7 +684,7 @@ class BacktestEngine:
         order.fee_tax = fee.tax
         order.fee_model = fee.model
 
-    def _record_fill(self, order: Order, timestamp: datetime, bar: dict, fill_price: float, fee: FeeBreakdown) -> None:
+    def _record_fill(self, order: Order, timestamp: datetime, bar: dict, fill_price: float, fee: FeeBreakdown, slippage_bps: float | None = None) -> None:
         fill = Fill(
             fill_id=self.next_fill_id,
             order_id=order.order_id,
@@ -582,7 +695,7 @@ class BacktestEngine:
             filled_at=timestamp,
             order_type=order.order_type,
             reason=order.reason,
-            slippage_bps=self.config.slippage_bps,
+            slippage_bps=self.config.slippage_bps if slippage_bps is None else slippage_bps,
             commission=fee.commission,
             regulatory_fee=fee.regulatory_fee,
             fee_tax=fee.tax,
