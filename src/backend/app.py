@@ -526,11 +526,27 @@ def enrich_trade_with_order_context(trade: dict[str, Any], orders_by_id: dict[in
     fills = fills or []
     entry_fill = matching_trade_fill(trade, fills, "BUY", "entry_time", "entry_price")
     exit_fill = matching_trade_fill(trade, fills, "SELL", "exit_time", "exit_price")
+    enriched["entry_fills"] = matching_trade_fills(trade, fills, "BUY")
+    enriched["exit_fills"] = matching_trade_fills(trade, fills, "SELL")
     if entry_fill and entry_fill.get("bar_time_market"):
         enriched["entry_bar_time"] = entry_fill.get("bar_time_market")
     if exit_fill and exit_fill.get("bar_time_market"):
         enriched["exit_bar_time"] = exit_fill.get("bar_time_market")
     return enriched
+
+
+def matching_trade_fills(trade: dict[str, Any], fills: list[dict[str, Any]], side: str) -> list[dict[str, Any]]:
+    entry_time = str(trade.get("entry_time") or "")
+    exit_time = str(trade.get("exit_time") or "")
+    if not entry_time or not exit_time:
+        return []
+    selected = [
+        fill
+        for fill in fills
+        if str(fill.get("side") or "").upper() == side
+        and entry_time <= str(fill.get("filled_at") or "") <= exit_time
+    ]
+    return sorted(selected, key=lambda fill: str(fill.get("filled_at") or ""))
 
 
 def matching_trade_fill(trade: dict[str, Any], fills: list[dict[str, Any]], side: str, time_key: str, price_key: str) -> dict[str, Any] | None:

@@ -51,12 +51,12 @@ When the new one-bar return is stronger, the strategy fully rotates: it exits
 the current position and enters the new candidate. There is no partial rotation
 in v1.
 
-If the all-cash entry size is larger than provider-estimated `last_max_fill_qty`, or
-if quote capacity is zero, the strategy skips the entry before submitting an
-order. The backtest engine still applies its execution-bar liquidity guard at
-fill time. Entries use ask-side quote size as capacity, while exits use bid-side
-quote size and can partially fill if the displayed bid size is smaller than the
-sell quantity.
+If quote capacity is zero, the strategy skips the entry before submitting an
+order. Otherwise it lets the backtest engine apply execution-bar liquidity.
+Entries use ask-side quote size as capacity and exits use bid-side quote size.
+If either side partially fills, Long Momentum waits for the next bar open and
+submits the remaining quantity as a same-bar limit order at `current_open`.
+Later buy fills are averaged into the open position price.
 
 ## Stop And Exits
 

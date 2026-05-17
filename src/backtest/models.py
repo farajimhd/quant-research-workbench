@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -142,3 +142,5 @@ class BarContext:
     updates_by_symbol: dict[str, dict]
     latest_by_symbol: dict[str, dict]
     observability: Any | None = None
+    recent_orders: list[dict] = field(default_factory=list)
+    recent_fills: list[dict] = field(default_factory=list)

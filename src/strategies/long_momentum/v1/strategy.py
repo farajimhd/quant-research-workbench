@@ -72,6 +72,9 @@ class LongMomentumStrategy:
 
     def on_bar(self, context: BarContext, portfolio: Portfolio, pending_orders: list[Order]) -> list[OrderRequest]:
         self._update_states(context)
+        residual_requests = self._partial_residual_requests(context, portfolio)
+        if residual_requests:
+            return residual_requests
         rows = self._scanner_rows(context, portfolio, pending_orders)
         candidates = [row for row in rows if row["entry_open"]]
         self._record_scanner(context, rows, candidates, portfolio, pending_orders)
@@ -96,6 +99,74 @@ class LongMomentumStrategy:
         if entry_request is not None:
             requests.append(entry_request)
         return requests
+
+    def _partial_residual_requests(self, context: BarContext, portfolio: Portfolio) -> list[OrderRequest]:
+        requests: list[OrderRequest] = []
+        for fill in context.recent_fills:
+            remaining = self._partial_remaining(fill.get("tag"))
+            if remaining <= 0:
+                continue
+            symbol = str(fill.get("symbol") or "").upper()
+            if not symbol:
+                continue
+            row = context.updates_by_symbol.get(symbol) or context.latest_by_symbol.get(symbol)
+            if row is None:
+                continue
+            open_price = self._float(row.get("current_open") if row.get("current_open") is not None else row.get("open"))
+            if open_price <= 0:
+                continue
+            side = str(fill.get("side") or "").upper()
+            if side == "BUY":
+                if symbol not in portfolio.positions:
+                    continue
+                requests.append(
+                    OrderRequest(
+                        symbol=symbol,
+                        side="BUY",
+                        quantity=remaining,
+                        order_type="LIMIT",
+                        reason="PARTIAL_ENTRY_REST",
+                        limit_price=open_price,
+                        allow_same_bar_fill=True,
+                        tag=f"ENTRY|reason=PARTIAL_ENTRY_REST|qty={remaining}|open={open_price:.2f}|source_fill={fill.get('fill_id')}",
+                    )
+                )
+            elif side == "SELL":
+                position = portfolio.positions.get(symbol)
+                if position is None:
+                    continue
+                quantity = min(remaining, position.quantity)
+                if quantity <= 0:
+                    continue
+                requests.append(
+                    OrderRequest(
+                        symbol=symbol,
+                        side="SELL",
+                        quantity=quantity,
+                        order_type="LIMIT",
+                        reason="PARTIAL_EXIT_REST",
+                        limit_price=open_price,
+                        allow_same_bar_fill=True,
+                        tag=f"EXIT|reason=PARTIAL_EXIT_REST|qty={quantity}|open={open_price:.2f}|source_fill={fill.get('fill_id')}",
+                    )
+                )
+        return requests
+
+    def _partial_remaining(self, tag: Any) -> int:
+        parsed = self._parse_pipe_tag(str(tag or ""))
+        try:
+            return max(0, int(float(parsed.get("remaining", 0))))
+        except (TypeError, ValueError):
+            return 0
+
+    def _parse_pipe_tag(self, tag: str) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for part in tag.split("|"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            values[key.strip().lower()] = value.strip()
+        return values
 
     def _cancel_stale_entry_requests(self, pending_orders: list[Order]) -> list[OrderRequest]:
         return [
@@ -305,13 +376,9 @@ class LongMomentumStrategy:
             return None
         raw_max_fill_qty = candidate.get("last_max_fill_qty")
         max_fill_qty = int(self._float(raw_max_fill_qty))
-        if raw_max_fill_qty is not None:
-            if max_fill_qty <= 0:
-                self._reject(context.timestamp, symbol, "no_quote_liquidity", candidate | {"quantity": quantity, "last_max_fill_qty": max_fill_qty})
-                return None
-            if quantity > max_fill_qty:
-                self._reject(context.timestamp, symbol, "liquidity_capacity", candidate | {"quantity": quantity, "last_max_fill_qty": max_fill_qty})
-                return None
+        if raw_max_fill_qty is not None and max_fill_qty <= 0:
+            self._reject(context.timestamp, symbol, "no_quote_liquidity", candidate | {"quantity": quantity, "last_max_fill_qty": max_fill_qty})
+            return None
         self.entry_order_metadata[symbol] = {
             "setup_rank": int(candidate.get("rank") or 0),
             "live_rank": int(candidate.get("entry_rank") or candidate.get("rank") or 0),

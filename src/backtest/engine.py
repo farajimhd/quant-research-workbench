@@ -66,6 +66,8 @@ class BacktestEngine:
         self.logs: list[str] = []
         self.symbol_bar_rows: list[dict] = []
         self.symbol_bar_5m_rows: list[dict] = []
+        self._strategy_recent_orders: list[dict] = []
+        self._strategy_recent_fills: list[dict] = []
         self.fill_model = BarFillModel()
         self.fee_model = fee_model_for_name(config.fee_model, tax_rate=config.fee_tax_rate)
         self.symbol_exclusions = load_symbol_exclusions(config.excluded_symbols_file)
@@ -198,6 +200,10 @@ class BacktestEngine:
                         latest = pl.DataFrame(list(latest_bars.values()), infer_schema_length=None) if latest_bars else pl.DataFrame()
 
                         pending_order_ids_at_open = {order.order_id for order in self.pending_orders}
+                        recent_orders = self._strategy_recent_orders
+                        recent_fills = self._strategy_recent_fills
+                        self._strategy_recent_orders = []
+                        self._strategy_recent_fills = []
                         requests = self.strategy.on_bar(
                             BarContext(
                                 timestamp=timestamp,
@@ -206,6 +212,8 @@ class BacktestEngine:
                                 updates_by_symbol=fresh_bars,
                                 latest_by_symbol=latest_bars,
                                 observability=self.observability,
+                                recent_orders=recent_orders,
+                                recent_fills=recent_fills,
                             ),
                             self.portfolio,
                             list(self.pending_orders),
@@ -602,14 +610,23 @@ class BacktestEngine:
         if order.side == "BUY":
             metadata = self.strategy.entry_metadata(order)
             max_fill_quantity = self._max_fill_quantity(order, bar)
+            requested_quantity = order.quantity
             if max_fill_quantity is not None and order.quantity > max_fill_quantity:
-                order.status = "REJECTED_LIQUIDITY"
-                order.filled_at = timestamp
-                order.fill_price = fill_price
-                order.reason = reason
-                self.orders.append(asdict(order))
-                self._record_engine_rejection(timestamp, order, "entry_liquidity")
-                return
+                fill_quantity = max(0, max_fill_quantity)
+                if fill_quantity <= 0:
+                    order.status = "REJECTED_LIQUIDITY"
+                    order.filled_at = timestamp
+                    order.fill_price = fill_price
+                    order.reason = reason
+                    self.orders.append(asdict(order))
+                    self._record_strategy_order_event(order)
+                    self._record_engine_rejection(timestamp, order, "entry_liquidity")
+                    return
+                order.quantity = fill_quantity
+                order.status = "PARTIALLY_FILLED"
+                order.tag = self._tag_with_partial_fill(order.tag, requested_quantity, fill_quantity)
+            else:
+                order.status = "FILLED"
             fee = self.fee_model.estimate(side=order.side, quantity=order.quantity, fill_price=fill_price)
             if not self.portfolio.can_afford(fill_price, order.quantity, fee.total):
                 order.status = "REJECTED_CASH"
@@ -617,7 +634,6 @@ class BacktestEngine:
                 order.fill_price = fill_price
                 order.reason = reason
             else:
-                order.status = "FILLED"
                 order.filled_at = timestamp
                 order.fill_price = fill_price
                 order.reason = reason
@@ -643,8 +659,8 @@ class BacktestEngine:
                     order.fill_price = fill_price
                     order.reason = reason
                     self.orders.append(asdict(order))
+                    self._record_strategy_order_event(order)
                     self._record_engine_rejection(timestamp, order, "exit_liquidity")
-                    self._queue_residual_sell_limit(order, requested_quantity, timestamp, bar, requested_quantity, 0)
                     return
                 order.quantity = fill_quantity
                 order.status = "PARTIALLY_FILLED"
@@ -667,11 +683,9 @@ class BacktestEngine:
             trade = self.portfolio.close_position(order, fee=fee.total)
             if trade is not None:
                 self.trades.append(asdict(trade))
-            remaining_quantity = requested_quantity - order.quantity
-            if remaining_quantity > 0:
-                self._queue_residual_sell_limit(order, remaining_quantity, timestamp, bar, requested_quantity, order.quantity)
 
         self.orders.append(asdict(order))
+        self._record_strategy_order_event(order)
 
     def _entry_stop_price(self, metadata: dict, order: Order, fill_price: float) -> float:
         if "stop_offset_dollars" in metadata:
@@ -735,40 +749,6 @@ class BacktestEngine:
         suffix = f"PARTIAL|requested={requested_quantity}|filled={fill_quantity}|remaining={requested_quantity - fill_quantity}"
         return f"{tag}|{suffix}" if tag else suffix
 
-    def _queue_residual_sell_limit(
-        self,
-        source_order: Order,
-        remaining_quantity: int,
-        timestamp: datetime,
-        bar: dict,
-        requested_quantity: int | None = None,
-        filled_quantity: int | None = None,
-    ) -> None:
-        if remaining_quantity <= 0:
-            return
-        try:
-            limit_price = float(bar.get("close"))
-        except (TypeError, ValueError):
-            return
-        residual = Order(
-            order_id=self.next_order_id,
-            symbol=source_order.symbol,
-            side="SELL",
-            quantity=remaining_quantity,
-            order_type="LIMIT",
-            reason=f"{source_order.reason}_RESIDUAL",
-            created_at=timestamp,
-            limit_price=limit_price,
-            tag=self._tag_with_partial_fill(
-                source_order.tag,
-                requested_quantity if requested_quantity is not None else source_order.quantity + remaining_quantity,
-                filled_quantity if filled_quantity is not None else source_order.quantity,
-            ),
-        )
-        self.next_order_id += 1
-        self.pending_orders.append(residual)
-        self.orders.append(asdict(residual))
-
     def _apply_fee_to_order(self, order: Order, fee: FeeBreakdown) -> None:
         order.fill_fee = fee.total
         order.commission = fee.commission
@@ -804,7 +784,12 @@ class BacktestEngine:
             tag=order.tag,
         )
         self.next_fill_id += 1
-        self.fills.append(asdict(fill))
+        row = asdict(fill)
+        self.fills.append(row)
+        self._strategy_recent_fills.append(dict(row))
+
+    def _record_strategy_order_event(self, order: Order) -> None:
+        self._strategy_recent_orders.append(asdict(order))
 
     def _record_portfolio(self, timestamp: datetime, bars_by_symbol: dict[str, dict]) -> None:
         equity = self.portfolio.total_equity(bars_by_symbol)

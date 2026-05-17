@@ -3080,6 +3080,7 @@ function tradeAnnotations(trades: DataRow[], selectedKey: string): NonNullable<C
       exitLabelSide: "right",
       exitPrice,
       exitTime,
+      fills: tradeFillAnnotations(trade),
       id: `${key}:trade:${index}`,
       pnl,
       selected,
@@ -3087,6 +3088,39 @@ function tradeAnnotations(trades: DataRow[], selectedKey: string): NonNullable<C
       triggerPrice: numericTradeValue(trade.entry_trigger) ?? undefined
     }];
   });
+}
+
+function tradeFillAnnotations(trade: DataRow) {
+  const entryFills = arrayValue(trade.entry_fills).map((fill) => tradeFillAnnotation(fill, "BUY" as const)).filter((fill) => fill !== null);
+  const exitFills = arrayValue(trade.exit_fills).map((fill) => tradeFillAnnotation(fill, "SELL" as const)).filter((fill) => fill !== null);
+  return [...entryFills, ...exitFills];
+}
+
+function tradeFillAnnotation(fill: DataRow, side: "BUY" | "SELL") {
+  const time = tradeTimestampSeconds(fill.bar_time_market ?? fill.filled_at);
+  const price = numericTradeValue(fill.fill_price);
+  if (time === null || price === null) return null;
+  const quantity = numericTradeValue(fill.quantity);
+  const partial = String(fill.tag ?? "").includes("PARTIAL");
+  const label = `${partial ? "Partial" : side === "BUY" ? "Entry" : "Exit"} ${quantity ? formatNumber(quantity) : ""}@${formatMoney(price)}`.replace(/\s+/g, " ").trim();
+  return {
+    label,
+    labelParts: [
+      { text: partial ? "Partial" : side === "BUY" ? "Entry" : "Exit", tone: "reason" as const },
+      { text: " ", tone: "separator" as const },
+      ...(quantity ? [{ text: formatNumber(quantity), tone: "size" as const }] : []),
+      { text: "@", tone: "label" as const },
+      { text: formatMoney(price), tone: "price" as const }
+    ],
+    price,
+    quantity: quantity ?? undefined,
+    side,
+    time
+  };
+}
+
+function arrayValue(value: unknown): DataRow[] {
+  return Array.isArray(value) ? value.filter((item): item is DataRow => item !== null && typeof item === "object") : [];
 }
 
 function symbolTimeframePayload(payload: RunSymbolChartPayload | null | undefined, timeframe: string): RunSymbolChartTimeframePayload | null {

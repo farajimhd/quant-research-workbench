@@ -52,6 +52,14 @@ type ChartSeries = {
 };
 type Region = { start: number; end: number; color: string; label: string };
 type TradeLabelPart = { text: string; tone?: "label" | "price" | "pnlLoss" | "pnlWin" | "reason" | "separator" | "size" };
+type TradeFillAnnotation = {
+  label?: string;
+  labelParts?: TradeLabelPart[];
+  price: number;
+  quantity?: number;
+  side: "BUY" | "SELL";
+  time: number;
+};
 type TradeAnnotation = {
   color: string;
   entryLabel?: string;
@@ -64,6 +72,7 @@ type TradeAnnotation = {
   exitLabelSide?: "left" | "right";
   exitPrice: number;
   exitTime: number;
+  fills?: TradeFillAnnotation[];
   id: string;
   pnl?: number;
   selected?: boolean;
@@ -2745,6 +2754,12 @@ function drawTradeAnnotations(
     drawTradePriceLine(layer, left, width, exitY, color, annotation.exitLabel ?? "Exit", annotation.exitLabelParts, "exit", selected, annotation.exitLabelSide ?? "right");
     drawTradeArrow(layer, entryX, entryY, color, "entry", selected);
     drawTradeArrow(layer, exitX, exitY, color, "exit", selected);
+    annotation.fills?.forEach((fill) => {
+      const fillX = xForAnnotationTime(chart, fill.time, candles);
+      const fillY = priceSeries.priceToCoordinate(fill.price);
+      if (fillX === null || fillY === null) return;
+      drawTradeFillMarker(layer, fillX, fillY, color, fill, selected);
+    });
     if (typeof annotation.stopPrice === "number" && Number.isFinite(annotation.stopPrice)) {
       const stopY = priceSeries.priceToCoordinate(annotation.stopPrice);
       if (stopY !== null) drawTradeGuideLine(layer, left, width, stopY, "#dc2626", "Stop", "stop");
@@ -2778,6 +2793,28 @@ function drawTradePriceLine(layer: HTMLDivElement, left: number, width: number, 
   text.style.borderColor = rgbaFromHex(color, 0.32);
   line.appendChild(text);
   layer.appendChild(line);
+}
+
+function drawTradeFillMarker(layer: HTMLDivElement, x: number, y: number, color: string, fill: TradeFillAnnotation, selected: boolean) {
+  const marker = document.createElement("div");
+  marker.className = `trade-fill-marker ${fill.side === "BUY" ? "entry" : "exit"}${selected ? " selected" : ""}`;
+  marker.style.left = `${x}px`;
+  marker.style.top = `${y}px`;
+  marker.style.borderColor = color;
+  const label = document.createElement("span");
+  if (fill.labelParts?.length) {
+    fill.labelParts.forEach((part) => {
+      const piece = document.createElement("b");
+      piece.className = `trade-label-part ${part.tone ?? "label"}`;
+      piece.textContent = part.text;
+      label.appendChild(piece);
+    });
+  } else {
+    label.textContent = fill.label ?? `${fill.side} @${fill.price.toFixed(2)}`;
+  }
+  label.style.borderColor = rgbaFromHex(color, 0.28);
+  marker.appendChild(label);
+  layer.appendChild(marker);
 }
 
 function drawTradeGuideLine(layer: HTMLDivElement, left: number, width: number, y: number, color: string, label: string, kind: string) {

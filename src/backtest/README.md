@@ -233,6 +233,13 @@ extend:
 - `fills.parquet`: partial fills, quote/trade execution references, spread
   checks, and liquidity diagnostics
 
+Partial fills are execution events. The engine records the partial order and
+fill, then exposes recent fills to the strategy on the next bar through
+`BarContext`. The strategy owns the residual decision. If it wants the rest
+filled, it should submit a new order at that bar open; the engine averages later
+buy fills into the existing position and reduces open position quantity for
+partial exits.
+
 Separating orders, fills, and trades is important for Phase 2 quote/trade
 execution. Partial fills, spread checks, liquidity limits, and extended-hours
 execution rules are much easier to debug when every lifecycle event is recorded

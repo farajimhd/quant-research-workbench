@@ -69,6 +69,23 @@ class Portfolio:
 
         cost = order.fill_price * order.quantity
         self.cash -= cost + fee
+        existing = self.positions.get(order.symbol)
+        if existing is not None:
+            original_quantity = existing.quantity
+            total_quantity = original_quantity + order.quantity
+            if total_quantity <= 0:
+                return
+            existing.entry_price = ((existing.entry_price * original_quantity) + (order.fill_price * order.quantity)) / total_quantity
+            existing.quantity = total_quantity
+            existing.entry_fee += fee
+            existing.stop_price = min(existing.stop_price, stop_price)
+            existing.setup_rank = setup_rank or existing.setup_rank
+            existing.live_rank = live_rank or existing.live_rank
+            existing.setup_score = setup_score or existing.setup_score
+            existing.live_score = live_score or existing.live_score
+            existing.max_price = max(existing.max_price, order.fill_price)
+            existing.min_price = min(existing.min_price, order.fill_price)
+            return
         self.positions[order.symbol] = Position(
             symbol=order.symbol,
             quantity=order.quantity,

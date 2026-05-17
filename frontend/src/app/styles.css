@@ -6392,6 +6392,44 @@ button {
   left: auto;
 }
 
+.trade-fill-marker {
+  position: absolute;
+  z-index: 8;
+  width: 54px;
+  height: 0;
+  border-top: 2px solid;
+  transform: translateX(-50%);
+}
+
+.trade-fill-marker.exit {
+  border-top-style: dashed;
+}
+
+.trade-fill-marker.selected {
+  border-top-width: 3px;
+}
+
+.trade-fill-marker span {
+  position: absolute;
+  left: 50%;
+  overflow: hidden;
+  max-width: 220px;
+  border: 1px solid;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface) 96%, transparent);
+  box-shadow: 0 2px 8px color-mix(in oklab, #000 12%, transparent);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 6px;
+  text-overflow: ellipsis;
+  transform: translate(-50%, -145%);
+  white-space: nowrap;
+}
+
+.trade-fill-marker.entry span {
+  transform: translate(-50%, 45%);
+}
+
 .trade-guide-line {
   z-index: 5;
   border-top-style: dotted;
