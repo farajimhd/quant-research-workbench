@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -19,8 +18,6 @@ from src.strategies.long_momentum.v1.presentation import chart_presentation
 class LongMomentumSymbolState:
     ticker: str
     last_timestamp: datetime | None = None
-    last_red_low: float | None = None
-    recent_green_bodies: deque[float] = field(default_factory=lambda: deque(maxlen=6))
     row: dict[str, Any] = field(default_factory=dict)
 
 
@@ -154,14 +151,6 @@ class LongMomentumStrategy:
             if state is None:
                 state = LongMomentumSymbolState(ticker=ticker)
                 self.states[ticker] = state
-            open_price = self._float(row.get("open"))
-            close = self._float(row.get("close"))
-            low = self._float(row.get("low"))
-            body = abs(close - open_price)
-            if close > open_price:
-                state.recent_green_bodies.append(body)
-            elif close < open_price:
-                state.last_red_low = low
             state.last_timestamp = context.timestamp
             state.row = row
 
@@ -279,6 +268,8 @@ class LongMomentumStrategy:
         active_positions = [item for item in portfolio.positions.items() if item[0] not in exiting_symbols]
         if active_positions:
             held_symbol, position = active_positions[0]
+            if position.entry_time == context.timestamp:
+                return None
             if symbol == held_symbol:
                 return None
             held_bar = context.updates_by_symbol.get(held_symbol)
@@ -319,7 +310,6 @@ class LongMomentumStrategy:
         self.position_meta[symbol] = {
             "initial_r": initial_r,
             "initial_stop": stop_price,
-            "structure_stop": stop_price,
             "entry_score": self._float(candidate.get("scanner_score")),
         }
         self._trace_entry(context.timestamp, candidate, quantity, trigger_price, stop_price, initial_r)
@@ -360,16 +350,15 @@ class LongMomentumStrategy:
             if bar is None:
                 continue
             meta = self._position_meta(symbol, position)
-            active_stop = max(self._float(meta.get("structure_stop")), position.stop_price)
+            if position.entry_time == context.timestamp:
+                continue
+            active_stop = position.stop_price
 
             reason = self._exit_reason(symbol, position, bar, meta, active_stop)
             if reason is None:
-                next_stop = self._next_structure_stop(symbol, bar, active_stop)
-                meta["structure_stop"] = next_stop
-                position.stop_price = max(position.stop_price, next_stop)
                 continue
             self._trace_exit(context.timestamp, symbol, reason, position, bar, meta)
-            is_stop_exit = reason in {"INITIAL_STOP", "STRUCTURE_STOP"}
+            is_stop_exit = reason == "INITIAL_STOP"
             requests.append(
                 OrderRequest(
                     symbol=symbol,
@@ -388,40 +377,24 @@ class LongMomentumStrategy:
         close = self._float(bar.get("close"))
         low = self._float(bar.get("low"))
         if low <= active_stop:
-            initial_stop = self._float(meta.get("initial_stop")) or position.stop_price
-            return "INITIAL_STOP" if active_stop <= initial_stop + 1e-9 else "STRUCTURE_STOP"
+            return "INITIAL_STOP"
         if self._tema_closed(bar):
             return "TEMA_CLOSE"
-        r_multiple = self._open_r_multiple(position, close, meta)
-        if self._velocity_take_profit(bar, position, meta, r_multiple):
-            return "VELOCITY_TAKE_PROFIT"
-        if self._green_body_contraction(symbol, r_multiple):
-            return "GREEN_BODY_CONTRACTION"
-        if self._small_red_top(symbol, position, bar, meta, r_multiple):
-            return "SMALL_RED_TOP"
+        if self._take_profit(position, close):
+            return "TAKE_PROFIT"
         return None
 
     def _entry_levels(self, candidate: dict) -> tuple[float, float, float]:
         open_price = self._float(candidate.get("open"))
         close = self._float(candidate.get("close"))
         trigger = max(open_price, close)
-        stop = min(open_price, close)
+        stop = open_price
         if trigger <= 0:
             return 0.0, 0.0, 0.0
         if trigger - stop < self.config.min_initial_risk_dollars:
             stop = trigger - self.config.min_initial_risk_dollars
         stop = max(0.01, stop)
         return trigger, stop, max(self.config.min_initial_risk_dollars, trigger - stop)
-
-    def _next_structure_stop(self, symbol: str, bar: dict, active_stop: float) -> float:
-        close = self._float(bar.get("close"))
-        next_stop = active_stop
-        state = self.states.get(symbol)
-        if state and state.last_red_low is not None:
-            red_low = float(state.last_red_low)
-            if active_stop < red_low < close:
-                next_stop = red_low
-        return max(0.01, min(next_stop, close - self.config.min_initial_risk_dollars))
 
     def _tema_closed(self, bar: dict) -> bool:
         close = self._float(bar.get("close"))
@@ -431,48 +404,8 @@ class LongMomentumStrategy:
             and self._float(bar.get("tema9")) < self._float(bar.get("tema20")) + (close * self.config.tema_exit_offset_pct)
         )
 
-    def _velocity_take_profit(self, bar: dict, position, meta: dict, r_multiple: float) -> bool:
-        if r_multiple < self.config.velocity_min_r:
-            return False
-        close = self._float(bar.get("close"))
-        open_price = self._float(bar.get("open"))
-        if close <= open_price:
-            return False
-        body = close - open_price
-        green_avg = self._float(bar.get("green_body_avg"))
-        close_location = self._float(bar.get("close_location"))
-        return_1_bps = self._float(bar.get("return_1")) * 10_000.0
-        return (
-            green_avg > 0
-            and body >= green_avg * self.config.velocity_body_multiple
-            and return_1_bps >= self.config.velocity_return_1_bps
-            and close_location >= self.config.velocity_min_close_location
-            and close > position.entry_price
-        )
-
-    def _green_body_contraction(self, symbol: str, r_multiple: float) -> bool:
-        if r_multiple < self.config.contraction_min_r:
-            return False
-        bodies = list(self.states.get(symbol, LongMomentumSymbolState(symbol)).recent_green_bodies)
-        required = max(3, min(6, int(self.config.contraction_bars)))
-        if len(bodies) < required:
-            return False
-        recent = bodies[-required:]
-        return all(recent[index] < recent[index - 1] for index in range(1, len(recent)))
-
-    def _small_red_top(self, symbol: str, position, bar: dict, meta: dict, r_multiple: float) -> bool:
-        if r_multiple < self.config.small_red_min_r:
-            return False
-        open_price = self._float(bar.get("open"))
-        close = self._float(bar.get("close"))
-        if close >= open_price:
-            return False
-        body = open_price - close
-        state = self.states.get(symbol)
-        avg_green = sum(state.recent_green_bodies) / len(state.recent_green_bodies) if state and state.recent_green_bodies else 0.0
-        initial_r = self._float(meta.get("initial_r")) or abs(position.entry_price - position.stop_price)
-        near_high = close >= max(position.max_price, self._float(bar.get("high"))) - self.config.small_red_near_high_r * initial_r
-        return avg_green > 0 and body <= avg_green * self.config.small_red_body_multiple and near_high
+    def _take_profit(self, position, close: float) -> bool:
+        return position.entry_price > 0 and close >= position.entry_price * (1.0 + self.config.take_profit_pct)
 
     def _position_meta(self, symbol: str, position) -> dict:
         meta = self.position_meta.get(symbol)
@@ -481,7 +414,6 @@ class LongMomentumStrategy:
             meta = {
                 "initial_r": risk,
                 "initial_stop": position.stop_price,
-                "structure_stop": position.stop_price,
                 "entry_score": position.live_score,
             }
             self.position_meta[symbol] = meta
@@ -587,7 +519,7 @@ class LongMomentumStrategy:
                 "quantity": position.quantity,
                 "price": close,
                 "entry_price": position.entry_price,
-                "structure_stop": meta.get("structure_stop"),
+                "initial_stop": meta.get("initial_stop"),
                 "initial_r": meta.get("initial_r"),
                 "open_r": self._open_r_multiple(position, close, meta),
             },
@@ -607,7 +539,7 @@ class LongMomentumStrategy:
 
     def _exit_tag(self, reason: str, position, bar: dict | None, meta: dict) -> str:
         price = self._float(bar.get("close")) if bar is not None else position.entry_price
-        stop = self._float(meta.get("structure_stop")) or self._float(meta.get("initial_stop")) or position.stop_price
+        stop = self._float(meta.get("initial_stop")) or position.stop_price
         return (
             f"EXIT|reason={reason}|price={price:.2f}|stop={stop:.2f}"
             f"|R={self._float(meta.get('initial_r')):.4f}|maxp={position.max_price:.2f}"

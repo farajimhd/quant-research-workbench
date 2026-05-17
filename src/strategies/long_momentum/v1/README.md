@@ -32,10 +32,10 @@ held, it is ignored.
 
 An eligible scanner row is only an intent. The strategy submits a one-bar-valid
 buy stop at `max(open, close)` of the completed signal bar. The initial stop is
-`min(open, close)` of that same signal bar. If the trigger is not touched on the
-next bar, the pending entry is canceled and the scanner is evaluated again from
-the newly completed bar. Doji-style signal bars use `min_initial_risk_dollars`
-as the minimum risk distance so the stop remains below the trigger.
+the open of that signal bar. If the trigger is not touched on the next bar, the
+pending entry is canceled and the scanner is evaluated again from the newly
+completed bar. Doji-style signal bars use `min_initial_risk_dollars` as the
+minimum risk distance so the stop remains below the trigger.
 
 If a different candidate appears while a position is open, the strategy compares
 the candidate's one-bar return with the open position's total unrealized return.
@@ -47,16 +47,15 @@ in v1.
 
 After entry, the active stop is treated as a resting stop: if the current bar's
 low trades through it, the strategy submits a stop sell that can fill on that
-same bar. If no stop is hit and a new red candle creates a higher structural
-stop, that stop becomes active from the next bar forward.
+same bar. Exits are not evaluated on the same 1-minute bar that just filled the
+entry, because OHLC bars do not reveal whether the low happened before or after
+the entry trigger.
 
 Additional exits:
 
 - `TEMA_CLOSE`: `tema9 < tema20 + offset`
-- `STRUCTURE_STOP`: close breaks the current raised structural stop
-- `VELOCITY_TAKE_PROFIT`: unusually large fast green move after profit
-- `GREEN_BODY_CONTRACTION`: consecutive green candle bodies shrink after profit
-- `SMALL_RED_TOP`: small red candle appears near the best price after profit
+- `TAKE_PROFIT`: market exit when the completed bar closes at least
+  `take_profit_pct`, default 10%, above the entry price
 - `EOD`: flatten at the end of the available extended-hours session
 
 ## Data Requirements

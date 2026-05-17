@@ -24,15 +24,7 @@ class LongMomentumConfig:
     min_initial_risk_dollars: float = 0.01
 
     tema_exit_offset_pct: float = 0.0
-    velocity_min_r: float = 1.0
-    velocity_return_1_bps: float = 80.0
-    velocity_body_multiple: float = 2.5
-    velocity_min_close_location: float = 0.75
-    contraction_min_r: float = 0.75
-    contraction_bars: int = 3
-    small_red_min_r: float = 0.75
-    small_red_body_multiple: float = 0.5
-    small_red_near_high_r: float = 0.25
+    take_profit_pct: float = 0.10
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "LongMomentumConfig":
