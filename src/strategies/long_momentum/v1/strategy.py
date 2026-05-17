@@ -191,8 +191,11 @@ class LongMomentumStrategy:
                 & (pl.col("_lm_macd_hist_z") >= self.config.min_macd_hist_z_since_open)
                 & pl.col("_lm_spread_ok")
             ).fill_null(False).alias("entry_open"),
+            pl.col("_lm_spread_ok").fill_null(False).alias("long_momentum_spread_ok"),
             (pl.col("_lm_return_1") * 10_000.0).alias("return_1_bps"),
             (pl.col("_lm_return_1") * 10_000.0).alias("scanner_score"),
+        ).with_columns(
+            pl.col("entry_open").alias("long_momentum_entry_open"),
         )
 
         rows = frame.sort(["entry_open", "return_1_bps", "macd_hist_z_since_open"], descending=[True, True, True]).to_dicts()
@@ -299,6 +302,10 @@ class LongMomentumStrategy:
         if quantity <= 0:
             self._reject(context.timestamp, symbol, "quantity", candidate)
             return None
+        max_fill_qty = int(self._float(candidate.get("max_fill_qty")))
+        if max_fill_qty > 0 and quantity > max_fill_qty:
+            self._reject(context.timestamp, symbol, "liquidity_capacity", candidate | {"quantity": quantity, "max_fill_qty": max_fill_qty})
+            return None
         self.entry_order_metadata[symbol] = {
             "setup_rank": int(candidate.get("rank") or 0),
             "live_rank": int(candidate.get("entry_rank") or candidate.get("rank") or 0),
@@ -327,7 +334,7 @@ class LongMomentumStrategy:
                 f"|qty={quantity}|trigger={trigger_price:.2f}|stop={stop_price:.2f}|R={initial_r:.4f}"
                 f"|signal_open={self._float(candidate.get('open')):.2f}|signal_close={self._float(candidate.get('close')):.2f}"
                 f"|ret1={self._float(candidate.get('return_1_bps')):.1f}|macdz={self._float(candidate.get('macd_hist_z_since_open')):.2f}"
-                f"|spread={self._float(candidate.get('spread')):.4f}"
+                f"|spread={self._float(candidate.get('spread')):.4f}|maxfill={max_fill_qty}"
             ),
         )
 

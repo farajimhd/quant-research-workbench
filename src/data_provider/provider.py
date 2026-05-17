@@ -13,6 +13,10 @@ from src.data_provider.raw_loader import date_range
 from src.data_provider.store import existing_dates, partition_path
 
 
+DEFAULT_MAX_ENTRY_PARTICIPATION_RATE = 0.05
+DEFAULT_MAX_ENTRY_TRADE_MULTIPLE = 3.0
+
+
 class MarketDataProvider:
     def __init__(self, config: DataProviderConfig | None = None):
         self.config = config or DataProviderConfig()
@@ -80,6 +84,7 @@ class MarketDataProvider:
                 if duplicate_columns:
                     features = features.drop(duplicate_columns)
                 base = base.join(features, on="bar_id", how="left", coalesce=True)
+        base = add_liquidity_capacity_columns(base)
         if columns:
             selected = [column for column in columns if column in base.columns]
             if selected:
@@ -103,3 +108,59 @@ class MarketDataProvider:
         if tickers:
             scan = scan.filter(pl.col("ticker").is_in(tickers))
         return scan.collect()
+
+
+def add_liquidity_capacity_columns(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    names = frame.columns
+    exprs = liquidity_capacity_expressions(names)
+    if not exprs:
+        return frame
+    order_columns = [column for column in ["ticker", "bar_time_utc", "bar_time_market"] if column in names]
+    sorted_frame = frame.sort(order_columns) if order_columns else frame
+    return sorted_frame.with_columns(exprs)
+
+
+def liquidity_capacity_expressions(names: list[str]) -> list[pl.Expr]:
+    if "volume" not in names:
+        return []
+    volume = pl.col("volume").cast(pl.Float64, strict=False)
+    participation_capacity = volume * DEFAULT_MAX_ENTRY_PARTICIPATION_RATE
+    if "transactions" in names:
+        transactions = pl.col("transactions").cast(pl.Float64, strict=False)
+        average_trade_size = pl.when(transactions > 0).then(volume / transactions).otherwise(None)
+        last_capacity = pl.min_horizontal(participation_capacity, average_trade_size * DEFAULT_MAX_ENTRY_TRADE_MULTIPLE)
+    else:
+        average_trade_size = pl.lit(None, dtype=pl.Float64)
+        last_capacity = participation_capacity
+
+    group_columns = ["ticker"] if "ticker" in names else []
+    rolling_volume = volume.rolling_mean(3, min_samples=1).over(group_columns) if group_columns else volume.rolling_mean(3, min_samples=1)
+    rolling_participation_capacity = rolling_volume * DEFAULT_MAX_ENTRY_PARTICIPATION_RATE
+    if "transactions" in names:
+        rolling_transactions = transactions.rolling_sum(3, min_samples=1).over(group_columns) if group_columns else transactions.rolling_sum(3, min_samples=1)
+        rolling_average_trade_size = pl.when(rolling_transactions > 0).then(
+            (volume.rolling_sum(3, min_samples=1).over(group_columns) if group_columns else volume.rolling_sum(3, min_samples=1))
+            / rolling_transactions
+        ).otherwise(None)
+        rolling_capacity = pl.min_horizontal(rolling_participation_capacity, rolling_average_trade_size * DEFAULT_MAX_ENTRY_TRADE_MULTIPLE)
+    else:
+        rolling_capacity = rolling_participation_capacity
+
+    exprs = [
+        average_trade_size.alias("avg_trade_size"),
+        last_capacity.floor().clip(0).cast(pl.Int64).alias("max_fill_qty_last_bar"),
+        rolling_capacity.floor().clip(0).cast(pl.Int64).alias("max_fill_qty_3bar"),
+        rolling_capacity.fill_null(last_capacity).floor().clip(0).cast(pl.Int64).alias("max_fill_qty"),
+    ]
+    if "close" in names:
+        close = pl.col("close").cast(pl.Float64, strict=False)
+        exprs.extend(
+            [
+                (last_capacity * close).alias("max_fill_notional_last_bar"),
+                (rolling_capacity * close).alias("max_fill_notional_3bar"),
+                (rolling_capacity.fill_null(last_capacity) * close).alias("max_fill_notional"),
+            ]
+        )
+    return exprs

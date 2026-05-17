@@ -29,7 +29,7 @@ from src.data_provider.config import (
     DataProviderConfig,
 )
 from src.data_provider.manifest import read_manifest
-from src.data_provider.provider import MarketDataProvider
+from src.data_provider.provider import MarketDataProvider, liquidity_capacity_expressions
 
 
 CHART_FEATURE_EXCLUDE_COLUMNS = {
@@ -364,6 +364,8 @@ def load_scanner_snapshot(
     joined_schema = scan.collect_schema()
     scan = apply_scanner_compatibility_columns(scan, joined_schema)
     joined_schema = scan.collect_schema()
+    scan = apply_scanner_liquidity_capacity_columns(scan, joined_schema.names())
+    joined_schema = scan.collect_schema()
     scan = apply_strategy_decision_view(scan, joined_schema)
     joined_schema = scan.collect_schema()
     scan = apply_strategy_decision_price_action_columns(scan, joined_schema.names())
@@ -431,6 +433,14 @@ def apply_scanner_compatibility_columns(scan: pl.LazyFrame, schema: pl.Schema) -
     scan = apply_scanner_momentum_compatibility_columns(scan, schema.names())
     schema = scan.collect_schema()
     return apply_scanner_price_action_compatibility_columns(scan, schema.names())
+
+
+def apply_scanner_liquidity_capacity_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
+    order_columns = [column for column in ["ticker", "bar_time_utc", "bar_time_market"] if column in names]
+    if order_columns:
+        scan = scan.sort(order_columns)
+    exprs = liquidity_capacity_expressions(names)
+    return scan.with_columns(exprs) if exprs else scan
 
 
 def apply_strategy_decision_view(scan: pl.LazyFrame, schema: pl.Schema) -> pl.LazyFrame:
@@ -929,6 +939,13 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "relative_dollar_volume20",
         "recent_dollar_volume_5",
         "recent_transactions_5",
+        "avg_trade_size",
+        "max_fill_qty",
+        "max_fill_qty_last_bar",
+        "max_fill_qty_3bar",
+        "max_fill_notional",
+        "max_fill_notional_last_bar",
+        "max_fill_notional_3bar",
         "quote_bid_price",
         "quote_ask_price",
         "spread",

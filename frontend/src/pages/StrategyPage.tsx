@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
-import { DataTable } from "../app/components/DataTable";
+import { DataTable, type DataTableFilterPreset } from "../app/components/DataTable";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { ProgressMeter } from "../app/components/Progress";
@@ -81,6 +81,34 @@ type ObservationChartTarget = {
   symbol: string;
   timestamp: string;
 };
+
+const OBSERVABILITY_SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
+  filters: {
+    close: { operator: "between", presetLabel: "between 1 and 10", valueText: "1", valueTextSecondary: "10" },
+    volume: { operator: "gte", presetLabel: ">= 10,000", valueText: "10000" },
+    transactions: { operator: "gte", presetLabel: ">= 100", valueText: "100" },
+    is_red: { operator: "eq", presetLabel: "Is false", valueText: "false" },
+    return_1: { operator: "gt", presetLabel: "> 0", valueText: "0" },
+    tema_open: { operator: "eq", presetLabel: "Is true", valueText: "true" },
+    macd_line: { operator: "gt", presetLabel: "Positive", valueText: "0" },
+    macd_hist_z_since_open: { operator: "gte", presetLabel: ">= 0.1", valueText: "0.1" },
+    long_momentum_spread_ok: { operator: "eq", presetLabel: "Is true", valueText: "true" },
+  },
+  label: "Momentum Filters",
+  title: "Apply the Long Momentum scanner filters to the strategy-time row view.",
+};
+const OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
+  filters: {
+    spread_bps_abs: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
+    spread_bps_max: { operator: "lte", presetLabel: "<= 150 bps", valueText: "150" },
+    quote_valid_ratio: { operator: "gte", presetLabel: ">= 0.8", valueText: "0.8" },
+    locked_or_crossed_count: { operator: "eq", presetLabel: "Zero", valueText: "0" },
+    recent_dollar_volume_5: { operator: "gte", presetLabel: ">= $100k", valueText: "100000" },
+  },
+  label: "Spread Quality",
+  title: "Apply bid/ask spread and recent dollar-volume filters to avoid high-cost fills.",
+};
+const OBSERVABILITY_SCANNER_FILTER_PRESETS = [OBSERVABILITY_SCANNER_MOMENTUM_FILTER_PRESET, OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET];
 
 const tabs = ["Backtest", "Runs", "Strategy README"];
 const defaultStrategyName = "orb_5m_momentum";
@@ -1578,6 +1606,7 @@ function ObservationEvidenceTable({
           <DataTable
             columns={scannerColumns}
             defaultSort={scannerSort}
+            filterPresets={scannerTable ? OBSERVABILITY_SCANNER_FILTER_PRESETS : undefined}
             onRowClick={scannerTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
             rows={displayRows}
           />
@@ -1599,6 +1628,7 @@ function ObservationEvidenceTable({
         <DataTable
           columns={scannerColumns}
           defaultSort={scannerSort}
+          filterPresets={scannerTable ? OBSERVABILITY_SCANNER_FILTER_PRESETS : undefined}
           onRowClick={scannerTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
           rows={displayRows}
         />
@@ -2027,7 +2057,18 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "tema_spread_bps",
   "vwap_distance_bps",
   "recent_dollar_volume",
+  "recent_dollar_volume_5",
+  "recent_transactions_5",
   "session_dollar_volume",
+  "avg_trade_size",
+  "max_fill_qty",
+  "max_fill_qty_last_bar",
+  "max_fill_qty_3bar",
+  "max_fill_notional",
+  "max_fill_notional_last_bar",
+  "max_fill_notional_3bar",
+  "long_momentum_spread_ok",
+  "long_momentum_entry_open",
   "price_trend_bps",
   "live_rank",
   "live_score",
