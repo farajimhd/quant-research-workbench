@@ -306,6 +306,7 @@ class LongMomentumStrategy:
             "live_score": self._float(candidate.get("scanner_score")),
             "stop_price": stop_price,
             "trigger_price": trigger_price,
+            "stop_offset_dollars": self.config.min_initial_risk_dollars,
         }
         self.position_meta[symbol] = {
             "initial_r": initial_r,
@@ -320,6 +321,8 @@ class LongMomentumStrategy:
             order_type="STOP",
             reason="LONG_MOMENTUM",
             stop_price=trigger_price,
+            fill_requires_green_bar=True,
+            fill_requires_close_through_stop=True,
             tag=(
                 f"ENTRY|rule=LONG_MOMENTUM|rank={candidate.get('entry_rank') or candidate.get('rank')}"
                 f"|qty={quantity}|trigger={trigger_price:.2f}|stop={stop_price:.2f}|R={initial_r:.4f}"
@@ -359,16 +362,18 @@ class LongMomentumStrategy:
                 continue
             self._trace_exit(context.timestamp, symbol, reason, position, bar, meta)
             is_stop_exit = reason == "INITIAL_STOP"
+            is_take_profit = reason == "TAKE_PROFIT"
             requests.append(
                 OrderRequest(
                     symbol=symbol,
                     side="SELL",
                     quantity=position.quantity,
-                    order_type="STOP" if is_stop_exit else "MARKET",
+                    order_type="STOP" if is_stop_exit else "LIMIT" if is_take_profit else "MARKET",
                     reason=reason,
                     stop_price=active_stop if is_stop_exit else None,
+                    limit_price=self._take_profit_price(position) if is_take_profit else None,
                     tag=self._exit_tag(reason, position, bar, meta),
-                    allow_same_bar_fill=is_stop_exit,
+                    allow_same_bar_fill=is_stop_exit or is_take_profit,
                 )
             )
         return requests
@@ -380,7 +385,7 @@ class LongMomentumStrategy:
             return "INITIAL_STOP"
         if self._tema_closed(bar):
             return "TEMA_CLOSE"
-        if self._take_profit(position, close):
+        if self._take_profit(position, bar):
             return "TAKE_PROFIT"
         return None
 
@@ -388,11 +393,9 @@ class LongMomentumStrategy:
         open_price = self._float(candidate.get("open"))
         close = self._float(candidate.get("close"))
         trigger = max(open_price, close)
-        stop = open_price
+        stop = trigger - self.config.min_initial_risk_dollars
         if trigger <= 0:
             return 0.0, 0.0, 0.0
-        if trigger - stop < self.config.min_initial_risk_dollars:
-            stop = trigger - self.config.min_initial_risk_dollars
         stop = max(0.01, stop)
         return trigger, stop, max(self.config.min_initial_risk_dollars, trigger - stop)
 
@@ -404,8 +407,11 @@ class LongMomentumStrategy:
             and self._float(bar.get("tema9")) < self._float(bar.get("tema20")) + (close * self.config.tema_exit_offset_pct)
         )
 
-    def _take_profit(self, position, close: float) -> bool:
-        return position.entry_price > 0 and close >= position.entry_price * (1.0 + self.config.take_profit_pct)
+    def _take_profit(self, position, bar: dict) -> bool:
+        return position.entry_price > 0 and self._float(bar.get("high")) >= self._take_profit_price(position)
+
+    def _take_profit_price(self, position) -> float:
+        return position.entry_price * (1.0 + self.config.take_profit_pct)
 
     def _position_meta(self, symbol: str, position) -> dict:
         meta = self.position_meta.get(symbol)
@@ -417,6 +423,9 @@ class LongMomentumStrategy:
                 "entry_score": position.live_score,
             }
             self.position_meta[symbol] = meta
+        elif self._float(meta.get("initial_stop")) != position.stop_price:
+            meta["initial_stop"] = position.stop_price
+            meta["initial_r"] = max(self.config.min_initial_risk_dollars, abs(position.entry_price - position.stop_price))
         return meta
 
     def _open_r_multiple(self, position, close: float, meta: dict) -> float:

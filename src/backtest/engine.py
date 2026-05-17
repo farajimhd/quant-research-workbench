@@ -400,6 +400,7 @@ class BacktestEngine:
                 limit_price=request.limit_price,
                 tag=request.tag,
                 fill_requires_green_bar=request.fill_requires_green_bar,
+                fill_requires_close_through_stop=request.fill_requires_close_through_stop,
             )
             self.next_order_id += 1
 
@@ -453,9 +454,20 @@ class BacktestEngine:
     def _order_bar_filter_passes(self, order: Order, bar: dict) -> bool:
         if order.fill_requires_green_bar:
             try:
-                return float(bar.get("close")) >= float(bar.get("open"))
+                if float(bar.get("close")) < float(bar.get("open")):
+                    return False
             except (TypeError, ValueError):
                 return False
+        if order.fill_requires_close_through_stop and order.stop_price is not None:
+            try:
+                close = float(bar.get("close"))
+                stop_price = float(order.stop_price)
+            except (TypeError, ValueError):
+                return False
+            if order.side == "BUY":
+                return close >= stop_price
+            if order.side == "SELL":
+                return close <= stop_price
         return True
 
     def _reject_excluded_order(self, timestamp: datetime, request: OrderRequest) -> None:
@@ -472,6 +484,7 @@ class BacktestEngine:
             status="REJECTED_EXCLUDED_SYMBOL",
             tag=request.tag,
             fill_requires_green_bar=request.fill_requires_green_bar,
+            fill_requires_close_through_stop=request.fill_requires_close_through_stop,
         )
         self.next_order_id += 1
         self.orders.append(asdict(order))
@@ -523,7 +536,7 @@ class BacktestEngine:
                     live_rank=int(metadata.get("live_rank", 0)),
                     setup_score=float(metadata.get("setup_score", 0.0)),
                     live_score=float(metadata.get("live_score", 0.0)),
-                    stop_price=float(metadata.get("stop_price", order.stop_price or fill_price)),
+                    stop_price=self._entry_stop_price(metadata, order, fill_price),
                     fee=fee.total,
                 )
         else:
@@ -545,6 +558,11 @@ class BacktestEngine:
                 self.trades.append(asdict(trade))
 
         self.orders.append(asdict(order))
+
+    def _entry_stop_price(self, metadata: dict, order: Order, fill_price: float) -> float:
+        if "stop_offset_dollars" in metadata:
+            return max(0.01, fill_price - float(metadata["stop_offset_dollars"]))
+        return float(metadata.get("stop_price", order.stop_price or fill_price))
 
     def _apply_fee_to_order(self, order: Order, fee: FeeBreakdown) -> None:
         order.fill_fee = fee.total

@@ -32,10 +32,10 @@ held, it is ignored.
 
 An eligible scanner row is only an intent. The strategy submits a one-bar-valid
 buy stop at `max(open, close)` of the completed signal bar. The initial stop is
-the open of that signal bar. If the trigger is not touched on the next bar, the
-pending entry is canceled and the scanner is evaluated again from the newly
-completed bar. Doji-style signal bars use `min_initial_risk_dollars` as the
-minimum risk distance so the stop remains below the trigger.
+one cent below the actual entry fill by default. A stop-entry fill also requires
+the execution bar to close green and close at or above the stop trigger. If the
+trigger is not confirmed on the next bar, the pending entry is canceled and the
+scanner is evaluated again from the newly completed bar.
 
 If a different candidate appears while a position is open, the strategy compares
 the candidate's one-bar return with the open position's total unrealized return.
@@ -54,7 +54,7 @@ the entry trigger.
 Additional exits:
 
 - `TEMA_CLOSE`: `tema9 < tema20 + offset`
-- `TAKE_PROFIT`: market exit when the completed bar closes at least
+- `TAKE_PROFIT`: target exit when the current bar high reaches at least
   `take_profit_pct`, default 10%, above the entry price
 - `EOD`: flatten at the end of the available extended-hours session
 

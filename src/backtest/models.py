@@ -29,6 +29,7 @@ class OrderRequest:
     tag: str = ""
     allow_same_bar_fill: bool = False
     fill_requires_green_bar: bool = False
+    fill_requires_close_through_stop: bool = False
 
 
 @dataclass(slots=True)
@@ -52,6 +53,7 @@ class Order:
     fee_model: str = ""
     tag: str = ""
     fill_requires_green_bar: bool = False
+    fill_requires_close_through_stop: bool = False
 
 
 @dataclass(slots=True)
