@@ -16,6 +16,7 @@ strategy-time row:
 - `last_transactions >= min_transactions`, default 100
 - `last_is_red == false`
 - `last_return_1 > 0`
+- `current_open_above_last_body_high == true`
 - `last_tema9 > last_tema20`
 - `last_macd_line > 0`
 - `last_macd_hist_z_since_open >= min_macd_hist_z_since_open`, default 0.1

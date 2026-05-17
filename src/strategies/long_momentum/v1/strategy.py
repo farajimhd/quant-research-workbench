@@ -238,6 +238,7 @@ class LongMomentumStrategy:
             pl.col("last_transactions").cast(pl.Float64).alias("_lm_last_transactions"),
             pl.col("last_spread").cast(pl.Float64).alias("_lm_last_spread"),
             pl.col("last_return_1").cast(pl.Float64).fill_null(0.0).alias("_lm_last_return_1"),
+            pl.col("current_open_above_last_body_high").fill_null(False).alias("_lm_current_open_above_last_body_high"),
             pl.col("last_macd_line").cast(pl.Float64).alias("_lm_last_macd_line"),
             pl.col("last_macd_hist_z_since_open").cast(pl.Float64).alias("_lm_last_macd_hist_z"),
             pl.col("last_tema9").cast(pl.Float64).alias("_lm_last_tema9"),
@@ -258,6 +259,7 @@ class LongMomentumStrategy:
                 & (pl.col("_lm_last_transactions") >= self.config.min_transactions)
                 & (~pl.col("_lm_last_is_red"))
                 & pl.col("_lm_last_close_above_previous")
+                & pl.col("_lm_current_open_above_last_body_high")
                 & (pl.col("_lm_last_tema9") > pl.col("_lm_last_tema20"))
                 & (pl.col("_lm_last_macd_line") > 0)
                 & (pl.col("_lm_last_macd_hist_z") >= self.config.min_macd_hist_z_since_open)
@@ -313,6 +315,8 @@ class LongMomentumStrategy:
             return "red_candle"
         if not bool(row.get("_lm_last_close_above_previous")):
             return "close_not_above_previous"
+        if not bool(row.get("_lm_current_open_above_last_body_high") if "_lm_current_open_above_last_body_high" in row else row.get("current_open_above_last_body_high")):
+            return "current_open_not_above_last_body_high"
         if self._float(row.get("last_tema9")) <= self._float(row.get("last_tema20")):
             return "tema_closed"
         if self._float(row.get("last_macd_line")) <= 0:
@@ -594,6 +598,7 @@ class LongMomentumStrategy:
                 "stop": stop_price,
                 "initial_r": initial_r,
                 "return_1_bps": candidate.get("return_1_bps"),
+                "current_open_above_last_body_high": candidate.get("current_open_above_last_body_high"),
                 "last_macd_hist_z_since_open": candidate.get("last_macd_hist_z_since_open"),
                 "last_spread": candidate.get("last_spread"),
                 "rank": candidate.get("entry_rank") or candidate.get("rank"),

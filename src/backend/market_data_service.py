@@ -488,6 +488,7 @@ def apply_strategy_decision_price_action_columns(scan: pl.LazyFrame, names: list
         (pl.col("last_close") > pl.col("last_open")).alias("is_green"),
         (pl.col("last_close") < pl.col("last_open")).alias("last_is_red"),
         (pl.col("last_close") < pl.col("last_open")).alias("is_red"),
+        (pl.col("current_open") > pl.max_horizontal("last_open", "last_close")).alias("current_open_above_last_body_high"),
     ]
     if {"last_high", "last_low"}.issubset(names):
         exprs.extend(
@@ -509,7 +510,17 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
         .fill_null(False)
     )
     exprs: list[pl.Expr] = [spread_ok.alias("long_momentum_spread_ok")]
-    required = {"last_close", "last_volume", "last_transactions", "last_is_red", "last_return_1", "last_tema_open", "last_macd_line", "last_macd_hist_z_since_open"}
+    required = {
+        "last_close",
+        "last_volume",
+        "last_transactions",
+        "last_is_red",
+        "last_return_1",
+        "current_open_above_last_body_high",
+        "last_tema_open",
+        "last_macd_line",
+        "last_macd_hist_z_since_open",
+    }
     if required.issubset(names):
         exprs.append(
             (
@@ -519,6 +530,7 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
                 & (pl.col("last_transactions") >= 100)
                 & (~pl.col("last_is_red"))
                 & (pl.col("last_return_1") > 0)
+                & pl.col("current_open_above_last_body_high")
                 & pl.col("last_tema_open")
                 & (pl.col("last_macd_line") > 0)
                 & (pl.col("last_macd_hist_z_since_open") >= 0.1)
@@ -948,6 +960,7 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "last_high",
         "last_low",
         "last_close",
+        "current_open_above_last_body_high",
         "last_volume",
         "last_transactions",
         "last_dollar_volume",

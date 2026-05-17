@@ -386,7 +386,12 @@ class BacktestEngine:
             for column in frame.columns
             if column not in current_columns and f"last_{column}" not in decision.columns
         )
-        return decision.with_columns(alias_exprs)
+        decision = decision.with_columns(alias_exprs)
+        if {"current_open", "last_open", "last_close"}.issubset(decision.columns):
+            decision = decision.with_columns(
+                (pl.col("current_open") > pl.max_horizontal("last_open", "last_close")).alias("current_open_above_last_body_high")
+            )
+        return decision
 
     def _execution_frame_for_decisions(self, execution_frame: pl.DataFrame, decision_frame: pl.DataFrame) -> pl.DataFrame:
         if execution_frame.is_empty() or decision_frame.is_empty():
