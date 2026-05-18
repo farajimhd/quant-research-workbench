@@ -381,11 +381,11 @@ class BacktestEngine:
         ]
         if "low" in frame.columns:
             shifted_exprs.append(
-                pl.col("low")
-                .shift(1)
-                .rolling_min(3, min_samples=1)
-                .over("ticker")
-                .alias("last_swing_low_3_price")
+                pl.min_horizontal(
+                    pl.col("low").shift(1).over("ticker"),
+                    pl.col("low").shift(2).over("ticker"),
+                    pl.col("low").shift(3).over("ticker"),
+                ).alias("last_3_candle_low_price")
             )
         decision = frame.with_columns(shifted_exprs) if shifted_exprs else frame
         alias_exprs = [pl.col("open").alias("current_open"), pl.col("open").shift(1).over("ticker").alias("last_open")]

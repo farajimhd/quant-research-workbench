@@ -389,9 +389,9 @@ class LongMomentumV2Strategy:
         }
 
     def _initial_stop_price(self, row: dict, entry_price: float) -> float:
-        swing_low = self._float(row.get("last_swing_low_3_price"))
-        if swing_low > 0 and swing_low < entry_price:
-            return max(0.01, swing_low)
+        last_3_candle_low = self._float(row.get("last_3_candle_low_price"))
+        if last_3_candle_low > 0 and last_3_candle_low < entry_price:
+            return max(0.01, last_3_candle_low)
         body_floor = min(self._float(row.get("last_open")), self._float(row.get("last_close")))
         if body_floor > 0 and body_floor < entry_price:
             return max(0.01, body_floor)

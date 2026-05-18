@@ -31,8 +31,8 @@ at `current_open` until available cash is exhausted. The requested quantity is
 the prior bar `last_quote_ask_size`, capped by available cash when the quote
 size is larger than the account can buy.
 
-The initial stop is the last three completed bars' swing-low price,
-`last_swing_low_3_price`. If that price is unavailable or not below the entry,
+The initial stop is the minimum low across the last three completed candles,
+`last_3_candle_low_price`. If that price is unavailable or not below the entry,
 v2 falls back to the previous completed bar body floor:
 `min(last_open, last_close)`, then to one cent below entry. After the position
 has seen at least `trailing_activation_r_multiple`, default 0.1R, the stop
