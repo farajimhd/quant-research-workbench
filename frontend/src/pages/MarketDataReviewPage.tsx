@@ -335,24 +335,32 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
   "last_macd_hist",
   "last_macd_hist_z_since_open",
 ];
-const SCANNER_SETUP_FILTER_PRESETS: DataTableFilterPreset[] = [
-  scannerBooleanPreset("Setup: VWAP", "long_momentum_v5_price_above_vwap", "Price is above VWAP."),
-  scannerBooleanPreset("Setup: TEMA Stack", "long_momentum_v5_tema_stack_ok", "TEMA9 is above TEMA20."),
-  scannerBooleanPreset("Setup: TEMA Spread", "long_momentum_v5_tema_spread_ok", "TEMA spread is above the v5 minimum."),
-  scannerBooleanPreset("Setup: MACD Line", "long_momentum_v5_macd_line_positive", "MACD line is positive."),
-  scannerBooleanPreset("Setup: MACD Hist", "long_momentum_v5_macd_hist_ok", "MACD histogram is positive or improving."),
-  scannerBooleanPreset("Setup: Day Open", "long_momentum_v5_above_day_open", "Price is above the day open."),
-  scannerBooleanPreset("Setup: Near High", "long_momentum_v5_near_enough_day_high", "Price is not too far below the day high."),
-  scannerBooleanPreset("Setup: Volume", "long_momentum_v5_volume_vs_avg_so_far_ok", "Volume is expanding versus average volume so far."),
-  scannerBooleanPreset("Setup: BVD", "long_momentum_v5_bearish_divergence_ok", "Bearish volume divergence score is below warning level."),
-];
-const SCANNER_EARLY_MOVE_FILTER_PRESETS: DataTableFilterPreset[] = [
-  scannerBooleanPreset("Early: Day Low", "long_momentum_v5_distance_from_day_low_ok", "Distance from day low is not extreme."),
-  scannerBooleanPreset("Early: VWAP Dist", "long_momentum_v5_distance_above_vwap_ok", "Distance from VWAP is not extreme."),
-  scannerBooleanPreset("Early: No Jump", "long_momentum_v5_open_above_last_close_ok", "Current open is not too extended versus the previous completed close."),
-  scannerBooleanPreset("Early: Range", "long_momentum_v5_last_bar_range_ok", "Current setup candle is not a giant chase candle."),
-  scannerBooleanPreset("Early: High Chase", "long_momentum_v5_day_high_chase_ok", "Stock is not entering directly under day high after a long run unless trend and volume are strong."),
-];
+const SCANNER_SETUP_FILTER_PRESET: DataTableFilterPreset = {
+  filters: scannerBooleanFilters([
+    "long_momentum_v5_price_above_vwap",
+    "long_momentum_v5_tema_stack_ok",
+    "long_momentum_v5_tema_spread_ok",
+    "long_momentum_v5_macd_line_positive",
+    "long_momentum_v5_macd_hist_ok",
+    "long_momentum_v5_above_day_open",
+    "long_momentum_v5_near_enough_day_high",
+    "long_momentum_v5_volume_vs_avg_so_far_ok",
+    "long_momentum_v5_bearish_divergence_ok",
+  ]),
+  label: "Setup Uptrend",
+  title: "Apply the v5 setup filters: VWAP, TEMA, MACD, day-open, day-high position, volume expansion, and bearish divergence guard.",
+};
+const SCANNER_EARLY_MOVE_FILTER_PRESET: DataTableFilterPreset = {
+  filters: scannerBooleanFilters([
+    "long_momentum_v5_distance_from_day_low_ok",
+    "long_momentum_v5_distance_above_vwap_ok",
+    "long_momentum_v5_open_above_last_close_ok",
+    "long_momentum_v5_last_bar_range_ok",
+    "long_momentum_v5_day_high_chase_ok",
+  ]),
+  label: "Early Move",
+  title: "Apply the v5 early-move filters: distance from day low, VWAP distance, no jump, bar range, and day-high chase guard.",
+};
 const SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
   filters: {
     last_spread_bps_abs: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
@@ -364,15 +372,9 @@ const SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
   label: "Spread Quality",
   title: "Apply bid/ask spread and recent dollar-volume filters to avoid high-cost fills.",
 };
-const SCANNER_FILTER_PRESETS = [...SCANNER_SETUP_FILTER_PRESETS, ...SCANNER_EARLY_MOVE_FILTER_PRESETS, SCANNER_SPREAD_FILTER_PRESET];
-function scannerBooleanPreset(label: string, column: string, title: string): DataTableFilterPreset {
-  return {
-    filters: {
-      [column]: { operator: "eq", presetLabel: "Is true", valueText: "true" },
-    },
-    label,
-    title,
-  };
+const SCANNER_FILTER_PRESETS = [SCANNER_SETUP_FILTER_PRESET, SCANNER_EARLY_MOVE_FILTER_PRESET, SCANNER_SPREAD_FILTER_PRESET];
+function scannerBooleanFilters(columns: string[]): DataTableFilterPreset["filters"] {
+  return Object.fromEntries(columns.map((column) => [column, { operator: "eq", presetLabel: "Is true", valueText: "true" }]));
 }
 const PREVIEW_PAGE_SIZE = 1000;
 const PRESENTATION_TYPE_ORDER = ["price_overlay", "composite_group", "lower_pane_line", "histogram_pane", "event_marker", "anchored_zone", "continuous_band", "background_state", "data_only", "other"];
