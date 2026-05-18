@@ -26,7 +26,6 @@ class LongMomentumV2Config:
     sizing_fee_per_share: float = 0.005
     sizing_min_fee: float = 1.0
     stop_offset_dollars: float = 0.01
-    trailing_activation_r_multiple: float = 0.1
     tema_exit_offset_pct: float = 0.0
 
     @classmethod

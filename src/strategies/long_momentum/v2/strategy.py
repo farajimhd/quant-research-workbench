@@ -348,7 +348,6 @@ class LongMomentumV2Strategy:
                     )
                 )
                 continue
-            active_stop = self._update_trailing_stop(position, bar, meta)
             requests.append(
                 OrderRequest(
                     symbol=symbol,
@@ -356,27 +355,13 @@ class LongMomentumV2Strategy:
                     quantity=position.quantity,
                     order_type="STOP",
                     reason="INITIAL_STOP",
-                    stop_price=active_stop,
+                    stop_price=position.stop_price,
                     tag=self._exit_tag("INITIAL_STOP", position, bar, meta),
                     allow_same_bar_fill=True,
                     expire_on_bar_close=True,
                 )
             )
         return requests
-
-    def _update_trailing_stop(self, position, bar: dict, meta: dict) -> float:
-        active_stop = position.stop_price
-        if position.max_r_multiple < self.config.trailing_activation_r_multiple:
-            return active_stop
-        last_body_floor = min(self._float(bar.get("last_open")), self._float(bar.get("last_close")))
-        if last_body_floor <= 0:
-            return active_stop
-        active_stop = max(active_stop, last_body_floor)
-        if active_stop > position.stop_price:
-            position.stop_price = active_stop
-            meta["trailing_stop"] = active_stop
-            meta["trailing_distance_to_entry"] = active_stop - position.entry_price
-        return active_stop
 
     def _set_entry_metadata(self, symbol: str, row: dict, *, rank: int, score: float, stop_price: float) -> None:
         self.entry_order_metadata[symbol] = {
