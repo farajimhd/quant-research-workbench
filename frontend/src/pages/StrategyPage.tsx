@@ -111,6 +111,7 @@ const OBSERVABILITY_SCANNER_FILTER_PRESETS = [OBSERVABILITY_SCANNER_MOMENTUM_FIL
 
 const tabs = ["Backtest", "Runs", "Strategy README"];
 const defaultStrategyName = "orb_5m_momentum";
+const CHART_DISPLAY_ITEMS_NONE = "__none__";
 
 type StrategySelection = {
   strategyName: string;
@@ -2903,6 +2904,7 @@ function StrategySymbolChart({
   const chartPayload = useMemo(() => symbolTradeChartPayload(payload, sameSymbolTrades, selectedKey, timeframe), [payload, sameSymbolTrades, selectedKey, timeframe]);
   const defaultVisibleColumns = useMemo(() => strategyVisibleColumns(chartPayload, payload), [chartPayload, payload]);
   const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
+  const [customVisibleColumns, setCustomVisibleColumns] = useState(false);
   const reference = useMemo(() => selectedSymbolReference(target, selectedTrade), [selectedTrade, target]);
   const periodBounds = useMemo(() => symbolChartPeriodBounds(payload, timeframe, selectedDay), [payload, selectedDay, timeframe]);
   const [period, setPeriod] = useState({ end: periodBounds.end, start: periodBounds.start });
@@ -2910,6 +2912,10 @@ function StrategySymbolChart({
   const featureOptions = chartPayload?.options?.feature_columns ?? [];
   const displayItemOptions = chartPayload?.options?.display_items ?? [];
   const catalogColumns = payload?.catalog_columns ?? [];
+  const selectionContext = `${symbol}|${timeframe}`;
+  const [visibleSelectionContext, setVisibleSelectionContext] = useState("");
+  const displayItemsRequest = customVisibleColumns ? (visibleColumns.length ? visibleColumns.join(",") : CHART_DISPLAY_ITEMS_NONE) : undefined;
+  const displayItemsRequestKey = displayItemsRequest ?? "";
 
   useEffect(() => {
     const next = payload?.default_timeframe || availableTimeframes[0] || "1m";
@@ -2917,8 +2923,15 @@ function StrategySymbolChart({
   }, [availableTimeframes, payload?.default_timeframe]);
 
   useEffect(() => {
-    setVisibleColumns(defaultVisibleColumns);
-  }, [defaultVisibleColumns.join("|"), symbol, timeframe]);
+    if (!defaultVisibleColumns.length) return;
+    if (visibleSelectionContext !== selectionContext) {
+      setVisibleColumns(defaultVisibleColumns);
+      setCustomVisibleColumns(false);
+      setVisibleSelectionContext(selectionContext);
+    } else if (!visibleColumns.length && !customVisibleColumns) {
+      setVisibleColumns(defaultVisibleColumns);
+    }
+  }, [customVisibleColumns, defaultVisibleColumns.join("|"), selectionContext, visibleColumns.length, visibleSelectionContext]);
 
   useEffect(() => {
     setPeriod({ end: periodBounds.end, start: periodBounds.start });
@@ -2932,7 +2945,7 @@ function StrategySymbolChart({
     }
     let canceled = false;
     setLoading(true);
-    api<RunSymbolChartPayload>(`/api/backtests/runs/${runId}/symbols/${encodeURIComponent(symbol)}/chart${query({ output_root: outputRoot })}`)
+    api<RunSymbolChartPayload>(`/api/backtests/runs/${runId}/symbols/${encodeURIComponent(symbol)}/chart${query({ display_items: displayItemsRequest, output_root: outputRoot, timeframe })}`)
       .then((nextPayload) => {
         if (canceled) return;
         setPayload(nextPayload);
@@ -2947,7 +2960,7 @@ function StrategySymbolChart({
     return () => {
       canceled = true;
     };
-  }, [outputRoot, runId, symbol]);
+  }, [displayItemsRequestKey, outputRoot, runId, symbol, timeframe]);
 
   function updatePeriod(start: string, end: string) {
     setPeriod(start <= end ? { start, end } : { start: end, end: start });
@@ -2996,7 +3009,10 @@ function StrategySymbolChart({
         onPeriodChange={updatePeriod}
         onTickerChange={() => undefined}
         onTimeframeChange={setTimeframe}
-        onVisibleColumnsChange={setVisibleColumns}
+        onVisibleColumnsChange={(nextColumns) => {
+          setCustomVisibleColumns(true);
+          setVisibleColumns(nextColumns);
+        }}
         onVisibleSupervisionGroupsChange={() => undefined}
         payload={filteredPayload}
         periodEnd={period.end}
@@ -3072,7 +3088,7 @@ function symbolTradeChartPayload(payload: RunSymbolChartPayload | null | undefin
   const candleTimes = new Set(candles.map((candle) => candle.time));
   return {
     candles,
-    markers: [],
+    markers: source?.markers ?? [],
     options: source?.options ?? payload?.options,
     oscillator_series: source?.oscillator_series ?? [],
     overlay_series: source?.overlay_series ?? [],
@@ -3152,27 +3168,25 @@ function arrayValue(value: unknown): DataRow[] {
 
 function symbolTimeframePayload(payload: RunSymbolChartPayload | null | undefined, timeframe: string): RunSymbolChartTimeframePayload | null {
   if (!payload) return null;
-  return payload.timeframe_payloads?.[timeframe] ?? (timeframe === payload.default_timeframe ? payload : null) ?? payload;
+  return payload.timeframe_payloads?.[timeframe] ?? (timeframe === payload.default_timeframe ? payload : null);
 }
 
 function symbolChartTimeframes(payload: RunSymbolChartPayload | null | undefined) {
   const configured = payload?.presentation?.timeframes?.map(String).filter(Boolean) ?? [];
   const provided = payload?.timeframes?.map(String).filter(Boolean) ?? [];
-  const payloads = payload?.timeframe_payloads ?? {};
-  const withData = [...new Set([...configured, ...provided])].filter((timeframe) => {
-    const source = payloads[timeframe] ?? (timeframe === payload?.default_timeframe ? payload : null);
-    return (source?.candles ?? []).length > 0;
-  });
-  if (withData.length) return withData;
+  if (configured.length) return configured;
   return provided.length ? provided : ["1m"];
 }
 
 function strategyVisibleColumns(chartPayload: ChartPayload | null, payload: RunSymbolChartPayload | null | undefined) {
-  const available = [...(chartPayload?.overlay_series ?? []), ...(chartPayload?.oscillator_series ?? [])]
-    .map((series) => String(series.displayItemId ?? series.column ?? ""))
-    .filter(Boolean);
+  const available = [
+    ...(chartPayload?.overlay_series ?? []).map((series) => String(series.displayItemId ?? series.column ?? "")),
+    ...(chartPayload?.oscillator_series ?? []).map((series) => String(series.displayItemId ?? series.column ?? "")),
+    ...(chartPayload?.markers ?? []).map((marker) => String(marker.displayItemId ?? "")),
+    ...(chartPayload?.price_zones ?? []).map((zone) => String(zone.displayItemId ?? "")),
+  ].filter(Boolean);
   const configured = payload?.presentation?.default_visible?.map(String).filter((column) => available.includes(column)) ?? [];
-  return configured.length ? configured : available;
+  return configured.length ? configured : Array.from(new Set(available));
 }
 
 function tradeEntryLabel(trade: DataRow, quantity: number | null, entryPrice: number) {
@@ -3428,6 +3442,7 @@ type RunSymbolChartTimeframePayload = {
     low: number;
     close: number;
   }>;
+  markers: ChartPayload["markers"];
   volume: ChartPayload["volume"];
   overlay_series: ChartPayload["overlay_series"];
   oscillator_series: ChartPayload["oscillator_series"];

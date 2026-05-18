@@ -850,6 +850,30 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
     )
     add(
+        composite_display_item(
+            by_column,
+            item_id="feature.volume_profile",
+            title="Volume Profile",
+            source_columns=["volume"],
+            group="core",
+            pane="volume",
+            parts=[
+                display_part(
+                    by_column,
+                    "volume",
+                    label="Volume",
+                    pane="volume",
+                    role="histogram",
+                    style="histogram",
+                    color="inherit_candle_direction",
+                )
+            ],
+            short="Raw traded volume as a dedicated lower-pane histogram.",
+            detailed="Volume Profile exposes the per-bar volume histogram as a selectable chart pane for trade review, separate from price overlays and momentum oscillators.",
+            value_format="volume",
+        )
+    )
+    add(
         marker_display_item(
             by_column,
             "feature.volume_liquidity.bearish_volume_divergence",

@@ -29,6 +29,7 @@ from src.backtest.metrics import portfolio_pnl_breakdown
 from src.backtest.results import list_runs, read_run_metadata
 from src.backend.json_utils import json_safe, parse_csv_list
 from src.backend.market_data_service import (
+    apply_chart_volume_convergence_columns,
     artifact_records,
     artifact_schema,
     chart_display_item_options,
@@ -37,6 +38,7 @@ from src.backend.market_data_service import (
     chart_payload,
     coverage_rows,
     display_item_settings,
+    display_item_markers,
     display_price_zones,
     extended_session_regions,
     feature_groups_for_display_items,
@@ -285,7 +287,12 @@ def portfolio_candle_payload(run_dir: Path, metadata: dict[str, Any]) -> dict[st
     return {"timeframes": available_timeframes, "default_timeframe": default_timeframe, "candles": candles}
 
 
-def run_symbol_chart_payload(run_dir: Path, symbol: str) -> dict[str, Any]:
+def run_symbol_chart_payload(
+    run_dir: Path,
+    symbol: str,
+    selected_display_items: list[str] | None = None,
+    selected_timeframe: str | None = None,
+) -> dict[str, Any]:
     normalized_symbol = symbol.strip().upper()
     if not normalized_symbol:
         raise HTTPException(status_code=400, detail="symbol is required")
@@ -295,34 +302,34 @@ def run_symbol_chart_payload(run_dir: Path, symbol: str) -> dict[str, Any]:
     processed_root = Path(config.get("processed_data_root") or DEFAULT_PROCESSED_ROOT)
     start_date, end_date = run_chart_date_range(metadata)
     requested_timeframes = strategy_chart_timeframes(presentation)
+    default_timeframe = str(presentation.get("default_timeframe") or (requested_timeframes[0] if requested_timeframes else "1m"))
+    if default_timeframe not in requested_timeframes and requested_timeframes:
+        default_timeframe = requested_timeframes[0]
+    active_timeframe = selected_timeframe if selected_timeframe in requested_timeframes else default_timeframe
     timeframe_payloads = {
-        timeframe: symbol_timeframe_chart_payload(
+        active_timeframe: symbol_timeframe_chart_payload(
             run_dir,
             normalized_symbol,
-            timeframe,
+            active_timeframe,
             presentation,
             processed_root,
             start_date,
             end_date,
+            selected_display_items,
         )
-        for timeframe in requested_timeframes
     }
-    available_timeframes = [timeframe for timeframe in requested_timeframes if timeframe_payloads[timeframe]["candles"]]
-    if not available_timeframes:
-        available_timeframes = [requested_timeframes[0] if requested_timeframes else "1m"]
-    default_timeframe = str(presentation.get("default_timeframe") or available_timeframes[0])
-    if default_timeframe not in available_timeframes:
-        default_timeframe = available_timeframes[0]
-    default_payload = timeframe_payloads.get(default_timeframe) or next(iter(timeframe_payloads.values()), empty_symbol_timeframe_payload())
+    available_timeframes = requested_timeframes or [active_timeframe]
+    default_payload = timeframe_payloads.get(active_timeframe, empty_symbol_timeframe_payload())
     trades = run_symbol_trades(run_dir, normalized_symbol)
     catalog = provider_catalog(processed_root)
     return {
         "symbol": normalized_symbol,
         "timeframes": available_timeframes,
-        "default_timeframe": default_timeframe,
+        "default_timeframe": active_timeframe,
         "timeframe_payloads": timeframe_payloads,
         "presentation": presentation,
         "catalog_columns": catalog.get("columns", []),
+        "selected_display_items": selected_display_items,
         "trades": trades,
         **default_payload,
     }
@@ -336,8 +343,9 @@ def symbol_timeframe_chart_payload(
     processed_root: Path,
     start_date: date | None,
     end_date: date | None,
+    selected_display_items: list[str] | None,
 ) -> dict[str, Any]:
-    display_options, selected_items, requested_feature_groups = symbol_chart_display_contracts(processed_root, timeframe, start_date, end_date, presentation)
+    display_options, selected_items, requested_feature_groups = symbol_chart_display_contracts(processed_root, timeframe, start_date, end_date, presentation, selected_display_items)
     frame = provider_symbol_frame(normalized_symbol, timeframe, presentation, processed_root, start_date, end_date, requested_feature_groups)
     if frame is None or frame.is_empty():
         frame = saved_symbol_frame(run_dir, normalized_symbol, timeframe)
@@ -346,7 +354,8 @@ def symbol_timeframe_chart_payload(
     required_columns = {"ticker", "bar_time_market", "open", "high", "low", "close"}
     if not required_columns.issubset(set(frame.columns)):
         return empty_symbol_timeframe_payload()
-    rows = frame.sort("bar_time_market").to_dicts()
+    frame = apply_chart_volume_convergence_columns(frame.sort("bar_time_market"))
+    rows = frame.to_dicts()
     timed_rows = [(chart_timestamp_seconds(row, timeframe), row) for row in rows]
     timed_rows = [(timestamp, row) for timestamp, row in timed_rows if timestamp is not None]
     candles, volume = symbol_candles_and_volume(timed_rows)
@@ -355,6 +364,7 @@ def symbol_timeframe_chart_payload(
         "volume": volume,
         "overlay_series": symbol_overlay_series(timed_rows, selected_items, timeframe),
         "oscillator_series": symbol_oscillator_series(timed_rows, selected_items, timeframe),
+        "markers": display_item_markers([row for _, row in timed_rows], timeframe, selected_items, marker_limit=500),
         "price_zones": display_price_zones([row for _, row in timed_rows], timeframe, selected_items),
         "regions": extended_session_regions([row for _, row in timed_rows], timeframe),
         "options": {
@@ -373,17 +383,28 @@ def symbol_chart_display_contracts(
     start_date: date | None,
     end_date: date | None,
     presentation: dict[str, Any],
+    selected_display_items: list[str] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     if start_date is None or end_date is None:
-        selected_items = strategy_display_items(processed_root, presentation, timeframe)
-        return [], selected_items, strategy_timeframe_feature_groups(presentation, timeframe)
+        if selected_display_items is None:
+            selected_items = strategy_display_items(processed_root, presentation, timeframe)
+        else:
+            catalog = provider_catalog(processed_root)
+            by_id = {str(item.get("id")): item for item in catalog.get("displayItems", [])}
+            selected_items = [by_id[item_id] for item_id in selected_display_items if item_id in by_id]
+        requested_feature_groups = feature_groups_for_display_items(selected_items)
+        if selected_display_items is None and not requested_feature_groups:
+            requested_feature_groups = strategy_timeframe_feature_groups(presentation, timeframe)
+        return [], selected_items, requested_feature_groups
     catalog = provider_catalog(processed_root)
     display_options = chart_display_item_options(artifact_records(processed_root), timeframe, start_date, end_date, catalog)
-    selected_ids = [str(option.get("id")) for option in display_options if option.get("id")]
+    selected_ids = selected_display_items if selected_display_items is not None else strategy_display_item_ids(presentation, timeframe)
     selected_items = resolve_chart_display_items(catalog, display_options, selected_ids, [])
-    if not selected_items:
+    if selected_display_items is None and not selected_items:
         selected_items = strategy_display_items(processed_root, presentation, timeframe)
-    requested_feature_groups = feature_groups_for_display_items(selected_items) or strategy_timeframe_feature_groups(presentation, timeframe)
+    requested_feature_groups = feature_groups_for_display_items(selected_items)
+    if selected_display_items is None and not requested_feature_groups:
+        requested_feature_groups = strategy_timeframe_feature_groups(presentation, timeframe)
     return display_options, selected_items, requested_feature_groups
 
 
@@ -415,7 +436,7 @@ def provider_symbol_frame(
             end_date=end_date,
             timeframe=timeframe,
             tickers=[normalized_symbol],
-            feature_groups=feature_groups or strategy_timeframe_feature_groups(presentation, timeframe),
+            feature_groups=feature_groups if feature_groups is not None else strategy_timeframe_feature_groups(presentation, timeframe),
         )
     except (FileNotFoundError, OSError, ValueError, pl.exceptions.PolarsError):
         return None
@@ -496,20 +517,23 @@ def run_symbol_trades(run_dir: Path, symbol: str) -> list[dict[str, Any]]:
 
 
 def empty_symbol_timeframe_payload() -> dict[str, Any]:
-    return {"candles": [], "volume": [], "overlay_series": [], "oscillator_series": [], "price_zones": [], "regions": []}
+    return {"candles": [], "volume": [], "overlay_series": [], "oscillator_series": [], "markers": [], "price_zones": [], "regions": []}
 
 
 def run_strategy_chart_presentation(metadata: dict[str, Any]) -> dict[str, Any]:
     snapshot = metadata.get("strategy_chart_presentation")
-    if isinstance(snapshot, dict) and snapshot.get("display_items"):
-        return snapshot
     strategy_name = str(metadata.get("strategy_name") or (metadata.get("config") or {}).get("strategy_name") or "").strip()
     strategy_version = str(metadata.get("strategy_version") or (metadata.get("config") or {}).get("strategy_version") or "").strip()
     if strategy_name:
         try:
-            return strategy_chart_presentation(strategy_name, strategy_version or None)
+            current = strategy_chart_presentation(strategy_name, strategy_version or None)
+            if isinstance(snapshot, dict):
+                return {**snapshot, **current}
+            return current
         except KeyError:
-            return {}
+            pass
+    if isinstance(snapshot, dict) and snapshot.get("display_items"):
+        return snapshot
     return {}
 
 
@@ -611,7 +635,7 @@ def parse_pipe_tag(tag: str) -> dict[str, Any]:
 
 def symbol_overlay_series(timed_rows: list[tuple[int, dict[str, Any]]], selected_items: list[dict[str, Any]], timeframe: str = "1m") -> list[dict[str, Any]]:
     configured = catalog_symbol_series(timed_rows, selected_items, "price")
-    if configured:
+    if configured or selected_items:
         return configured
     series_config = [
         ("tema9", "TEMA 9", "#2563eb"),
@@ -635,7 +659,7 @@ def symbol_overlay_series(timed_rows: list[tuple[int, dict[str, Any]]], selected
 
 def symbol_oscillator_series(timed_rows: list[tuple[int, dict[str, Any]]], selected_items: list[dict[str, Any]], timeframe: str = "1m") -> list[dict[str, Any]]:
     configured = catalog_symbol_series(timed_rows, selected_items, "oscillator")
-    if configured:
+    if configured or selected_items:
         return configured
     series_config = [
         ("macd_line", "MACD", "#2563eb"),
@@ -914,14 +938,20 @@ def backtest_run_detail(
 
 
 @app.get("/api/backtests/runs/{run_id}/symbols/{symbol}/chart")
-def backtest_run_symbol_chart(run_id: str, symbol: str, output_root: str = str(DEFAULT_OUTPUT_ROOT)) -> dict[str, Any]:
+def backtest_run_symbol_chart(
+    run_id: str,
+    symbol: str,
+    output_root: str = str(DEFAULT_OUTPUT_ROOT),
+    display_items: str | None = None,
+    timeframe: str | None = None,
+) -> dict[str, Any]:
     root = Path(output_root).resolve()
     run_dir = (root / run_id).resolve()
     if root != run_dir and root not in run_dir.parents:
         raise HTTPException(status_code=400, detail="Invalid run path")
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail="Run not found")
-    return json_safe(run_symbol_chart_payload(run_dir, symbol))
+    return json_safe(run_symbol_chart_payload(run_dir, symbol, parse_chart_display_items(display_items), timeframe))
 
 
 @app.delete("/api/backtests/runs/{run_id}")

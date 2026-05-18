@@ -518,7 +518,10 @@ class LongMomentumV4Strategy:
     def _managed_stop_price(self, symbol: str, position, bar: dict, meta: dict) -> float:
         score = self._float(bar.get("last_bearish_volume_divergence_score"))
         last_close = self._float(bar.get("last_close"))
-        if score >= self.config.exit_watch_bearish_divergence_score and last_close > position.entry_price:
+        if (
+            self.config.exit_watch_bearish_divergence_score <= score < self.config.exit_definite_bearish_divergence_score
+            and last_close > position.entry_price
+        ):
             meta["exit_watch_active"] = True
             meta["exit_watch_score"] = max(self._float(meta.get("exit_watch_score")), score)
             meta["exit_watch_stop"] = max(self._float(meta.get("exit_watch_stop")), last_close)

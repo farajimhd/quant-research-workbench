@@ -26,7 +26,7 @@ class LongMomentumV4Config:
     pullback_reclaim_valid_bars: int = 6
     max_bearish_divergence_entry_score: float = 75.0
 
-    exit_watch_bearish_divergence_score: float = 75.0
+    exit_watch_bearish_divergence_score: float = 50.0
     exit_definite_bearish_divergence_score: float = 90.0
     cash_buffer_dollars: float = 5.0
     sizing_fee_per_share: float = 0.005

@@ -61,7 +61,9 @@ Open positions are exited by:
   default 90
 - `BEARISH_VOLUME_DIVERGENCE_WATCH`, when
   `last_bearish_volume_divergence_score >= exit_watch_bearish_divergence_score`,
-  default 75; this raises the active stop to the highest watched completed close
+  default 50; this medium-high warning applies while the score is below the
+  definite-close threshold and raises the active stop to the highest watched
+  completed close
 - `EOD`, at the end of the extended-hours session
 
 ## Data Requirements
