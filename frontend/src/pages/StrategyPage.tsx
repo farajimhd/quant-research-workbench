@@ -872,7 +872,7 @@ function NewRunPanel({
   const canStop = ["running", "queued"].includes(jobStatus);
 
   return (
-    <section className="new-run-page">
+    <section className={debugSession ? "new-run-page step-debug-page-scroll" : "new-run-page"}>
       <div className="new-run-action-row">
         <button className="button primary" onClick={startRun} type="button" disabled={running}>
           <Play size={15} /> Start Backtest

@@ -824,6 +824,12 @@ button {
   overflow: hidden;
 }
 
+.new-run-page.step-debug-page-scroll {
+  height: auto;
+  min-height: calc(100vh - 236px);
+  overflow: visible;
+}
+
 .new-run-action-row {
   display: flex;
   flex: 0 0 auto;
@@ -877,6 +883,11 @@ button {
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
+}
+
+.step-debug-page-scroll .backtest-results-panel {
+  flex: 0 0 auto;
+  overflow: visible;
 }
 
 .backtest-results-panel > .toolbar,
@@ -7159,10 +7170,7 @@ button {
 }
 
 .interactive-debug-panel .step-debug-detail {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: 4px;
+  overflow: visible;
 }
 
 .observability-summary {
