@@ -465,6 +465,14 @@ def apply_strategy_decision_view(scan: pl.LazyFrame, schema: pl.Schema) -> pl.La
         for column in names
         if column not in current_columns
     ]
+    if "low" in names:
+        shifted_exprs.append(
+            pl.col("low")
+            .shift(1)
+            .rolling_min(3, min_samples=1)
+            .over("ticker")
+            .alias("last_swing_low_3_price")
+        )
     decision = scan.with_columns(shifted_exprs) if shifted_exprs else scan
     alias_exprs = [pl.col("open").alias("current_open"), pl.col("open").shift(1).over("ticker").alias("last_open")]
     alias_exprs.extend(

@@ -2059,6 +2059,7 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "last_open",
   "last_high",
   "last_low",
+  "last_swing_low_3_price",
   "last_close",
   "current_open_above_last_body_high",
   "last_volume",

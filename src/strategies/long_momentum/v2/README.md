@@ -31,14 +31,15 @@ at `current_open` until available cash is exhausted. The requested quantity is
 the prior bar `last_quote_ask_size`, capped by available cash when the quote
 size is larger than the account can buy.
 
-The initial stop is the previous completed bar body floor:
-`min(last_open, last_close)`. If that floor is not below the entry price, v2
-falls back to one cent below the entry. After the position has seen at least
-`trailing_activation_r_multiple`, default 0.1R, the stop trails up to newer
-completed body floors. The distance from entry is recorded in strategy metadata
-for the trailing stop. Entry orders carry an attached same-bar protective stop,
-so if the execution candle trades through that stop after entry, the engine
-closes the actually filled quantity.
+The initial stop is the last three completed bars' swing-low price,
+`last_swing_low_3_price`. If that price is unavailable or not below the entry,
+v2 falls back to the previous completed bar body floor:
+`min(last_open, last_close)`, then to one cent below entry. After the position
+has seen at least `trailing_activation_r_multiple`, default 0.1R, the stop
+trails up to newer completed body floors. The distance from entry is recorded
+in strategy metadata for the trailing stop. Entry orders carry an attached
+same-bar protective stop, so if the execution candle trades through that stop
+after entry, the engine closes the actually filled quantity.
 
 If an entry or exit partially fills, v2 handles the residual first on the next
 bar open with a same-bar limit at `current_open`, then it continues scanning the
