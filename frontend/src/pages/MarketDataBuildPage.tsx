@@ -108,7 +108,7 @@ export function MarketDataBuildPage() {
   const [deleteResult, setDeleteResult] = useState<string | null>(null);
   const [editingScope, setEditingScope] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [jobAction, setJobAction] = useState<"pause" | "resume" | "resume-stateful" | "spread-backfill" | "start" | "stop" | null>(null);
+  const [jobAction, setJobAction] = useState<"long-momentum-v4" | "pause" | "resume" | "resume-stateful" | "spread-backfill" | "start" | "stop" | null>(null);
   const [startMode, setStartMode] = useState<BuildStartMode>("normal");
 
   useEffect(() => {
@@ -204,6 +204,26 @@ export function MarketDataBuildPage() {
     setJobAction("spread-backfill");
     try {
       const payload = await api<BuildJob>("/api/market-data/build/spread-backfill/jobs", {
+        method: "POST",
+        body: JSON.stringify(scope)
+      });
+      setJob(payload);
+      await loadJobs(scope);
+      await loadJob(scope, payload.job_id);
+      setActiveTab(tabs[0]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setJobAction(null);
+    }
+  }
+
+  async function startLongMomentumV4Build() {
+    if (!scope) return;
+    setError(null);
+    setJobAction("long-momentum-v4");
+    try {
+      const payload = await api<BuildJob>("/api/market-data/build/long-momentum-v4/jobs", {
         method: "POST",
         body: JSON.stringify(scope)
       });
@@ -384,8 +404,10 @@ export function MarketDataBuildPage() {
           onOpenJob={(jobId) => scope && openJob(scope, jobId)}
           onSelectNormal={() => setStartMode("normal")}
           onSelectSpread={() => setStartMode("spread")}
+          onLongMomentumV4Build={startLongMomentumV4Build}
           onSpreadBackfill={startSpreadBackfill}
           onStartBuild={startBuild}
+          longMomentumV4Running={jobAction === "long-momentum-v4"}
           spreadBackfillRunning={jobAction === "spread-backfill"}
           startMode={startMode}
           startRunning={jobAction === "start"}
@@ -487,11 +509,13 @@ function BuildStartPage({
   jobs,
   onEditScope,
   onDeleteRequest,
+  onLongMomentumV4Build,
   onOpenJob,
   onSelectNormal,
   onSelectSpread,
   onSpreadBackfill,
   onStartBuild,
+  longMomentumV4Running,
   spreadBackfillRunning,
   startMode,
   startRunning,
@@ -502,11 +526,13 @@ function BuildStartPage({
   jobs: BuildJob[];
   onEditScope: () => void;
   onDeleteRequest: (job: BuildJob) => void;
+  onLongMomentumV4Build: () => void;
   onOpenJob: (jobId: string) => void;
   onSelectNormal: () => void;
   onSelectSpread: () => void;
   onSpreadBackfill: () => void;
   onStartBuild: () => void;
+  longMomentumV4Running: boolean;
   spreadBackfillRunning: boolean;
   startMode: BuildStartMode;
   startRunning: boolean;
@@ -557,10 +583,13 @@ function BuildStartPage({
           <p>Start a provider build or open an earlier build record. The market-data artifacts stay integrated in the shared processed store.</p>
         </div>
         <div className="button-row">
-          <button className="button primary" disabled={!scope || startRunning || spreadBackfillRunning} onClick={onStartBuild} type="button">
+          <button className="button primary" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV4Running} onClick={onStartBuild} type="button">
             {startRunning ? "Starting..." : "New build"}
           </button>
-          <button className="button" disabled={!scope || startRunning || spreadBackfillRunning} onClick={onSelectSpread} type="button">
+          <button className="button" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV4Running} onClick={onLongMomentumV4Build} type="button">
+            {longMomentumV4Running ? "Starting..." : "Build LM v4 features"}
+          </button>
+          <button className="button" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV4Running} onClick={onSelectSpread} type="button">
             Build spread columns
           </button>
           <button className="button" disabled={!scope} onClick={onEditScope} type="button">

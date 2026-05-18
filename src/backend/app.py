@@ -1002,6 +1002,28 @@ def start_build(payload: BuildSubmit) -> dict[str, Any]:
     )
 
 
+@app.post("/api/market-data/build/long-momentum-v4/jobs")
+def start_long_momentum_v4_build(payload: BuildSubmit) -> dict[str, Any]:
+    request = BuildRequest(
+        raw_root=Path(payload.raw_root),
+        spread_root=Path(payload.spread_root),
+        processed_root=Path(payload.processed_root),
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        timeframes=["1m"],
+        feature_groups=["core", "momentum", "session", "volume_liquidity"],
+        supervision_groups=[],
+        rebuild_mode="force_rebuild",
+        tickers=None,
+    )
+    request.build_name = f"long_momentum_v4_features_{payload.start_date.isoformat()}_{payload.end_date.isoformat()}"
+    return submit_build_job(
+        request,
+        session_workers=payload.session_workers,
+        polars_threads=payload.polars_threads,
+    )
+
+
 @app.post("/api/market-data/build/spread-backfill/jobs")
 def start_spread_backfill(payload: BuildSubmit) -> dict[str, Any]:
     request = BuildRequest(
