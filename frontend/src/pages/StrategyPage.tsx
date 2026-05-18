@@ -108,6 +108,20 @@ const OBSERVABILITY_SCANNER_EARLY_MOVE_FILTER_PRESET: DataTableFilterPreset = {
   label: "Early Move",
   title: "Apply the v5 early-move filters: distance from day low, VWAP distance, no jump, bar range, and day-high chase guard.",
 };
+const OBSERVABILITY_SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
+  filters: {
+    last_close: { operator: "between", presetLabel: "between 1 and 10", valueText: "1", valueTextSecondary: "10" },
+    current_open_above_last_body_high: { operator: "eq", presetLabel: ">= last high", valueText: "true" },
+    last_volume: { operator: "gte", presetLabel: ">= 10,000", valueText: "10000" },
+    last_transactions: { operator: "gte", presetLabel: ">= 100", valueText: "100" },
+    long_momentum_spread_ok: { operator: "eq", presetLabel: "Is true", valueText: "true" },
+    last_tema_open: { operator: "eq", presetLabel: "Is true", valueText: "true" },
+    last_macd_line: { operator: "gt", presetLabel: "Positive", valueText: "0" },
+    last_macd_hist_z_since_open: { operator: "gte", presetLabel: ">= 0.1", valueText: "0.1" },
+  },
+  label: "Momentum Filters",
+  title: "Apply the original Long Momentum scanner filters to the strategy-time row view.",
+};
 const OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
   filters: {
     last_spread_bps_abs: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
@@ -120,6 +134,7 @@ const OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
   title: "Apply bid/ask spread and recent dollar-volume filters to avoid high-cost fills.",
 };
 const OBSERVABILITY_SCANNER_FILTER_PRESETS = [
+  OBSERVABILITY_SCANNER_MOMENTUM_FILTER_PRESET,
   OBSERVABILITY_SCANNER_SETUP_FILTER_PRESET,
   OBSERVABILITY_SCANNER_EARLY_MOVE_FILTER_PRESET,
   OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET,
