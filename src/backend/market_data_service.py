@@ -616,12 +616,21 @@ def apply_scanner_session_compatibility_columns(scan: pl.LazyFrame, names: list[
 
 def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
     exprs: list[pl.Expr] = []
+    group_columns = scanner_session_group_columns(names) or (["ticker"] if "ticker" in names else [])
     if "dollar_volume" not in names and {"close", "volume"}.issubset(names):
         exprs.append((pl.col("close") * pl.col("volume")).alias("dollar_volume"))
     if "return_1" not in names and "close" in names:
         exprs.append(((pl.col("close") / pl.col("close").shift(1).over("ticker")) - 1.0).fill_null(0.0).alias("return_1"))
     if "volume_sma10" not in names and "volume" in names:
         exprs.append(pl.col("volume").rolling_mean(10).over("ticker").alias("volume_sma10"))
+    if "volume_avg_3" not in names and "volume" in names and group_columns:
+        exprs.append(pl.col("volume").rolling_mean(3, min_samples=1).over(group_columns).alias("volume_avg_3"))
+    if "avg_volume_so_far" not in names and "volume" in names and group_columns:
+        exprs.append(
+            (pl.col("volume").cum_sum().over(group_columns) / pl.cum_count("volume").over(group_columns))
+            .fill_null(0.0)
+            .alias("avg_volume_so_far")
+        )
     if "recent_volume_5" not in names and "volume" in names:
         exprs.append(pl.col("volume").rolling_sum(5, min_samples=1).over("ticker").alias("recent_volume_5"))
     if "recent_dollar_volume_5" not in names and ("dollar_volume" in names or {"close", "volume"}.issubset(names)):
@@ -972,6 +981,8 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "last_close",
         "current_open_above_last_body_high",
         "last_volume",
+        "last_volume_avg_3",
+        "last_avg_volume_so_far",
         "last_transactions",
         "last_dollar_volume",
         "last_relative_volume10",

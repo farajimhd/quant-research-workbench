@@ -211,6 +211,8 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
   "last_close",
   "current_open_above_last_body_high",
   "last_volume",
+  "last_volume_avg_3",
+  "last_avg_volume_so_far",
   "last_transactions",
   "last_volume_sma10",
   "last_relative_volume10",
