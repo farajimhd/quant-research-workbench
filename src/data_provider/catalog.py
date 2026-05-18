@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 17
+CATALOG_VERSION = 18
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -861,10 +861,13 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             marker_position="aboveBar",
             source_columns=[
                 "bearish_volume_divergence",
+                "bearish_volume_divergence_score",
+                "bearish_volume_divergence_label",
                 "open",
                 "close",
                 "volume",
             ],
+            label_column="bearish_volume_divergence_label",
             label_text="BVD",
         )
     )
@@ -880,10 +883,13 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             marker_position="belowBar",
             source_columns=[
                 "bullish_volume_divergence",
+                "bullish_volume_divergence_score",
+                "bullish_volume_divergence_label",
                 "open",
                 "close",
                 "volume",
             ],
+            label_column="bullish_volume_divergence_label",
             label_text="BullVD",
         )
     )
@@ -1158,6 +1164,7 @@ def marker_display_item(
     marker_shape: str = "circle",
     marker_position: str = "belowBar",
     source_columns: list[str] | None = None,
+    label_column: str | None = None,
     label_text: str | None = None,
 ) -> dict[str, Any] | None:
     return display_item_contract(
@@ -1178,6 +1185,7 @@ def marker_display_item(
             "markerShape": marker_shape,
             "markerPosition": marker_position,
             "signalColumn": signal_column,
+            "labelColumn": label_column,
             "labelMode": "short",
             "labelText": label_text,
             "valueFormat": "boolean",
@@ -1553,7 +1561,7 @@ def dtype_for_column(column: str) -> str:
     lower = column.lower()
     if lower in BOOLEAN_COLUMNS or lower.startswith("is_") or lower.endswith("_signal") or lower.endswith("_confirmed") or "shock_before" in lower:
         return "bool"
-    if lower in STRING_COLUMNS or lower.endswith("_bar_id"):
+    if lower in STRING_COLUMNS or lower.endswith("_bar_id") or lower.endswith("_label"):
         return "string"
     if lower in {"macd_line", "macd_signal", "macd_hist", "macd_hist_z_since_open"}:
         return "float"

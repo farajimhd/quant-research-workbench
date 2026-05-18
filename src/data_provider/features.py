@@ -114,7 +114,11 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "volume_convergence_gap",
         "volume_convergence_slope",
         "bearish_volume_divergence",
+        "bearish_volume_divergence_score",
+        "bearish_volume_divergence_label",
         "bullish_volume_divergence",
+        "bullish_volume_divergence_score",
+        "bullish_volume_divergence_label",
         "volume_sma10",
         "relative_volume10",
         "volume_sma20",
@@ -250,6 +254,39 @@ def rolling_z(column: str, window: int, alias: str) -> pl.Expr:
     mean = pl.col(column).rolling_mean(window).over("ticker")
     std = pl.col(column).rolling_std(window).over("ticker")
     return pl.when(std > 0).then((pl.col(column) - mean) / std).otherwise(0.0).alias(alias)
+
+
+def volume_divergence_score_expr(signal_column: str, direction: str, group_columns: list[str], alias: str) -> pl.Expr:
+    prev_volume = pl.col("volume").shift(1).over(group_columns)
+    prev_close = pl.col("close").shift(1).over(group_columns)
+    current_body = (
+        pl.max_horizontal(pl.col("open"), pl.col("close"))
+        if direction == "bearish"
+        else pl.min_horizontal(pl.col("open"), pl.col("close"))
+    )
+    previous_body = (
+        pl.max_horizontal(pl.col("open").shift(1).over(group_columns), pl.col("close").shift(1).over(group_columns))
+        if direction == "bearish"
+        else pl.min_horizontal(pl.col("open").shift(1).over(group_columns), pl.col("close").shift(1).over(group_columns))
+    )
+    body_push = current_body - previous_body if direction == "bearish" else previous_body - current_body
+    volume_fade_score = pl.when(prev_volume > 0).then(((prev_volume - pl.col("volume")) / prev_volume / 0.50).clip(0.0, 1.0)).otherwise(0.0)
+    body_push_score = pl.when(prev_close > 0).then((body_push / prev_close / 0.003).clip(0.0, 1.0)).otherwise(0.0)
+    score = (100.0 * ((0.65 * volume_fade_score) + (0.35 * body_push_score))).round(2)
+    return pl.when(pl.col(signal_column)).then(score).otherwise(0.0).fill_null(0.0).alias(alias)
+
+
+def volume_divergence_label_expr(score_column: str, alias: str) -> pl.Expr:
+    return (
+        pl.when(pl.col(score_column) >= 60.0)
+        .then(pl.lit("Strong"))
+        .when(pl.col(score_column) >= 30.0)
+        .then(pl.lit("Meaningful"))
+        .when(pl.col(score_column) > 0.0)
+        .then(pl.lit("Weak"))
+        .otherwise(pl.lit(""))
+        .alias(alias)
+    )
 
 
 def ema_expr(column: str, span: int, alias: str) -> pl.Expr:
@@ -553,6 +590,24 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             )
             .fill_null(False)
             .alias("bullish_volume_divergence"),
+        )
+        .with_columns(
+            volume_divergence_score_expr(
+                "bearish_volume_divergence",
+                "bearish",
+                ["ticker", "session_date"],
+                "bearish_volume_divergence_score",
+            ),
+            volume_divergence_score_expr(
+                "bullish_volume_divergence",
+                "bullish",
+                ["ticker", "session_date"],
+                "bullish_volume_divergence_score",
+            ),
+        )
+        .with_columns(
+            volume_divergence_label_expr("bearish_volume_divergence_score", "bearish_volume_divergence_label"),
+            volume_divergence_label_expr("bullish_volume_divergence_score", "bullish_volume_divergence_label"),
         )
     )
     typical_money_flow = pl.col("hlc3") * pl.col("volume")

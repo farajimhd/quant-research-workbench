@@ -53,6 +53,43 @@ CHART_FEATURE_EXCLUDE_COLUMNS = {
 DYNAMIC_COLORS = ["#1E3A5F", "#B7791F", "#067647", "#B42318", "#2563EB", "#7C3AED", "#0E7490", "#C2410C"]
 
 
+def shifted_over(column: str, group_columns: list[str]) -> pl.Expr:
+    return pl.col(column).shift(1).over(group_columns) if group_columns else pl.col(column).shift(1)
+
+
+def volume_divergence_score_expr(signal_column: str, direction: str, group_columns: list[str], alias: str) -> pl.Expr:
+    prev_volume = shifted_over("volume", group_columns)
+    prev_close = shifted_over("close", group_columns)
+    current_body = (
+        pl.max_horizontal(pl.col("open"), pl.col("close"))
+        if direction == "bearish"
+        else pl.min_horizontal(pl.col("open"), pl.col("close"))
+    )
+    previous_body = (
+        pl.max_horizontal(shifted_over("open", group_columns), shifted_over("close", group_columns))
+        if direction == "bearish"
+        else pl.min_horizontal(shifted_over("open", group_columns), shifted_over("close", group_columns))
+    )
+    body_push = current_body - previous_body if direction == "bearish" else previous_body - current_body
+    volume_fade_score = pl.when(prev_volume > 0).then(((prev_volume - pl.col("volume")) / prev_volume / 0.50).clip(0.0, 1.0)).otherwise(0.0)
+    body_push_score = pl.when(prev_close > 0).then((body_push / prev_close / 0.003).clip(0.0, 1.0)).otherwise(0.0)
+    score = (100.0 * ((0.65 * volume_fade_score) + (0.35 * body_push_score))).round(2)
+    return pl.when(pl.col(signal_column)).then(score).otherwise(0.0).fill_null(0.0).alias(alias)
+
+
+def volume_divergence_label_expr(score_column: str, alias: str) -> pl.Expr:
+    return (
+        pl.when(pl.col(score_column) >= 60.0)
+        .then(pl.lit("Strong"))
+        .when(pl.col(score_column) >= 30.0)
+        .then(pl.lit("Meaningful"))
+        .when(pl.col(score_column) > 0.0)
+        .then(pl.lit("Weak"))
+        .otherwise(pl.lit(""))
+        .alias(alias)
+    )
+
+
 def timeframe_sort_key(value: str) -> tuple[int, str]:
     order = {timeframe: index for index, timeframe in enumerate(TIMEFRAMES)}
     return order.get(value, 999), value
@@ -714,6 +751,22 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
         )
     if divergence_exprs:
         scan = scan.with_columns(divergence_exprs)
+        names = scan.collect_schema().names()
+    score_exprs: list[pl.Expr] = []
+    if "bearish_volume_divergence_score" not in names and {"bearish_volume_divergence", "open", "close", "volume"}.issubset(names):
+        score_exprs.append(volume_divergence_score_expr("bearish_volume_divergence", "bearish", group_columns, "bearish_volume_divergence_score"))
+    if "bullish_volume_divergence_score" not in names and {"bullish_volume_divergence", "open", "close", "volume"}.issubset(names):
+        score_exprs.append(volume_divergence_score_expr("bullish_volume_divergence", "bullish", group_columns, "bullish_volume_divergence_score"))
+    if score_exprs:
+        scan = scan.with_columns(score_exprs)
+        names = scan.collect_schema().names()
+    label_exprs: list[pl.Expr] = []
+    if "bearish_volume_divergence_label" not in names and "bearish_volume_divergence_score" in names:
+        label_exprs.append(volume_divergence_label_expr("bearish_volume_divergence_score", "bearish_volume_divergence_label"))
+    if "bullish_volume_divergence_label" not in names and "bullish_volume_divergence_score" in names:
+        label_exprs.append(volume_divergence_label_expr("bullish_volume_divergence_score", "bullish_volume_divergence_label"))
+    if label_exprs:
+        scan = scan.with_columns(label_exprs)
     return scan
 
 
@@ -1049,7 +1102,11 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "last_volume_convergence_gap",
         "last_volume_convergence_slope",
         "last_bearish_volume_divergence",
+        "last_bearish_volume_divergence_score",
+        "last_bearish_volume_divergence_label",
         "last_bullish_volume_divergence",
+        "last_bullish_volume_divergence_score",
+        "last_bullish_volume_divergence_label",
         "last_transactions",
         "last_dollar_volume",
         "last_relative_volume10",
@@ -1701,7 +1758,7 @@ def display_item_markers(rows: list[dict[str, Any]], timeframe: str, items: list
                 "shape": str(presentation.get("markerShape") or "circle"),
                 "size": bounded_float(presentation.get("markerSize"), default=0.1 if role == "text_label" else 1.0, lower=0.1, upper=4.0),
             }
-            label = display_marker_text(item, presentation, role)
+            label = display_marker_text(row, item, presentation, role)
             if label:
                 marker["text"] = label
             markers.append(marker)
@@ -1796,11 +1853,33 @@ def apply_chart_volume_convergence_columns(frame: pl.DataFrame) -> pl.DataFrame:
             .fill_null(False)
             .alias("bullish_volume_divergence")
         )
+        names = frame.columns
+    score_exprs: list[pl.Expr] = []
+    if "bearish_volume_divergence_score" not in names and {"bearish_volume_divergence", "open", "close", "volume"}.issubset(names):
+        score_exprs.append(volume_divergence_score_expr("bearish_volume_divergence", "bearish", group_columns, "bearish_volume_divergence_score"))
+    if "bullish_volume_divergence_score" not in names and {"bullish_volume_divergence", "open", "close", "volume"}.issubset(names):
+        score_exprs.append(volume_divergence_score_expr("bullish_volume_divergence", "bullish", group_columns, "bullish_volume_divergence_score"))
+    if score_exprs:
+        frame = frame.with_columns(score_exprs)
+        names = frame.columns
+    label_exprs: list[pl.Expr] = []
+    if "bearish_volume_divergence_label" not in names and "bearish_volume_divergence_score" in names:
+        label_exprs.append(volume_divergence_label_expr("bearish_volume_divergence_score", "bearish_volume_divergence_label"))
+    if "bullish_volume_divergence_label" not in names and "bullish_volume_divergence_score" in names:
+        label_exprs.append(volume_divergence_label_expr("bullish_volume_divergence_score", "bullish_volume_divergence_label"))
+    if label_exprs:
+        frame = frame.with_columns(label_exprs)
     return frame
 
 
-def display_marker_text(item: dict[str, Any], presentation: dict[str, Any], role: str) -> str:
+def display_marker_text(row: dict[str, Any], item: dict[str, Any], presentation: dict[str, Any], role: str) -> str:
     explicit = str(presentation.get("labelText") or "").strip()
+    label_column = str(presentation.get("labelColumn") or "").strip()
+    row_label = str(row.get(label_column) or "").strip() if label_column else ""
+    if row_label and explicit:
+        return f"{row_label[:16]}\n{explicit[:16]}"
+    if row_label:
+        return row_label[:24]
     label_mode = str(presentation.get("labelMode") or ("short" if role == "text_label" else "none"))
     if label_mode == "none" and role != "text_label" and not explicit:
         return ""
