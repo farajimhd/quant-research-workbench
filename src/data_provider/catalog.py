@@ -850,27 +850,24 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
     )
     add(
-        composite_display_item(
+        display_item_contract(
             by_column,
             item_id="feature.volume_profile",
             title="Volume Profile",
             source_columns=["volume"],
             group="core",
-            pane="volume",
-            parts=[
-                display_part(
-                    by_column,
-                    "volume",
-                    label="Volume",
-                    pane="volume",
-                    role="histogram",
-                    style="histogram",
-                    color="inherit_candle_direction",
-                )
-            ],
-            short="Raw traded volume as a dedicated lower-pane histogram.",
-            detailed="Volume Profile exposes the per-bar volume histogram as a selectable chart pane for trade review, separate from price overlays and momentum oscillators.",
-            value_format="volume",
+            category="feature",
+            presentation={
+                "selectable": True,
+                "defaultVisible": True,
+                "chartRole": "data_only",
+                "dataShape": "continuous_series",
+                "valueFormat": "volume",
+                "presentationSource": "auto",
+                "presentationConfidence": 0.92,
+            },
+            short="Raw traded volume as the built-in bottom histogram on the price chart.",
+            detailed="Volume Profile controls the built-in per-bar volume histogram rendered at the bottom of the candle chart, with each bar colored to match the candle direction.",
         )
     )
     add(

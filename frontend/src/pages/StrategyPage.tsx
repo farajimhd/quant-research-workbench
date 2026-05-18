@@ -112,6 +112,7 @@ const OBSERVABILITY_SCANNER_FILTER_PRESETS = [OBSERVABILITY_SCANNER_MOMENTUM_FIL
 const tabs = ["Backtest", "Runs", "Strategy README"];
 const defaultStrategyName = "orb_5m_momentum";
 const CHART_DISPLAY_ITEMS_NONE = "__none__";
+const VOLUME_PROFILE_DISPLAY_ITEM = "feature.volume_profile";
 
 type StrategySelection = {
   strategyName: string;
@@ -2916,6 +2917,7 @@ function StrategySymbolChart({
   const [visibleSelectionContext, setVisibleSelectionContext] = useState("");
   const displayItemsRequest = customVisibleColumns ? (visibleColumns.length ? visibleColumns.join(",") : CHART_DISPLAY_ITEMS_NONE) : undefined;
   const displayItemsRequestKey = displayItemsRequest ?? "";
+  const volumeProfileVisible = customVisibleColumns ? visibleColumns.includes(VOLUME_PROFILE_DISPLAY_ITEM) : defaultVisibleColumns.includes(VOLUME_PROFILE_DISPLAY_ITEM);
 
   useEffect(() => {
     const next = payload?.default_timeframe || availableTimeframes[0] || "1m";
@@ -2977,9 +2979,9 @@ function StrategySymbolChart({
       overlay_series: chartPayload.overlay_series.map((series) => ({ ...series, data: series.data.filter((point) => visibleTimes.has(Number(point.time))) })),
       oscillator_series: chartPayload.oscillator_series.map((series) => ({ ...series, data: series.data.filter((point) => visibleTimes.has(Number(point.time))) })),
       price_zones: (chartPayload.price_zones ?? []).filter((zone) => candles.some((candle) => candle.time >= zone.start && candle.time <= zone.end)),
-      volume: chartPayload.volume.filter((point) => visibleTimes.has(Number(point.time)))
+      volume: volumeProfileVisible ? chartPayload.volume.filter((point) => visibleTimes.has(Number(point.time))) : []
     };
-  }, [chartPayload, period.end, period.start]);
+  }, [chartPayload, period.end, period.start, volumeProfileVisible]);
 
   return (
     <section className="trade-chart-modal-body">
@@ -3179,11 +3181,13 @@ function symbolChartTimeframes(payload: RunSymbolChartPayload | null | undefined
 }
 
 function strategyVisibleColumns(chartPayload: ChartPayload | null, payload: RunSymbolChartPayload | null | undefined) {
+  const volumeProfileAvailable = Boolean(chartPayload?.volume?.length) && Boolean(chartPayload?.options?.display_items?.some((item) => item.id === VOLUME_PROFILE_DISPLAY_ITEM));
   const available = [
     ...(chartPayload?.overlay_series ?? []).map((series) => String(series.displayItemId ?? series.column ?? "")),
     ...(chartPayload?.oscillator_series ?? []).map((series) => String(series.displayItemId ?? series.column ?? "")),
     ...(chartPayload?.markers ?? []).map((marker) => String(marker.displayItemId ?? "")),
     ...(chartPayload?.price_zones ?? []).map((zone) => String(zone.displayItemId ?? "")),
+    ...(volumeProfileAvailable ? [VOLUME_PROFILE_DISPLAY_ITEM] : []),
   ].filter(Boolean);
   const configured = payload?.presentation?.default_visible?.map(String).filter((column) => available.includes(column)) ?? [];
   return configured.length ? configured : Array.from(new Set(available));
