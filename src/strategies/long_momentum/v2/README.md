@@ -14,6 +14,7 @@ At each bar open, v2 filters the cross-section with only these gates:
 - `last_transactions >= min_transactions`, default 100
 - `long_momentum_spread_ok == true`
 - `last_tema_open == true`
+- `last_macd_line > 0`
 - `last_macd_hist_z_since_open >= min_macd_hist_z_since_open`, default 0.1
 - `last_recent_dollar_volume_5 >= min_recent_dollar_volume_5`, default 100,000
 - `last_spread_bps_abs <= max_spread_bps_abs`, default 100 bps

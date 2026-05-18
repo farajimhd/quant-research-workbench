@@ -233,6 +233,7 @@ class LongMomentumV2Strategy:
             column("last_spread_bps_max", None).cast(pl.Float64).alias("_lm_spread_bps_max"),
             column("last_quote_valid_ratio", None).cast(pl.Float64).alias("_lm_quote_valid_ratio"),
             column("last_locked_or_crossed_count", None).cast(pl.Float64).alias("_lm_locked_or_crossed_count"),
+            column("last_macd_line", None).cast(pl.Float64).alias("_lm_macd_line"),
             column("last_macd_hist_z_since_open", None).cast(pl.Float64).alias("_lm_macd_hist_z"),
             column("last_quote_ask_size", 0.0).cast(pl.Float64).fill_null(0.0).alias("_lm_quote_ask_size"),
             column("current_open", None).cast(pl.Float64).alias("_lm_current_open"),
@@ -248,6 +249,7 @@ class LongMomentumV2Strategy:
                 & (pl.col("_lm_last_transactions") >= self.config.min_transactions)
                 & pl.col("_lm_spread_ok")
                 & pl.col("_lm_tema_open")
+                & (pl.col("_lm_macd_line") > 0)
                 & (pl.col("_lm_macd_hist_z") >= self.config.min_macd_hist_z_since_open)
                 & (pl.col("_lm_recent_dollar_volume_5") >= self.config.min_recent_dollar_volume_5)
                 & (pl.col("_lm_spread_bps_abs") <= self.config.max_spread_bps_abs)
@@ -450,6 +452,8 @@ class LongMomentumV2Strategy:
             return "spread"
         if not bool(row.get("_lm_tema_open")):
             return "tema_closed"
+        if self._float(row.get("last_macd_line")) <= 0:
+            return "macd_line"
         if self._float(row.get("last_macd_hist_z_since_open")) < self.config.min_macd_hist_z_since_open:
             return "macd_hist_z"
         if self._float(row.get("last_recent_dollar_volume_5")) < self.config.min_recent_dollar_volume_5:
@@ -527,6 +531,7 @@ class LongMomentumV2Strategy:
                 "last_recent_volume_5": candidate.get("last_recent_volume_5"),
                 "last_recent_dollar_volume_5": candidate.get("last_recent_dollar_volume_5"),
                 "last_quote_ask_size": candidate.get("last_quote_ask_size"),
+                "last_macd_line": candidate.get("last_macd_line"),
                 "last_macd_hist_z_since_open": candidate.get("last_macd_hist_z_since_open"),
                 "rank": candidate.get("entry_rank") or candidate.get("rank"),
             },

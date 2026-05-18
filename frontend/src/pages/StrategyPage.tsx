@@ -90,6 +90,7 @@ const OBSERVABILITY_SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
     last_transactions: { operator: "gte", presetLabel: ">= 100", valueText: "100" },
     long_momentum_spread_ok: { operator: "eq", presetLabel: "Is true", valueText: "true" },
     last_tema_open: { operator: "eq", presetLabel: "Is true", valueText: "true" },
+    last_macd_line: { operator: "gt", presetLabel: "Positive", valueText: "0" },
     last_macd_hist_z_since_open: { operator: "gte", presetLabel: ">= 0.1", valueText: "0.1" },
   },
   label: "Momentum Filters",
