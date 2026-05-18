@@ -525,15 +525,20 @@ def apply_strategy_decision_price_action_columns(scan: pl.LazyFrame, names: list
     if not {"last_open", "last_close", "last_high"}.issubset(names):
         return scan
     body = pl.col("last_close") - pl.col("last_open")
+    last_body_high = pl.max_horizontal(pl.col("last_open"), pl.col("last_close"))
+    last_body_low = pl.min_horizontal(pl.col("last_open"), pl.col("last_close"))
     exprs: list[pl.Expr] = [
         body.alias("last_body"),
         body.alias("body"),
         body.abs().alias("last_body_abs"),
         body.abs().alias("body_abs"),
+        last_body_high.alias("last_body_high"),
+        last_body_low.alias("last_body_low"),
         (pl.col("last_close") > pl.col("last_open")).alias("last_is_green"),
         (pl.col("last_close") > pl.col("last_open")).alias("is_green"),
         (pl.col("last_close") < pl.col("last_open")).alias("last_is_red"),
         (pl.col("last_close") < pl.col("last_open")).alias("is_red"),
+        (pl.col("current_open") >= last_body_high).alias("current_open_above_last_body_high_actual"),
         (pl.col("current_open") >= pl.col("last_high")).alias("current_open_above_last_body_high"),
     ]
     if {"last_high", "last_low"}.issubset(names):
@@ -556,6 +561,65 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
         .fill_null(False)
     )
     exprs: list[pl.Expr] = [spread_ok.alias("long_momentum_spread_ok")]
+    setup_required = {
+        "current_open",
+        "last_body_high",
+        "last_close",
+        "last_volume",
+        "last_transactions",
+        "last_is_red",
+        "last_return_1",
+        "last_tema_open",
+        "last_macd_line",
+        "last_macd_hist_z_since_open",
+        "last_recent_dollar_volume_5",
+        "last_spread_bps_abs",
+        "last_spread_bps_max",
+        "last_quote_valid_ratio",
+        "last_locked_or_crossed_count",
+    }
+    setup_available = setup_required.issubset(names)
+    body_break_entry: pl.Expr | None = None
+    if setup_available:
+        bearish_divergence_score = (
+            pl.col("last_bearish_volume_divergence_score").fill_null(0.0)
+            if "last_bearish_volume_divergence_score" in names
+            else pl.lit(0.0)
+        )
+        setup_price_ok = ((pl.col("last_close") >= 1.0) & (pl.col("last_close") <= 10.0)).fill_null(False)
+        setup_activity_ok = (
+            (pl.col("last_volume") >= 10_000)
+            & (pl.col("last_transactions") >= 100)
+            & (pl.col("last_recent_dollar_volume_5") >= 100_000)
+        ).fill_null(False)
+        setup_quote_ok = (
+            spread_ok
+            & (pl.col("last_spread_bps_abs") <= 100.0)
+            & (pl.col("last_spread_bps_max") <= 150.0)
+            & (pl.col("last_quote_valid_ratio") >= 0.8)
+            & (pl.col("last_locked_or_crossed_count") <= 0.0)
+        ).fill_null(False)
+        setup_trend_ok = (
+            (~pl.col("last_is_red"))
+            & (pl.col("last_return_1") > 0.0)
+            & pl.col("last_tema_open")
+            & (pl.col("last_macd_line") > 0.0)
+            & (pl.col("last_macd_hist_z_since_open") >= 0.0)
+        ).fill_null(False)
+        setup_exhaustion_ok = (bearish_divergence_score < 75.0).fill_null(True)
+        setup_open = (setup_price_ok & setup_activity_ok & setup_quote_ok & setup_trend_ok & setup_exhaustion_ok).fill_null(False)
+        body_break_entry = (setup_open & (pl.col("current_open") >= pl.col("last_body_high"))).fill_null(False)
+        exprs.extend(
+            [
+                setup_price_ok.alias("long_momentum_setup_price_ok"),
+                setup_activity_ok.alias("long_momentum_setup_activity_ok"),
+                setup_quote_ok.alias("long_momentum_setup_quote_ok"),
+                setup_trend_ok.alias("long_momentum_setup_trend_ok"),
+                setup_exhaustion_ok.alias("long_momentum_setup_exhaustion_ok"),
+                setup_open.alias("long_momentum_setup_open"),
+                body_break_entry.alias("long_momentum_body_break_entry_open"),
+            ]
+        )
     required = {
         "last_close",
         "last_volume",
@@ -568,22 +632,29 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
         "last_macd_hist_z_since_open",
     }
     if required.issubset(names):
+        v2_entry_open = (
+            (pl.col("last_close") >= 1.0)
+            & (pl.col("last_close") <= 10.0)
+            & (pl.col("last_volume") >= 10_000)
+            & (pl.col("last_transactions") >= 100)
+            & (~pl.col("last_is_red"))
+            & (pl.col("last_return_1") > 0)
+            & pl.col("current_open_above_last_body_high")
+            & pl.col("last_tema_open")
+            & (pl.col("last_macd_line") > 0)
+            & (pl.col("last_macd_hist_z_since_open") >= 0.1)
+            & spread_ok
+        ).fill_null(False)
+        exprs.append(v2_entry_open.alias("long_momentum_entry_open"))
         exprs.append(
             (
-                (pl.col("last_close") >= 1.0)
-                & (pl.col("last_close") <= 10.0)
-                & (pl.col("last_volume") >= 10_000)
-                & (pl.col("last_transactions") >= 100)
-                & (~pl.col("last_is_red"))
-                & (pl.col("last_return_1") > 0)
-                & pl.col("current_open_above_last_body_high")
-                & pl.col("last_tema_open")
-                & (pl.col("last_macd_line") > 0)
-                & (pl.col("last_macd_hist_z_since_open") >= 0.1)
-                & spread_ok
+                body_break_entry
+                & ~v2_entry_open
+                if body_break_entry is not None
+                else pl.lit(False)
             )
             .fill_null(False)
-            .alias("long_momentum_entry_open")
+            .alias("long_momentum_early_body_break_entry_open")
         )
     return scan.with_columns(exprs)
 
@@ -1096,6 +1167,9 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "last_low",
         "last_close",
         "current_open_above_last_body_high",
+        "current_open_above_last_body_high_actual",
+        "last_body_high",
+        "last_body_low",
         "last_volume",
         "last_volume_avg_3",
         "last_avg_volume_so_far",
@@ -1141,6 +1215,14 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "last_spread_bps_median",
         "last_spread_bps_max",
         "long_momentum_spread_ok",
+        "long_momentum_setup_price_ok",
+        "long_momentum_setup_activity_ok",
+        "long_momentum_setup_quote_ok",
+        "long_momentum_setup_trend_ok",
+        "long_momentum_setup_exhaustion_ok",
+        "long_momentum_setup_open",
+        "long_momentum_body_break_entry_open",
+        "long_momentum_early_body_break_entry_open",
         "long_momentum_entry_open",
         "last_quote_bid_size",
         "last_quote_ask_size",
