@@ -217,6 +217,7 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
   "last_volume_convergence_gap",
   "last_volume_convergence_slope",
   "last_bearish_volume_divergence",
+  "last_bullish_volume_divergence",
   "last_transactions",
   "last_volume_sma10",
   "last_relative_volume10",

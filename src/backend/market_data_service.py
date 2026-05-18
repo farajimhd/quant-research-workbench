@@ -683,18 +683,34 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
     if (
         "bearish_volume_divergence" not in names
         and group_columns
-        and {"session_bar_count", "high", "day_high_so_far", "volume_convergence_slope", "volume_avg_3"}.issubset(names)
+        and {"open", "close", "volume"}.issubset(names)
     ):
         divergence_exprs.append(
             (
-                (pl.col("session_bar_count") >= 4)
-                & (pl.col("high") >= pl.col("day_high_so_far"))
-                & (pl.col("day_high_so_far").shift(1).over(group_columns).is_not_null())
-                & (pl.col("volume_convergence_slope") < 0)
-                & (pl.col("volume_avg_3") < pl.col("volume_avg_3").shift(1).over(group_columns))
+                (pl.col("volume") < pl.col("volume").shift(1).over(group_columns))
+                & (
+                    pl.max_horizontal(pl.col("open"), pl.col("close"))
+                    > pl.max_horizontal(pl.col("open").shift(1).over(group_columns), pl.col("close").shift(1).over(group_columns))
+                )
             )
             .fill_null(False)
             .alias("bearish_volume_divergence")
+        )
+    if (
+        "bullish_volume_divergence" not in names
+        and group_columns
+        and {"open", "close", "volume"}.issubset(names)
+    ):
+        divergence_exprs.append(
+            (
+                (pl.col("volume") < pl.col("volume").shift(1).over(group_columns))
+                & (
+                    pl.min_horizontal(pl.col("open"), pl.col("close"))
+                    < pl.min_horizontal(pl.col("open").shift(1).over(group_columns), pl.col("close").shift(1).over(group_columns))
+                )
+            )
+            .fill_null(False)
+            .alias("bullish_volume_divergence")
         )
     if divergence_exprs:
         scan = scan.with_columns(divergence_exprs)
@@ -1033,6 +1049,7 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "last_volume_convergence_gap",
         "last_volume_convergence_slope",
         "last_bearish_volume_divergence",
+        "last_bullish_volume_divergence",
         "last_transactions",
         "last_dollar_volume",
         "last_relative_volume10",
@@ -1688,9 +1705,7 @@ def display_item_markers(rows: list[dict[str, Any]], timeframe: str, items: list
             if label:
                 marker["text"] = label
             markers.append(marker)
-            if len(markers) >= marker_limit:
-                return markers
-    return markers
+    return sorted(markers, key=lambda marker: int(marker.get("time") or 0))[:marker_limit]
 
 
 def apply_chart_volume_convergence_columns(frame: pl.DataFrame) -> pl.DataFrame:
@@ -1751,18 +1766,35 @@ def apply_chart_volume_convergence_columns(frame: pl.DataFrame) -> pl.DataFrame:
     if (
         "bearish_volume_divergence" not in names
         and group_columns
-        and {"session_bar_count", "high", "day_high_so_far", "volume_convergence_slope", "volume_avg_3"}.issubset(names)
+        and {"open", "close", "volume"}.issubset(names)
     ):
         frame = frame.with_columns(
             (
-                (pl.col("session_bar_count") >= 4)
-                & (pl.col("high") >= pl.col("day_high_so_far"))
-                & (pl.col("day_high_so_far").shift(1).over(group_columns).is_not_null())
-                & (pl.col("volume_convergence_slope") < 0)
-                & (pl.col("volume_avg_3") < pl.col("volume_avg_3").shift(1).over(group_columns))
+                (pl.col("volume") < pl.col("volume").shift(1).over(group_columns))
+                & (
+                    pl.max_horizontal(pl.col("open"), pl.col("close"))
+                    > pl.max_horizontal(pl.col("open").shift(1).over(group_columns), pl.col("close").shift(1).over(group_columns))
+                )
             )
             .fill_null(False)
             .alias("bearish_volume_divergence")
+        )
+        names = frame.columns
+    if (
+        "bullish_volume_divergence" not in names
+        and group_columns
+        and {"open", "close", "volume"}.issubset(names)
+    ):
+        frame = frame.with_columns(
+            (
+                (pl.col("volume") < pl.col("volume").shift(1).over(group_columns))
+                & (
+                    pl.min_horizontal(pl.col("open"), pl.col("close"))
+                    < pl.min_horizontal(pl.col("open").shift(1).over(group_columns), pl.col("close").shift(1).over(group_columns))
+                )
+            )
+            .fill_null(False)
+            .alias("bullish_volume_divergence")
         )
     return frame
 

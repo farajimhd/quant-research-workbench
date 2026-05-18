@@ -114,6 +114,7 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "volume_convergence_gap",
         "volume_convergence_slope",
         "bearish_volume_divergence",
+        "bullish_volume_divergence",
         "volume_sma10",
         "relative_volume10",
         "volume_sma20",
@@ -529,14 +530,29 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
         )
         .with_columns(
             (
-                (pl.col("session_bar_count") >= 4)
-                & (pl.col("high") >= pl.col("day_high_so_far"))
-                & (pl.col("day_high_so_far").shift(1).over(["ticker", "session_date"]).is_not_null())
-                & (pl.col("volume_convergence_slope") < 0)
-                & (pl.col("volume_avg_3") < pl.col("volume_avg_3").shift(1).over(["ticker", "session_date"]))
+                (pl.col("volume") < pl.col("volume").shift(1).over(["ticker", "session_date"]))
+                & (
+                    pl.max_horizontal(pl.col("open"), pl.col("close"))
+                    > pl.max_horizontal(
+                        pl.col("open").shift(1).over(["ticker", "session_date"]),
+                        pl.col("close").shift(1).over(["ticker", "session_date"]),
+                    )
+                )
             )
             .fill_null(False)
-            .alias("bearish_volume_divergence")
+            .alias("bearish_volume_divergence"),
+            (
+                (pl.col("volume") < pl.col("volume").shift(1).over(["ticker", "session_date"]))
+                & (
+                    pl.min_horizontal(pl.col("open"), pl.col("close"))
+                    < pl.min_horizontal(
+                        pl.col("open").shift(1).over(["ticker", "session_date"]),
+                        pl.col("close").shift(1).over(["ticker", "session_date"]),
+                    )
+                )
+            )
+            .fill_null(False)
+            .alias("bullish_volume_divergence"),
         )
     )
     typical_money_flow = pl.col("hlc3") * pl.col("volume")

@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 16
+CATALOG_VERSION = 17
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -255,6 +255,7 @@ BOOLEAN_COLUMNS = {
     "current_volume_shock",
     "current_confirmed_price_volume_shock",
     "bearish_volume_divergence",
+    "bullish_volume_divergence",
     "is_top_1",
     "is_top_3",
     "is_top_5",
@@ -860,11 +861,30 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             marker_position="aboveBar",
             source_columns=[
                 "bearish_volume_divergence",
-                "session_bar_count",
-                "day_high_so_far",
-                "volume_avg_3",
-                "volume_convergence_slope",
+                "open",
+                "close",
+                "volume",
             ],
+            label_text="BVD",
+        )
+    )
+    add(
+        marker_display_item(
+            by_column,
+            "feature.volume_liquidity.bullish_volume_divergence",
+            "Bullish Volume Divergence",
+            "volume_liquidity",
+            "bullish_volume_divergence",
+            "#067647",
+            marker_shape="arrowUp",
+            marker_position="belowBar",
+            source_columns=[
+                "bullish_volume_divergence",
+                "open",
+                "close",
+                "volume",
+            ],
+            label_text="BullVD",
         )
     )
 
@@ -1138,6 +1158,7 @@ def marker_display_item(
     marker_shape: str = "circle",
     marker_position: str = "belowBar",
     source_columns: list[str] | None = None,
+    label_text: str | None = None,
 ) -> dict[str, Any] | None:
     return display_item_contract(
         by_column,
@@ -1158,6 +1179,7 @@ def marker_display_item(
             "markerPosition": marker_position,
             "signalColumn": signal_column,
             "labelMode": "short",
+            "labelText": label_text,
             "valueFormat": "boolean",
             "presentationSource": "auto",
             "presentationConfidence": 0.9,
@@ -2503,10 +2525,16 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
             {"VolumeGap": "Log short-volume-to-session-average gap"},
         ),
         "bearish_volume_divergence": (
-            "Fresh high with fading short-term volume.",
-            "Bearish volume divergence is true when price makes a fresh session high while the three-bar volume average and the volume convergence gap are both falling. It is a review marker for possible exhaustion near the top of an uptrend.",
-            "$$Divergence_t=I(High_t=DayHigh_t\\land \\Delta VolumeGap_t<0\\land VolumeAvg3_t<VolumeAvg3_{t-1})$$",
-            {"High": "Current bar high", "DayHigh": "Session high so far", "VolumeGap": "Log volume convergence gap", "VolumeAvg3": "Three-bar average volume"},
+            "Body pushes above the prior body on lower volume.",
+            "Bearish volume divergence is true when the current candle body high is above the prior candle body high while current volume is lower than prior volume. It marks price pushing up with weaker participation.",
+            "$$BearDiv_t=I(Volume_t<Volume_{t-1}\\land BodyHigh_t>BodyHigh_{t-1})$$",
+            {"Volume": "Share volume", "BodyHigh": "Maximum of candle open and close"},
+        ),
+        "bullish_volume_divergence": (
+            "Body pushes below the prior body on lower volume.",
+            "Bullish volume divergence is true when the current candle body low is below the prior candle body low while current volume is lower than prior volume. It marks price pushing down with weaker participation.",
+            "$$BullDiv_t=I(Volume_t<Volume_{t-1}\\land BodyLow_t<BodyLow_{t-1})$$",
+            {"Volume": "Share volume", "BodyLow": "Minimum of candle open and close"},
         ),
     }
     if lower in convergence:
