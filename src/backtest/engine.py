@@ -748,9 +748,15 @@ class BacktestEngine:
         self._fill_order(stop_order, timestamp, bar, stop_order.reason)
 
     def _entry_stop_price(self, metadata: dict, order: Order, fill_price: float) -> float:
+        if metadata.get("stop_price") is not None:
+            return float(metadata["stop_price"])
+        if order.protective_stop_price is not None:
+            return float(order.protective_stop_price)
+        if order.stop_price is not None:
+            return float(order.stop_price)
         if "stop_offset_dollars" in metadata:
             return max(0.01, fill_price - float(metadata["stop_offset_dollars"]))
-        return float(metadata.get("stop_price", order.stop_price or fill_price))
+        return fill_price
 
     def _max_fill_quantity(self, order: Order, bar: dict) -> int | None:
         quote_column = "quote_ask_size" if order.side == "BUY" else "quote_bid_size"

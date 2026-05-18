@@ -305,7 +305,7 @@ class LongMomentumV2Strategy:
         self._set_entry_metadata(symbol, candidate, rank=rank, score=score, stop_price=stop_price)
         self.position_meta[symbol] = {
             "initial_stop": stop_price,
-            "initial_r": self.config.stop_offset_dollars,
+            "initial_r": max(self.config.stop_offset_dollars, abs(entry_price - stop_price)),
             "entry_score": score,
         }
         self._trace_entry(context.timestamp, candidate, quantity, entry_price, stop_price)
@@ -385,7 +385,6 @@ class LongMomentumV2Strategy:
             "setup_score": score,
             "live_score": score,
             "stop_price": stop_price,
-            "stop_offset_dollars": self.config.stop_offset_dollars,
         }
 
     def _initial_stop_price(self, row: dict, entry_price: float) -> float:
