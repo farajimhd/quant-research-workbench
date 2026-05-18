@@ -5169,6 +5169,97 @@ button {
   font-size: 18px;
 }
 
+.data-table-transpose-modal-panel {
+  display: flex;
+  width: min(1280px, calc(100vw - 40px));
+  max-height: calc(100vh - 48px);
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.data-table-transpose-modal-panel .modal-header {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--surface-alt) 35%, var(--card));
+  margin: 0;
+  padding: 14px 16px;
+}
+
+.data-table-transpose-summary {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+}
+
+.data-table-transpose-summary span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 9px;
+}
+
+.data-table-transpose-scroll {
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.data-table-transpose {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+
+.data-table-transpose th,
+.data-table-transpose td {
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  max-width: 340px;
+  min-width: 150px;
+  overflow-wrap: anywhere;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.data-table-transpose thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-alt);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.data-table-transpose th:first-child {
+  left: 0;
+  min-width: 240px;
+  position: sticky;
+  z-index: 3;
+}
+
+.data-table-transpose tbody th {
+  background: var(--card);
+}
+
+.data-table-transpose tbody th span,
+.data-table-transpose tbody th small {
+  display: block;
+}
+
+.data-table-transpose tbody th small {
+  color: var(--muted);
+  font-weight: 500;
+  margin-top: 2px;
+}
+
 .parameter-modal-panel {
   display: flex;
   width: min(1040px, calc(100vw - 48px));

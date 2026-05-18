@@ -1056,6 +1056,7 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
             : undefined
         }
         rows={snapshot?.rows ?? []}
+        transposeHelper
       />
       {chartTarget ? (
         <PreviewRowChartModal

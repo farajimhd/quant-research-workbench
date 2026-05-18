@@ -10,6 +10,7 @@ import {
   Filter,
   MoreHorizontal,
   Plus,
+  Rows3,
   Search,
   Trash2,
   X,
@@ -18,6 +19,7 @@ import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { displayName, formatCell } from "../format";
+import { Modal } from "./Modal";
 
 type DataRow = Record<string, unknown>;
 export type SortDirection = "asc" | "desc";
@@ -139,9 +141,11 @@ type DataTableProps = {
   rowAction?: RowActionConfig;
   rows: DataRow[];
   title?: string;
+  transposeHelper?: boolean;
 };
 
 const TABLE_DENSITY_MODES = ["compact", "comfortable", "wide"] as const;
+const TRANSPOSE_MAX_SOURCE_ROWS = 80;
 const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean; needsValue?: boolean; value: BackendQueryOperator }> = [
   { label: "Contains", needsValue: true, value: "contains" },
   { label: "Equals", needsValue: true, value: "eq" },
@@ -158,7 +162,7 @@ const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean
 ];
 let backendQueryConditionSequence = 0;
 
-export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows.", filterPresets = [], isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title }: DataTableProps) {
+export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows.", filterPresets = [], isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title, transposeHelper = false }: DataTableProps) {
   const resolvedColumns = useMemo(() => {
     if (columns?.length) return columns;
     return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -178,6 +182,7 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>(null);
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
+  const [transposeOpen, setTransposeOpen] = useState(false);
   const tableIdentityRef = useRef<string | null>(null);
 
   const profilesByColumn = useMemo<Record<string, ColumnProfile>>(() => {
@@ -258,6 +263,10 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
       return result * directionMultiplier;
     });
   }, [effectiveSort, filteredRows]);
+  const transposeView = useMemo(
+    () => buildTransposeView(sortedRows, resolvedColumns),
+    [resolvedColumns, sortedRows],
+  );
 
   const numericColumnCount = resolvedColumns.filter((column) => profilesByColumn[column]?.kind === "numeric").length;
   const activeSortLabel = effectiveSort ? `${displayName(effectiveSort.column)} ${effectiveSort.direction}` : "None";
@@ -452,6 +461,7 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
     setSearch("");
     setSort(null);
     setToolbarMenuOpen(false);
+    setTransposeOpen(false);
     if (backendQuery) {
       const emptyQuery = emptyBackendTableQuery();
       setBackendQueryDraft(emptyQuery);
@@ -514,6 +524,20 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
         {preset.label}
       </button>
     ));
+
+  const renderTransposeButton = () =>
+    transposeHelper ? (
+      <button
+        className="table-text-button"
+        disabled={!sortedRows.length || !resolvedColumns.length}
+        onClick={() => setTransposeOpen(true)}
+        title="Open a transposed view of the current filtered and sorted table"
+        type="button"
+      >
+        <Rows3 size={13} />
+        Transpose
+      </button>
+    ) : null;
 
   const renderColumnToggles = () =>
     filteredColumnOptions.length ? (
@@ -744,6 +768,7 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
         </div>
         <div className="data-table-toolbar-actions data-table-toolbar-actions-wide">
           {renderFilterPresetButtons()}
+          {renderTransposeButton()}
           <span className="data-table-sort-chip">Sort: {activeSortLabel}</span>
           <div className="data-table-toolbar-control" aria-label="Table density">
             {renderDensityControls()}
@@ -809,6 +834,11 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
               {filterPresets.length ? (
                 <div className="data-table-toolbar-menu-section actions">
                   {renderFilterPresetButtons()}
+                </div>
+              ) : null}
+              {transposeHelper ? (
+                <div className="data-table-toolbar-menu-section actions">
+                  {renderTransposeButton()}
                 </div>
               ) : null}
               <div className="data-table-toolbar-menu-section">
@@ -969,6 +999,41 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
         </table>
       </div>
 
+      {transposeOpen ? (
+        <Modal className="data-table-transpose-modal-panel" onClose={() => setTransposeOpen(false)} title="Transposed Table">
+          <div className="data-table-transpose-summary">
+            <span>{formatInteger(transposeView.rows.length)} fields</span>
+            <span>{formatInteger(transposeView.sourceRowCount)} rows shown</span>
+            {transposeView.truncated ? <span>Showing first {formatInteger(TRANSPOSE_MAX_SOURCE_ROWS)} filtered rows</span> : null}
+          </div>
+          <div className="data-table-transpose-scroll">
+            <table className="data-table-transpose">
+              <thead>
+                <tr>
+                  <th>Column</th>
+                  {transposeView.sourceRowLabels.map((label, index) => (
+                    <th key={`${label}:${index}`}>{label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {transposeView.rows.map((row) => (
+                  <tr key={row.column}>
+                    <th>
+                      <span>{row.label}</span>
+                      <small>{row.column}</small>
+                    </th>
+                    {row.values.map((value, index) => (
+                      <td key={`${row.column}:${index}`}>{value}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+      ) : null}
+
       {openPopover && openProfile && typeof document !== "undefined"
         ? createPortal(
             <div
@@ -1017,6 +1082,41 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
 
 function emptyBackendTableQuery(): BackendTableQuery {
   return { conditions: [], matchMode: "all", sortDirection: "asc" };
+}
+
+type TransposeView = {
+  rows: Array<{ column: string; label: string; values: string[] }>;
+  sourceRowCount: number;
+  sourceRowLabels: string[];
+  truncated: boolean;
+};
+
+function buildTransposeView(rows: DataRow[], columns: string[]): TransposeView {
+  const sourceRows = rows.slice(0, TRANSPOSE_MAX_SOURCE_ROWS);
+  return {
+    rows: columns.map((column) => ({
+      column,
+      label: displayName(column),
+      values: sourceRows.map((row) => formatCell(column, row[column])),
+    })),
+    sourceRowCount: sourceRows.length,
+    sourceRowLabels: sourceRows.map((row, index) => transposeSourceRowLabel(row, index)),
+    truncated: rows.length > sourceRows.length,
+  };
+}
+
+function transposeSourceRowLabel(row: DataRow, index: number): string {
+  const ticker = stringValue(row.ticker || row.symbol);
+  const rank = stringValue(row.entry_rank || row.rank);
+  if (ticker && rank) return `${index + 1}. ${ticker} #${rank}`;
+  if (ticker) return `${index + 1}. ${ticker}`;
+  if (rank) return `Row ${index + 1} #${rank}`;
+  return `Row ${index + 1}`;
+}
+
+function stringValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
 }
 
 function keepExistingColumnFilters<T>(filters: Record<string, T>, validColumns: Set<string>): Record<string, T> {

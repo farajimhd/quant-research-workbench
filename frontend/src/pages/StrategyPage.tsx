@@ -1702,6 +1702,7 @@ function ObservationEvidenceTable({
             filterPresets={scannerTable ? OBSERVABILITY_SCANNER_FILTER_PRESETS : undefined}
             onRowClick={scannerTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
             rows={displayRows}
+            transposeHelper={scannerTable}
           />
         )}
       </section>
@@ -1724,6 +1725,7 @@ function ObservationEvidenceTable({
           filterPresets={scannerTable ? OBSERVABILITY_SCANNER_FILTER_PRESETS : undefined}
           onRowClick={scannerTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
           rows={displayRows}
+          transposeHelper={scannerTable}
         />
       ) : null}
     </section>
