@@ -162,7 +162,7 @@ class LongMomentumV2Strategy:
                 if self._tema_closed(row):
                     self._reject(context.timestamp, symbol, "partial_entry_blocked_tema_closed", row)
                     continue
-                stop_price = max(0.01, open_price - self.config.stop_offset_dollars)
+                stop_price = self._initial_stop_price(row, open_price)
                 self._set_entry_metadata(symbol, row, rank=0, score=0.0, stop_price=stop_price)
                 requests.append(
                     OrderRequest(
@@ -297,7 +297,7 @@ class LongMomentumV2Strategy:
         if quantity <= 0:
             self._reject(context.timestamp, symbol, "cash", candidate)
             return None
-        stop_price = max(0.01, entry_price - self.config.stop_offset_dollars)
+        stop_price = self._initial_stop_price(candidate, entry_price)
         rank = int(candidate.get("entry_rank") or candidate.get("rank") or 0)
         score = self._float(candidate.get("scanner_score"))
         self._set_entry_metadata(symbol, candidate, rank=rank, score=score, stop_price=stop_price)
@@ -385,6 +385,12 @@ class LongMomentumV2Strategy:
             "stop_price": stop_price,
             "stop_offset_dollars": self.config.stop_offset_dollars,
         }
+
+    def _initial_stop_price(self, row: dict, entry_price: float) -> float:
+        body_floor = min(self._float(row.get("last_open")), self._float(row.get("last_close")))
+        if body_floor > 0 and body_floor < entry_price:
+            return max(0.01, body_floor)
+        return max(0.01, entry_price - self.config.stop_offset_dollars)
 
     def _cash_quantity(self, price: float, available_cash: float) -> int:
         if price <= 0 or available_cash <= 0:
