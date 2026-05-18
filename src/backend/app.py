@@ -23,6 +23,7 @@ from src.backtest.config import (
     generated_run_name,
     submitted_run_name,
 )
+from src.backtest.debugger import StepBacktestDebugger
 from src.backtest.equity_candles import default_portfolio_candle_timeframe
 from src.backtest.jobs import cancel_backtest_job, get_backtest_status, list_backtest_jobs, submit_backtest_job
 from src.backtest.metrics import portfolio_pnl_breakdown
@@ -85,6 +86,7 @@ FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 CHART_DISPLAY_ITEMS_NONE = "__none__"
 EXCHANGE_TIME_ZONE = "America/New_York"
 PORTFOLIO_CHART_TIMEFRAMES = ["30m", "1h", "2h", "4h", "1d"]
+DEBUG_SESSIONS: dict[str, StepBacktestDebugger] = {}
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
 app.add_middleware(
@@ -898,6 +900,59 @@ def start_backtest(payload: BacktestSubmit) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return submit_backtest_job(config)
+
+
+@app.post("/api/backtests/debug/sessions")
+def create_backtest_debug_session(payload: BacktestSubmit) -> dict[str, Any]:
+    raw = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    raw["run_name"] = submitted_run_name(raw["strategy_name"], raw.get("strategy_version") or "v3", raw.get("run_name"))
+    raw["observability_mode"] = "standard"
+    raw["observability_sessions"] = max(999, int(raw.get("observability_sessions") or 0))
+    raw["observability_scanner_top_percent"] = 1.0
+    raw["observability_scanner_min_rows"] = max(100, int(raw.get("observability_scanner_min_rows") or 0))
+    raw["observability_scanner_max_rows"] = max(500, int(raw.get("observability_scanner_max_rows") or 0))
+    raw["observability_always_trace_trades"] = True
+    raw["save_symbol_bars"] = True
+    config = BacktestConfig.from_dict({**raw, "created_by_app": True})
+    try:
+        strategy = create_strategy(config.strategy_name, config.strategy_params, config.strategy_version)
+        debugger = StepBacktestDebugger(config, strategy)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    DEBUG_SESSIONS[debugger.debug_session_id] = debugger
+    return json_safe(debugger.payload())
+
+
+@app.get("/api/backtests/debug/sessions/{session_id}")
+def get_backtest_debug_session(session_id: str) -> dict[str, Any]:
+    debugger = DEBUG_SESSIONS.get(session_id)
+    if debugger is None:
+        raise HTTPException(status_code=404, detail="Debug session not found")
+    return json_safe(debugger.payload())
+
+
+@app.post("/api/backtests/debug/sessions/{session_id}/next")
+def next_backtest_debug_step(session_id: str) -> dict[str, Any]:
+    debugger = DEBUG_SESSIONS.get(session_id)
+    if debugger is None:
+        raise HTTPException(status_code=404, detail="Debug session not found")
+    return json_safe(debugger.next_step())
+
+
+@app.post("/api/backtests/debug/sessions/{session_id}/previous")
+def previous_backtest_debug_step(session_id: str) -> dict[str, Any]:
+    debugger = DEBUG_SESSIONS.get(session_id)
+    if debugger is None:
+        raise HTTPException(status_code=404, detail="Debug session not found")
+    return json_safe(debugger.previous_step())
+
+
+@app.delete("/api/backtests/debug/sessions/{session_id}")
+def delete_backtest_debug_session(session_id: str) -> dict[str, Any]:
+    removed = DEBUG_SESSIONS.pop(session_id, None)
+    if removed is None:
+        raise HTTPException(status_code=404, detail="Debug session not found")
+    return {"deleted": True, "session_id": session_id}
 
 
 @app.get("/api/backtests/jobs")
