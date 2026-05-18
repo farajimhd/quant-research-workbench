@@ -7037,6 +7037,123 @@ button {
   overflow: hidden;
 }
 
+.step-debug-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.step-debug-control-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  padding: 12px;
+}
+
+.step-debug-control-row {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.step-debug-search-field {
+  min-width: 220px;
+}
+
+.step-debug-current-card {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(240px, 1fr) minmax(320px, 1.3fr);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.step-debug-current-card span,
+.step-debug-list-item small {
+  color: var(--muted-foreground);
+  font-size: 0.78rem;
+}
+
+.step-debug-current-card strong {
+  display: block;
+  font-size: 1rem;
+  margin-top: 3px;
+}
+
+.step-debug-current-card p {
+  color: var(--muted-foreground);
+  margin: 4px 0 0;
+}
+
+.step-debug-step-facts {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.step-debug-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 300px minmax(0, 1fr);
+}
+
+.step-debug-sidebar,
+.step-debug-detail {
+  min-width: 0;
+}
+
+.step-debug-sidebar {
+  align-self: start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  padding: 10px;
+  position: sticky;
+  top: 12px;
+}
+
+.step-debug-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 62vh;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.step-debug-list-item {
+  align-items: flex-start;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--foreground);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+  text-align: left;
+}
+
+.step-debug-list-item:hover,
+.step-debug-list-item:focus-visible,
+.step-debug-list-item.active {
+  background: color-mix(in oklab, var(--surface) 84%, var(--card));
+  border-color: var(--border);
+}
+
+.step-debug-list-item.active {
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.step-debug-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .observability-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

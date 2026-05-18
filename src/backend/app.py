@@ -182,17 +182,17 @@ def empty_backtest_tables() -> dict[str, dict[str, Any]]:
 
 def backtest_tables_payload(run_dir: Path) -> dict[str, dict[str, Any]]:
     return {
-        "daily": read_table(run_dir / "daily_summary.parquet"),
-        "trades": read_table(run_dir / "trades.parquet"),
-        "orders": read_table(run_dir / "orders.parquet"),
-        "fills": read_table(run_dir / "fills.parquet"),
-        "scanner": read_table(run_dir / "scanner_snapshots.parquet"),
-        "observability_scanner": read_table(run_dir / "observability_scanner.parquet", limit=5000),
-        "observability_trace": read_table(run_dir / "observability_trace.parquet", limit=5000),
-        "observability_state": read_table(run_dir / "observability_state.parquet", limit=5000),
-        "rejections": read_table(run_dir / "rejection_events.parquet"),
-        "positions": read_table(run_dir / "positions.parquet"),
-        "portfolio": read_table(run_dir / "portfolio.parquet"),
+        "daily": read_table(run_dir / "daily_summary.parquet", limit=10_000),
+        "trades": read_table(run_dir / "trades.parquet", limit=10_000),
+        "orders": read_table(run_dir / "orders.parquet", limit=10_000),
+        "fills": read_table(run_dir / "fills.parquet", limit=10_000),
+        "scanner": read_table(run_dir / "scanner_snapshots.parquet", limit=10_000),
+        "observability_scanner": read_table(run_dir / "observability_scanner.parquet", limit=50_000),
+        "observability_trace": read_table(run_dir / "observability_trace.parquet", limit=25_000),
+        "observability_state": read_table(run_dir / "observability_state.parquet", limit=25_000),
+        "rejections": read_table(run_dir / "rejection_events.parquet", limit=10_000),
+        "positions": read_table(run_dir / "positions.parquet", limit=10_000),
+        "portfolio": read_table(run_dir / "portfolio.parquet", limit=25_000),
     }
 
 

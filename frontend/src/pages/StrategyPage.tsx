@@ -139,6 +139,8 @@ const OBSERVABILITY_SCANNER_FILTER_PRESETS = [
   OBSERVABILITY_SCANNER_EARLY_MOVE_FILTER_PRESET,
   OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET,
 ];
+const DEBUG_BACKTEST_SCANNER_MAX_ROWS = 500;
+const BACKTEST_RESULT_TABS = ["Backtest Results", "Step Debug", "Observability", "Daily", "Trades", "Orders", "Fills", "Positions"];
 
 function scannerBooleanFilters(columns: string[]): DataTableFilterPreset["filters"] {
   return Object.fromEntries(columns.map((column) => [column, { operator: "eq", presetLabel: "Is true", valueText: "true" }]));
@@ -760,6 +762,30 @@ function NewRunPanel({
     }
   }
 
+  async function startDebugRun() {
+    setError(null);
+    const runConfig = {
+      ...config,
+      observability_always_trace_trades: true,
+      observability_mode: "standard",
+      observability_scanner_max_rows: Math.max(DEBUG_BACKTEST_SCANNER_MAX_ROWS, config.observability_scanner_max_rows ?? 0),
+      observability_scanner_min_rows: Math.max(100, config.observability_scanner_min_rows ?? 0),
+      observability_scanner_top_percent: 1,
+      observability_sessions: Math.max(999, config.observability_sessions ?? 0),
+      run_name: `${submittedRunName(config)}_step_debug`,
+      save_symbol_bars: true
+    };
+    onConfigChange(runConfig);
+    setDraftConfig(runConfig);
+    try {
+      const payload = await api<Record<string, unknown>>("/api/backtests/jobs", { method: "POST", body: JSON.stringify(runConfig) });
+      setJob(payload);
+      setJobId(String(payload.job_id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function stopRun() {
     if (!jobId) return;
     setError(null);
@@ -793,6 +819,9 @@ function NewRunPanel({
       <div className="new-run-action-row">
         <button className="button primary" onClick={startRun} type="button" disabled={running}>
           <Play size={15} /> Start Backtest
+        </button>
+        <button className="button secondary" onClick={startDebugRun} type="button" disabled={running}>
+          <ListChecks size={15} /> Start Step Debug
         </button>
         <button className="button danger" onClick={stopRun} type="button" disabled={!canStop}>
           <StopCircle size={15} /> Stop Backtest
@@ -1312,7 +1341,7 @@ function BacktestJobPanel({
         <h2 className="backtest-results-title">{activeRunName}</h2>
         <SemanticBadge tone={toneForStatus(progress.status)}>{progress.status}</SemanticBadge>
       </div>
-      <Tabs tabs={["Backtest Results", "Observability", "Daily", "Trades", "Orders", "Fills", "Positions"]} active={tab} onChange={setTab} />
+      <Tabs tabs={BACKTEST_RESULT_TABS} active={tab} onChange={setTab} />
       {selectedObservationChart ? (
         <Modal className="trade-chart-modal-panel" title={`${selectedObservationChart.symbol || "Symbol"} Chart`} onClose={() => setSelectedObservationChart(null)}>
           <StrategySymbolChart
@@ -1346,6 +1375,9 @@ function BacktestJobPanel({
         <CachedTabPanel active={tab === "Observability"} mounted={isTabMounted("Observability")}>
           <ObservabilityPanel detail={detail} events={events} logs={detail?.logs ?? ""} onOpenChart={setSelectedObservationChart} />
         </CachedTabPanel>
+        <CachedTabPanel active={tab === "Step Debug"} mounted={isTabMounted("Step Debug")}>
+          <StepDebugPanel detail={detail} onOpenChart={setSelectedObservationChart} />
+        </CachedTabPanel>
         <CachedTabPanel active={tab === "Trades"} mounted={isTabMounted("Trades")}>
           <>
             {selectedTrade ? (
@@ -1377,6 +1409,179 @@ function BacktestJobPanel({
           <DataTable rows={detail?.tables.positions.rows ?? []} />
         </CachedTabPanel>
         {job?.error ? <div className="error-panel">{String(job.error)}</div> : null}
+      </div>
+    </section>
+  );
+}
+
+function StepDebugPanel({
+  detail,
+  onOpenChart
+}: {
+  detail: RunDetailPayload | null;
+  onOpenChart: (target: ObservationChartTarget) => void;
+}) {
+  const sources = useMemo(() => buildDebugStepSources(detail), [detail]);
+  const steps = useMemo(() => buildDebugSteps(sources), [sources]);
+  const [stepIndex, setStepIndex] = useState(0);
+  const [stepFilter, setStepFilter] = useState("");
+
+  useEffect(() => {
+    setStepIndex(0);
+  }, [steps.length]);
+
+  const filteredSteps = useMemo(() => {
+    const text = stepFilter.trim().toLowerCase();
+    if (!text) return steps;
+    return steps.filter((step) =>
+      [
+        step.label,
+        step.timestamp,
+        step.sessionDate,
+        step.symbols.join(" "),
+        step.actionSummary,
+      ].join(" ").toLowerCase().includes(text)
+    );
+  }, [stepFilter, steps]);
+  const activeStep = filteredSteps[Math.min(stepIndex, Math.max(0, filteredSteps.length - 1))] ?? null;
+  const evidence = useMemo(() => activeStep ? debugStepEvidence(activeStep, sources) : emptyDebugStepEvidence(), [activeStep, sources]);
+  const flattenedScannerRows = useMemo(() => flattenScannerRows(evidence.scannerRows), [evidence.scannerRows]);
+  const scannerColumns = useMemo(() => scannerSnapshotColumns(flattenedScannerRows), [flattenedScannerRows]);
+  const configRows = useMemo(() => debugConfigRows(detail), [detail]);
+
+  useEffect(() => {
+    if (stepIndex < filteredSteps.length) return;
+    setStepIndex(Math.max(0, filteredSteps.length - 1));
+  }, [filteredSteps.length, stepIndex]);
+
+  if (!detail) {
+    return <div className="empty-state">Start a debug backtest or open a saved run, then this tab will show timestamp-by-timestamp evidence.</div>;
+  }
+  if (!steps.length) {
+    return (
+      <section className="step-debug-workspace">
+        <div className="empty-state">
+          No step-debug artifacts are available. Run with observability enabled, or use Start Step Debug to capture scanner, trace, state, order, fill, and trade rows.
+        </div>
+        <ObservationEvidenceTable
+          description="The run and strategy parameters used for this backtest."
+          rows={configRows}
+          title="Run Parameters"
+        />
+      </section>
+    );
+  }
+
+  return (
+    <section className="step-debug-workspace">
+      <div className="step-debug-control-panel">
+        <div className="step-debug-control-row">
+          <button className="button secondary" disabled={!filteredSteps.length || stepIndex <= 0} onClick={() => setStepIndex((value) => Math.max(0, value - 1))} type="button">
+            Previous
+          </button>
+          <button className="button primary" disabled={!filteredSteps.length || stepIndex >= filteredSteps.length - 1} onClick={() => setStepIndex((value) => Math.min(filteredSteps.length - 1, value + 1))} type="button">
+            Next
+          </button>
+          <div className="field step-debug-search-field">
+            <label>Search steps</label>
+            <input placeholder="Ticker, time, action" value={stepFilter} onChange={(event) => setStepFilter(event.target.value)} />
+          </div>
+          <SemanticBadge tone="info">
+            Step {formatNumber(Math.min(stepIndex + 1, filteredSteps.length))} of {formatNumber(filteredSteps.length)}
+          </SemanticBadge>
+        </div>
+        {activeStep ? (
+          <div className="step-debug-current-card">
+            <div>
+              <span>Current Step</span>
+              <strong>{activeStep.label}</strong>
+              <p>{activeStep.actionSummary || "No strategy action trace at this timestamp."}</p>
+            </div>
+            <div className="step-debug-step-facts">
+              <ObservationFact label="Time" value={activeStep.timestamp} />
+              <ObservationFact label="Symbols" value={activeStep.symbols.join(", ") || "-"} />
+              <ObservationFact label="Scanner Rows" value={evidence.scannerRows.length} />
+              <ObservationFact label="Orders" value={evidence.orderRows.length} />
+              <ObservationFact label="Fills" value={evidence.fillRows.length} />
+              <ObservationFact label="Trades" value={evidence.tradeRows.length} />
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="step-debug-grid">
+        <section className="step-debug-sidebar">
+          <div className="observability-section-header">
+            <h4>Timeline</h4>
+            <small>{formatNumber(filteredSteps.length)} steps</small>
+          </div>
+          <div className="step-debug-list">
+            {filteredSteps.slice(Math.max(0, stepIndex - 60), stepIndex + 61).map((step) => {
+              const actualIndex = filteredSteps.indexOf(step);
+              return (
+                <button
+                  className={step === activeStep ? "step-debug-list-item active" : "step-debug-list-item"}
+                  key={step.id}
+                  onClick={() => setStepIndex(actualIndex)}
+                  type="button"
+                >
+                  <span>{step.label}</span>
+                  <small>{step.countSummary}</small>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+        <section className="step-debug-detail">
+          <ObservationEvidenceTable
+            description="Trace rows emitted by the strategy at this step. Open these first when checking why a decision happened."
+            presentation="cards"
+            rows={evidence.traceRows}
+            title="Strategy Actions"
+          />
+          <ObservationEvidenceTable
+            description="Scanner candidates captured at this exact timestamp. Use search, filters, column stats, and transpose to inspect all candidate inputs."
+            onOpenChart={onOpenChart}
+            rows={flattenedScannerRows}
+            title="Scanner Snapshot"
+          />
+          <ObservationEvidenceTable
+            description="Orders submitted or active at this timestamp."
+            rows={evidence.orderRows}
+            title="Orders"
+          />
+          <ObservationEvidenceTable
+            description="Fills produced by the fill model at this timestamp."
+            rows={evidence.fillRows}
+            title="Fills"
+          />
+          <ObservationEvidenceTable
+            description="Trades opening or closing at this timestamp."
+            rows={evidence.tradeRows}
+            title="Trades"
+          />
+          <ObservationEvidenceTable
+            description="Portfolio rows captured at this timestamp."
+            rows={evidence.portfolioRows}
+            title="Portfolio"
+          />
+          <ObservationEvidenceTable
+            description="Strategy state snapshots emitted at this timestamp."
+            rows={evidence.stateRows}
+            title="State"
+          />
+          <ObservationEvidenceTable
+            description="Candidate rejection rows captured at this timestamp."
+            rows={evidence.rejectionRows}
+            title="Rejections"
+          />
+          <ObservationEvidenceTable
+            description="The run and strategy parameters used for this backtest."
+            rows={configRows}
+            title="Run Parameters"
+          />
+          {!evidenceHasRows(evidence) ? <div className="empty-state">This step has no rows after filtering.</div> : null}
+        </section>
       </div>
     </section>
   );
@@ -1975,6 +2180,27 @@ type ObservationEvidenceRows = {
   tradeRows: DataRow[];
 };
 
+type DebugStepSources = ObservationEvidenceSources & {
+  portfolio: DataRow[];
+  traces: DataRow[];
+};
+
+type DebugStep = {
+  actionSummary: string;
+  countSummary: string;
+  id: string;
+  label: string;
+  sessionDate: string;
+  symbols: string[];
+  timeMs: number;
+  timestamp: string;
+};
+
+type DebugStepEvidence = ObservationEvidenceRows & {
+  portfolioRows: DataRow[];
+  traceRows: DataRow[];
+};
+
 type ObservationActionFilter = "all" | "cancel" | "entry" | "exit" | "order" | "rejected" | "scanner";
 
 const OBSERVABILITY_ACTION_FILTERS: Array<{ label: string; value: ObservationActionFilter }> = [
@@ -2104,6 +2330,167 @@ function emptyObservationEvidence(): ObservationEvidenceRows {
     stateRows: [],
     tradeRows: [],
   };
+}
+
+function buildDebugStepSources(detail: RunDetailPayload | null): DebugStepSources {
+  const scannerRows = detail?.tables.observability_scanner?.rows ?? [];
+  return {
+    fills: detail?.tables.fills.rows ?? [],
+    orders: detail?.tables.orders.rows ?? [],
+    portfolio: detail?.tables.portfolio.rows ?? [],
+    rejections: detail?.tables.rejections.rows ?? [],
+    scanner: scannerRows.length ? scannerRows : detail?.tables.scanner.rows ?? [],
+    states: detail?.tables.observability_state.rows ?? [],
+    traces: detail?.tables.observability_trace.rows ?? [],
+    trades: detail?.tables.trades.rows ?? [],
+  };
+}
+
+function buildDebugSteps(sources: DebugStepSources): DebugStep[] {
+  const byTime = new Map<number, { fills: number; orders: number; portfolio: number; rejections: number; scanner: number; states: number; symbols: Set<string>; traces: DataRow[]; trades: number }>();
+  const addRow = (row: DataRow, timeKeys: string[], bucket: keyof Omit<ReturnType<typeof emptyDebugStepBucket>, "symbols" | "traces">) => {
+    for (const key of timeKeys) {
+      const timeMs = rowTimeForKey(row, key);
+      if (!Number.isFinite(timeMs)) continue;
+      const entry = byTime.get(timeMs) ?? emptyDebugStepBucket();
+      entry[bucket] += 1;
+      const symbol = normalizedTicker(rowText(row, "ticker") || rowText(row, "symbol"));
+      if (symbol) entry.symbols.add(symbol);
+      byTime.set(timeMs, entry);
+    }
+  };
+  sources.traces.forEach((row) => {
+    const timeMs = rowTimeForKey(row, "timestamp");
+    if (!Number.isFinite(timeMs)) return;
+    const entry = byTime.get(timeMs) ?? emptyDebugStepBucket();
+    entry.traces.push(row);
+    const symbol = normalizedTicker(rowText(row, "ticker") || rowText(row, "symbol"));
+    if (symbol) entry.symbols.add(symbol);
+    byTime.set(timeMs, entry);
+  });
+  sources.scanner.forEach((row) => addRow(row, ["timestamp", "bar_time_market"], "scanner"));
+  sources.states.forEach((row) => addRow(row, ["timestamp"], "states"));
+  sources.rejections.forEach((row) => addRow(row, ["timestamp"], "rejections"));
+  sources.orders.forEach((row) => addRow(row, ["created_at"], "orders"));
+  sources.fills.forEach((row) => addRow(row, ["filled_at", "bar_time_market"], "fills"));
+  sources.trades.forEach((row) => addRow(row, ["entry_time", "exit_time"], "trades"));
+  sources.portfolio.forEach((row) => addRow(row, ["timestamp", "bar_time_market"], "portfolio"));
+
+  return Array.from(byTime.entries())
+    .sort(([left], [right]) => left - right)
+    .map(([timeMs, bucket], index) => {
+      const symbols = Array.from(bucket.symbols).sort();
+      const actionSummary = bucket.traces.map(debugTraceSummary).filter(Boolean).slice(0, 3).join(" | ");
+      const countSummary = [
+        bucket.traces.length ? `${formatNumber(bucket.traces.length)} actions` : "",
+        bucket.scanner ? `${formatNumber(bucket.scanner)} scanner` : "",
+        bucket.orders ? `${formatNumber(bucket.orders)} orders` : "",
+        bucket.fills ? `${formatNumber(bucket.fills)} fills` : "",
+        bucket.trades ? `${formatNumber(bucket.trades)} trades` : "",
+      ].filter(Boolean).join(", ");
+      return {
+        actionSummary,
+        countSummary: countSummary || "portfolio/state",
+        id: `debug-step:${timeMs}:${index}`,
+        label: `${formatDebugStepTime(timeMs)}${symbols.length ? ` | ${symbols.slice(0, 4).join(", ")}` : ""}`,
+        sessionDate: debugSessionDate(timeMs),
+        symbols,
+        timeMs,
+        timestamp: formatDebugStepTime(timeMs),
+      };
+    });
+}
+
+function emptyDebugStepBucket() {
+  return {
+    fills: 0,
+    orders: 0,
+    portfolio: 0,
+    rejections: 0,
+    scanner: 0,
+    states: 0,
+    symbols: new Set<string>(),
+    traces: [] as DataRow[],
+    trades: 0,
+  };
+}
+
+function debugStepEvidence(step: DebugStep, sources: DebugStepSources): DebugStepEvidence {
+  return {
+    fillRows: sources.fills.filter((row) => rowMatchesDebugStep(row, step.timeMs, ["filled_at", "bar_time_market"])).sort(compareEvidenceRows),
+    orderRows: sources.orders.filter((row) => rowMatchesDebugStep(row, step.timeMs, ["created_at"])).sort(compareEvidenceRows),
+    portfolioRows: sources.portfolio.filter((row) => rowMatchesDebugStep(row, step.timeMs, ["timestamp", "bar_time_market"])).sort(compareEvidenceRows),
+    rejectionRows: sources.rejections.filter((row) => rowMatchesDebugStep(row, step.timeMs, ["timestamp"])).sort(compareEvidenceRows),
+    scannerRows: sources.scanner.filter((row) => rowMatchesDebugStep(row, step.timeMs, ["timestamp", "bar_time_market"])).sort(compareScannerRows),
+    stateRows: sources.states.filter((row) => rowMatchesDebugStep(row, step.timeMs, ["timestamp"])).sort(compareEvidenceRows),
+    traceRows: sources.traces.filter((row) => rowMatchesDebugStep(row, step.timeMs, ["timestamp"])).sort(compareObservationTraceRows),
+    tradeRows: sources.trades.filter((row) => rowMatchesDebugStep(row, step.timeMs, ["entry_time", "exit_time"])).sort(compareEvidenceRows),
+  };
+}
+
+function emptyDebugStepEvidence(): DebugStepEvidence {
+  return {
+    ...emptyObservationEvidence(),
+    portfolioRows: [],
+    traceRows: [],
+  };
+}
+
+function rowMatchesDebugStep(row: DataRow, stepTimeMs: number, timeKeys: string[]): boolean {
+  return timeKeys.some((key) => sameObservationStepTime(rowTimeForKey(row, key), stepTimeMs));
+}
+
+function evidenceHasRows(evidence: DebugStepEvidence): boolean {
+  return Boolean(
+    evidence.fillRows.length ||
+    evidence.orderRows.length ||
+    evidence.portfolioRows.length ||
+    evidence.rejectionRows.length ||
+    evidence.scannerRows.length ||
+    evidence.stateRows.length ||
+    evidence.traceRows.length ||
+    evidence.tradeRows.length
+  );
+}
+
+function debugTraceSummary(row: DataRow): string {
+  const ticker = normalizedTicker(rowText(row, "ticker"));
+  const decision = rowText(row, "decision");
+  const eventType = rowText(row, "event_type");
+  const reasonCode = rowText(row, "reason_code");
+  return [ticker, formatObservationLabel(eventType || decision), reasonCode].filter(Boolean).join(" ");
+}
+
+function debugConfigRows(detail: RunDetailPayload | null): DataRow[] {
+  const config = detail?.metadata.config;
+  if (!config || typeof config !== "object") return [];
+  const runConfig = config as Record<string, unknown>;
+  const strategyParams = runConfig.strategy_params && typeof runConfig.strategy_params === "object" ? runConfig.strategy_params as Record<string, unknown> : {};
+  return [
+    ...Object.entries(runConfig)
+      .filter(([key]) => key !== "strategy_params")
+      .map(([key, value]) => ({ group: "Backtest", parameter: key, value: normalizeObservationTableValue(value) })),
+    ...Object.entries(strategyParams).map(([key, value]) => ({ group: "Strategy", parameter: key, value: normalizeObservationTableValue(value) })),
+  ];
+}
+
+function formatDebugStepTime(timeMs: number): string {
+  if (!Number.isFinite(timeMs)) return "";
+  return new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    hour: "numeric",
+    hour12: true,
+    minute: "2-digit",
+    month: "short",
+    second: "2-digit",
+    timeZone: "America/New_York",
+    year: "numeric",
+  }).format(new Date(timeMs));
+}
+
+function debugSessionDate(timeMs: number): string {
+  if (!Number.isFinite(timeMs)) return "";
+  return dateStringFromTimestamp(Math.round(timeMs / 1000));
 }
 
 function relatedScannerRows(rows: DataRow[], trace: DataRow): DataRow[] {
