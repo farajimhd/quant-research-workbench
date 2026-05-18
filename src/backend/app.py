@@ -4,7 +4,7 @@ import json
 import re
 import shutil
 from dataclasses import asdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -53,7 +53,7 @@ from src.backend.market_data_service import (
     source_scan,
 )
 from src.backend.progress_model import build_progress_model
-from src.data_provider.calendar import scan_market_source
+from src.data_provider.calendar import market_sessions, scan_market_source
 from src.data_provider.catalog import provider_catalog, save_presentation_override
 from src.data_provider.config import (
     DEFAULT_PROCESSED_ROOT,
@@ -107,6 +107,15 @@ class ScopeUpdate(BaseModel):
 class BuildSubmit(ScopeUpdate):
     session_workers: int = Field(default=8, ge=1, le=24)
     polars_threads: int = Field(default=10, ge=1, le=24)
+
+
+def build_start_with_reference_warmup(start_date: date, end_date: date, warmup_sessions: int = 13) -> date:
+    search_start = start_date - timedelta(days=max(45, warmup_sessions * 5))
+    sessions = market_sessions(search_start, end_date)
+    first_output_index = next((index for index, session in enumerate(sessions) if session >= start_date), None)
+    if first_output_index is None:
+        return start_date
+    return sessions[max(0, first_output_index - warmup_sessions)]
 
 
 class BacktestSubmit(BaseModel):
@@ -1004,17 +1013,19 @@ def start_build(payload: BuildSubmit) -> dict[str, Any]:
 
 @app.post("/api/market-data/build/long-momentum-v4/jobs")
 def start_long_momentum_v4_build(payload: BuildSubmit) -> dict[str, Any]:
+    build_start = build_start_with_reference_warmup(payload.start_date, payload.end_date)
     request = BuildRequest(
         raw_root=Path(payload.raw_root),
         spread_root=Path(payload.spread_root),
         processed_root=Path(payload.processed_root),
-        start_date=payload.start_date,
+        start_date=build_start,
         end_date=payload.end_date,
         timeframes=["1m"],
         feature_groups=["core", "momentum", "session", "volume_liquidity"],
         supervision_groups=[],
         rebuild_mode="force_rebuild",
         tickers=None,
+        resume_stage="force_stateful_features",
     )
     request.build_name = f"long_momentum_v4_features_{payload.start_date.isoformat()}_{payload.end_date.isoformat()}"
     return submit_build_job(

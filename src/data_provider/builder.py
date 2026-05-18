@@ -80,7 +80,11 @@ def session_timeframes(request: BuildRequest) -> list[str]:
 
 
 def is_stateful_resume(request: BuildRequest) -> bool:
-    return str(request.resume_stage or "").lower() == "stateful_features"
+    return str(request.resume_stage or "").lower() in {"stateful_features", "force_stateful_features"}
+
+
+def is_stateful_force_rebuild(request: BuildRequest) -> bool:
+    return str(request.resume_stage or "").lower() == "force_stateful_features"
 
 
 def is_spread_backfill(request: BuildRequest) -> bool:
@@ -1901,7 +1905,7 @@ def _stateful_artifact_worker(
             output_sessions=output_sessions,
             progress_callback=on_progress,
             progress_state=progress_state,
-            force_rebuild=is_spread_backfill(request),
+            force_rebuild=is_spread_backfill(request) or is_stateful_force_rebuild(request),
         )
         return result
     except BuildCancelled:
@@ -1999,7 +2003,7 @@ def build_stateful_artifact_tasks(
                     output_sessions=[str(session) for session in task.get("sessions", [])],
                     progress_callback=progress_callback,
                     progress_state=state,
-                    force_rebuild=is_spread_backfill(request),
+                    force_rebuild=is_spread_backfill(request) or is_stateful_force_rebuild(request),
                 )
             )
         return results
