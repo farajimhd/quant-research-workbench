@@ -12,3 +12,8 @@ Version details live in each version folder:
   one-cent stop, and TEMA-close trend exit.
 - `v3`: v2-derived tighter momentum selection with a $5 price floor, one new
   entry per bar, and profit-lock exits.
+- `v4`: two-trigger version with earlier body-break and Pullback/Reclaim
+  entries plus bearish volume-divergence exits.
+- `v5`: early-uptrend lifecycle version that removes loose Pullback/Reclaim,
+  requires VWAP/TEMA/MACD/volume/early-move agreement, and holds with
+  structural stops until divergence or trend structure fails.

@@ -622,6 +622,96 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
                 body_break_entry.alias("long_momentum_entry_open"),
             ]
         )
+    v5_required = setup_required | {
+        "last_vwap",
+        "last_day_open",
+        "last_day_high_so_far",
+        "last_day_low_so_far",
+        "last_tema9",
+        "last_tema20",
+        "last_macd_hist",
+        "last_avg_volume_so_far",
+        "last_volume_avg_3",
+        "last_close_location",
+        "last_bar_range",
+    }
+    if v5_required.issubset(names):
+        tema_spread = ((pl.col("last_tema9") / pl.col("last_tema20")) - 1.0).fill_null(0.0)
+        volume_vs_avg_so_far = (pl.col("last_volume") / pl.col("last_avg_volume_so_far")).fill_null(0.0)
+        volume_vs_recent_3 = (pl.col("last_volume") / pl.col("last_volume_avg_3")).fill_null(0.0)
+        distance_above_vwap = ((pl.col("current_open") / pl.col("last_vwap")) - 1.0).fill_null(0.0)
+        distance_from_day_low = ((pl.col("current_open") / pl.col("last_day_low_so_far")) - 1.0).fill_null(0.0)
+        open_above_last_close = ((pl.col("current_open") / pl.col("last_close")) - 1.0).fill_null(0.0)
+        last_bar_range_pct = (pl.col("last_bar_range") / pl.col("last_close")).fill_null(0.0)
+        fresh_day_high_break = (pl.col("current_open") > (pl.col("last_day_high_so_far") * 1.0005)).fill_null(False)
+        near_day_high = (pl.col("current_open") >= (pl.col("last_day_high_so_far") * 0.995)).fill_null(False)
+        price_above_vwap = ((pl.col("current_open") > pl.col("last_vwap")) & (pl.col("last_close") > pl.col("last_vwap"))).fill_null(False)
+        trend_quality_ok = (
+            pl.col("last_tema_open")
+            & (tema_spread >= 0.005)
+            & (pl.col("last_macd_line") > 0.0)
+            & (pl.col("last_macd_hist") > 0.0)
+            & (pl.col("last_macd_hist_z_since_open") >= 0.5)
+            & (pl.col("current_open") > pl.col("last_day_open"))
+            & (pl.col("last_close") > pl.col("last_day_open"))
+        ).fill_null(False)
+        volume_expansion_ok = ((volume_vs_avg_so_far >= 1.5) & (volume_vs_recent_3 >= 0.75)).fill_null(False)
+        day_high_position_ok = (
+            (pl.col("current_open") >= (pl.col("last_day_high_so_far") * 0.94))
+            & (~near_day_high | fresh_day_high_break)
+        ).fill_null(False)
+        early_move_ok = (
+            (distance_above_vwap <= 0.08)
+            & (distance_from_day_low <= 0.35)
+            & (open_above_last_close <= 0.03)
+            & (last_bar_range_pct <= 0.12)
+            & (pl.col("last_close_location") >= 0.55)
+            & day_high_position_ok
+        ).fill_null(False)
+        v5_setup_open = (
+            setup_price_ok
+            & setup_activity_ok
+            & setup_quote_ok
+            & setup_exhaustion_ok
+            & price_above_vwap
+            & trend_quality_ok
+            & volume_expansion_ok
+            & early_move_ok
+        ).fill_null(False)
+        v5_entry_time_ok = (
+            ((pl.col("minute_of_day") >= 8 * 60) & (pl.col("minute_of_day") < 10 * 60))
+            | ((pl.col("minute_of_day") >= 15 * 60) & (pl.col("minute_of_day") < 20 * 60))
+        ).fill_null(False)
+        v5_entry_threshold = (pl.col("last_body_high") * 1.001).alias("long_momentum_v5_entry_threshold")
+        v5_entry_open = (
+            v5_setup_open
+            & v5_entry_time_ok
+            & (pl.col("current_open") > (pl.col("last_body_high") * 1.001))
+            & (pl.col("current_open") >= pl.col("last_close"))
+        ).fill_null(False)
+        exprs.extend(
+            [
+                tema_spread.alias("long_momentum_v5_tema_spread_pct"),
+                volume_vs_avg_so_far.alias("long_momentum_v5_volume_vs_avg_so_far"),
+                volume_vs_recent_3.alias("long_momentum_v5_volume_vs_recent_3"),
+                distance_above_vwap.alias("long_momentum_v5_distance_above_vwap_pct"),
+                distance_from_day_low.alias("long_momentum_v5_distance_from_day_low_pct"),
+                open_above_last_close.alias("long_momentum_v5_open_above_last_close_pct"),
+                last_bar_range_pct.alias("long_momentum_v5_last_bar_range_pct"),
+                fresh_day_high_break.alias("long_momentum_v5_fresh_day_high_break"),
+                near_day_high.alias("long_momentum_v5_near_day_high"),
+                price_above_vwap.alias("long_momentum_v5_price_above_vwap"),
+                trend_quality_ok.alias("long_momentum_v5_trend_quality_ok"),
+                volume_expansion_ok.alias("long_momentum_v5_volume_expansion_ok"),
+                day_high_position_ok.alias("long_momentum_v5_day_high_position_ok"),
+                early_move_ok.alias("long_momentum_v5_early_move_ok"),
+                v5_setup_open.alias("long_momentum_v5_setup_open"),
+                v5_entry_time_ok.alias("long_momentum_v5_entry_time_ok"),
+                v5_entry_threshold,
+                v5_entry_open.alias("long_momentum_v5_early_uptrend_entry_open"),
+                v5_entry_open.alias("long_momentum_v5_entry_open"),
+            ]
+        )
     required = {
         "last_close",
         "last_volume",
@@ -1225,6 +1315,16 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "long_momentum_v4_body_break_entry_open",
         "long_momentum_v4_pullback_reclaim_entry_open",
         "long_momentum_v4_entry_open",
+        "long_momentum_v5_price_above_vwap",
+        "long_momentum_v5_trend_quality_ok",
+        "long_momentum_v5_volume_expansion_ok",
+        "long_momentum_v5_day_high_position_ok",
+        "long_momentum_v5_early_move_ok",
+        "long_momentum_v5_setup_open",
+        "long_momentum_v5_entry_time_ok",
+        "long_momentum_v5_entry_threshold",
+        "long_momentum_v5_early_uptrend_entry_open",
+        "long_momentum_v5_entry_open",
         "long_momentum_v2_entry_open",
         "long_momentum_early_body_break_entry_open",
         "long_momentum_entry_open",

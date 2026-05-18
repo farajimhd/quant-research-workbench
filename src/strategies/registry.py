@@ -32,6 +32,9 @@ from src.strategies.long_momentum.v3.strategy import LongMomentumV3Strategy
 from src.strategies.long_momentum.v4.config import LongMomentumV4Config
 from src.strategies.long_momentum.v4.presentation import chart_presentation as long_momentum_v4_chart_presentation
 from src.strategies.long_momentum.v4.strategy import LongMomentumV4Strategy
+from src.strategies.long_momentum.v5.config import LongMomentumV5Config
+from src.strategies.long_momentum.v5.presentation import chart_presentation as long_momentum_v5_chart_presentation
+from src.strategies.long_momentum.v5.strategy import LongMomentumV5Strategy
 from src.strategies.orb_5m_momentum.v10.config import OrbMomentumConfig as OrbMomentumV10Config
 from src.strategies.orb_5m_momentum.v10.presentation import chart_presentation as orb_5m_momentum_v10_chart_presentation
 from src.strategies.orb_5m_momentum.v10.strategy import OrbFiveMinuteMomentumV10Strategy
@@ -202,6 +205,14 @@ def default_long_momentum_v4_params() -> dict:
     return LongMomentumV4Config().to_dict()
 
 
+def create_long_momentum_v5(params: dict | None = None) -> LongMomentumV5Strategy:
+    return LongMomentumV5Strategy(LongMomentumV5Config.from_dict(params))
+
+
+def default_long_momentum_v5_params() -> dict:
+    return LongMomentumV5Config().to_dict()
+
+
 STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("adaptive_live_trend_rotation", "v1"): create_adaptive_live_trend_rotation_v1,
     ("break_of_vwap", "v1"): create_break_of_vwap_v1,
@@ -210,6 +221,7 @@ STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("long_momentum", "v2"): create_long_momentum_v2,
     ("long_momentum", "v3"): create_long_momentum_v3,
     ("long_momentum", "v4"): create_long_momentum_v4,
+    ("long_momentum", "v5"): create_long_momentum_v5,
     ("orb_5m_momentum", "v10"): create_orb_5m_momentum_v10,
     ("orb_5m_momentum", "v1"): create_orb_5m_momentum_v1,
     ("orb_5m_momentum", "v2"): create_orb_5m_momentum_v2,
@@ -230,6 +242,7 @@ STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("long_momentum", "v2"): default_long_momentum_v2_params,
     ("long_momentum", "v3"): default_long_momentum_v3_params,
     ("long_momentum", "v4"): default_long_momentum_v4_params,
+    ("long_momentum", "v5"): default_long_momentum_v5_params,
     ("orb_5m_momentum", "v10"): default_orb_5m_momentum_v10_params,
     ("orb_5m_momentum", "v1"): default_orb_5m_momentum_v1_params,
     ("orb_5m_momentum", "v2"): default_orb_5m_momentum_v2_params,
@@ -250,6 +263,7 @@ STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]]
     ("long_momentum", "v2"): long_momentum_v2_chart_presentation,
     ("long_momentum", "v3"): long_momentum_v3_chart_presentation,
     ("long_momentum", "v4"): long_momentum_v4_chart_presentation,
+    ("long_momentum", "v5"): long_momentum_v5_chart_presentation,
     ("orb_5m_momentum", "v10"): orb_5m_momentum_v10_chart_presentation,
     ("orb_5m_momentum", "v1"): orb_5m_momentum_v1_chart_presentation,
     ("orb_5m_momentum", "v2"): orb_5m_momentum_v2_chart_presentation,
@@ -315,6 +329,11 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
         "Starts from v2 and exposes two entry triggers: earlier body break and pullback/reclaim. Both triggers are "
         "enabled by default, use quote/liquidity/momentum setup filters, and exit with fixed stops plus bearish "
         "volume-divergence close/watch rules."
+    ),
+    ("long_momentum", "v5"): (
+        "Early uptrend lifecycle version: enter only when price, VWAP, TEMA/MACD, volume expansion, and early-move "
+        "filters agree; remove loose pullback/reclaim entries; and hold through small pullbacks with structural "
+        "stops until divergence or trend structure fails."
     ),
     ("orb_5m_momentum", "v1"): (
         "Baseline provider-backed ORB momentum version with daily context, opening-range setup scoring, 5-minute momentum "
