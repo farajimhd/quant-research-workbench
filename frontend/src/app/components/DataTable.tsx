@@ -183,6 +183,7 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
   const [sort, setSort] = useState<SortState>(null);
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
   const [transposeOpen, setTransposeOpen] = useState(false);
+  const [selectedTransposeColumn, setSelectedTransposeColumn] = useState<string | null>(null);
   const tableIdentityRef = useRef<string | null>(null);
 
   const profilesByColumn = useMemo<Record<string, ColumnProfile>>(() => {
@@ -462,6 +463,7 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
     setSort(null);
     setToolbarMenuOpen(false);
     setTransposeOpen(false);
+    setSelectedTransposeColumn(null);
     if (backendQuery) {
       const emptyQuery = emptyBackendTableQuery();
       setBackendQueryDraft(emptyQuery);
@@ -1000,7 +1002,14 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
       </div>
 
       {transposeOpen ? (
-        <Modal className="data-table-transpose-modal-panel" onClose={() => setTransposeOpen(false)} title="Transposed Table">
+        <Modal
+          className="data-table-transpose-modal-panel"
+          onClose={() => {
+            setTransposeOpen(false);
+            setSelectedTransposeColumn(null);
+          }}
+          title="Transposed Table"
+        >
           <div className="data-table-transpose-summary">
             <span>{formatInteger(transposeView.rows.length)} fields</span>
             <span>{formatInteger(transposeView.sourceRowCount)} rows shown</span>
@@ -1018,7 +1027,20 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
               </thead>
               <tbody>
                 {transposeView.rows.map((row) => (
-                  <tr key={row.column}>
+                  <tr
+                    aria-selected={selectedTransposeColumn === row.column}
+                    className={selectedTransposeColumn === row.column ? "selected" : undefined}
+                    key={row.column}
+                    onClick={() => setSelectedTransposeColumn((selected) => (selected === row.column ? null : row.column))}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedTransposeColumn((selected) => (selected === row.column ? null : row.column));
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
                     <th>
                       <span>{row.label}</span>
                       <small>{row.column}</small>
