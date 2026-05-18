@@ -2557,16 +2557,16 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
             {"VolumeGap": "Log short-volume-to-session-average gap"},
         ),
         "bearish_volume_divergence": (
-            "Body pushes above the prior body on lower volume.",
-            "Bearish volume divergence is true when the current candle body high is above the prior candle body high while current volume is lower than prior volume. It marks price pushing up with weaker participation.",
-            "$$BearDiv_t=I(Volume_t<Volume_{t-1}\\land BodyHigh_t>BodyHigh_{t-1})$$",
-            {"Volume": "Share volume", "BodyHigh": "Maximum of candle open and close"},
+            "Close pushes above the prior close on lower volume.",
+            "Bearish volume divergence is true when the current close is above the prior close while current volume is lower than prior volume. It marks price pushing up with weaker participation.",
+            "$$BearDiv_t=I(Volume_t<Volume_{t-1}\\land Close_t>Close_{t-1})$$",
+            {"Volume": "Share volume", "Close": "Candle close price"},
         ),
         "bullish_volume_divergence": (
-            "Body pushes below the prior body on lower volume.",
-            "Bullish volume divergence is true when the current candle body low is below the prior candle body low while current volume is lower than prior volume. It marks price pushing down with weaker participation.",
-            "$$BullDiv_t=I(Volume_t<Volume_{t-1}\\land BodyLow_t<BodyLow_{t-1})$$",
-            {"Volume": "Share volume", "BodyLow": "Minimum of candle open and close"},
+            "Close pushes below the prior close on lower volume.",
+            "Bullish volume divergence is true when the current close is below the prior close while current volume is lower than prior volume. It marks price pushing down with weaker participation.",
+            "$$BullDiv_t=I(Volume_t<Volume_{t-1}\\land Close_t<Close_{t-1})$$",
+            {"Volume": "Share volume", "Close": "Candle close price"},
         ),
     }
     if lower in convergence:

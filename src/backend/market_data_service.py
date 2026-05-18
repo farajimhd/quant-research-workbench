@@ -61,20 +61,10 @@ def shifted_over(column: str, group_columns: list[str]) -> pl.Expr:
 def volume_divergence_score_expr(signal_column: str, direction: str, group_columns: list[str], alias: str) -> pl.Expr:
     prev_volume = shifted_over("volume", group_columns)
     prev_close = shifted_over("close", group_columns)
-    current_body = (
-        pl.max_horizontal(pl.col("open"), pl.col("close"))
-        if direction == "bearish"
-        else pl.min_horizontal(pl.col("open"), pl.col("close"))
-    )
-    previous_body = (
-        pl.max_horizontal(shifted_over("open", group_columns), shifted_over("close", group_columns))
-        if direction == "bearish"
-        else pl.min_horizontal(shifted_over("open", group_columns), shifted_over("close", group_columns))
-    )
-    body_push = current_body - previous_body if direction == "bearish" else previous_body - current_body
+    close_push = pl.col("close") - prev_close if direction == "bearish" else prev_close - pl.col("close")
     volume_fade_score = pl.when(prev_volume > 0).then(((prev_volume - pl.col("volume")) / prev_volume / 0.50).clip(0.0, 1.0)).otherwise(0.0)
-    body_push_score = pl.when(prev_close > 0).then((body_push / prev_close / 0.003).clip(0.0, 1.0)).otherwise(0.0)
-    score = (100.0 * ((0.65 * volume_fade_score) + (0.35 * body_push_score))).round(2)
+    close_push_score = pl.when(prev_close > 0).then((close_push / prev_close / 0.003).clip(0.0, 1.0)).otherwise(0.0)
+    score = (100.0 * ((0.65 * volume_fade_score) + (0.35 * close_push_score))).round(2)
     return pl.when(pl.col(signal_column)).then(score).otherwise(0.0).fill_null(0.0).alias(alias)
 
 
@@ -797,10 +787,7 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
         divergence_exprs.append(
             (
                 (pl.col("volume") < pl.col("volume").shift(1).over(group_columns))
-                & (
-                    pl.max_horizontal(pl.col("open"), pl.col("close"))
-                    > pl.max_horizontal(pl.col("open").shift(1).over(group_columns), pl.col("close").shift(1).over(group_columns))
-                )
+                & (pl.col("close") > pl.col("close").shift(1).over(group_columns))
             )
             .fill_null(False)
             .alias("bearish_volume_divergence")
@@ -813,10 +800,7 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
         divergence_exprs.append(
             (
                 (pl.col("volume") < pl.col("volume").shift(1).over(group_columns))
-                & (
-                    pl.min_horizontal(pl.col("open"), pl.col("close"))
-                    < pl.min_horizontal(pl.col("open").shift(1).over(group_columns), pl.col("close").shift(1).over(group_columns))
-                )
+                & (pl.col("close") < pl.col("close").shift(1).over(group_columns))
             )
             .fill_null(False)
             .alias("bullish_volume_divergence")
@@ -1911,10 +1895,7 @@ def apply_chart_volume_convergence_columns(frame: pl.DataFrame) -> pl.DataFrame:
         frame = frame.with_columns(
             (
                 (pl.col("volume") < pl.col("volume").shift(1).over(group_columns))
-                & (
-                    pl.max_horizontal(pl.col("open"), pl.col("close"))
-                    > pl.max_horizontal(pl.col("open").shift(1).over(group_columns), pl.col("close").shift(1).over(group_columns))
-                )
+                & (pl.col("close") > pl.col("close").shift(1).over(group_columns))
             )
             .fill_null(False)
             .alias("bearish_volume_divergence")
@@ -1928,10 +1909,7 @@ def apply_chart_volume_convergence_columns(frame: pl.DataFrame) -> pl.DataFrame:
         frame = frame.with_columns(
             (
                 (pl.col("volume") < pl.col("volume").shift(1).over(group_columns))
-                & (
-                    pl.min_horizontal(pl.col("open"), pl.col("close"))
-                    < pl.min_horizontal(pl.col("open").shift(1).over(group_columns), pl.col("close").shift(1).over(group_columns))
-                )
+                & (pl.col("close") < pl.col("close").shift(1).over(group_columns))
             )
             .fill_null(False)
             .alias("bullish_volume_divergence")
