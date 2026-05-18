@@ -8,14 +8,15 @@ actionable bar open and all `last_*` columns as the previous completed bar.
 
 At each bar open, v2 filters the cross-section with only these gates:
 
-- `last_close` between `min_price` and `max_price`, default 1 to 10
+- `last_close` between `min_price` and `max_price`, default 5 to 10
 - `current_open_above_last_body_high == true`, meaning `current_open >= last_high`
 - `last_volume >= min_volume`, default 10,000
-- `last_transactions >= min_transactions`, default 100
+- `last_transactions >= min_transactions`, default 300
 - `long_momentum_spread_ok == true`
 - `last_tema_open == true`
 - `last_macd_line > 0`
-- `last_macd_hist_z_since_open >= min_macd_hist_z_since_open`, default 0.1
+- `last_macd_hist_z_since_open >= min_macd_hist_z_since_open`, default 0.75
+- `last_close_location >= min_close_location`, default 0.85
 - `last_recent_dollar_volume_5 >= min_recent_dollar_volume_5`, default 100,000
 - `last_spread_bps_abs <= max_spread_bps_abs`, default 100 bps
 - `last_spread_bps_max <= max_spread_bps_max`, default 150 bps
@@ -23,6 +24,8 @@ At each bar open, v2 filters the cross-section with only these gates:
 - `last_locked_or_crossed_count <= max_locked_or_crossed_count`, default 0
 
 Eligible rows are ranked by `last_recent_volume_5` descending.
+By default v2 submits at most one new entry per bar so lower-ranked residual
+candidates do not churn the account after the top setup consumes liquidity.
 
 ## Entry
 
@@ -46,10 +49,15 @@ v2 handles the residual first on the next bar open with a same-bar limit at
 
 ## Exit
 
-The strategy has no profit-taking, no rotation, and no extra momentum exits.
-Open positions are exited only by:
+The strategy has no fixed profit target and no rotation. Open positions are
+exited by:
 
 - the fixed protective stop
+- `PROFIT_LOCK`, after the position has reached at least
+  `profit_lock_activation_r` and `profit_lock_activation_pct`; the exit fires
+  when the next actionable open has given back at least
+  `profit_lock_giveback_pct` of the peak move while still locking at least
+  `profit_lock_min_locked_pct`
 - `TEMA_CLOSE`, when `last_tema9 < last_tema20 + offset`
 - `EOD`, at the end of the extended-hours session
 

@@ -74,9 +74,10 @@ class LongMomentumV2Strategy:
         self._update_states(context)
         requests: list[OrderRequest] = []
         requests.extend(self._partial_residual_requests(context, portfolio))
+        current_bar_sell_symbols = {request.symbol for request in requests if request.side == "SELL"}
 
         active_pending_orders = [order for order in pending_orders if order.status == "OPEN"]
-        requests.extend(self._exit_requests(context, portfolio, active_pending_orders))
+        requests.extend(self._exit_requests(context, portfolio, active_pending_orders, current_bar_sell_symbols))
 
         rows = self._scanner_rows(context, portfolio, active_pending_orders)
         candidates = [row for row in rows if row["entry_open"]]
@@ -92,7 +93,10 @@ class LongMomentumV2Strategy:
             if request.side == "BUY":
                 available_cash -= self._estimated_buy_cost(request.quantity, self._float(request.limit_price or request.stop_price))
 
+        entries_submitted = 0
         for candidate in candidates:
+            if entries_submitted >= self.config.max_entries_per_bar:
+                break
             symbol = str(candidate["ticker"])
             if symbol in blocked_symbols:
                 continue
@@ -100,6 +104,7 @@ class LongMomentumV2Strategy:
             if request is None:
                 continue
             requests.append(request)
+            entries_submitted += 1
             blocked_symbols.add(symbol)
             available_cash -= self._estimated_buy_cost(request.quantity, self._float(request.limit_price or request.stop_price))
             if available_cash <= 0:
@@ -217,6 +222,7 @@ class LongMomentumV2Strategy:
             column("last_locked_or_crossed_count", None).cast(pl.Float64).alias("_lm_locked_or_crossed_count"),
             column("last_macd_line", None).cast(pl.Float64).alias("_lm_macd_line"),
             column("last_macd_hist_z_since_open", None).cast(pl.Float64).alias("_lm_macd_hist_z"),
+            column("last_close_location", None).cast(pl.Float64).alias("_lm_close_location"),
             column("last_quote_ask_size", 0.0).cast(pl.Float64).fill_null(0.0).alias("_lm_quote_ask_size"),
             column("current_open", None).cast(pl.Float64).alias("_lm_current_open"),
             column("current_open_above_last_body_high", False).fill_null(False).alias("_lm_current_open_above_last_body_high"),
@@ -233,6 +239,7 @@ class LongMomentumV2Strategy:
                 & pl.col("_lm_tema_open")
                 & (pl.col("_lm_macd_line") > 0)
                 & (pl.col("_lm_macd_hist_z") >= self.config.min_macd_hist_z_since_open)
+                & (pl.col("_lm_close_location") >= self.config.min_close_location)
                 & (pl.col("_lm_recent_dollar_volume_5") >= self.config.min_recent_dollar_volume_5)
                 & (pl.col("_lm_spread_bps_abs") <= self.config.max_spread_bps_abs)
                 & (pl.col("_lm_spread_bps_max") <= self.config.max_spread_bps_max)
@@ -307,9 +314,17 @@ class LongMomentumV2Strategy:
             ),
         )
 
-    def _exit_requests(self, context: BarContext, portfolio: Portfolio, pending_orders: list[Order]) -> list[OrderRequest]:
+    def _exit_requests(
+        self,
+        context: BarContext,
+        portfolio: Portfolio,
+        pending_orders: list[Order],
+        current_bar_sell_symbols: set[str] | None = None,
+    ) -> list[OrderRequest]:
         requests: list[OrderRequest] = []
         pending_sell_symbols = {order.symbol for order in pending_orders if order.side == "SELL" and order.status == "OPEN"}
+        if current_bar_sell_symbols:
+            pending_sell_symbols |= current_bar_sell_symbols
         for symbol, position in list(portfolio.positions.items()):
             if symbol in pending_sell_symbols:
                 continue
@@ -317,6 +332,19 @@ class LongMomentumV2Strategy:
             if bar is None:
                 continue
             meta = self._position_meta(symbol, position)
+            if self._profit_lock_triggered(position, bar, meta):
+                self._trace_exit(context.timestamp, symbol, "PROFIT_LOCK", position, bar, meta)
+                requests.append(
+                    OrderRequest(
+                        symbol=symbol,
+                        side="SELL",
+                        quantity=position.quantity,
+                        order_type="MARKET",
+                        reason="PROFIT_LOCK",
+                        tag=self._exit_tag("PROFIT_LOCK", position, bar, meta),
+                    )
+                )
+                continue
             if self._tema_closed(bar):
                 self._trace_exit(context.timestamp, symbol, "TEMA_CLOSE", position, bar, meta)
                 requests.append(
@@ -425,6 +453,8 @@ class LongMomentumV2Strategy:
             return "macd_line"
         if self._float(row.get("last_macd_hist_z_since_open")) < self.config.min_macd_hist_z_since_open:
             return "macd_hist_z"
+        if self._float(row.get("last_close_location")) < self.config.min_close_location:
+            return "close_location"
         if self._float(row.get("last_recent_dollar_volume_5")) < self.config.min_recent_dollar_volume_5:
             return "recent_dollar_volume_5"
         if self._float(row.get("last_spread_bps_abs")) > self.config.max_spread_bps_abs:
@@ -524,6 +554,7 @@ class LongMomentumV2Strategy:
                 "entry_price": position.entry_price,
                 "initial_stop": meta.get("initial_stop"),
                 "initial_r": meta.get("initial_r"),
+                "profit_lock_price": self._profit_lock_price(position, meta),
             },
             force=self._force_trade_trace(),
         )
@@ -545,8 +576,27 @@ class LongMomentumV2Strategy:
         return (
             f"EXIT|reason={reason}|price={price:.2f}|stop={stop:.2f}"
             f"|R={self._float(meta.get('initial_r')):.4f}|maxp={position.max_price:.2f}"
-            f"|maxR={position.max_r_multiple:.2f}"
+            f"|maxR={position.max_r_multiple:.2f}|lock={self._profit_lock_price(position, meta):.2f}"
         )
+
+    def _profit_lock_triggered(self, position, bar: dict, meta: dict) -> bool:
+        activation_r = max(0.0, self.config.profit_lock_activation_r)
+        activation_pct = max(0.0, self.config.profit_lock_activation_pct)
+        if position.max_r_multiple < activation_r:
+            return False
+        if position.max_price < position.entry_price * (1.0 + activation_pct):
+            return False
+        current_open = self._bar_open(bar)
+        lock_price = self._profit_lock_price(position, meta)
+        return current_open > 0 and lock_price > 0 and current_open <= lock_price
+
+    def _profit_lock_price(self, position, meta: dict) -> float:
+        peak_gain = max(0.0, position.max_price - position.entry_price)
+        if peak_gain <= 0:
+            return 0.0
+        retained_gain = peak_gain * (1.0 - max(0.0, min(1.0, self.config.profit_lock_giveback_pct)))
+        min_locked_gain = position.entry_price * max(0.0, self.config.profit_lock_min_locked_pct)
+        return position.entry_price + max(retained_gain, min_locked_gain)
 
     def _partial_remaining(self, tag: Any) -> int:
         parsed = self._parse_pipe_tag(str(tag or ""))
