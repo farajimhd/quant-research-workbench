@@ -484,7 +484,7 @@ def apply_strategy_decision_view(scan: pl.LazyFrame, schema: pl.Schema) -> pl.La
 
 
 def apply_strategy_decision_price_action_columns(scan: pl.LazyFrame, names: list[str]) -> pl.LazyFrame:
-    if not {"last_open", "last_close"}.issubset(names):
+    if not {"last_open", "last_close", "last_high"}.issubset(names):
         return scan
     body = pl.col("last_close") - pl.col("last_open")
     exprs: list[pl.Expr] = [
@@ -496,11 +496,7 @@ def apply_strategy_decision_price_action_columns(scan: pl.LazyFrame, names: list
         (pl.col("last_close") > pl.col("last_open")).alias("is_green"),
         (pl.col("last_close") < pl.col("last_open")).alias("last_is_red"),
         (pl.col("last_close") < pl.col("last_open")).alias("is_red"),
-        (
-            pl.when(pl.col("last_close") < pl.col("last_open"))
-            .then(pl.col("current_open") >= pl.max_horizontal("last_open", "last_close"))
-            .otherwise(True)
-        ).alias("current_open_above_last_body_high"),
+        (pl.col("current_open") >= pl.col("last_high")).alias("current_open_above_last_body_high"),
     ]
     if {"last_high", "last_low"}.issubset(names):
         exprs.extend(

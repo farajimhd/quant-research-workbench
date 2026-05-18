@@ -316,7 +316,7 @@ class LongMomentumStrategy:
         if not bool(row.get("_lm_last_close_above_previous")):
             return "close_not_above_previous"
         if not bool(row.get("_lm_current_open_above_last_body_high") if "_lm_current_open_above_last_body_high" in row else row.get("current_open_above_last_body_high")):
-            return "current_open_not_above_last_body_high"
+            return "current_open_not_above_last_high"
         if self._float(row.get("last_tema9")) <= self._float(row.get("last_tema20")):
             return "tema_closed"
         if self._float(row.get("last_macd_line")) <= 0:

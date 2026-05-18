@@ -412,7 +412,7 @@ class LongMomentumV2Strategy:
         if close > self.config.max_price:
             return "price_high"
         if not bool(row.get("_lm_current_open_above_last_body_high")):
-            return "current_open_not_above_last_body_high"
+            return "current_open_not_above_last_high"
         if self._float(row.get("last_volume")) < self.config.min_volume:
             return "volume"
         if self._float(row.get("last_transactions")) < self.config.min_transactions:

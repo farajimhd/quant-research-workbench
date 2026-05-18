@@ -9,7 +9,7 @@ actionable bar open and all `last_*` columns as the previous completed bar.
 At each bar open, v2 filters the cross-section with only these gates:
 
 - `last_close` between `min_price` and `max_price`, default 1 to 10
-- `current_open_above_last_body_high == true`
+- `current_open_above_last_body_high == true`, meaning `current_open >= last_high`
 - `last_volume >= min_volume`, default 10,000
 - `last_transactions >= min_transactions`, default 100
 - `long_momentum_spread_ok == true`

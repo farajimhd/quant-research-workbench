@@ -85,7 +85,7 @@ type ObservationChartTarget = {
 const OBSERVABILITY_SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
   filters: {
     last_close: { operator: "between", presetLabel: "between 1 and 10", valueText: "1", valueTextSecondary: "10" },
-    current_open_above_last_body_high: { operator: "eq", presetLabel: "Is true", valueText: "true" },
+    current_open_above_last_body_high: { operator: "eq", presetLabel: ">= last high", valueText: "true" },
     last_volume: { operator: "gte", presetLabel: ">= 10,000", valueText: "10000" },
     last_transactions: { operator: "gte", presetLabel: ">= 100", valueText: "100" },
     long_momentum_spread_ok: { operator: "eq", presetLabel: "Is true", valueText: "true" },
