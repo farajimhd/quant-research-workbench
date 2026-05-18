@@ -82,20 +82,24 @@ type ObservationChartTarget = {
   timestamp: string;
 };
 
-const OBSERVABILITY_SCANNER_MOMENTUM_FILTER_PRESET: DataTableFilterPreset = {
-  filters: {
-    last_close: { operator: "between", presetLabel: "between 1 and 10", valueText: "1", valueTextSecondary: "10" },
-    current_open_above_last_body_high: { operator: "eq", presetLabel: ">= last high", valueText: "true" },
-    last_volume: { operator: "gte", presetLabel: ">= 10,000", valueText: "10000" },
-    last_transactions: { operator: "gte", presetLabel: ">= 100", valueText: "100" },
-    long_momentum_spread_ok: { operator: "eq", presetLabel: "Is true", valueText: "true" },
-    last_tema_open: { operator: "eq", presetLabel: "Is true", valueText: "true" },
-    last_macd_line: { operator: "gt", presetLabel: "Positive", valueText: "0" },
-    last_macd_hist_z_since_open: { operator: "gte", presetLabel: ">= 0.1", valueText: "0.1" },
-  },
-  label: "Momentum Filters",
-  title: "Apply the Long Momentum scanner filters to the strategy-time row view.",
-};
+const OBSERVABILITY_SCANNER_SETUP_FILTER_PRESETS: DataTableFilterPreset[] = [
+  scannerBooleanPreset("Setup: VWAP", "long_momentum_v5_price_above_vwap", "Price is above VWAP."),
+  scannerBooleanPreset("Setup: TEMA Stack", "long_momentum_v5_tema_stack_ok", "TEMA9 is above TEMA20."),
+  scannerBooleanPreset("Setup: TEMA Spread", "long_momentum_v5_tema_spread_ok", "TEMA spread is above the v5 minimum."),
+  scannerBooleanPreset("Setup: MACD Line", "long_momentum_v5_macd_line_positive", "MACD line is positive."),
+  scannerBooleanPreset("Setup: MACD Hist", "long_momentum_v5_macd_hist_ok", "MACD histogram is positive or improving."),
+  scannerBooleanPreset("Setup: Day Open", "long_momentum_v5_above_day_open", "Price is above the day open."),
+  scannerBooleanPreset("Setup: Near High", "long_momentum_v5_near_enough_day_high", "Price is not too far below the day high."),
+  scannerBooleanPreset("Setup: Volume", "long_momentum_v5_volume_vs_avg_so_far_ok", "Volume is expanding versus average volume so far."),
+  scannerBooleanPreset("Setup: BVD", "long_momentum_v5_bearish_divergence_ok", "Bearish volume divergence score is below warning level."),
+];
+const OBSERVABILITY_SCANNER_EARLY_MOVE_FILTER_PRESETS: DataTableFilterPreset[] = [
+  scannerBooleanPreset("Early: Day Low", "long_momentum_v5_distance_from_day_low_ok", "Distance from day low is not extreme."),
+  scannerBooleanPreset("Early: VWAP Dist", "long_momentum_v5_distance_above_vwap_ok", "Distance from VWAP is not extreme."),
+  scannerBooleanPreset("Early: No Jump", "long_momentum_v5_open_above_last_close_ok", "Current open is not too extended versus the previous completed close."),
+  scannerBooleanPreset("Early: Range", "long_momentum_v5_last_bar_range_ok", "Current setup candle is not a giant chase candle."),
+  scannerBooleanPreset("Early: High Chase", "long_momentum_v5_day_high_chase_ok", "Stock is not entering directly under day high after a long run unless trend and volume are strong."),
+];
 const OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
   filters: {
     last_spread_bps_abs: { operator: "lte", presetLabel: "<= 100 bps", valueText: "100" },
@@ -107,7 +111,21 @@ const OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET: DataTableFilterPreset = {
   label: "Spread Quality",
   title: "Apply bid/ask spread and recent dollar-volume filters to avoid high-cost fills.",
 };
-const OBSERVABILITY_SCANNER_FILTER_PRESETS = [OBSERVABILITY_SCANNER_MOMENTUM_FILTER_PRESET, OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET];
+const OBSERVABILITY_SCANNER_FILTER_PRESETS = [
+  ...OBSERVABILITY_SCANNER_SETUP_FILTER_PRESETS,
+  ...OBSERVABILITY_SCANNER_EARLY_MOVE_FILTER_PRESETS,
+  OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET,
+];
+
+function scannerBooleanPreset(label: string, column: string, title: string): DataTableFilterPreset {
+  return {
+    filters: {
+      [column]: { operator: "eq", presetLabel: "Is true", valueText: "true" },
+    },
+    label,
+    title,
+  };
+}
 
 const tabs = ["Backtest", "Runs", "Strategy README"];
 const defaultStrategyName = "orb_5m_momentum";
@@ -2177,8 +2195,23 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v4_pullback_reclaim_entry_open",
   "long_momentum_v4_entry_open",
   "long_momentum_v5_price_above_vwap",
+  "long_momentum_v5_tema_stack_ok",
+  "long_momentum_v5_tema_spread_ok",
+  "long_momentum_v5_macd_line_positive",
+  "long_momentum_v5_macd_hist_ok",
+  "long_momentum_v5_above_day_open",
+  "long_momentum_v5_near_enough_day_high",
+  "long_momentum_v5_volume_vs_avg_so_far_ok",
+  "long_momentum_v5_volume_vs_recent_3_ok",
+  "long_momentum_v5_bearish_divergence_ok",
   "long_momentum_v5_trend_quality_ok",
   "long_momentum_v5_volume_expansion_ok",
+  "long_momentum_v5_distance_from_day_low_ok",
+  "long_momentum_v5_distance_above_vwap_ok",
+  "long_momentum_v5_open_above_last_close_ok",
+  "long_momentum_v5_last_bar_range_ok",
+  "long_momentum_v5_close_location_ok",
+  "long_momentum_v5_day_high_chase_ok",
   "long_momentum_v5_day_high_position_ok",
   "long_momentum_v5_early_move_ok",
   "long_momentum_v5_setup_open",

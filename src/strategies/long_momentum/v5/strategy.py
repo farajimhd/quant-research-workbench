@@ -284,6 +284,43 @@ class LongMomentumV5Strategy:
             .fill_null(False)
             .alias("long_momentum_v5_near_day_high"),
         ).with_columns(
+            (pl.col("_lm_tema9") > pl.col("_lm_tema20")).fill_null(False).alias("long_momentum_v5_tema_stack_ok"),
+            (pl.col("long_momentum_v5_tema_spread_pct") >= self.config.min_tema_spread_pct)
+            .fill_null(False)
+            .alias("long_momentum_v5_tema_spread_ok"),
+            (pl.col("_lm_macd_line") > 0).fill_null(False).alias("long_momentum_v5_macd_line_positive"),
+            ((pl.col("_lm_macd_hist") > 0) | (pl.col("_lm_macd_hist_z") >= self.config.min_macd_hist_z_since_open))
+            .fill_null(False)
+            .alias("long_momentum_v5_macd_hist_ok"),
+            ((pl.col("_lm_current_open") > pl.col("_lm_day_open")) & (pl.col("_lm_last_close") > pl.col("_lm_day_open")))
+            .fill_null(False)
+            .alias("long_momentum_v5_above_day_open"),
+            (pl.col("_lm_current_open") >= (pl.col("_lm_day_high") * (1.0 - max(0.0, self.config.max_entry_below_day_high_pct))))
+            .fill_null(False)
+            .alias("long_momentum_v5_near_enough_day_high"),
+            (pl.col("long_momentum_v5_volume_vs_avg_so_far") >= self.config.min_volume_vs_avg_so_far)
+            .fill_null(False)
+            .alias("long_momentum_v5_volume_vs_avg_so_far_ok"),
+            (pl.col("long_momentum_v5_volume_vs_recent_3") >= self.config.min_volume_vs_recent_3)
+            .fill_null(False)
+            .alias("long_momentum_v5_volume_vs_recent_3_ok"),
+            (pl.col("_lm_bearish_divergence_score") < self.config.max_bearish_divergence_entry_score)
+            .fill_null(False)
+            .alias("long_momentum_v5_bearish_divergence_ok"),
+            (pl.col("long_momentum_v5_distance_above_vwap_pct") <= self.config.max_distance_above_vwap_pct)
+            .fill_null(False)
+            .alias("long_momentum_v5_distance_above_vwap_ok"),
+            (pl.col("long_momentum_v5_distance_from_day_low_pct") <= self.config.max_distance_from_day_low_pct)
+            .fill_null(False)
+            .alias("long_momentum_v5_distance_from_day_low_ok"),
+            (pl.col("long_momentum_v5_open_above_last_close_pct") <= self.config.max_open_above_last_close_pct)
+            .fill_null(False)
+            .alias("long_momentum_v5_open_above_last_close_ok"),
+            (pl.col("long_momentum_v5_last_bar_range_pct") <= self.config.max_last_bar_range_pct)
+            .fill_null(False)
+            .alias("long_momentum_v5_last_bar_range_ok"),
+            (pl.col("_lm_close_location") >= self.config.min_close_location).fill_null(False).alias("long_momentum_v5_close_location_ok"),
+        ).with_columns(
             (
                 (pl.col("_lm_current_open") > pl.col("_lm_last_vwap"))
                 & (pl.col("_lm_last_close") > pl.col("_lm_last_vwap"))
@@ -292,23 +329,31 @@ class LongMomentumV5Strategy:
             .alias("long_momentum_v5_price_above_vwap"),
             (
                 pl.col("_lm_tema_open")
-                & (pl.col("long_momentum_v5_tema_spread_pct") >= self.config.min_tema_spread_pct)
-                & (pl.col("_lm_macd_line") > 0)
+                & pl.col("long_momentum_v5_tema_stack_ok")
+                & pl.col("long_momentum_v5_tema_spread_ok")
+                & pl.col("long_momentum_v5_macd_line_positive")
                 & (pl.col("_lm_macd_hist") > 0)
                 & (pl.col("_lm_macd_hist_z") >= self.config.min_macd_hist_z_since_open)
-                & (pl.col("_lm_current_open") > pl.col("_lm_day_open"))
-                & (pl.col("_lm_last_close") > pl.col("_lm_day_open"))
+                & pl.col("long_momentum_v5_above_day_open")
             )
             .fill_null(False)
             .alias("long_momentum_v5_trend_quality_ok"),
             (
-                (pl.col("long_momentum_v5_volume_vs_avg_so_far") >= self.config.min_volume_vs_avg_so_far)
-                & (pl.col("long_momentum_v5_volume_vs_recent_3") >= self.config.min_volume_vs_recent_3)
+                pl.col("long_momentum_v5_volume_vs_avg_so_far_ok")
+                & pl.col("long_momentum_v5_volume_vs_recent_3_ok")
             )
             .fill_null(False)
             .alias("long_momentum_v5_volume_expansion_ok"),
+        ).with_columns(
             (
-                (pl.col("_lm_current_open") >= (pl.col("_lm_day_high") * (1.0 - max(0.0, self.config.max_entry_below_day_high_pct))))
+                ~pl.col("long_momentum_v5_near_day_high")
+                | pl.col("long_momentum_v5_fresh_day_high_break")
+                | (pl.col("long_momentum_v5_trend_quality_ok") & pl.col("long_momentum_v5_volume_expansion_ok"))
+            )
+            .fill_null(False)
+            .alias("long_momentum_v5_day_high_chase_ok"),
+            (
+                pl.col("long_momentum_v5_near_enough_day_high")
                 & (
                     ~pl.col("long_momentum_v5_near_day_high")
                     | pl.col("long_momentum_v5_fresh_day_high_break")
@@ -318,11 +363,11 @@ class LongMomentumV5Strategy:
             .alias("long_momentum_v5_day_high_position_ok"),
         ).with_columns(
             (
-                (pl.col("long_momentum_v5_distance_above_vwap_pct") <= self.config.max_distance_above_vwap_pct)
-                & (pl.col("long_momentum_v5_distance_from_day_low_pct") <= self.config.max_distance_from_day_low_pct)
-                & (pl.col("long_momentum_v5_open_above_last_close_pct") <= self.config.max_open_above_last_close_pct)
-                & (pl.col("long_momentum_v5_last_bar_range_pct") <= self.config.max_last_bar_range_pct)
-                & (pl.col("_lm_close_location") >= self.config.min_close_location)
+                pl.col("long_momentum_v5_distance_above_vwap_ok")
+                & pl.col("long_momentum_v5_distance_from_day_low_ok")
+                & pl.col("long_momentum_v5_open_above_last_close_ok")
+                & pl.col("long_momentum_v5_last_bar_range_ok")
+                & pl.col("long_momentum_v5_close_location_ok")
                 & pl.col("long_momentum_v5_day_high_position_ok")
             )
             .fill_null(False)
@@ -339,7 +384,7 @@ class LongMomentumV5Strategy:
                 & (pl.col("_lm_spread_bps_max") <= self.config.max_spread_bps_max)
                 & (pl.col("_lm_quote_valid_ratio") >= self.config.min_quote_valid_ratio)
                 & (pl.col("_lm_locked_or_crossed_count") <= self.config.max_locked_or_crossed_count)
-                & (pl.col("_lm_bearish_divergence_score") < self.config.max_bearish_divergence_entry_score)
+                & pl.col("long_momentum_v5_bearish_divergence_ok")
                 & pl.col("long_momentum_v5_price_above_vwap")
                 & pl.col("long_momentum_v5_trend_quality_ok")
                 & pl.col("long_momentum_v5_volume_expansion_ok")
