@@ -38,6 +38,9 @@ from src.strategies.long_momentum.v5.strategy import LongMomentumV5Strategy
 from src.strategies.long_momentum.v6.config import LongMomentumV6Config
 from src.strategies.long_momentum.v6.presentation import chart_presentation as long_momentum_v6_chart_presentation
 from src.strategies.long_momentum.v6.strategy import LongMomentumV6Strategy
+from src.strategies.long_momentum.v7.config import LongMomentumV7Config
+from src.strategies.long_momentum.v7.presentation import chart_presentation as long_momentum_v7_chart_presentation
+from src.strategies.long_momentum.v7.strategy import LongMomentumV7Strategy
 from src.strategies.orb_5m_momentum.v10.config import OrbMomentumConfig as OrbMomentumV10Config
 from src.strategies.orb_5m_momentum.v10.presentation import chart_presentation as orb_5m_momentum_v10_chart_presentation
 from src.strategies.orb_5m_momentum.v10.strategy import OrbFiveMinuteMomentumV10Strategy
@@ -224,6 +227,14 @@ def default_long_momentum_v6_params() -> dict:
     return LongMomentumV6Config().to_dict()
 
 
+def create_long_momentum_v7(params: dict | None = None) -> LongMomentumV7Strategy:
+    return LongMomentumV7Strategy(LongMomentumV7Config.from_dict(params))
+
+
+def default_long_momentum_v7_params() -> dict:
+    return LongMomentumV7Config().to_dict()
+
+
 STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("adaptive_live_trend_rotation", "v1"): create_adaptive_live_trend_rotation_v1,
     ("break_of_vwap", "v1"): create_break_of_vwap_v1,
@@ -234,6 +245,7 @@ STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("long_momentum", "v4"): create_long_momentum_v4,
     ("long_momentum", "v5"): create_long_momentum_v5,
     ("long_momentum", "v6"): create_long_momentum_v6,
+    ("long_momentum", "v7"): create_long_momentum_v7,
     ("orb_5m_momentum", "v10"): create_orb_5m_momentum_v10,
     ("orb_5m_momentum", "v1"): create_orb_5m_momentum_v1,
     ("orb_5m_momentum", "v2"): create_orb_5m_momentum_v2,
@@ -256,6 +268,7 @@ STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("long_momentum", "v4"): default_long_momentum_v4_params,
     ("long_momentum", "v5"): default_long_momentum_v5_params,
     ("long_momentum", "v6"): default_long_momentum_v6_params,
+    ("long_momentum", "v7"): default_long_momentum_v7_params,
     ("orb_5m_momentum", "v10"): default_orb_5m_momentum_v10_params,
     ("orb_5m_momentum", "v1"): default_orb_5m_momentum_v1_params,
     ("orb_5m_momentum", "v2"): default_orb_5m_momentum_v2_params,
@@ -278,6 +291,7 @@ STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]]
     ("long_momentum", "v4"): long_momentum_v4_chart_presentation,
     ("long_momentum", "v5"): long_momentum_v5_chart_presentation,
     ("long_momentum", "v6"): long_momentum_v6_chart_presentation,
+    ("long_momentum", "v7"): long_momentum_v7_chart_presentation,
     ("orb_5m_momentum", "v10"): orb_5m_momentum_v10_chart_presentation,
     ("orb_5m_momentum", "v1"): orb_5m_momentum_v1_chart_presentation,
     ("orb_5m_momentum", "v2"): orb_5m_momentum_v2_chart_presentation,
@@ -353,6 +367,11 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
         "Oracle-supervised benchmark version: consumes provider-built oracle supervision labels, enters long when "
         "the LONG ENTER score and expected profit clear configurable thresholds, and exits at labeled best-horizon "
         "LONG EXIT bars. This version intentionally uses lookahead labels for supervision validation, not live trading."
+    ),
+    ("long_momentum", "v7"): (
+        "Live-safe May 1 learned version: uses oracle supervision only offline for comparison, then trades from "
+        "current/prior bars and provider-built core, momentum, session, and volume-liquidity features. Preserves "
+        "the v3 rule family because it was the strongest normal baseline on the May 1 review."
     ),
     ("orb_5m_momentum", "v1"): (
         "Baseline provider-backed ORB momentum version with daily context, opening-range setup scoring, 5-minute momentum "
