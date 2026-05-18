@@ -7050,6 +7050,10 @@ button {
   padding: 12px;
 }
 
+.interactive-debug-panel .step-debug-control-panel {
+  flex: 0 0 auto;
+}
+
 .step-debug-control-row {
   align-items: end;
   display: flex;
@@ -7152,6 +7156,13 @@ button {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.interactive-debug-panel .step-debug-detail {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .observability-summary {
