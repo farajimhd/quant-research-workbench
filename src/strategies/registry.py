@@ -313,7 +313,8 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ),
     ("long_momentum", "v4"): (
         "Starts from v2 and exposes two entry triggers: earlier body break and pullback/reclaim. Both triggers are "
-        "enabled by default, use quote/liquidity/momentum setup filters, and keep a fixed setup-based protective stop."
+        "enabled by default, use quote/liquidity/momentum setup filters, and exit with fixed stops plus bearish "
+        "volume-divergence close/watch rules."
     ),
     ("orb_5m_momentum", "v1"): (
         "Baseline provider-backed ORB momentum version with daily context, opening-range setup scoring, 5-minute momentum "

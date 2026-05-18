@@ -31,6 +31,7 @@ from src.backend.json_utils import json_safe, parse_csv_list
 from src.backend.market_data_service import (
     artifact_records,
     artifact_schema,
+    chart_display_item_options,
     catalog_preview_payload,
     chart_timestamp_seconds,
     chart_payload,
@@ -38,12 +39,14 @@ from src.backend.market_data_service import (
     display_item_settings,
     display_price_zones,
     extended_session_regions,
+    feature_groups_for_display_items,
     first_matching_artifact,
     first_ticker_in_range,
     load_artifact_query_sample,
     load_artifact_sample,
     load_scanner_snapshot,
     review_payload,
+    resolve_chart_display_items,
     scope_defaults,
     source_scan,
 )
@@ -312,12 +315,14 @@ def run_symbol_chart_payload(run_dir: Path, symbol: str) -> dict[str, Any]:
         default_timeframe = available_timeframes[0]
     default_payload = timeframe_payloads.get(default_timeframe) or next(iter(timeframe_payloads.values()), empty_symbol_timeframe_payload())
     trades = run_symbol_trades(run_dir, normalized_symbol)
+    catalog = provider_catalog(processed_root)
     return {
         "symbol": normalized_symbol,
         "timeframes": available_timeframes,
         "default_timeframe": default_timeframe,
         "timeframe_payloads": timeframe_payloads,
         "presentation": presentation,
+        "catalog_columns": catalog.get("columns", []),
         "trades": trades,
         **default_payload,
     }
@@ -332,7 +337,8 @@ def symbol_timeframe_chart_payload(
     start_date: date | None,
     end_date: date | None,
 ) -> dict[str, Any]:
-    frame = provider_symbol_frame(normalized_symbol, timeframe, presentation, processed_root, start_date, end_date)
+    display_options, selected_items, requested_feature_groups = symbol_chart_display_contracts(processed_root, timeframe, start_date, end_date, presentation)
+    frame = provider_symbol_frame(normalized_symbol, timeframe, presentation, processed_root, start_date, end_date, requested_feature_groups)
     if frame is None or frame.is_empty():
         frame = saved_symbol_frame(run_dir, normalized_symbol, timeframe)
     if frame is None or frame.is_empty():
@@ -343,7 +349,6 @@ def symbol_timeframe_chart_payload(
     rows = frame.sort("bar_time_market").to_dicts()
     timed_rows = [(chart_timestamp_seconds(row, timeframe), row) for row in rows]
     timed_rows = [(timestamp, row) for timestamp, row in timed_rows if timestamp is not None]
-    selected_items = strategy_display_items(processed_root, presentation, timeframe)
     candles, volume = symbol_candles_and_volume(timed_rows)
     return {
         "candles": candles,
@@ -352,7 +357,34 @@ def symbol_timeframe_chart_payload(
         "oscillator_series": symbol_oscillator_series(timed_rows, selected_items, timeframe),
         "price_zones": display_price_zones([row for _, row in timed_rows], timeframe, selected_items),
         "regions": extended_session_regions([row for _, row in timed_rows], timeframe),
+        "options": {
+            "display_items": display_options,
+            "feature_columns": [],
+            "feature_groups": requested_feature_groups,
+            "standard_indicators": [],
+            "supervision_groups": [],
+        },
     }
+
+
+def symbol_chart_display_contracts(
+    processed_root: Path,
+    timeframe: str,
+    start_date: date | None,
+    end_date: date | None,
+    presentation: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    if start_date is None or end_date is None:
+        selected_items = strategy_display_items(processed_root, presentation, timeframe)
+        return [], selected_items, strategy_timeframe_feature_groups(presentation, timeframe)
+    catalog = provider_catalog(processed_root)
+    display_options = chart_display_item_options(artifact_records(processed_root), timeframe, start_date, end_date, catalog)
+    selected_ids = [str(option.get("id")) for option in display_options if option.get("id")]
+    selected_items = resolve_chart_display_items(catalog, display_options, selected_ids, [])
+    if not selected_items:
+        selected_items = strategy_display_items(processed_root, presentation, timeframe)
+    requested_feature_groups = feature_groups_for_display_items(selected_items) or strategy_timeframe_feature_groups(presentation, timeframe)
+    return display_options, selected_items, requested_feature_groups
 
 
 def saved_symbol_frame(run_dir: Path, normalized_symbol: str, timeframe: str) -> pl.DataFrame | None:
@@ -372,6 +404,7 @@ def provider_symbol_frame(
     processed_root: Path,
     start_date: date | None,
     end_date: date | None,
+    feature_groups: list[str] | None = None,
 ) -> pl.DataFrame | None:
     if start_date is None or end_date is None:
         return None
@@ -382,7 +415,7 @@ def provider_symbol_frame(
             end_date=end_date,
             timeframe=timeframe,
             tickers=[normalized_symbol],
-            feature_groups=strategy_timeframe_feature_groups(presentation, timeframe),
+            feature_groups=feature_groups or strategy_timeframe_feature_groups(presentation, timeframe),
         )
     except (FileNotFoundError, OSError, ValueError, pl.exceptions.PolarsError):
         return None

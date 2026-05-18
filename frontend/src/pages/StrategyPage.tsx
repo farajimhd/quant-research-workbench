@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type
 import ReactMarkdown from "react-markdown";
 
 import { api, query } from "../api/client";
-import { ChartPanel, type ChartPayload } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartCatalogItem, type ChartPayload } from "../app/components/ChartPanel";
 import { DataTable, type DataTableFilterPreset } from "../app/components/DataTable";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
@@ -2901,15 +2901,24 @@ function StrategySymbolChart({
   }, [payload?.trades, selectedDay, symbol, trades]);
   const availableTimeframes = useMemo(() => symbolChartTimeframes(payload), [payload]);
   const chartPayload = useMemo(() => symbolTradeChartPayload(payload, sameSymbolTrades, selectedKey, timeframe), [payload, sameSymbolTrades, selectedKey, timeframe]);
-  const visibleOverlayColumns = useMemo(() => strategyVisibleColumns(chartPayload, payload), [chartPayload, payload]);
+  const defaultVisibleColumns = useMemo(() => strategyVisibleColumns(chartPayload, payload), [chartPayload, payload]);
+  const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
   const reference = useMemo(() => selectedSymbolReference(target, selectedTrade), [selectedTrade, target]);
   const periodBounds = useMemo(() => symbolChartPeriodBounds(payload, timeframe, selectedDay), [payload, selectedDay, timeframe]);
   const [period, setPeriod] = useState({ end: periodBounds.end, start: periodBounds.start });
+  const indicatorOptions = chartPayload?.options?.standard_indicators ?? [];
+  const featureOptions = chartPayload?.options?.feature_columns ?? [];
+  const displayItemOptions = chartPayload?.options?.display_items ?? [];
+  const catalogColumns = payload?.catalog_columns ?? [];
 
   useEffect(() => {
     const next = payload?.default_timeframe || availableTimeframes[0] || "1m";
     setTimeframe((current) => (availableTimeframes.includes(current) ? current : next));
   }, [availableTimeframes, payload?.default_timeframe]);
+
+  useEffect(() => {
+    setVisibleColumns(defaultVisibleColumns);
+  }, [defaultVisibleColumns.join("|"), symbol, timeframe]);
 
   useEffect(() => {
     setPeriod({ end: periodBounds.end, start: periodBounds.start });
@@ -2976,16 +2985,18 @@ function StrategySymbolChart({
         )}
       </div>
       <ChartPanel
+        catalogColumns={catalogColumns}
+        displayItemOptions={displayItemOptions}
         emptyMessage={symbol ? `No saved symbol bars found for ${symbol}. Enable Save symbol bars before running the backtest.` : "Select a trade with a symbol to load the chart."}
         errorMessage={error ?? undefined}
-        featureOptions={[]}
-        indicatorOptions={[]}
+        featureOptions={featureOptions}
+        indicatorOptions={indicatorOptions}
         loading={loading}
         normalizeTicker={false}
         onPeriodChange={updatePeriod}
         onTickerChange={() => undefined}
         onTimeframeChange={setTimeframe}
-        onVisibleColumnsChange={() => undefined}
+        onVisibleColumnsChange={setVisibleColumns}
         onVisibleSupervisionGroupsChange={() => undefined}
         payload={filteredPayload}
         periodEnd={period.end}
@@ -2994,14 +3005,14 @@ function StrategySymbolChart({
         periodStart={period.start}
         reference={reference}
         showReferenceLine={!selectedTrade}
-        showIndicatorControls={false}
+        showIndicatorControls={true}
         showSupervisionControls={false}
         ticker={symbol || "Trade"}
         tickerInputWidth={112}
         tickerMaxLength={16}
         timeframe={timeframe}
         timeframes={availableTimeframes}
-        visibleColumns={visibleOverlayColumns}
+        visibleColumns={visibleColumns}
         visibleSupervisionGroups={[]}
       />
     </section>
@@ -3062,6 +3073,7 @@ function symbolTradeChartPayload(payload: RunSymbolChartPayload | null | undefin
   return {
     candles,
     markers: [],
+    options: source?.options ?? payload?.options,
     oscillator_series: source?.oscillator_series ?? [],
     overlay_series: source?.overlay_series ?? [],
     price_zones: source?.price_zones ?? [],
@@ -3419,6 +3431,7 @@ type RunSymbolChartTimeframePayload = {
   volume: ChartPayload["volume"];
   overlay_series: ChartPayload["overlay_series"];
   oscillator_series: ChartPayload["oscillator_series"];
+  options?: ChartPayload["options"];
   price_zones?: ChartPayload["price_zones"];
   regions?: ChartPayload["regions"];
 };
@@ -3430,6 +3443,7 @@ type RunSymbolChartPresentation = {
 };
 
 type RunSymbolChartPayload = RunSymbolChartTimeframePayload & {
+  catalog_columns?: ChartCatalogItem[];
   symbol: string;
   timeframes: string[];
   default_timeframe: string;

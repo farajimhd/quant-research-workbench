@@ -257,7 +257,9 @@ class LongMomentumV4Strategy:
                 & (pl.col("_lm_locked_or_crossed_count") <= self.config.max_locked_or_crossed_count)
                 & (pl.col("_lm_bearish_divergence_score") < self.config.max_bearish_divergence_entry_score)
             ).fill_null(False).alias("setup_open"),
-            (pl.col("_lm_current_open") >= pl.col("_lm_last_body_high")).fill_null(False).alias("body_break_entry_open"),
+            (pl.col("_lm_current_open") > pl.col("_lm_last_body_high")).fill_null(False).alias("body_break_entry_open"),
+            pl.col("_lm_last_body_high").alias("last_body_high"),
+            pl.col("_lm_last_body_low").alias("last_body_low"),
             pl.col("_lm_spread_ok").alias("long_momentum_spread_ok"),
             pl.col("_lm_recent_volume_5").alias("scanner_score"),
         )
@@ -303,7 +305,26 @@ class LongMomentumV4Strategy:
             body_high = self._float(row.get("_lm_last_body_high"))
 
             setup_low = self._setup_stop_low(row, current_open)
-            if setup_open and state is not None:
+            if state is not None and state.setup_body_high > 0 and state.setup_bar_index < bar_index <= state.setup_expires_bar:
+                if current_open < state.setup_body_high or self._float(row.get("last_close")) < state.setup_body_high:
+                    state.pullback_seen = True
+
+            body_break_entry = (
+                setup_open
+                and self.config.enable_entry_trigger_1_earlier_body_break
+                and current_open > 0
+                and body_high > 0
+                and current_open > body_high
+            )
+            pullback_reclaim_entry = self._pullback_reclaim_entry_open(row, state, bar_index)
+            entry_open = body_break_entry or pullback_reclaim_entry
+            trigger = ""
+            if body_break_entry:
+                trigger = "earlier_body_break"
+            elif pullback_reclaim_entry:
+                trigger = "pullback_reclaim"
+
+            if setup_open and state is not None and not pullback_reclaim_entry:
                 active_setup = state.setup_body_high > 0 and bar_index <= state.setup_expires_bar
                 if not active_setup or body_high > state.setup_body_high:
                     state.setup_body_high = body_high
@@ -314,25 +335,6 @@ class LongMomentumV4Strategy:
                 elif setup_low > 0:
                     state.setup_low = min(value for value in (state.setup_low, setup_low) if value > 0)
 
-            if state is not None and state.setup_body_high > 0 and state.setup_bar_index < bar_index <= state.setup_expires_bar:
-                if current_open < state.setup_body_high or self._float(row.get("last_close")) < state.setup_body_high:
-                    state.pullback_seen = True
-
-            body_break_entry = (
-                setup_open
-                and self.config.enable_entry_trigger_1_earlier_body_break
-                and current_open > 0
-                and body_high > 0
-                and current_open >= body_high
-            )
-            pullback_reclaim_entry = self._pullback_reclaim_entry_open(row, state, bar_index)
-            entry_open = body_break_entry or pullback_reclaim_entry
-            trigger = ""
-            if body_break_entry:
-                trigger = "earlier_body_break"
-            elif pullback_reclaim_entry:
-                trigger = "pullback_reclaim"
-
             row["setup_stop_low"] = state.setup_low if state and state.setup_low > 0 else setup_low
             row["setup_body_high"] = state.setup_body_high if state and state.setup_body_high > 0 else body_high
             row["long_momentum_setup_open"] = setup_open
@@ -341,16 +343,19 @@ class LongMomentumV4Strategy:
             row["body_break_entry_open"] = body_break_entry
             row["pullback_reclaim_entry_open"] = pullback_reclaim_entry
             row["entry_trigger"] = trigger
+            row["long_momentum_entry_trigger"] = trigger
             row["entry_open"] = entry_open
             row["long_momentum_entry_open"] = entry_open
 
     def _pullback_reclaim_entry_open(self, row: dict, state: LongMomentumV4SymbolState | None, bar_index: int) -> bool:
         if not self.config.enable_entry_trigger_2_pullback_reclaim or state is None:
             return False
+        if not bool(row.get("setup_open")):
+            return False
         if state.setup_body_high <= 0 or bar_index <= state.setup_bar_index or bar_index > state.setup_expires_bar or not state.pullback_seen:
             return False
         current_open = self._float(row.get("current_open"))
-        if current_open < state.setup_body_high:
+        if current_open <= state.setup_body_high:
             return False
         if state.setup_low > 0 and current_open <= state.setup_low:
             return False
@@ -409,6 +414,9 @@ class LongMomentumV4Strategy:
             "initial_stop": stop_price,
             "initial_r": max(self.config.stop_offset_dollars, abs(entry_price - stop_price)),
             "entry_score": score,
+            "exit_watch_active": False,
+            "exit_watch_stop": 0.0,
+            "exit_watch_score": 0.0,
         }
         self._trace_entry(context.timestamp, candidate, quantity, entry_price, stop_price)
         return OrderRequest(
@@ -438,28 +446,30 @@ class LongMomentumV4Strategy:
             if bar is None:
                 continue
             meta = self._position_meta(symbol, position)
-            if self._tema_closed(bar):
-                self._trace_exit(context.timestamp, symbol, "TEMA_CLOSE", position, bar, meta)
+            if self._definite_bearish_divergence_close(bar):
+                self._trace_exit(context.timestamp, symbol, "BEARISH_VOLUME_DIVERGENCE_CLOSE", position, bar, meta)
                 requests.append(
                     OrderRequest(
                         symbol=symbol,
                         side="SELL",
                         quantity=position.quantity,
                         order_type="MARKET",
-                        reason="TEMA_CLOSE",
-                        tag=self._exit_tag("TEMA_CLOSE", position, bar, meta),
+                        reason="BEARISH_VOLUME_DIVERGENCE_CLOSE",
+                        tag=self._exit_tag("BEARISH_VOLUME_DIVERGENCE_CLOSE", position, bar, meta),
                     )
                 )
                 continue
+            stop_price = self._managed_stop_price(symbol, position, bar, meta)
+            stop_reason = "BEARISH_VOLUME_DIVERGENCE_WATCH" if stop_price > position.stop_price + 1e-9 else "INITIAL_STOP"
             requests.append(
                 OrderRequest(
                     symbol=symbol,
                     side="SELL",
                     quantity=position.quantity,
                     order_type="STOP",
-                    reason="INITIAL_STOP",
-                    stop_price=position.stop_price,
-                    tag=self._exit_tag("INITIAL_STOP", position, bar, meta),
+                    reason=stop_reason,
+                    stop_price=stop_price,
+                    tag=self._exit_tag(stop_reason, position, bar, meta),
                     allow_same_bar_fill=True,
                     expire_on_bar_close=True,
                 )
@@ -502,13 +512,26 @@ class LongMomentumV4Strategy:
         fee = max(self.config.sizing_min_fee, quantity * self.config.sizing_fee_per_share)
         return quantity * price + fee
 
-    def _tema_closed(self, bar: dict) -> bool:
-        close = self._float(bar.get("last_close"))
-        return (
-            bar.get("last_tema9") is not None
-            and bar.get("last_tema20") is not None
-            and self._float(bar.get("last_tema9")) < self._float(bar.get("last_tema20")) + (close * self.config.tema_exit_offset_pct)
-        )
+    def _definite_bearish_divergence_close(self, bar: dict) -> bool:
+        return self._float(bar.get("last_bearish_volume_divergence_score")) >= self.config.exit_definite_bearish_divergence_score
+
+    def _managed_stop_price(self, symbol: str, position, bar: dict, meta: dict) -> float:
+        score = self._float(bar.get("last_bearish_volume_divergence_score"))
+        last_close = self._float(bar.get("last_close"))
+        if score >= self.config.exit_watch_bearish_divergence_score and last_close > position.entry_price:
+            meta["exit_watch_active"] = True
+            meta["exit_watch_score"] = max(self._float(meta.get("exit_watch_score")), score)
+            meta["exit_watch_stop"] = max(self._float(meta.get("exit_watch_stop")), last_close)
+            self.position_meta[symbol] = meta
+        if bool(meta.get("exit_watch_active")):
+            watch_stop = self._float(meta.get("exit_watch_stop"))
+            if last_close > watch_stop:
+                watch_stop = last_close
+                meta["exit_watch_stop"] = watch_stop
+                self.position_meta[symbol] = meta
+            if watch_stop > 0:
+                return max(position.stop_price, watch_stop)
+        return position.stop_price
 
     def _position_meta(self, symbol: str, position) -> dict:
         meta = self.position_meta.get(symbol)
@@ -518,6 +541,9 @@ class LongMomentumV4Strategy:
                 "initial_stop": position.stop_price,
                 "initial_r": risk,
                 "entry_score": position.live_score,
+                "exit_watch_active": False,
+                "exit_watch_stop": 0.0,
+                "exit_watch_score": 0.0,
             }
             self.position_meta[symbol] = meta
         return meta
@@ -651,8 +677,11 @@ class LongMomentumV4Strategy:
             values={
                 "quantity": position.quantity,
                 "last_close": bar.get("last_close"),
+                "last_bearish_volume_divergence_score": bar.get("last_bearish_volume_divergence_score"),
                 "entry_price": position.entry_price,
                 "initial_stop": meta.get("initial_stop"),
+                "exit_watch_stop": meta.get("exit_watch_stop"),
+                "exit_watch_score": meta.get("exit_watch_score"),
                 "initial_r": meta.get("initial_r"),
             },
             force=self._force_trade_trace(),
@@ -672,10 +701,12 @@ class LongMomentumV4Strategy:
     def _exit_tag(self, reason: str, position, bar: dict | None, meta: dict) -> str:
         price = self._float(bar.get("last_close")) if bar is not None else position.entry_price
         stop = self._float(meta.get("initial_stop")) or position.stop_price
+        divergence_score = self._float(bar.get("last_bearish_volume_divergence_score")) if bar is not None else 0.0
+        watch_stop = self._float(meta.get("exit_watch_stop"))
         return (
             f"EXIT|reason={reason}|price={price:.2f}|stop={stop:.2f}"
             f"|R={self._float(meta.get('initial_r')):.4f}|maxp={position.max_price:.2f}"
-            f"|maxR={position.max_r_multiple:.2f}"
+            f"|maxR={position.max_r_multiple:.2f}|bvd={divergence_score:.2f}|watch_stop={watch_stop:.2f}"
         )
 
     def _partial_remaining(self, tag: Any) -> int:

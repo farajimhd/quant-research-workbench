@@ -29,13 +29,13 @@ Eligible rows are ranked by `last_recent_volume_5` descending.
 Both entry triggers are configurable and enabled by default.
 
 - `enable_entry_trigger_1_earlier_body_break`: Entry Trigger 1, Earlier Body
-  Break. This enters when `current_open >= max(last_open, last_close)` after
+  Break. This enters when `current_open > max(last_open, last_close)` after
   the setup filters pass.
 - `enable_entry_trigger_2_pullback_reclaim`: Entry Trigger 2, Pullback/Reclaim.
   When a setup appears, v4 stores the setup body high and setup low for
   `pullback_reclaim_valid_bars`, default 6 bars. If price pulls back below the
-  setup body high and later opens back above it while quote, liquidity, trend,
-  and bearish-divergence checks remain valid, v4 can enter on that reclaim.
+  setup body high and later opens back above it while the full setup filters
+  remain valid, v4 can enter on that reclaim.
 
 The submitted buy is a same-bar limit at `current_open`. Quantity is the prior
 bar `last_quote_ask_size`, capped by available cash.
@@ -56,7 +56,12 @@ using `stop_offset_dollars`, default 0.01. The strategy does not trail this stop
 Open positions are exited by:
 
 - the fixed protective stop
-- `TEMA_CLOSE`, when `last_tema9 < last_tema20 + offset`
+- `BEARISH_VOLUME_DIVERGENCE_CLOSE`, when
+  `last_bearish_volume_divergence_score >= exit_definite_bearish_divergence_score`,
+  default 90
+- `BEARISH_VOLUME_DIVERGENCE_WATCH`, when
+  `last_bearish_volume_divergence_score >= exit_watch_bearish_divergence_score`,
+  default 75; this raises the active stop to the highest watched completed close
 - `EOD`, at the end of the extended-hours session
 
 ## Data Requirements
