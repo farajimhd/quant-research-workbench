@@ -51,6 +51,7 @@ CHART_FEATURE_EXCLUDE_COLUMNS = {
 }
 
 DYNAMIC_COLORS = ["#1E3A5F", "#B7791F", "#067647", "#B42318", "#2563EB", "#7C3AED", "#0E7490", "#C2410C"]
+SPREAD_COMPARISON_EPSILON = 1e-9
 
 
 def shifted_over(column: str, group_columns: list[str]) -> pl.Expr:
@@ -550,8 +551,8 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
         return scan
     spread_ok = (
         pl.when(pl.col("last_close") < 5.0)
-        .then(pl.col("last_spread") <= 0.02)
-        .otherwise(pl.col("last_spread") <= 0.05)
+        .then(pl.col("last_spread") <= 0.02 + SPREAD_COMPARISON_EPSILON)
+        .otherwise(pl.col("last_spread") <= 0.05 + SPREAD_COMPARISON_EPSILON)
         .fill_null(False)
     )
     exprs: list[pl.Expr] = [spread_ok.alias("long_momentum_spread_ok")]

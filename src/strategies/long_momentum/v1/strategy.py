@@ -248,8 +248,8 @@ class LongMomentumStrategy:
             (pl.col("_lm_last_return_1") > 0).alias("_lm_last_close_above_previous"),
             (
                 pl.when(pl.col("_lm_last_close") < 5.0)
-                .then(pl.col("_lm_last_spread") <= self.config.max_spread_below_5)
-                .otherwise(pl.col("_lm_last_spread") <= self.config.max_spread_5_to_10)
+                .then(pl.col("_lm_last_spread") <= self.config.max_spread_below_5 + 1e-9)
+                .otherwise(pl.col("_lm_last_spread") <= self.config.max_spread_5_to_10 + 1e-9)
             ).alias("_lm_spread_ok"),
         ).with_columns(
             (

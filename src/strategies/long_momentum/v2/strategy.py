@@ -196,8 +196,8 @@ class LongMomentumV2Strategy:
             column("long_momentum_spread_ok", None)
             if "long_momentum_spread_ok" in names
             else pl.when(column("last_close", None).cast(pl.Float64) < 5.0)
-            .then(last_spread <= self.config.max_spread_below_5)
-            .otherwise(last_spread <= self.config.max_spread_5_to_10)
+            .then(last_spread <= self.config.max_spread_below_5 + 1e-9)
+            .otherwise(last_spread <= self.config.max_spread_5_to_10 + 1e-9)
         )
         tema_open = (
             column("last_tema_open", None)
