@@ -5,7 +5,7 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 
 import { api, query } from "../api/client";
-import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload, type ChartReference } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartLabelOption, type ChartPayload, type ChartReference } from "../app/components/ChartPanel";
 import { DataTable, type BackendTableQuery, type DataTableFilterPreset } from "../app/components/DataTable";
 import { MetricStrip } from "../app/components/MetricStrip";
 import { Modal } from "../app/components/Modal";
@@ -697,6 +697,7 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
   const [ticker, setTicker] = useState("");
   const [featureGroups, setFeatureGroups] = useState(DEFAULT_CHART_FEATURE_GROUPS);
   const [visibleColumns, setVisibleColumns] = useState(DEFAULT_CHART_DISPLAY_ITEMS);
+  const [visibleSupervisionGroups, setVisibleSupervisionGroups] = useState<string[]>([]);
   const [payload, setPayload] = useState<ChartPayload | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState("");
@@ -755,6 +756,7 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
         ticker: ticker.trim().toUpperCase(),
         feature_groups: featureGroups.join(","),
         display_items: chartDisplayItemsRequestValue(visibleColumns),
+        supervision_groups: visibleSupervisionGroups.join(","),
         min_confidence: DEFAULT_CHART_MIN_CONFIDENCE
       })}`
     ).then((nextPayload) => {
@@ -774,7 +776,7 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
     return () => {
       active = false;
     };
-  }, [scope.processed_root, rangeEnd, rangeStart, timeframe, ticker, featureGroups, visibleColumns]);
+  }, [scope.processed_root, rangeEnd, rangeStart, timeframe, ticker, featureGroups, visibleColumns, visibleSupervisionGroups]);
 
   function updateChartPeriod(start: string, end: string) {
     if (start <= end) {
@@ -789,6 +791,7 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
   const displayItemOptions = payload?.options?.display_items ?? defaultCatalogDisplayItemOptions(catalog);
   const indicatorOptions = payload?.options?.standard_indicators ?? DEFAULT_CHART_DISPLAY_ITEMS;
   const featureOptions = payload?.options?.feature_columns ?? [];
+  const labelOptions = payload?.options?.supervision_groups ?? [];
 
   if (!barRecords.length) return <div className="empty-state panel">No saved bar artifacts are available for charting.</div>;
   return (
@@ -800,11 +803,13 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
         errorMessage={chartError}
         featureOptions={featureOptions}
         indicatorOptions={indicatorOptions}
+        labelOptions={labelOptions}
         loading={chartLoading}
         onPeriodChange={updateChartPeriod}
         onTickerChange={setTicker}
         onTimeframeChange={setTimeframe}
         onVisibleColumnsChange={(nextColumns) => updateChartVisibleColumns(nextColumns, setVisibleColumns, setPayload)}
+        onVisibleSupervisionGroupsChange={(nextGroups) => updateChartVisibleSupervisionGroups(nextGroups, setVisibleSupervisionGroups)}
         payload={payload}
         periodEnd={rangeEnd}
         periodMax={availableSessions[availableSessions.length - 1] ?? scope.end_date}
@@ -814,6 +819,8 @@ function ChartTab({ catalog, scope, records }: { catalog: CatalogPayload | null;
         timeframe={timeframe}
         timeframes={timeframes}
         visibleColumns={visibleColumns}
+        visibleSupervisionGroups={visibleSupervisionGroups}
+        showSupervisionControls
       />
     </section>
   );
@@ -1579,6 +1586,7 @@ function PreviewRowChartModal({
   const [rangeEnd, setRangeEnd] = useState(initial.range.end);
   const [featureGroups, setFeatureGroups] = useState(initial.featureGroups);
   const [visibleColumns, setVisibleColumns] = useState(initial.visibleColumns);
+  const [visibleSupervisionGroups, setVisibleSupervisionGroups] = useState<string[]>([]);
   const [payload, setPayload] = useState<ChartPayload | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState("");
@@ -1602,6 +1610,7 @@ function PreviewRowChartModal({
         ticker,
         feature_groups: featureGroups.join(","),
         display_items: chartDisplayItemsRequestValue(visibleColumns),
+        supervision_groups: visibleSupervisionGroups.join(","),
         min_confidence: DEFAULT_CHART_MIN_CONFIDENCE,
       })}`
     )
@@ -1625,7 +1634,7 @@ function PreviewRowChartModal({
     return () => {
       active = false;
     };
-  }, [featureGroups, rangeEnd, rangeStart, scope.processed_root, ticker, timeframe, visibleColumns]);
+  }, [featureGroups, rangeEnd, rangeStart, scope.processed_root, ticker, timeframe, visibleColumns, visibleSupervisionGroups]);
 
   function updateChartPeriod(start: string, end: string) {
     if (start <= end) {
@@ -1640,6 +1649,7 @@ function PreviewRowChartModal({
   const displayItemOptions = payload?.options?.display_items ?? defaultCatalogDisplayItemOptions(catalog);
   const indicatorOptions = payload?.options?.standard_indicators ?? initial.visibleColumns;
   const featureOptions = payload?.options?.feature_columns ?? [];
+  const labelOptions = payload?.options?.supervision_groups ?? [];
   const periodBounds = chartPeriodBounds(records, timeframe, scope);
 
   return (
@@ -1666,11 +1676,13 @@ function PreviewRowChartModal({
           errorMessage={chartError}
           featureOptions={featureOptions}
           indicatorOptions={indicatorOptions}
+          labelOptions={labelOptions}
           loading={chartLoading}
           onPeriodChange={updateChartPeriod}
           onTickerChange={setTicker}
           onTimeframeChange={setTimeframe}
           onVisibleColumnsChange={(nextColumns) => updateChartVisibleColumns(nextColumns, setVisibleColumns, setPayload)}
+          onVisibleSupervisionGroupsChange={(nextGroups) => updateChartVisibleSupervisionGroups(nextGroups, setVisibleSupervisionGroups)}
           payload={payload}
           periodEnd={rangeEnd}
           periodMax={periodBounds.max}
@@ -1681,6 +1693,8 @@ function PreviewRowChartModal({
           timeframe={timeframe}
           timeframes={timeframes}
           visibleColumns={visibleColumns}
+          visibleSupervisionGroups={visibleSupervisionGroups}
+          showSupervisionControls
         />
       ) : (
         <div className="empty-state">This row does not include a ticker, so it cannot be opened on the chart.</div>
@@ -1818,6 +1832,13 @@ function updateChartVisibleColumns(
   setPayload((current) => (current ? filterChartPayloadForDisplayItems(current, normalized) : current));
 }
 
+function updateChartVisibleSupervisionGroups(
+  nextGroups: string[],
+  setVisibleSupervisionGroups: (value: string[]) => void,
+) {
+  setVisibleSupervisionGroups(Array.from(new Set(nextGroups)));
+}
+
 function filterChartPayloadForDisplayItems(payload: ChartPayload, selectedItems: string[]): ChartPayload {
   const selected = new Set(selectedItems.map((item) => item.toLowerCase()));
   return {
@@ -1825,7 +1846,10 @@ function filterChartPayloadForDisplayItems(payload: ChartPayload, selectedItems:
     markers: payload.markers.filter((marker) => markerBelongsToSelection(marker, selected)),
     oscillator_series: payload.oscillator_series.filter((series) => selected.has(chartPayloadSeriesSelectionKey(series))),
     overlay_series: payload.overlay_series.filter((series) => selected.has(chartPayloadSeriesSelectionKey(series))),
-    price_zones: (payload.price_zones ?? []).filter((zone) => !zone.displayItemId || selected.has(String(zone.displayItemId).toLowerCase())),
+    price_zones: (payload.price_zones ?? []).filter((zone) => {
+      const displayItemId = String(zone.displayItemId ?? "").toLowerCase();
+      return !displayItemId || displayItemId.startsWith("supervision:") || selected.has(displayItemId);
+    }),
   };
 }
 
@@ -1835,7 +1859,7 @@ function chartPayloadSeriesSelectionKey(series: ChartPayload["overlay_series"][n
 
 function markerBelongsToSelection(marker: ChartPayload["markers"][number], selectedItems: Set<string>) {
   const displayItemId = "displayItemId" in marker ? String(marker.displayItemId ?? "") : "";
-  return !displayItemId || selectedItems.has(displayItemId.toLowerCase());
+  return !displayItemId || displayItemId.toLowerCase().startsWith("supervision:") || selectedItems.has(displayItemId.toLowerCase());
 }
 
 function previewChartDisplayItems(_record: RecordRow, catalog: CatalogPayload | null) {

@@ -130,6 +130,8 @@ def progress_stage_for_event(event: dict[str, Any]) -> str | None:
         return "build_bars"
     if phase == "spread_feature_patch":
         return "build_features"
+    if phase.startswith("supervision_") or group.startswith("supervision_"):
+        return "build_features"
     if stateful and (phase in {"feature_compute", "feature_write", "stateful_features"} or group.startswith("features_")):
         return "build_stateful"
     if phase in {"feature_compute", "feature_write"} or group.startswith("features_"):
@@ -226,12 +228,16 @@ def summarize_phases(
     buildable_count = len(buildable_rows)
     local_timeframes = [timeframe for timeframe in selected_timeframes if timeframe not in CARRYOVER_TIMEFRAMES]
     stateful_timeframes = [timeframe for timeframe in selected_timeframes if timeframe in CARRYOVER_TIMEFRAMES]
+    if set(supervision_groups) == {"oracle"} and not feature_groups:
+        local_timeframes = selected_timeframes
+        stateful_timeframes = []
     contexts = buildable_count * len(selected_timeframes)
 
     scan_total = len(expected_rows)
     reference_total = len(reference_rows)
     bar_total = contexts
-    feature_total = buildable_count * len(local_timeframes) * len(feature_groups)
+    supervision_total = buildable_count * len(local_timeframes) * len(supervision_groups)
+    feature_total = buildable_count * len(local_timeframes) * len(feature_groups) + supervision_total
     stateful_total = buildable_count * len(stateful_timeframes) * len(feature_groups)
     expected_stateful_chunks = sum(chunk_count_for_sessions(buildable_count, timeframe) for timeframe in stateful_timeframes)
     plan_event = next((event for event in reversed(events) if event.get("event") == "plan_complete"), {})
@@ -339,6 +345,10 @@ def summarize_phases(
             else:
                 feature_done += 1.0
                 feature_elapsed += duration
+        elif event_name == "artifact_complete" and status == "complete" and group.startswith("supervision_"):
+            feature_done += 1.0
+            feature_elapsed += duration
+            active_by_stage["build_features"].pop(key, None)
         elif event_name == "phase_complete" and status == "complete" and phase == "stateful_features":
             timeframe = str(event.get("timeframe") or "")
             if timeframe:
@@ -448,6 +458,7 @@ def timeframe_stage_totals(feature_groups: list[str], supervision_groups: list[s
         "write_features": len(feature_groups),
         "bar_labels": 1 if "bar" in supervision_groups else 0,
         "method_labels": 1 if "method" in supervision_groups else 0,
+        "oracle_labels": 1 if "oracle" in supervision_groups else 0,
         "scanner_labels": 1 if "scanner" in supervision_groups else 0,
     }
 
@@ -585,6 +596,10 @@ def build_session_cards(
                 stage = timeframe_stage(row, timeframe, "method_labels")
                 if stage is not None:
                     start_stage(stage, event)
+            elif phase == "supervision_oracle":
+                stage = timeframe_stage(row, timeframe, "oracle_labels")
+                if stage is not None:
+                    start_stage(stage, event)
             elif phase == "supervision_scanner":
                 stage = timeframe_stage(row, timeframe, "scanner_labels")
                 if stage is not None:
@@ -627,6 +642,10 @@ def build_session_cards(
                 stage = timeframe_stage(row, timeframe, "method_labels")
                 if stage is not None:
                     complete_stage(stage, event)
+            elif event.get("event") == "artifact_complete" and group == "supervision_oracle":
+                stage = timeframe_stage(row, timeframe, "oracle_labels")
+                if stage is not None:
+                    complete_stage(stage, event)
             elif event.get("event") == "artifact_complete" and group == "supervision_scanner":
                 stage = timeframe_stage(row, timeframe, "scanner_labels")
                 if stage is not None:
@@ -641,6 +660,7 @@ def build_session_cards(
         ("write_features", "Write features"),
         ("bar_labels", "Bar labels"),
         ("method_labels", "Method labels"),
+        ("oracle_labels", "Oracle labels"),
         ("scanner_labels", "Scanner labels"),
     ]
     materialized = []

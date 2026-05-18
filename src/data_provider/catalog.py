@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 18
+CATALOG_VERSION = 19
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -180,6 +180,44 @@ SCANNER_SUPERVISION_COLUMNS = [
     "is_top_5pct",
 ]
 
+ORACLE_SUPERVISION_COLUMNS = [
+    "bar_id",
+    "ticker",
+    "timeframe",
+    "bar_time_utc",
+    "bar_time_market",
+    "session_date",
+    "desired_method",
+    "signal",
+    "horizon_bars",
+    "horizon_minutes",
+    "score",
+    "expected_profit",
+    "expected_drawdown",
+    "best_exit_bar_id",
+    "best_exit_time_utc",
+    "best_exit_price",
+    "reason",
+    "oracle_long_supervision",
+    "oracle_short_supervision",
+    "oracle_long_enter_signal",
+    "oracle_long_exit_signal",
+    "oracle_short_enter_signal",
+    "oracle_short_exit_signal",
+    "oracle_long_enter_score",
+    "oracle_long_exit_score",
+    "oracle_short_enter_score",
+    "oracle_short_exit_score",
+    "long_expected_profit",
+    "short_expected_profit",
+    "long_drawdown_before_best",
+    "short_adverse_before_best",
+    "long_best_horizon_bars",
+    "short_best_horizon_bars",
+    "future_bar_count",
+    "valid_future_window",
+]
+
 KEY_COLUMNS = {"bar_id", "ticker", "timeframe", "window_start", "bar_time_utc", "bar_time_market", "session_date", "session_month", "minute_of_day"}
 INDICATOR_PREFIXES = ("sma", "ema", "tema", "macd", "rsi", "roc", "cci", "stoch", "atr", "bb_", "donchian", "keltner")
 INDICATOR_COLUMNS = {"vwap", "obv", "mfi14", "cmf20"}
@@ -247,6 +285,10 @@ BOOLEAN_COLUMNS = {
     "mfe_before_mae",
     "oracle_long_entry_signal",
     "oracle_long_exit_signal",
+    "oracle_long_supervision",
+    "oracle_short_supervision",
+    "oracle_short_enter_signal",
+    "oracle_short_exit_signal",
     "method_entry_signal",
     "method_exit_signal",
     "fwd_liquidity_confirmed",
@@ -274,9 +316,13 @@ STRING_COLUMNS = {
     "horizon",
     "trade_method",
     "oracle_action",
+    "desired_method",
+    "signal",
+    "reason",
     "fwd_outcome_bucket",
     "shock_confirmation_type",
     "oracle_best_exit_bar_id",
+    "best_exit_bar_id",
     "method_best_exit_bar_id",
     "shock_best_exit_after_confirmation_bar_id",
     "fwd_first_volume_shock_bar_id",
@@ -640,6 +686,8 @@ def build_column_contracts() -> list[dict[str, Any]]:
         add_column(entries, column, group="supervision_bar", artifact_group="supervision_bar")
     for column in METHOD_SUPERVISION_COLUMNS:
         add_column(entries, column, group="supervision_method", artifact_group="supervision_method")
+    for column in ORACLE_SUPERVISION_COLUMNS:
+        add_column(entries, column, group="supervision_oracle", artifact_group="supervision_oracle")
     for column in SCANNER_SUPERVISION_COLUMNS:
         add_column(entries, column, group="supervision_scanner", artifact_group="supervision_scanner")
     return sorted(entries.values(), key=lambda item: (category_order(item["category"]), item["group"], item["title"], item["id"]))
@@ -1686,6 +1734,15 @@ def presentation_for_column(column: str, group: str, category: str) -> dict[str,
                 presentation.update({"markerShape": "circle", "markerPosition": "belowBar", "color": "#15803D", "labelMode": "short", "labelText": "MFE", "markerSize": 1.0})
             else:
                 presentation.update({"markerShape": "arrowUp", "markerPosition": "belowBar", "color": "#067647", "labelMode": "short", "labelText": "BAR", "markerSize": 1.15})
+        elif group == "supervision_oracle":
+            if lower in {"oracle_short_supervision", "oracle_short_enter_signal"}:
+                presentation.update({"markerShape": "arrowDown", "markerPosition": "aboveBar", "color": "#B42318", "labelMode": "short", "labelText": "SHORT", "markerSize": 1.15})
+            elif lower == "oracle_short_exit_signal":
+                presentation.update({"markerShape": "arrowUp", "markerPosition": "belowBar", "color": "#2563EB", "labelMode": "short", "labelText": "SX", "markerSize": 1.05})
+            elif lower == "oracle_long_exit_signal":
+                presentation.update({"markerShape": "arrowDown", "markerPosition": "aboveBar", "color": "#B54708", "labelMode": "short", "labelText": "LX", "markerSize": 1.05})
+            else:
+                presentation.update({"markerShape": "arrowUp", "markerPosition": "belowBar", "color": "#067647", "labelMode": "short", "labelText": "LONG", "markerSize": 1.15})
         else:
             presentation.update({"markerShape": "circle", "markerPosition": "belowBar", "color": "#067647"})
     if role == "anchored_zone":
@@ -1721,7 +1778,7 @@ def data_shape_for_column(column: str, group: str, category: str) -> str:
     if category == "bar" or column in KEY_COLUMNS:
         return "data_only"
     if group.startswith("supervision_"):
-        if lower in {"oracle_long_entry_signal", "oracle_long_exit_signal", "mfe_before_mae", "fwd_liquidity_confirmed", "fwd_volume_shock_before_mfe", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5", "is_top_10", "is_top_1pct", "is_top_5pct"}:
+        if lower in {"oracle_long_supervision", "oracle_short_supervision", "oracle_long_entry_signal", "oracle_long_exit_signal", "oracle_short_enter_signal", "oracle_short_exit_signal", "mfe_before_mae", "fwd_liquidity_confirmed", "fwd_volume_shock_before_mfe", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5", "is_top_10", "is_top_1pct", "is_top_5pct"}:
             return "bar_event"
         return "data_only"
     if group == "fvg":
@@ -1754,7 +1811,7 @@ def chart_role_for_column(column: str, group: str, category: str) -> str:
     if lower in OPERATIONAL_HELPER_COLUMNS:
         return "data_only"
     if group.startswith("supervision_"):
-        return "marker" if lower in {"oracle_long_entry_signal", "oracle_long_exit_signal", "mfe_before_mae", "fwd_liquidity_confirmed", "fwd_volume_shock_before_mfe", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5", "is_top_10", "is_top_1pct", "is_top_5pct"} else "data_only"
+        return "marker" if lower in {"oracle_long_supervision", "oracle_short_supervision", "oracle_long_entry_signal", "oracle_long_exit_signal", "oracle_short_enter_signal", "oracle_short_exit_signal", "mfe_before_mae", "fwd_liquidity_confirmed", "fwd_volume_shock_before_mfe", "method_entry_signal", "method_exit_signal", "is_top_1", "is_top_3", "is_top_5", "is_top_10", "is_top_1pct", "is_top_5pct"} else "data_only"
     if group == "fvg":
         return "data_only"
     if group == "market_structure" and lower in MARKET_STRUCTURE_EVENT_LEVELS:

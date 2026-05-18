@@ -21,6 +21,7 @@ from src.data_provider.store import partition_path, read_frame, write_frame
 from src.data_provider.supervision import (
     FIXED_HORIZON_BARS,
     build_method_supervision,
+    build_oracle_supervision,
     build_scanner_supervision,
     iter_bar_supervision_frames,
     method_windows_for_timeframe,
@@ -91,6 +92,10 @@ def is_spread_backfill(request: BuildRequest) -> bool:
     return str(request.resume_stage or "").lower() == "spread_backfill"
 
 
+def is_oracle_supervision_build(request: BuildRequest) -> bool:
+    return set(request.supervision_groups) == {"oracle"} and not request.feature_groups
+
+
 def estimate_session_units(request: BuildRequest, output_sessions: int, monthly_periods: int = 0) -> int:
     timeframes = session_timeframes(request)
     supervision_units = len(request.supervision_groups)
@@ -100,7 +105,7 @@ def estimate_session_units(request: BuildRequest, output_sessions: int, monthly_
     return max(1, output_sessions * per_session)
 
 
-def build_plan(statuses: list) -> list[dict]:
+def build_plan(statuses: list, reference_lookback_sessions: int = REFERENCE_LOOKBACK_SESSIONS) -> list[dict]:
     rows: list[dict] = []
     expected_seen = 0
     output_started = False
@@ -117,13 +122,13 @@ def build_plan(statuses: list) -> list[dict]:
             )
         else:
             expected_seen += 1
-            if expected_seen <= REFERENCE_LOOKBACK_SESSIONS:
+            if expected_seen <= reference_lookback_sessions:
                 row.update(
                     {
                         "build_role": "reference_only",
                         "write_output": False,
                         "reference_only": True,
-                        "reason": f"Warm-up context for carry-over indicators ({expected_seen}/{REFERENCE_LOOKBACK_SESSIONS}).",
+                        "reason": f"Warm-up context for carry-over indicators ({expected_seen}/{reference_lookback_sessions}).",
                     }
                 )
             else:
@@ -161,7 +166,7 @@ def enrich_plan_with_spread(plan_rows: list[dict], request: BuildRequest) -> lis
         row["spread_exists"] = exists
         row["spread_size_bytes"] = path.stat().st_size if exists else 0
         row["spread_modified_at"] = path.stat().st_mtime if exists else None
-        if row.get("build_role") == "output" and not exists:
+        if row.get("build_role") == "output" and not exists and not is_oracle_supervision_build(request):
             row["status"] = "missing_spread"
             row["reason"] = "Output session spread file is missing."
     return plan_rows
@@ -176,7 +181,7 @@ def plan_metadata(plan_rows: list[dict]) -> dict:
         "missing_reference_sessions": len(missing_reference_rows),
         "output_sessions": len(output_rows),
         "output_start_date": output_start_date(plan_rows),
-        "warmup_sessions": REFERENCE_LOOKBACK_SESSIONS,
+        "warmup_sessions": len(reference_rows),
         "carryover_timeframes": sorted(CARRYOVER_TIMEFRAMES),
     }
 
@@ -443,6 +448,7 @@ def build_supervision_groups(
     estimated_rows = {
         "supervision_bar": artifact_height * len(FIXED_HORIZON_BARS) if "bar" in request.supervision_groups else 0,
         "supervision_method": artifact_height * len(method_windows_for_timeframe(timeframe)) if "method" in request.supervision_groups or "scanner" in request.supervision_groups else 0,
+        "supervision_oracle": artifact_height if "oracle" in request.supervision_groups else 0,
         "supervision_scanner": artifact_height * len(method_windows_for_timeframe(timeframe)) if "scanner" in request.supervision_groups else 0,
     }
     bar_supervision = None
@@ -456,6 +462,7 @@ def build_supervision_groups(
                 "status": "running",
                 "session_date": session_date,
                 "timeframe": timeframe,
+                "group": "supervision_oracle",
                 "rows_in": bars.height,
                 "estimated_rows_out": estimated_rows["supervision_bar"],
                 "stateful": stateful,
@@ -545,8 +552,60 @@ def build_supervision_groups(
                     "size_bytes": artifact_size(path),
                     "work_completed": progress_state.get("completed_units") if progress_state else None,
                     "work_total": progress_state.get("total_units") if progress_state else None,
-                },
-            )
+            },
+        )
+    if "oracle" in request.supervision_groups:
+        emit(
+            progress_callback,
+            {
+                "event": "phase_started",
+                "phase": "supervision_oracle",
+                "status": "running",
+                "session_date": session_date,
+                "timeframe": timeframe,
+                "rows_in": bars.height,
+                "estimated_rows_out": estimated_rows["supervision_oracle"],
+                "stateful": stateful,
+                "work_completed": progress_state.get("completed_units") if progress_state else None,
+                "work_total": progress_state.get("total_units") if progress_state else None,
+            },
+        )
+        started_at = perf_counter()
+        oracle_supervision = build_oracle_supervision(bars, assume_sorted=True)
+        if artifact_session_date is not None and "session_date" in oracle_supervision.columns:
+            oracle_supervision = oracle_supervision.filter(pl.col("session_date") == artifact_session_date)
+        path = write_artifact(
+            root=request.processed_root,
+            group="supervision_oracle",
+            timeframe=timeframe,
+            session_date=session_date,
+            frame=oracle_supervision,
+            build_id=request.build_id,
+            build_name=request.build_name,
+            source_path=source_path,
+        )
+        if progress_state is not None:
+            progress_state["completed_units"] += 1
+        emit(
+            progress_callback,
+            {
+                "event": "artifact_complete",
+                "phase": "supervision_oracle",
+                "status": "complete",
+                "session_date": session_date,
+                "timeframe": timeframe,
+                "group": "supervision_oracle",
+                "stateful": stateful,
+                "rows_in": bars.height,
+                "rows_out": oracle_supervision.height,
+                "duration_sec": elapsed_since(started_at),
+                "path": str(path),
+                "size_bytes": artifact_size(path),
+                "work_completed": progress_state.get("completed_units") if progress_state else None,
+                "work_total": progress_state.get("total_units") if progress_state else None,
+            },
+        )
+        del oracle_supervision
     if "scanner" in request.supervision_groups:
         if method_supervision is None:
             method_supervision = build_method_supervision(bars, assume_sorted=True)
@@ -2109,7 +2168,7 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
     run_started_at = perf_counter()
     scan_started_at = perf_counter()
     statuses = scan_market_source(request.raw_root, request.start_date, request.end_date)
-    plan_rows = enrich_plan_with_spread(build_plan(statuses), request)
+    plan_rows = enrich_plan_with_spread(build_plan(statuses, 0 if is_oracle_supervision_build(request) else REFERENCE_LOOKBACK_SESSIONS), request)
     plan_by_session = {str(row["session_date"]): row for row in plan_rows}
     output_statuses = [status for status in statuses if plan_by_session[status.session_date].get("build_role") == "output"]
     buildable_statuses = [
@@ -2146,7 +2205,7 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
     artifact_tasks: list[dict] = []
     artifact_results: list[dict] = []
     selected_timeframes = set(session_timeframes(request))
-    local_artifact_timeframes = selected_timeframes - CARRYOVER_TIMEFRAMES
+    local_artifact_timeframes = selected_timeframes if is_oracle_supervision_build(request) else selected_timeframes - CARRYOVER_TIMEFRAMES
     stateful_tasks: list[dict] = []
     resume_stateful = is_stateful_resume(request)
 
@@ -2184,7 +2243,7 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
                 },
             )
             continue
-        if not resume_stateful and not plan_row.get("spread_exists"):
+        if not resume_stateful and not is_oracle_supervision_build(request) and not plan_row.get("spread_exists"):
             completed.append({"session_date": status.session_date, "status": "missing_spread", "rows": 0})
             emit(
                 progress_callback,
@@ -2219,7 +2278,7 @@ def build_market_data(request: BuildRequest, progress_callback: ProgressCallback
                 artifact_tasks.append({"session_date": status.session_date, "timeframe": str(artifact_result.get("timeframe"))})
                 artifact_results.append(artifact_result)
             for timeframe in result.get("timeframes", []):
-                if str(timeframe) in CARRYOVER_TIMEFRAMES:
+                if not is_oracle_supervision_build(request) and str(timeframe) in CARRYOVER_TIMEFRAMES:
                     stateful_tasks.append({"session_date": status.session_date, "timeframe": str(timeframe)})
             completed.append({"session_date": status.session_date, "status": "bars_complete", "rows": int(result.get("rows") or 0)})
 
@@ -2301,7 +2360,7 @@ def build_market_data_parallel(
     run_started_at = perf_counter()
     scan_started_at = perf_counter()
     statuses = scan_market_source(request.raw_root, request.start_date, request.end_date)
-    plan_rows = enrich_plan_with_spread(build_plan(statuses), request)
+    plan_rows = enrich_plan_with_spread(build_plan(statuses, 0 if is_oracle_supervision_build(request) else REFERENCE_LOOKBACK_SESSIONS), request)
     plan_by_session = {str(row["session_date"]): row for row in plan_rows}
     output_statuses = [status for status in statuses if plan_by_session[status.session_date].get("build_role") == "output"]
     buildable_statuses = [
@@ -2337,7 +2396,7 @@ def build_market_data_parallel(
 
     completed: list[dict] = []
     selected_timeframes = set(session_timeframes(request))
-    local_artifact_timeframes = selected_timeframes - CARRYOVER_TIMEFRAMES
+    local_artifact_timeframes = selected_timeframes if is_oracle_supervision_build(request) else selected_timeframes - CARRYOVER_TIMEFRAMES
     stateful_tasks: list[dict] = []
     resume_stateful = is_stateful_resume(request)
     build_jobs: list[tuple[int, dict]] = []
@@ -2375,7 +2434,7 @@ def build_market_data_parallel(
                 },
             )
             continue
-        if not resume_stateful and not plan_row.get("spread_exists"):
+        if not resume_stateful and not is_oracle_supervision_build(request) and not plan_row.get("spread_exists"):
             completed.append({"session_date": status.session_date, "status": "missing_spread", "rows": 0})
             emit(
                 progress_callback,
@@ -2462,7 +2521,7 @@ def build_market_data_parallel(
                         )
                         artifact_results.append(artifact_result)
                     for timeframe in result.get("timeframes", []):
-                        if str(timeframe) in CARRYOVER_TIMEFRAMES:
+                        if not is_oracle_supervision_build(request) and str(timeframe) in CARRYOVER_TIMEFRAMES:
                             stateful_tasks.append({"session_date": str(result.get("session_date")), "timeframe": str(timeframe)})
                     completed.append(
                         {

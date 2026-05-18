@@ -208,7 +208,7 @@ export type ChartOptions = {
   feature_groups: string[];
   display_items?: ChartDisplayItem[];
   standard_indicators: string[];
-  supervision_groups: string[];
+  supervision_groups: ChartLabelOption[];
 };
 
 export type ChartPanelHandle = {

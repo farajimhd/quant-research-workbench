@@ -92,7 +92,7 @@ const activeBuildStatuses = new Set(["queued", "running", "canceling", "cancelli
 const pauseableBuildStatuses = new Set(["queued", "running"]);
 const pausedBuildStatuses = new Set(["paused"]);
 const resumableBuildStatuses = new Set(["cancelled", "canceled", "failed", "error"]);
-type BuildStartMode = "normal" | "spread";
+type BuildStartMode = "normal" | "oracle" | "spread";
 
 function isActiveBuildStatus(status: unknown) {
   return activeBuildStatuses.has(String(status ?? "").toLowerCase());
@@ -108,7 +108,7 @@ export function MarketDataBuildPage() {
   const [deleteResult, setDeleteResult] = useState<string | null>(null);
   const [editingScope, setEditingScope] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [jobAction, setJobAction] = useState<"long-momentum-v4" | "pause" | "resume" | "resume-stateful" | "spread-backfill" | "start" | "stop" | null>(null);
+  const [jobAction, setJobAction] = useState<"long-momentum-v4" | "oracle-supervision" | "pause" | "resume" | "resume-stateful" | "spread-backfill" | "start" | "stop" | null>(null);
   const [startMode, setStartMode] = useState<BuildStartMode>("normal");
 
   useEffect(() => {
@@ -224,6 +224,26 @@ export function MarketDataBuildPage() {
     setJobAction("long-momentum-v4");
     try {
       const payload = await api<BuildJob>("/api/market-data/build/long-momentum-v4/jobs", {
+        method: "POST",
+        body: JSON.stringify(scope)
+      });
+      setJob(payload);
+      await loadJobs(scope);
+      await loadJob(scope, payload.job_id);
+      setActiveTab(tabs[0]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setJobAction(null);
+    }
+  }
+
+  async function startOracleSupervisionBuild() {
+    if (!scope) return;
+    setError(null);
+    setJobAction("oracle-supervision");
+    try {
+      const payload = await api<BuildJob>("/api/market-data/build/oracle-supervision/jobs", {
         method: "POST",
         body: JSON.stringify(scope)
       });
@@ -403,11 +423,14 @@ export function MarketDataBuildPage() {
           onDeleteRequest={requestDeleteBuild}
           onOpenJob={(jobId) => scope && openJob(scope, jobId)}
           onSelectNormal={() => setStartMode("normal")}
+          onSelectOracle={() => setStartMode("oracle")}
           onSelectSpread={() => setStartMode("spread")}
           onLongMomentumV4Build={startLongMomentumV4Build}
+          onOracleSupervisionBuild={startOracleSupervisionBuild}
           onSpreadBackfill={startSpreadBackfill}
           onStartBuild={startBuild}
           longMomentumV4Running={jobAction === "long-momentum-v4"}
+          oracleSupervisionRunning={jobAction === "oracle-supervision"}
           spreadBackfillRunning={jobAction === "spread-backfill"}
           startMode={startMode}
           startRunning={jobAction === "start"}
@@ -510,12 +533,15 @@ function BuildStartPage({
   onEditScope,
   onDeleteRequest,
   onLongMomentumV4Build,
+  onOracleSupervisionBuild,
   onOpenJob,
   onSelectNormal,
+  onSelectOracle,
   onSelectSpread,
   onSpreadBackfill,
   onStartBuild,
   longMomentumV4Running,
+  oracleSupervisionRunning,
   spreadBackfillRunning,
   startMode,
   startRunning,
@@ -527,17 +553,58 @@ function BuildStartPage({
   onEditScope: () => void;
   onDeleteRequest: (job: BuildJob) => void;
   onLongMomentumV4Build: () => void;
+  onOracleSupervisionBuild: () => void;
   onOpenJob: (jobId: string) => void;
   onSelectNormal: () => void;
+  onSelectOracle: () => void;
   onSelectSpread: () => void;
   onSpreadBackfill: () => void;
   onStartBuild: () => void;
   longMomentumV4Running: boolean;
+  oracleSupervisionRunning: boolean;
   spreadBackfillRunning: boolean;
   startMode: BuildStartMode;
   startRunning: boolean;
   scope: Scope | null;
 }) {
+  if (startMode === "oracle") {
+    return (
+      <section className="panel">
+        <div className="section-heading-row">
+          <div>
+            <h2>Build Oracle Supervision</h2>
+            <p>Build compact future-looking LONG/SHORT oracle labels for selected 1m sessions. Use a one or two day scope first, then inspect the labels on the Review Data chart.</p>
+          </div>
+          <div className="button-row">
+            <button className="button primary" disabled={!scope || oracleSupervisionRunning || startRunning} onClick={onOracleSupervisionBuild} type="button">
+              {oracleSupervisionRunning ? "Starting..." : "Start oracle supervision"}
+            </button>
+            <button className="button" disabled={!scope || oracleSupervisionRunning || startRunning} onClick={onEditScope} type="button">
+              Edit scope
+            </button>
+            <button className="button" disabled={oracleSupervisionRunning || startRunning} onClick={onSelectNormal} type="button">
+              Back to build runs
+            </button>
+          </div>
+        </div>
+        {error ? <div className="error-panel">{error}</div> : null}
+        {scope ? (
+          <div className="build-summary-facts">
+            <BuildFact label="Start" value={scope.start_date} />
+            <BuildFact label="End" value={scope.end_date} />
+            <BuildFact label="Timeframe" value="1m" />
+            <BuildFact label="Artifact" value="supervision_oracle" />
+            <BuildFact label="Processed root" value={scope.processed_root} />
+          </div>
+        ) : null}
+        <div className="build-step-grid" style={{ marginTop: 16 }}>
+          {oracleSupervisionPreviewStages().map((stage) => (
+            <BuildStepCard key={stage.phase ?? stage.label} stage={stage} />
+          ))}
+        </div>
+      </section>
+    );
+  }
   if (startMode === "spread") {
     return (
       <section className="panel">
@@ -583,13 +650,16 @@ function BuildStartPage({
           <p>Start a provider build or open an earlier build record. The market-data artifacts stay integrated in the shared processed store.</p>
         </div>
         <div className="button-row">
-          <button className="button primary" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV4Running} onClick={onStartBuild} type="button">
+          <button className="button primary" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV4Running || oracleSupervisionRunning} onClick={onStartBuild} type="button">
             {startRunning ? "Starting..." : "New build"}
           </button>
-          <button className="button" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV4Running} onClick={onLongMomentumV4Build} type="button">
+          <button className="button" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV4Running || oracleSupervisionRunning} onClick={onLongMomentumV4Build} type="button">
             {longMomentumV4Running ? "Starting..." : "Build LM v4 features"}
           </button>
-          <button className="button" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV4Running} onClick={onSelectSpread} type="button">
+          <button className="button" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV4Running || oracleSupervisionRunning} onClick={onSelectOracle} type="button">
+            Build oracle supervision
+          </button>
+          <button className="button" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV4Running || oracleSupervisionRunning} onClick={onSelectSpread} type="button">
             Build spread columns
           </button>
           <button className="button" disabled={!scope} onClick={onEditScope} type="button">
@@ -953,6 +1023,8 @@ function buildStageDescription(phase: string | undefined, label?: string): strin
   if (label === "Add spread columns to bars") return "Drops old quote/spread columns, joins spread by ticker and window_start, and rewrites bar artifacts.";
   if (label === "Patch spread feature files") return "Updates only volume/liquidity feature files with the quote-derived spread fields.";
   if (label === "Finalize spread build") return "Records final spread build status and closes the job.";
+  if (label === "Build oracle labels") return "Calculates compact future-looking LONG/SHORT method and signal labels from the future price path.";
+  if (label === "Finalize supervision build") return "Records final oracle supervision build status and closes the job.";
   switch (phase) {
     case "scan_source":
       return "Checks raw files and classifies each market session.";
@@ -977,6 +1049,15 @@ function spreadBuildPreviewStages(): Stage[] {
     { phase: "build_bars", label: "Add spread columns to bars", done: 0, total: 1, elapsed_sec: 0, progress: 0, unit_label: "step", active_items: [], active_count: 0 },
     { phase: "build_features", label: "Patch spread feature files", done: 0, total: 1, elapsed_sec: 0, progress: 0, unit_label: "step", active_items: [], active_count: 0 },
     { phase: "finalize", label: "Finalize spread build", done: 0, total: 1, elapsed_sec: 0, progress: 0, unit_label: "step", active_items: [], active_count: 0 },
+  ];
+}
+
+function oracleSupervisionPreviewStages(): Stage[] {
+  return [
+    { phase: "scan_source", label: "Scan selected sessions", done: 0, total: 1, elapsed_sec: 0, progress: 0, unit_label: "step", active_items: [], active_count: 0 },
+    { phase: "build_bars", label: "Build 1m bars", done: 0, total: 1, elapsed_sec: 0, progress: 0, unit_label: "step", active_items: [], active_count: 0 },
+    { phase: "build_features", label: "Build oracle labels", done: 0, total: 1, elapsed_sec: 0, progress: 0, unit_label: "step", active_items: [], active_count: 0 },
+    { phase: "finalize", label: "Finalize supervision build", done: 0, total: 1, elapsed_sec: 0, progress: 0, unit_label: "step", active_items: [], active_count: 0 },
   ];
 }
 

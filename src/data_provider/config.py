@@ -12,7 +12,7 @@ DEFAULT_PROCESSED_ROOT = Path("D:/TradingData/quant-research-workbench/market_da
 EXCHANGE_TIME_ZONE = "America/New_York"
 SCHEMA_VERSION = 3
 FEATURE_VERSION = 17
-SUPERVISION_VERSION = 3
+SUPERVISION_VERSION = 4
 
 TIMEFRAMES: dict[str, int | str] = {
     "1m": 1,
@@ -41,6 +41,7 @@ FEATURE_GROUPS = [
 SUPERVISION_GROUPS = [
     "bar",
     "method",
+    "oracle",
     "scanner",
 ]
 

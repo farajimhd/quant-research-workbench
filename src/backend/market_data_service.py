@@ -1721,6 +1721,57 @@ def chart_display_item_summary(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def supervision_label_options(records: list[dict[str, Any]], timeframe: str, start: date, end: date) -> list[dict[str, Any]]:
+    available_groups = {
+        str(record.get("group"))
+        for record in records
+        if record.get("timeframe") == timeframe
+        and start.isoformat() <= str(record.get("session_date") or "") <= end.isoformat()
+        and record.get("exists")
+    }
+    options: list[dict[str, Any]] = []
+    if "supervision_oracle" in available_groups:
+        options.extend(
+            [
+                {
+                    "id": "supervision:oracle:long_supervision",
+                    "group": "oracle:long_supervision",
+                    "title": "Oracle Long Supervision",
+                    "lookahead": True,
+                    "leakage": leakage_block_for_chart(),
+                    "knowledge": {
+                        "shortDescription": "Future-looking long oracle labels.",
+                        "detailedDescription": "Highlights bars where the compact oracle supervision selected LONG as the desired method, including ENTER, HOLD, and EXIT states.",
+                        "theory": "The label is built from future path profit adjusted for drawdown, timing, and top proximity. It is for research validation only.",
+                        "interpretation": "Higher score means the future path better matched a tradable long opportunity or long exit point.",
+                        "caveats": ["Uses future bars by design. Do not use directly as a live signal."],
+                        "equations": [],
+                    },
+                },
+                {
+                    "id": "supervision:oracle:short_supervision",
+                    "group": "oracle:short_supervision",
+                    "title": "Oracle Short Supervision",
+                    "lookahead": True,
+                    "leakage": leakage_block_for_chart(),
+                    "knowledge": {
+                        "shortDescription": "Future-looking short oracle labels.",
+                        "detailedDescription": "Highlights bars where the compact oracle supervision selected SHORT as the desired method, including ENTER, HOLD, and EXIT states.",
+                        "theory": "The label is built from future downside path profit adjusted for adverse bounce, timing, and bottom proximity. It is for research validation only.",
+                        "interpretation": "Higher score means the future path better matched a tradable short opportunity or short exit point.",
+                        "caveats": ["Uses future bars by design. Do not use directly as a live signal."],
+                        "equations": [],
+                    },
+                },
+            ]
+        )
+    return options
+
+
+def leakage_block_for_chart() -> dict[str, Any]:
+    return {"type": "lookahead", "safeForLiveTrading": False, "description": "Uses future bars and is intended only for offline research, review, and model-target construction."}
+
+
 def resolve_chart_display_items(
     catalog: dict[str, Any],
     available_options: list[dict[str, Any]],
@@ -2284,11 +2335,18 @@ SUPERVISION_LABEL_SPECS: dict[str, dict[str, str]] = {
     "scanner:is_top_10": {"source": "scanner", "signal": "is_top_10", "confidence": "method_confidence", "kind": "scanner_rank"},
     "scanner:is_top_1pct": {"source": "scanner", "signal": "is_top_1pct", "confidence": "method_confidence", "kind": "scanner_rank"},
     "scanner:is_top_5pct": {"source": "scanner", "signal": "is_top_5pct", "confidence": "method_confidence", "kind": "scanner_rank"},
+    "oracle:long_supervision": {"source": "oracle", "signal": "oracle_long_supervision", "confidence": "score", "kind": "oracle_long"},
+    "oracle:short_supervision": {"source": "oracle", "signal": "oracle_short_supervision", "confidence": "score", "kind": "oracle_short"},
+    "oracle:long_enter": {"source": "oracle", "signal": "oracle_long_enter_signal", "confidence": "oracle_long_enter_score", "kind": "oracle_long_enter"},
+    "oracle:long_exit": {"source": "oracle", "signal": "oracle_long_exit_signal", "confidence": "oracle_long_exit_score", "kind": "oracle_long_exit"},
+    "oracle:short_enter": {"source": "oracle", "signal": "oracle_short_enter_signal", "confidence": "oracle_short_enter_score", "kind": "oracle_short_enter"},
+    "oracle:short_exit": {"source": "oracle", "signal": "oracle_short_exit_signal", "confidence": "oracle_short_exit_score", "kind": "oracle_short_exit"},
 }
 
 DEFAULT_SUPERVISION_LABELS: dict[str, list[str]] = {
     "bar": ["bar:oracle_long_entry_signal", "bar:oracle_long_exit_signal"],
     "method": ["method:method_entry_signal", "method:method_exit_signal"],
+    "oracle": ["oracle:long_supervision", "oracle:short_supervision"],
     "scanner": ["scanner:is_top_3"],
 }
 
@@ -2319,7 +2377,14 @@ def supervision_label_candidates(frame: pl.DataFrame, spec: dict[str, str], min_
     candidates = frame.filter(pl.col(signal) == True)
     confidence_column = spec.get("confidence", "")
     if confidence_column and confidence_column in candidates.columns:
-        scored = candidates.filter(pl.col(confidence_column) >= min_confidence)
+        threshold = min_confidence
+        try:
+            max_confidence = candidates.select(pl.col(confidence_column).max()).item()
+            if max_confidence is not None and float(max_confidence) > 1.0:
+                threshold = min_confidence * 100.0
+        except (TypeError, ValueError):
+            threshold = min_confidence
+        scored = candidates.filter(pl.col(confidence_column) >= threshold)
         if not scored.is_empty():
             candidates = scored
         candidates = candidates.sort(confidence_column, descending=True)
@@ -2392,6 +2457,10 @@ def marker_text(row: dict[str, Any], supervision_group: str) -> str:
         if kind == "method_exit":
             return f"IGNORE {method} {confidence_label(row.get('method_confidence')).strip()}"
         return f"{method} {percent_label(row.get('method_best_return'))}{confidence_label(row.get('method_confidence'))}"
+    if source == "oracle":
+        method = "L" if str(row.get("desired_method") or "").upper() == "LONG" else "S"
+        signal = str(row.get("signal") or "").upper()[:5] or "LABEL"
+        return f"{method} {signal} {integer_label(row.get('score'))} {percent_label(row.get('expected_profit'))}"
     if kind == "bar_exit":
         return f"EXIT h{integer_label(row.get('horizon_bars') or row.get('horizon'))} risk {percent_label(row.get('fwd_mae'))}{confidence_label(row.get('oracle_long_exit_confidence'))}"
     if kind == "bar_liquidity":
@@ -2412,6 +2481,13 @@ def supervision_marker_size(supervision_group: str, row: dict[str, Any]) -> floa
             return 1.45
         if rank is not None and rank <= 3:
             return 1.25
+        return 1.0
+    if source == "oracle":
+        score = numeric_or_none(row.get("score"))
+        if score is not None and score >= 85:
+            return 1.35
+        if score is not None and score >= 70:
+            return 1.2
         return 1.0
     confidence_column = spec.get("confidence") if spec else ("method_confidence" if source == "method" else "oracle_long_entry_confidence")
     confidence = numeric_or_none(row.get(confidence_column))
@@ -2494,7 +2570,17 @@ def supervision_price_zones(
     close = numeric_or_none(source_bar.get("close"))
     if close is None or close <= 0:
         return []
-    if source == "bar":
+    if source == "oracle":
+        method = str(row.get("desired_method") or "").upper()
+        signal = str(row.get("signal") or "").upper()
+        target_price = numeric_or_none(row.get("best_exit_price"))
+        target_return = numeric_or_none(row.get("expected_profit"))
+        target_end = timestamp_seconds(row.get("best_exit_time_utc")) or start + int_or_default(row.get("horizon_bars"), 1) * candle_duration
+        target_label = f"{method} {signal} target {percent_label(target_return)}"
+        risk_return = numeric_or_none(row.get("expected_drawdown"))
+        target_color = "#067647" if method == "LONG" else "#B42318"
+        risk_end = target_end
+    elif source == "bar":
         target_price = numeric_or_none(row.get("oracle_best_exit_price"))
         target_return = numeric_or_none(row.get("oracle_best_exit_return") or row.get("fwd_mfe"))
         horizon_bars = int_or_default(row.get("horizon_bars"), 1)
@@ -2524,22 +2610,37 @@ def supervision_price_zones(
     else:
         return []
     zones: list[dict[str, Any]] = []
-    show_target = kind not in {"bar_exit", "method_exit", "bar_liquidity", "bar_volume_sequence"}
-    if show_target and target_price is not None and target_price > close:
+    show_target = kind not in {"bar_exit", "method_exit", "bar_liquidity", "bar_volume_sequence", "oracle_long_exit", "oracle_short_exit"}
+    if show_target and target_price is not None and ((target_price > close and target_color != "#B42318") or (target_price < close and target_color == "#B42318")):
         zones.append(
             supervision_zone(
                 supervision_group,
                 start=start,
                 end=max(start + candle_duration, int(target_end)),
-                lower=close,
-                upper=target_price,
+                lower=min(close, target_price),
+                upper=max(close, target_price),
                 color=target_color,
                 label=target_label,
                 fill_opacity=0.055,
                 border_opacity=0.20,
             )
         )
-    if risk_return is not None and risk_return < 0:
+    if source == "oracle" and str(row.get("desired_method") or "").upper() == "SHORT" and risk_return is not None and risk_return > 0:
+        risk_price = close * (1.0 + risk_return)
+        zones.append(
+            supervision_zone(
+                supervision_group,
+                start=start,
+                end=max(start + candle_duration, int(risk_end)),
+                lower=close,
+                upper=risk_price,
+                color="#B42318",
+                label=f"Adverse {percent_label(risk_return)}",
+                fill_opacity=0.045,
+                border_opacity=0.16,
+            )
+        )
+    elif risk_return is not None and risk_return < 0:
         risk_price = close * (1.0 + risk_return)
         zones.append(
             supervision_zone(
@@ -2597,8 +2698,19 @@ def supervision_marker_style(catalog: dict[str, Any], supervision_group: str, ro
     defaults = {
         "bar": ("#067647", "arrowUp", "belowBar"),
         "method": ("#2563EB", "arrowUp", "belowBar"),
+        "oracle": ("#067647", "arrowUp", "belowBar"),
         "scanner": ("#7C3AED", "square", "aboveBar"),
     }
+    if source == "oracle":
+        method = str(row.get("desired_method") or "").upper()
+        signal_value = str(row.get("signal") or "").upper()
+        if method == "SHORT":
+            return ("#B42318", "arrowDown" if signal_value != "EXIT" else "arrowUp", "aboveBar" if signal_value != "EXIT" else "belowBar")
+        if signal_value == "EXIT":
+            return ("#B54708", "arrowDown", "aboveBar")
+        if signal_value == "HOLD":
+            return ("#15803D", "circle", "belowBar")
+        return ("#067647", "arrowUp", "belowBar")
     item = None
     if signal:
         item = by_id.get(signal)
@@ -2661,7 +2773,7 @@ def chart_payload(
         "feature_groups": feature_group_options(records, timeframe, start_date, end_date),
         "feature_columns": non_indicator_columns,
         "standard_indicators": indicator_columns,
-        "supervision_groups": [],
+        "supervision_groups": supervision_label_options(records, timeframe, start_date, end_date),
         "display_items": display_options,
     }
     if bars.is_empty():

@@ -1035,6 +1035,28 @@ def start_long_momentum_v4_build(payload: BuildSubmit) -> dict[str, Any]:
     )
 
 
+@app.post("/api/market-data/build/oracle-supervision/jobs")
+def start_oracle_supervision_build(payload: BuildSubmit) -> dict[str, Any]:
+    request = BuildRequest(
+        raw_root=Path(payload.raw_root),
+        spread_root=Path(payload.spread_root),
+        processed_root=Path(payload.processed_root),
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        timeframes=["1m"],
+        feature_groups=[],
+        supervision_groups=["oracle"],
+        rebuild_mode="force_rebuild",
+        tickers=None,
+    )
+    request.build_name = f"oracle_supervision_{payload.start_date.isoformat()}_{payload.end_date.isoformat()}"
+    return submit_build_job(
+        request,
+        session_workers=payload.session_workers,
+        polars_threads=payload.polars_threads,
+    )
+
+
 @app.post("/api/market-data/build/spread-backfill/jobs")
 def start_spread_backfill(payload: BuildSubmit) -> dict[str, Any]:
     request = BuildRequest(
@@ -1315,7 +1337,7 @@ def market_chart(
     selected_columns = parse_csv_list(columns) if columns is not None else []
     if selected_display_items is None and not selected_columns:
         selected_display_items = default_catalog_display_items(processed_root_path)
-    selected_supervision: list[str] = []
+    selected_supervision = parse_csv_list(supervision_groups)
     range_start, range_end = resolve_chart_range(start_date, end_date, session_date)
     return json_safe(
         chart_payload(
