@@ -10,3 +10,5 @@ Version details live in each version folder:
 - `v1`: adaptive scanner with rotation and profit-protection exits.
 - `v2`: quote-liquidity scanner, five-bar volume ranking, ask-size entries,
   one-cent stop, and TEMA-close trend exit.
+- `v3`: v2-derived tighter momentum selection with a $5 price floor, one new
+  entry per bar, and profit-lock exits.
