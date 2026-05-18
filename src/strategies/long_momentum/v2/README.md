@@ -39,10 +39,10 @@ fixed stop; v2 does not trail the stop after entry. Entry orders carry an
 attached same-bar protective stop, so if the execution candle trades through
 that stop after entry, the engine closes the actually filled quantity.
 
-If an entry or exit partially fills, v2 handles the residual first on the next
-bar open with a same-bar limit at `current_open`, then it continues scanning the
-same bar. Entry residuals are not refilled when TEMA is already closed at that
-bar open.
+If an entry partially fills, v2 accepts the filled quantity as the final entry
+size and does not resubmit the unfilled remainder. If an exit partially fills,
+v2 handles the residual first on the next bar open with a same-bar limit at
+`current_open`, then it continues scanning the same bar.
 
 ## Exit
 

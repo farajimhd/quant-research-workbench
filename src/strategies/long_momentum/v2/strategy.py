@@ -157,26 +157,8 @@ class LongMomentumV2Strategy:
                 continue
             side = str(fill.get("side") or "").upper()
             if side == "BUY":
-                if symbol not in portfolio.positions:
-                    continue
-                if self._tema_closed(row):
-                    self._reject(context.timestamp, symbol, "partial_entry_blocked_tema_closed", row)
-                    continue
-                stop_price = self._initial_stop_price(row, open_price)
-                self._set_entry_metadata(symbol, row, rank=0, score=0.0, stop_price=stop_price)
-                requests.append(
-                    OrderRequest(
-                        symbol=symbol,
-                        side="BUY",
-                        quantity=remaining,
-                        order_type="LIMIT",
-                        reason="PARTIAL_ENTRY_REST",
-                        limit_price=open_price,
-                        allow_same_bar_fill=True,
-                        protective_stop_price=stop_price,
-                        tag=f"ENTRY|reason=PARTIAL_ENTRY_REST|qty={remaining}|open={open_price:.2f}|stop={stop_price:.2f}|source_fill={fill.get('fill_id')}",
-                    )
-                )
+                self._reject(context.timestamp, symbol, "partial_entry_rest_disabled", row)
+                continue
             elif side == "SELL":
                 position = portfolio.positions.get(symbol)
                 if position is None:
