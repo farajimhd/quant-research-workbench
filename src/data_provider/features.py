@@ -108,6 +108,12 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
     ],
     "volume_liquidity": [
         "bar_id",
+        "volume_avg_3",
+        "avg_volume_so_far",
+        "volume_convergence_ratio",
+        "volume_convergence_gap",
+        "volume_convergence_slope",
+        "bearish_volume_divergence",
         "volume_sma10",
         "relative_volume10",
         "volume_sma20",
@@ -470,8 +476,14 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             rolling_z("bar_range", 20, "range_z20"),
             rolling_z("volume", 20, "volume_z20"),
             rolling_z("transactions", 20, "transactions_z20"),
+            pl.col("volume").rolling_mean(3, min_samples=1).over(["ticker", "session_date"]).alias("volume_avg_3"),
+            (pl.col("volume").cum_sum().over(["ticker", "session_date"]) / pl.cum_count("volume").over(["ticker", "session_date"])).alias("avg_volume_so_far"),
         )
         .with_columns(
+            pl.when(pl.col("avg_volume_so_far") > 0)
+            .then(pl.col("volume_avg_3") / pl.col("avg_volume_so_far"))
+            .otherwise(None)
+            .alias("volume_convergence_ratio"),
             (pl.col("bb_mid20") + 2.0 * pl.col("_bb_std20")).alias("bb_upper20"),
             (pl.col("bb_mid20") - 2.0 * pl.col("_bb_std20")).alias("bb_lower20"),
             pl.when(pl.col("bb_mid20") > 0).then((4.0 * pl.col("_bb_std20")) / pl.col("bb_mid20")).otherwise(0.0).alias("bb_width20"),
@@ -505,6 +517,26 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             .then(pl.col("day_dollar_volume_so_far") / pl.col("tod_cum_dollar_volume_avg13"))
             .otherwise(None)
             .alias("intraday_dollar_rvol13"),
+        )
+        .with_columns(
+            pl.when(pl.col("volume_convergence_ratio") > 0)
+            .then(pl.col("volume_convergence_ratio").log())
+            .otherwise(None)
+            .alias("volume_convergence_gap")
+        )
+        .with_columns(
+            (pl.col("volume_convergence_gap") - pl.col("volume_convergence_gap").shift(1).over(["ticker", "session_date"])).alias("volume_convergence_slope")
+        )
+        .with_columns(
+            (
+                (pl.col("session_bar_count") >= 4)
+                & (pl.col("high") >= pl.col("day_high_so_far"))
+                & (pl.col("day_high_so_far").shift(1).over(["ticker", "session_date"]).is_not_null())
+                & (pl.col("volume_convergence_slope") < 0)
+                & (pl.col("volume_avg_3") < pl.col("volume_avg_3").shift(1).over(["ticker", "session_date"]))
+            )
+            .fill_null(False)
+            .alias("bearish_volume_divergence")
         )
     )
     typical_money_flow = pl.col("hlc3") * pl.col("volume")

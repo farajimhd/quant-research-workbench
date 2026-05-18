@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 15
+CATALOG_VERSION = 16
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -254,6 +254,7 @@ BOOLEAN_COLUMNS = {
     "current_price_shock",
     "current_volume_shock",
     "current_confirmed_price_volume_shock",
+    "bearish_volume_divergence",
     "is_top_1",
     "is_top_3",
     "is_top_5",
@@ -847,6 +848,25 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             value_format="number",
         )
     )
+    add(
+        marker_display_item(
+            by_column,
+            "feature.volume_liquidity.bearish_volume_divergence",
+            "Bearish Volume Divergence",
+            "volume_liquidity",
+            "bearish_volume_divergence",
+            "#B42318",
+            marker_shape="arrowDown",
+            marker_position="aboveBar",
+            source_columns=[
+                "bearish_volume_divergence",
+                "session_bar_count",
+                "day_high_so_far",
+                "volume_avg_3",
+                "volume_convergence_slope",
+            ],
+        )
+    )
 
     for column, contract in by_column.items():
         presentation = contract.get("presentation", {})
@@ -1117,6 +1137,7 @@ def marker_display_item(
     *,
     marker_shape: str = "circle",
     marker_position: str = "belowBar",
+    source_columns: list[str] | None = None,
 ) -> dict[str, Any] | None:
     return display_item_contract(
         by_column,
@@ -1124,7 +1145,7 @@ def marker_display_item(
         title=title,
         category="feature",
         group=group,
-        source_columns=[signal_column],
+        source_columns=source_columns or [signal_column],
         presentation={
             "selectable": True,
             "defaultVisible": False,
@@ -2421,6 +2442,7 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
         )
 
     rolling = {
+        "volume_avg_3": ("Volume", "share volume", 3),
         "volume_sma10": ("Volume", "share volume", 10),
         "volume_sma20": ("Volume", "share volume"),
         "dollar_volume_sma20": ("DollarVolume", "dollar volume"),
@@ -2455,6 +2477,41 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
             equation=f"$$Relative{numerator}{window}_t=\\begin{{cases}}\\frac{{{numerator}_t}}{{{denominator}_t}},&{denominator}_t>0\\\\0,&otherwise\\end{{cases}}$$",
             variables={numerator: "Current activity", denominator: f"{window}-bar activity baseline"},
         )
+    convergence = {
+        "avg_volume_so_far": (
+            "Average session volume per bar so far.",
+            "Average volume so far divides cumulative same-session volume by the number of bars seen so far. It gives the current session its own participation baseline.",
+            "$$AvgVolumeSoFar_t=\\frac{\\sum_{i\\le t}Volume_i}{SessionBars_t}$$",
+            {"Volume": "Share volume", "SessionBars": "Bars elapsed in the ticker session"},
+        ),
+        "volume_convergence_ratio": (
+            "Short-term volume divided by the session average so far.",
+            "Volume convergence ratio compares the latest three-bar average volume with the average volume per bar seen so far in the same session.",
+            "$$VolumeConvergenceRatio_t=\\frac{VolumeAvg3_t}{AvgVolumeSoFar_t}$$",
+            {"VolumeAvg3": "Three-bar average volume", "AvgVolumeSoFar": "Session average volume per bar so far"},
+        ),
+        "volume_convergence_gap": (
+            "Log gap between short-term volume and the session average.",
+            "Volume convergence gap is the log of the convergence ratio. Positive values mean recent volume is above the session average; falling values mean participation is fading toward the baseline.",
+            "$$VolumeGap_t=\\log(VolumeConvergenceRatio_t)$$",
+            {"VolumeConvergenceRatio": "Short-term volume divided by session average volume so far"},
+        ),
+        "volume_convergence_slope": (
+            "One-bar change in the volume convergence gap.",
+            "Volume convergence slope measures whether the short-term volume gap is expanding or fading compared with the prior bar in the same session.",
+            "$$VolumeSlope_t=VolumeGap_t-VolumeGap_{t-1}$$",
+            {"VolumeGap": "Log short-volume-to-session-average gap"},
+        ),
+        "bearish_volume_divergence": (
+            "Fresh high with fading short-term volume.",
+            "Bearish volume divergence is true when price makes a fresh session high while the three-bar volume average and the volume convergence gap are both falling. It is a review marker for possible exhaustion near the top of an uptrend.",
+            "$$Divergence_t=I(High_t=DayHigh_t\\land \\Delta VolumeGap_t<0\\land VolumeAvg3_t<VolumeAvg3_{t-1})$$",
+            {"High": "Current bar high", "DayHigh": "Session high so far", "VolumeGap": "Log volume convergence gap", "VolumeAvg3": "Three-bar average volume"},
+        ),
+    }
+    if lower in convergence:
+        short, detailed, equation, variables = convergence[lower]
+        return knowledge_block(short, detailed, theory_for_group(group, category), interpretation_for_group(group, category), equation, variables)
     tod_baselines = {
         "tod_cum_volume_avg13": ("DayVolumeSoFar", "share volume"),
         "tod_cum_dollar_volume_avg13": ("DayDollarVolumeSoFar", "dollar volume"),

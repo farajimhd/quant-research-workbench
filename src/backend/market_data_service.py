@@ -643,6 +643,13 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
         names = scan.collect_schema().names()
 
     derived_exprs: list[pl.Expr] = []
+    if "volume_convergence_ratio" not in names and {"volume_avg_3", "avg_volume_so_far"}.issubset(names):
+        derived_exprs.append(
+            pl.when(pl.col("avg_volume_so_far") > 0)
+            .then(pl.col("volume_avg_3") / pl.col("avg_volume_so_far"))
+            .otherwise(None)
+            .alias("volume_convergence_ratio")
+        )
     if "relative_volume10" not in names and {"volume", "volume_sma10"}.issubset(names):
         derived_exprs.append(
             pl.when(pl.col("volume_sma10") > 0)
@@ -652,6 +659,45 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
         )
     if derived_exprs:
         scan = scan.with_columns(derived_exprs)
+        names = scan.collect_schema().names()
+    convergence_exprs: list[pl.Expr] = []
+    if "volume_convergence_gap" not in names and "volume_convergence_ratio" in names:
+        convergence_exprs.append(
+            pl.when(pl.col("volume_convergence_ratio") > 0)
+            .then(pl.col("volume_convergence_ratio").log())
+            .otherwise(None)
+            .alias("volume_convergence_gap")
+        )
+    if convergence_exprs:
+        scan = scan.with_columns(convergence_exprs)
+        names = scan.collect_schema().names()
+    slope_exprs: list[pl.Expr] = []
+    if "volume_convergence_slope" not in names and "volume_convergence_gap" in names and group_columns:
+        slope_exprs.append(
+            (pl.col("volume_convergence_gap") - pl.col("volume_convergence_gap").shift(1).over(group_columns)).alias("volume_convergence_slope")
+        )
+    if slope_exprs:
+        scan = scan.with_columns(slope_exprs)
+        names = scan.collect_schema().names()
+    divergence_exprs: list[pl.Expr] = []
+    if (
+        "bearish_volume_divergence" not in names
+        and group_columns
+        and {"session_bar_count", "high", "day_high_so_far", "volume_convergence_slope", "volume_avg_3"}.issubset(names)
+    ):
+        divergence_exprs.append(
+            (
+                (pl.col("session_bar_count") >= 4)
+                & (pl.col("high") >= pl.col("day_high_so_far"))
+                & (pl.col("day_high_so_far").shift(1).over(group_columns).is_not_null())
+                & (pl.col("volume_convergence_slope") < 0)
+                & (pl.col("volume_avg_3") < pl.col("volume_avg_3").shift(1).over(group_columns))
+            )
+            .fill_null(False)
+            .alias("bearish_volume_divergence")
+        )
+    if divergence_exprs:
+        scan = scan.with_columns(divergence_exprs)
     return scan
 
 
@@ -983,6 +1029,10 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "last_volume",
         "last_volume_avg_3",
         "last_avg_volume_so_far",
+        "last_volume_convergence_ratio",
+        "last_volume_convergence_gap",
+        "last_volume_convergence_slope",
+        "last_bearish_volume_divergence",
         "last_transactions",
         "last_dollar_volume",
         "last_relative_volume10",
@@ -1643,6 +1693,80 @@ def display_item_markers(rows: list[dict[str, Any]], timeframe: str, items: list
     return markers
 
 
+def apply_chart_volume_convergence_columns(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty() or "volume" not in frame.columns:
+        return frame
+    names = frame.columns
+    group_columns = [column for column in ("ticker", "session_date") if column in names]
+    if not group_columns:
+        group_columns = ["ticker"] if "ticker" in names else []
+    exprs: list[pl.Expr] = []
+    if "volume_avg_3" not in names:
+        exprs.append(
+            pl.col("volume").rolling_mean(3, min_samples=1).over(group_columns).alias("volume_avg_3")
+            if group_columns
+            else pl.col("volume").rolling_mean(3, min_samples=1).alias("volume_avg_3")
+        )
+    if "avg_volume_so_far" not in names:
+        exprs.append(
+            (pl.col("volume").cum_sum().over(group_columns) / pl.cum_count("volume").over(group_columns)).alias("avg_volume_so_far")
+            if group_columns
+            else (pl.col("volume").cum_sum() / pl.cum_count("volume")).alias("avg_volume_so_far")
+        )
+    if exprs:
+        frame = frame.with_columns(exprs)
+        names = frame.columns
+    ratio_exprs: list[pl.Expr] = []
+    if "volume_convergence_ratio" not in names and {"volume_avg_3", "avg_volume_so_far"}.issubset(names):
+        ratio_exprs.append(
+            pl.when(pl.col("avg_volume_so_far") > 0)
+            .then(pl.col("volume_avg_3") / pl.col("avg_volume_so_far"))
+            .otherwise(None)
+            .alias("volume_convergence_ratio")
+        )
+    if ratio_exprs:
+        frame = frame.with_columns(ratio_exprs)
+        names = frame.columns
+    gap_exprs: list[pl.Expr] = []
+    if "volume_convergence_gap" not in names and "volume_convergence_ratio" in names:
+        gap_exprs.append(
+            pl.when(pl.col("volume_convergence_ratio") > 0)
+            .then(pl.col("volume_convergence_ratio").log())
+            .otherwise(None)
+            .alias("volume_convergence_gap")
+        )
+    if gap_exprs:
+        frame = frame.with_columns(gap_exprs)
+        names = frame.columns
+    slope_exprs: list[pl.Expr] = []
+    if "volume_convergence_slope" not in names and "volume_convergence_gap" in names:
+        slope_exprs.append(
+            (pl.col("volume_convergence_gap") - pl.col("volume_convergence_gap").shift(1).over(group_columns)).alias("volume_convergence_slope")
+            if group_columns
+            else (pl.col("volume_convergence_gap") - pl.col("volume_convergence_gap").shift(1)).alias("volume_convergence_slope")
+        )
+    if slope_exprs:
+        frame = frame.with_columns(slope_exprs)
+        names = frame.columns
+    if (
+        "bearish_volume_divergence" not in names
+        and group_columns
+        and {"session_bar_count", "high", "day_high_so_far", "volume_convergence_slope", "volume_avg_3"}.issubset(names)
+    ):
+        frame = frame.with_columns(
+            (
+                (pl.col("session_bar_count") >= 4)
+                & (pl.col("high") >= pl.col("day_high_so_far"))
+                & (pl.col("day_high_so_far").shift(1).over(group_columns).is_not_null())
+                & (pl.col("volume_convergence_slope") < 0)
+                & (pl.col("volume_avg_3") < pl.col("volume_avg_3").shift(1).over(group_columns))
+            )
+            .fill_null(False)
+            .alias("bearish_volume_divergence")
+        )
+    return frame
+
+
 def display_marker_text(item: dict[str, Any], presentation: dict[str, Any], role: str) -> str:
     explicit = str(presentation.get("labelText") or "").strip()
     label_mode = str(presentation.get("labelMode") or ("short" if role == "text_label" else "none"))
@@ -2214,7 +2338,7 @@ def chart_payload(
             "price_zones": [],
             "options": options,
         }
-    bars = bars.sort("bar_time_market")
+    bars = apply_chart_volume_convergence_columns(bars.sort("bar_time_market"))
     rows = bars.to_dicts()
     candles = []
     volume = []
