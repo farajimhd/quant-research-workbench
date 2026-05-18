@@ -128,6 +128,7 @@ class BacktestEngine:
                 processed_event_bars = 0
                 total_event_bars = int(metadata["total_event_bars"])
                 live_chart_bar_interval = self._live_chart_bar_interval(requirements)
+                requires_latest_frame = self._strategy_requires_latest_frame()
                 live_trade_count = 0
                 for index, session_date in enumerate(sessions, start=1):
                     self._check_cancelled(cancel_check)
@@ -197,7 +198,11 @@ class BacktestEngine:
                         execution_fresh_bars = {row["ticker"]: row for row in execution_rows}
                         latest_bars.update(fresh_bars)
                         latest_execution_bars.update(execution_fresh_bars)
-                        latest = pl.DataFrame(list(latest_bars.values()), infer_schema_length=None) if latest_bars else pl.DataFrame()
+                        latest = (
+                            pl.DataFrame(list(latest_bars.values()), infer_schema_length=None)
+                            if requires_latest_frame and latest_bars
+                            else pl.DataFrame()
+                        )
 
                         pending_order_ids_at_open = {order.order_id for order in self.pending_orders}
                         recent_orders = self._strategy_recent_orders
@@ -227,7 +232,7 @@ class BacktestEngine:
                         session_processed_bars += 1
                         total_event_bars = max(total_event_bars, processed_event_bars)
                         if self._should_write_live_chart(session_processed_bars, session_total_bars, live_chart_bar_interval):
-                            self._write_chart_artifacts(run_dir, artifact_writer)
+                            self._write_chart_artifacts(run_dir, artifact_writer, coalesce=True)
                         if self._should_emit_bar_progress(session_processed_bars, session_total_bars):
                             summary = self._summary(run_dir)
                             self._emit_progress(
@@ -439,10 +444,14 @@ class BacktestEngine:
             return False
         return session_processed_bars == session_total_bars or session_processed_bars % interval == 0
 
+    def _strategy_requires_latest_frame(self) -> bool:
+        return bool(getattr(self.strategy, "requires_latest_frame", False))
+
     def _write_live_trades_if_needed(self, run_dir, artifact_writer: ArtifactWriter, previous_count: int) -> int:
         current_count = len(self.trades)
         if current_count > previous_count:
-            artifact_writer.write_table(run_dir / "trades.parquet", self.trades)
+            if not artifact_writer.write_table(run_dir / "trades.parquet", self.trades, coalesce=True):
+                return previous_count
         return current_count
 
     def _emit_progress(self, progress_callback, payload: dict) -> None:
@@ -1014,11 +1023,12 @@ class BacktestEngine:
             artifact_writer.write_table(run_dir / "symbol_bars_5m.parquet", self.symbol_bar_5m_rows)
         artifact_writer.write_text(run_dir / "logs.txt", "\n".join(self.logs))
 
-    def _write_chart_artifacts(self, run_dir, artifact_writer: ArtifactWriter) -> None:
+    def _write_chart_artifacts(self, run_dir, artifact_writer: ArtifactWriter, *, coalesce: bool = False) -> None:
         artifact_writer.write_portfolio_candles(
             run_dir / "portfolio_candles.parquet",
             self.portfolio_rows,
             initial_cash=self.config.initial_cash,
+            coalesce=coalesce,
         )
         artifact_writer.write_json(
             run_dir / "chart_metadata.json",
@@ -1029,6 +1039,7 @@ class BacktestEngine:
                     self.config.end_date,
                 ),
             },
+            coalesce=coalesce,
         )
 
     def _write_metadata(self, run_dir, metadata: dict, artifact_writer: ArtifactWriter) -> None:
