@@ -26,6 +26,11 @@ class LongMomentumV4SymbolState:
     pullback_seen: bool = False
 
 
+REQUIRED_PROVIDER_COLUMNS = (
+    "last_bearish_volume_divergence_score",
+)
+
+
 class LongMomentumV4Strategy:
     name = "long_momentum"
 
@@ -70,10 +75,21 @@ class LongMomentumV4Strategy:
         self.states = {}
         self.entry_order_metadata = {}
         self.position_meta = {}
+        self._validate_provider_columns(frames.event_frame)
         return frames.event_frame.filter(
             (pl.col("minute_of_day") >= self.config.trading_start_minute)
             & (pl.col("minute_of_day") < self.config.trading_end_minute)
         )
+
+    def _validate_provider_columns(self, frame: pl.DataFrame) -> None:
+        missing = [column for column in REQUIRED_PROVIDER_COLUMNS if column not in frame.columns]
+        if missing:
+            date_text = self.session_date.isoformat() if self.session_date else "unknown session"
+            missing_text = ", ".join(missing)
+            raise ValueError(
+                f"Long Momentum v4 requires provider-built volume divergence features for {date_text}; "
+                f"missing columns: {missing_text}. Rebuild market data with current volume_liquidity features."
+            )
 
     def on_bar(self, context: BarContext, portfolio: Portfolio, pending_orders: list[Order]) -> list[OrderRequest]:
         self._update_states(context)
@@ -237,7 +253,7 @@ class LongMomentumV4Strategy:
             last_body_high.alias("_lm_last_body_high"),
             last_body_low.alias("_lm_last_body_low"),
             column("last_3_candle_low_price", None).cast(pl.Float64).alias("_lm_last_3_candle_low"),
-            column("last_bearish_volume_divergence_score", 0.0).cast(pl.Float64).fill_null(0.0).alias("_lm_bearish_divergence_score"),
+            column("last_bearish_volume_divergence_score", None).cast(pl.Float64).fill_null(0.0).alias("_lm_bearish_divergence_score"),
             long_spread_ok.fill_null(False).alias("_lm_spread_ok"),
             tema_open.fill_null(False).alias("_lm_tema_open"),
         ).with_columns(
@@ -308,13 +324,19 @@ class LongMomentumV4Strategy:
             if state is not None and state.setup_body_high > 0 and state.setup_bar_index < bar_index <= state.setup_expires_bar:
                 if current_open < state.setup_body_high or self._float(row.get("last_close")) < state.setup_body_high:
                     state.pullback_seen = True
+            active_setup_high = (
+                state.setup_body_high
+                if state is not None and state.setup_body_high > 0 and state.setup_bar_index < bar_index <= state.setup_expires_bar
+                else 0.0
+            )
+            body_break_threshold = max(body_high, active_setup_high)
 
             body_break_entry = (
                 setup_open
                 and self.config.enable_entry_trigger_1_earlier_body_break
                 and current_open > 0
-                and body_high > 0
-                and current_open > body_high
+                and body_break_threshold > 0
+                and current_open > body_break_threshold
             )
             pullback_reclaim_entry = self._pullback_reclaim_entry_open(row, state, bar_index)
             entry_open = body_break_entry or pullback_reclaim_entry
@@ -337,15 +359,20 @@ class LongMomentumV4Strategy:
 
             row["setup_stop_low"] = state.setup_low if state and state.setup_low > 0 else setup_low
             row["setup_body_high"] = state.setup_body_high if state and state.setup_body_high > 0 else body_high
+            row["body_break_threshold"] = body_break_threshold
             row["long_momentum_setup_open"] = setup_open
             row["long_momentum_body_break_entry_open"] = body_break_entry
+            row["long_momentum_early_body_break_entry_open"] = body_break_entry
             row["long_momentum_pullback_reclaim_entry_open"] = pullback_reclaim_entry
+            row["long_momentum_v4_body_break_entry_open"] = body_break_entry
+            row["long_momentum_v4_pullback_reclaim_entry_open"] = pullback_reclaim_entry
             row["body_break_entry_open"] = body_break_entry
             row["pullback_reclaim_entry_open"] = pullback_reclaim_entry
             row["entry_trigger"] = trigger
             row["long_momentum_entry_trigger"] = trigger
             row["entry_open"] = entry_open
             row["long_momentum_entry_open"] = entry_open
+            row["long_momentum_v4_entry_open"] = entry_open
 
     def _pullback_reclaim_entry_open(self, row: dict, state: LongMomentumV4SymbolState | None, bar_index: int) -> bool:
         if not self.config.enable_entry_trigger_2_pullback_reclaim or state is None:

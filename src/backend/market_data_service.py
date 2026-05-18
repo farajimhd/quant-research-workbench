@@ -557,8 +557,6 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
         "last_close",
         "last_volume",
         "last_transactions",
-        "last_is_red",
-        "last_return_1",
         "last_tema_open",
         "last_macd_line",
         "last_macd_hist_z_since_open",
@@ -574,7 +572,7 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
         bearish_divergence_score = (
             pl.col("last_bearish_volume_divergence_score").fill_null(0.0)
             if "last_bearish_volume_divergence_score" in names
-            else pl.lit(0.0)
+            else pl.lit(None)
         )
         setup_price_ok = ((pl.col("last_close") >= 1.0) & (pl.col("last_close") <= 10.0)).fill_null(False)
         setup_activity_ok = (
@@ -590,15 +588,13 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
             & (pl.col("last_locked_or_crossed_count") <= 0.0)
         ).fill_null(False)
         setup_trend_ok = (
-            (~pl.col("last_is_red"))
-            & (pl.col("last_return_1") > 0.0)
-            & pl.col("last_tema_open")
+            pl.col("last_tema_open")
             & (pl.col("last_macd_line") > 0.0)
-            & (pl.col("last_macd_hist_z_since_open") >= 0.0)
+            & (pl.col("last_macd_hist_z_since_open") >= 0.1)
         ).fill_null(False)
-        setup_exhaustion_ok = (bearish_divergence_score < 75.0).fill_null(True)
+        setup_exhaustion_ok = (bearish_divergence_score < 75.0).fill_null(False)
         setup_open = (setup_price_ok & setup_activity_ok & setup_quote_ok & setup_trend_ok & setup_exhaustion_ok).fill_null(False)
-        body_break_entry = (setup_open & (pl.col("current_open") >= pl.col("last_body_high"))).fill_null(False)
+        body_break_entry = (setup_open & (pl.col("current_open") > pl.col("last_body_high"))).fill_null(False)
         exprs.extend(
             [
                 setup_price_ok.alias("long_momentum_setup_price_ok"),
@@ -608,6 +604,10 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
                 setup_exhaustion_ok.alias("long_momentum_setup_exhaustion_ok"),
                 setup_open.alias("long_momentum_setup_open"),
                 body_break_entry.alias("long_momentum_body_break_entry_open"),
+                body_break_entry.alias("long_momentum_v4_body_break_entry_open"),
+                pl.lit(False).alias("long_momentum_v4_pullback_reclaim_entry_open"),
+                body_break_entry.alias("long_momentum_v4_entry_open"),
+                body_break_entry.alias("long_momentum_entry_open"),
             ]
         )
     required = {
@@ -635,7 +635,7 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
             & (pl.col("last_macd_hist_z_since_open") >= 0.1)
             & spread_ok
         ).fill_null(False)
-        exprs.append(v2_entry_open.alias("long_momentum_entry_open"))
+        exprs.append(v2_entry_open.alias("long_momentum_v2_entry_open"))
         exprs.append(
             (
                 body_break_entry
@@ -1206,6 +1206,10 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "long_momentum_setup_exhaustion_ok",
         "long_momentum_setup_open",
         "long_momentum_body_break_entry_open",
+        "long_momentum_v4_body_break_entry_open",
+        "long_momentum_v4_pullback_reclaim_entry_open",
+        "long_momentum_v4_entry_open",
+        "long_momentum_v2_entry_open",
         "long_momentum_early_body_break_entry_open",
         "long_momentum_entry_open",
         "last_quote_bid_size",

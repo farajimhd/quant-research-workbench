@@ -755,6 +755,8 @@ class BacktestEngine:
         return fill_price
 
     def _max_fill_quantity(self, order: Order, bar: dict) -> int | None:
+        if order.side == "SELL" and order.order_type == "MARKET" and order.reason == "EOD":
+            return None
         quote_column = "quote_ask_size" if order.side == "BUY" else "quote_bid_size"
         quote_quantity = self._nonnegative_int(bar.get(quote_column))
         if quote_quantity is not None:
