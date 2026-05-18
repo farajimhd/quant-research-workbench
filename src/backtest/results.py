@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -63,7 +64,7 @@ def read_run_metadata(run_dir: Path) -> dict | None:
 def write_json(path: Path, data: dict) -> None:
     tmp = path.with_name(f"{path.name}.tmp")
     tmp.write_text(json.dumps(data, indent=2, default=json_default), encoding="utf-8")
-    tmp.replace(path)
+    replace_with_retry(tmp, path)
 
 
 def write_table(path: Path, rows: list[dict]) -> None:
@@ -72,7 +73,18 @@ def write_table(path: Path, rows: list[dict]) -> None:
         pl.DataFrame([normalize_row(row) for row in rows], infer_schema_length=None).write_parquet(tmp)
     else:
         pl.DataFrame().write_parquet(tmp)
-    tmp.replace(path)
+    replace_with_retry(tmp, path)
+
+
+def replace_with_retry(tmp: Path, path: Path, *, attempts: int = 10, delay_seconds: float = 0.05) -> None:
+    for attempt in range(1, attempts + 1):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            if attempt == attempts:
+                raise
+            time.sleep(delay_seconds * attempt)
 
 
 def normalize_row(row: dict) -> dict:
