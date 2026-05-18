@@ -698,6 +698,8 @@ class BacktestEngine:
             trade = self.portfolio.close_position(order, fee=fee.total)
             if trade is not None:
                 self.trades.append(asdict(trade))
+            if order.symbol not in self.portfolio.positions:
+                self._cancel_orphaned_sell_orders(timestamp, order.symbol, reason)
 
         should_check_attached_stop = (
             order.side == "BUY"
@@ -742,6 +744,20 @@ class BacktestEngine:
         )
         self.next_order_id += 1
         self._fill_order(stop_order, timestamp, bar, stop_order.reason)
+
+    def _cancel_orphaned_sell_orders(self, timestamp: datetime, symbol: str, source_reason: str) -> None:
+        still_open = []
+        for pending in self.pending_orders:
+            if pending.symbol == symbol and pending.side == "SELL" and pending.status == "OPEN":
+                pending.status = "CANCELED"
+                pending.filled_at = timestamp
+                pending.reason = "NO_POSITION"
+                pending.tag = f"CANCEL|reason=NO_POSITION|source={source_reason}|{pending.tag}"
+                self.orders.append(asdict(pending))
+                self._record_strategy_order_event(pending)
+            else:
+                still_open.append(pending)
+        self.pending_orders = still_open
 
     def _entry_stop_price(self, metadata: dict, order: Order, fill_price: float) -> float:
         if metadata.get("stop_price") is not None:

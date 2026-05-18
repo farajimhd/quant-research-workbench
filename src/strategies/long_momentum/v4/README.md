@@ -29,8 +29,10 @@ Eligible rows are ranked by `last_recent_volume_5` descending.
 Both entry triggers are configurable and enabled by default.
 
 - `enable_entry_trigger_1_earlier_body_break`: Entry Trigger 1, Earlier Body
-  Break. This enters when `current_open > max(last_open, last_close)` after
-  the setup filters pass.
+  Break. This enters when the setup filters pass, the bar is inside one of the
+  configured Trigger 1 windows, and `current_open` breaks the active body-break
+  threshold by at least `trigger_1_min_break_bps`, default 10 bps. The default
+  Trigger 1 windows are 08:00-10:00 ET and 15:00-20:00 ET.
 - `enable_entry_trigger_2_pullback_reclaim`: Entry Trigger 2, Pullback/Reclaim.
   When a setup appears, v4 stores the setup body high and setup low for
   `pullback_reclaim_valid_bars`, default 6 bars. If price pulls back below the
@@ -38,7 +40,9 @@ Both entry triggers are configurable and enabled by default.
   remain valid, v4 can enter on that reclaim.
 
 The submitted buy is a same-bar limit at `current_open`. Quantity is the prior
-bar `last_quote_ask_size`, capped by available cash.
+bar `last_quote_ask_size`, capped by available cash and risk-based sizing.
+`risk_per_trade_pct`, default 0.5% of account equity, caps quantity by the
+initial stop distance.
 
 ## Stop Loss
 

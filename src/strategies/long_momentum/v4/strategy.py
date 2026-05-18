@@ -117,7 +117,7 @@ class LongMomentumV4Strategy:
             symbol = str(candidate["ticker"])
             if symbol in blocked_symbols:
                 continue
-            request = self._entry_request(candidate, context, available_cash)
+            request = self._entry_request(candidate, context, portfolio, available_cash)
             if request is None:
                 continue
             requests.append(request)
@@ -324,19 +324,18 @@ class LongMomentumV4Strategy:
             if state is not None and state.setup_body_high > 0 and state.setup_bar_index < bar_index <= state.setup_expires_bar:
                 if current_open < state.setup_body_high or self._float(row.get("last_close")) < state.setup_body_high:
                     state.pullback_seen = True
-            active_setup_high = (
-                state.setup_body_high
-                if state is not None and state.setup_body_high > 0 and state.setup_bar_index < bar_index <= state.setup_expires_bar
-                else 0.0
-            )
+            active_setup = self._has_active_setup(state, bar_index)
+            active_setup_high = state.setup_body_high if active_setup and state is not None else 0.0
             body_break_threshold = max(body_high, active_setup_high)
+            trigger_1_threshold = body_break_threshold * (1.0 + max(0.0, self.config.trigger_1_min_break_bps) / 10_000.0)
 
             body_break_entry = (
                 setup_open
                 and self.config.enable_entry_trigger_1_earlier_body_break
+                and self._trigger_1_time_ok(context)
                 and current_open > 0
                 and body_break_threshold > 0
-                and current_open > body_break_threshold
+                and current_open > trigger_1_threshold
             )
             pullback_reclaim_entry = self._pullback_reclaim_entry_open(row, state, bar_index)
             entry_open = body_break_entry or pullback_reclaim_entry
@@ -347,7 +346,6 @@ class LongMomentumV4Strategy:
                 trigger = "pullback_reclaim"
 
             if setup_open and state is not None and not pullback_reclaim_entry:
-                active_setup = state.setup_body_high > 0 and bar_index <= state.setup_expires_bar
                 if not active_setup or body_high > state.setup_body_high:
                     state.setup_body_high = body_high
                     state.setup_low = setup_low
@@ -357,9 +355,14 @@ class LongMomentumV4Strategy:
                 elif setup_low > 0:
                     state.setup_low = min(value for value in (state.setup_low, setup_low) if value > 0)
 
-            row["setup_stop_low"] = state.setup_low if state and state.setup_low > 0 else setup_low
-            row["setup_body_high"] = state.setup_body_high if state and state.setup_body_high > 0 else body_high
+            display_active_setup = self._has_active_setup(state, bar_index)
+            display_active_setup_high = state.setup_body_high if display_active_setup and state is not None else 0.0
+            row["setup_stop_low"] = state.setup_low if display_active_setup and state and state.setup_low > 0 else setup_low
+            row["setup_body_high"] = display_active_setup_high if display_active_setup_high > 0 else body_high
+            row["active_setup_body_high"] = display_active_setup_high if display_active_setup_high > 0 else None
             row["body_break_threshold"] = body_break_threshold
+            row["trigger_1_threshold"] = trigger_1_threshold
+            row["trigger_1_time_ok"] = self._trigger_1_time_ok(context)
             row["long_momentum_setup_open"] = setup_open
             row["long_momentum_body_break_entry_open"] = body_break_entry
             row["long_momentum_early_body_break_entry_open"] = body_break_entry
@@ -412,6 +415,21 @@ class LongMomentumV4Strategy:
             return False
         return self._float(row.get("last_bearish_volume_divergence_score")) < self.config.max_bearish_divergence_entry_score
 
+    def _has_active_setup(self, state: LongMomentumV4SymbolState | None, bar_index: int) -> bool:
+        return bool(
+            state is not None
+            and state.setup_body_high > 0
+            and state.setup_bar_index < bar_index <= state.setup_expires_bar
+        )
+
+    def _trigger_1_time_ok(self, context: BarContext) -> bool:
+        minute = self._minute_of_day(context)
+        if minute is None:
+            return False
+        primary = self.config.trigger_1_minute_start <= minute < self.config.trigger_1_minute_end
+        late = self.config.trigger_1_late_minute_start <= minute < self.config.trigger_1_late_minute_end
+        return primary or late
+
     def _setup_stop_low(self, row: dict, entry_price: float) -> float:
         candidates = [
             self._float(row.get("last_3_candle_low_price")),
@@ -421,19 +439,20 @@ class LongMomentumV4Strategy:
         valid = [value for value in candidates if value > 0 and (entry_price <= 0 or value < entry_price)]
         return min(valid) if valid else 0.0
 
-    def _entry_request(self, candidate: dict, context: BarContext, available_cash: float) -> OrderRequest | None:
+    def _entry_request(self, candidate: dict, context: BarContext, portfolio: Portfolio, available_cash: float) -> OrderRequest | None:
         symbol = str(candidate["ticker"])
         entry_price = self._float(candidate.get("current_open"))
         ask_size = int(self._float(candidate.get("last_quote_ask_size")))
         if entry_price <= 0 or ask_size <= 0:
             self._reject(context.timestamp, symbol, "quote_ask_size", candidate)
             return None
-        cash_quantity = self._cash_quantity(entry_price, available_cash)
-        quantity = min(ask_size, cash_quantity)
-        if quantity <= 0:
-            self._reject(context.timestamp, symbol, "cash", candidate)
-            return None
         stop_price = self._initial_stop_price(candidate, entry_price)
+        cash_quantity = self._cash_quantity(entry_price, available_cash)
+        risk_quantity = self._risk_quantity(entry_price, stop_price, portfolio.total_equity(context.latest_by_symbol))
+        quantity = min(ask_size, cash_quantity, risk_quantity)
+        if quantity <= 0:
+            self._reject(context.timestamp, symbol, "risk_or_cash", candidate)
+            return None
         rank = int(candidate.get("entry_rank") or candidate.get("rank") or 0)
         score = self._float(candidate.get("scanner_score"))
         self._set_entry_metadata(symbol, candidate, rank=rank, score=score, stop_price=stop_price)
@@ -459,6 +478,7 @@ class LongMomentumV4Strategy:
                 f"ENTRY|rule=LONG_MOMENTUM_V4|trigger={candidate.get('entry_trigger') or 'unknown'}"
                 f"|rank={rank}|qty={quantity}|entry={entry_price:.2f}"
                 f"|stop={stop_price:.2f}|last_recent_volume_5={score:.0f}|ask_size={ask_size}"
+                f"|risk_qty={risk_quantity}|cash_qty={cash_quantity}"
                 f"|macdz={self._float(candidate.get('last_macd_hist_z_since_open')):.2f}"
             ),
         )
@@ -532,6 +552,15 @@ class LongMomentumV4Strategy:
         while quantity > 0 and self._estimated_buy_cost(quantity, price) > available_cash:
             quantity -= 1
         return max(0, quantity)
+
+    def _risk_quantity(self, entry_price: float, stop_price: float, equity: float) -> int:
+        if entry_price <= 0 or stop_price <= 0 or stop_price >= entry_price:
+            return 0
+        risk_pct = max(0.0, self.config.risk_per_trade_pct)
+        if risk_pct <= 0 or equity <= 0:
+            return 10**12
+        risk_per_share = entry_price - stop_price
+        return max(0, int((equity * risk_pct) / risk_per_share))
 
     def _estimated_buy_cost(self, quantity: int, price: float) -> float:
         if quantity <= 0 or price <= 0:
@@ -765,6 +794,13 @@ class LongMomentumV4Strategy:
                 if len(series) > 0:
                     return int(self._float(series[0]))
         return 0
+
+    def _minute_of_day(self, context: BarContext) -> int | None:
+        if "minute_of_day" in context.updates.columns:
+            series = context.updates.get_column("minute_of_day")
+            if len(series) > 0:
+                return int(self._float(series[0]))
+        return None
 
     def _float(self, value) -> float:
         try:

@@ -554,6 +554,7 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
     setup_required = {
         "current_open",
         "last_body_high",
+        "minute_of_day",
         "last_close",
         "last_volume",
         "last_transactions",
@@ -594,7 +595,16 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
         ).fill_null(False)
         setup_exhaustion_ok = (bearish_divergence_score < 75.0).fill_null(False)
         setup_open = (setup_price_ok & setup_activity_ok & setup_quote_ok & setup_trend_ok & setup_exhaustion_ok).fill_null(False)
-        body_break_entry = (setup_open & (pl.col("current_open") > pl.col("last_body_high"))).fill_null(False)
+        trigger_1_time_ok = (
+            ((pl.col("minute_of_day") >= 8 * 60) & (pl.col("minute_of_day") < 10 * 60))
+            | ((pl.col("minute_of_day") >= 15 * 60) & (pl.col("minute_of_day") < 20 * 60))
+        ).fill_null(False)
+        trigger_1_threshold = (pl.col("last_body_high") * 1.001).alias("trigger_1_threshold")
+        body_break_entry = (
+            setup_open
+            & trigger_1_time_ok
+            & (pl.col("current_open") > (pl.col("last_body_high") * 1.001))
+        ).fill_null(False)
         exprs.extend(
             [
                 setup_price_ok.alias("long_momentum_setup_price_ok"),
@@ -603,6 +613,8 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
                 setup_trend_ok.alias("long_momentum_setup_trend_ok"),
                 setup_exhaustion_ok.alias("long_momentum_setup_exhaustion_ok"),
                 setup_open.alias("long_momentum_setup_open"),
+                trigger_1_time_ok.alias("trigger_1_time_ok"),
+                trigger_1_threshold,
                 body_break_entry.alias("long_momentum_body_break_entry_open"),
                 body_break_entry.alias("long_momentum_v4_body_break_entry_open"),
                 pl.lit(False).alias("long_momentum_v4_pullback_reclaim_entry_open"),
@@ -1205,6 +1217,10 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "long_momentum_setup_trend_ok",
         "long_momentum_setup_exhaustion_ok",
         "long_momentum_setup_open",
+        "active_setup_body_high",
+        "body_break_threshold",
+        "trigger_1_time_ok",
+        "trigger_1_threshold",
         "long_momentum_body_break_entry_open",
         "long_momentum_v4_body_break_entry_open",
         "long_momentum_v4_pullback_reclaim_entry_open",

@@ -23,6 +23,11 @@ class LongMomentumV4Config:
     max_spread_5_to_10: float = 0.05
     enable_entry_trigger_1_earlier_body_break: bool = True
     enable_entry_trigger_2_pullback_reclaim: bool = True
+    trigger_1_minute_start: int = 8 * 60
+    trigger_1_minute_end: int = 10 * 60
+    trigger_1_late_minute_start: int = 15 * 60
+    trigger_1_late_minute_end: int = 20 * 60
+    trigger_1_min_break_bps: float = 10.0
     pullback_reclaim_valid_bars: int = 6
     max_bearish_divergence_entry_score: float = 75.0
 
@@ -31,6 +36,7 @@ class LongMomentumV4Config:
     cash_buffer_dollars: float = 5.0
     sizing_fee_per_share: float = 0.005
     sizing_min_fee: float = 1.0
+    risk_per_trade_pct: float = 0.005
     stop_offset_dollars: float = 0.01
 
     @classmethod
