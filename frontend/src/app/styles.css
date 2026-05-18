@@ -915,6 +915,18 @@ button {
   height: 100%;
 }
 
+.trades-table-fill {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.trades-table-fill .data-table-shell {
+  flex: 1 1 auto;
+  height: auto;
+}
+
 .backtest-results-log {
   height: 100%;
   min-height: 0;

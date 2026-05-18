@@ -1266,11 +1266,13 @@ function BacktestJobPanel({
                 />
               </Modal>
             ) : null}
-            <DataTable
-              isRowSelected={(row) => tradeRowKey(row) === tradeRowKey(selectedTrade)}
-              onRowClick={setSelectedTrade}
-              rows={detail?.tables.trades.rows ?? []}
-            />
+            <div className="trades-table-fill">
+              <DataTable
+                isRowSelected={(row) => tradeRowKey(row) === tradeRowKey(selectedTrade)}
+                onRowClick={setSelectedTrade}
+                rows={detail?.tables.trades.rows ?? []}
+              />
+            </div>
           </>
         </CachedTabPanel>
         <CachedTabPanel active={tab === "Orders"} mounted={isTabMounted("Orders")}>
