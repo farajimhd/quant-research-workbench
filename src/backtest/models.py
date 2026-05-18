@@ -11,10 +11,12 @@ import polars as pl
 class DataRequirements:
     event_timeframe: str = "1m"
     feature_groups: tuple[str, ...] = ()
+    supervision_groups: tuple[str, ...] = ()
     context_feature_groups: dict[str, tuple[str, ...]] | None = None
     daily_lookback_days: int = 0
     daily_feature_groups: tuple[str, ...] = ()
     required_columns: tuple[str, ...] = ()
+    decision_current_columns: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

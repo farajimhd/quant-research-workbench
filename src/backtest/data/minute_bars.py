@@ -63,6 +63,8 @@ def validate_provider_artifacts(
         check("bars", requirements.event_timeframe, session, requirements.required_columns)
         for group in requirements.feature_groups:
             check(f"features_{group}", requirements.event_timeframe, session)
+        for group in requirements.supervision_groups:
+            check(f"supervision_{group}", requirements.event_timeframe, session)
         for timeframe, groups in (requirements.context_feature_groups or {}).items():
             check("bars", timeframe, session)
             for group in groups:
@@ -119,6 +121,32 @@ def load_provider_bars(
             f"timeframe={timeframe} under {config.processed_data_root}."
         )
     return bars
+
+
+def attach_supervision_groups(
+    config: BacktestConfig,
+    event_frame: pl.DataFrame,
+    session_date: date,
+    requirements: DataRequirements,
+) -> pl.DataFrame:
+    if event_frame.is_empty() or not requirements.supervision_groups:
+        return event_frame
+    provider = provider_for_config(config)
+    joined = event_frame
+    for group in requirements.supervision_groups:
+        supervision = provider.load_supervision(
+            start_date=session_date,
+            end_date=session_date,
+            timeframe=requirements.event_timeframe,
+            supervision_type=group,
+        )
+        if supervision.is_empty() or "bar_id" not in supervision.columns:
+            continue
+        duplicate_columns = [column for column in supervision.columns if column != "bar_id" and column in joined.columns]
+        if duplicate_columns:
+            supervision = supervision.drop(duplicate_columns)
+        joined = joined.join(supervision, on="bar_id", how="left", coalesce=True)
+    return joined
 
 
 def attach_context_timeframe(event_frame: pl.DataFrame, context_frame: pl.DataFrame, timeframe: str) -> pl.DataFrame:
@@ -238,6 +266,7 @@ def load_day_frames(
         requirements.event_timeframe,
         requirements.feature_groups,
     )
+    event_frame = attach_supervision_groups(config, event_frame, session_date, requirements)
     context_frames: dict[str, pl.DataFrame] = {}
     for timeframe, groups in (requirements.context_feature_groups or {}).items():
         context = load_provider_bars(config, session_date, timeframe, groups)

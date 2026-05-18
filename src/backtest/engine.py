@@ -139,7 +139,7 @@ class BacktestEngine:
                     execution_frame = frames.event_frame
                     decision_frames = DayFrames(
                         session_date=frames.session_date,
-                        event_frame=self._strategy_decision_frame(execution_frame),
+                        event_frame=self._strategy_decision_frame(execution_frame, requirements),
                         daily_context=frames.daily_context,
                         context_frames=frames.context_frames,
                     )
@@ -364,7 +364,7 @@ class BacktestEngine:
             bar_start = key[0] if isinstance(key, tuple) else key
             yield bar_start, frame
 
-    def _strategy_decision_frame(self, execution_frame: pl.DataFrame) -> pl.DataFrame:
+    def _strategy_decision_frame(self, execution_frame: pl.DataFrame, requirements: DataRequirements) -> pl.DataFrame:
         if execution_frame.is_empty() or "ticker" not in execution_frame.columns:
             return execution_frame
         current_columns = {
@@ -377,6 +377,7 @@ class BacktestEngine:
             "minute_of_day",
             "open",
         }
+        current_columns.update(requirements.decision_current_columns)
         order_columns = [column for column in ["ticker", "bar_time_market"] if column in execution_frame.columns]
         frame = execution_frame.sort(order_columns) if order_columns else execution_frame
         shifted_exprs = [
