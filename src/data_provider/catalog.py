@@ -11,7 +11,7 @@ from src.data_provider.features import FEATURE_COLUMNS
 from src.data_provider.supervision import METHOD_BAR_WINDOWS
 
 
-CATALOG_VERSION = 19
+CATALOG_VERSION = 20
 PRESENTATION_OVERRIDE_FILE = "catalog_presentation_overrides.json"
 
 BAR_COLUMNS = [
@@ -200,6 +200,8 @@ ORACLE_SUPERVISION_COLUMNS = [
     "reason",
     "oracle_long_supervision",
     "oracle_short_supervision",
+    "oracle_long_supervision_score",
+    "oracle_short_supervision_score",
     "oracle_long_enter_signal",
     "oracle_long_exit_signal",
     "oracle_short_enter_signal",
@@ -210,6 +212,10 @@ ORACLE_SUPERVISION_COLUMNS = [
     "oracle_short_exit_score",
     "long_expected_profit",
     "short_expected_profit",
+    "long_exit_realized_profit",
+    "short_exit_realized_profit",
+    "long_exit_entry_bar_id",
+    "short_exit_entry_bar_id",
     "long_drawdown_before_best",
     "short_adverse_before_best",
     "long_best_horizon_bars",
@@ -323,6 +329,8 @@ STRING_COLUMNS = {
     "shock_confirmation_type",
     "oracle_best_exit_bar_id",
     "best_exit_bar_id",
+    "long_exit_entry_bar_id",
+    "short_exit_entry_bar_id",
     "method_best_exit_bar_id",
     "shock_best_exit_after_confirmation_bar_id",
     "fwd_first_volume_shock_bar_id",

@@ -2335,8 +2335,8 @@ SUPERVISION_LABEL_SPECS: dict[str, dict[str, str]] = {
     "scanner:is_top_10": {"source": "scanner", "signal": "is_top_10", "confidence": "method_confidence", "kind": "scanner_rank"},
     "scanner:is_top_1pct": {"source": "scanner", "signal": "is_top_1pct", "confidence": "method_confidence", "kind": "scanner_rank"},
     "scanner:is_top_5pct": {"source": "scanner", "signal": "is_top_5pct", "confidence": "method_confidence", "kind": "scanner_rank"},
-    "oracle:long_supervision": {"source": "oracle", "signal": "oracle_long_supervision", "confidence": "score", "kind": "oracle_long"},
-    "oracle:short_supervision": {"source": "oracle", "signal": "oracle_short_supervision", "confidence": "score", "kind": "oracle_short"},
+    "oracle:long_supervision": {"source": "oracle", "signal": "oracle_long_supervision", "confidence": "oracle_long_supervision_score", "kind": "oracle_long"},
+    "oracle:short_supervision": {"source": "oracle", "signal": "oracle_short_supervision", "confidence": "oracle_short_supervision_score", "kind": "oracle_short"},
     "oracle:long_enter": {"source": "oracle", "signal": "oracle_long_enter_signal", "confidence": "oracle_long_enter_score", "kind": "oracle_long_enter"},
     "oracle:long_exit": {"source": "oracle", "signal": "oracle_long_exit_signal", "confidence": "oracle_long_exit_score", "kind": "oracle_long_exit"},
     "oracle:short_enter": {"source": "oracle", "signal": "oracle_short_enter_signal", "confidence": "oracle_short_enter_score", "kind": "oracle_short_enter"},
@@ -2458,9 +2458,16 @@ def marker_text(row: dict[str, Any], supervision_group: str) -> str:
             return f"IGNORE {method} {confidence_label(row.get('method_confidence')).strip()}"
         return f"{method} {percent_label(row.get('method_best_return'))}{confidence_label(row.get('method_confidence'))}"
     if source == "oracle":
-        method = "L" if str(row.get("desired_method") or "").upper() == "LONG" else "S"
-        signal = str(row.get("signal") or "").upper()[:5] or "LABEL"
-        return f"{method} {signal} {integer_label(row.get('score'))} {percent_label(row.get('expected_profit'))}"
+        is_short = kind.startswith("oracle_short") or ":short" in supervision_group
+        if is_short:
+            signal = "EXIT" if bool(row.get("oracle_short_exit_signal")) else "ENTER" if bool(row.get("oracle_short_enter_signal")) else "HOLD"
+            profit = row.get("short_exit_realized_profit") if signal == "EXIT" else row.get("short_expected_profit")
+            score = row.get("oracle_short_supervision_score") or row.get("oracle_short_enter_score")
+            return f"S {signal} {integer_label(score)} {percent_label(profit)}"
+        signal = "EXIT" if bool(row.get("oracle_long_exit_signal")) else "ENTER" if bool(row.get("oracle_long_enter_signal")) else "HOLD"
+        profit = row.get("long_exit_realized_profit") if signal == "EXIT" else row.get("long_expected_profit")
+        score = row.get("oracle_long_supervision_score") or row.get("oracle_long_enter_score")
+        return f"L {signal} {integer_label(score)} {percent_label(profit)}"
     if kind == "bar_exit":
         return f"EXIT h{integer_label(row.get('horizon_bars') or row.get('horizon'))} risk {percent_label(row.get('fwd_mae'))}{confidence_label(row.get('oracle_long_exit_confidence'))}"
     if kind == "bar_liquidity":
@@ -2483,7 +2490,9 @@ def supervision_marker_size(supervision_group: str, row: dict[str, Any]) -> floa
             return 1.25
         return 1.0
     if source == "oracle":
-        score = numeric_or_none(row.get("score"))
+        kind = str(spec.get("kind") or "") if spec else ""
+        score_column = "oracle_short_supervision_score" if kind.startswith("oracle_short") or ":short" in supervision_group else "oracle_long_supervision_score"
+        score = numeric_or_none(row.get(score_column) or row.get("score"))
         if score is not None and score >= 85:
             return 1.35
         if score is not None and score >= 70:
@@ -2571,15 +2580,7 @@ def supervision_price_zones(
     if close is None or close <= 0:
         return []
     if source == "oracle":
-        method = str(row.get("desired_method") or "").upper()
-        signal = str(row.get("signal") or "").upper()
-        target_price = numeric_or_none(row.get("best_exit_price"))
-        target_return = numeric_or_none(row.get("expected_profit"))
-        target_end = timestamp_seconds(row.get("best_exit_time_utc")) or start + int_or_default(row.get("horizon_bars"), 1) * candle_duration
-        target_label = f"{method} {signal} target {percent_label(target_return)}"
-        risk_return = numeric_or_none(row.get("expected_drawdown"))
-        target_color = "#067647" if method == "LONG" else "#B42318"
-        risk_end = target_end
+        return []
     elif source == "bar":
         target_price = numeric_or_none(row.get("oracle_best_exit_price"))
         target_return = numeric_or_none(row.get("oracle_best_exit_return") or row.get("fwd_mfe"))
@@ -2695,6 +2696,7 @@ def supervision_marker_style(catalog: dict[str, Any], supervision_group: str, ro
     spec = supervision_label_spec(supervision_group)
     source = spec["source"] if spec else supervision_group
     signal = spec.get("signal") if spec else ""
+    kind = str(spec.get("kind") or "") if spec else ""
     defaults = {
         "bar": ("#067647", "arrowUp", "belowBar"),
         "method": ("#2563EB", "arrowUp", "belowBar"),
@@ -2702,13 +2704,16 @@ def supervision_marker_style(catalog: dict[str, Any], supervision_group: str, ro
         "scanner": ("#7C3AED", "square", "aboveBar"),
     }
     if source == "oracle":
-        method = str(row.get("desired_method") or "").upper()
-        signal_value = str(row.get("signal") or "").upper()
-        if method == "SHORT":
-            return ("#B42318", "arrowDown" if signal_value != "EXIT" else "arrowUp", "aboveBar" if signal_value != "EXIT" else "belowBar")
-        if signal_value == "EXIT":
+        is_short = kind.startswith("oracle_short") or ":short" in supervision_group
+        if is_short:
+            if bool(row.get("oracle_short_exit_signal")):
+                return ("#2563EB", "arrowUp", "belowBar")
+            if not bool(row.get("oracle_short_enter_signal")):
+                return ("#B42318", "circle", "aboveBar")
+            return ("#B42318", "arrowDown", "aboveBar")
+        if bool(row.get("oracle_long_exit_signal")):
             return ("#B54708", "arrowDown", "aboveBar")
-        if signal_value == "HOLD":
+        if not bool(row.get("oracle_long_enter_signal")):
             return ("#15803D", "circle", "belowBar")
         return ("#067647", "arrowUp", "belowBar")
     item = None

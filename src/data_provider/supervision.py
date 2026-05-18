@@ -260,7 +260,7 @@ def build_oracle_supervision(frame: pl.DataFrame, *, max_horizon_bars: int = ORA
     future_bar_ids = _future_list("bar_id", offsets)
     future_times = _future_list("bar_time_utc", offsets)
 
-    return (
+    metrics = (
         sorted_frame.with_columns(
             future_highs.alias("_future_highs"),
             future_lows.alias("_future_lows"),
@@ -327,6 +327,62 @@ def build_oracle_supervision(frame: pl.DataFrame, *, max_horizon_bars: int = ORA
             _score_0_100(pl.col("_short_enter_quality")).alias("oracle_short_enter_score"),
             _score_0_100(pl.col("_short_exit_quality")).alias("oracle_short_exit_score"),
         )
+    )
+
+    long_exit_points = (
+        metrics.filter(
+            (pl.col("_future_count") > 0)
+            & pl.col("_long_best_bar_id").is_not_null()
+            & (pl.col("_long_profit") >= 0.008)
+            & (pl.col("oracle_long_enter_score") >= 45.0)
+        )
+        .sort(["_long_best_bar_id", "_long_profit", "oracle_long_enter_score"], descending=[False, True, True])
+        .unique("_long_best_bar_id", keep="first", maintain_order=True)
+        .select(
+            pl.col("_long_best_bar_id").alias("bar_id"),
+            pl.col("bar_id").alias("_long_exit_entry_bar_id"),
+            pl.col("bar_time_utc").alias("_long_exit_entry_time"),
+            pl.col("_long_profit").alias("_long_exit_realized_profit"),
+            pl.col("_long_drawdown").alias("_long_exit_realized_drawdown"),
+            (pl.col("_long_best_index") + 1).alias("_long_exit_realized_horizon_bars"),
+            pl.max_horizontal(pl.col("oracle_long_enter_score"), pl.col("oracle_long_exit_score")).alias("_long_exit_realized_score"),
+        )
+    )
+    short_exit_points = (
+        metrics.filter(
+            (pl.col("_future_count") > 0)
+            & pl.col("_short_best_bar_id").is_not_null()
+            & (pl.col("_short_profit") >= 0.008)
+            & (pl.col("oracle_short_enter_score") >= 45.0)
+        )
+        .sort(["_short_best_bar_id", "_short_profit", "oracle_short_enter_score"], descending=[False, True, True])
+        .unique("_short_best_bar_id", keep="first", maintain_order=True)
+        .select(
+            pl.col("_short_best_bar_id").alias("bar_id"),
+            pl.col("bar_id").alias("_short_exit_entry_bar_id"),
+            pl.col("bar_time_utc").alias("_short_exit_entry_time"),
+            pl.col("_short_profit").alias("_short_exit_realized_profit"),
+            pl.col("_short_adverse").alias("_short_exit_realized_adverse"),
+            (pl.col("_short_best_index") + 1).alias("_short_exit_realized_horizon_bars"),
+            pl.max_horizontal(pl.col("oracle_short_enter_score"), pl.col("oracle_short_exit_score")).alias("_short_exit_realized_score"),
+        )
+    )
+
+    return (
+        metrics.join(long_exit_points, on="bar_id", how="left")
+        .join(short_exit_points, on="bar_id", how="left")
+        .with_columns(
+            pl.coalesce(pl.col("_long_exit_realized_profit"), pl.lit(0.0)).alias("_long_exit_realized_profit"),
+            pl.coalesce(pl.col("_short_exit_realized_profit"), pl.lit(0.0)).alias("_short_exit_realized_profit"),
+            pl.coalesce(pl.col("_long_exit_realized_score"), pl.lit(0.0)).alias("_long_exit_realized_score"),
+            pl.coalesce(pl.col("_short_exit_realized_score"), pl.lit(0.0)).alias("_short_exit_realized_score"),
+            pl.coalesce(pl.col("_long_exit_realized_drawdown"), pl.lit(0.0)).alias("_long_exit_realized_drawdown"),
+            pl.coalesce(pl.col("_short_exit_realized_adverse"), pl.lit(0.0)).alias("_short_exit_realized_adverse"),
+            pl.coalesce(pl.col("_long_exit_realized_horizon_bars"), pl.lit(0)).alias("_long_exit_realized_horizon_bars"),
+            pl.coalesce(pl.col("_short_exit_realized_horizon_bars"), pl.lit(0)).alias("_short_exit_realized_horizon_bars"),
+            pl.max_horizontal(pl.col("oracle_long_exit_score"), pl.col("_long_exit_realized_score")).alias("oracle_long_exit_score"),
+            pl.max_horizontal(pl.col("oracle_short_exit_score"), pl.col("_short_exit_realized_score")).alias("oracle_short_exit_score"),
+        )
         .with_columns(
             (
                 (pl.col("_future_count") > 0)
@@ -343,16 +399,12 @@ def build_oracle_supervision(frame: pl.DataFrame, *, max_horizon_bars: int = ORA
                 & (pl.col("oracle_short_enter_score") > pl.col("oracle_long_enter_score") * 1.05)
             ).alias("_short_enter"),
             (
-                (pl.col("_future_count") > 0)
-                & (pl.col("oracle_long_exit_score") >= 55.0)
-                & (pl.col("_long_profit") <= 0.006)
-                & (pl.col("_short_profit") >= 0.003)
+                (pl.col("_long_exit_realized_profit") >= 0.008)
+                & (pl.col("_long_exit_realized_score") >= 45.0)
             ).alias("_long_exit"),
             (
-                (pl.col("_future_count") > 0)
-                & (pl.col("oracle_short_exit_score") >= 55.0)
-                & (pl.col("_short_profit") <= 0.006)
-                & (pl.col("_long_profit") >= 0.003)
+                (pl.col("_short_exit_realized_profit") >= 0.008)
+                & (pl.col("_short_exit_realized_score") >= 45.0)
             ).alias("_short_exit"),
         )
         .with_columns(
@@ -360,54 +412,84 @@ def build_oracle_supervision(frame: pl.DataFrame, *, max_horizon_bars: int = ORA
             ((pl.col("oracle_long_enter_score") >= 35.0) & (pl.col("_long_profit") >= 0.003) & ~pl.col("_long_exit")).alias("_long_hold"),
         )
         .with_columns(
-            pl.when(pl.col("_short_enter"))
+            pl.when(pl.col("_long_exit"))
+            .then(pl.lit("LONG"))
+            .when(pl.col("_short_exit"))
+            .then(pl.lit("SHORT"))
+            .when(pl.col("_short_enter"))
             .then(pl.lit("SHORT"))
             .when(pl.col("_short_hold"))
             .then(pl.lit("SHORT"))
             .when(pl.col("_long_enter") | pl.col("_long_hold"))
             .then(pl.lit("LONG"))
-            .when(pl.col("_long_exit"))
-            .then(pl.lit("LONG"))
-            .when(pl.col("_short_exit"))
-            .then(pl.lit("SHORT"))
             .otherwise(pl.lit("NONE"))
             .alias("desired_method"),
-            pl.when(pl.col("_short_enter") | pl.col("_long_enter"))
+            pl.when(pl.col("_long_exit") | pl.col("_short_exit"))
+            .then(pl.lit("EXIT"))
+            .when(pl.col("_short_enter") | pl.col("_long_enter"))
             .then(pl.lit("ENTER"))
             .when(pl.col("_short_hold") | pl.col("_long_hold"))
             .then(pl.lit("HOLD"))
-            .when(pl.col("_long_exit") | pl.col("_short_exit"))
-            .then(pl.lit("EXIT"))
             .otherwise(pl.lit("AVOID"))
             .alias("signal"),
         )
         .with_columns(
             pl.when(pl.col("desired_method") == "LONG")
-            .then(pl.when(pl.col("signal") == "EXIT").then(pl.col("oracle_long_exit_score")).otherwise(pl.col("oracle_long_enter_score")))
+            .then(pl.when(pl.col("signal") == "EXIT").then(pl.col("_long_exit_realized_score")).otherwise(pl.col("oracle_long_enter_score")))
             .when(pl.col("desired_method") == "SHORT")
-            .then(pl.when(pl.col("signal") == "EXIT").then(pl.col("oracle_short_exit_score")).otherwise(pl.col("oracle_short_enter_score")))
+            .then(pl.when(pl.col("signal") == "EXIT").then(pl.col("_short_exit_realized_score")).otherwise(pl.col("oracle_short_enter_score")))
             .otherwise(pl.max_horizontal(pl.col("oracle_long_enter_score"), pl.col("oracle_short_enter_score")))
             .alias("score"),
-            pl.when(pl.col("desired_method") == "LONG").then(pl.col("_long_profit")).when(pl.col("desired_method") == "SHORT").then(pl.col("_short_profit")).otherwise(0.0).alias("expected_profit"),
-            pl.when(pl.col("desired_method") == "LONG").then(pl.col("_long_drawdown")).when(pl.col("desired_method") == "SHORT").then(pl.col("_short_adverse")).otherwise(0.0).alias("expected_drawdown"),
-            pl.when(pl.col("desired_method") == "LONG").then(pl.col("_long_best_index") + 1).when(pl.col("desired_method") == "SHORT").then(pl.col("_short_best_index") + 1).otherwise(None).alias("horizon_bars"),
-            pl.when(pl.col("desired_method") == "LONG").then(pl.col("_long_best_bar_id")).when(pl.col("desired_method") == "SHORT").then(pl.col("_short_best_bar_id")).otherwise(None).alias("best_exit_bar_id"),
-            pl.when(pl.col("desired_method") == "LONG").then(pl.col("_long_best_time")).when(pl.col("desired_method") == "SHORT").then(pl.col("_short_best_time")).otherwise(None).alias("best_exit_time_utc"),
-            pl.when(pl.col("desired_method") == "LONG").then(pl.col("_long_best_price")).when(pl.col("desired_method") == "SHORT").then(pl.col("_short_best_price")).otherwise(None).alias("best_exit_price"),
+            pl.when((pl.col("desired_method") == "LONG") & (pl.col("signal") == "EXIT")).then(pl.col("_long_exit_realized_profit"))
+            .when((pl.col("desired_method") == "SHORT") & (pl.col("signal") == "EXIT")).then(pl.col("_short_exit_realized_profit"))
+            .when(pl.col("desired_method") == "LONG").then(pl.col("_long_profit"))
+            .when(pl.col("desired_method") == "SHORT").then(pl.col("_short_profit"))
+            .otherwise(0.0)
+            .alias("expected_profit"),
+            pl.when((pl.col("desired_method") == "LONG") & (pl.col("signal") == "EXIT")).then(pl.col("_long_exit_realized_drawdown"))
+            .when((pl.col("desired_method") == "SHORT") & (pl.col("signal") == "EXIT")).then(pl.col("_short_exit_realized_adverse"))
+            .when(pl.col("desired_method") == "LONG").then(pl.col("_long_drawdown"))
+            .when(pl.col("desired_method") == "SHORT").then(pl.col("_short_adverse"))
+            .otherwise(0.0)
+            .alias("expected_drawdown"),
+            pl.when((pl.col("desired_method") == "LONG") & (pl.col("signal") == "EXIT")).then(pl.col("_long_exit_realized_horizon_bars"))
+            .when((pl.col("desired_method") == "SHORT") & (pl.col("signal") == "EXIT")).then(pl.col("_short_exit_realized_horizon_bars"))
+            .when(pl.col("desired_method") == "LONG").then(pl.col("_long_best_index") + 1)
+            .when(pl.col("desired_method") == "SHORT").then(pl.col("_short_best_index") + 1)
+            .otherwise(None)
+            .alias("horizon_bars"),
+            pl.when(pl.col("signal") == "EXIT").then(pl.col("bar_id"))
+            .when(pl.col("desired_method") == "LONG").then(pl.col("_long_best_bar_id"))
+            .when(pl.col("desired_method") == "SHORT").then(pl.col("_short_best_bar_id"))
+            .otherwise(None)
+            .alias("best_exit_bar_id"),
+            pl.when(pl.col("signal") == "EXIT").then(pl.col("bar_time_utc"))
+            .when(pl.col("desired_method") == "LONG").then(pl.col("_long_best_time"))
+            .when(pl.col("desired_method") == "SHORT").then(pl.col("_short_best_time"))
+            .otherwise(None)
+            .alias("best_exit_time_utc"),
+            pl.when((pl.col("desired_method") == "LONG") & (pl.col("signal") == "EXIT")).then(pl.col("high"))
+            .when((pl.col("desired_method") == "SHORT") & (pl.col("signal") == "EXIT")).then(pl.col("low"))
+            .when(pl.col("desired_method") == "LONG").then(pl.col("_long_best_price"))
+            .when(pl.col("desired_method") == "SHORT").then(pl.col("_short_best_price"))
+            .otherwise(None)
+            .alias("best_exit_price"),
         )
         .with_columns(
             (pl.col("horizon_bars") * step).alias("horizon_minutes"),
-            (pl.col("desired_method") == "LONG").alias("oracle_long_supervision"),
-            (pl.col("desired_method") == "SHORT").alias("oracle_short_supervision"),
-            ((pl.col("desired_method") == "LONG") & (pl.col("signal") == "ENTER")).alias("oracle_long_enter_signal"),
-            ((pl.col("desired_method") == "LONG") & (pl.col("signal") == "EXIT")).alias("oracle_long_exit_signal"),
-            ((pl.col("desired_method") == "SHORT") & (pl.col("signal") == "ENTER")).alias("oracle_short_enter_signal"),
-            ((pl.col("desired_method") == "SHORT") & (pl.col("signal") == "EXIT")).alias("oracle_short_exit_signal"),
+            (pl.col("_long_enter") | pl.col("_long_hold") | pl.col("_long_exit")).alias("oracle_long_supervision"),
+            (pl.col("_short_enter") | pl.col("_short_hold") | pl.col("_short_exit")).alias("oracle_short_supervision"),
+            pl.when(pl.col("_long_exit")).then(pl.col("_long_exit_realized_score")).otherwise(pl.col("oracle_long_enter_score")).alias("oracle_long_supervision_score"),
+            pl.when(pl.col("_short_exit")).then(pl.col("_short_exit_realized_score")).otherwise(pl.col("oracle_short_enter_score")).alias("oracle_short_supervision_score"),
+            pl.col("_long_enter").alias("oracle_long_enter_signal"),
+            pl.col("_long_exit").alias("oracle_long_exit_signal"),
+            pl.col("_short_enter").alias("oracle_short_enter_signal"),
+            pl.col("_short_exit").alias("oracle_short_exit_signal"),
         )
         .with_columns(
             pl.when(pl.col("signal") == "ENTER").then(pl.lit("best_future_profit_after_risk_penalty"))
             .when(pl.col("signal") == "HOLD").then(pl.lit("continuation_upside_remaining"))
-            .when(pl.col("signal") == "EXIT").then(pl.lit("remaining_upside_small_giveback_risk_high"))
+            .when(pl.col("signal") == "EXIT").then(pl.lit("best_horizon_reached_take_profit"))
             .otherwise(pl.lit("no_tradeable_oracle_edge"))
             .alias("reason")
         )
@@ -426,6 +508,8 @@ def build_oracle_supervision(frame: pl.DataFrame, *, max_horizon_bars: int = ORA
             "reason",
             "oracle_long_supervision",
             "oracle_short_supervision",
+            "oracle_long_supervision_score",
+            "oracle_short_supervision_score",
             "oracle_long_enter_signal",
             "oracle_long_exit_signal",
             "oracle_short_enter_signal",
@@ -436,6 +520,10 @@ def build_oracle_supervision(frame: pl.DataFrame, *, max_horizon_bars: int = ORA
             "oracle_short_exit_score",
             pl.col("_long_profit").alias("long_expected_profit"),
             pl.col("_short_profit").alias("short_expected_profit"),
+            pl.col("_long_exit_realized_profit").alias("long_exit_realized_profit"),
+            pl.col("_short_exit_realized_profit").alias("short_exit_realized_profit"),
+            pl.col("_long_exit_entry_bar_id").alias("long_exit_entry_bar_id"),
+            pl.col("_short_exit_entry_bar_id").alias("short_exit_entry_bar_id"),
             pl.col("_long_drawdown").alias("long_drawdown_before_best"),
             pl.col("_short_adverse").alias("short_adverse_before_best"),
             (pl.col("_long_best_index") + 1).alias("long_best_horizon_bars"),
