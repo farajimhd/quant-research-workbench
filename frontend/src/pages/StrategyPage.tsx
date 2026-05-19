@@ -2584,7 +2584,7 @@ function interactiveDebugFilterPresets(config: StrategyConfig): DataTableFilterP
     Object.assign(filters, {
       current_open_above_last_body_high: trueFilter(),
       last_tema_open: trueFilter(),
-      last_macd_line: gtFilter(0, "Positive"),
+      ...(version === "v2" ? { long_momentum_v2_macd_line_or_vwap_ok: trueFilter() } : { last_macd_line: gtFilter(0, "Positive") }),
       last_macd_hist_z_since_open: gteFilter(minMacdHistZ),
       long_momentum_spread_ok: trueFilter(),
       last_recent_dollar_volume_5: gteFilter(minRecentDollarVolume),
@@ -2821,6 +2821,7 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v5_entry_threshold",
   "long_momentum_v5_early_uptrend_entry_open",
   "long_momentum_v5_entry_open",
+  "long_momentum_v2_macd_line_or_vwap_ok",
   "long_momentum_v2_entry_open",
   "long_momentum_early_body_break_entry_open",
   "long_momentum_entry_open",

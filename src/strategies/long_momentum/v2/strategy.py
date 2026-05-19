@@ -219,9 +219,17 @@ class LongMomentumV2Strategy:
             column("last_macd_hist_z_since_open", None).cast(pl.Float64).alias("_lm_macd_hist_z"),
             column("last_quote_ask_size", 0.0).cast(pl.Float64).fill_null(0.0).alias("_lm_quote_ask_size"),
             column("current_open", None).cast(pl.Float64).alias("_lm_current_open"),
+            column("last_vwap", None).cast(pl.Float64).alias("_lm_last_vwap"),
             column("current_open_above_last_body_high", False).fill_null(False).alias("_lm_current_open_above_last_body_high"),
             long_spread_ok.fill_null(False).alias("_lm_spread_ok"),
             tema_open.fill_null(False).alias("_lm_tema_open"),
+        ).with_columns(
+            (
+                (pl.col("_lm_macd_line") > 0)
+                | ((pl.col("_lm_current_open") > pl.col("_lm_last_vwap")) & (pl.col("_lm_last_vwap") > 0))
+            )
+            .fill_null(False)
+            .alias("long_momentum_v2_macd_line_or_vwap_ok"),
         ).with_columns(
             (
                 (pl.col("_lm_last_close") >= self.config.min_price)
@@ -231,7 +239,7 @@ class LongMomentumV2Strategy:
                 & (pl.col("_lm_last_transactions") >= self.config.min_transactions)
                 & pl.col("_lm_spread_ok")
                 & pl.col("_lm_tema_open")
-                & (pl.col("_lm_macd_line") > 0)
+                & pl.col("long_momentum_v2_macd_line_or_vwap_ok")
                 & (pl.col("_lm_macd_hist_z") >= self.config.min_macd_hist_z_since_open)
                 & (pl.col("_lm_recent_dollar_volume_5") >= self.config.min_recent_dollar_volume_5)
                 & (pl.col("_lm_spread_bps_abs") <= self.config.max_spread_bps_abs)
@@ -421,8 +429,8 @@ class LongMomentumV2Strategy:
             return "spread"
         if not bool(row.get("_lm_tema_open")):
             return "tema_closed"
-        if self._float(row.get("last_macd_line")) <= 0:
-            return "macd_line"
+        if not bool(row.get("long_momentum_v2_macd_line_or_vwap_ok")):
+            return "macd_line_or_vwap"
         if self._float(row.get("last_macd_hist_z_since_open")) < self.config.min_macd_hist_z_since_open:
             return "macd_hist_z"
         if self._float(row.get("last_recent_dollar_volume_5")) < self.config.min_recent_dollar_volume_5:

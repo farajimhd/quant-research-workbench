@@ -334,7 +334,7 @@ class StepBacktestDebugger(BacktestEngine):
                 ],
                 "Trend / Momentum": [
                     self._bool_check(row, "last_tema_open", True, fallback_key="_lm_tema_open"),
-                    self._gt_check(row, "last_macd_line", 0.0),
+                    self._macd_line_or_vwap_check(row) if version == "v2" else self._gt_check(row, "last_macd_line", 0.0),
                     self._gte_check(row, "last_macd_hist_z_since_open", self._strategy_param("min_macd_hist_z_since_open", 0.1)),
                 ],
                 "Final Strategy Decision": [
@@ -413,3 +413,19 @@ class StepBacktestDebugger(BacktestEngine):
     def _bool_check(self, row: dict, key: str, expected: bool, fallback_key: str | None = None) -> dict:
         value = self._bool_value(row, key, fallback_key)
         return self._check(key, value, value == expected, f"is {expected}")
+
+    def _macd_line_or_vwap_check(self, row: dict) -> dict:
+        value = self._bool_value(row, "long_momentum_v2_macd_line_or_vwap_ok")
+        if value is None:
+            macd_line = self._number(row, "last_macd_line", "_lm_macd_line")
+            current_open = self._number(row, "current_open", "_lm_current_open")
+            last_vwap = self._number(row, "last_vwap", "_lm_last_vwap")
+            value = bool((macd_line is not None and macd_line > 0) or (current_open is not None and last_vwap is not None and last_vwap > 0 and current_open > last_vwap))
+        macd_line = self._number(row, "last_macd_line", "_lm_macd_line")
+        current_open = self._number(row, "current_open", "_lm_current_open")
+        last_vwap = self._number(row, "last_vwap", "_lm_last_vwap")
+        label = (
+            "last_macd_line_or_current_open_above_vwap="
+            f"{value} (last_macd_line={macd_line}, current_open={current_open}, last_vwap={last_vwap}) is True => {value}"
+        )
+        return {"label": label, "name": "last_macd_line_or_current_open_above_vwap", "passed": value}

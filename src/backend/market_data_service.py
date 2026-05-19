@@ -743,30 +743,33 @@ def apply_long_momentum_scanner_columns(scan: pl.LazyFrame, names: list[str]) ->
             ]
         )
     required = {
+        "current_open",
         "last_close",
         "last_volume",
         "last_transactions",
-        "last_is_red",
-        "last_return_1",
         "current_open_above_last_body_high",
         "last_tema_open",
         "last_macd_line",
         "last_macd_hist_z_since_open",
+        "last_vwap",
     }
     if required.issubset(names):
+        v2_macd_line_or_vwap_ok = (
+            (pl.col("last_macd_line") > 0)
+            | ((pl.col("current_open") > pl.col("last_vwap")) & (pl.col("last_vwap") > 0))
+        ).fill_null(False)
         v2_entry_open = (
             (pl.col("last_close") >= 1.0)
             & (pl.col("last_close") <= 10.0)
             & (pl.col("last_volume") >= 10_000)
             & (pl.col("last_transactions") >= 100)
-            & (~pl.col("last_is_red"))
-            & (pl.col("last_return_1") > 0)
             & pl.col("current_open_above_last_body_high")
             & pl.col("last_tema_open")
-            & (pl.col("last_macd_line") > 0)
+            & v2_macd_line_or_vwap_ok
             & (pl.col("last_macd_hist_z_since_open") >= 0.1)
             & spread_ok
         ).fill_null(False)
+        exprs.append(v2_macd_line_or_vwap_ok.alias("long_momentum_v2_macd_line_or_vwap_ok"))
         exprs.append(v2_entry_open.alias("long_momentum_v2_entry_open"))
         exprs.append(
             (
@@ -1370,6 +1373,7 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "long_momentum_v5_entry_threshold",
         "long_momentum_v5_early_uptrend_entry_open",
         "long_momentum_v5_entry_open",
+        "long_momentum_v2_macd_line_or_vwap_ok",
         "long_momentum_v2_entry_open",
         "long_momentum_early_body_break_entry_open",
         "long_momentum_entry_open",
