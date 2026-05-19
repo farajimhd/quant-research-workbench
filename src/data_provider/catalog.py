@@ -303,6 +303,7 @@ BOOLEAN_COLUMNS = {
     "current_volume_shock",
     "current_confirmed_price_volume_shock",
     "bearish_volume_divergence",
+    "triple_bearish_volume_divergence",
     "bullish_volume_divergence",
     "is_top_1",
     "is_top_3",
@@ -940,12 +941,37 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "bearish_volume_divergence",
                 "bearish_volume_divergence_score",
                 "bearish_volume_divergence_label",
+                "triple_bearish_volume_divergence",
+                "triple_bearish_volume_divergence_score",
+                "triple_bearish_volume_divergence_label",
                 "open",
                 "close",
                 "volume",
             ],
             label_column="bearish_volume_divergence_label",
             label_text="BVD",
+        )
+    )
+    add(
+        marker_display_item(
+            by_column,
+            "feature.volume_liquidity.triple_bearish_volume_divergence",
+            "Triple Bearish Volume Divergence",
+            "volume_liquidity",
+            "triple_bearish_volume_divergence",
+            "#7F1D1D",
+            marker_shape="arrowDown",
+            marker_position="aboveBar",
+            source_columns=[
+                "triple_bearish_volume_divergence",
+                "triple_bearish_volume_divergence_score",
+                "triple_bearish_volume_divergence_label",
+                "open",
+                "close",
+                "volume",
+            ],
+            label_column="triple_bearish_volume_divergence_label",
+            label_text="3BVD",
         )
     )
     add(
@@ -2168,6 +2194,7 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
             "recent_transactions_5",
             "transactions_avg_prior_3",
             "transactions_vs_prior_3",
+            "triple_bearish_volume_divergence",
             "obv",
             "mfi14",
             "cmf20",
@@ -2637,6 +2664,12 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
             "Bearish volume divergence is true when the current close is above the prior close while current volume is lower than prior volume. It marks price pushing up with weaker participation.",
             "$$BearDiv_t=I(Volume_t<Volume_{t-1}\\land Close_t>Close_{t-1})$$",
             {"Volume": "Share volume", "Close": "Candle close price"},
+        ),
+        "triple_bearish_volume_divergence": (
+            "Three consecutive bearish volume divergence candles.",
+            "Triple bearish volume divergence is true when bearish volume divergence is true for the current bar and the prior two bars in the same ticker/session. It marks a three-step price push higher while participation fades on every step.",
+            "$$TripleBearDiv_t=BearDiv_t\\land BearDiv_{t-1}\\land BearDiv_{t-2}$$",
+            {"BearDiv": "Bearish volume divergence signal"},
         ),
         "bullish_volume_divergence": (
             "Close pushes below the prior close on lower volume.",

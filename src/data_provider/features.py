@@ -116,6 +116,9 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "bearish_volume_divergence",
         "bearish_volume_divergence_score",
         "bearish_volume_divergence_label",
+        "triple_bearish_volume_divergence",
+        "triple_bearish_volume_divergence_score",
+        "triple_bearish_volume_divergence_label",
         "bullish_volume_divergence",
         "bullish_volume_divergence_score",
         "bullish_volume_divergence_label",
@@ -603,6 +606,15 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             .alias("bullish_volume_divergence"),
         )
         .with_columns(
+            (
+                pl.col("bearish_volume_divergence")
+                & pl.col("bearish_volume_divergence").shift(1).over(["ticker", "session_date"])
+                & pl.col("bearish_volume_divergence").shift(2).over(["ticker", "session_date"])
+            )
+            .fill_null(False)
+            .alias("triple_bearish_volume_divergence")
+        )
+        .with_columns(
             volume_divergence_score_expr(
                 "bearish_volume_divergence",
                 "bearish",
@@ -617,7 +629,22 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             ),
         )
         .with_columns(
+            pl.when(pl.col("triple_bearish_volume_divergence"))
+            .then(
+                pl.min_horizontal(
+                    pl.col("bearish_volume_divergence_score"),
+                    pl.col("bearish_volume_divergence_score").shift(1).over(["ticker", "session_date"]),
+                    pl.col("bearish_volume_divergence_score").shift(2).over(["ticker", "session_date"]),
+                )
+            )
+            .otherwise(0.0)
+            .fill_null(0.0)
+            .round(2)
+            .alias("triple_bearish_volume_divergence_score")
+        )
+        .with_columns(
             volume_divergence_label_expr("bearish_volume_divergence_score", "bearish_volume_divergence_label"),
+            volume_divergence_label_expr("triple_bearish_volume_divergence_score", "triple_bearish_volume_divergence_label"),
             volume_divergence_label_expr("bullish_volume_divergence_score", "bullish_volume_divergence_label"),
         )
     )

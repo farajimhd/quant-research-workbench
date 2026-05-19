@@ -962,6 +962,20 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
     if divergence_exprs:
         scan = scan.with_columns(divergence_exprs)
         names = scan.collect_schema().names()
+    triple_exprs: list[pl.Expr] = []
+    if "triple_bearish_volume_divergence" not in names and "bearish_volume_divergence" in names and group_columns:
+        triple_exprs.append(
+            (
+                pl.col("bearish_volume_divergence")
+                & pl.col("bearish_volume_divergence").shift(1).over(group_columns)
+                & pl.col("bearish_volume_divergence").shift(2).over(group_columns)
+            )
+            .fill_null(False)
+            .alias("triple_bearish_volume_divergence")
+        )
+    if triple_exprs:
+        scan = scan.with_columns(triple_exprs)
+        names = scan.collect_schema().names()
     score_exprs: list[pl.Expr] = []
     if "bearish_volume_divergence_score" not in names and {"bearish_volume_divergence", "open", "close", "volume"}.issubset(names):
         score_exprs.append(volume_divergence_score_expr("bearish_volume_divergence", "bearish", group_columns, "bearish_volume_divergence_score"))
@@ -970,9 +984,30 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
     if score_exprs:
         scan = scan.with_columns(score_exprs)
         names = scan.collect_schema().names()
+    triple_score_exprs: list[pl.Expr] = []
+    if "triple_bearish_volume_divergence_score" not in names and {"triple_bearish_volume_divergence", "bearish_volume_divergence_score"}.issubset(names) and group_columns:
+        triple_score_exprs.append(
+            pl.when(pl.col("triple_bearish_volume_divergence"))
+            .then(
+                pl.min_horizontal(
+                    pl.col("bearish_volume_divergence_score"),
+                    pl.col("bearish_volume_divergence_score").shift(1).over(group_columns),
+                    pl.col("bearish_volume_divergence_score").shift(2).over(group_columns),
+                )
+            )
+            .otherwise(0.0)
+            .fill_null(0.0)
+            .round(2)
+            .alias("triple_bearish_volume_divergence_score")
+        )
+    if triple_score_exprs:
+        scan = scan.with_columns(triple_score_exprs)
+        names = scan.collect_schema().names()
     label_exprs: list[pl.Expr] = []
     if "bearish_volume_divergence_label" not in names and "bearish_volume_divergence_score" in names:
         label_exprs.append(volume_divergence_label_expr("bearish_volume_divergence_score", "bearish_volume_divergence_label"))
+    if "triple_bearish_volume_divergence_label" not in names and "triple_bearish_volume_divergence_score" in names:
+        label_exprs.append(volume_divergence_label_expr("triple_bearish_volume_divergence_score", "triple_bearish_volume_divergence_label"))
     if "bullish_volume_divergence_label" not in names and "bullish_volume_divergence_score" in names:
         label_exprs.append(volume_divergence_label_expr("bullish_volume_divergence_score", "bullish_volume_divergence_label"))
     if label_exprs:
@@ -1317,6 +1352,9 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "last_bearish_volume_divergence",
         "last_bearish_volume_divergence_score",
         "last_bearish_volume_divergence_label",
+        "last_triple_bearish_volume_divergence",
+        "last_triple_bearish_volume_divergence_score",
+        "last_triple_bearish_volume_divergence_label",
         "last_bullish_volume_divergence",
         "last_bullish_volume_divergence_score",
         "last_bullish_volume_divergence_label",
@@ -2156,6 +2194,17 @@ def apply_chart_volume_convergence_columns(frame: pl.DataFrame) -> pl.DataFrame:
             .alias("bullish_volume_divergence")
         )
         names = frame.columns
+    if "triple_bearish_volume_divergence" not in names and "bearish_volume_divergence" in names and group_columns:
+        frame = frame.with_columns(
+            (
+                pl.col("bearish_volume_divergence")
+                & pl.col("bearish_volume_divergence").shift(1).over(group_columns)
+                & pl.col("bearish_volume_divergence").shift(2).over(group_columns)
+            )
+            .fill_null(False)
+            .alias("triple_bearish_volume_divergence")
+        )
+        names = frame.columns
     score_exprs: list[pl.Expr] = []
     if "bearish_volume_divergence_score" not in names and {"bearish_volume_divergence", "open", "close", "volume"}.issubset(names):
         score_exprs.append(volume_divergence_score_expr("bearish_volume_divergence", "bearish", group_columns, "bearish_volume_divergence_score"))
@@ -2164,9 +2213,27 @@ def apply_chart_volume_convergence_columns(frame: pl.DataFrame) -> pl.DataFrame:
     if score_exprs:
         frame = frame.with_columns(score_exprs)
         names = frame.columns
+    if "triple_bearish_volume_divergence_score" not in names and {"triple_bearish_volume_divergence", "bearish_volume_divergence_score"}.issubset(names) and group_columns:
+        frame = frame.with_columns(
+            pl.when(pl.col("triple_bearish_volume_divergence"))
+            .then(
+                pl.min_horizontal(
+                    pl.col("bearish_volume_divergence_score"),
+                    pl.col("bearish_volume_divergence_score").shift(1).over(group_columns),
+                    pl.col("bearish_volume_divergence_score").shift(2).over(group_columns),
+                )
+            )
+            .otherwise(0.0)
+            .fill_null(0.0)
+            .round(2)
+            .alias("triple_bearish_volume_divergence_score")
+        )
+        names = frame.columns
     label_exprs: list[pl.Expr] = []
     if "bearish_volume_divergence_label" not in names and "bearish_volume_divergence_score" in names:
         label_exprs.append(volume_divergence_label_expr("bearish_volume_divergence_score", "bearish_volume_divergence_label"))
+    if "triple_bearish_volume_divergence_label" not in names and "triple_bearish_volume_divergence_score" in names:
+        label_exprs.append(volume_divergence_label_expr("triple_bearish_volume_divergence_score", "triple_bearish_volume_divergence_label"))
     if "bullish_volume_divergence_label" not in names and "bullish_volume_divergence_score" in names:
         label_exprs.append(volume_divergence_label_expr("bullish_volume_divergence_score", "bullish_volume_divergence_label"))
     if label_exprs:
