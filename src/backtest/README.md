@@ -149,6 +149,14 @@ symbol's high or low crossed a stop or limit at that time. Latest-known rows can
 mark positions, but they should not trigger fills unless a later execution model
 explicitly supports that behavior.
 
+Partial entry fills are controlled by backtest configuration, not by provider
+quote size. When `enable_partial_fills` is true, each BUY entry can fill up to
+`max_allowable_entry_fill_size` shares on the candle where the order crosses. If
+the requested size is larger, the engine records a `PARTIAL` fill tag and the
+unfilled remainder is marked as canceled rather than left as an open order. When
+partial fills are disabled, entry orders that cross are filled for the full
+requested quantity subject to cash and normal order checks.
+
 The order book should be indexed so the engine checks pending orders only for
 symbols with fresh updates at the current timestamp. This keeps the event loop
 small even when the provider frame contains many symbols.

@@ -134,6 +134,8 @@ class BacktestSubmit(BaseModel):
     slippage_bps: float = 0.0
     max_entry_participation_rate: float = 0.05
     max_entry_trade_multiple: float = 3.0
+    enable_partial_fills: bool = True
+    max_allowable_entry_fill_size: int = 3_000
     exit_liquidity_slippage_bps_per_excess_multiple: float = 10.0
     fee_model: str = "ibkr_ca_us_stock_fixed"
     fee_tax_rate: float = 0.0
@@ -850,6 +852,11 @@ def strategy_default_config(strategy_name: str, version: str | None = None) -> d
         "excluded_symbols_file": str(DEFAULT_EXCLUDED_SYMBOLS_FILE),
         "initial_cash": 10_000.0,
         "slippage_bps": 0.0,
+        "max_entry_participation_rate": 0.05,
+        "max_entry_trade_multiple": 3.0,
+        "enable_partial_fills": True,
+        "max_allowable_entry_fill_size": 3_000,
+        "exit_liquidity_slippage_bps_per_excess_multiple": 10.0,
         "fee_model": "ibkr_ca_us_stock_fixed",
         "fee_tax_rate": 0.0,
         "save_symbol_bars": True,

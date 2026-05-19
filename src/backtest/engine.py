@@ -634,7 +634,7 @@ class BacktestEngine:
 
         if order.side == "BUY":
             metadata = self.strategy.entry_metadata(order)
-            max_fill_quantity = self._max_fill_quantity(order, bar)
+            max_fill_quantity = self._partial_fill_quantity_limit(order, bar)
             requested_quantity = order.quantity
             if max_fill_quantity is not None and order.quantity > max_fill_quantity:
                 fill_quantity = max(0, max_fill_quantity)
@@ -674,7 +674,7 @@ class BacktestEngine:
                     fee=fee.total,
                 )
         else:
-            max_fill_quantity = self._max_fill_quantity(order, bar)
+            max_fill_quantity = self._partial_fill_quantity_limit(order, bar)
             requested_quantity = order.quantity
             if max_fill_quantity is not None and requested_quantity > max_fill_quantity:
                 fill_quantity = max(0, max_fill_quantity)
@@ -813,6 +813,22 @@ class BacktestEngine:
             capacity = participation_capacity
         return max(0, int(capacity))
 
+    def _partial_fill_quantity_limit(self, order: Order, bar: dict) -> int | None:
+        if not self.config.enable_partial_fills:
+            return None
+        if order.side == "BUY":
+            return self._max_allowable_entry_fill_quantity()
+        return self._max_fill_quantity(order, bar)
+
+    def _max_allowable_entry_fill_quantity(self) -> int | None:
+        try:
+            quantity = int(self.config.max_allowable_entry_fill_size)
+        except (TypeError, ValueError):
+            return None
+        if quantity <= 0:
+            return None
+        return quantity
+
     def _exit_liquidity_slippage_bps(self, order: Order, bar: dict) -> float:
         if order.side != "SELL":
             return 0.0
@@ -836,7 +852,7 @@ class BacktestEngine:
         return int(number)
 
     def _tag_with_partial_fill(self, tag: str, requested_quantity: int, fill_quantity: int) -> str:
-        suffix = f"PARTIAL|requested={requested_quantity}|filled={fill_quantity}|remaining={requested_quantity - fill_quantity}"
+        suffix = f"PARTIAL|requested={requested_quantity}|filled={fill_quantity}|remaining={requested_quantity - fill_quantity}|remaining_status=CANCELED"
         return f"{tag}|{suffix}" if tag else suffix
 
     def _apply_fee_to_order(self, order: Order, fee: FeeBreakdown) -> None:

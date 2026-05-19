@@ -69,6 +69,8 @@ class BacktestConfig:
     slippage_bps: float = 0.0
     max_entry_participation_rate: float = 0.05
     max_entry_trade_multiple: float = 3.0
+    enable_partial_fills: bool = True
+    max_allowable_entry_fill_size: int = 3_000
     exit_liquidity_slippage_bps_per_excess_multiple: float = 10.0
     fee_model: str = "ibkr_ca_us_stock_fixed"
     fee_tax_rate: float = 0.0
@@ -122,6 +124,8 @@ class BacktestConfig:
             "slippage_bps": self.slippage_bps,
             "max_entry_participation_rate": self.max_entry_participation_rate,
             "max_entry_trade_multiple": self.max_entry_trade_multiple,
+            "enable_partial_fills": self.enable_partial_fills,
+            "max_allowable_entry_fill_size": self.max_allowable_entry_fill_size,
             "exit_liquidity_slippage_bps_per_excess_multiple": self.exit_liquidity_slippage_bps_per_excess_multiple,
             "fee_model": self.fee_model,
             "fee_tax_rate": self.fee_tax_rate,
