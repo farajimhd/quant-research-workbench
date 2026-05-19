@@ -4676,7 +4676,7 @@ button {
 
 .data-table-column-toggle {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   min-height: 36px;
   align-items: center;
   gap: 8px;
@@ -4738,6 +4738,35 @@ button {
   cursor: pointer;
   padding: 0;
   text-align: left;
+}
+
+.data-table-column-order-buttons {
+  display: inline-grid;
+  grid-template-columns: repeat(2, 24px);
+  gap: 3px;
+}
+
+.data-table-column-order-button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid color-mix(in oklab, var(--border) 68%, transparent);
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--surface) 88%, transparent);
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.data-table-column-order-button:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--primary) 26%, var(--border));
+  background: color-mix(in oklab, var(--primary) 8%, var(--surface));
+  color: var(--foreground);
+}
+
+.data-table-column-order-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.34;
 }
 
 .data-table-column-toggle-mark {

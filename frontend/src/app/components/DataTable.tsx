@@ -469,6 +469,17 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
     saveColumnOrder(nextOrder);
   };
 
+  const moveColumnByOffset = (column: string, offset: number) => {
+    const currentOrder = applyColumnOrder(baseColumns, columnOrder);
+    const sourceIndex = currentOrder.indexOf(column);
+    const targetIndex = sourceIndex + offset;
+    if (sourceIndex < 0 || targetIndex < 0 || targetIndex >= currentOrder.length) return;
+    const nextOrder = [...currentOrder];
+    const [source] = nextOrder.splice(sourceIndex, 1);
+    nextOrder.splice(targetIndex, 0, source);
+    saveColumnOrder(nextOrder);
+  };
+
   const resetColumnOrder = () => {
     setColumnOrder([]);
     removeColumnOrderPreference(columnOrderStorageKey);
@@ -611,6 +622,7 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
       filteredColumnOptions.map((column) => {
         const visible = !hiddenColumns.includes(column);
         const profile = profilesByColumn[column];
+        const columnIndex = resolvedColumns.indexOf(column);
         const className = [
           "data-table-column-toggle",
           visible ? "selected" : "",
@@ -642,6 +654,26 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
                 <small>{profile?.typeLabel ?? "Column"}</small>
               </span>
             </button>
+            <span className="data-table-column-order-buttons" aria-label={`Move ${displayName(column)}`}>
+              <button
+                className="data-table-column-order-button"
+                disabled={columnIndex <= 0}
+                onClick={() => moveColumnByOffset(column, -1)}
+                title="Move column up"
+                type="button"
+              >
+                <ArrowUp size={12} />
+              </button>
+              <button
+                className="data-table-column-order-button"
+                disabled={columnIndex < 0 || columnIndex >= resolvedColumns.length - 1}
+                onClick={() => moveColumnByOffset(column, 1)}
+                title="Move column down"
+                type="button"
+              >
+                <ArrowDown size={12} />
+              </button>
+            </span>
           </div>
         );
       })
