@@ -191,6 +191,10 @@ function trueFilter(): DataTableManualFilterState {
   return { operator: "eq", presetLabel: "Is true", valueText: "true" };
 }
 
+function hasValueFilter(): DataTableManualFilterState {
+  return { operator: "not_null", presetLabel: "Has value", valueText: "" };
+}
+
 function gteFilter(value: unknown, label?: string): DataTableManualFilterState {
   const valueText = String(value ?? 0);
   return { operator: "gte", presetLabel: label ?? `>= ${valueText}`, valueText };
@@ -2596,38 +2600,46 @@ function interactiveDebugFilterPresets(config: StrategyConfig): DataTableFilterP
     return [
       {
         filters: {
-          long_momentum_v9_price_eligible: trueFilter(),
-          long_momentum_v9_return_ok: trueFilter(),
+          last_close: betweenFilter(minPrice, maxPrice),
+          long_momentum_v9_last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.05)),
         },
         label: "v9 Watchlist Add",
-        title: "Apply the v9 watchlist-add prerequisites: price eligibility and provider-built same-session return threshold.",
+        title: "Apply the visible v9 watchlist-add inputs: price range and provider-built same-session return threshold.",
       },
       {
         filters: {
-          long_momentum_v9_price_eligible: trueFilter(),
-          long_momentum_v9_watchlist_active: trueFilter(),
+          last_close: betweenFilter(minPrice, maxPrice),
+          long_momentum_v9_watchlist_added_timestamp: hasValueFilter(),
           long_momentum_v9_watchlist_first_entry_submitted: { operator: "eq", presetLabel: "Is false", valueText: "false" },
-          long_momentum_v9_entry_time_ok: trueFilter(),
-          long_momentum_v9_no_symbol_position: trueFilter(),
-          long_momentum_v9_return_ok: trueFilter(),
-          long_momentum_v9_first_entry_transactions_ok: trueFilter(),
-          long_momentum_v9_first_entry_transactions_vs_prior_3_ok: trueFilter(),
+          minute_of_day: betweenFilter(
+            strategyNumberParam(params, "trading_start_minute", 240),
+            strategyNumberParam(params, "trading_end_minute", 1200) - 1,
+          ),
+          held_quantity: lteFilter(0),
+          long_momentum_v9_pending_symbol_order: { operator: "eq", presetLabel: "Is false", valueText: "false" },
+          long_momentum_v9_last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.05)),
+          last_transactions: gteFilter(strategyNumberParam(params, "min_first_entry_transactions", 100)),
+          last_transactions_vs_prior_3: gteFilter(strategyNumberParam(params, "min_first_entry_transactions_vs_prior_3", 20)),
         },
         label: "v9 First Entry",
-        title: "Apply the exact v9 First Entry prerequisite group before the final first-entry decision.",
+        title: "Apply the v9 First Entry inputs and state gates using visible columns and thresholds.",
       },
       {
         filters: {
-          long_momentum_v9_price_eligible: trueFilter(),
-          long_momentum_v9_watchlist_active: trueFilter(),
+          last_close: betweenFilter(minPrice, maxPrice),
+          long_momentum_v9_watchlist_added_timestamp: hasValueFilter(),
           long_momentum_v9_watchlist_first_entry_submitted: trueFilter(),
-          long_momentum_v9_entry_time_ok: trueFilter(),
-          long_momentum_v9_no_symbol_position: trueFilter(),
-          long_momentum_v9_reentry_price_reclaim: trueFilter(),
-          long_momentum_v9_reentry_tema_open: trueFilter(),
+          minute_of_day: betweenFilter(
+            strategyNumberParam(params, "trading_start_minute", 240),
+            strategyNumberParam(params, "trading_end_minute", 1200) - 1,
+          ),
+          held_quantity: lteFilter(0),
+          long_momentum_v9_pending_symbol_order: { operator: "eq", presetLabel: "Is false", valueText: "false" },
+          long_momentum_v9_close_minus_watchlist_max_vwap: gtFilter(0),
+          last_tema_open: trueFilter(),
         },
         label: "v9 Reentry",
-        title: "Apply the exact v9 Watchlist Reentry prerequisite group before the final reentry decision.",
+        title: "Apply the v9 Reentry inputs and state gates using visible columns and thresholds.",
       },
       {
         filters: {
@@ -2810,15 +2822,22 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_price_eligible",
   "long_momentum_v9_watchlist_add_open",
   "long_momentum_v9_watchlist_active",
+  "long_momentum_v9_watchlist_added_timestamp",
+  "long_momentum_v9_watchlist_added_last_close",
+  "long_momentum_v9_watchlist_added_last_5m_return",
   "long_momentum_v9_watchlist_first_entry_submitted",
+  "long_momentum_v9_watchlist_last_entry_type",
+  "long_momentum_v9_watchlist_last_state",
   "long_momentum_v9_watchlist_max_vwap",
   "long_momentum_v9_watchlist_avg_transactions",
   "long_momentum_v9_return_ok",
   "long_momentum_v9_first_entry_transactions_ok",
   "long_momentum_v9_first_entry_transactions_vs_prior_3_ok",
   "long_momentum_v9_entry_time_ok",
+  "long_momentum_v9_pending_symbol_order",
   "long_momentum_v9_no_symbol_position",
   "long_momentum_v9_first_entry_open",
+  "long_momentum_v9_close_minus_watchlist_max_vwap",
   "long_momentum_v9_reentry_price_reclaim",
   "long_momentum_v9_reentry_tema_open",
   "long_momentum_v9_reentry_open",

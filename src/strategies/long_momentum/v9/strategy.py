@@ -298,7 +298,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         first_transactions_ok = transactions >= self.config.min_first_entry_transactions
         first_transactions_vs_prior_3_ok = transactions_vs_prior_3 >= self.config.min_first_entry_transactions_vs_prior_3
         entry_time_ok = self.config.trading_start_minute <= int(self._float(row.get("minute_of_day"))) < self.config.trading_end_minute
-        no_symbol_position = ticker not in portfolio.positions and ticker not in pending_symbols
+        pending_symbol_order = ticker in pending_symbols
+        no_symbol_position = ticker not in portfolio.positions and not pending_symbol_order
         first_entry_available = bool(watch and not watch.first_entry_submitted)
         first_entry_open = (
             price_eligible
@@ -312,6 +313,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         )
         max_vwap = watch.max_vwap if watch else 0.0
         reentry_price_reclaim = max_vwap > 0 and last_close > max_vwap
+        reentry_close_minus_max_vwap = last_close - max_vwap if max_vwap > 0 else None
         tema_open = self._tema_open(row)
         reentry_open = (
             price_eligible
@@ -326,7 +328,12 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_price_eligible": price_eligible,
             "long_momentum_v9_watchlist_add_open": price_eligible and return_ok,
             "long_momentum_v9_watchlist_active": watch is not None,
+            "long_momentum_v9_watchlist_added_timestamp": watch.added_timestamp.isoformat() if watch else "",
+            "long_momentum_v9_watchlist_added_last_close": watch.added_last_close if watch else None,
+            "long_momentum_v9_watchlist_added_last_5m_return": watch.added_last_5m_return if watch else None,
             "long_momentum_v9_watchlist_first_entry_submitted": bool(watch and watch.first_entry_submitted),
+            "long_momentum_v9_watchlist_last_entry_type": watch.last_entry_type if watch else "",
+            "long_momentum_v9_watchlist_last_state": watch.last_state if watch else "",
             "long_momentum_v9_watchlist_max_vwap": max_vwap,
             "long_momentum_v9_watchlist_avg_transactions": watch.avg_transactions_since_watchlist if watch else 0.0,
             "long_momentum_v9_last_5m_return": last_5m_return,
@@ -334,8 +341,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_first_entry_transactions_ok": first_transactions_ok,
             "long_momentum_v9_first_entry_transactions_vs_prior_3_ok": first_transactions_vs_prior_3_ok,
             "long_momentum_v9_entry_time_ok": entry_time_ok,
+            "long_momentum_v9_pending_symbol_order": pending_symbol_order,
             "long_momentum_v9_no_symbol_position": no_symbol_position,
             "long_momentum_v9_first_entry_open": first_entry_open,
+            "long_momentum_v9_close_minus_watchlist_max_vwap": reentry_close_minus_max_vwap,
             "long_momentum_v9_reentry_price_reclaim": reentry_price_reclaim,
             "long_momentum_v9_reentry_tema_open": tema_open,
             "long_momentum_v9_reentry_open": reentry_open,
