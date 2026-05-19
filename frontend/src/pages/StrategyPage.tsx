@@ -321,6 +321,8 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   max_initial_risk_pct: "Maximum initial R distance as a fraction of entry price.",
   max_risk_fraction_of_cash: "Long Momentum v9 maximum cash-slice risk used for position sizing.",
   double_bvd_exit_score: "Long Momentum v9 main exit threshold for provider-built double-timeframe bearish volume divergence score.",
+  profit_giveback_exit_pct: "Long Momentum v9 secondary main exit. Exits when current completed-bar P/L gives back more than this fraction of peak unrealized P/L.",
+  tema9_exit_buffer_pct: "Long Momentum v9 TEMA exit threshold as a fraction of TEMA9. -0.01 means exit when TEMA20 reaches 99% of TEMA9, before the crossover.",
   vwap_stop_offset_pct: "Long Momentum v9 VWAP reentry protective stop offset, expressed as n percent of VWAP. For example, 3 means stop = VWAP - 3% of VWAP.",
   trailing_activation_r: "Open R multiple required before the trailing stop tightens.",
   trailing_lock_r: "R multiple locked in after trailing activation.",
@@ -470,6 +472,8 @@ const STRATEGY_PARAMETER_GROUPS = [
       "structural_trail_activation_r",
       "vwap_stop_buffer_pct",
       "vwap_stop_offset_pct",
+      "profit_giveback_exit_pct",
+      "tema9_exit_buffer_pct",
       "double_bvd_exit_score"
     ]
   },
@@ -2609,7 +2613,7 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
         last_double_timeframe_bearish_volume_divergence_score: gtFilter(strategyNumberParam(params, "double_bvd_exit_score", 50)),
       },
       label: "v9 Exit Raw",
-      title: "Apply the raw/provider 2xBVD exit input threshold.",
+      title: "Apply the raw/provider 2xBVD exit input threshold. TEMA and P/L giveback exits are visible in the step filter groups and order tags because they compare multiple fields and position state.",
     },
   ];
 }
@@ -2874,6 +2878,8 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_reentry_open",
   "long_momentum_v9_entry_open",
   "long_momentum_v9_reject_reason",
+  "last_tema9",
+  "last_tema20",
   "current_open",
   "last_open",
   "last_high",

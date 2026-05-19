@@ -21,6 +21,8 @@ REQUIRED_V9_COLUMNS = (
     "current_open",
     "last_transactions",
     "last_transactions_vs_prior_3",
+    "last_tema9",
+    "last_tema20",
     "last_vwap",
     "last_double_timeframe_bearish_volume_divergence_score",
 )
@@ -162,8 +164,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         if missing:
             date_text = self.session_date.isoformat() if self.session_date else "unknown session"
             raise ValueError(
-                f"Long Momentum v9 requires provider-built strategy-time core and volume/liquidity features for {date_text}; "
-                f"missing columns: {', '.join(missing)}. Rebuild market data with current core and volume_liquidity features."
+                f"Long Momentum v9 requires provider-built strategy-time core, momentum, and volume/liquidity features for {date_text}; "
+                f"missing columns: {', '.join(missing)}. Rebuild market data with current core, momentum, and volume_liquidity features."
             )
 
     def _with_last_5m_return(self, frame: pl.DataFrame) -> pl.DataFrame:
@@ -385,6 +387,19 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     )
                 )
                 continue
+            if self._profit_giveback_exit_triggered(position, bar):
+                self._trace_exit(context.timestamp, symbol, "PROFIT_GIVEBACK", position, bar, meta)
+                requests.append(
+                    OrderRequest(
+                        symbol=symbol,
+                        side="SELL",
+                        quantity=position.quantity,
+                        order_type="MARKET",
+                        reason="PROFIT_GIVEBACK",
+                        tag=self._exit_tag("PROFIT_GIVEBACK", position, bar, meta) + self._profit_giveback_exit_tag(position, bar),
+                    )
+                )
+                continue
             if self._tema_closed(bar):
                 self._trace_exit(context.timestamp, symbol, "TEMA_CLOSE", position, bar, meta)
                 requests.append(
@@ -394,7 +409,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                         quantity=position.quantity,
                         order_type="MARKET",
                         reason="TEMA_CLOSE",
-                        tag=self._exit_tag("TEMA_CLOSE", position, bar, meta),
+                        tag=self._exit_tag("TEMA_CLOSE", position, bar, meta) + self._tema_exit_tag(bar),
                     )
                 )
                 continue
@@ -498,6 +513,44 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return 0.0
         offset_fraction = max(0.0, self.config.vwap_stop_offset_pct) / 100.0
         return vwap * (1.0 - offset_fraction)
+
+    def _profit_giveback_exit_triggered(self, position, bar: dict) -> bool:
+        peak_profit = max(0.0, self._float(position.max_unrealized_profit))
+        if peak_profit <= 0:
+            return False
+        current_profit = self._current_completed_bar_pnl(position, bar)
+        giveback = peak_profit - current_profit
+        threshold = peak_profit * max(0.0, self.config.profit_giveback_exit_pct)
+        return giveback > threshold + 1e-9
+
+    def _current_completed_bar_pnl(self, position, bar: dict) -> float:
+        last_close = self._float(bar.get("last_close"))
+        if last_close <= 0:
+            last_close = self._bar_open(bar)
+        return (last_close - position.entry_price) * position.quantity
+
+    def _profit_giveback_exit_tag(self, position, bar: dict) -> str:
+        peak_profit = max(0.0, self._float(position.max_unrealized_profit))
+        current_profit = self._current_completed_bar_pnl(position, bar)
+        giveback = peak_profit - current_profit
+        giveback_pct = (giveback / peak_profit) if peak_profit > 0 else 0.0
+        return f"|peakPnl={peak_profit:.2f}|currentPnl={current_profit:.2f}|givebackPct={giveback_pct:.4f}"
+
+    def _tema_closed(self, bar: dict) -> bool:
+        tema9 = self._float(bar.get("last_tema9"))
+        tema20 = self._float(bar.get("last_tema20"))
+        if tema9 <= 0 or tema20 <= 0:
+            return False
+        return tema20 >= self._tema_exit_threshold(tema9)
+
+    def _tema_exit_threshold(self, tema9: float) -> float:
+        return tema9 * (1.0 + self.config.tema9_exit_buffer_pct)
+
+    def _tema_exit_tag(self, bar: dict) -> str:
+        tema9 = self._float(bar.get("last_tema9"))
+        tema20 = self._float(bar.get("last_tema20"))
+        threshold = self._tema_exit_threshold(tema9) if tema9 > 0 else 0.0
+        return f"|tema9={tema9:.4f}|tema20={tema20:.4f}|temaThreshold={threshold:.4f}|tema9BufferPct={self.config.tema9_exit_buffer_pct:.4f}"
 
     def _available_cash_after_submitted_requests(
         self,

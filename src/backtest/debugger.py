@@ -412,6 +412,7 @@ class StepBacktestDebugger(BacktestEngine):
                 ],
                 "Exit": [
                     self._gt_check(row, "last_double_timeframe_bearish_volume_divergence_score", self._strategy_param("double_bvd_exit_score", 50.0)),
+                    self._v9_tema_exit_check(row),
                 ],
                 "Final Strategy Decision": [
                     self._check(
@@ -492,6 +493,19 @@ class StepBacktestDebugger(BacktestEngine):
     def _gt_check(self, row: dict, key: str, threshold: float, fallback_key: str | None = None) -> dict:
         value = self._number(row, key, fallback_key)
         return self._check(key, value, value is not None and value > threshold, f"> {threshold:g}")
+
+    def _v9_tema_exit_check(self, row: dict) -> dict:
+        tema9 = self._number(row, "last_tema9")
+        tema20 = self._number(row, "last_tema20")
+        buffer_pct = self._strategy_param("tema9_exit_buffer_pct", -0.01)
+        threshold = tema9 * (1.0 + buffer_pct) if tema9 is not None else None
+        passed = tema20 is not None and threshold is not None and tema20 >= threshold
+        return self._check(
+            "last_tema20_vs_tema9_exit_buffer",
+            f"tema20={tema20}, threshold={threshold}",
+            passed,
+            f">= tema9 * (1 + {buffer_pct:g})",
+        )
 
     def _lte_check(self, row: dict, key: str, threshold: float, fallback_key: str | None = None) -> dict:
         value = self._number(row, key, fallback_key)

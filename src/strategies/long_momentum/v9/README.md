@@ -100,13 +100,27 @@ last_double_timeframe_bearish_volume_divergence_score > double_bvd_exit_score
 On 1-minute data this is 2-minute BVD. When it triggers on the last completed
 bar, v9 exits immediately at the current open.
 
+Secondary main exit:
+
+```text
+peak_unrealized_pnl > 0
+and (peak_unrealized_pnl - current_completed_bar_pnl) / peak_unrealized_pnl > profit_giveback_exit_pct
+```
+
+The default `profit_giveback_exit_pct` is `0.10`, so v9 exits at the current
+open when the completed-bar P/L has given back more than 10% of the best
+unrealized P/L seen so far.
+
 Emergency exit:
 
 ```text
-TEMA close
+last_tema20 >= last_tema9 * (1 + tema9_exit_buffer_pct)
 ```
 
-If no main exit is active and TEMA is closed, v9 exits at the current open.
+The default `tema9_exit_buffer_pct` is `-0.01`, so the TEMA emergency exit
+triggers when TEMA20 reaches 99% of TEMA9. This can exit before TEMA9 actually
+crosses below TEMA20. If no main exit is active and TEMA is closed, v9 exits at
+the current open.
 
 After exit, the ticker stays in the day momentum watchlist and the same VWAP
 entry rule can open another position later in the session.
