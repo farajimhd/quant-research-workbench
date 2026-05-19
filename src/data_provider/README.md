@@ -171,6 +171,9 @@ Feature artifacts are split by group so consumers can load only what they need. 
 - `ema9`, `ema20`, `ema50`, `ema200`: exponential moving averages of close.
 - `tema9`, `tema20`: triple exponential moving averages.
 - `tema_open`: `tema9 > tema20`.
+- `current_open_tema9`, `current_open_tema20`: open-of-current-bar TEMA
+  estimates built from the prior close-based EMA state and current `open`.
+  Close-based `tema9` and `tema20` remain unchanged.
 - `macd_line`: EMA12 - EMA26.
 - `macd_signal`: EMA9 of `macd_line`.
 - `macd_hist`: `macd_line - macd_signal`.

@@ -1608,6 +1608,8 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "last_tema9",
         "last_tema20",
         "last_tema_open",
+        "current_open_tema9",
+        "current_open_tema20",
         "last_macd_line",
         "last_macd_signal",
         "last_macd_hist",

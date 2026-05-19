@@ -23,6 +23,8 @@ REQUIRED_V9_COLUMNS = (
     "last_transactions_vs_prior_3",
     "last_tema9",
     "last_tema20",
+    "current_open_tema9",
+    "current_open_tema20",
     "last_vwap",
     "last_bearish_volume_divergence_score",
     "last_double_timeframe_bearish_volume_divergence_score",
@@ -76,6 +78,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 "transactions",
                 "spread",
             ),
+            decision_current_columns=("current_open_tema9", "current_open_tema20"),
         )
 
     def chart_presentation(self) -> dict:
@@ -646,8 +649,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         )
 
     def _tema_closed(self, bar: dict) -> bool:
-        tema9 = self._float(bar.get("last_tema9"))
-        tema20 = self._float(bar.get("last_tema20"))
+        tema9 = self._float(bar.get("current_open_tema9"))
+        tema20 = self._float(bar.get("current_open_tema20"))
         if tema9 <= 0 or tema20 <= 0:
             return False
         return tema20 >= self._tema_exit_threshold(tema9)
@@ -656,10 +659,13 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         return tema9 * (1.0 + self.config.tema9_exit_buffer_pct)
 
     def _tema_exit_tag(self, bar: dict) -> str:
-        tema9 = self._float(bar.get("last_tema9"))
-        tema20 = self._float(bar.get("last_tema20"))
+        tema9 = self._float(bar.get("current_open_tema9"))
+        tema20 = self._float(bar.get("current_open_tema20"))
         threshold = self._tema_exit_threshold(tema9) if tema9 > 0 else 0.0
-        return f"|tema9={tema9:.4f}|tema20={tema20:.4f}|temaThreshold={threshold:.4f}|tema9BufferPct={self.config.tema9_exit_buffer_pct:.4f}"
+        return (
+            f"|currentOpenTema9={tema9:.4f}|currentOpenTema20={tema20:.4f}"
+            f"|temaThreshold={threshold:.4f}|tema9BufferPct={self.config.tema9_exit_buffer_pct:.4f}"
+        )
 
     def _available_cash_after_submitted_requests(
         self,

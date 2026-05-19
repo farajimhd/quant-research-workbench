@@ -499,16 +499,16 @@ class StepBacktestDebugger(BacktestEngine):
         return self._check(key, value, value is not None and value > threshold, f"> {threshold:g}")
 
     def _v9_tema_exit_check(self, row: dict) -> dict:
-        tema9 = self._number(row, "last_tema9")
-        tema20 = self._number(row, "last_tema20")
+        tema9 = self._number(row, "current_open_tema9")
+        tema20 = self._number(row, "current_open_tema20")
         buffer_pct = self._strategy_param("tema9_exit_buffer_pct", -0.01)
         threshold = tema9 * (1.0 + buffer_pct) if tema9 is not None else None
         passed = tema20 is not None and threshold is not None and tema20 >= threshold
         return self._check(
-            "last_tema20_vs_tema9_exit_buffer",
-            f"tema20={tema20}, threshold={threshold}",
+            "current_open_tema20_vs_tema9_exit_buffer",
+            f"current_open_tema20={tema20}, threshold={threshold}",
             passed,
-            f">= tema9 * (1 + {buffer_pct:g})",
+            f">= current_open_tema9 * (1 + {buffer_pct:g})",
         )
 
     def _lte_check(self, row: dict, key: str, threshold: float, fallback_key: str | None = None) -> dict:

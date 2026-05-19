@@ -942,6 +942,8 @@ class BacktestEngine:
             "macd_hist",
             "tema9",
             "tema20",
+            "current_open_tema9",
+            "current_open_tema20",
             "macd_line_5m",
             "macd_signal_5m",
             "macd_hist_5m",

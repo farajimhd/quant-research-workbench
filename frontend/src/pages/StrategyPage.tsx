@@ -2903,6 +2903,8 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_reject_reason",
   "last_tema9",
   "last_tema20",
+  "current_open_tema9",
+  "current_open_tema20",
   "current_open",
   "last_open",
   "last_high",

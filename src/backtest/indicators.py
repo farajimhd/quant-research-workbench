@@ -30,11 +30,39 @@ def add_tema(frame: pl.DataFrame, column: str, period: int, prefix: str) -> pl.D
     ema1 = f"{prefix}_ema1"
     ema2 = f"{prefix}_ema2"
     ema3 = f"{prefix}_ema3"
+    open_ema1 = f"{prefix}_open_ema1"
+    open_ema2 = f"{prefix}_open_ema2"
+    open_ema3 = f"{prefix}_open_ema3"
+    alpha = 2.0 / (period + 1.0)
+    prev_ema1 = pl.col(ema1).shift(1).over("ticker")
+    prev_ema2 = pl.col(ema2).shift(1).over("ticker")
+    prev_ema3 = pl.col(ema3).shift(1).over("ticker")
     return (
         add_ema(frame, column, period, ema1)
         .with_columns(pl.col(ema1).ewm_mean(span=period, adjust=False).over("ticker").alias(ema2))
         .with_columns(pl.col(ema2).ewm_mean(span=period, adjust=False).over("ticker").alias(ema3))
-        .with_columns(((3.0 * pl.col(ema1)) - (3.0 * pl.col(ema2)) + pl.col(ema3)).alias(prefix))
+        .with_columns(
+            pl.when(prev_ema1.is_null())
+            .then(pl.col("open"))
+            .otherwise((alpha * pl.col("open")) + ((1.0 - alpha) * prev_ema1))
+            .alias(open_ema1)
+        )
+        .with_columns(
+            pl.when(prev_ema2.is_null())
+            .then(pl.col(open_ema1))
+            .otherwise((alpha * pl.col(open_ema1)) + ((1.0 - alpha) * prev_ema2))
+            .alias(open_ema2)
+        )
+        .with_columns(
+            pl.when(prev_ema3.is_null())
+            .then(pl.col(open_ema2))
+            .otherwise((alpha * pl.col(open_ema2)) + ((1.0 - alpha) * prev_ema3))
+            .alias(open_ema3)
+        )
+        .with_columns(
+            ((3.0 * pl.col(ema1)) - (3.0 * pl.col(ema2)) + pl.col(ema3)).alias(prefix),
+            ((3.0 * pl.col(open_ema1)) - (3.0 * pl.col(open_ema2)) + pl.col(open_ema3)).alias(f"current_open_{prefix}"),
+        )
     )
 
 
