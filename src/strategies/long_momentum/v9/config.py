@@ -1,9 +1,32 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 from src.strategies.long_momentum.v3.config import LongMomentumV3Config
+
+
+V9_PARAMETER_FIELDS = (
+    "min_price",
+    "max_price",
+    "trading_start_minute",
+    "trading_end_minute",
+    "cash_buffer_dollars",
+    "sizing_fee_per_share",
+    "sizing_min_fee",
+    "min_last_5m_return",
+    "min_first_entry_transactions",
+    "min_first_entry_transactions_vs_prior_3",
+    "max_risk_fraction_of_cash",
+    "vwap_stop_offset_pct",
+    "double_bvd_exit_score",
+    "profit_giveback_exit_pct",
+    "tema9_exit_buffer_pct",
+    "partial_fill_reprice_offset",
+    "max_immediate_entry_candidates_per_bar",
+    "max_reentry_candidates_per_bar",
+    "watchlist_snapshot_limit",
+)
 
 
 @dataclass(slots=True)
@@ -35,4 +58,4 @@ class LongMomentumV9Config(LongMomentumV3Config):
         return cls(**allowed)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {field: getattr(self, field) for field in V9_PARAMETER_FIELDS}

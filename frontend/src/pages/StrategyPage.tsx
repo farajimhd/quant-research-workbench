@@ -276,7 +276,12 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_first_entry_transactions: "Long Momentum v9 1-minute transaction threshold needed to add a ticker to the day momentum watchlist. This is calibrated for 1m bars and should be retuned for other timeframes.",
   min_first_entry_transactions_vs_prior_3: "Long Momentum v9 immediate-entry transaction impulse threshold versus the prior three transactions average. This is calibrated for 1m bars.",
   min_last_5m_return: "Long Momentum v9 provider-built same-session return_5 threshold needed to add a ticker to the day momentum watchlist.",
+  max_immediate_entry_candidates_per_bar: "Maximum Long Momentum v9 First Entry candidates the strategy can process on one bar before cash allocation.",
+  max_reentry_candidates_per_bar: "Maximum Long Momentum v9 watchlist reentry candidates the strategy can process on one bar after First Entries.",
+  watchlist_snapshot_limit: "Maximum Long Momentum v9 day-momentum watchlist rows saved in debug and observability snapshots.",
   min_macd_hist_z_since_open: "Minimum MACD histogram z-score since the open required before a Long Momentum entry.",
+  trading_start_minute: "First minute of day where the strategy can evaluate entries. 240 is 04:00 ET.",
+  trading_end_minute: "End minute of day, exclusive, where the strategy can evaluate entries. 1200 is 20:00 ET.",
   trigger_1_minute_start: "Earliest minute of day where Long Momentum v4 Trigger 1 can enter.",
   trigger_1_minute_end: "End minute, exclusive, for the first Long Momentum v4 Trigger 1 window.",
   trigger_1_late_minute_start: "Earliest minute of day where the late Long Momentum v4 Trigger 1 window can enter.",
@@ -320,6 +325,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_initial_risk_dollars: "Minimum initial R distance in dollars.",
   max_initial_risk_pct: "Maximum initial R distance as a fraction of entry price.",
   max_risk_fraction_of_cash: "Long Momentum v9 maximum cash-slice risk used for position sizing.",
+  cash_buffer_dollars: "Cash kept out of Long Momentum sizing so estimated fees and rounding do not overdraw the account.",
   double_bvd_exit_score: "Long Momentum v9 main exit threshold for provider-built double-timeframe bearish volume divergence score.",
   profit_giveback_exit_pct: "Long Momentum v9 secondary main exit. Exits when current completed-bar P/L gives back more than this fraction of peak unrealized P/L.",
   tema9_exit_buffer_pct: "Long Momentum v9 TEMA exit threshold as a fraction of TEMA9. -0.01 means exit when TEMA20 reaches 99% of TEMA9, before the crossover.",
@@ -411,7 +417,10 @@ const STRATEGY_PARAMETER_GROUPS = [
       "rank_decay",
       "watchlist_size",
       "max_active_positions",
-      "replacement_score_buffer"
+      "replacement_score_buffer",
+      "max_immediate_entry_candidates_per_bar",
+      "max_reentry_candidates_per_bar",
+      "watchlist_snapshot_limit"
     ]
   },
   {
@@ -430,7 +439,9 @@ const STRATEGY_PARAMETER_GROUPS = [
       "entry_minute_start",
       "entry_minute_end",
       "entry_late_minute_start",
-      "entry_late_minute_end"
+      "entry_late_minute_end",
+      "trading_start_minute",
+      "trading_end_minute"
     ]
   },
   {
