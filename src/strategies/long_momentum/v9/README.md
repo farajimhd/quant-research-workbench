@@ -122,8 +122,8 @@ peak_unrealized_pnl > 0
 and (peak_unrealized_pnl - current_completed_bar_pnl) / peak_unrealized_pnl > profit_giveback_exit_pct
 ```
 
-The default `profit_giveback_exit_pct` is `0.10`, so v9 exits at the current
-open when the completed-bar P/L has given back more than 10% of the best
+The default `profit_giveback_exit_pct` is `0.15`, so v9 exits at the current
+open when the completed-bar P/L has given back more than 15% of the best
 unrealized P/L seen so far.
 
 Emergency exit:

@@ -41,7 +41,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     min_first_entry_transactions_vs_prior_3: float = 20.0
     max_risk_fraction_of_cash: float = 0.25
     double_bvd_exit_score: float = 50.0
-    profit_giveback_exit_pct: float = 0.10
+    profit_giveback_exit_pct: float = 0.15
     tema9_exit_buffer_pct: float = -0.01
     vwap_stop_offset_pct: float = 3.0
     partial_fill_reprice_offset: float = 0.01
