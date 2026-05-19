@@ -230,10 +230,12 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return
         last_close = self._float(row.get("last_close"))
         last_5m_return = self._float(row.get("last_5m_return"))
+        transactions = self._float(row.get("last_transactions"))
         price_eligible = self.config.min_price <= last_close <= self.config.max_price
         return_ok = last_5m_return >= self.config.min_last_5m_return
+        transactions_ok = transactions >= self.config.min_first_entry_transactions
         watch = self.momentum_watchlist.get(ticker)
-        if watch is None and price_eligible and return_ok:
+        if watch is None and price_eligible and return_ok and transactions_ok:
             watch = MomentumWatch(
                 ticker=ticker,
                 added_timestamp=timestamp,
@@ -247,7 +249,6 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         last_vwap = self._float(row.get("last_vwap"))
         if last_vwap > 0:
             watch.max_vwap = max(watch.max_vwap, last_vwap)
-        transactions = self._float(row.get("last_transactions"))
         if transactions > 0:
             watch.transaction_sum += transactions
             watch.transaction_count += 1
@@ -326,7 +327,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         )
         return {
             "long_momentum_v9_price_eligible": price_eligible,
-            "long_momentum_v9_watchlist_add_open": price_eligible and return_ok,
+            "long_momentum_v9_watchlist_add_open": price_eligible and return_ok and first_transactions_ok,
             "long_momentum_v9_watchlist_active": watch is not None,
             "long_momentum_v9_watchlist_added_timestamp": watch.added_timestamp.isoformat() if watch else "",
             "long_momentum_v9_watchlist_added_last_close": watch.added_last_close if watch else None,
@@ -661,12 +662,14 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             stage="watchlist",
             event_type="watchlist_add",
             decision="add_to_day_momentum_watchlist",
-            reason_code="LAST_5M_RETURN",
-            reason="Ticker entered the day momentum watchlist from completed-bar 5m return.",
+            reason_code="PRICE_RETURN_TRANSACTIONS",
+            reason="Ticker entered the day momentum watchlist from price, completed-bar 5m return, and transactions.",
             values={
                 "last_close": row.get("last_close"),
                 "last_5m_return": watch.added_last_5m_return,
+                "last_transactions": row.get("last_transactions"),
                 "min_last_5m_return": self.config.min_last_5m_return,
+                "min_first_entry_transactions": self.config.min_first_entry_transactions,
                 "min_price": self.config.min_price,
                 "max_price": self.config.max_price,
             },

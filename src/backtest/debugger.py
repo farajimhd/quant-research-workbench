@@ -384,6 +384,7 @@ class StepBacktestDebugger(BacktestEngine):
                 "Watchlist Add": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.05), fallback_key="last_5m_return"),
+                    self._gte_check(row, "last_transactions", self._strategy_param("min_first_entry_transactions", 100.0)),
                 ],
                 "First Entry Raw Inputs": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),

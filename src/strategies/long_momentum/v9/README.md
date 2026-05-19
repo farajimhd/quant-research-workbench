@@ -14,6 +14,7 @@ A ticker is eligible for the watchlist when:
 
 - `min_price <= last_close <= max_price`
 - `last_5m_return >= min_last_5m_return`
+- `last_transactions >= min_first_entry_transactions`
 
 For 1-minute bars:
 

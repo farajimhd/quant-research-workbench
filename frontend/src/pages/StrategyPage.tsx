@@ -1012,7 +1012,7 @@ function InteractiveStepDebugPanel({
   const canGoPrevious = session.current_step_index > 0;
   const parameters = useMemo(() => interactiveDebugParameterRows(session.config, config.strategy_params), [config.strategy_params, session.config]);
   const rawScannerFilterPresets = useMemo(() => interactiveDebugRawFilterPresets(config), [config]);
-  const defaultRawFilterPreset = String(config.strategy_version || "").toLowerCase() === "v9" ? undefined : rawScannerFilterPresets?.[0];
+  const defaultRawFilterPreset = rawScannerFilterPresets?.[0];
   const rawRows = step?.raw_scanner_rows ?? [];
   const strategyWatchlistRows = step?.strategy_watchlist_rows ?? [];
   const actionRows = step?.observability_trace ?? [];
@@ -2566,9 +2566,10 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
       filters: {
         last_close: betweenFilter(minPrice, maxPrice),
         last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.05)),
+        last_transactions: gteFilter(strategyNumberParam(params, "min_first_entry_transactions", 100)),
       },
       label: "v9 Watchlist Add Raw",
-      title: "Apply only the raw/provider inputs for adding a ticker to the v9 watchlist: price range and same-session 5m return.",
+      title: "Apply only the raw/provider inputs for adding a ticker to the v9 watchlist: price range, same-session 5m return, and transactions.",
     },
     {
       filters: {
