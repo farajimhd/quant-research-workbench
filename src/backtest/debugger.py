@@ -259,6 +259,8 @@ class StepBacktestDebugger(BacktestEngine):
         return rows[before:after]
 
     def _filter_group_rows(self, rows: list[dict]) -> list[dict]:
+        if self.config.strategy_name == "long_momentum" and str(self.config.strategy_version).lower() in {"v2", "v3", "v7"}:
+            return self._long_momentum_v2_family_filter_group_rows(rows)
         groups: dict[tuple[str, str], dict] = {}
         for row in rows:
             ticker = str(row.get("ticker") or row.get("symbol") or "")
@@ -305,3 +307,109 @@ class StepBacktestDebugger(BacktestEngine):
         if "price" in lowered or "vwap" in lowered or "day_high" in lowered or "distance" in lowered:
             return "Price Location"
         return "Other Filters"
+
+    def _long_momentum_v2_family_filter_group_rows(self, rows: list[dict]) -> list[dict]:
+        version = str(self.config.strategy_version).lower()
+        filter_rows: list[dict] = []
+        for row in rows:
+            ticker = str(row.get("ticker") or row.get("symbol") or "")
+            checks_by_group = {
+                "Price": [
+                    self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
+                ],
+                "Entry Trigger": [
+                    self._bool_check(row, "current_open_above_last_body_high", True, fallback_key="_lm_current_open_above_last_body_high"),
+                ],
+                "Volume / Activity": [
+                    self._gte_check(row, "last_volume", self._strategy_param("min_volume", 10_000.0)),
+                    self._gte_check(row, "last_transactions", self._strategy_param("min_transactions", 100.0)),
+                    self._gte_check(row, "last_recent_dollar_volume_5", self._strategy_param("min_recent_dollar_volume_5", 100_000.0)),
+                ],
+                "Liquidity / Spread": [
+                    self._bool_check(row, "long_momentum_spread_ok", True, fallback_key="_lm_spread_ok"),
+                    self._lte_check(row, "last_spread_bps_abs", self._strategy_param("max_spread_bps_abs", 100.0)),
+                    self._lte_check(row, "last_spread_bps_max", self._strategy_param("max_spread_bps_max", 150.0)),
+                    self._gte_check(row, "last_quote_valid_ratio", self._strategy_param("min_quote_valid_ratio", 0.8)),
+                    self._lte_check(row, "last_locked_or_crossed_count", self._strategy_param("max_locked_or_crossed_count", 0.0)),
+                ],
+                "Trend / Momentum": [
+                    self._bool_check(row, "last_tema_open", True, fallback_key="_lm_tema_open"),
+                    self._gt_check(row, "last_macd_line", 0.0),
+                    self._gte_check(row, "last_macd_hist_z_since_open", self._strategy_param("min_macd_hist_z_since_open", 0.1)),
+                ],
+                "Final Strategy Decision": [
+                    self._bool_check(row, "long_momentum_entry_open", True, fallback_key="entry_open"),
+                ],
+            }
+            if version in {"v3", "v7"}:
+                price_quality_checks = checks_by_group.setdefault("Price Quality", [])
+                price_quality_checks.append(self._gte_check(row, "last_close_location", self._strategy_param("min_close_location", 0.85)))
+            for group, checks in checks_by_group.items():
+                passed_count = sum(1 for check in checks if check["passed"])
+                failed_checks = [check for check in checks if not check["passed"]]
+                filter_rows.append(
+                    {
+                        "ticker": ticker,
+                        "filter_group": group,
+                        "passed": passed_count,
+                        "failed": len(failed_checks),
+                        "all_passed": not failed_checks,
+                        "failed_filters": " | ".join(check["name"] for check in failed_checks),
+                        "filters": " | ".join(check["label"] for check in checks),
+                    }
+                )
+        return filter_rows
+
+    def _strategy_param(self, name: str, default: float) -> float:
+        config = getattr(self.strategy, "config", None)
+        value = getattr(config, name, None)
+        if value is None:
+            value = self.config.strategy_params.get(name, default)
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed == parsed else default
+
+    def _number(self, row: dict, key: str, fallback_key: str | None = None) -> float | None:
+        value = row.get(key)
+        if value is None and fallback_key:
+            value = row.get(fallback_key)
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed == parsed else None
+
+    def _bool_value(self, row: dict, key: str, fallback_key: str | None = None) -> bool | None:
+        value = row.get(key)
+        if value is None and fallback_key:
+            value = row.get(fallback_key)
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y"}
+        return bool(value)
+
+    def _check(self, name: str, value: object, passed: bool, expectation: str) -> dict:
+        return {"label": f"{name}={value} {expectation} => {passed}", "name": name, "passed": passed}
+
+    def _range_check(self, row: dict, key: str, minimum: float, maximum: float, fallback_key: str | None = None) -> dict:
+        value = self._number(row, key, fallback_key)
+        return self._check(key, value, value is not None and minimum <= value <= maximum, f"between {minimum:g} and {maximum:g}")
+
+    def _gte_check(self, row: dict, key: str, threshold: float, fallback_key: str | None = None) -> dict:
+        value = self._number(row, key, fallback_key)
+        return self._check(key, value, value is not None and value >= threshold, f">= {threshold:g}")
+
+    def _gt_check(self, row: dict, key: str, threshold: float, fallback_key: str | None = None) -> dict:
+        value = self._number(row, key, fallback_key)
+        return self._check(key, value, value is not None and value > threshold, f"> {threshold:g}")
+
+    def _lte_check(self, row: dict, key: str, threshold: float, fallback_key: str | None = None) -> dict:
+        value = self._number(row, key, fallback_key)
+        return self._check(key, value, value is not None and value <= threshold, f"<= {threshold:g}")
+
+    def _bool_check(self, row: dict, key: str, expected: bool, fallback_key: str | None = None) -> dict:
+        value = self._bool_value(row, key, fallback_key)
+        return self._check(key, value, value == expected, f"is {expected}")
