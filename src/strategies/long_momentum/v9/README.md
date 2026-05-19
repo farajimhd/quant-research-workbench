@@ -69,7 +69,7 @@ Watchlist VWAP entry uses a stop slightly below VWAP:
 
 ```text
 entry_price = current_open
-stop_price = last_vwap * (1 - vwap_stop_buffer_pct)
+stop_price = last_vwap - (last_vwap * vwap_stop_offset_pct / 100)
 ```
 
 If `risk_per_share <= 0`, the entry is skipped.
@@ -86,7 +86,7 @@ quantity = floor(min(risk_size, cash_size))
 While the position remains open, the stop trails upward with VWAP:
 
 ```text
-stop_price = max(previous_stop_price, last_vwap * (1 - vwap_stop_buffer_pct))
+stop_price = max(previous_stop_price, last_vwap - (last_vwap * vwap_stop_offset_pct / 100))
 ```
 
 ## Exit

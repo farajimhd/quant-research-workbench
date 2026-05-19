@@ -488,10 +488,16 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
     def _entry_stop_for_type(self, candidate: dict, entry_price: float, entry_type: str) -> float:
         if entry_type == "WATCHLIST_REENTRY":
             vwap = self._float(candidate.get("last_vwap"))
-            stop = vwap * (1.0 - max(0.0, self.config.vwap_stop_buffer_pct)) if vwap > 0 else 0.0
+            stop = self._vwap_offset_stop(vwap)
             return stop if 0 < stop < entry_price else 0.0
         stop = self._float(candidate.get("last_open"))
         return stop if 0 < stop < entry_price else 0.0
+
+    def _vwap_offset_stop(self, vwap: float) -> float:
+        if vwap <= 0:
+            return 0.0
+        offset_fraction = max(0.0, self.config.vwap_stop_offset_pct) / 100.0
+        return vwap * (1.0 - offset_fraction)
 
     def _available_cash_after_submitted_requests(
         self,
@@ -515,7 +521,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         vwap = self._float(bar.get("last_vwap"))
         if vwap <= 0:
             return
-        next_stop = vwap * (1.0 - max(0.0, self.config.vwap_stop_buffer_pct))
+        next_stop = self._vwap_offset_stop(vwap)
         if next_stop <= 0 or next_stop >= self._bar_open(bar):
             return
         position.stop_price = max(position.stop_price, next_stop)

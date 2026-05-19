@@ -317,6 +317,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   max_initial_risk_pct: "Maximum initial R distance as a fraction of entry price.",
   max_risk_fraction_of_cash: "Long Momentum v9 maximum cash-slice risk used for position sizing.",
   double_bvd_exit_score: "Long Momentum v9 main exit threshold for provider-built double-timeframe bearish volume divergence score.",
+  vwap_stop_offset_pct: "Long Momentum v9 VWAP reentry protective stop offset, expressed as n percent of VWAP. For example, 3 means stop = VWAP - 3% of VWAP.",
   trailing_activation_r: "Open R multiple required before the trailing stop tightens.",
   trailing_lock_r: "R multiple locked in after trailing activation.",
   trailing_giveback_r: "R multiple allowed to give back from the best price.",
@@ -464,6 +465,7 @@ const STRATEGY_PARAMETER_GROUPS = [
       "breakeven_activation_r",
       "structural_trail_activation_r",
       "vwap_stop_buffer_pct",
+      "vwap_stop_offset_pct",
       "double_bvd_exit_score"
     ]
   },
