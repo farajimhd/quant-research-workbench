@@ -385,26 +385,30 @@ class StepBacktestDebugger(BacktestEngine):
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.05), fallback_key="last_5m_return"),
                 ],
-                "First Entry": [
+                "First Entry Raw Inputs": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
-                    self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
-                    self._bool_check(row, "long_momentum_v9_watchlist_first_entry_submitted", False),
                     self._range_check(row, "minute_of_day", self._strategy_param("trading_start_minute", 240.0), self._strategy_param("trading_end_minute", 1200.0) - 1),
-                    self._lte_check(row, "held_quantity", 0.0),
-                    self._bool_check(row, "long_momentum_v9_pending_symbol_order", False),
                     self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.05), fallback_key="last_5m_return"),
                     self._gte_check(row, "last_transactions", self._strategy_param("min_first_entry_transactions", 100.0)),
                     self._gte_check(row, "last_transactions_vs_prior_3", self._strategy_param("min_first_entry_transactions_vs_prior_3", 20.0)),
                 ],
-                "Watchlist Reentry": [
+                "First Entry Strategy State": [
+                    self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
+                    self._bool_check(row, "long_momentum_v9_watchlist_first_entry_submitted", False),
+                    self._lte_check(row, "held_quantity", 0.0),
+                    self._bool_check(row, "long_momentum_v9_pending_symbol_order", False),
+                ],
+                "Watchlist Reentry Raw Inputs": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
+                    self._range_check(row, "minute_of_day", self._strategy_param("trading_start_minute", 240.0), self._strategy_param("trading_end_minute", 1200.0) - 1),
+                    self._bool_check(row, "last_tema_open", True, fallback_key="long_momentum_v9_reentry_tema_open"),
+                ],
+                "Watchlist Reentry Strategy State": [
                     self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
                     self._bool_check(row, "long_momentum_v9_watchlist_first_entry_submitted", True),
-                    self._range_check(row, "minute_of_day", self._strategy_param("trading_start_minute", 240.0), self._strategy_param("trading_end_minute", 1200.0) - 1),
                     self._lte_check(row, "held_quantity", 0.0),
                     self._bool_check(row, "long_momentum_v9_pending_symbol_order", False),
                     self._gt_check(row, "long_momentum_v9_close_minus_watchlist_max_vwap", 0.0),
-                    self._bool_check(row, "last_tema_open", True, fallback_key="long_momentum_v9_reentry_tema_open"),
                 ],
                 "Exit": [
                     self._gt_check(row, "last_double_timeframe_bearish_volume_divergence_score", self._strategy_param("double_bvd_exit_score", 50.0)),

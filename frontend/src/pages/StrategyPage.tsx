@@ -1011,15 +1011,13 @@ function InteractiveStepDebugPanel({
   const complete = session.status === "complete" || step?.type === "complete";
   const canGoPrevious = session.current_step_index > 0;
   const parameters = useMemo(() => interactiveDebugParameterRows(session.config, config.strategy_params), [config.strategy_params, session.config]);
-  const strategyFilterPresets = useMemo(() => interactiveDebugFilterPresets(config), [config]);
+  const rawScannerFilterPresets = useMemo(() => interactiveDebugRawFilterPresets(config), [config]);
+  const strategyFilterPresets = useMemo(() => interactiveDebugStrategyFilterPresets(config), [config]);
+  const defaultRawFilterPreset = String(config.strategy_version || "").toLowerCase() === "v9" ? undefined : rawScannerFilterPresets?.[0];
   const defaultStrategyFilterPreset = String(config.strategy_version || "").toLowerCase() === "v9" ? undefined : strategyFilterPresets?.[0];
   const rawRows = step?.raw_scanner_rows ?? [];
   const strategyScannerRows = step?.strategy_scanner_rows ?? [];
   const strategyWatchlistRows = step?.strategy_watchlist_rows ?? [];
-  const rawRowsWithStrategyFilters = useMemo(
-    () => mergeRawRowsWithStrategyFilters(rawRows, strategyScannerRows),
-    [rawRows, strategyScannerRows]
-  );
   const actionRows = step?.observability_trace ?? [];
   const [selectedDebugChart, setSelectedDebugChart] = useState<ObservationChartTarget | null>(null);
   return (
@@ -1074,11 +1072,11 @@ function InteractiveStepDebugPanel({
 
       <div className="step-debug-detail">
         <ObservationEvidenceTable
-          description="The exact rows passed to strategy.on_bar as context.updates, with strategy-calculated filter columns appended when available so toolbar presets can be compared on the same rows."
-          defaultFilterPreset={defaultStrategyFilterPreset}
-          filterPresets={strategyFilterPresets}
+          description="The exact rows passed to strategy.on_bar as context.updates. Toolbar presets here use only raw/provider columns and do not depend on strategy watchlist or order state."
+          defaultFilterPreset={defaultRawFilterPreset}
+          filterPresets={rawScannerFilterPresets}
           onOpenChart={setSelectedDebugChart}
-          rows={rawRowsWithStrategyFilters}
+          rows={rawRows}
           title="Scanner Raw Input"
         />
         <ObservationEvidenceTable
@@ -2562,27 +2560,59 @@ function interactiveDebugParameterRows(config: Record<string, unknown>, currentS
   ];
 }
 
-function mergeRawRowsWithStrategyFilters(rawRows: DataRow[], strategyRows: DataRow[]): DataRow[] {
-  if (!rawRows.length || !strategyRows.length) return rawRows;
-  const strategyByTicker = new Map<string, DataRow>();
-  strategyRows.forEach((row) => {
-    const ticker = normalizedTicker(rowText(row, "ticker") || rowText(row, "symbol"));
-    if (ticker && !strategyByTicker.has(ticker)) strategyByTicker.set(ticker, row);
-  });
-  return rawRows.map((rawRow) => {
-    const ticker = normalizedTicker(rowText(rawRow, "ticker") || rowText(rawRow, "symbol"));
-    const strategyRow = strategyByTicker.get(ticker);
-    if (!strategyRow) return rawRow;
-    const merged: DataRow = { ...rawRow };
-    Object.entries(strategyRow).forEach(([key, value]) => {
-      if (key in merged) return;
-      merged[key] = value;
-    });
-    return merged;
-  });
+function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilterPreset[] | undefined {
+  if (config.strategy_name !== "long_momentum") return undefined;
+  const params = config.strategy_params ?? {};
+  const version = String(config.strategy_version || "").toLowerCase();
+  const minPrice = strategyNumberParam(params, "min_price", 1);
+  const maxPrice = strategyNumberParam(params, "max_price", 10);
+  if (version !== "v9") return interactiveDebugStrategyFilterPresets(config);
+  return [
+    {
+      filters: {
+        last_close: betweenFilter(minPrice, maxPrice),
+        last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.05)),
+      },
+      label: "v9 Watchlist Add Raw",
+      title: "Apply only the raw/provider inputs for adding a ticker to the v9 watchlist: price range and same-session 5m return.",
+    },
+    {
+      filters: {
+        last_close: betweenFilter(minPrice, maxPrice),
+        minute_of_day: betweenFilter(
+          strategyNumberParam(params, "trading_start_minute", 240),
+          strategyNumberParam(params, "trading_end_minute", 1200) - 1,
+        ),
+        last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.05)),
+        last_transactions: gteFilter(strategyNumberParam(params, "min_first_entry_transactions", 100)),
+        last_transactions_vs_prior_3: gteFilter(strategyNumberParam(params, "min_first_entry_transactions_vs_prior_3", 20)),
+      },
+      label: "v9 First Entry Raw",
+      title: "Apply only the raw/provider market inputs used by v9 First Entry. Watchlist and order-state gates are shown in Strategy Scanner, not Raw Scanner.",
+    },
+    {
+      filters: {
+        last_close: betweenFilter(minPrice, maxPrice),
+        minute_of_day: betweenFilter(
+          strategyNumberParam(params, "trading_start_minute", 240),
+          strategyNumberParam(params, "trading_end_minute", 1200) - 1,
+        ),
+        last_tema_open: trueFilter(),
+      },
+      label: "v9 Reentry Raw",
+      title: "Apply only the raw/provider market inputs used by v9 Reentry. The max-VWAP reclaim is strategy watchlist state and is shown in Strategy Scanner.",
+    },
+    {
+      filters: {
+        last_double_timeframe_bearish_volume_divergence_score: gtFilter(strategyNumberParam(params, "double_bvd_exit_score", 50)),
+      },
+      label: "v9 Exit Raw",
+      title: "Apply the raw/provider 2xBVD exit input threshold.",
+    },
+  ];
 }
 
-function interactiveDebugFilterPresets(config: StrategyConfig): DataTableFilterPreset[] | undefined {
+function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTableFilterPreset[] | undefined {
   if (config.strategy_name !== "long_momentum") return undefined;
   const params = config.strategy_params ?? {};
   const version = String(config.strategy_version || "").toLowerCase();
