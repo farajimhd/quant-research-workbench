@@ -20,6 +20,7 @@ REQUIRED_V9_COLUMNS = (
     "last_return_5",
     "current_open",
     "last_transactions",
+    "last_transactions_vs_prior_3",
     "last_vwap",
     "last_double_timeframe_bearish_volume_divergence_score",
 )
@@ -105,8 +106,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         requests.extend(self._exit_requests(context, portfolio, active_pending_orders))
 
         rows = self._scanner_rows(context, portfolio, active_pending_orders)
-        entry_candidates = [row for row in rows if row.get("long_momentum_v9_reentry_open")]
-        self._record_scanner(context, rows, entry_candidates, portfolio, active_pending_orders)
+        immediate_candidates = [row for row in rows if row.get("long_momentum_v9_immediate_entry_open")]
+        reentry_candidates = [row for row in rows if row.get("long_momentum_v9_reentry_open")]
+        self._record_scanner(context, rows, immediate_candidates + reentry_candidates, portfolio, active_pending_orders)
 
         blocked_symbols = {
             order.symbol for order in active_pending_orders if order.side == "BUY"
@@ -120,14 +122,33 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             context=context,
         )
 
-        entry_candidates = [
-            row for row in entry_candidates
+        immediate_candidates = [
+            row for row in immediate_candidates
+            if str(row.get("ticker") or "") not in blocked_symbols
+        ][: max(0, int(self.config.max_immediate_entry_candidates_per_bar))]
+        if immediate_candidates and available_cash > 0:
+            submitted = self._submit_entry_group(
+                candidates=immediate_candidates,
+                context=context,
+                available_cash=available_cash,
+                entry_type="IMMEDIATE_ENTRY",
+            )
+            requests.extend(submitted)
+            blocked_symbols |= {request.symbol for request in submitted if request.side == "BUY"}
+            available_cash = self._available_cash_after_submitted_requests(
+                portfolio=portfolio,
+                requests=requests,
+                context=context,
+            )
+
+        reentry_candidates = [
+            row for row in reentry_candidates
             if str(row.get("ticker") or "") not in blocked_symbols
         ][: max(0, int(self.config.max_reentry_candidates_per_bar))]
-        if entry_candidates and available_cash > 0:
+        if reentry_candidates and available_cash > 0:
             requests.extend(
                 self._submit_entry_group(
-                    candidates=entry_candidates,
+                    candidates=reentry_candidates,
                     context=context,
                     available_cash=available_cash,
                     entry_type="WATCHLIST_REENTRY",
@@ -181,7 +202,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             side = str(fill.get("side") or "").upper()
             if side == "BUY":
                 watch.entry_submitted = True
-                watch.last_entry_type = "WATCHLIST_REENTRY"
+                tag = str(fill.get("tag") or "")
+                watch.last_entry_type = "IMMEDIATE_ENTRY" if "IMMEDIATE_ENTRY" in tag else "WATCHLIST_REENTRY"
                 watch.last_state = "in_position"
             elif side == "SELL":
                 watch.last_exit_timestamp = context.timestamp
@@ -255,9 +277,11 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         last_close = self._float(row.get("last_close"))
         last_5m_return = self._float(row.get("last_5m_return"))
         transactions = self._float(row.get("last_transactions"))
+        transactions_vs_prior_3 = self._float(row.get("last_transactions_vs_prior_3"))
         price_eligible = self.config.min_price <= last_close <= self.config.max_price
         return_ok = last_5m_return >= self.config.min_last_5m_return
         watchlist_add_transactions_ok = transactions >= self.config.min_first_entry_transactions
+        immediate_transactions_vs_prior_3_ok = transactions_vs_prior_3 >= self.config.min_first_entry_transactions_vs_prior_3
         entry_time_ok = self.config.trading_start_minute <= int(self._float(row.get("minute_of_day"))) < self.config.trading_end_minute
         pending_symbol_order = ticker in pending_symbols
         no_symbol_position = ticker not in portfolio.positions and not pending_symbol_order
@@ -268,6 +292,15 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         last_vwap = self._float(row.get("last_vwap"))
         reentry_price_reclaim = last_vwap > 0 and last_close > last_vwap
         reentry_close_minus_vwap = last_close - last_vwap if last_vwap > 0 else None
+        immediate_entry_open = (
+            price_eligible
+            and bool(watch)
+            and no_symbol_position
+            and entry_time_ok
+            and return_ok
+            and watchlist_add_transactions_ok
+            and immediate_transactions_vs_prior_3_ok
+        )
         reentry_open = (
             price_eligible
             and bool(watch)
@@ -275,6 +308,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             and no_symbol_position
             and entry_time_ok
             and reentry_price_reclaim
+            and not immediate_entry_open
         )
         return {
             "long_momentum_v9_price_eligible": price_eligible,
@@ -293,20 +327,25 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_last_5m_return": last_5m_return,
             "long_momentum_v9_return_ok": return_ok,
             "long_momentum_v9_watchlist_add_transactions_ok": watchlist_add_transactions_ok,
+            "long_momentum_v9_immediate_transactions_vs_prior_3_ok": immediate_transactions_vs_prior_3_ok,
             "long_momentum_v9_entry_time_ok": entry_time_ok,
             "long_momentum_v9_pending_symbol_order": pending_symbol_order,
             "long_momentum_v9_no_symbol_position": no_symbol_position,
             "long_momentum_v9_close_minus_vwap": reentry_close_minus_vwap,
             "long_momentum_v9_reentry_price_reclaim": reentry_price_reclaim,
+            "long_momentum_v9_immediate_entry_open": immediate_entry_open,
             "long_momentum_v9_reentry_open": reentry_open,
-            "long_momentum_v9_entry_priority": 1 if reentry_open else 0,
-            "long_momentum_v9_entry_open": reentry_open,
-            "entry_trigger": "WATCHLIST_REENTRY" if reentry_open else "",
+            "long_momentum_v9_entry_priority": 2 if immediate_entry_open else 1 if reentry_open else 0,
+            "long_momentum_v9_entry_open": immediate_entry_open or reentry_open,
+            "entry_trigger": "IMMEDIATE_ENTRY" if immediate_entry_open else "WATCHLIST_REENTRY" if reentry_open else "",
             "long_momentum_v9_reject_reason": self._v9_reject_reason(
                 price_eligible=price_eligible,
                 watch_active=watch is not None,
                 watch_entry_ready=watch_entry_ready,
                 entry_time_ok=entry_time_ok,
+                return_ok=return_ok,
+                watchlist_add_transactions_ok=watchlist_add_transactions_ok,
+                immediate_transactions_vs_prior_3_ok=immediate_transactions_vs_prior_3_ok,
                 reentry_price_reclaim=reentry_price_reclaim,
                 no_symbol_position=no_symbol_position,
             ),
@@ -543,6 +582,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 "timestamp": context.timestamp,
                 "session_date": self.session_date.isoformat() if self.session_date else "",
                 "candidate_count": len(candidates),
+                "immediate_entry_count": len([row for row in candidates if row.get("long_momentum_v9_immediate_entry_open")]),
                 "watchlist_entry_count": len([row for row in candidates if row.get("long_momentum_v9_reentry_open")]),
                 "scanned_count": len(rows),
                 "watchlist_count": len(self.momentum_watchlist),
@@ -557,6 +597,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             state={
                 "scanned_count": len(rows),
                 "entry_open_count": len(candidates),
+                "immediate_entry_count": len([row for row in candidates if row.get("long_momentum_v9_immediate_entry_open")]),
                 "watchlist_entry_count": len([row for row in candidates if row.get("long_momentum_v9_reentry_open")]),
                 "watchlist_count": len(self.momentum_watchlist),
                 "open_positions": len(portfolio.positions),
@@ -601,6 +642,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 "stop": stop_price,
                 "last_5m_return": candidate.get("long_momentum_v9_last_5m_return"),
                 "transactions": candidate.get("last_transactions"),
+                "transactions_vs_prior_3": candidate.get("last_transactions_vs_prior_3"),
                 "watchlist_max_vwap": candidate.get("long_momentum_v9_watchlist_max_vwap"),
             }
         )
@@ -613,7 +655,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             event_type="entry_intent",
             decision="submit_order",
             reason_code=f"LONG_MOMENTUM_V9_{entry_type}",
-            reason="Ticker is in the day momentum watchlist and crossed above VWAP; eligible candidates share available cash.",
+            reason="Ticker passed the immediate transaction impulse or the watchlist VWAP entry; eligible candidates share available cash.",
             values={
                 "entry_type": entry_type,
                 "quantity": quantity,
@@ -622,6 +664,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 "risk_per_share": entry_price - stop_price,
                 "last_5m_return": candidate.get("long_momentum_v9_last_5m_return"),
                 "last_transactions": candidate.get("last_transactions"),
+                "last_transactions_vs_prior_3": candidate.get("last_transactions_vs_prior_3"),
                 "last_vwap": candidate.get("last_vwap"),
                 "close_minus_vwap": candidate.get("long_momentum_v9_close_minus_vwap"),
                 "watchlist_max_vwap": candidate.get("long_momentum_v9_watchlist_max_vwap"),
@@ -634,6 +677,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         )
 
     def _v9_entry_state(self, row: dict[str, Any]) -> str:
+        if row.get("long_momentum_v9_immediate_entry_open"):
+            return "IMMEDIATE_ENTRY"
         if row.get("long_momentum_v9_reentry_open"):
             return "WATCHLIST_VWAP_ENTRY"
         return str(row.get("long_momentum_v9_reject_reason") or "filtered")
@@ -645,6 +690,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         watch_active: bool,
         watch_entry_ready: bool,
         entry_time_ok: bool,
+        return_ok: bool,
+        watchlist_add_transactions_ok: bool,
+        immediate_transactions_vs_prior_3_ok: bool,
         reentry_price_reclaim: bool,
         no_symbol_position: bool,
     ) -> str:
@@ -652,12 +700,14 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return "price_eligibility"
         if not watch_active:
             return "not_in_day_momentum_watchlist"
-        if not watch_entry_ready:
-            return "watchlist_entry_wait_next_bar"
         if not entry_time_ok:
             return "entry_time"
         if not no_symbol_position:
             return "already_held_or_pending"
+        if return_ok and watchlist_add_transactions_ok and not immediate_transactions_vs_prior_3_ok:
+            return "immediate_entry_transactions_vs_prior_3"
+        if not watch_entry_ready:
+            return "watchlist_entry_wait_next_bar"
         if not reentry_price_reclaim:
             return "watchlist_entry_below_vwap"
         return "filtered"

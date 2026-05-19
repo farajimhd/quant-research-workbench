@@ -16,6 +16,13 @@ A ticker is eligible for the watchlist when:
 - `last_5m_return >= min_last_5m_return`
 - `last_transactions >= min_first_entry_transactions`
 
+If the same bar also has:
+
+- `last_transactions_vs_prior_3 >= min_first_entry_transactions_vs_prior_3`
+
+then v9 can enter immediately on that current bar without waiting for the next
+bar VWAP entry rule.
+
 For 1-minute bars:
 
 ```text
@@ -32,8 +39,8 @@ bars.
 
 ## Watchlist VWAP Entry
 
-A ticker that is already in the day momentum watchlist can enter when all entry
-rules are true:
+If a ticker only passes the watchlist-add conditions, it waits in the day
+momentum watchlist. It can enter later when all VWAP entry rules are true:
 
 - the ticker was added to the watchlist on a prior bar, not the current bar
 - there is no open position or pending order for the ticker
@@ -42,13 +49,21 @@ rules are true:
 - `last_close > last_vwap`
 
 The 5-minute return and transaction threshold are used only to add the ticker to
-the watchlist. Once the ticker is in the watchlist, the entry gate is the VWAP
-cross, but the first possible entry is the next bar after the watchlist add.
+the watchlist unless the same bar also passes the transaction-impulse threshold.
+For watchlist-only names, the entry gate is the VWAP cross, and the first
+possible VWAP entry is the next bar after the watchlist add.
 
 If multiple watchlist VWAP entry candidates appear on the same bar, v9 splits
 available cash equally across them and submits them at the same current open.
 
-## Watchlist VWAP Entry Sizing And Stop
+## Entry Sizing And Stop
+
+Immediate entry uses the previous candle open as the stop reference:
+
+```text
+entry_price = current_open
+stop_price = last_open
+```
 
 Watchlist VWAP entry uses a stop slightly below VWAP:
 

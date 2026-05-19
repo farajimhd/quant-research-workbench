@@ -15,10 +15,12 @@ class LongMomentumV9Config(LongMomentumV3Config):
 
     min_last_5m_return: float = 0.05
     min_first_entry_transactions: float = 100.0
+    min_first_entry_transactions_vs_prior_3: float = 20.0
     max_risk_fraction_of_cash: float = 0.25
     double_bvd_exit_score: float = 50.0
     vwap_stop_buffer_pct: float = 0.005
 
+    max_immediate_entry_candidates_per_bar: int = 50
     max_reentry_candidates_per_bar: int = 50
     watchlist_snapshot_limit: int = 250
 
