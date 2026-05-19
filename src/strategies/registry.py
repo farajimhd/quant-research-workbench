@@ -44,6 +44,9 @@ from src.strategies.long_momentum.v7.strategy import LongMomentumV7Strategy
 from src.strategies.long_momentum.v8.config import LongMomentumV8Config
 from src.strategies.long_momentum.v8.presentation import chart_presentation as long_momentum_v8_chart_presentation
 from src.strategies.long_momentum.v8.strategy import LongMomentumV8Strategy
+from src.strategies.long_momentum.v9.config import LongMomentumV9Config
+from src.strategies.long_momentum.v9.presentation import chart_presentation as long_momentum_v9_chart_presentation
+from src.strategies.long_momentum.v9.strategy import LongMomentumV9Strategy
 from src.strategies.orb_5m_momentum.v10.config import OrbMomentumConfig as OrbMomentumV10Config
 from src.strategies.orb_5m_momentum.v10.presentation import chart_presentation as orb_5m_momentum_v10_chart_presentation
 from src.strategies.orb_5m_momentum.v10.strategy import OrbFiveMinuteMomentumV10Strategy
@@ -246,6 +249,14 @@ def default_long_momentum_v8_params() -> dict:
     return LongMomentumV8Config().to_dict()
 
 
+def create_long_momentum_v9(params: dict | None = None) -> LongMomentumV9Strategy:
+    return LongMomentumV9Strategy(LongMomentumV9Config.from_dict(params))
+
+
+def default_long_momentum_v9_params() -> dict:
+    return LongMomentumV9Config().to_dict()
+
+
 STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("adaptive_live_trend_rotation", "v1"): create_adaptive_live_trend_rotation_v1,
     ("break_of_vwap", "v1"): create_break_of_vwap_v1,
@@ -258,6 +269,7 @@ STRATEGY_FACTORIES: dict[tuple[str, str], Callable[[dict | None], object]] = {
     ("long_momentum", "v6"): create_long_momentum_v6,
     ("long_momentum", "v7"): create_long_momentum_v7,
     ("long_momentum", "v8"): create_long_momentum_v8,
+    ("long_momentum", "v9"): create_long_momentum_v9,
     ("orb_5m_momentum", "v10"): create_orb_5m_momentum_v10,
     ("orb_5m_momentum", "v1"): create_orb_5m_momentum_v1,
     ("orb_5m_momentum", "v2"): create_orb_5m_momentum_v2,
@@ -282,6 +294,7 @@ STRATEGY_CONFIG_FACTORIES: dict[tuple[str, str], Callable[[], dict]] = {
     ("long_momentum", "v6"): default_long_momentum_v6_params,
     ("long_momentum", "v7"): default_long_momentum_v7_params,
     ("long_momentum", "v8"): default_long_momentum_v8_params,
+    ("long_momentum", "v9"): default_long_momentum_v9_params,
     ("orb_5m_momentum", "v10"): default_orb_5m_momentum_v10_params,
     ("orb_5m_momentum", "v1"): default_orb_5m_momentum_v1_params,
     ("orb_5m_momentum", "v2"): default_orb_5m_momentum_v2_params,
@@ -306,6 +319,7 @@ STRATEGY_CHART_PRESENTATION_FACTORIES: dict[tuple[str, str], Callable[[], dict]]
     ("long_momentum", "v6"): long_momentum_v6_chart_presentation,
     ("long_momentum", "v7"): long_momentum_v7_chart_presentation,
     ("long_momentum", "v8"): long_momentum_v8_chart_presentation,
+    ("long_momentum", "v9"): long_momentum_v9_chart_presentation,
     ("orb_5m_momentum", "v10"): orb_5m_momentum_v10_chart_presentation,
     ("orb_5m_momentum", "v1"): orb_5m_momentum_v1_chart_presentation,
     ("orb_5m_momentum", "v2"): orb_5m_momentum_v2_chart_presentation,
@@ -391,6 +405,12 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
         "Live-safe news-shock continuation version: a completed price/volume shock near news-time starts a temporary "
         "watch, then later entries require liquidity ramp, VWAP/midpoint acceptance, TEMA/MACD confirmation, and a "
         "shock-body or post-shock structure reclaim. Uses the provider shock feature group, not supervision labels."
+    ),
+    ("long_momentum", "v9"): (
+        "Live-safe day momentum watchlist version: completed-bar 5-minute return adds a ticker to a separate day "
+        "watchlist, strict 1-minute transaction impulse rules trigger First Entry, simultaneous First Entries split "
+        "cash, no-cash First Entries rotate out existing positions, and lower-priority VWAP/TEMA reentries remain "
+        "available after exits. Main exits use 2-minute BVD at the current open."
     ),
     ("orb_5m_momentum", "v1"): (
         "Baseline provider-backed ORB momentum version with daily context, opening-range setup scoring, 5-minute momentum "

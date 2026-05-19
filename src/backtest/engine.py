@@ -1013,6 +1013,7 @@ class BacktestEngine:
         artifact_writer.write_table(run_dir / "scanner_snapshots.parquet", artifacts.get("scanner_snapshots", []))
         artifact_writer.write_table(run_dir / "candidate_rankings.parquet", artifacts.get("candidate_rankings", []))
         artifact_writer.write_table(run_dir / "live_rankings.parquet", artifacts.get("live_rankings", []))
+        artifact_writer.write_table(run_dir / "watchlist_snapshots.parquet", artifacts.get("watchlist_snapshots", []))
         artifact_writer.write_table(run_dir / "signal_events.parquet", artifacts.get("signal_events", []))
         artifact_writer.write_table(run_dir / "rejection_events.parquet", artifacts.get("rejection_events", []) + self.engine_rejection_events)
         artifact_writer.write_table(run_dir / "observability_scanner.parquet", observability_artifacts.get("observability_scanner", []))

@@ -209,6 +209,7 @@ class StepBacktestDebugger(BacktestEngine):
         scanner_rows = self._delta_rows(artifacts.get("live_rankings", []), before["live_rankings"], after["live_rankings"])
         if not scanner_rows:
             scanner_rows = self._delta_rows(artifacts.get("candidate_rankings", []), before["candidate_rankings"], after["candidate_rankings"])
+        watchlist_rows = self._delta_rows(artifacts.get("watchlist_snapshots", []), before["watchlist_snapshots"], after["watchlist_snapshots"])
         return {
             "type": "bar",
             "timestamp": timestamp.isoformat(),
@@ -217,6 +218,7 @@ class StepBacktestDebugger(BacktestEngine):
             "raw_scanner_rows": updates,
             "execution_rows": execution_rows,
             "strategy_scanner_rows": scanner_rows,
+            "strategy_watchlist_rows": watchlist_rows,
             "filter_groups": self._filter_group_rows(scanner_rows or updates),
             "strategy_requests": requests,
             "orders": self.orders[before["orders"] : after["orders"]],
@@ -253,12 +255,15 @@ class StepBacktestDebugger(BacktestEngine):
             "rejection_events": len(artifacts.get("rejection_events", [])),
             "signal_events": len(artifacts.get("signal_events", [])),
             "trades": len(self.trades),
+            "watchlist_snapshots": len(artifacts.get("watchlist_snapshots", [])),
         }
 
     def _delta_rows(self, rows: list[dict], before: int, after: int) -> list[dict]:
         return rows[before:after]
 
     def _filter_group_rows(self, rows: list[dict]) -> list[dict]:
+        if self.config.strategy_name == "long_momentum" and str(self.config.strategy_version).lower() == "v9":
+            return self._long_momentum_v9_filter_group_rows(rows)
         if self.config.strategy_name == "long_momentum" and str(self.config.strategy_version).lower() in {"v2", "v3", "v7"}:
             return self._long_momentum_v2_family_filter_group_rows(rows)
         groups: dict[tuple[str, str], dict] = {}
@@ -344,6 +349,53 @@ class StepBacktestDebugger(BacktestEngine):
             if version in {"v3", "v7"}:
                 price_quality_checks = checks_by_group.setdefault("Price Quality", [])
                 price_quality_checks.append(self._gte_check(row, "last_close_location", self._strategy_param("min_close_location", 0.85)))
+            for group, checks in checks_by_group.items():
+                passed_count = sum(1 for check in checks if check["passed"])
+                failed_checks = [check for check in checks if not check["passed"]]
+                filter_rows.append(
+                    {
+                        "ticker": ticker,
+                        "filter_group": group,
+                        "passed": passed_count,
+                        "failed": len(failed_checks),
+                        "all_passed": not failed_checks,
+                        "failed_filters": " | ".join(check["name"] for check in failed_checks),
+                        "filters": " | ".join(check["label"] for check in checks),
+                    }
+                )
+        return filter_rows
+
+    def _long_momentum_v9_filter_group_rows(self, rows: list[dict]) -> list[dict]:
+        filter_rows: list[dict] = []
+        for row in rows:
+            ticker = str(row.get("ticker") or row.get("symbol") or "")
+            checks_by_group = {
+                "Price Eligibility": [
+                    self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
+                ],
+                "Watchlist Add": [
+                    self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.05), fallback_key="last_5m_return"),
+                    self._bool_check(row, "long_momentum_v9_watchlist_add_open", True),
+                    self._bool_check(row, "long_momentum_v9_watchlist_active", True),
+                ],
+                "First Entry": [
+                    self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.05), fallback_key="last_5m_return"),
+                    self._gte_check(row, "last_transactions", self._strategy_param("min_first_entry_transactions", 100.0)),
+                    self._gte_check(row, "last_transactions_vs_prior_3", self._strategy_param("min_first_entry_transactions_vs_prior_3", 20.0)),
+                    self._bool_check(row, "long_momentum_v9_first_entry_open", True),
+                ],
+                "Watchlist Reentry": [
+                    self._gt_check(row, "last_close", self._number(row, "long_momentum_v9_watchlist_max_vwap") or 0.0),
+                    self._bool_check(row, "long_momentum_v9_reentry_tema_open", True, fallback_key="last_tema_open"),
+                    self._bool_check(row, "long_momentum_v9_reentry_open", True),
+                ],
+                "Exit": [
+                    self._gt_check(row, "last_double_timeframe_bearish_volume_divergence_score", self._strategy_param("double_bvd_exit_score", 50.0)),
+                ],
+                "Final Strategy Decision": [
+                    self._bool_check(row, "long_momentum_v9_entry_open", True, fallback_key="entry_open"),
+                ],
+            }
             for group, checks in checks_by_group.items():
                 passed_count = sum(1 for check in checks if check["passed"])
                 failed_checks = [check for check in checks if not check["passed"]]

@@ -101,6 +101,7 @@ type InteractiveDebugStep = {
   signal_events?: DataRow[];
   strategy_requests?: DataRow[];
   strategy_scanner_rows?: DataRow[];
+  strategy_watchlist_rows?: DataRow[];
   summary?: Record<string, unknown>;
   timestamp?: string | null;
   trades?: DataRow[];
@@ -180,7 +181,7 @@ const OBSERVABILITY_SCANNER_FILTER_PRESETS = [
   OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET,
 ];
 const DEBUG_BACKTEST_SCANNER_MAX_ROWS = 500;
-const BACKTEST_RESULT_TABS = ["Backtest Results", "Observability", "Daily", "Trades", "Orders", "Fills", "Positions"];
+const BACKTEST_RESULT_TABS = ["Backtest Results", "Observability", "Daily", "Trades", "Orders", "Fills", "Positions", "Watchlist"];
 
 function scannerBooleanFilters(columns: string[]): DataTableFilterPreset["filters"] {
   return Object.fromEntries(columns.map((column) => [column, { operator: "eq", presetLabel: "Is true", valueText: "true" }]));
@@ -264,6 +265,9 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_recent_transactions: "Minimum rolling recent transaction count required before entry.",
   min_volume: "Minimum current bar share volume required before a Long Momentum entry.",
   min_transactions: "Minimum current bar transaction count required before a Long Momentum entry.",
+  min_first_entry_transactions: "Long Momentum v9 1-minute First Entry transaction threshold. This is calibrated for 1m bars and should be retuned for other timeframes.",
+  min_first_entry_transactions_vs_prior_3: "Long Momentum v9 1-minute First Entry transaction impulse threshold versus the prior three transactions average. This is calibrated for 1m bars.",
+  min_last_5m_return: "Long Momentum v9 completed-bar five-minute return needed to add a ticker to the day momentum watchlist and validate First Entry.",
   min_macd_hist_z_since_open: "Minimum MACD histogram z-score since the open required before a Long Momentum entry.",
   trigger_1_minute_start: "Earliest minute of day where Long Momentum v4 Trigger 1 can enter.",
   trigger_1_minute_end: "End minute, exclusive, for the first Long Momentum v4 Trigger 1 window.",
@@ -307,6 +311,8 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   initial_risk_pct: "Initial R distance as a fraction of entry price.",
   min_initial_risk_dollars: "Minimum initial R distance in dollars.",
   max_initial_risk_pct: "Maximum initial R distance as a fraction of entry price.",
+  max_risk_fraction_of_cash: "Long Momentum v9 maximum cash-slice risk used for position sizing.",
+  double_bvd_exit_score: "Long Momentum v9 main exit threshold for provider-built double-timeframe bearish volume divergence score.",
   trailing_activation_r: "Open R multiple required before the trailing stop tightens.",
   trailing_lock_r: "R multiple locked in after trailing activation.",
   trailing_giveback_r: "R multiple allowed to give back from the best price.",
@@ -365,6 +371,8 @@ const STRATEGY_PARAMETER_GROUPS = [
       "min_recent_transactions",
       "min_volume",
       "min_transactions",
+      "min_first_entry_transactions",
+      "min_first_entry_transactions_vs_prior_3",
       "max_spread_below_5",
       "max_spread_5_to_10",
       "liquidity_window_minutes"
@@ -377,6 +385,7 @@ const STRATEGY_PARAMETER_GROUPS = [
       "min_setup_score",
       "min_live_score",
       "min_momentum_score",
+      "min_last_5m_return",
       "min_macd_hist_z_since_open",
       "top_n",
       "trend_macd_weight",
@@ -426,6 +435,7 @@ const STRATEGY_PARAMETER_GROUPS = [
       "min_risk_pct",
       "max_risk_pct",
       "max_initial_risk_pct",
+      "max_risk_fraction_of_cash",
       "risk_per_trade_pct",
       "max_capital_per_trade_pct",
       "cash_reserve_pct",
@@ -449,7 +459,8 @@ const STRATEGY_PARAMETER_GROUPS = [
       "trailing_giveback_r",
       "breakeven_activation_r",
       "structural_trail_activation_r",
-      "vwap_stop_buffer_pct"
+      "vwap_stop_buffer_pct",
+      "double_bvd_exit_score"
     ]
   },
   {
@@ -999,6 +1010,7 @@ function InteractiveStepDebugPanel({
   const strategyFilterPresets = useMemo(() => interactiveDebugFilterPresets(config), [config]);
   const rawRows = step?.raw_scanner_rows ?? [];
   const strategyScannerRows = step?.strategy_scanner_rows ?? [];
+  const strategyWatchlistRows = step?.strategy_watchlist_rows ?? [];
   const rawRowsWithStrategyFilters = useMemo(
     () => mergeRawRowsWithStrategyFilters(rawRows, strategyScannerRows),
     [rawRows, strategyScannerRows]
@@ -1046,6 +1058,7 @@ function InteractiveStepDebugPanel({
             <ObservationFact label="Equity" value={summary.final_equity ?? config.initial_cash} />
             <ObservationFact label="Raw Scanner Rows" value={rawRows.length} />
             <ObservationFact label="Strategy Scanner Rows" value={strategyScannerRows.length} />
+            <ObservationFact label="Watchlist Rows" value={strategyWatchlistRows.length} />
             <ObservationFact label="Actions" value={actionRows.length} />
             <ObservationFact label="Requests" value={step?.strategy_requests?.length ?? 0} />
             <ObservationFact label="Orders" value={step?.orders?.length ?? 0} />
@@ -1075,6 +1088,12 @@ function InteractiveStepDebugPanel({
           onOpenChart={setSelectedDebugChart}
           rows={strategyScannerRows}
           title="Scanner Snapshot"
+        />
+        <ObservationEvidenceTable
+          description="Strategy-maintained day momentum watchlist state for this bar, including max VWAP, first-entry status, and reentry inputs."
+          onOpenChart={setSelectedDebugChart}
+          rows={strategyWatchlistRows}
+          title="Momentum Watchlist"
         />
         <ObservationEvidenceTable
           description="Trace rows emitted by the strategy while evaluating this bar."
@@ -1780,6 +1799,12 @@ function BacktestJobPanel({
         <CachedTabPanel active={tab === "Positions"} mounted={isTabMounted("Positions")}>
           <DataTable rows={detail?.tables.positions.rows ?? []} />
         </CachedTabPanel>
+        <CachedTabPanel active={tab === "Watchlist"} mounted={isTabMounted("Watchlist")}>
+          <DataTable
+            onRowClick={(row) => openScannerRowChart(row, setSelectedObservationChart)}
+            rows={detail?.tables.watchlist?.rows ?? []}
+          />
+        </CachedTabPanel>
         {job?.error ? <div className="error-panel">{String(job.error)}</div> : null}
       </div>
     </section>
@@ -2087,7 +2112,8 @@ function ObservationEvidenceTable({
 }) {
   const [open, setOpen] = useState(false);
   const scannerTable = title === "Scanner Snapshot";
-  const chartableTable = Boolean(onOpenChart) && (scannerTable || title === "Scanner Raw Input");
+  const watchlistTable = title.toLowerCase().includes("watchlist");
+  const chartableTable = Boolean(onOpenChart) && (scannerTable || watchlistTable || title === "Scanner Raw Input");
   const displayRows = scannerTable ? sortScannerSnapshotRows(rows) : rows;
   const scannerColumns = scannerTable ? scannerSnapshotColumns(displayRows) : undefined;
   const scannerSort = scannerTable && scannerColumns?.includes("rank") ? { column: "rank", direction: "asc" as const } : undefined;
@@ -2662,6 +2688,14 @@ function interactiveDebugFilterPresets(config: StrategyConfig): DataTableFilterP
       long_momentum_v8_entry_open: trueFilter(),
       long_momentum_entry_open: trueFilter(),
     });
+  } else if (version === "v9") {
+    Object.assign(filters, {
+      long_momentum_v9_price_eligible: trueFilter(),
+      long_momentum_v9_watchlist_active: trueFilter(),
+      long_momentum_v9_entry_time_ok: trueFilter(),
+      long_momentum_v9_entry_open: trueFilter(),
+      long_momentum_entry_open: trueFilter(),
+    });
   } else {
     return undefined;
   }
@@ -2732,6 +2766,17 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "session_macd_pressure_bps",
   "session_return_bps",
   "recent_return_bps",
+  "last_5m_return",
+  "long_momentum_v9_last_5m_return",
+  "long_momentum_v9_price_eligible",
+  "long_momentum_v9_watchlist_add_open",
+  "long_momentum_v9_watchlist_active",
+  "long_momentum_v9_watchlist_first_entry_submitted",
+  "long_momentum_v9_watchlist_max_vwap",
+  "long_momentum_v9_watchlist_avg_transactions",
+  "long_momentum_v9_first_entry_open",
+  "long_momentum_v9_reentry_open",
+  "long_momentum_v9_entry_open",
   "current_open",
   "last_open",
   "last_high",

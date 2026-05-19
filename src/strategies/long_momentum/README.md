@@ -17,3 +17,11 @@ Version details live in each version folder:
 - `v5`: early-uptrend lifecycle version that removes loose Pullback/Reclaim,
   requires VWAP/TEMA/MACD/volume/early-move agreement, and holds with
   structural stops until divergence or trend structure fails.
+- `v6`: oracle-supervised benchmark version for supervision validation.
+- `v7`: live-safe May 1 learned version based on the v3 rule family.
+- `v8`: news-shock continuation version using provider shock features.
+- `v9`: day momentum watchlist version. A completed-bar 5-minute return adds a
+  ticker to the strategy watchlist, strict 1-minute transaction impulse rules
+  trigger First Entry, simultaneous First Entries split cash, no-cash First
+  Entries rotate out existing positions, and lower-priority VWAP/TEMA reentries
+  remain available after exits.
