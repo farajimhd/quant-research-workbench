@@ -57,6 +57,16 @@ possible VWAP entry is the next bar after the watchlist add.
 If multiple watchlist VWAP entry candidates appear on the same bar, v9 splits
 available cash equally across them and submits them at the same current open.
 
+Watchlist VWAP reentry also blocks bearish exhaustion on the last completed
+candle:
+
+```text
+last_bearish_volume_divergence_score <= max_reentry_bvd_score
+```
+
+The default `max_reentry_bvd_score` is `50.0`, so a 1-minute BVD score above
+50 blocks watchlist reentry. This does not block same-bar immediate First Entry.
+
 ## Entry Sizing And Stop
 
 Immediate entry uses the previous candle open as the stop reference:
