@@ -447,7 +447,6 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
     premarket_start_minute = 4 * 60
     frame = frame.sort(["ticker", "bar_time_utc"])
     session_group = ["ticker", "session_date"]
-    session_bar_number = pl.cum_count("close").over(session_group)
     prior_bar_close = pl.col("close").shift(1).over(session_group)
     prior_5_bar_close = pl.col("close").shift(5).over(session_group)
     first_session_close = pl.col("close").first().over(session_group)
@@ -457,9 +456,7 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             ((pl.col("open") + pl.col("high") + pl.col("low") + pl.col("close")) / 4.0).alias("ohlc4"),
             (pl.col("close") * pl.col("volume")).alias("dollar_volume"),
             ((pl.col("close") / prior_bar_close) - 1.0).fill_null(0.0).alias("return_1"),
-            pl.when(session_bar_number < 3)
-            .then(pl.lit(None, dtype=pl.Float64))
-            .when(prior_5_bar_close > 0)
+            pl.when(prior_5_bar_close > 0)
             .then((pl.col("close") / prior_5_bar_close) - 1.0)
             .when(first_session_close > 0)
             .then((pl.col("close") / first_session_close) - 1.0)
@@ -616,31 +613,18 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             pl.col("volume").rolling_sum(5, min_samples=1).over(session_group).alias("recent_volume_5"),
             pl.col("dollar_volume").rolling_sum(5, min_samples=1).over(session_group).alias("recent_dollar_volume_5"),
             pl.col("transactions").rolling_sum(5, min_samples=1).over(session_group).alias("recent_transactions_5"),
-            pl.when(
+            (
                 pl.sum_horizontal(
                     [
-                        pl.col("transactions").shift(offset).over(["ticker", "session_date"]).is_not_null().cast(pl.Int8)
+                        pl.col("transactions")
+                        .shift(offset)
+                        .over(["ticker", "session_date"])
+                        .fill_null(pl.col("transactions"))
                         for offset in range(1, 4)
                     ]
                 )
-                > 0
-            )
-            .then(
-                pl.sum_horizontal(
-                    [
-                        pl.col("transactions").shift(offset).over(["ticker", "session_date"]).fill_null(0.0)
-                        for offset in range(1, 4)
-                    ]
-                )
-                / pl.sum_horizontal(
-                    [
-                        pl.col("transactions").shift(offset).over(["ticker", "session_date"]).is_not_null().cast(pl.Int8)
-                        for offset in range(1, 4)
-                    ]
-                )
-            )
-            .otherwise(None)
-            .alias("transactions_avg_prior_3"),
+                / 3.0
+            ).alias("transactions_avg_prior_3"),
             pl.col("day_volume_so_far")
             .shift(1)
             .rolling_mean(13, min_samples=1)
@@ -674,7 +658,7 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
         .with_columns(
             pl.when(pl.col("transactions_avg_prior_3") > 0)
             .then(pl.col("transactions") / pl.col("transactions_avg_prior_3"))
-            .otherwise(None)
+            .otherwise(1.0)
             .alias("transactions_vs_prior_3")
         )
         .with_columns(

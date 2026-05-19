@@ -1590,12 +1590,21 @@ def artifact_is_readable(path: Path) -> bool:
         return False
 
 
+def artifact_has_columns(path: Path, required_columns: list[str]) -> bool:
+    if not artifact_is_readable(path):
+        return False
+    try:
+        return set(required_columns).issubset(set(pl.read_parquet_schema(path).keys()))
+    except Exception:
+        return False
+
+
 def stateful_session_outputs_complete(request: BuildRequest, timeframe: str, session_text: str) -> bool:
     for group in request.feature_groups:
         if group not in FEATURE_COLUMNS:
             continue
         path = partition_path(request.processed_root, f"features_{group}", timeframe, session_text)
-        if not artifact_is_readable(path):
+        if not artifact_has_columns(path, FEATURE_COLUMNS[group]):
             return False
     return True
 

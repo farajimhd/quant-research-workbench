@@ -21,14 +21,13 @@ For 1-minute bars:
 last_5m_return = last_return_5
 ```
 
-`last_return_5` is provider-built from the same ticker/session only. It is null
-for completed bars 1-2. From completed bar 3 through warmup it uses the first
-completed session close as the baseline; after that it uses the close from five
-bars earlier. Because strategy-time rows use completed-bar inputs,
-`last_5m_return` at the current open is always based on the previous completed
-candle. This lets the first actionable v9 decision happen on the fourth candle
-of the day, after candles 1, 2, and 3 are complete, without using prior-session
-prices or future bars.
+`last_return_5` is provider-built from the same ticker/session only. Until a
+true five-bar lookback exists, it uses the first completed session close as the
+placeholder baseline, so the first completed bar is neutral at `0.0`. After
+that it uses the close from five bars earlier. Because strategy-time rows use
+completed-bar inputs, `last_5m_return` at the current open is always based on
+the previous completed candle. It never uses prior-session prices or future
+bars.
 
 ## First Entry
 

@@ -132,8 +132,10 @@ Feature artifacts are split by group so consumers can load only what they need. 
 - `hlc3`: `(high + low + close) / 3`.
 - `ohlc4`: `(open + high + low + close) / 4`.
 - `dollar_volume`: `close * volume`.
-- `return_1`: `close / prior_close - 1`, per ticker.
-- `log_return_1`: `ln(close / prior_close)`, per ticker.
+- `return_1`: `close / prior_close - 1`, per ticker/session.
+- `return_5`: same-session 5-bar close return. During warmup, the first
+  current-session close is used as the placeholder baseline.
+- `log_return_1`: `ln(close / prior_close)`, per ticker/session.
 - `bar_range`: `high - low`.
 - `body`: `close - open`.
 - `body_abs`: `abs(close - open)`.
@@ -207,8 +209,9 @@ Feature artifacts are split by group so consumers can load only what they need. 
 - `volume_z20`: 20-bar z-score of volume.
 - `transactions_sma20`: 20-bar average transaction count.
 - `transactions_z20`: 20-bar z-score of transaction count.
-- `transactions_avg_prior_3`: average transaction count from up to the three
-  prior bars in the same ticker/session, excluding the current bar.
+- `transactions_avg_prior_3`: average transaction count from the prior three
+  bars in the same ticker/session. During warmup, missing prior slots are
+  filled with the current bar's transaction count so the first bar is neutral.
 - `transactions_vs_prior_3`: `transactions / transactions_avg_prior_3`.
 - `double_timeframe_bearish_volume_divergence`: BVD on synthetic two-bar
   candles within the same ticker/session; on 1m bars this behaves like 2m BVD.

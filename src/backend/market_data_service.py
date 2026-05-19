@@ -942,13 +942,10 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
         prior_close = pl.col("close").shift(1).over(group_columns) if group_columns else pl.col("close").shift(1)
         exprs.append(((pl.col("close") / prior_close) - 1.0).fill_null(0.0).alias("return_1"))
     if "return_5" not in names and "close" in names:
-        session_bar_number = pl.cum_count("close").over(group_columns) if group_columns else pl.cum_count("close")
         prior_5_close = pl.col("close").shift(5).over(group_columns) if group_columns else pl.col("close").shift(5)
         first_close = pl.col("close").first().over(group_columns) if group_columns else pl.col("close").first()
         exprs.append(
-            pl.when(session_bar_number < 3)
-            .then(pl.lit(None, dtype=pl.Float64))
-            .when(prior_5_close > 0)
+            pl.when(prior_5_close > 0)
             .then((pl.col("close") / prior_5_close) - 1.0)
             .when(first_close > 0)
             .then((pl.col("close") / first_close) - 1.0)
@@ -998,15 +995,15 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
         )
     if "transactions_avg_prior_3" not in names and "transactions" in names:
         prior_transactions = [
-            pl.col("transactions").shift(offset).over(group_columns) if group_columns else pl.col("transactions").shift(offset)
+            (
+                pl.col("transactions").shift(offset).over(group_columns)
+                if group_columns
+                else pl.col("transactions").shift(offset)
+            ).fill_null(pl.col("transactions"))
             for offset in range(1, 4)
         ]
-        prior_count = pl.sum_horizontal([expr.is_not_null().cast(pl.Int8) for expr in prior_transactions])
         exprs.append(
-            pl.when(prior_count > 0)
-            .then(pl.sum_horizontal([expr.fill_null(0.0) for expr in prior_transactions]) / prior_count)
-            .otherwise(None)
-            .alias("transactions_avg_prior_3")
+            (pl.sum_horizontal(prior_transactions) / 3.0).alias("transactions_avg_prior_3")
         )
     if exprs:
         scan = scan.with_columns(exprs)
@@ -1031,7 +1028,7 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
         derived_exprs.append(
             pl.when(pl.col("transactions_avg_prior_3") > 0)
             .then(pl.col("transactions") / pl.col("transactions_avg_prior_3"))
-            .otherwise(None)
+            .otherwise(1.0)
             .alias("transactions_vs_prior_3")
         )
     if derived_exprs:

@@ -2139,7 +2139,7 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
         ),
         "return_5": (
             "Same-session five-bar close return with early-session estimate.",
-            "Return 5 compares the current close with the close five bars earlier inside the same ticker/session. It is null for completed bars 1-2; from completed bar 3 through warmup it uses the first completed close of the current session as the baseline, and it never borrows prior-day prices.",
+            "Return 5 compares the current close with the close five bars earlier inside the same ticker/session. During warmup it uses the first completed close of the current session as the placeholder baseline, so the first bar is neutral at zero and it never borrows prior-day prices.",
             "$$Return5_t=\\frac{Close_t}{Close_{max(1,t-5)}}-1$$",
             {"Close_t": "Current close", "Close_{max(1,t-5)}": "Five-bars-ago close, or first current-session close during warmup"},
         ),
@@ -2546,9 +2546,9 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
         ),
         "transactions_avg_prior_3": (
             "Average transaction count from the prior three bars.",
-            "Transactions avg prior 3 averages the three completed bars before the current bar for the same ticker and session. It excludes the current bar, so it is a clean baseline for detecting whether current activity is expanding.",
-            "$$TransactionsAvgPrior3_t=\\frac{1}{N_t}\\sum_{i=1}^{3}Transactions_{t-i},\\ N_t\\le3$$",
-            {"Transactions": "Bar transaction count", "N_t": "Available prior bars in the same session, capped at three"},
+            "Transactions avg prior 3 averages the three completed bars before the current bar for the same ticker/session. During warmup, missing prior slots are filled with the current bar's transaction count, making the first bar neutral instead of null or inflated.",
+            "$$TransactionsAvgPrior3_t=\\frac{1}{3}\\sum_{i=1}^{3}coalesce(Transactions_{t-i}, Transactions_t)$$",
+            {"Transactions": "Bar transaction count"},
         ),
         "transactions_vs_prior_3": (
             "Current transactions divided by the prior-three-bar average.",

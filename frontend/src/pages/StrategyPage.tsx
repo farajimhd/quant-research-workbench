@@ -266,7 +266,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_volume: "Minimum current bar share volume required before a Long Momentum entry.",
   min_transactions: "Minimum current bar transaction count required before a Long Momentum entry.",
   min_first_entry_transactions: "Long Momentum v9 1-minute First Entry transaction threshold. This is calibrated for 1m bars and should be retuned for other timeframes.",
-  min_first_entry_transactions_vs_prior_3: "Long Momentum v9 1-minute First Entry transaction impulse threshold versus the prior three transactions average. This is calibrated for 1m bars.",
+  min_first_entry_transactions_vs_prior_3: "Long Momentum v9 1-minute First Entry transaction impulse threshold versus the prior three transactions average. Early-session missing prior slots are estimated from the current bar, so the first bar is neutral at 1.0. This is calibrated for 1m bars.",
   min_last_5m_return: "Long Momentum v9 provider-built same-session return_5 threshold needed to add a ticker to the day momentum watchlist and validate First Entry.",
   min_macd_hist_z_since_open: "Minimum MACD histogram z-score since the open required before a Long Momentum entry.",
   trigger_1_minute_start: "Earliest minute of day where Long Momentum v4 Trigger 1 can enter.",

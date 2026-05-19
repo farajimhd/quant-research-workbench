@@ -8,6 +8,7 @@ import polars as pl
 
 from src.data_provider.config import DataProviderConfig
 from src.data_provider.calendar import market_sessions
+from src.data_provider.features import add_double_timeframe_bearish_volume_divergence
 from src.data_provider.manifest import read_manifest
 from src.data_provider.raw_loader import date_range
 from src.data_provider.store import existing_dates, partition_path
@@ -84,6 +85,7 @@ class MarketDataProvider:
                 if duplicate_columns:
                     features = features.drop(duplicate_columns)
                 base = base.join(features, on="bar_id", how="left", coalesce=True)
+        base = add_provider_compatibility_columns(base, feature_groups or [])
         base = add_liquidity_capacity_columns(base)
         if columns:
             selected = [column for column in columns if column in base.columns]
@@ -108,6 +110,68 @@ class MarketDataProvider:
         if tickers:
             scan = scan.filter(pl.col("ticker").is_in(tickers))
         return scan.collect()
+
+
+def add_provider_compatibility_columns(frame: pl.DataFrame, feature_groups: list[str]) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    names = set(frame.columns)
+    group_columns = [column for column in ["ticker", "session_date"] if column in names]
+    if not group_columns and "ticker" in names:
+        group_columns = ["ticker"]
+    order_columns = [column for column in ["ticker", "session_date", "bar_time_utc", "bar_time_market"] if column in names]
+    result = frame.sort(order_columns) if order_columns else frame
+    requested = set(feature_groups)
+    exprs: list[pl.Expr] = []
+    if "core" in requested and "return_5" not in names and "close" in names:
+        prior_5_close = pl.col("close").shift(5).over(group_columns) if group_columns else pl.col("close").shift(5)
+        first_close = pl.col("close").first().over(group_columns) if group_columns else pl.col("close").first()
+        exprs.append(
+            pl.when(prior_5_close > 0)
+            .then((pl.col("close") / prior_5_close) - 1.0)
+            .when(first_close > 0)
+            .then((pl.col("close") / first_close) - 1.0)
+            .otherwise(0.0)
+            .alias("return_5")
+        )
+    if "volume_liquidity" in requested and "transactions_avg_prior_3" not in names and "transactions" in names:
+        prior_transactions = [
+            (
+                pl.col("transactions").shift(offset).over(group_columns)
+                if group_columns
+                else pl.col("transactions").shift(offset)
+            ).fill_null(pl.col("transactions"))
+            for offset in range(1, 4)
+        ]
+        exprs.append((pl.sum_horizontal(prior_transactions) / 3.0).alias("transactions_avg_prior_3"))
+    if exprs:
+        result = result.with_columns(exprs)
+        names = set(result.columns)
+    if (
+        "volume_liquidity" in requested
+        and "transactions_vs_prior_3" not in names
+        and {"transactions", "transactions_avg_prior_3"}.issubset(names)
+    ):
+        result = result.with_columns(
+            pl.when(pl.col("transactions_avg_prior_3") > 0)
+            .then(pl.col("transactions") / pl.col("transactions_avg_prior_3"))
+            .otherwise(1.0)
+            .alias("transactions_vs_prior_3")
+        )
+        names = set(result.columns)
+    if (
+        "volume_liquidity" in requested
+        and not {
+            "double_timeframe_bearish_volume_divergence",
+            "double_timeframe_bearish_volume_divergence_score",
+            "double_timeframe_bearish_volume_divergence_label",
+        }.issubset(names)
+        and {"close", "volume"}.issubset(names)
+    ):
+        if "session_bar_count" not in names and group_columns:
+            result = result.with_columns(pl.cum_count("close").over(group_columns).alias("session_bar_count"))
+        result = add_double_timeframe_bearish_volume_divergence(result)
+    return result
 
 
 def add_liquidity_capacity_columns(frame: pl.DataFrame) -> pl.DataFrame:
