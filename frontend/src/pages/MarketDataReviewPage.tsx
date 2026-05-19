@@ -226,6 +226,8 @@ const SCANNER_COMPATIBILITY_COLUMNS = [
   "last_bullish_volume_divergence_score",
   "last_bullish_volume_divergence_label",
   "last_transactions",
+  "last_transactions_avg_prior_3",
+  "last_transactions_vs_prior_3",
   "last_volume_sma10",
   "last_relative_volume10",
   "last_recent_volume_5",

@@ -2166,6 +2166,8 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
             "recent_volume_5",
             "recent_dollar_volume_5",
             "recent_transactions_5",
+            "transactions_avg_prior_3",
+            "transactions_vs_prior_3",
             "obv",
             "mfi14",
             "cmf20",
@@ -2484,6 +2486,18 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
             "Recent transactions 5 sums transaction count over the last five bars for the same ticker. Low values warn that the bar may be thin even if price moved.",
             "$$RecentTransactions5_t=\\sum_{i=0}^{4}Transactions_{t-i}$$",
             {"Transactions": "Bar transaction count"},
+        ),
+        "transactions_avg_prior_3": (
+            "Average transaction count from the prior three bars.",
+            "Transactions avg prior 3 averages the three completed bars before the current bar for the same ticker and session. It excludes the current bar, so it is a clean baseline for detecting whether current activity is expanding.",
+            "$$TransactionsAvgPrior3_t=\\frac{1}{N_t}\\sum_{i=1}^{3}Transactions_{t-i},\\ N_t\\le3$$",
+            {"Transactions": "Bar transaction count", "N_t": "Available prior bars in the same session, capped at three"},
+        ),
+        "transactions_vs_prior_3": (
+            "Current transactions divided by the prior-three-bar average.",
+            "Transactions vs prior 3 compares the current bar's transaction count to the average of the three earlier bars in the same ticker/session. Values above 1 mean transaction activity is expanding versus the immediate baseline.",
+            "$$TransactionsVsPrior3_t=\\frac{Transactions_t}{TransactionsAvgPrior3_t}$$",
+            {"Transactions": "Bar transaction count", "TransactionsAvgPrior3": "Average transaction count over the previous three bars"},
         ),
         "spread": (
             "Observed bid/ask spread from the quote sample matched to the bar.",

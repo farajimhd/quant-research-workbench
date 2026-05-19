@@ -207,6 +207,9 @@ Feature artifacts are split by group so consumers can load only what they need. 
 - `volume_z20`: 20-bar z-score of volume.
 - `transactions_sma20`: 20-bar average transaction count.
 - `transactions_z20`: 20-bar z-score of transaction count.
+- `transactions_avg_prior_3`: average transaction count from up to the three
+  prior bars in the same ticker/session, excluding the current bar.
+- `transactions_vs_prior_3`: `transactions / transactions_avg_prior_3`.
 - `liquidity_band_25bp_volume`: 20-bar rolling volume proxy for near-price liquidity.
 - `liquidity_band_50bp_volume`: 50-bar rolling volume proxy.
 - `liquidity_band_100bp_volume`: 100-bar rolling volume proxy.

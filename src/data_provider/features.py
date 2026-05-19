@@ -128,6 +128,8 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "recent_volume_5",
         "recent_dollar_volume_5",
         "recent_transactions_5",
+        "transactions_avg_prior_3",
+        "transactions_vs_prior_3",
         "spread",
         "spread_bps",
         "spread_bps_abs",
@@ -525,6 +527,31 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             pl.col("volume").rolling_sum(5, min_samples=1).over("ticker").alias("recent_volume_5"),
             pl.col("dollar_volume").rolling_sum(5, min_samples=1).over("ticker").alias("recent_dollar_volume_5"),
             pl.col("transactions").rolling_sum(5, min_samples=1).over("ticker").alias("recent_transactions_5"),
+            pl.when(
+                pl.sum_horizontal(
+                    [
+                        pl.col("transactions").shift(offset).over(["ticker", "session_date"]).is_not_null().cast(pl.Int8)
+                        for offset in range(1, 4)
+                    ]
+                )
+                > 0
+            )
+            .then(
+                pl.sum_horizontal(
+                    [
+                        pl.col("transactions").shift(offset).over(["ticker", "session_date"]).fill_null(0.0)
+                        for offset in range(1, 4)
+                    ]
+                )
+                / pl.sum_horizontal(
+                    [
+                        pl.col("transactions").shift(offset).over(["ticker", "session_date"]).is_not_null().cast(pl.Int8)
+                        for offset in range(1, 4)
+                    ]
+                )
+            )
+            .otherwise(None)
+            .alias("transactions_avg_prior_3"),
             pl.col("day_volume_so_far")
             .shift(1)
             .rolling_mean(13, min_samples=1)
@@ -554,6 +581,12 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
         )
         .with_columns(
             (pl.col("volume_convergence_gap") - pl.col("volume_convergence_gap").shift(1).over(["ticker", "session_date"])).alias("volume_convergence_slope")
+        )
+        .with_columns(
+            pl.when(pl.col("transactions_avg_prior_3") > 0)
+            .then(pl.col("transactions") / pl.col("transactions_avg_prior_3"))
+            .otherwise(None)
+            .alias("transactions_vs_prior_3")
         )
         .with_columns(
             (

@@ -2744,6 +2744,8 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "last_body_low",
   "last_volume",
   "last_transactions",
+  "last_transactions_avg_prior_3",
+  "last_transactions_vs_prior_3",
   "last_return_1",
   "last_is_red",
   "last_tema_open",

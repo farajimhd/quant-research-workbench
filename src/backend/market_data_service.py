@@ -872,6 +872,18 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
         exprs.append(dollar_volume_expr.rolling_sum(5, min_samples=1).over("ticker").alias("recent_dollar_volume_5"))
     if "recent_transactions_5" not in names and "transactions" in names:
         exprs.append(pl.col("transactions").rolling_sum(5, min_samples=1).over("ticker").alias("recent_transactions_5"))
+    if "transactions_avg_prior_3" not in names and "transactions" in names:
+        prior_transactions = [
+            pl.col("transactions").shift(offset).over(group_columns) if group_columns else pl.col("transactions").shift(offset)
+            for offset in range(1, 4)
+        ]
+        prior_count = pl.sum_horizontal([expr.is_not_null().cast(pl.Int8) for expr in prior_transactions])
+        exprs.append(
+            pl.when(prior_count > 0)
+            .then(pl.sum_horizontal([expr.fill_null(0.0) for expr in prior_transactions]) / prior_count)
+            .otherwise(None)
+            .alias("transactions_avg_prior_3")
+        )
     if exprs:
         scan = scan.with_columns(exprs)
         names = scan.collect_schema().names()
@@ -890,6 +902,13 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
             .then(pl.col("volume") / pl.col("volume_sma10"))
             .otherwise(0.0)
             .alias("relative_volume10")
+        )
+    if "transactions_vs_prior_3" not in names and {"transactions", "transactions_avg_prior_3"}.issubset(names):
+        derived_exprs.append(
+            pl.when(pl.col("transactions_avg_prior_3") > 0)
+            .then(pl.col("transactions") / pl.col("transactions_avg_prior_3"))
+            .otherwise(None)
+            .alias("transactions_vs_prior_3")
         )
     if derived_exprs:
         scan = scan.with_columns(derived_exprs)
@@ -1302,6 +1321,8 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "last_bullish_volume_divergence_score",
         "last_bullish_volume_divergence_label",
         "last_transactions",
+        "last_transactions_avg_prior_3",
+        "last_transactions_vs_prior_3",
         "last_dollar_volume",
         "last_relative_volume10",
         "last_relative_volume20",
