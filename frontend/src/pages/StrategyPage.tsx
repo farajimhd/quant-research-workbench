@@ -2591,6 +2591,17 @@ function interactiveDebugFilterPresets(config: StrategyConfig): DataTableFilterP
   const maxSpreadBpsMax = strategyNumberParam(params, "max_spread_bps_max", 150);
   const minQuoteValidRatio = strategyNumberParam(params, "min_quote_valid_ratio", 0.8);
   const maxLockedOrCrossedCount = strategyNumberParam(params, "max_locked_or_crossed_count", 0);
+  if (version === "v9") {
+    return [
+      {
+        filters: {
+          long_momentum_v9_entry_open: trueFilter(),
+        },
+        label: "Apply v9 Strategy",
+        title: "Apply the exact v9 final entry decision. It includes First Entry and Watchlist Reentry because the strategy treats them as alternate entry paths.",
+      },
+    ];
+  }
   const filters: DataTableFilterPreset["filters"] = {
     last_close: betweenFilter(minPrice, maxPrice),
     last_volume: gteFilter(minVolume),
@@ -2688,14 +2699,6 @@ function interactiveDebugFilterPresets(config: StrategyConfig): DataTableFilterP
       long_momentum_v8_entry_open: trueFilter(),
       long_momentum_entry_open: trueFilter(),
     });
-  } else if (version === "v9") {
-    Object.assign(filters, {
-      long_momentum_v9_price_eligible: trueFilter(),
-      long_momentum_v9_watchlist_active: trueFilter(),
-      long_momentum_v9_entry_time_ok: trueFilter(),
-      long_momentum_v9_entry_open: trueFilter(),
-      long_momentum_entry_open: trueFilter(),
-    });
   } else {
     return undefined;
   }
@@ -2774,9 +2777,17 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_watchlist_first_entry_submitted",
   "long_momentum_v9_watchlist_max_vwap",
   "long_momentum_v9_watchlist_avg_transactions",
+  "long_momentum_v9_return_ok",
+  "long_momentum_v9_first_entry_transactions_ok",
+  "long_momentum_v9_first_entry_transactions_vs_prior_3_ok",
+  "long_momentum_v9_entry_time_ok",
+  "long_momentum_v9_no_symbol_position",
   "long_momentum_v9_first_entry_open",
+  "long_momentum_v9_reentry_price_reclaim",
+  "long_momentum_v9_reentry_tema_open",
   "long_momentum_v9_reentry_open",
   "long_momentum_v9_entry_open",
+  "long_momentum_v9_reject_reason",
   "current_open",
   "last_open",
   "last_high",

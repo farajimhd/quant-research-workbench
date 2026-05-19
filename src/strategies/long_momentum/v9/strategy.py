@@ -55,6 +55,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         self.config: LongMomentumV9Config
         self.momentum_watchlist: dict[str, MomentumWatch] = {}
         self.watchlist_snapshots: list[dict] = []
+        self.last_scanner_rows: list[dict] = []
 
     def data_requirements(self) -> DataRequirements:
         return DataRequirements(
@@ -83,6 +84,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         self.entry_order_metadata = {}
         self.position_meta = {}
         self.momentum_watchlist = {}
+        self.last_scanner_rows = []
         frame = frames.event_frame.filter(
             (pl.col("minute_of_day") >= self.config.trading_start_minute)
             & (pl.col("minute_of_day") < self.config.trading_end_minute)
@@ -611,6 +613,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         pending_orders: list[Order],
     ) -> None:
         captured = rows[: max(25, len(candidates))]
+        self.last_scanner_rows = [dict(row) for row in rows]
         self.live_rankings.extend(captured)
         self.scanner_snapshots.append(
             {

@@ -206,7 +206,9 @@ class StepBacktestDebugger(BacktestEngine):
     ) -> dict:
         artifacts = self.strategy.artifacts()
         observability = self.observability.artifacts()
-        scanner_rows = self._delta_rows(artifacts.get("live_rankings", []), before["live_rankings"], after["live_rankings"])
+        scanner_rows = self._last_strategy_scanner_rows()
+        if not scanner_rows:
+            scanner_rows = self._delta_rows(artifacts.get("live_rankings", []), before["live_rankings"], after["live_rankings"])
         if not scanner_rows:
             scanner_rows = self._delta_rows(artifacts.get("candidate_rankings", []), before["candidate_rankings"], after["candidate_rankings"])
         watchlist_rows = self._delta_rows(artifacts.get("watchlist_snapshots", []), before["watchlist_snapshots"], after["watchlist_snapshots"])
@@ -260,6 +262,12 @@ class StepBacktestDebugger(BacktestEngine):
 
     def _delta_rows(self, rows: list[dict], before: int, after: int) -> list[dict]:
         return rows[before:after]
+
+    def _last_strategy_scanner_rows(self) -> list[dict]:
+        rows = getattr(self.strategy, "last_scanner_rows", None)
+        if not isinstance(rows, list):
+            return []
+        return [dict(row) for row in rows if isinstance(row, dict)]
 
     def _filter_group_rows(self, rows: list[dict]) -> list[dict]:
         if self.config.strategy_name == "long_momentum" and str(self.config.strategy_version).lower() == "v9":
@@ -374,25 +382,41 @@ class StepBacktestDebugger(BacktestEngine):
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                 ],
                 "Watchlist Add": [
+                    self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.05), fallback_key="last_5m_return"),
-                    self._bool_check(row, "long_momentum_v9_watchlist_add_open", True),
-                    self._bool_check(row, "long_momentum_v9_watchlist_active", True),
                 ],
                 "First Entry": [
+                    self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
+                    self._bool_check(row, "long_momentum_v9_watchlist_active", True),
+                    self._bool_check(row, "long_momentum_v9_watchlist_first_entry_submitted", False),
+                    self._bool_check(row, "long_momentum_v9_entry_time_ok", True),
+                    self._bool_check(row, "long_momentum_v9_no_symbol_position", True),
                     self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.05), fallback_key="last_5m_return"),
                     self._gte_check(row, "last_transactions", self._strategy_param("min_first_entry_transactions", 100.0)),
                     self._gte_check(row, "last_transactions_vs_prior_3", self._strategy_param("min_first_entry_transactions_vs_prior_3", 20.0)),
-                    self._bool_check(row, "long_momentum_v9_first_entry_open", True),
                 ],
                 "Watchlist Reentry": [
+                    self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
+                    self._bool_check(row, "long_momentum_v9_watchlist_active", True),
+                    self._bool_check(row, "long_momentum_v9_watchlist_first_entry_submitted", True),
+                    self._bool_check(row, "long_momentum_v9_entry_time_ok", True),
+                    self._bool_check(row, "long_momentum_v9_no_symbol_position", True),
                     self._gt_check(row, "last_close", self._number(row, "long_momentum_v9_watchlist_max_vwap") or 0.0),
                     self._bool_check(row, "long_momentum_v9_reentry_tema_open", True, fallback_key="last_tema_open"),
-                    self._bool_check(row, "long_momentum_v9_reentry_open", True),
                 ],
                 "Exit": [
                     self._gt_check(row, "last_double_timeframe_bearish_volume_divergence_score", self._strategy_param("double_bvd_exit_score", 50.0)),
                 ],
                 "Final Strategy Decision": [
+                    self._check(
+                        "long_momentum_v9_first_entry_or_reentry_open",
+                        f"first_entry={self._bool_value(row, 'long_momentum_v9_first_entry_open')}, reentry={self._bool_value(row, 'long_momentum_v9_reentry_open')}",
+                        bool(
+                            self._bool_value(row, "long_momentum_v9_first_entry_open")
+                            or self._bool_value(row, "long_momentum_v9_reentry_open")
+                        ),
+                        "is True",
+                    ),
                     self._bool_check(row, "long_momentum_v9_entry_open", True, fallback_key="entry_open"),
                 ],
             }
