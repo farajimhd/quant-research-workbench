@@ -1008,6 +1008,7 @@ function InteractiveStepDebugPanel({
   const canGoPrevious = session.current_step_index > 0;
   const parameters = useMemo(() => interactiveDebugParameterRows(session.config, config.strategy_params), [config.strategy_params, session.config]);
   const strategyFilterPresets = useMemo(() => interactiveDebugFilterPresets(config), [config]);
+  const defaultStrategyFilterPreset = String(config.strategy_version || "").toLowerCase() === "v9" ? undefined : strategyFilterPresets?.[0];
   const rawRows = step?.raw_scanner_rows ?? [];
   const strategyScannerRows = step?.strategy_scanner_rows ?? [];
   const strategyWatchlistRows = step?.strategy_watchlist_rows ?? [];
@@ -1070,7 +1071,7 @@ function InteractiveStepDebugPanel({
       <div className="step-debug-detail">
         <ObservationEvidenceTable
           description="The exact rows passed to strategy.on_bar as context.updates, with strategy-calculated filter columns appended when available so toolbar presets can be compared on the same rows."
-          defaultFilterPreset={strategyFilterPresets?.[0]}
+          defaultFilterPreset={defaultStrategyFilterPreset}
           filterPresets={strategyFilterPresets}
           onOpenChart={setSelectedDebugChart}
           rows={rawRowsWithStrategyFilters}
@@ -1083,7 +1084,7 @@ function InteractiveStepDebugPanel({
         />
         <ObservationEvidenceTable
           description="Rows produced by the strategy scanner for this bar, including strategy filter columns, ranks, scores, and entry state."
-          defaultFilterPreset={strategyFilterPresets?.[0]}
+          defaultFilterPreset={defaultStrategyFilterPreset}
           filterPresets={strategyFilterPresets}
           onOpenChart={setSelectedDebugChart}
           rows={strategyScannerRows}
@@ -2595,9 +2596,44 @@ function interactiveDebugFilterPresets(config: StrategyConfig): DataTableFilterP
     return [
       {
         filters: {
+          long_momentum_v9_price_eligible: trueFilter(),
+          long_momentum_v9_return_ok: trueFilter(),
+        },
+        label: "v9 Watchlist Add",
+        title: "Apply the v9 watchlist-add prerequisites: price eligibility and provider-built same-session return threshold.",
+      },
+      {
+        filters: {
+          long_momentum_v9_price_eligible: trueFilter(),
+          long_momentum_v9_watchlist_active: trueFilter(),
+          long_momentum_v9_watchlist_first_entry_submitted: { operator: "eq", presetLabel: "Is false", valueText: "false" },
+          long_momentum_v9_entry_time_ok: trueFilter(),
+          long_momentum_v9_no_symbol_position: trueFilter(),
+          long_momentum_v9_return_ok: trueFilter(),
+          long_momentum_v9_first_entry_transactions_ok: trueFilter(),
+          long_momentum_v9_first_entry_transactions_vs_prior_3_ok: trueFilter(),
+        },
+        label: "v9 First Entry",
+        title: "Apply the exact v9 First Entry prerequisite group before the final first-entry decision.",
+      },
+      {
+        filters: {
+          long_momentum_v9_price_eligible: trueFilter(),
+          long_momentum_v9_watchlist_active: trueFilter(),
+          long_momentum_v9_watchlist_first_entry_submitted: trueFilter(),
+          long_momentum_v9_entry_time_ok: trueFilter(),
+          long_momentum_v9_no_symbol_position: trueFilter(),
+          long_momentum_v9_reentry_price_reclaim: trueFilter(),
+          long_momentum_v9_reentry_tema_open: trueFilter(),
+        },
+        label: "v9 Reentry",
+        title: "Apply the exact v9 Watchlist Reentry prerequisite group before the final reentry decision.",
+      },
+      {
+        filters: {
           long_momentum_v9_entry_open: trueFilter(),
         },
-        label: "Apply v9 Strategy",
+        label: "v9 Final Entry",
         title: "Apply the exact v9 final entry decision. It includes First Entry and Watchlist Reentry because the strategy treats them as alternate entry paths.",
       },
     ];
