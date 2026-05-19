@@ -402,6 +402,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._range_check(row, "minute_of_day", self._strategy_param("trading_start_minute", 240.0), self._strategy_param("trading_end_minute", 1200.0) - 1),
                     self._gt_check(row, "last_close", self._number(row, "last_vwap") or 0.0),
+                    self._gte_check(row, "last_close", self._number(row, "last_open") or 0.0),
                 ],
                 "Watchlist VWAP Entry Strategy State": [
                     self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
@@ -409,6 +410,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._lte_check(row, "held_quantity", 0.0),
                     self._bool_check(row, "long_momentum_v9_pending_symbol_order", False),
                     self._gt_check(row, "long_momentum_v9_close_minus_vwap", 0.0),
+                    self._bool_check(row, "long_momentum_v9_reentry_last_bar_not_red", True),
                 ],
                 "Exit": [
                     self._gt_check(row, "last_double_timeframe_bearish_volume_divergence_score", self._strategy_param("double_bvd_exit_score", 50.0)),

@@ -2606,7 +2606,7 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
         ),
       },
       label: "v9 Watchlist Entry Raw",
-      title: "Apply the raw/provider inputs available before v9 checks watchlist state and last_close > last_vwap.",
+      title: "Apply the raw/provider inputs available before v9 checks watchlist state, last_close > last_vwap, and last_close >= last_open.",
     },
     {
       filters: {
@@ -2671,9 +2671,10 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
           held_quantity: lteFilter(0),
           long_momentum_v9_pending_symbol_order: { operator: "eq", presetLabel: "Is false", valueText: "false" },
           long_momentum_v9_close_minus_vwap: gtFilter(0),
+          long_momentum_v9_reentry_last_bar_not_red: trueFilter(),
         },
         label: "v9 Watchlist VWAP Entry",
-        title: "Apply the v9 watchlist entry gates: ticker is on watchlist, not held/pending, and last close is above VWAP.",
+        title: "Apply the v9 watchlist entry gates: ticker is on watchlist, not held/pending, last close is above VWAP, and the VWAP reclaim bar is not red.",
       },
       {
         filters: {
@@ -2874,6 +2875,7 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_no_symbol_position",
   "long_momentum_v9_close_minus_vwap",
   "long_momentum_v9_reentry_price_reclaim",
+  "long_momentum_v9_reentry_last_bar_not_red",
   "long_momentum_v9_immediate_entry_open",
   "long_momentum_v9_reentry_open",
   "long_momentum_v9_entry_open",

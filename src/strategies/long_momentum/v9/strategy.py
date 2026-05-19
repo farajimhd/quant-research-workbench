@@ -292,7 +292,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         watch_entry_ready = bool(watch and isinstance(current_timestamp, datetime) and watch.added_timestamp < current_timestamp)
         max_vwap = watch.max_vwap if watch else 0.0
         last_vwap = self._float(row.get("last_vwap"))
+        last_open = self._float(row.get("last_open"))
         reentry_price_reclaim = last_vwap > 0 and last_close > last_vwap
+        reentry_last_bar_not_red = last_close >= last_open
         reentry_close_minus_vwap = last_close - last_vwap if last_vwap > 0 else None
         immediate_entry_open = (
             price_eligible
@@ -310,6 +312,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             and no_symbol_position
             and entry_time_ok
             and reentry_price_reclaim
+            and reentry_last_bar_not_red
             and not immediate_entry_open
         )
         return {
@@ -335,6 +338,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_no_symbol_position": no_symbol_position,
             "long_momentum_v9_close_minus_vwap": reentry_close_minus_vwap,
             "long_momentum_v9_reentry_price_reclaim": reentry_price_reclaim,
+            "long_momentum_v9_reentry_last_bar_not_red": reentry_last_bar_not_red,
             "long_momentum_v9_immediate_entry_open": immediate_entry_open,
             "long_momentum_v9_reentry_open": reentry_open,
             "long_momentum_v9_entry_priority": 2 if immediate_entry_open else 1 if reentry_open else 0,
@@ -349,6 +353,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 watchlist_add_transactions_ok=watchlist_add_transactions_ok,
                 immediate_transactions_vs_prior_3_ok=immediate_transactions_vs_prior_3_ok,
                 reentry_price_reclaim=reentry_price_reclaim,
+                reentry_last_bar_not_red=reentry_last_bar_not_red,
                 no_symbol_position=no_symbol_position,
             ),
         }
@@ -753,6 +758,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         watchlist_add_transactions_ok: bool,
         immediate_transactions_vs_prior_3_ok: bool,
         reentry_price_reclaim: bool,
+        reentry_last_bar_not_red: bool,
         no_symbol_position: bool,
     ) -> str:
         if not price_eligible:
@@ -769,6 +775,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return "watchlist_entry_wait_next_bar"
         if not reentry_price_reclaim:
             return "watchlist_entry_below_vwap"
+        if not reentry_last_bar_not_red:
+            return "watchlist_entry_red_vwap_reclaim_bar"
         return "filtered"
 
 __all__ = ["LongMomentumV9Strategy"]

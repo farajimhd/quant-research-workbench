@@ -47,6 +47,7 @@ momentum watchlist. It can enter later when all VWAP entry rules are true:
 - the current minute is inside the configured trading window
 - `min_price <= last_close <= max_price`
 - `last_close > last_vwap`
+- the completed VWAP reclaim bar is not red: `last_close >= last_open`
 
 The 5-minute return and transaction threshold are used only to add the ticker to
 the watchlist unless the same bar also passes the transaction-impulse threshold.
