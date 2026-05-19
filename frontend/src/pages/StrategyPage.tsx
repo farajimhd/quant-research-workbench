@@ -219,7 +219,7 @@ function betweenFilter(minValue: unknown, maxValue: unknown, label?: string): Da
 }
 
 const tabs = ["Backtest", "Runs", "Strategy README"];
-const defaultStrategyName = "orb_5m_momentum";
+const defaultStrategyName = "long_momentum";
 const CHART_DISPLAY_ITEMS_NONE = "__none__";
 const VOLUME_PROFILE_DISPLAY_ITEM = "feature.volume_profile";
 

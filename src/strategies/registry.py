@@ -458,7 +458,7 @@ DEFAULT_STRATEGY_VERSIONS: dict[str, str] = {
     "adaptive_live_trend_rotation": "v1",
     "break_of_vwap": "v1",
     "liquidity_pullback_reversal": "v1",
-    "long_momentum": "v2",
+    "long_momentum": "v9",
     "orb_5m_momentum": "v3",
 }
 
