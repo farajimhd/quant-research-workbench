@@ -1012,11 +1012,8 @@ function InteractiveStepDebugPanel({
   const canGoPrevious = session.current_step_index > 0;
   const parameters = useMemo(() => interactiveDebugParameterRows(session.config, config.strategy_params), [config.strategy_params, session.config]);
   const rawScannerFilterPresets = useMemo(() => interactiveDebugRawFilterPresets(config), [config]);
-  const strategyFilterPresets = useMemo(() => interactiveDebugStrategyFilterPresets(config), [config]);
   const defaultRawFilterPreset = String(config.strategy_version || "").toLowerCase() === "v9" ? undefined : rawScannerFilterPresets?.[0];
-  const defaultStrategyFilterPreset = String(config.strategy_version || "").toLowerCase() === "v9" ? undefined : strategyFilterPresets?.[0];
   const rawRows = step?.raw_scanner_rows ?? [];
-  const strategyScannerRows = step?.strategy_scanner_rows ?? [];
   const strategyWatchlistRows = step?.strategy_watchlist_rows ?? [];
   const actionRows = step?.observability_trace ?? [];
   const [selectedDebugChart, setSelectedDebugChart] = useState<ObservationChartTarget | null>(null);
@@ -1060,7 +1057,6 @@ function InteractiveStepDebugPanel({
             <ObservationFact label="P/L" value={summary.total_pnl ?? 0} />
             <ObservationFact label="Equity" value={summary.final_equity ?? config.initial_cash} />
             <ObservationFact label="Raw Scanner Rows" value={rawRows.length} />
-            <ObservationFact label="Strategy Scanner Rows" value={strategyScannerRows.length} />
             <ObservationFact label="Watchlist Rows" value={strategyWatchlistRows.length} />
             <ObservationFact label="Actions" value={actionRows.length} />
             <ObservationFact label="Requests" value={step?.strategy_requests?.length ?? 0} />
@@ -1085,17 +1081,10 @@ function InteractiveStepDebugPanel({
           title="Filter Groups"
         />
         <ObservationEvidenceTable
-          description="Rows produced by the strategy scanner for this bar, including strategy filter columns, ranks, scores, and entry state."
-          defaultFilterPreset={defaultStrategyFilterPreset}
-          filterPresets={strategyFilterPresets}
-          onOpenChart={setSelectedDebugChart}
-          rows={strategyScannerRows}
-          title="Scanner Snapshot"
-        />
-        <ObservationEvidenceTable
           description="Strategy-maintained day momentum watchlist state for this bar, including max VWAP, first-entry status, and reentry inputs."
           onOpenChart={setSelectedDebugChart}
           rows={strategyWatchlistRows}
+          showWhenEmpty
           title="Momentum Watchlist"
         />
         <ObservationEvidenceTable
@@ -1992,7 +1981,7 @@ function ObservabilityActionCard({ action, onOpenChart, sources }: { action: Obs
             description="Captured scanner candidates for this action timestamp, not only the selected ticker."
             onOpenChart={onOpenChart}
             rows={evidence.scannerRows}
-            title="Scanner Snapshot"
+            title="Full Scanner At Action Time"
           />
         </div>
       ) : null}
@@ -2102,6 +2091,7 @@ function ObservationEvidenceTable({
   onOpenChart,
   presentation = "table",
   rows,
+  showWhenEmpty = false,
   title,
 }: {
   collapsible?: boolean;
@@ -2111,17 +2101,19 @@ function ObservationEvidenceTable({
   onOpenChart?: (target: ObservationChartTarget) => void;
   presentation?: "cards" | "table";
   rows: DataRow[];
+  showWhenEmpty?: boolean;
   title: string;
 }) {
   const [open, setOpen] = useState(false);
-  const scannerTable = title === "Scanner Snapshot";
+  const scannerTable = title === "Full Scanner At Action Time";
   const watchlistTable = title.toLowerCase().includes("watchlist");
   const chartableTable = Boolean(onOpenChart) && (scannerTable || watchlistTable || title === "Scanner Raw Input");
   const displayRows = scannerTable ? sortScannerSnapshotRows(rows) : rows;
   const scannerColumns = scannerTable ? scannerSnapshotColumns(displayRows) : undefined;
   const scannerSort = scannerTable && scannerColumns?.includes("rank") ? { column: "rank", direction: "asc" as const } : undefined;
   const tableFilterPresets = filterPresets ?? (scannerTable ? OBSERVABILITY_SCANNER_FILTER_PRESETS : undefined);
-  if (!displayRows.length) return null;
+  const emptyMessage = <p className="muted" style={{ margin: 0, padding: "12px 16px" }}>No rows for this step.</p>;
+  if (!displayRows.length && !showWhenEmpty) return null;
   if (!collapsible) {
     return (
       <section className="observability-evidence-block">
@@ -2134,7 +2126,7 @@ function ObservationEvidenceTable({
         </div>
         {presentation === "cards" ? (
           <ObservationEvidenceCards rows={displayRows} title={title} />
-        ) : (
+        ) : displayRows.length ? (
           <DataTable
             columns={scannerColumns}
             defaultFilterPreset={defaultFilterPreset}
@@ -2144,6 +2136,8 @@ function ObservationEvidenceTable({
             rows={displayRows}
             transposeHelper={scannerTable}
           />
+        ) : (
+          emptyMessage
         )}
       </section>
     );
@@ -2158,7 +2152,7 @@ function ObservationEvidenceTable({
         </span>
         <small>{formatNumber(displayRows.length)} rows</small>
       </button>
-      {open ? (
+      {open && displayRows.length ? (
         <DataTable
           columns={scannerColumns}
           defaultFilterPreset={defaultFilterPreset}
@@ -2168,7 +2162,7 @@ function ObservationEvidenceTable({
           rows={displayRows}
           transposeHelper={scannerTable}
         />
-      ) : null}
+      ) : open ? emptyMessage : null}
     </section>
   );
 }
