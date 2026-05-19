@@ -90,6 +90,20 @@ While the position remains open, the stop trails upward with VWAP:
 stop_price = max(previous_stop_price, last_vwap - (last_vwap * vwap_stop_offset_pct / 100))
 ```
 
+## Partial Fill Remainders
+
+When the backtest partially fills a v9 order, v9 submits the remaining quantity
+on the next strategy step as an aggressive limit order:
+
+```text
+BUY remainder:  limit_price = max(current_open, bid) + partial_fill_reprice_offset
+SELL remainder: limit_price = min(current_open, ask) - partial_fill_reprice_offset
+```
+
+The default `partial_fill_reprice_offset` is `0.01`. These remainder orders are
+intended to cross the current open in the backtest and complete the rest of the
+original order.
+
 ## Exit
 
 Main exit has priority:

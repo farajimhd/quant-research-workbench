@@ -105,7 +105,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
 
         requests: list[OrderRequest] = []
         active_pending_orders = [order for order in pending_orders if order.status == "OPEN"]
-        requests.extend(self._exit_requests(context, portfolio, active_pending_orders))
+        requests.extend(self._partial_residual_requests(context, portfolio))
+        current_bar_residual_symbols = {request.symbol for request in requests}
+        requests.extend(self._exit_requests(context, portfolio, active_pending_orders, current_bar_residual_symbols))
 
         rows = self._scanner_rows(context, portfolio, active_pending_orders)
         immediate_candidates = [row for row in rows if row.get("long_momentum_v9_immediate_entry_open")]
@@ -158,6 +160,79 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             )
         self._record_watchlist_snapshot(context, portfolio)
         return requests
+
+    def _partial_residual_requests(self, context: BarContext, portfolio: Portfolio) -> list[OrderRequest]:
+        requests: list[OrderRequest] = []
+        for fill in context.recent_fills:
+            remaining = self._partial_remaining(fill.get("tag"))
+            if remaining <= 0:
+                continue
+            symbol = str(fill.get("symbol") or "").upper()
+            side = str(fill.get("side") or "").upper()
+            if not symbol or side not in {"BUY", "SELL"}:
+                continue
+            row = context.updates_by_symbol.get(symbol) or context.latest_by_symbol.get(symbol)
+            if row is None:
+                continue
+            quantity = remaining
+            if side == "SELL":
+                position = portfolio.positions.get(symbol)
+                if position is None:
+                    continue
+                quantity = min(remaining, position.quantity)
+            elif side == "BUY":
+                if portfolio.cash <= self.config.cash_buffer_dollars:
+                    continue
+            if quantity <= 0:
+                continue
+            limit_price = self._partial_residual_limit_price(side, row)
+            if limit_price <= 0:
+                continue
+            if side == "BUY":
+                quantity = min(quantity, self._cash_quantity(limit_price, max(0.0, portfolio.cash - self.config.cash_buffer_dollars)))
+                if quantity <= 0:
+                    continue
+            protective_stop_price = None
+            if side == "BUY" and symbol in portfolio.positions:
+                protective_stop_price = portfolio.positions[symbol].stop_price
+            requests.append(
+                OrderRequest(
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    order_type="LIMIT",
+                    reason=f"PARTIAL_{'ENTRY' if side == 'BUY' else 'EXIT'}_REST",
+                    limit_price=limit_price,
+                    allow_same_bar_fill=True,
+                    protective_stop_price=protective_stop_price,
+                    tag=(
+                        f"{'ENTRY' if side == 'BUY' else 'EXIT'}|reason=PARTIAL_{'ENTRY' if side == 'BUY' else 'EXIT'}_REST"
+                        f"|qty={quantity}|limit={limit_price:.2f}|offset={self.config.partial_fill_reprice_offset:.2f}"
+                        f"|source_fill={fill.get('fill_id')}"
+                    ),
+                )
+            )
+        return requests
+
+    def _partial_residual_limit_price(self, side: str, row: dict[str, Any]) -> float:
+        open_price = self._bar_open(row)
+        if open_price <= 0:
+            return 0.0
+        offset = max(0.0, self.config.partial_fill_reprice_offset)
+        if side == "BUY":
+            bid = self._first_positive(row, ("quote_bid_price", "last_quote_bid_price", "current_bid", "last_bid"))
+            reference = max(open_price, bid or open_price)
+            return reference + offset
+        ask = self._first_positive(row, ("quote_ask_price", "last_quote_ask_price", "current_ask", "last_ask"))
+        reference = min(open_price, ask or open_price)
+        return max(0.01, reference - offset)
+
+    def _first_positive(self, row: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+        for key in keys:
+            value = self._float(row.get(key))
+            if value > 0:
+                return value
+        return None
 
     def _validate_provider_columns(self, frame: pl.DataFrame) -> None:
         missing = [column for column in REQUIRED_V9_COLUMNS if column not in frame.columns]

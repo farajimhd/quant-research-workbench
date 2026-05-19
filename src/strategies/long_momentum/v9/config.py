@@ -21,6 +21,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     profit_giveback_exit_pct: float = 0.10
     tema9_exit_buffer_pct: float = -0.01
     vwap_stop_offset_pct: float = 3.0
+    partial_fill_reprice_offset: float = 0.01
 
     max_immediate_entry_candidates_per_bar: int = 50
     max_reentry_candidates_per_bar: int = 50

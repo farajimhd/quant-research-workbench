@@ -816,9 +816,11 @@ class BacktestEngine:
     def _partial_fill_quantity_limit(self, order: Order, bar: dict) -> int | None:
         if not self.config.enable_partial_fills:
             return None
-        if order.side == "BUY":
+        if order.reason in {"PARTIAL_ENTRY_REST", "PARTIAL_EXIT_REST"}:
+            return None
+        if order.side in {"BUY", "SELL"}:
             return self._max_allowable_entry_fill_quantity()
-        return self._max_fill_quantity(order, bar)
+        return None
 
     def _max_allowable_entry_fill_quantity(self) -> int | None:
         try:
@@ -852,7 +854,7 @@ class BacktestEngine:
         return int(number)
 
     def _tag_with_partial_fill(self, tag: str, requested_quantity: int, fill_quantity: int) -> str:
-        suffix = f"PARTIAL|requested={requested_quantity}|filled={fill_quantity}|remaining={requested_quantity - fill_quantity}|remaining_status=CANCELED"
+        suffix = f"PARTIAL|requested={requested_quantity}|filled={fill_quantity}|remaining={requested_quantity - fill_quantity}|remaining_status=STRATEGY_RESUBMIT"
         return f"{tag}|{suffix}" if tag else suffix
 
     def _apply_fee_to_order(self, order: Order, fee: FeeBreakdown) -> None:
