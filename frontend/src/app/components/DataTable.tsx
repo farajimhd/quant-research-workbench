@@ -132,6 +132,7 @@ type RowMenuState = {
 type DataTableProps = {
   backendQuery?: BackendQueryConfig;
   columns?: string[];
+  defaultFilterPreset?: DataTableFilterPreset;
   defaultSort?: SortState;
   empty?: string;
   filterPresets?: DataTableFilterPreset[];
@@ -162,7 +163,7 @@ const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean
 ];
 let backendQueryConditionSequence = 0;
 
-export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows.", filterPresets = [], isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title, transposeHelper = false }: DataTableProps) {
+export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultSort, empty = "No rows.", filterPresets = [], isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title, transposeHelper = false }: DataTableProps) {
   const resolvedColumns = useMemo(() => {
     if (columns?.length) return columns;
     return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -176,7 +177,9 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
   const [densityMode, setDensityMode] = useState<TableDensityMode>("compact");
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
   const [layoutMode, setLayoutMode] = useState<TableLayoutMode>("fit_data");
-  const [manualFiltersByColumn, setManualFiltersByColumn] = useState<Record<string, ColumnManualFilterState>>({});
+  const [manualFiltersByColumn, setManualFiltersByColumn] = useState<Record<string, ColumnManualFilterState>>(
+    () => filterPresetForColumns(defaultFilterPreset, resolvedColumns)
+  );
   const [openPopover, setOpenPopover] = useState<HeaderPopoverState | null>(null);
   const [rowMenu, setRowMenu] = useState<RowMenuState | null>(null);
   const [search, setSearch] = useState("");
@@ -372,10 +375,10 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
     setActiveValueFiltersByColumn({});
     setBackendQueryOpen(false);
     setColumnsSearch("");
-    setManualFiltersByColumn({});
+    setManualFiltersByColumn(filterPresetForColumns(defaultFilterPreset, resolvedColumns));
     setOpenPopover(null);
     setRowMenu(null);
-  }, [preserveFiltersOnDataChange, resolvedColumns, tableIdentityKey]);
+  }, [defaultFilterPreset, preserveFiltersOnDataChange, resolvedColumns, tableIdentityKey]);
 
   const toggleSort = (column: string) => {
     setSort((current) => {
@@ -404,12 +407,7 @@ export function DataTable({ backendQuery, columns, defaultSort, empty = "No rows
   };
 
   const applyFilterPreset = (preset: DataTableFilterPreset) => {
-    const validColumns = new Set(resolvedColumns);
-    const presetFilters = Object.fromEntries(
-      Object.entries(preset.filters)
-        .filter(([column]) => validColumns.has(column))
-        .map(([column, filter]) => [column, normalizeManualFilterPreset(filter)]),
-    );
+    const presetFilters = filterPresetForColumns(preset, resolvedColumns);
     if (!Object.keys(presetFilters).length) return;
     setManualFiltersByColumn((current) => ({ ...current, ...presetFilters }));
     setActiveValueFiltersByColumn((current) => {
@@ -1991,6 +1989,16 @@ function normalizeManualFilterPreset(filter: DataTableManualFilterState): Column
     valueText: filter.valueText ?? "",
     valueTextSecondary: filter.valueTextSecondary ?? "",
   };
+}
+
+function filterPresetForColumns(preset: DataTableFilterPreset | undefined, columns: string[]): Record<string, ColumnManualFilterState> {
+  if (!preset) return {};
+  const validColumns = new Set(columns);
+  return Object.fromEntries(
+    Object.entries(preset.filters)
+      .filter(([column]) => validColumns.has(column))
+      .map(([column, filter]) => [column, normalizeManualFilterPreset(filter)]),
+  );
 }
 
 function buildNormalizedManualFilter(draft: ColumnManualFilterState): ColumnManualFilterState | null {

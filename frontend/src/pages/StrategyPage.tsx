@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type
 import ReactMarkdown from "react-markdown";
 
 import { api, query } from "../api/client";
-import { ChartPanel, type ChartCatalogItem, type ChartPayload } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartCatalogItem, type ChartPayload, type ChartReference } from "../app/components/ChartPanel";
 import { DataTable, type DataTableFilterPreset, type DataTableManualFilterState } from "../app/components/DataTable";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
@@ -1004,8 +1004,12 @@ function InteractiveStepDebugPanel({
     [rawRows, strategyScannerRows]
   );
   const actionRows = step?.observability_trace ?? [];
+  const [selectedDebugChart, setSelectedDebugChart] = useState<ObservationChartTarget | null>(null);
   return (
     <section className="panel backtest-results-panel interactive-debug-panel" style={{ marginTop: 16 }}>
+      {selectedDebugChart ? (
+        <DebugScannerRowChartModal config={config} onClose={() => setSelectedDebugChart(null)} target={selectedDebugChart} />
+      ) : null}
       <div className="toolbar" style={{ justifyContent: "space-between" }}>
         <div>
           <h2 className="backtest-results-title">Interactive Step Debug</h2>
@@ -1053,7 +1057,9 @@ function InteractiveStepDebugPanel({
       <div className="step-debug-detail">
         <ObservationEvidenceTable
           description="The exact rows passed to strategy.on_bar as context.updates, with strategy-calculated filter columns appended when available so toolbar presets can be compared on the same rows."
+          defaultFilterPreset={strategyFilterPresets?.[0]}
           filterPresets={strategyFilterPresets}
+          onOpenChart={setSelectedDebugChart}
           rows={rawRowsWithStrategyFilters}
           title="Scanner Raw Input"
         />
@@ -1064,7 +1070,9 @@ function InteractiveStepDebugPanel({
         />
         <ObservationEvidenceTable
           description="Rows produced by the strategy scanner for this bar, including strategy filter columns, ranks, scores, and entry state."
+          defaultFilterPreset={strategyFilterPresets?.[0]}
           filterPresets={strategyFilterPresets}
+          onOpenChart={setSelectedDebugChart}
           rows={strategyScannerRows}
           title="Scanner Snapshot"
         />
@@ -1131,6 +1139,128 @@ function InteractiveStepDebugPanel({
         />
       </div>
     </section>
+  );
+}
+
+function DebugScannerRowChartModal({
+  config,
+  onClose,
+  target,
+}: {
+  config: StrategyConfig;
+  onClose: () => void;
+  target: ObservationChartTarget;
+}) {
+  const symbol = target.symbol;
+  const sessionDate = rowText(target.row ?? {}, "session_date") || observationTargetMarketDate(target);
+  const processedRoot = config.processed_data_root;
+  const [timeframe, setTimeframe] = useState("1m");
+  const [payload, setPayload] = useState<ChartPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
+  const [customVisibleColumns, setCustomVisibleColumns] = useState(false);
+  const [period, setPeriod] = useState({ end: sessionDate, start: sessionDate });
+  const reference = useMemo<ChartReference | null>(() => selectedSymbolReference(target), [target]);
+  const displayItemsRequest = customVisibleColumns ? (visibleColumns.length ? visibleColumns.join(",") : CHART_DISPLAY_ITEMS_NONE) : undefined;
+  const displayItemsRequestKey = displayItemsRequest ?? "";
+  const periodBounds = useMemo(() => chartPayloadPeriodBounds(payload, sessionDate), [payload, sessionDate]);
+
+  useEffect(() => {
+    setPeriod({ end: sessionDate, start: sessionDate });
+    setCustomVisibleColumns(false);
+    setVisibleColumns([]);
+  }, [sessionDate, symbol]);
+
+  useEffect(() => {
+    if (!processedRoot || !sessionDate || !symbol || !timeframe) return;
+    let active = true;
+    setLoading(true);
+    setError("");
+    api<ChartPayload>(
+      `/api/market-data/chart${query({
+        display_items: displayItemsRequest,
+        marker_limit: 100,
+        processed_root: processedRoot,
+        session_date: sessionDate,
+        ticker: symbol,
+        timeframe,
+      })}`
+    )
+      .then((nextPayload) => {
+        if (!active) return;
+        setPayload(nextPayload);
+        if (!customVisibleColumns) setVisibleColumns(debugChartVisibleColumns(nextPayload));
+      })
+      .catch((err) => {
+        if (!active) return;
+        setPayload(null);
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [customVisibleColumns, displayItemsRequestKey, processedRoot, sessionDate, symbol, timeframe]);
+
+  function updatePeriod(start: string, end: string) {
+    setPeriod(start <= end ? { start, end } : { start: end, end: start });
+  }
+
+  const filteredPayload = useMemo(() => {
+    if (!payload) return null;
+    const candles = payload.candles.filter((candle) => candleInChartPeriod(candle, period.start, period.end));
+    const visibleTimes = new Set(candles.map((candle) => Number(candle.time)));
+    return {
+      ...payload,
+      candles,
+      markers: payload.markers.filter((marker) => visibleTimes.has(Number(marker.time))),
+      overlay_series: payload.overlay_series.map((series) => ({ ...series, data: series.data.filter((point) => visibleTimes.has(Number(point.time))) })),
+      oscillator_series: payload.oscillator_series.map((series) => ({ ...series, data: series.data.filter((point) => visibleTimes.has(Number(point.time))) })),
+      price_zones: (payload.price_zones ?? []).filter((zone) => candles.some((candle) => candle.time >= zone.start && candle.time <= zone.end)),
+      volume: payload.volume.filter((point) => visibleTimes.has(Number(point.time))),
+    };
+  }, [payload, period.end, period.start]);
+
+  return (
+    <Modal className="chart-context-modal-panel" onClose={onClose} title={`${symbol || "Scanner Row"} Chart`}>
+      <ChartPanel
+        displayItemOptions={payload?.options?.display_items ?? []}
+        emptyMessage={symbol ? `No provider chart data found for ${symbol} on ${sessionDate}.` : "This row does not include a ticker."}
+        errorMessage={error}
+        featureOptions={payload?.options?.feature_columns ?? []}
+        indicatorOptions={payload?.options?.standard_indicators ?? []}
+        labelOptions={payload?.options?.supervision_groups ?? []}
+        loading={loading}
+        normalizeTicker={false}
+        onPeriodChange={updatePeriod}
+        onTickerChange={() => undefined}
+        onTimeframeChange={setTimeframe}
+        onVisibleColumnsChange={(nextColumns) => {
+          setCustomVisibleColumns(true);
+          setVisibleColumns(nextColumns);
+        }}
+        onVisibleSupervisionGroupsChange={() => undefined}
+        payload={filteredPayload}
+        periodEnd={period.end || periodBounds.end}
+        periodMax={periodBounds.max}
+        periodMin={periodBounds.min}
+        periodStart={period.start || periodBounds.start}
+        reference={reference}
+        showIndicatorControls
+        showReferenceLine
+        showSupervisionControls={false}
+        ticker={symbol || "Scanner"}
+        tickerInputWidth={112}
+        tickerMaxLength={16}
+        timeframe={timeframe}
+        timeframes={["1m", "5m"]}
+        visibleColumns={visibleColumns}
+        visibleSupervisionGroups={[]}
+      />
+    </Modal>
   );
 }
 
@@ -1938,6 +2068,7 @@ function ObservationFieldGroup({ fields, title }: { fields: ObservationFieldValu
 
 function ObservationEvidenceTable({
   collapsible = false,
+  defaultFilterPreset,
   description,
   filterPresets,
   onOpenChart,
@@ -1946,6 +2077,7 @@ function ObservationEvidenceTable({
   title,
 }: {
   collapsible?: boolean;
+  defaultFilterPreset?: DataTableFilterPreset;
   description?: string;
   filterPresets?: DataTableFilterPreset[];
   onOpenChart?: (target: ObservationChartTarget) => void;
@@ -1955,6 +2087,7 @@ function ObservationEvidenceTable({
 }) {
   const [open, setOpen] = useState(false);
   const scannerTable = title === "Scanner Snapshot";
+  const chartableTable = Boolean(onOpenChart) && (scannerTable || title === "Scanner Raw Input");
   const displayRows = scannerTable ? sortScannerSnapshotRows(rows) : rows;
   const scannerColumns = scannerTable ? scannerSnapshotColumns(displayRows) : undefined;
   const scannerSort = scannerTable && scannerColumns?.includes("rank") ? { column: "rank", direction: "asc" as const } : undefined;
@@ -1975,9 +2108,10 @@ function ObservationEvidenceTable({
         ) : (
           <DataTable
             columns={scannerColumns}
+            defaultFilterPreset={defaultFilterPreset}
             defaultSort={scannerSort}
             filterPresets={tableFilterPresets}
-            onRowClick={scannerTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
+            onRowClick={chartableTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
             rows={displayRows}
             transposeHelper={scannerTable}
           />
@@ -1998,9 +2132,10 @@ function ObservationEvidenceTable({
       {open ? (
         <DataTable
           columns={scannerColumns}
+          defaultFilterPreset={defaultFilterPreset}
           defaultSort={scannerSort}
           filterPresets={tableFilterPresets}
-          onRowClick={scannerTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
+          onRowClick={chartableTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
           rows={displayRows}
           transposeHelper={scannerTable}
         />
@@ -3765,6 +3900,17 @@ function strategyVisibleColumns(chartPayload: ChartPayload | null, payload: RunS
   return configured.length ? configured : Array.from(new Set(available));
 }
 
+function debugChartVisibleColumns(payload: ChartPayload | null | undefined) {
+  const volumeProfileAvailable = Boolean(payload?.volume?.length) && Boolean(payload?.options?.display_items?.some((item) => item.id === VOLUME_PROFILE_DISPLAY_ITEM));
+  return Array.from(new Set([
+    ...(payload?.overlay_series ?? []).map((series) => String(series.displayItemId ?? series.column ?? "")),
+    ...(payload?.oscillator_series ?? []).map((series) => String(series.displayItemId ?? series.column ?? "")),
+    ...(payload?.markers ?? []).map((marker) => String(marker.displayItemId ?? "")),
+    ...(payload?.price_zones ?? []).map((zone) => String(zone.displayItemId ?? "")),
+    ...(volumeProfileAvailable ? [VOLUME_PROFILE_DISPLAY_ITEM] : []),
+  ].filter(Boolean)));
+}
+
 function tradeEntryLabel(trade: DataRow, quantity: number | null, entryPrice: number) {
   const reason = String(trade.entry_reason ?? trade.reason ?? "Entry").trim();
   const size = quantity ? `${formatNumber(quantity)}` : "";
@@ -3836,7 +3982,7 @@ function observationActionChartTarget(action: ObservabilityAction): ObservationC
 
 function scannerRowChartTarget(row: DataRow): ObservationChartTarget | null {
   const symbol = normalizedTicker(rowText(row, "ticker") || rowText(row, "candidate_ticker") || rowText(row, "symbol"));
-  const timestamp = rowText(row, "timestamp") || rowText(row, "candidate_timestamp");
+  const timestamp = rowText(row, "timestamp") || rowText(row, "candidate_timestamp") || rowText(row, "bar_time_market");
   if (!symbol || !timestamp) return null;
   const rank = rowText(row, "rank") || rowText(row, "live_rank") || rowText(row, "setup_rank");
   const scoreKey = rowText(row, "score_key") || "score";
@@ -3938,6 +4084,16 @@ function symbolChartPeriodBounds(payload: RunSymbolChartPayload | null | undefin
   if (!timestamps.length) return { end: "", max: "", min: "", start: "" };
   const dates = timestamps.map(dateStringFromTimestamp).filter(Boolean).sort();
   const min = dates[0] ?? "";
+  const max = dates[dates.length - 1] ?? min;
+  const selectedInRange = selectedDay && selectedDay >= min && selectedDay <= max;
+  return { end: selectedInRange ? selectedDay : max, max, min, start: selectedInRange ? selectedDay : min };
+}
+
+function chartPayloadPeriodBounds(payload: ChartPayload | null | undefined, selectedDay = "") {
+  const timestamps = (payload?.candles ?? []).map((candle) => Number(candle.time)).filter(Number.isFinite);
+  if (!timestamps.length) return { end: selectedDay, max: selectedDay, min: selectedDay, start: selectedDay };
+  const dates = timestamps.map(dateStringFromTimestamp).filter(Boolean).sort();
+  const min = dates[0] ?? selectedDay;
   const max = dates[dates.length - 1] ?? min;
   const selectedInRange = selectedDay && selectedDay >= min && selectedDay <= max;
   return { end: selectedInRange ? selectedDay : max, max, min, start: selectedInRange ? selectedDay : min };
