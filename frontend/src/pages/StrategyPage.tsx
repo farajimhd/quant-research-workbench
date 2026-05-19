@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartCatalogItem, type ChartPayload } from "../app/components/ChartPanel";
-import { DataTable, type DataTableFilterPreset } from "../app/components/DataTable";
+import { DataTable, type DataTableFilterPreset, type DataTableManualFilterState } from "../app/components/DataTable";
 import { Modal } from "../app/components/Modal";
 import { PageIntro } from "../app/components/PageIntro";
 import { ProgressMeter } from "../app/components/Progress";
@@ -184,6 +184,31 @@ const BACKTEST_RESULT_TABS = ["Backtest Results", "Observability", "Daily", "Tra
 
 function scannerBooleanFilters(columns: string[]): DataTableFilterPreset["filters"] {
   return Object.fromEntries(columns.map((column) => [column, { operator: "eq", presetLabel: "Is true", valueText: "true" }]));
+}
+
+function trueFilter(): DataTableManualFilterState {
+  return { operator: "eq", presetLabel: "Is true", valueText: "true" };
+}
+
+function gteFilter(value: unknown, label?: string): DataTableManualFilterState {
+  const valueText = String(value ?? 0);
+  return { operator: "gte", presetLabel: label ?? `>= ${valueText}`, valueText };
+}
+
+function gtFilter(value: unknown, label?: string): DataTableManualFilterState {
+  const valueText = String(value ?? 0);
+  return { operator: "gt", presetLabel: label ?? `> ${valueText}`, valueText };
+}
+
+function lteFilter(value: unknown, label?: string): DataTableManualFilterState {
+  const valueText = String(value ?? 0);
+  return { operator: "lte", presetLabel: label ?? `<= ${valueText}`, valueText };
+}
+
+function betweenFilter(minValue: unknown, maxValue: unknown, label?: string): DataTableManualFilterState {
+  const valueText = String(minValue ?? 0);
+  const valueTextSecondary = String(maxValue ?? 0);
+  return { operator: "between", presetLabel: label ?? `${valueText}-${valueTextSecondary}`, valueText, valueTextSecondary };
 }
 
 const tabs = ["Backtest", "Runs", "Strategy README"];
@@ -971,8 +996,13 @@ function InteractiveStepDebugPanel({
   const complete = session.status === "complete" || step?.type === "complete";
   const canGoPrevious = session.current_step_index > 0;
   const parameters = useMemo(() => interactiveDebugParameterRows(session.config, config.strategy_params), [config.strategy_params, session.config]);
+  const strategyFilterPresets = useMemo(() => interactiveDebugFilterPresets(config), [config]);
   const rawRows = step?.raw_scanner_rows ?? [];
   const strategyScannerRows = step?.strategy_scanner_rows ?? [];
+  const rawRowsWithStrategyFilters = useMemo(
+    () => mergeRawRowsWithStrategyFilters(rawRows, strategyScannerRows),
+    [rawRows, strategyScannerRows]
+  );
   const actionRows = step?.observability_trace ?? [];
   return (
     <section className="panel backtest-results-panel interactive-debug-panel" style={{ marginTop: 16 }}>
@@ -1022,8 +1052,9 @@ function InteractiveStepDebugPanel({
 
       <div className="step-debug-detail">
         <ObservationEvidenceTable
-          description="The exact rows passed to strategy.on_bar as context.updates. These are the scanner-time inputs before the strategy decides."
-          rows={rawRows}
+          description="The exact rows passed to strategy.on_bar as context.updates, with strategy-calculated filter columns appended when available so toolbar presets can be compared on the same rows."
+          filterPresets={strategyFilterPresets}
+          rows={rawRowsWithStrategyFilters}
           title="Scanner Raw Input"
         />
         <ObservationEvidenceTable
@@ -1033,6 +1064,7 @@ function InteractiveStepDebugPanel({
         />
         <ObservationEvidenceTable
           description="Rows produced by the strategy scanner for this bar, including strategy filter columns, ranks, scores, and entry state."
+          filterPresets={strategyFilterPresets}
           rows={strategyScannerRows}
           title="Scanner Snapshot"
         />
@@ -1907,6 +1939,7 @@ function ObservationFieldGroup({ fields, title }: { fields: ObservationFieldValu
 function ObservationEvidenceTable({
   collapsible = false,
   description,
+  filterPresets,
   onOpenChart,
   presentation = "table",
   rows,
@@ -1914,6 +1947,7 @@ function ObservationEvidenceTable({
 }: {
   collapsible?: boolean;
   description?: string;
+  filterPresets?: DataTableFilterPreset[];
   onOpenChart?: (target: ObservationChartTarget) => void;
   presentation?: "cards" | "table";
   rows: DataRow[];
@@ -1924,6 +1958,7 @@ function ObservationEvidenceTable({
   const displayRows = scannerTable ? sortScannerSnapshotRows(rows) : rows;
   const scannerColumns = scannerTable ? scannerSnapshotColumns(displayRows) : undefined;
   const scannerSort = scannerTable && scannerColumns?.includes("rank") ? { column: "rank", direction: "asc" as const } : undefined;
+  const tableFilterPresets = filterPresets ?? (scannerTable ? OBSERVABILITY_SCANNER_FILTER_PRESETS : undefined);
   if (!displayRows.length) return null;
   if (!collapsible) {
     return (
@@ -1941,7 +1976,7 @@ function ObservationEvidenceTable({
           <DataTable
             columns={scannerColumns}
             defaultSort={scannerSort}
-            filterPresets={scannerTable ? OBSERVABILITY_SCANNER_FILTER_PRESETS : undefined}
+            filterPresets={tableFilterPresets}
             onRowClick={scannerTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
             rows={displayRows}
             transposeHelper={scannerTable}
@@ -1964,7 +1999,7 @@ function ObservationEvidenceTable({
         <DataTable
           columns={scannerColumns}
           defaultSort={scannerSort}
-          filterPresets={scannerTable ? OBSERVABILITY_SCANNER_FILTER_PRESETS : undefined}
+          filterPresets={tableFilterPresets}
           onRowClick={scannerTable && onOpenChart ? (row) => openScannerRowChart(row, onOpenChart) : undefined}
           rows={displayRows}
           transposeHelper={scannerTable}
@@ -2359,6 +2394,215 @@ function interactiveDebugParameterRows(config: Record<string, unknown>, currentS
       .map(([key, value]) => ({ group: "Backtest", parameter: key, value: normalizeObservationTableValue(value) })),
     ...Object.entries(strategyParams).map(([key, value]) => ({ group: "Strategy", parameter: key, value: normalizeObservationTableValue(value) })),
   ];
+}
+
+function mergeRawRowsWithStrategyFilters(rawRows: DataRow[], strategyRows: DataRow[]): DataRow[] {
+  if (!rawRows.length || !strategyRows.length) return rawRows;
+  const strategyByTicker = new Map<string, DataRow>();
+  strategyRows.forEach((row) => {
+    const ticker = normalizedTicker(rowText(row, "ticker") || rowText(row, "symbol"));
+    if (ticker && !strategyByTicker.has(ticker)) strategyByTicker.set(ticker, row);
+  });
+  return rawRows.map((rawRow) => {
+    const ticker = normalizedTicker(rowText(rawRow, "ticker") || rowText(rawRow, "symbol"));
+    const strategyRow = strategyByTicker.get(ticker);
+    if (!strategyRow) return rawRow;
+    const merged: DataRow = { ...rawRow };
+    Object.entries(strategyRow).forEach(([key, value]) => {
+      if (key in merged) return;
+      merged[key] = value;
+    });
+    return merged;
+  });
+}
+
+function interactiveDebugFilterPresets(config: StrategyConfig): DataTableFilterPreset[] | undefined {
+  if (config.strategy_name !== "long_momentum") return undefined;
+  const params = config.strategy_params ?? {};
+  const version = String(config.strategy_version || "").toLowerCase();
+  const minPrice = strategyNumberParam(params, "min_price", 1);
+  const maxPrice = strategyNumberParam(params, "max_price", 10);
+  const minVolume = strategyNumberParam(params, "min_volume", 10_000);
+  const minTransactions = strategyNumberParam(params, "min_transactions", 100);
+  const minMacdHistZ = strategyNumberParam(params, "min_macd_hist_z_since_open", 0.1);
+  const minRecentDollarVolume = strategyNumberParam(params, "min_recent_dollar_volume_5", 100_000);
+  const maxSpreadBpsAbs = strategyNumberParam(params, "max_spread_bps_abs", 100);
+  const maxSpreadBpsMax = strategyNumberParam(params, "max_spread_bps_max", 150);
+  const minQuoteValidRatio = strategyNumberParam(params, "min_quote_valid_ratio", 0.8);
+  const maxLockedOrCrossedCount = strategyNumberParam(params, "max_locked_or_crossed_count", 0);
+  const base: DataTableFilterPreset[] = [
+    {
+      filters: { last_close: betweenFilter(minPrice, maxPrice) },
+      label: `${version} Price`,
+      title: `Apply ${version} price range from the active strategy parameters.`,
+    },
+    {
+      filters: {
+        last_volume: gteFilter(minVolume),
+        last_transactions: gteFilter(minTransactions),
+      },
+      label: `${version} Activity`,
+      title: `Apply ${version} volume and transaction filters.`,
+    },
+  ];
+
+  if (["v1"].includes(version)) {
+    return [
+      ...base,
+      {
+        filters: {
+          current_open_above_last_body_high: trueFilter(),
+          last_tema_open: trueFilter(),
+          last_macd_line: gtFilter(0, "Positive"),
+          last_macd_hist_z_since_open: gteFilter(minMacdHistZ),
+        },
+        label: "v1 Momentum",
+        title: "Apply the v1 body-break, TEMA, and MACD filters.",
+      },
+      { filters: { long_momentum_spread_ok: trueFilter() }, label: "v1 Spread", title: "Apply the v1 spread gate." },
+      { filters: { entry_open: trueFilter(), long_momentum_entry_open: trueFilter() }, label: "v1 Entry Open", title: "Show rows that pass the v1 entry signal." },
+    ];
+  }
+
+  if (["v2", "v3", "v7"].includes(version)) {
+    const filters: DataTableFilterPreset[] = [
+      ...base,
+      {
+        filters: { current_open_above_last_body_high: trueFilter() },
+        label: `${version} Body Break`,
+        title: `Apply the ${version} current-open body/high break filter.`,
+      },
+      {
+        filters: {
+          last_tema_open: trueFilter(),
+          last_macd_line: gtFilter(0, "Positive"),
+          last_macd_hist_z_since_open: gteFilter(minMacdHistZ),
+        },
+        label: `${version} Momentum`,
+        title: `Apply ${version} TEMA and MACD filters.`,
+      },
+      {
+        filters: {
+          long_momentum_spread_ok: trueFilter(),
+          last_recent_dollar_volume_5: gteFilter(minRecentDollarVolume),
+          last_spread_bps_abs: lteFilter(maxSpreadBpsAbs),
+          last_spread_bps_max: lteFilter(maxSpreadBpsMax),
+          last_quote_valid_ratio: gteFilter(minQuoteValidRatio),
+          last_locked_or_crossed_count: lteFilter(maxLockedOrCrossedCount),
+        },
+        label: `${version} Liquidity`,
+        title: `Apply ${version} spread, quote-quality, and recent dollar-volume filters.`,
+      },
+    ];
+    if (version === "v3" || version === "v7") {
+      filters.push({
+        filters: { last_close_location: gteFilter(strategyNumberParam(params, "min_close_location", 0.55)) },
+        label: `${version} Close Quality`,
+        title: `Apply the ${version} close-location filter.`,
+      });
+    }
+    filters.push({
+      filters: { entry_open: trueFilter(), long_momentum_entry_open: trueFilter() },
+      label: `${version} Entry Open`,
+      title: `Show rows that pass the ${version} entry signal.`,
+    });
+    return filters;
+  }
+
+  if (version === "v4") {
+    return [
+      ...base,
+      {
+        filters: {
+          long_momentum_setup_price_ok: trueFilter(),
+          long_momentum_setup_activity_ok: trueFilter(),
+          long_momentum_setup_quote_ok: trueFilter(),
+          long_momentum_setup_trend_ok: trueFilter(),
+          long_momentum_setup_exhaustion_ok: trueFilter(),
+        },
+        label: "v4 Setup Groups",
+        title: "Apply the v4 setup price, activity, quote, trend, and exhaustion groups.",
+      },
+      { filters: { long_momentum_setup_open: trueFilter() }, label: "v4 Setup Open", title: "Show rows that pass the v4 setup gate." },
+      { filters: { long_momentum_v4_body_break_entry_open: trueFilter() }, label: "v4 Body Break", title: "Apply v4 Entry Trigger 1: Earlier Body Break." },
+      { filters: { long_momentum_v4_pullback_reclaim_entry_open: trueFilter() }, label: "v4 Pullback", title: "Apply v4 Entry Trigger 2: Pullback/Reclaim." },
+      { filters: { long_momentum_v4_entry_open: trueFilter(), long_momentum_entry_open: trueFilter() }, label: "v4 Entry Open", title: "Show rows that pass either v4 entry trigger." },
+    ];
+  }
+
+  if (version === "v5") {
+    return [
+      ...base,
+      OBSERVABILITY_SCANNER_SETUP_FILTER_PRESET,
+      OBSERVABILITY_SCANNER_EARLY_MOVE_FILTER_PRESET,
+      {
+        filters: {
+          long_momentum_v5_trend_quality_ok: trueFilter(),
+          long_momentum_v5_volume_expansion_ok: trueFilter(),
+          long_momentum_v5_early_move_ok: trueFilter(),
+          long_momentum_v5_day_high_position_ok: trueFilter(),
+        },
+        label: "v5 Composite",
+        title: "Apply the v5 composite trend, volume, early-move, and day-high-position filters.",
+      },
+      { filters: { long_momentum_v5_setup_open: trueFilter() }, label: "v5 Setup Open", title: "Show rows that pass the v5 setup gate." },
+      { filters: { long_momentum_v5_early_uptrend_entry_open: trueFilter() }, label: "v5 Trigger", title: "Apply the v5 early-uptrend body-break trigger." },
+      { filters: { long_momentum_v5_entry_open: trueFilter(), long_momentum_entry_open: trueFilter() }, label: "v5 Entry Open", title: "Show rows that pass the v5 entry signal." },
+    ];
+  }
+
+  if (version === "v6") {
+    const maxDrawdown = strategyNumberParam(params, "max_oracle_drawdown_before_best", 0.05);
+    return [
+      {
+        filters: {
+          oracle_long_enter_signal: trueFilter(),
+          oracle_entry_score: gteFilter(strategyNumberParam(params, "min_oracle_entry_score", 0.7)),
+          oracle_expected_profit: gteFilter(strategyNumberParam(params, "min_oracle_expected_profit", 0.01)),
+          oracle_drawdown_before_best: gteFilter(-Math.abs(maxDrawdown), `>= -${Math.abs(maxDrawdown)}`),
+        },
+        label: "v6 Oracle Entry",
+        title: "Apply the v6 oracle long-enter, score, profit, and drawdown filters.",
+      },
+      { filters: { entry_open: trueFilter() }, label: "v6 Entry Open", title: "Show rows that pass the v6 oracle entry signal." },
+    ];
+  }
+
+  if (version === "v8") {
+    return [
+      ...base,
+      {
+        filters: {
+          long_momentum_v8_shock_watch_active: trueFilter(),
+          long_momentum_v8_shock_confirmation_seen: trueFilter(),
+        },
+        label: "v8 Watch",
+        title: "Apply the v8 active shock-watch and confirmation filters.",
+      },
+      { filters: { long_momentum_v8_liquidity_ok: trueFilter() }, label: "v8 Liquidity", title: "Apply the v8 liquidity-ramp filter." },
+      { filters: { long_momentum_v8_price_acceptance_ok: trueFilter() }, label: "v8 Acceptance", title: "Apply the v8 VWAP/midpoint price-acceptance filter." },
+      { filters: { long_momentum_v8_trend_ok: trueFilter() }, label: "v8 Trend", title: "Apply the v8 TEMA/MACD trend filter." },
+      {
+        filters: {
+          long_momentum_v8_entry_time_ok: trueFilter(),
+          long_momentum_v8_entry_limit_ok: trueFilter(),
+          long_momentum_v8_entry_trigger: trueFilter(),
+          long_momentum_v8_initial_risk_pct: lteFilter(strategyNumberParam(params, "max_initial_risk_pct", 0.12)),
+          long_momentum_v8_score: gteFilter(strategyNumberParam(params, "min_entry_score", 0.65)),
+        },
+        label: "v8 Trigger/Risk",
+        title: "Apply the v8 time, limit, trigger, risk, and score filters.",
+      },
+      { filters: { long_momentum_v8_entry_open: trueFilter(), long_momentum_entry_open: trueFilter() }, label: "v8 Entry Open", title: "Show rows that pass the v8 entry signal." },
+    ];
+  }
+
+  return OBSERVABILITY_SCANNER_FILTER_PRESETS;
+}
+
+function strategyNumberParam(params: Record<string, StrategyParamValue>, key: string, fallback: number): number {
+  const value = Number(params[key]);
+  return Number.isFinite(value) ? value : fallback;
 }
 
 function debugStepTitle(step: InteractiveDebugStep | null): string {
