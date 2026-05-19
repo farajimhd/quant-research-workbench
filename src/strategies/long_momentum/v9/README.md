@@ -30,32 +30,30 @@ completed-bar inputs, `last_5m_return` at the current open is always based on
 the previous completed candle. It never uses prior-session prices or future
 bars.
 
-## First Entry
+## Watchlist VWAP Entry
 
-First Entry has higher priority than watchlist reentry. A ticker that is already
-in the day watchlist and has not had its first entry submitted today can enter
-when all main entry rules are true:
+A ticker that is already in the day momentum watchlist can enter when all entry
+rules are true:
 
-- `last_5m_return >= min_last_5m_return`
-- `last_transactions >= min_first_entry_transactions`
-- `last_transactions_vs_prior_3 >= min_first_entry_transactions_vs_prior_3`
+- there is no open position or pending order for the ticker
+- the current minute is inside the configured trading window
+- `min_price <= last_close <= max_price`
+- `last_close > last_vwap`
 
-The price range is an eligibility parameter, not a main entry trigger.
-`min_first_entry_transactions` and
-`min_first_entry_transactions_vs_prior_3` are calibrated for 1-minute bars; they
-may not hold for other timeframes without retuning.
+The 5-minute return and transaction threshold are used only to add the ticker to
+the watchlist. Once the ticker is in the watchlist, the entry gate is the VWAP
+cross.
 
-If multiple First Entry candidates appear on the same bar, v9 splits available
-cash equally across them and submits them at the same current open.
+If multiple watchlist VWAP entry candidates appear on the same bar, v9 splits
+available cash equally across them and submits them at the same current open.
 
-## First Entry Sizing And Stop
+## Watchlist VWAP Entry Sizing And Stop
 
-First Entry uses the previous candle open as the stop reference:
+Watchlist VWAP entry uses a stop slightly below VWAP:
 
 ```text
 entry_price = current_open
-stop_price = last_open
-risk_per_share = current_open - last_open
+stop_price = last_vwap * (1 - vwap_stop_buffer_pct)
 ```
 
 If `risk_per_share <= 0`, the entry is skipped.
@@ -69,16 +67,11 @@ cash_size = cash_slice / current_open
 quantity = floor(min(risk_size, cash_size))
 ```
 
-## Rotation
+While the position remains open, the stop trails upward with VWAP:
 
-If First Entry candidates appear while another position is already open:
-
-- if there is cash for the new First Entry group, keep the existing position and
-  enter the new candidates
-- if there is no cash for the new First Entry group, close existing positions at
-  the current open and enter the new First Entry candidates at the current open
-
-Watchlist reentries never force rotation.
+```text
+stop_price = max(previous_stop_price, last_vwap * (1 - vwap_stop_buffer_pct))
+```
 
 ## Exit
 
@@ -99,27 +92,5 @@ TEMA close
 
 If no main exit is active and TEMA is closed, v9 exits at the current open.
 
-## Watchlist Reentry
-
-After exit, the ticker stays in the day momentum watchlist. The watchlist tracks
-`max_vwap`, the highest completed-bar VWAP seen since the ticker joined the
-watchlist.
-
-Reentry is lower priority than First Entry and is allowed when:
-
-- the ticker had its first entry submitted today
-- there is no open position for the ticker
-- `last_close > max_vwap`
-- `last_tema_open` is true
-
-Reentry stop:
-
-```text
-stop_price = last_vwap * (1 - vwap_stop_buffer_pct)
-```
-
-While a reentry position remains open, the stop trails upward with VWAP:
-
-```text
-stop_price = max(previous_stop_price, last_vwap * (1 - vwap_stop_buffer_pct))
-```
+After exit, the ticker stays in the day momentum watchlist and the same VWAP
+entry rule can open another position later in the session.
