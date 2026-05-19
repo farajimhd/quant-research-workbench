@@ -1075,8 +1075,7 @@ def start_build(payload: BuildSubmit) -> dict[str, Any]:
     )
 
 
-@app.post("/api/market-data/build/long-momentum-v4/jobs")
-def start_long_momentum_v4_build(payload: BuildSubmit) -> dict[str, Any]:
+def submit_long_momentum_v9_feature_build(payload: BuildSubmit) -> dict[str, Any]:
     build_start = build_start_with_reference_warmup(payload.start_date, payload.end_date)
     request = BuildRequest(
         raw_root=Path(payload.raw_root),
@@ -1091,12 +1090,22 @@ def start_long_momentum_v4_build(payload: BuildSubmit) -> dict[str, Any]:
         tickers=None,
         resume_stage="force_stateful_features",
     )
-    request.build_name = f"long_momentum_v4_features_{payload.start_date.isoformat()}_{payload.end_date.isoformat()}"
+    request.build_name = f"long_momentum_v9_features_{payload.start_date.isoformat()}_{payload.end_date.isoformat()}"
     return submit_build_job(
         request,
         session_workers=payload.session_workers,
         polars_threads=payload.polars_threads,
     )
+
+
+@app.post("/api/market-data/build/long-momentum-v9/jobs")
+def start_long_momentum_v9_build(payload: BuildSubmit) -> dict[str, Any]:
+    return submit_long_momentum_v9_feature_build(payload)
+
+
+@app.post("/api/market-data/build/long-momentum-v4/jobs")
+def start_long_momentum_v4_build(payload: BuildSubmit) -> dict[str, Any]:
+    return submit_long_momentum_v9_feature_build(payload)
 
 
 @app.post("/api/market-data/build/oracle-supervision/jobs")
