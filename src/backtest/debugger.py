@@ -404,6 +404,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._gt_check(row, "last_close", self._number(row, "last_vwap") or 0.0),
                     self._gte_check(row, "last_close", self._number(row, "last_open") or 0.0),
                     self._lte_check(row, "last_bearish_volume_divergence_score", self._strategy_param("max_reentry_bvd_score", 50.0)),
+                    self._v9_tema_reentry_check(row),
                 ],
                 "Watchlist VWAP Entry Strategy State": [
                     self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
@@ -413,6 +414,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._gt_check(row, "long_momentum_v9_close_minus_vwap", 0.0),
                     self._bool_check(row, "long_momentum_v9_reentry_last_bar_not_red", True),
                     self._bool_check(row, "long_momentum_v9_reentry_bvd_ok", True),
+                    self._bool_check(row, "long_momentum_v9_reentry_tema_ok", True),
                 ],
                 "Exit": [
                     self._gt_check(row, "last_double_timeframe_bearish_volume_divergence_score", self._strategy_param("double_bvd_exit_score", 50.0)),
@@ -509,6 +511,19 @@ class StepBacktestDebugger(BacktestEngine):
             f"current_open_tema20={tema20}, threshold={threshold}",
             passed,
             f">= current_open_tema9 * (1 + {buffer_pct:g})",
+        )
+
+    def _v9_tema_reentry_check(self, row: dict) -> dict:
+        tema9 = self._number(row, "current_open_tema9")
+        tema20 = self._number(row, "current_open_tema20")
+        buffer_pct = self._strategy_param("tema9_exit_buffer_pct", -0.01)
+        threshold = tema9 * (1.0 + buffer_pct) if tema9 is not None else None
+        passed = tema20 is not None and threshold is not None and tema20 < threshold
+        return self._check(
+            "current_open_tema20_below_reentry_threshold",
+            f"current_open_tema20={tema20}, threshold={threshold}",
+            passed,
+            f"< current_open_tema9 * (1 + {buffer_pct:g})",
         )
 
     def _lte_check(self, row: dict, key: str, threshold: float, fallback_key: str | None = None) -> dict:

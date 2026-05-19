@@ -67,6 +67,17 @@ last_bearish_volume_divergence_score <= max_reentry_bvd_score
 The default `max_reentry_bvd_score` is `50.0`, so a 1-minute BVD score above
 50 blocks watchlist reentry. This does not block same-bar immediate First Entry.
 
+Watchlist VWAP reentry also requires the current-open TEMA stack to remain
+constructive using the same buffer as the TEMA exit, but with the inverse
+condition:
+
+```text
+current_open_tema20 < current_open_tema9 * (1 + tema9_exit_buffer_pct)
+```
+
+With the default `tema9_exit_buffer_pct = -0.01`, reentry is allowed only while
+current-open TEMA20 is still below 99% of current-open TEMA9.
+
 ## Entry Sizing And Stop
 
 Immediate entry uses the previous candle open as the stop reference:

@@ -2691,9 +2691,10 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
           long_momentum_v9_close_minus_vwap: gtFilter(0),
           long_momentum_v9_reentry_last_bar_not_red: trueFilter(),
           long_momentum_v9_reentry_bvd_ok: trueFilter(),
+          long_momentum_v9_reentry_tema_ok: trueFilter(),
         },
         label: "v9 Watchlist VWAP Entry",
-        title: "Apply the v9 watchlist entry gates: ticker is on watchlist, not held/pending, last close is above VWAP, the reclaim bar is not red, and 1m BVD is not above the threshold.",
+        title: "Apply the v9 watchlist entry gates: ticker is on watchlist, not held/pending, last close is above VWAP, the reclaim bar is not red, 1m BVD is not above the threshold, and current-open TEMA remains constructive.",
       },
       {
         filters: {
@@ -2897,6 +2898,8 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_reentry_last_bar_not_red",
   "long_momentum_v9_reentry_bvd_ok",
   "long_momentum_v9_reentry_bvd_score",
+  "long_momentum_v9_reentry_tema_ok",
+  "long_momentum_v9_reentry_tema_threshold",
   "long_momentum_v9_immediate_entry_open",
   "long_momentum_v9_reentry_open",
   "long_momentum_v9_entry_open",
