@@ -17,7 +17,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { type DragEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type MouseEvent, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { displayName, formatCell } from "../format";
@@ -130,6 +130,17 @@ type RowMenuState = {
   row: DataRow;
   top: number;
 };
+type ColumnOptionMeta = {
+  column: string;
+  label: string;
+  searchText: string;
+  typeLabel: string;
+};
+
+type ColumnOrderStorageKeys = {
+  legacy: string[];
+  primary: string;
+};
 
 type DataTableProps = {
   backendQuery?: BackendQueryConfig;
@@ -170,13 +181,14 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
     if (columns?.length) return columns;
     return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
   }, [columns, rows]);
-  const columnOrderStorageKey = useMemo(() => buildColumnOrderStorageKey(title, baseColumns), [baseColumns, title]);
+  const columnOrderStorageKeys = useMemo(() => buildColumnOrderStorageKeys(title, baseColumns), [baseColumns, title]);
 
   const [activeValueFiltersByColumn, setActiveValueFiltersByColumn] = useState<Record<string, string[]>>({});
   const [backendQueryOpen, setBackendQueryOpen] = useState(false);
   const [backendQueryDraft, setBackendQueryDraft] = useState<BackendTableQuery>(() => normalizeBackendQuery(backendQuery?.value));
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const [columnsSearch, setColumnsSearch] = useState("");
+  const deferredColumnsSearch = useDeferredValue(columnsSearch);
   const [columnOrder, setColumnOrder] = useState<string[]>([]);
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
@@ -197,23 +209,31 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
   const tableIdentityRef = useRef<string | null>(null);
 
   const profilesByColumn = useMemo<Record<string, ColumnProfile>>(() => {
-    return Object.fromEntries(resolvedColumns.map((column) => [column, buildColumnProfile(rows, column)]));
-  }, [resolvedColumns, rows]);
+    return Object.fromEntries(baseColumns.map((column) => [column, buildColumnProfile(rows, column)]));
+  }, [baseColumns, rows]);
 
-  const visibleColumns = resolvedColumns.filter((column) => !hiddenColumns.includes(column));
+  const hiddenColumnsSet = useMemo(() => new Set(hiddenColumns), [hiddenColumns]);
+  const visibleColumns = resolvedColumns.filter((column) => !hiddenColumnsSet.has(column));
   const usableColumns = visibleColumns.length ? visibleColumns : resolvedColumns.slice(0, 1);
+  const columnIndexByName = useMemo(() => Object.fromEntries(resolvedColumns.map((column, index) => [column, index])), [resolvedColumns]);
+  const columnOptionMetaByName = useMemo<Record<string, ColumnOptionMeta>>(() => {
+    return Object.fromEntries(
+      baseColumns.map((column) => {
+        const label = displayName(column);
+        const typeLabel = profilesByColumn[column]?.typeLabel ?? "Column";
+        return [column, { column, label, searchText: `${column} ${label} ${typeLabel}`.toLowerCase(), typeLabel }];
+      }),
+    );
+  }, [baseColumns, profilesByColumn]);
+  const orderedColumnOptions = useMemo(
+    () => resolvedColumns.map((column) => columnOptionMetaByName[column]).filter((item): item is ColumnOptionMeta => Boolean(item)),
+    [columnOptionMetaByName, resolvedColumns],
+  );
   const filteredColumnOptions = useMemo(() => {
-    const query = columnsSearch.trim().toLowerCase();
-    if (!query) return resolvedColumns;
-    return resolvedColumns.filter((column) => {
-      const profile = profilesByColumn[column];
-      return (
-        column.toLowerCase().includes(query) ||
-        displayName(column).toLowerCase().includes(query) ||
-        profile?.typeLabel.toLowerCase().includes(query)
-      );
-    });
-  }, [columnsSearch, profilesByColumn, resolvedColumns]);
+    const query = deferredColumnsSearch.trim().toLowerCase();
+    if (!query) return orderedColumnOptions;
+    return orderedColumnOptions.filter((item) => item.searchText.includes(query));
+  }, [deferredColumnsSearch, orderedColumnOptions]);
   const effectiveSort = sort ?? defaultSort ?? (resolvedColumns[0] ? { column: resolvedColumns[0], direction: "asc" as const } : null);
   const activeFilterCount =
     Object.values(activeValueFiltersByColumn).reduce((count, values) => count + values.length, 0) +
@@ -295,10 +315,10 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
   }, [backendQuery?.value]);
 
   useEffect(() => {
-    setColumnOrder(readColumnOrderPreference(columnOrderStorageKey, baseColumns));
+    setColumnOrder(readColumnOrderPreference(columnOrderStorageKeys, baseColumns));
     setDraggedColumn(null);
     setDragOverColumn(null);
-  }, [baseColumns, columnOrderStorageKey]);
+  }, [baseColumns, columnOrderStorageKeys]);
 
   useEffect(() => {
     if (!openPopover) return;
@@ -453,7 +473,7 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
   const saveColumnOrder = (nextOrder: string[]) => {
     const normalized = normalizeColumnOrder(nextOrder, baseColumns);
     setColumnOrder(normalized);
-    writeColumnOrderPreference(columnOrderStorageKey, normalized);
+    writeColumnOrderPreference(columnOrderStorageKeys.primary, normalized);
   };
 
   const moveColumnBefore = (sourceColumn: string, targetColumn: string) => {
@@ -482,7 +502,7 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
 
   const resetColumnOrder = () => {
     setColumnOrder([]);
-    removeColumnOrderPreference(columnOrderStorageKey);
+    removeColumnOrderPreference(columnOrderStorageKeys);
     setDraggedColumn(null);
     setDragOverColumn(null);
   };
@@ -619,10 +639,10 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
 
   const renderColumnToggles = () =>
     filteredColumnOptions.length ? (
-      filteredColumnOptions.map((column) => {
-        const visible = !hiddenColumns.includes(column);
-        const profile = profilesByColumn[column];
-        const columnIndex = resolvedColumns.indexOf(column);
+      filteredColumnOptions.map((option) => {
+        const column = option.column;
+        const visible = !hiddenColumnsSet.has(column);
+        const columnIndex = columnIndexByName[column] ?? -1;
         const className = [
           "data-table-column-toggle",
           visible ? "selected" : "",
@@ -650,11 +670,11 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
             <button className="data-table-column-toggle-visibility" onClick={() => toggleColumnVisibility(column)} type="button">
               <span className="data-table-column-toggle-mark">{visible ? <Check size={12} /> : null}</span>
               <span className="data-table-column-toggle-text">
-                <span>{displayName(column)}</span>
-                <small>{profile?.typeLabel ?? "Column"}</small>
+                <span>{option.label}</span>
+                <small>{option.typeLabel}</small>
               </span>
             </button>
-            <span className="data-table-column-order-buttons" aria-label={`Move ${displayName(column)}`}>
+            <span className="data-table-column-order-buttons" aria-label={`Move ${option.label}`}>
               <button
                 className="data-table-column-order-button"
                 disabled={columnIndex <= 0}
@@ -1252,13 +1272,23 @@ function buildTransposeView(rows: DataRow[], columns: string[]): TransposeView {
   };
 }
 
-function buildColumnOrderStorageKey(title: string | undefined, columns: string[]) {
-  const identity = JSON.stringify({
-    columns: [...columns].sort(),
-    path: typeof window === "undefined" ? "" : window.location.pathname,
-    title: (title ?? "").trim().toLowerCase() || "auto",
+function buildColumnOrderStorageKeys(title: string | undefined, columns: string[]): ColumnOrderStorageKeys {
+  const path = typeof window === "undefined" ? "" : window.location.pathname;
+  const titlePart = (title ?? "").trim().toLowerCase() || "auto";
+  const primaryIdentity = JSON.stringify({
+    anchorColumns: columns.slice(0, 8),
+    path,
+    title: titlePart,
   });
-  return `qrw.dataTable.columnOrder.${hashString(identity)}`;
+  const legacyIdentity = JSON.stringify({
+    columns: [...columns].sort(),
+    path,
+    title: titlePart,
+  });
+  return {
+    legacy: [`qrw.dataTable.columnOrder.${hashString(legacyIdentity)}`],
+    primary: `qrw.dataTable.columnOrder.${hashString(primaryIdentity)}`,
+  };
 }
 
 function applyColumnOrder(columns: string[], storedOrder: string[]) {
@@ -1276,14 +1306,25 @@ function normalizeColumnOrder(order: string[], columns: string[]) {
   return [...normalized, ...columns.filter((column) => !normalizedSet.has(column))];
 }
 
-function readColumnOrderPreference(storageKey: string, columns: string[]) {
+function readColumnOrderPreference(storageKeys: ColumnOrderStorageKeys, columns: string[]) {
   if (typeof window === "undefined") return [];
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]");
-    return Array.isArray(parsed) ? normalizeColumnOrder(parsed.filter((item): item is string => typeof item === "string"), columns) : [];
-  } catch {
-    return [];
+  for (const storageKey of [storageKeys.primary, ...storageKeys.legacy]) {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]");
+      const normalized = Array.isArray(parsed)
+        ? normalizeColumnOrder(parsed.filter((item): item is string => typeof item === "string"), columns)
+        : [];
+      if (normalized.length) {
+        if (storageKey !== storageKeys.primary) {
+          writeColumnOrderPreference(storageKeys.primary, normalized);
+        }
+        return normalized;
+      }
+    } catch {
+      // Column order is a convenience preference; ignore malformed stored values.
+    }
   }
+  return [];
 }
 
 function writeColumnOrderPreference(storageKey: string, order: string[]) {
@@ -1295,12 +1336,14 @@ function writeColumnOrderPreference(storageKey: string, order: string[]) {
   }
 }
 
-function removeColumnOrderPreference(storageKey: string) {
+function removeColumnOrderPreference(storageKeys: ColumnOrderStorageKeys) {
   if (typeof window === "undefined") return;
-  try {
-    window.localStorage.removeItem(storageKey);
-  } catch {
-    // Column order is a convenience preference; ignore storage failures.
+  for (const storageKey of [storageKeys.primary, ...storageKeys.legacy]) {
+    try {
+      window.localStorage.removeItem(storageKey);
+    } catch {
+      // Column order is a convenience preference; ignore storage failures.
+    }
   }
 }
 

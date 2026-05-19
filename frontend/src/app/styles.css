@@ -4483,8 +4483,8 @@ button {
 
 .data-table-columns-popover {
   top: calc(100% + 8px);
-  width: min(330px, calc(100vw - 32px));
-  max-height: min(480px, calc(100vh - 96px));
+  width: min(520px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 72px));
   overflow: hidden;
 }
 
@@ -4664,8 +4664,9 @@ button {
 }
 
 .data-table-columns-list {
-  max-height: 292px;
+  max-height: min(560px, calc(100vh - 230px));
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .data-table-columns-actions {
