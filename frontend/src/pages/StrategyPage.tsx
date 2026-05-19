@@ -2430,128 +2430,74 @@ function interactiveDebugFilterPresets(config: StrategyConfig): DataTableFilterP
   const maxSpreadBpsMax = strategyNumberParam(params, "max_spread_bps_max", 150);
   const minQuoteValidRatio = strategyNumberParam(params, "min_quote_valid_ratio", 0.8);
   const maxLockedOrCrossedCount = strategyNumberParam(params, "max_locked_or_crossed_count", 0);
-  const base: DataTableFilterPreset[] = [
-    {
-      filters: { last_close: betweenFilter(minPrice, maxPrice) },
-      label: `${version} Price`,
-      title: `Apply ${version} price range from the active strategy parameters.`,
-    },
-    {
-      filters: {
-        last_volume: gteFilter(minVolume),
-        last_transactions: gteFilter(minTransactions),
-      },
-      label: `${version} Activity`,
-      title: `Apply ${version} volume and transaction filters.`,
-    },
-  ];
+  const filters: DataTableFilterPreset["filters"] = {
+    last_close: betweenFilter(minPrice, maxPrice),
+    last_volume: gteFilter(minVolume),
+    last_transactions: gteFilter(minTransactions),
+  };
 
-  if (["v1"].includes(version)) {
-    return [
-      ...base,
-      {
-        filters: {
-          current_open_above_last_body_high: trueFilter(),
-          last_tema_open: trueFilter(),
-          last_macd_line: gtFilter(0, "Positive"),
-          last_macd_hist_z_since_open: gteFilter(minMacdHistZ),
-        },
-        label: "v1 Momentum",
-        title: "Apply the v1 body-break, TEMA, and MACD filters.",
-      },
-      { filters: { long_momentum_spread_ok: trueFilter() }, label: "v1 Spread", title: "Apply the v1 spread gate." },
-      { filters: { entry_open: trueFilter(), long_momentum_entry_open: trueFilter() }, label: "v1 Entry Open", title: "Show rows that pass the v1 entry signal." },
-    ];
-  }
-
-  if (["v2", "v3", "v7"].includes(version)) {
-    const filters: DataTableFilterPreset[] = [
-      ...base,
-      {
-        filters: { current_open_above_last_body_high: trueFilter() },
-        label: `${version} Body Break`,
-        title: `Apply the ${version} current-open body/high break filter.`,
-      },
-      {
-        filters: {
-          last_tema_open: trueFilter(),
-          last_macd_line: gtFilter(0, "Positive"),
-          last_macd_hist_z_since_open: gteFilter(minMacdHistZ),
-        },
-        label: `${version} Momentum`,
-        title: `Apply ${version} TEMA and MACD filters.`,
-      },
-      {
-        filters: {
-          long_momentum_spread_ok: trueFilter(),
-          last_recent_dollar_volume_5: gteFilter(minRecentDollarVolume),
-          last_spread_bps_abs: lteFilter(maxSpreadBpsAbs),
-          last_spread_bps_max: lteFilter(maxSpreadBpsMax),
-          last_quote_valid_ratio: gteFilter(minQuoteValidRatio),
-          last_locked_or_crossed_count: lteFilter(maxLockedOrCrossedCount),
-        },
-        label: `${version} Liquidity`,
-        title: `Apply ${version} spread, quote-quality, and recent dollar-volume filters.`,
-      },
-    ];
-    if (version === "v3" || version === "v7") {
-      filters.push({
-        filters: { last_close_location: gteFilter(strategyNumberParam(params, "min_close_location", 0.55)) },
-        label: `${version} Close Quality`,
-        title: `Apply the ${version} close-location filter.`,
-      });
-    }
-    filters.push({
-      filters: { entry_open: trueFilter(), long_momentum_entry_open: trueFilter() },
-      label: `${version} Entry Open`,
-      title: `Show rows that pass the ${version} entry signal.`,
+  if (version === "v1") {
+    Object.assign(filters, {
+      current_open_above_last_body_high: trueFilter(),
+      last_tema_open: trueFilter(),
+      last_macd_line: gtFilter(0, "Positive"),
+      last_macd_hist_z_since_open: gteFilter(minMacdHistZ),
+      long_momentum_spread_ok: trueFilter(),
+      long_momentum_entry_open: trueFilter(),
     });
-    return filters;
-  }
-
-  if (version === "v4") {
-    return [
-      ...base,
-      {
-        filters: {
-          long_momentum_setup_price_ok: trueFilter(),
-          long_momentum_setup_activity_ok: trueFilter(),
-          long_momentum_setup_quote_ok: trueFilter(),
-          long_momentum_setup_trend_ok: trueFilter(),
-          long_momentum_setup_exhaustion_ok: trueFilter(),
-        },
-        label: "v4 Setup Groups",
-        title: "Apply the v4 setup price, activity, quote, trend, and exhaustion groups.",
-      },
-      { filters: { long_momentum_setup_open: trueFilter() }, label: "v4 Setup Open", title: "Show rows that pass the v4 setup gate." },
-      { filters: { long_momentum_v4_body_break_entry_open: trueFilter() }, label: "v4 Body Break", title: "Apply v4 Entry Trigger 1: Earlier Body Break." },
-      { filters: { long_momentum_v4_pullback_reclaim_entry_open: trueFilter() }, label: "v4 Pullback", title: "Apply v4 Entry Trigger 2: Pullback/Reclaim." },
-      { filters: { long_momentum_v4_entry_open: trueFilter(), long_momentum_entry_open: trueFilter() }, label: "v4 Entry Open", title: "Show rows that pass either v4 entry trigger." },
-    ];
-  }
-
-  if (version === "v5") {
-    return [
-      ...base,
-      OBSERVABILITY_SCANNER_SETUP_FILTER_PRESET,
-      OBSERVABILITY_SCANNER_EARLY_MOVE_FILTER_PRESET,
-      {
-        filters: {
-          long_momentum_v5_trend_quality_ok: trueFilter(),
-          long_momentum_v5_volume_expansion_ok: trueFilter(),
-          long_momentum_v5_early_move_ok: trueFilter(),
-          long_momentum_v5_day_high_position_ok: trueFilter(),
-        },
-        label: "v5 Composite",
-        title: "Apply the v5 composite trend, volume, early-move, and day-high-position filters.",
-      },
-      { filters: { long_momentum_v5_setup_open: trueFilter() }, label: "v5 Setup Open", title: "Show rows that pass the v5 setup gate." },
-      { filters: { long_momentum_v5_early_uptrend_entry_open: trueFilter() }, label: "v5 Trigger", title: "Apply the v5 early-uptrend body-break trigger." },
-      { filters: { long_momentum_v5_entry_open: trueFilter(), long_momentum_entry_open: trueFilter() }, label: "v5 Entry Open", title: "Show rows that pass the v5 entry signal." },
-    ];
-  }
-
-  if (version === "v6") {
+  } else if (["v2", "v3", "v7"].includes(version)) {
+    Object.assign(filters, {
+      current_open_above_last_body_high: trueFilter(),
+      last_tema_open: trueFilter(),
+      last_macd_line: gtFilter(0, "Positive"),
+      last_macd_hist_z_since_open: gteFilter(minMacdHistZ),
+      long_momentum_spread_ok: trueFilter(),
+      last_recent_dollar_volume_5: gteFilter(minRecentDollarVolume),
+      last_spread_bps_abs: lteFilter(maxSpreadBpsAbs),
+      last_spread_bps_max: lteFilter(maxSpreadBpsMax),
+      last_quote_valid_ratio: gteFilter(minQuoteValidRatio),
+      last_locked_or_crossed_count: lteFilter(maxLockedOrCrossedCount),
+      long_momentum_entry_open: trueFilter(),
+    });
+    if (version === "v3" || version === "v7") {
+      filters.last_close_location = gteFilter(strategyNumberParam(params, "min_close_location", 0.55));
+    }
+  } else if (version === "v4") {
+    Object.assign(filters, {
+      long_momentum_setup_price_ok: trueFilter(),
+      long_momentum_setup_activity_ok: trueFilter(),
+      long_momentum_setup_quote_ok: trueFilter(),
+      long_momentum_setup_trend_ok: trueFilter(),
+      long_momentum_setup_exhaustion_ok: trueFilter(),
+      long_momentum_setup_open: trueFilter(),
+      long_momentum_v4_entry_open: trueFilter(),
+      long_momentum_entry_open: trueFilter(),
+    });
+  } else if (version === "v5") {
+    Object.assign(filters, {
+      long_momentum_v5_price_above_vwap: trueFilter(),
+      long_momentum_v5_tema_stack_ok: trueFilter(),
+      long_momentum_v5_tema_spread_ok: trueFilter(),
+      long_momentum_v5_macd_line_positive: trueFilter(),
+      long_momentum_v5_macd_hist_ok: trueFilter(),
+      long_momentum_v5_above_day_open: trueFilter(),
+      long_momentum_v5_near_enough_day_high: trueFilter(),
+      long_momentum_v5_volume_vs_avg_so_far_ok: trueFilter(),
+      long_momentum_v5_bearish_divergence_ok: trueFilter(),
+      long_momentum_v5_distance_from_day_low_ok: trueFilter(),
+      long_momentum_v5_distance_above_vwap_ok: trueFilter(),
+      long_momentum_v5_open_above_last_close_ok: trueFilter(),
+      long_momentum_v5_last_bar_range_ok: trueFilter(),
+      long_momentum_v5_day_high_chase_ok: trueFilter(),
+      long_momentum_v5_trend_quality_ok: trueFilter(),
+      long_momentum_v5_volume_expansion_ok: trueFilter(),
+      long_momentum_v5_day_high_position_ok: trueFilter(),
+      long_momentum_v5_early_move_ok: trueFilter(),
+      long_momentum_v5_setup_open: trueFilter(),
+      long_momentum_v5_entry_open: trueFilter(),
+      long_momentum_entry_open: trueFilter(),
+    });
+  } else if (version === "v6") {
     const maxDrawdown = strategyNumberParam(params, "max_oracle_drawdown_before_best", 0.05);
     return [
       {
@@ -2560,44 +2506,38 @@ function interactiveDebugFilterPresets(config: StrategyConfig): DataTableFilterP
           oracle_entry_score: gteFilter(strategyNumberParam(params, "min_oracle_entry_score", 0.7)),
           oracle_expected_profit: gteFilter(strategyNumberParam(params, "min_oracle_expected_profit", 0.01)),
           oracle_drawdown_before_best: gteFilter(-Math.abs(maxDrawdown), `>= -${Math.abs(maxDrawdown)}`),
+          entry_open: trueFilter(),
         },
-        label: "v6 Oracle Entry",
-        title: "Apply the v6 oracle long-enter, score, profit, and drawdown filters.",
+        label: "Apply v6 Strategy",
+        title: "Apply all v6 oracle entry filters for the active strategy parameters.",
       },
-      { filters: { entry_open: trueFilter() }, label: "v6 Entry Open", title: "Show rows that pass the v6 oracle entry signal." },
     ];
+  } else if (version === "v8") {
+    Object.assign(filters, {
+      long_momentum_v8_shock_watch_active: trueFilter(),
+      long_momentum_v8_shock_confirmation_seen: trueFilter(),
+      long_momentum_v8_liquidity_ok: trueFilter(),
+      long_momentum_v8_price_acceptance_ok: trueFilter(),
+      long_momentum_v8_trend_ok: trueFilter(),
+      long_momentum_v8_entry_time_ok: trueFilter(),
+      long_momentum_v8_entry_limit_ok: trueFilter(),
+      long_momentum_v8_entry_trigger: trueFilter(),
+      long_momentum_v8_initial_risk_pct: lteFilter(strategyNumberParam(params, "max_initial_risk_pct", 0.12)),
+      long_momentum_v8_score: gteFilter(strategyNumberParam(params, "min_entry_score", 0.65)),
+      long_momentum_v8_entry_open: trueFilter(),
+      long_momentum_entry_open: trueFilter(),
+    });
+  } else {
+    return undefined;
   }
 
-  if (version === "v8") {
-    return [
-      ...base,
-      {
-        filters: {
-          long_momentum_v8_shock_watch_active: trueFilter(),
-          long_momentum_v8_shock_confirmation_seen: trueFilter(),
-        },
-        label: "v8 Watch",
-        title: "Apply the v8 active shock-watch and confirmation filters.",
-      },
-      { filters: { long_momentum_v8_liquidity_ok: trueFilter() }, label: "v8 Liquidity", title: "Apply the v8 liquidity-ramp filter." },
-      { filters: { long_momentum_v8_price_acceptance_ok: trueFilter() }, label: "v8 Acceptance", title: "Apply the v8 VWAP/midpoint price-acceptance filter." },
-      { filters: { long_momentum_v8_trend_ok: trueFilter() }, label: "v8 Trend", title: "Apply the v8 TEMA/MACD trend filter." },
-      {
-        filters: {
-          long_momentum_v8_entry_time_ok: trueFilter(),
-          long_momentum_v8_entry_limit_ok: trueFilter(),
-          long_momentum_v8_entry_trigger: trueFilter(),
-          long_momentum_v8_initial_risk_pct: lteFilter(strategyNumberParam(params, "max_initial_risk_pct", 0.12)),
-          long_momentum_v8_score: gteFilter(strategyNumberParam(params, "min_entry_score", 0.65)),
-        },
-        label: "v8 Trigger/Risk",
-        title: "Apply the v8 time, limit, trigger, risk, and score filters.",
-      },
-      { filters: { long_momentum_v8_entry_open: trueFilter(), long_momentum_entry_open: trueFilter() }, label: "v8 Entry Open", title: "Show rows that pass the v8 entry signal." },
-    ];
-  }
-
-  return OBSERVABILITY_SCANNER_FILTER_PRESETS;
+  return [
+    {
+      filters,
+      label: `Apply ${version} Strategy`,
+      title: `Apply all available ${version} strategy filters for the active strategy parameters.`,
+    },
+  ];
 }
 
 function strategyNumberParam(params: Record<string, StrategyParamValue>, key: string, fallback: number): number {
