@@ -467,7 +467,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     )
                 )
                 continue
-            if self._profit_giveback_exit_triggered(position, bar):
+            if self._profit_giveback_exit_triggered(position, bar, meta):
                 self._trace_exit(context.timestamp, symbol, "PROFIT_GIVEBACK", position, bar, meta)
                 requests.append(
                     OrderRequest(
@@ -476,7 +476,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                         quantity=position.quantity,
                         order_type="MARKET",
                         reason="PROFIT_GIVEBACK",
-                        tag=self._exit_tag("PROFIT_GIVEBACK", position, bar, meta) + self._profit_giveback_exit_tag(position, bar),
+                        tag=self._exit_tag("PROFIT_GIVEBACK", position, bar, meta) + self._profit_giveback_exit_tag(position, bar, meta),
                     )
                 )
                 continue
@@ -556,6 +556,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "initial_r": risk_per_share,
             "entry_score": score,
             "entry_type": entry_type,
+            "peak_completed_close_profit_per_share": 0.0,
         }
         watch = self.momentum_watchlist.get(symbol)
         if watch is not None:
@@ -594,27 +595,41 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         offset_fraction = max(0.0, self.config.vwap_stop_offset_pct) / 100.0
         return vwap * (1.0 - offset_fraction)
 
-    def _profit_giveback_exit_triggered(self, position, bar: dict) -> bool:
-        peak_profit = max(0.0, self._float(position.max_unrealized_profit))
-        if peak_profit <= 0:
+    def _profit_giveback_exit_triggered(self, position, bar: dict, meta: dict) -> bool:
+        current_per_share, peak_per_share = self._completed_close_profit_state(position, bar, meta)
+        if peak_per_share <= 0:
             return False
-        current_profit = self._current_completed_bar_pnl(position, bar)
-        giveback = peak_profit - current_profit
-        threshold = peak_profit * max(0.0, self.config.profit_giveback_exit_pct)
+        giveback = peak_per_share - current_per_share
+        threshold = peak_per_share * max(0.0, self.config.profit_giveback_exit_pct)
         return giveback > threshold + 1e-9
 
-    def _current_completed_bar_pnl(self, position, bar: dict) -> float:
+    def _completed_close_profit_state(self, position, bar: dict, meta: dict) -> tuple[float, float]:
+        current_per_share = self._current_completed_bar_profit_per_share(position, bar)
+        peak_per_share = max(
+            0.0,
+            self._float(meta.get("peak_completed_close_profit_per_share")),
+            current_per_share,
+        )
+        meta["last_completed_close_profit_per_share"] = current_per_share
+        meta["peak_completed_close_profit_per_share"] = peak_per_share
+        return current_per_share, peak_per_share
+
+    def _current_completed_bar_profit_per_share(self, position, bar: dict) -> float:
         last_close = self._float(bar.get("last_close"))
         if last_close <= 0:
             last_close = self._bar_open(bar)
-        return (last_close - position.entry_price) * position.quantity
+        return last_close - position.entry_price
 
-    def _profit_giveback_exit_tag(self, position, bar: dict) -> str:
-        peak_profit = max(0.0, self._float(position.max_unrealized_profit))
-        current_profit = self._current_completed_bar_pnl(position, bar)
+    def _profit_giveback_exit_tag(self, position, bar: dict, meta: dict) -> str:
+        current_per_share, peak_per_share = self._completed_close_profit_state(position, bar, meta)
+        peak_profit = peak_per_share * position.quantity
+        current_profit = current_per_share * position.quantity
         giveback = peak_profit - current_profit
         giveback_pct = (giveback / peak_profit) if peak_profit > 0 else 0.0
-        return f"|peakPnl={peak_profit:.2f}|currentPnl={current_profit:.2f}|givebackPct={giveback_pct:.4f}"
+        return (
+            f"|peakClosePnl={peak_profit:.2f}|currentClosePnl={current_profit:.2f}"
+            f"|givebackPct={giveback_pct:.4f}"
+        )
 
     def _tema_closed(self, bar: dict) -> bool:
         tema9 = self._float(bar.get("last_tema9"))
