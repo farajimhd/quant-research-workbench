@@ -35,6 +35,7 @@ bars.
 A ticker that is already in the day momentum watchlist can enter when all entry
 rules are true:
 
+- the ticker was added to the watchlist on a prior bar, not the current bar
 - there is no open position or pending order for the ticker
 - the current minute is inside the configured trading window
 - `min_price <= last_close <= max_price`
@@ -42,7 +43,7 @@ rules are true:
 
 The 5-minute return and transaction threshold are used only to add the ticker to
 the watchlist. Once the ticker is in the watchlist, the entry gate is the VWAP
-cross.
+cross, but the first possible entry is the next bar after the watchlist add.
 
 If multiple watchlist VWAP entry candidates appear on the same bar, v9 splits
 available cash equally across them and submits them at the same current open.

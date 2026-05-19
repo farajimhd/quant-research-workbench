@@ -393,6 +393,7 @@ class StepBacktestDebugger(BacktestEngine):
                 ],
                 "Watchlist VWAP Entry Strategy State": [
                     self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
+                    self._bool_check(row, "long_momentum_v9_watchlist_entry_ready", True),
                     self._lte_check(row, "held_quantity", 0.0),
                     self._bool_check(row, "long_momentum_v9_pending_symbol_order", False),
                     self._gt_check(row, "long_momentum_v9_close_minus_vwap", 0.0),

@@ -261,6 +261,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         entry_time_ok = self.config.trading_start_minute <= int(self._float(row.get("minute_of_day"))) < self.config.trading_end_minute
         pending_symbol_order = ticker in pending_symbols
         no_symbol_position = ticker not in portfolio.positions and not pending_symbol_order
+        current_timestamp = row.get("timestamp")
+        watch_added_this_bar = bool(watch and current_timestamp == watch.added_timestamp)
+        watch_entry_ready = bool(watch and isinstance(current_timestamp, datetime) and watch.added_timestamp < current_timestamp)
         max_vwap = watch.max_vwap if watch else 0.0
         last_vwap = self._float(row.get("last_vwap"))
         reentry_price_reclaim = last_vwap > 0 and last_close > last_vwap
@@ -268,6 +271,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         reentry_open = (
             price_eligible
             and bool(watch)
+            and watch_entry_ready
             and no_symbol_position
             and entry_time_ok
             and reentry_price_reclaim
@@ -279,6 +283,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_watchlist_added_timestamp": watch.added_timestamp.isoformat() if watch else "",
             "long_momentum_v9_watchlist_added_last_close": watch.added_last_close if watch else None,
             "long_momentum_v9_watchlist_added_last_5m_return": watch.added_last_5m_return if watch else None,
+            "long_momentum_v9_watchlist_added_this_bar": watch_added_this_bar,
+            "long_momentum_v9_watchlist_entry_ready": watch_entry_ready,
             "long_momentum_v9_watchlist_entry_submitted": bool(watch and watch.entry_submitted),
             "long_momentum_v9_watchlist_last_entry_type": watch.last_entry_type if watch else "",
             "long_momentum_v9_watchlist_last_state": watch.last_state if watch else "",
@@ -299,6 +305,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_reject_reason": self._v9_reject_reason(
                 price_eligible=price_eligible,
                 watch_active=watch is not None,
+                watch_entry_ready=watch_entry_ready,
                 entry_time_ok=entry_time_ok,
                 reentry_price_reclaim=reentry_price_reclaim,
                 no_symbol_position=no_symbol_position,
@@ -636,6 +643,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         *,
         price_eligible: bool,
         watch_active: bool,
+        watch_entry_ready: bool,
         entry_time_ok: bool,
         reentry_price_reclaim: bool,
         no_symbol_position: bool,
@@ -644,6 +652,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return "price_eligibility"
         if not watch_active:
             return "not_in_day_momentum_watchlist"
+        if not watch_entry_ready:
+            return "watchlist_entry_wait_next_bar"
         if not entry_time_ok:
             return "entry_time"
         if not no_symbol_position:

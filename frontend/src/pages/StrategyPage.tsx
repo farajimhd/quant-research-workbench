@@ -2814,6 +2814,8 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_watchlist_added_timestamp",
   "long_momentum_v9_watchlist_added_last_close",
   "long_momentum_v9_watchlist_added_last_5m_return",
+  "long_momentum_v9_watchlist_added_this_bar",
+  "long_momentum_v9_watchlist_entry_ready",
   "long_momentum_v9_watchlist_entry_submitted",
   "long_momentum_v9_watchlist_last_entry_type",
   "long_momentum_v9_watchlist_last_state",
