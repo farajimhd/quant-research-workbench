@@ -91,7 +91,8 @@ class MarketDataProvider:
             selected = [column for column in columns if column in base.columns]
             if selected:
                 base = base.select(selected)
-        return base.sort(["ticker", "bar_time_utc"]) if not base.is_empty() else base
+        sort_columns = [column for column in ["ticker", "bar_time_utc"] if column in base.columns]
+        return base.sort(sort_columns) if sort_columns and not base.is_empty() else base
 
     def load_supervision(
         self,
