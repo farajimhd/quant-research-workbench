@@ -18,11 +18,17 @@ A ticker is eligible for the watchlist when:
 For 1-minute bars:
 
 ```text
-last_5m_return = (last_close / last_close_from_5_strategy_rows_ago) - 1
+last_5m_return = last_return_5
 ```
 
-Because strategy-time rows use completed-bar inputs, `last_close` is the
-previous completed candle close at the current decision open.
+`last_return_5` is provider-built from the same ticker/session only. It is null
+for completed bars 1-2. From completed bar 3 through warmup it uses the first
+completed session close as the baseline; after that it uses the close from five
+bars earlier. Because strategy-time rows use completed-bar inputs,
+`last_5m_return` at the current open is always based on the previous completed
+candle. This lets the first actionable v9 decision happen on the fourth candle
+of the day, after candles 1, 2, and 3 are complete, without using prior-session
+prices or future bars.
 
 ## First Entry
 

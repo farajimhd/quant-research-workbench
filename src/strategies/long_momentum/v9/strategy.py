@@ -17,6 +17,7 @@ from src.strategies.long_momentum.v9.presentation import chart_presentation
 REQUIRED_V9_COLUMNS = (
     "last_close",
     "last_open",
+    "last_return_5",
     "current_open",
     "last_transactions",
     "last_transactions_vs_prior_3",
@@ -174,13 +175,18 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         if missing:
             date_text = self.session_date.isoformat() if self.session_date else "unknown session"
             raise ValueError(
-                f"Long Momentum v9 requires provider-built strategy-time volume/liquidity features for {date_text}; "
-                f"missing columns: {', '.join(missing)}. Rebuild market data with current volume_liquidity features."
+                f"Long Momentum v9 requires provider-built strategy-time core and volume/liquidity features for {date_text}; "
+                f"missing columns: {', '.join(missing)}. Rebuild market data with current core and volume_liquidity features."
             )
 
     def _with_last_5m_return(self, frame: pl.DataFrame) -> pl.DataFrame:
         if frame.is_empty():
             return frame
+        if "last_return_5" in frame.columns:
+            return frame.with_columns(
+                pl.col("last_return_5").alias("last_5m_return"),
+                pl.col("last_return_5").alias("long_momentum_v9_last_5m_return"),
+            )
         group_columns = [column for column in ["ticker", "session_date"] if column in frame.columns]
         if not group_columns:
             group_columns = ["ticker"]

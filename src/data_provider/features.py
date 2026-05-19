@@ -19,6 +19,7 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
         "ohlc4",
         "dollar_volume",
         "return_1",
+        "return_5",
         "log_return_1",
         "bar_range",
         "body",
@@ -445,13 +446,25 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
         return frame
     premarket_start_minute = 4 * 60
     frame = frame.sort(["ticker", "bar_time_utc"])
-    prior_bar_close = pl.col("close").shift(1).over("ticker")
+    session_group = ["ticker", "session_date"]
+    session_bar_number = pl.cum_count("close").over(session_group)
+    prior_bar_close = pl.col("close").shift(1).over(session_group)
+    prior_5_bar_close = pl.col("close").shift(5).over(session_group)
+    first_session_close = pl.col("close").first().over(session_group)
     frame = (
         frame.with_columns(
             ((pl.col("high") + pl.col("low") + pl.col("close")) / 3.0).alias("hlc3"),
             ((pl.col("open") + pl.col("high") + pl.col("low") + pl.col("close")) / 4.0).alias("ohlc4"),
             (pl.col("close") * pl.col("volume")).alias("dollar_volume"),
             ((pl.col("close") / prior_bar_close) - 1.0).fill_null(0.0).alias("return_1"),
+            pl.when(session_bar_number < 3)
+            .then(pl.lit(None, dtype=pl.Float64))
+            .when(prior_5_bar_close > 0)
+            .then((pl.col("close") / prior_5_bar_close) - 1.0)
+            .when(first_session_close > 0)
+            .then((pl.col("close") / first_session_close) - 1.0)
+            .otherwise(0.0)
+            .alias("return_5"),
             (pl.col("close") / prior_bar_close).log().fill_null(0.0).alias("log_return_1"),
             (pl.col("high") - pl.col("low")).alias("bar_range"),
             (pl.col("close") - pl.col("open")).alias("body"),
@@ -574,10 +587,10 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             pl.col("close").rolling_std(20).over("ticker").alias("_bb_std20"),
             pl.col("high").rolling_max(20).over("ticker").alias("donchian_high20"),
             pl.col("low").rolling_min(20).over("ticker").alias("donchian_low20"),
-            pl.col("volume").rolling_mean(10).over("ticker").alias("volume_sma10"),
-            pl.col("volume").rolling_mean(20).over("ticker").alias("volume_sma20"),
-            pl.col("dollar_volume").rolling_mean(20).over("ticker").alias("dollar_volume_sma20"),
-            pl.col("transactions").rolling_mean(20).over("ticker").alias("transactions_sma20"),
+            pl.col("volume").rolling_mean(10, min_samples=1).over(session_group).alias("volume_sma10"),
+            pl.col("volume").rolling_mean(20, min_samples=1).over(session_group).alias("volume_sma20"),
+            pl.col("dollar_volume").rolling_mean(20, min_samples=1).over(session_group).alias("dollar_volume_sma20"),
+            pl.col("transactions").rolling_mean(20, min_samples=1).over(session_group).alias("transactions_sma20"),
             rolling_z("return_1", 20, "return_z20"),
             rolling_z("bar_range", 20, "range_z20"),
             rolling_z("volume", 20, "volume_z20"),
@@ -600,9 +613,9 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             pl.when(pl.col("volume_sma10") > 0).then(pl.col("volume") / pl.col("volume_sma10")).otherwise(0.0).alias("relative_volume10"),
             pl.when(pl.col("volume_sma20") > 0).then(pl.col("volume") / pl.col("volume_sma20")).otherwise(0.0).alias("relative_volume20"),
             pl.when(pl.col("dollar_volume_sma20") > 0).then(pl.col("dollar_volume") / pl.col("dollar_volume_sma20")).otherwise(0.0).alias("relative_dollar_volume20"),
-            pl.col("volume").rolling_sum(5, min_samples=1).over("ticker").alias("recent_volume_5"),
-            pl.col("dollar_volume").rolling_sum(5, min_samples=1).over("ticker").alias("recent_dollar_volume_5"),
-            pl.col("transactions").rolling_sum(5, min_samples=1).over("ticker").alias("recent_transactions_5"),
+            pl.col("volume").rolling_sum(5, min_samples=1).over(session_group).alias("recent_volume_5"),
+            pl.col("dollar_volume").rolling_sum(5, min_samples=1).over(session_group).alias("recent_dollar_volume_5"),
+            pl.col("transactions").rolling_sum(5, min_samples=1).over(session_group).alias("recent_transactions_5"),
             pl.when(
                 pl.sum_horizontal(
                     [

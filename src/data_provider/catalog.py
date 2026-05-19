@@ -2133,15 +2133,21 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
         ),
         "return_1": (
             "One-bar simple close-to-close return.",
-            "Return 1 compares the current close with the prior close for the same ticker. Null first bars are filled with zero.",
+            "Return 1 compares the current close with the prior close for the same ticker/session. The first bar of each session is neutral at zero and never reaches into a prior day.",
             "$$Return1_t=\\frac{Close_t}{Close_{t-1}}-1$$",
-            {"Close_t": "Current close", "Close_{t-1}": "Previous bar close for the same ticker"},
+            {"Close_t": "Current close", "Close_{t-1}": "Previous bar close for the same ticker/session"},
+        ),
+        "return_5": (
+            "Same-session five-bar close return with early-session estimate.",
+            "Return 5 compares the current close with the close five bars earlier inside the same ticker/session. It is null for completed bars 1-2; from completed bar 3 through warmup it uses the first completed close of the current session as the baseline, and it never borrows prior-day prices.",
+            "$$Return5_t=\\frac{Close_t}{Close_{max(1,t-5)}}-1$$",
+            {"Close_t": "Current close", "Close_{max(1,t-5)}": "Five-bars-ago close, or first current-session close during warmup"},
         ),
         "log_return_1": (
             "One-bar log close-to-close return.",
-            "Log return is the natural log of the current close divided by the prior close. It is additive across bars and useful for volatility statistics.",
+            "Log return is the natural log of the current close divided by the prior close for the same ticker/session. It is additive across bars and useful for volatility statistics.",
             "$$LogReturn1_t=\\ln\\left(\\frac{Close_t}{Close_{t-1}}\\right)$$",
-            {"Close_t": "Current close", "Close_{t-1}": "Previous bar close for the same ticker"},
+            {"Close_t": "Current close", "Close_{t-1}": "Previous bar close for the same ticker/session"},
         ),
         "bar_range": (
             "Full high-low candle range.",
@@ -2522,19 +2528,19 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
     spread_risk = {
         "recent_volume_5": (
             "Five-bar recent share volume.",
-            "Recent volume 5 sums share volume over the last five bars for the same ticker. It ranks short-term participation without multiplying by price.",
+            "Recent volume 5 sums share volume over the last five bars for the same ticker/session. During warmup it sums the available current-session bars only, so it does not include prior-day activity.",
             "$$RecentVolume5_t=\\sum_{i=0}^{4}Volume_{t-i}$$",
             {"Volume": "Share volume"},
         ),
         "recent_dollar_volume_5": (
             "Five-bar recent dollar volume.",
-            "Recent dollar volume 5 sums close times volume over the last five bars for the same ticker. It gives spread filters local participation context.",
+            "Recent dollar volume 5 sums close times volume over the last five bars for the same ticker/session. During warmup it sums the available current-session bars only.",
             "$$RecentDollarVolume5_t=\\sum_{i=0}^{4}Close_{t-i}\\cdot Volume_{t-i}$$",
             {"Close": "Bar close", "Volume": "Share volume"},
         ),
         "recent_transactions_5": (
             "Five-bar recent transaction count.",
-            "Recent transactions 5 sums transaction count over the last five bars for the same ticker. Low values warn that the bar may be thin even if price moved.",
+            "Recent transactions 5 sums transaction count over the last five bars for the same ticker/session. During warmup it sums the available current-session bars only.",
             "$$RecentTransactions5_t=\\sum_{i=0}^{4}Transactions_{t-i}$$",
             {"Transactions": "Bar transaction count"},
         ),
@@ -2635,7 +2641,7 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
         window = int(item[2]) if len(item) > 2 else 20
         return knowledge_block(
             short=f"{window}-bar average {description}.",
-            detailed=f"{title} is the {window}-bar rolling average of {description} for the same ticker. It defines the local baseline used by relative activity features.",
+            detailed=f"{title} is the {window}-bar rolling average of {description} for the same ticker/session. During session warmup it averages the available current-session bars instead of borrowing prior-day bars.",
             theory=theory_for_group(group, category),
             interpretation="Use the rolling average as a baseline, not as a signal by itself. Its usefulness increases when paired with current activity and price movement.",
             equation=f"$$SMA{window}({symbol})_t=\\frac{{1}}{{{window}}}\\sum_{{i=0}}^{{{window - 1}}}{symbol}_{{t-i}}$$",
@@ -2652,7 +2658,7 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
         window = int(item[2]) if len(item) > 2 else 20
         return knowledge_block(
             short=f"Current activity divided by its {window}-bar baseline.",
-            detailed=f"{title} compares current {numerator.lower()} with its {window}-bar moving average. The Polars expression returns 0 when the denominator baseline is not positive. A value of 3 means the current bar is trading at roughly three times its recent average activity.",
+            detailed=f"{title} compares current {numerator.lower()} with its same-session {window}-bar moving average. During warmup the denominator uses available current-session bars only. The Polars expression returns 0 when the denominator baseline is not positive. A value of 3 means the current bar is trading at roughly three times its recent average activity.",
             theory=theory_for_group(group, category),
             interpretation="High relative activity is more meaningful when price is also moving directionally or breaking structure.",
             equation=f"$$Relative{numerator}{window}_t=\\begin{{cases}}\\frac{{{numerator}_t}}{{{denominator}_t}},&{denominator}_t>0\\\\0,&otherwise\\end{{cases}}$$",
