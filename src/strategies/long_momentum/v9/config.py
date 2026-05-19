@@ -18,6 +18,7 @@ V9_PARAMETER_FIELDS = (
     "min_first_entry_transactions",
     "min_first_entry_transactions_vs_prior_3",
     "max_risk_fraction_of_cash",
+    "max_entry_order_quantity",
     "vwap_stop_offset_pct",
     "double_bvd_exit_score",
     "profit_giveback_exit_pct",
@@ -40,6 +41,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     min_first_entry_transactions: float = 100.0
     min_first_entry_transactions_vs_prior_3: float = 20.0
     max_risk_fraction_of_cash: float = 0.25
+    max_entry_order_quantity: int = 3_000
     double_bvd_exit_score: float = 50.0
     profit_giveback_exit_pct: float = 0.15
     tema9_exit_buffer_pct: float = -0.01

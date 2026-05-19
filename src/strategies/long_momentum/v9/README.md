@@ -81,8 +81,11 @@ For each candidate cash slice:
 max_risk_cash = cash_slice * max_risk_fraction_of_cash
 risk_size = max_risk_cash / risk_per_share
 cash_size = cash_slice / current_open
-quantity = floor(min(risk_size, cash_size))
+quantity = floor(min(risk_size, cash_size, max_entry_order_quantity))
 ```
+
+The default `max_entry_order_quantity` is `3000`, so v9 does not submit a BUY
+order larger than 3000 shares to the backtest.
 
 While the position remains open, the stop trails upward with VWAP:
 
@@ -100,9 +103,9 @@ BUY remainder:  limit_price = max(current_open, bid) + partial_fill_reprice_offs
 SELL remainder: limit_price = min(current_open, ask) - partial_fill_reprice_offset
 ```
 
-The default `partial_fill_reprice_offset` is `0.01`. These remainder orders are
-intended to cross the current open in the backtest and complete the rest of the
-original order.
+The default `partial_fill_reprice_offset` is `0.01`. BUY remainder orders are
+also capped by `max_entry_order_quantity`; v9 does not submit an oversized BUY
+remainder just because the original desired position was larger.
 
 ## Exit
 

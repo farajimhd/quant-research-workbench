@@ -190,6 +190,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 continue
             if side == "BUY":
                 quantity = min(quantity, self._cash_quantity(limit_price, max(0.0, portfolio.cash - self.config.cash_buffer_dollars)))
+                quantity = self._capped_entry_quantity(quantity)
                 if quantity <= 0:
                     continue
             protective_stop_price = None
@@ -543,7 +544,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         max_risk_cash = available_cash * max(0.0, self.config.max_risk_fraction_of_cash)
         risk_quantity = int(max_risk_cash / risk_per_share) if risk_per_share > 0 else 0
         cash_quantity = self._cash_quantity(entry_price, available_cash)
-        quantity = min(risk_quantity, cash_quantity)
+        quantity = self._capped_entry_quantity(min(risk_quantity, cash_quantity))
         if quantity <= 0:
             self._reject(context.timestamp, symbol, "cash", candidate)
             return None
@@ -588,6 +589,12 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return stop if 0 < stop < entry_price else 0.0
         stop = self._float(candidate.get("last_open"))
         return stop if 0 < stop < entry_price else 0.0
+
+    def _capped_entry_quantity(self, quantity: int) -> int:
+        max_quantity = int(max(0, self.config.max_entry_order_quantity))
+        if max_quantity <= 0:
+            return int(quantity)
+        return min(int(quantity), max_quantity)
 
     def _vwap_offset_stop(self, vwap: float) -> float:
         if vwap <= 0:
