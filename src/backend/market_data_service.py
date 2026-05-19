@@ -81,6 +81,91 @@ def volume_divergence_label_expr(score_column: str, alias: str) -> pl.Expr:
     )
 
 
+DOUBLE_TIMEFRAME_BVD_TEMP_COLUMNS = [
+    "_double_bvd_bucket",
+    "_double_bvd_pair_size",
+    "_double_bvd_pair_end",
+    "_double_bvd_close",
+    "_double_bvd_volume",
+    "_double_bvd_complete_close",
+    "_double_bvd_complete_volume",
+    "_double_bvd_prev_close",
+    "_double_bvd_prev_volume",
+]
+
+
+def add_double_timeframe_bearish_volume_divergence_columns(
+    frame: pl.DataFrame | pl.LazyFrame,
+    names: list[str],
+    group_columns: list[str],
+) -> pl.DataFrame | pl.LazyFrame:
+    if not group_columns or not {"close", "volume"}.issubset(names):
+        return frame
+    result: pl.DataFrame | pl.LazyFrame = frame
+    local_names = list(names)
+    if "session_bar_count" not in local_names:
+        result = result.with_columns(pl.cum_count("close").over(group_columns).alias("session_bar_count"))
+        local_names.append("session_bar_count")
+    if {
+        "double_timeframe_bearish_volume_divergence",
+        "double_timeframe_bearish_volume_divergence_score",
+        "double_timeframe_bearish_volume_divergence_label",
+    }.issubset(local_names):
+        return result
+
+    pair_group_columns = [*group_columns, "_double_bvd_bucket"]
+    score = (
+        100.0
+        * (
+            0.65
+            * pl.when(pl.col("_double_bvd_prev_volume") > 0)
+            .then(((pl.col("_double_bvd_prev_volume") - pl.col("_double_bvd_volume")) / pl.col("_double_bvd_prev_volume") / 0.50).clip(0.0, 1.0))
+            .otherwise(0.0)
+            + 0.35
+            * pl.when(pl.col("_double_bvd_prev_close") > 0)
+            .then(((pl.col("_double_bvd_close") - pl.col("_double_bvd_prev_close")) / pl.col("_double_bvd_prev_close") / 0.003).clip(0.0, 1.0))
+            .otherwise(0.0)
+        )
+    ).round(2)
+    return (
+        result.with_columns(((pl.col("session_bar_count") - 1) // 2).alias("_double_bvd_bucket"))
+        .with_columns(
+            pl.len().over(pair_group_columns).alias("_double_bvd_pair_size"),
+            ((pl.len().over(pair_group_columns) == 2) & ((pl.col("session_bar_count") % 2) == 0)).alias("_double_bvd_pair_end"),
+            pl.col("close").last().over(pair_group_columns).alias("_double_bvd_close"),
+            pl.col("volume").sum().over(pair_group_columns).alias("_double_bvd_volume"),
+        )
+        .with_columns(
+            pl.when(pl.col("_double_bvd_pair_end")).then(pl.col("_double_bvd_close")).otherwise(None).alias("_double_bvd_complete_close"),
+            pl.when(pl.col("_double_bvd_pair_end")).then(pl.col("_double_bvd_volume")).otherwise(None).alias("_double_bvd_complete_volume"),
+        )
+        .with_columns(
+            pl.col("_double_bvd_complete_close").shift(1).forward_fill().over(group_columns).alias("_double_bvd_prev_close"),
+            pl.col("_double_bvd_complete_volume").shift(1).forward_fill().over(group_columns).alias("_double_bvd_prev_volume"),
+        )
+        .with_columns(
+            (
+                pl.col("_double_bvd_pair_end")
+                & (pl.col("_double_bvd_volume") < pl.col("_double_bvd_prev_volume"))
+                & (pl.col("_double_bvd_close") > pl.col("_double_bvd_prev_close"))
+            )
+            .fill_null(False)
+            .alias("double_timeframe_bearish_volume_divergence")
+        )
+        .with_columns(
+            pl.when(pl.col("double_timeframe_bearish_volume_divergence"))
+            .then(score)
+            .otherwise(0.0)
+            .fill_null(0.0)
+            .alias("double_timeframe_bearish_volume_divergence_score")
+        )
+        .with_columns(
+            volume_divergence_label_expr("double_timeframe_bearish_volume_divergence_score", "double_timeframe_bearish_volume_divergence_label")
+        )
+        .drop(DOUBLE_TIMEFRAME_BVD_TEMP_COLUMNS)
+    )
+
+
 def timeframe_sort_key(value: str) -> tuple[int, str]:
     order = {timeframe: index for index, timeframe in enumerate(TIMEFRAMES)}
     return order.get(value, 999), value
@@ -962,6 +1047,8 @@ def apply_scanner_volume_compatibility_columns(scan: pl.LazyFrame, names: list[s
     if divergence_exprs:
         scan = scan.with_columns(divergence_exprs)
         names = scan.collect_schema().names()
+    scan = add_double_timeframe_bearish_volume_divergence_columns(scan, names, group_columns)
+    names = scan.collect_schema().names()
     triple_exprs: list[pl.Expr] = []
     if "triple_bearish_volume_divergence" not in names and "bearish_volume_divergence" in names and group_columns:
         triple_exprs.append(
@@ -1352,6 +1439,9 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "last_bearish_volume_divergence",
         "last_bearish_volume_divergence_score",
         "last_bearish_volume_divergence_label",
+        "last_double_timeframe_bearish_volume_divergence",
+        "last_double_timeframe_bearish_volume_divergence_score",
+        "last_double_timeframe_bearish_volume_divergence_label",
         "last_triple_bearish_volume_divergence",
         "last_triple_bearish_volume_divergence_score",
         "last_triple_bearish_volume_divergence_label",
@@ -2194,6 +2284,8 @@ def apply_chart_volume_convergence_columns(frame: pl.DataFrame) -> pl.DataFrame:
             .alias("bullish_volume_divergence")
         )
         names = frame.columns
+    frame = add_double_timeframe_bearish_volume_divergence_columns(frame, names, group_columns)
+    names = frame.columns
     if "triple_bearish_volume_divergence" not in names and "bearish_volume_divergence" in names and group_columns:
         frame = frame.with_columns(
             (

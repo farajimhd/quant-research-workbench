@@ -210,6 +210,8 @@ Feature artifacts are split by group so consumers can load only what they need. 
 - `transactions_avg_prior_3`: average transaction count from up to the three
   prior bars in the same ticker/session, excluding the current bar.
 - `transactions_vs_prior_3`: `transactions / transactions_avg_prior_3`.
+- `double_timeframe_bearish_volume_divergence`: BVD on synthetic two-bar
+  candles within the same ticker/session; on 1m bars this behaves like 2m BVD.
 - `triple_bearish_volume_divergence`: true when bearish volume divergence is
   true for the current bar and the prior two bars in the same ticker/session.
 - `liquidity_band_25bp_volume`: 20-bar rolling volume proxy for near-price liquidity.

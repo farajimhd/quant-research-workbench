@@ -303,6 +303,7 @@ BOOLEAN_COLUMNS = {
     "current_volume_shock",
     "current_confirmed_price_volume_shock",
     "bearish_volume_divergence",
+    "double_timeframe_bearish_volume_divergence",
     "triple_bearish_volume_divergence",
     "bullish_volume_divergence",
     "is_top_1",
@@ -950,6 +951,28 @@ def build_display_items(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             ],
             label_column="bearish_volume_divergence_label",
             label_text="BVD",
+        )
+    )
+    add(
+        marker_display_item(
+            by_column,
+            "feature.volume_liquidity.double_timeframe_bearish_volume_divergence",
+            "Double-Timeframe Bearish Volume Divergence",
+            "volume_liquidity",
+            "double_timeframe_bearish_volume_divergence",
+            "#991B1B",
+            marker_shape="arrowDown",
+            marker_position="aboveBar",
+            source_columns=[
+                "double_timeframe_bearish_volume_divergence",
+                "double_timeframe_bearish_volume_divergence_score",
+                "double_timeframe_bearish_volume_divergence_label",
+                "open",
+                "close",
+                "volume",
+            ],
+            label_column="double_timeframe_bearish_volume_divergence_label",
+            label_text="2xBVD",
         )
     )
     add(
@@ -2194,6 +2217,7 @@ def feature_knowledge_for_column(column: str, group: str, category: str, title: 
             "recent_transactions_5",
             "transactions_avg_prior_3",
             "transactions_vs_prior_3",
+            "double_timeframe_bearish_volume_divergence",
             "triple_bearish_volume_divergence",
             "obv",
             "mfi14",
@@ -2664,6 +2688,12 @@ def volume_feature_knowledge(lower: str, group: str, category: str, title: str) 
             "Bearish volume divergence is true when the current close is above the prior close while current volume is lower than prior volume. It marks price pushing up with weaker participation.",
             "$$BearDiv_t=I(Volume_t<Volume_{t-1}\\land Close_t>Close_{t-1})$$",
             {"Volume": "Share volume", "Close": "Candle close price"},
+        ),
+        "double_timeframe_bearish_volume_divergence": (
+            "Bearish volume divergence on a synthetic two-bar candle.",
+            "Double-timeframe bearish volume divergence combines each pair of current-timeframe bars into one synthetic candle, then applies the regular bearish volume divergence rule between completed synthetic candles. On 1m data this acts like a 2m BVD without requiring a separate 2m artifact.",
+            "$$DoubleTFBearDiv_t=I(Volume^{2x}_t<Volume^{2x}_{t-1}\\land Close^{2x}_t>Close^{2x}_{t-1})$$",
+            {"Volume^{2x}": "Summed volume over the two-bar candle", "Close^{2x}": "Close of the two-bar candle"},
         ),
         "triple_bearish_volume_divergence": (
             "Three consecutive bearish volume divergence candles.",
