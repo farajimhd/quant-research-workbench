@@ -46,7 +46,7 @@ momentum watchlist. It can enter later when all VWAP entry rules are true:
 - there is no open position or pending order for the ticker
 - the current minute is inside the configured trading window
 - `min_price <= last_close <= max_price`
-- `last_close > last_vwap`
+- `last_close >= last_vwap * (1 + reentry_vwap_buffer_pct / 100)`
 - the completed VWAP reclaim bar is not red: `last_close >= last_open`
 
 The 5-minute return and transaction threshold are used only to add the ticker to
@@ -66,6 +66,15 @@ last_bearish_volume_divergence_score <= max_reentry_bvd_score
 
 The default `max_reentry_bvd_score` is `80.0`, so a 1-minute BVD score above
 80 blocks watchlist reentry. This does not block same-bar immediate First Entry.
+
+Watchlist VWAP reentry requires the last completed candle to close above VWAP
+by the configured buffer:
+
+```text
+last_close >= last_vwap * (1 + reentry_vwap_buffer_pct / 100)
+```
+
+The default `reentry_vwap_buffer_pct` is `2.0`.
 
 Watchlist VWAP reentry also requires the current bar open to break the highest
 body high of the last two completed bars:
@@ -143,10 +152,11 @@ Main exit has priority:
 
 ```text
 last_double_timeframe_bearish_volume_divergence_score > double_bvd_exit_score
+and last_close < last_open
 ```
 
 On 1-minute data this is 2-minute BVD. When it triggers on the last completed
-bar, v9 exits immediately at the current open.
+red bar, v9 exits immediately at the current open.
 
 Pocketing:
 

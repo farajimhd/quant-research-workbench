@@ -404,7 +404,13 @@ class StepBacktestDebugger(BacktestEngine):
                 "Watchlist VWAP Entry Raw Inputs": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._range_check(row, "minute_of_day", self._strategy_param("trading_start_minute", 240.0), self._strategy_param("trading_end_minute", 1200.0) - 1),
-                    self._gt_check(row, "last_close", self._number(row, "last_vwap") or 0.0),
+                    self._gt_check(row, "last_vwap", 0.0),
+                    self._gte_check(
+                        row,
+                        "last_close",
+                        (self._number(row, "last_vwap") or 0.0)
+                        * (1.0 + max(0.0, self._strategy_param("reentry_vwap_buffer_pct", 2.0)) / 100.0),
+                    ),
                     self._gte_check(row, "last_close", self._number(row, "last_open") or 0.0),
                     self._lte_check(row, "last_bearish_volume_divergence_score", self._strategy_param("max_reentry_bvd_score", 80.0)),
                     self._v9_two_bar_body_reentry_check(row),
@@ -414,13 +420,14 @@ class StepBacktestDebugger(BacktestEngine):
                     self._bool_check(row, "long_momentum_v9_watchlist_entry_ready", True),
                     self._lte_check(row, "held_quantity", 0.0),
                     self._bool_check(row, "long_momentum_v9_pending_symbol_order", False),
-                    self._gt_check(row, "long_momentum_v9_close_minus_vwap", 0.0),
+                    self._bool_check(row, "long_momentum_v9_reentry_vwap_buffer_ok", True),
                     self._bool_check(row, "long_momentum_v9_reentry_last_bar_not_red", True),
                     self._bool_check(row, "long_momentum_v9_reentry_bvd_ok", True),
                     self._bool_check(row, "long_momentum_v9_reentry_body_break_ok", True),
                 ],
                 "Exit": [
                     self._gt_check(row, "last_double_timeframe_bearish_volume_divergence_score", self._strategy_param("double_bvd_exit_score", 50.0)),
+                    self._bool_check(row, "long_momentum_v9_double_bvd_exit_red_ok", True),
                     self._v9_tema_exit_check(row),
                 ],
                 "Final Strategy Decision": [

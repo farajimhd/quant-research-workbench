@@ -378,7 +378,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         max_vwap = watch.max_vwap if watch else 0.0
         last_vwap = self._float(row.get("last_vwap"))
         last_open = self._float(row.get("last_open"))
-        reentry_price_reclaim = last_vwap > 0 and last_close > last_vwap
+        reentry_vwap_threshold = last_vwap * (1.0 + max(0.0, self.config.reentry_vwap_buffer_pct) / 100.0) if last_vwap > 0 else 0.0
+        reentry_price_reclaim = reentry_vwap_threshold > 0 and last_close >= reentry_vwap_threshold
         reentry_last_bar_not_red = last_close >= last_open
         reentry_bvd_score = self._float(row.get("last_bearish_volume_divergence_score"))
         reentry_bvd_ok = reentry_bvd_score <= self.config.max_reentry_bvd_score
@@ -386,6 +387,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         reentry_body_break_threshold = self._float(row.get("last_2_body_high"))
         reentry_body_break_ok = current_open > 0 and reentry_body_break_threshold > 0 and current_open > reentry_body_break_threshold
         reentry_close_minus_vwap = last_close - last_vwap if last_vwap > 0 else None
+        reentry_close_minus_vwap_threshold = last_close - reentry_vwap_threshold if reentry_vwap_threshold > 0 else None
+        double_bvd_exit_score = self._float(row.get("last_double_timeframe_bearish_volume_divergence_score"))
+        double_bvd_exit_red_ok = last_close < last_open
+        double_bvd_exit_open = double_bvd_exit_score > self.config.double_bvd_exit_score and double_bvd_exit_red_ok
         immediate_entry_open = (
             price_eligible
             and bool(watch)
@@ -429,12 +434,17 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_pending_symbol_order": pending_symbol_order,
             "long_momentum_v9_no_symbol_position": no_symbol_position,
             "long_momentum_v9_close_minus_vwap": reentry_close_minus_vwap,
+            "long_momentum_v9_reentry_vwap_threshold": reentry_vwap_threshold if reentry_vwap_threshold > 0 else None,
+            "long_momentum_v9_close_minus_reentry_vwap_threshold": reentry_close_minus_vwap_threshold,
             "long_momentum_v9_reentry_price_reclaim": reentry_price_reclaim,
+            "long_momentum_v9_reentry_vwap_buffer_ok": reentry_price_reclaim,
             "long_momentum_v9_reentry_last_bar_not_red": reentry_last_bar_not_red,
             "long_momentum_v9_reentry_bvd_ok": reentry_bvd_ok,
             "long_momentum_v9_reentry_bvd_score": reentry_bvd_score,
             "long_momentum_v9_reentry_body_break_ok": reentry_body_break_ok,
             "long_momentum_v9_reentry_body_break_threshold": reentry_body_break_threshold,
+            "long_momentum_v9_double_bvd_exit_red_ok": double_bvd_exit_red_ok,
+            "long_momentum_v9_double_bvd_exit_open": double_bvd_exit_open,
             "long_momentum_v9_immediate_entry_open": immediate_entry_open,
             "long_momentum_v9_reentry_open": reentry_open,
             "long_momentum_v9_entry_priority": 2 if immediate_entry_open else 1 if reentry_open else 0,
@@ -477,7 +487,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             if str(meta.get("entry_type") or "") == "WATCHLIST_REENTRY":
                 self._trail_reentry_stop(position, bar, meta)
             double_bvd_score = self._float(bar.get("last_double_timeframe_bearish_volume_divergence_score"))
-            if double_bvd_score > self.config.double_bvd_exit_score:
+            double_bvd_red_ok = self._float(bar.get("last_close")) < self._float(bar.get("last_open"))
+            if double_bvd_score > self.config.double_bvd_exit_score and double_bvd_red_ok:
                 limit_price = self._liquid_limit_price("SELL", bar)
                 self._trace_exit(context.timestamp, symbol, "DOUBLE_BVD", position, bar, meta)
                 requests.append(
@@ -489,7 +500,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                         reason="DOUBLE_BVD",
                         limit_price=limit_price,
                         allow_same_bar_fill=True,
-                        tag=self._exit_tag("DOUBLE_BVD", position, bar, meta) + f"|limit={limit_price:.4f}|2xBVD={double_bvd_score:.2f}",
+                        tag=self._exit_tag("DOUBLE_BVD", position, bar, meta) + f"|limit={limit_price:.4f}|2xBVD={double_bvd_score:.2f}|lastRed={double_bvd_red_ok}",
                     )
                 )
                 continue
@@ -982,7 +993,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         if not watch_entry_ready:
             return "watchlist_entry_wait_next_bar"
         if not reentry_price_reclaim:
-            return "watchlist_entry_below_vwap"
+            return "watchlist_entry_below_vwap_buffer"
         if not reentry_last_bar_not_red:
             return "watchlist_entry_red_vwap_reclaim_bar"
         if not reentry_bvd_ok:
