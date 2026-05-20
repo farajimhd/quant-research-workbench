@@ -110,6 +110,7 @@ type ScannerSnapshot = {
 };
 type MomentumDiscoveryQueryState = {
   columns: string;
+  conditions: BackendTableQuery;
   endDate: string;
   featureGroups: string;
   minDayHighMovePct: number;
@@ -1121,6 +1122,14 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
 function MomentumDiscoveryTab({ catalog, scope, records }: { catalog: CatalogPayload | null; scope: Scope; records: RecordRow[] }) {
   const hasDailyBars = records.some((record) => record.exists && record.group === "bars" && record.timeframe === "1d");
   const hasMinuteBars = records.some((record) => record.exists && record.group === "bars" && record.timeframe === "1m");
+  const dailyColumns = useMemo(
+    () => Array.from(new Set(records.filter((record) => record.exists && record.group === "bars" && record.timeframe === "1d").flatMap((record) => record.columns))).sort(),
+    [records]
+  );
+  const minuteBarColumns = useMemo(
+    () => Array.from(new Set(records.filter((record) => record.exists && record.group === "bars" && record.timeframe === "1m").flatMap((record) => record.columns))).sort(),
+    [records]
+  );
   const featureOptions = useMemo(
     () =>
       Array.from(
@@ -1138,6 +1147,7 @@ function MomentumDiscoveryTab({ catalog, scope, records }: { catalog: CatalogPay
   );
   const [draft, setDraft] = useState<MomentumDiscoveryQueryState>({
     columns: "",
+    conditions: { conditions: [], matchMode: "all", sortDirection: "asc" },
     endDate: scope.end_date,
     featureGroups: defaultFeatureGroups,
     minDayHighMovePct: 10,
@@ -1152,6 +1162,11 @@ function MomentumDiscoveryTab({ catalog, scope, records }: { catalog: CatalogPay
   const [chartTarget, setChartTarget] = useState<PreviewChartTarget | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [queryOpen, setQueryOpen] = useState(false);
+  const availableColumns = useMemo(
+    () => momentumDiscoveryAvailableColumns(records, dailyColumns, minuteBarColumns, parseCommaList(draft.featureGroups || defaultFeatureGroups), scope.start_date, scope.end_date),
+    [dailyColumns, defaultFeatureGroups, draft.featureGroups, minuteBarColumns, records, scope.end_date, scope.start_date]
+  );
   const queryKey = applied ? JSON.stringify(applied) : "momentum-discovery-idle";
   const fillPanel = useViewportFillPanel(`${queryKey}:${discovery?.rows.length ?? 0}`);
 
@@ -1167,6 +1182,8 @@ function MomentumDiscoveryTab({ catalog, scope, records }: { catalog: CatalogPay
   useEffect(() => {
     if (!applied || runId === 0) return;
     let active = true;
+    const cleanedQuery = cleanPreviewBackendQuery(applied.conditions);
+    const tableQuery = previewBackendQueryIsActive(cleanedQuery) ? JSON.stringify(cleanedQuery) : undefined;
     setLoading(true);
     setError("");
     api<{ discovery: MomentumDiscoveryPayload }>(
@@ -1180,6 +1197,7 @@ function MomentumDiscoveryTab({ catalog, scope, records }: { catalog: CatalogPay
         start_move_pct: applied.startMovePct / 100,
         row_limit: applied.rowLimit,
         row_offset: applied.rowOffset,
+        table_query: tableQuery,
       })}`
     )
       .then((payload) => {
@@ -1210,6 +1228,7 @@ function MomentumDiscoveryTab({ catalog, scope, records }: { catalog: CatalogPay
   const runDiscovery = (rowOffset = 0) => {
     setApplied({
       ...draft,
+      conditions: cleanPreviewBackendQuery(draft.conditions),
       featureGroups: draft.featureGroups || defaultFeatureGroups,
       minDayHighMovePct: Math.max(0, Number(draft.minDayHighMovePct) || 10),
       rowLimit: Math.max(10, Math.min(5000, Math.round(Number(draft.rowLimit) || 2000))),
@@ -1217,6 +1236,7 @@ function MomentumDiscoveryTab({ catalog, scope, records }: { catalog: CatalogPay
       startMovePct: Math.max(0, Number(draft.startMovePct) || 5),
     });
     setRunId((value) => value + 1);
+    setQueryOpen(false);
   };
 
   return (
@@ -1229,14 +1249,26 @@ function MomentumDiscoveryTab({ catalog, scope, records }: { catalog: CatalogPay
           <InlineNumberField label="Start move" suffix="%" value={draft.startMovePct} onChange={(value) => setDraft({ ...draft, startMovePct: value })} />
           <InlineField label="Feature groups" value={draft.featureGroups || defaultFeatureGroups} width={340} onChange={(value) => setDraft({ ...draft, featureGroups: value })} />
           <InlineNumberField label="Rows" value={draft.rowLimit} onChange={(value) => setDraft({ ...draft, rowLimit: value })} />
+          <button className={queryOpen ? "button active" : "button"} onClick={() => setQueryOpen((value) => !value)} type="button">
+            <SlidersHorizontal size={16} />
+            Query
+          </button>
           <button className="button primary" disabled={loading} onClick={() => runDiscovery(0)} type="button">Run Discovery</button>
           <div className="preview-query-summary">
             <span>{discovery?.rows.length ?? 0} rows</span>
             <span>{discovery?.daily_candidates ?? 0} daily candidates</span>
             <span>{discovery?.feature_groups?.length ? discovery.feature_groups.join(", ") : "bars only"}</span>
             <span>{discovery?.columns?.length ?? 0} columns</span>
+            <span>{backendQueryClauseCount(cleanPreviewBackendQuery(draft.conditions))} query filters</span>
           </div>
         </div>
+        {queryOpen ? (
+          <MomentumDiscoveryQueryPanel
+            availableColumns={availableColumns}
+            onChange={setDraft}
+            query={draft}
+          />
+        ) : null}
       </div>
       {error ? <div className="preview-sample-status error">Momentum discovery failed: {error}</div> : null}
       {discovery?.reason ? <div className="preview-sample-status error">{discovery.reason}</div> : null}
@@ -1330,6 +1362,114 @@ function momentumDiscoveryChartRow(row: Record<string, unknown>): Record<string,
     session_date: sessionDate,
     timeframe: "1m",
   };
+}
+
+function MomentumDiscoveryQueryPanel({
+  availableColumns,
+  onChange,
+  query,
+}: {
+  availableColumns: string[];
+  onChange: (query: MomentumDiscoveryQueryState) => void;
+  query: MomentumDiscoveryQueryState;
+}) {
+  const columnsText = availableColumns.slice(0, 12).join(", ");
+  const conditions = query.conditions.conditions;
+  function updateConditions(next: BackendTableQuery) {
+    onChange({ ...query, conditions: next });
+  }
+  return (
+    <div className="preview-query-panel">
+      <div className="preview-query-grid">
+        <Select label="Sort column" value={query.conditions.sortColumn ?? ""} options={["", ...availableColumns]} onChange={(value) => updateConditions({ ...query.conditions, sortColumn: value || undefined })} />
+        <Select label="Sort direction" value={query.conditions.sortDirection ?? "asc"} options={["asc", "desc"]} onChange={(value) => updateConditions({ ...query.conditions, sortDirection: value === "desc" ? "desc" : "asc" })} />
+        <Select label="Match" value={query.conditions.matchMode ?? "all"} options={["all", "any"]} onChange={(value) => updateConditions({ ...query.conditions, matchMode: value === "any" ? "any" : "all" })} />
+      </div>
+      <div className="field preview-columns-field">
+        <label>Columns</label>
+        <textarea
+          placeholder={columnsText ? `Default: ${columnsText}` : "Leave blank for default discovery columns"}
+          value={query.columns}
+          onChange={(event) => onChange({ ...query, columns: event.target.value })}
+        />
+      </div>
+      <div className="preview-query-conditions">
+        <div className="preview-query-section-header">
+          <span>Filters Applied Before Discovery Loads</span>
+          <button className="table-text-button" onClick={() => updateConditions({ ...query.conditions, conditions: [...conditions, newPreviewCondition(availableColumns)] })} type="button">
+            Add condition
+          </button>
+        </div>
+        {conditions.length ? (
+          conditions.map((condition) => {
+            const operator = PREVIEW_QUERY_OPERATORS.find((item) => item.value === condition.operator) ?? PREVIEW_QUERY_OPERATORS[0];
+            return (
+              <div className="preview-query-condition" key={condition.id}>
+                <select value={condition.column} onChange={(event) => updateConditions(updatePreviewCondition(query.conditions, condition.id, { column: event.target.value }))}>
+                  {availableColumns.map((column) => (
+                    <option key={column} value={column}>{displayName(column)}</option>
+                  ))}
+                </select>
+                <select value={condition.operator} onChange={(event) => updateConditions(updatePreviewCondition(query.conditions, condition.id, { operator: event.target.value as BackendTableQuery["conditions"][number]["operator"] }))}>
+                  {PREVIEW_QUERY_OPERATORS.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
+                {operator.needsValue ? (
+                  <input value={condition.value} onChange={(event) => updateConditions(updatePreviewCondition(query.conditions, condition.id, { value: event.target.value }))} />
+                ) : null}
+                {operator.needsSecondValue ? (
+                  <input value={condition.valueSecondary ?? ""} onChange={(event) => updateConditions(updatePreviewCondition(query.conditions, condition.id, { valueSecondary: event.target.value }))} />
+                ) : null}
+                <button className="table-text-button danger" onClick={() => updateConditions({ ...query.conditions, conditions: conditions.filter((item) => item.id !== condition.id) })} type="button">
+                  Remove
+                </button>
+              </div>
+            );
+          })
+        ) : (
+          <div className="preview-query-empty">No filters. Discovery will load the earliest momentum-start row for every daily winner that crosses the start threshold.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function momentumDiscoveryAvailableColumns(records: RecordRow[], dailyColumns: string[], minuteBarColumns: string[], featureGroups: string[], startDate: string, endDate: string) {
+  const groups = new Set(featureGroups.map((group) => `features_${group}`));
+  const featureColumns = records
+    .filter((record) => record.exists && record.timeframe === "1m" && record.session_date >= startDate && record.session_date <= endDate && groups.has(record.group))
+    .flatMap((record) => record.columns);
+  return Array.from(
+    new Set([
+      "ticker",
+      "discovery_session_date",
+      "bar_time_market",
+      "minute_of_day",
+      "day_open",
+      "day_high",
+      "day_low",
+      "day_close",
+      "day_volume",
+      "day_high_move_pct",
+      "day_close_move_pct",
+      "momentum_start_threshold_price",
+      "momentum_bar_high_move_pct",
+      "momentum_bar_close_move_pct",
+      "momentum_start_bar_open",
+      "momentum_start_move_pct",
+      "discovery_min_day_high_move_pct",
+      ...minuteBarColumns,
+      ...featureColumns,
+      ...dailyColumns.filter((column) => column === "session_date"),
+      ...SCANNER_COMPATIBILITY_COLUMNS,
+    ])
+  ).sort();
+}
+
+function backendQueryClauseCount(query: BackendTableQuery) {
+  const cleaned = cleanPreviewBackendQuery(query);
+  return cleaned.conditions.length + (cleaned.sortColumn ? 1 : 0);
 }
 
 function ScannerFormulaPanel({
