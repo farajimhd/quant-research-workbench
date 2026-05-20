@@ -292,6 +292,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   max_entry_order_quantity: "Maximum BUY shares Long Momentum v9 is allowed to send to the backtest for a single entry or partial-entry remainder order.",
   max_reentry_bvd_score: "Maximum 1-minute bearish volume divergence score allowed for Long Momentum v9 VWAP Reclaim. Scores above this block VWAP Reclaim.",
   reentry_vwap_buffer_pct: "Minimum Long Momentum v9 VWAP Reclaim buffer above the max VWAP of the day. For example, 1 means last close must be at least 1% above day max VWAP.",
+  high_break_take_profit_pct: "Long Momentum v10 High Break Hold take-profit threshold as a ratio, not whole percent. 0.15 means exit when the current open is more than 15% above entry.",
   max_high_break_hold_candidates_per_bar: "Maximum Long Momentum v9 High Break Hold candidates the strategy can process on one bar before cash allocation.",
   max_reentry_candidates_per_bar: "Maximum Long Momentum v9 VWAP Reclaim candidates the strategy can process on one bar after High Break Hold entries.",
   high_break_hold_confirmation_bars: "Number of later bars that must hold the day-high break level before Long Momentum v9 can submit a High Break Hold entry.",
@@ -524,6 +525,7 @@ const STRATEGY_PARAMETER_GROUPS = [
       "high_break_hold_confirmation_bars",
       "high_break_hold_tolerance_ratio",
       "high_break_stop_offset_ratio",
+      "high_break_take_profit_pct",
       "high_break_soft_exit_unlock_profit_pct",
       "first_entry_soft_exit_wait_bars",
       "first_entry_high_lifecycle_exit_enabled",
@@ -652,6 +654,20 @@ const V9_STALE_STRATEGY_PARAMETER_KEYS = new Set([
   "min_first_entry_transactions_vs_prior_3",
   "max_first_entry_candidates_per_bar",
   "max_immediate_entry_candidates_per_bar",
+]);
+
+const V10_STALE_STRATEGY_PARAMETER_KEYS = new Set([
+  ...V9_STALE_STRATEGY_PARAMETER_KEYS,
+  "high_break_soft_exit_unlock_profit_pct",
+  "first_entry_soft_exit_wait_bars",
+  "first_entry_high_lifecycle_exit_enabled",
+  "first_entry_high_near_tolerance_ratio",
+  "first_entry_high_stall_bars",
+  "first_entry_body_lifecycle_exit_enabled",
+  "first_entry_body_fast_ema_bars",
+  "first_entry_body_slow_ema_bars",
+  "first_entry_body_contraction_ratio",
+  "first_entry_body_contraction_bars",
 ]);
 
 const IMPORTANT_STRATEGY_PARAMETER_KEYS = [
@@ -1828,18 +1844,20 @@ function StrategyParameterEditor({ config, onChange }: { config: StrategyConfig;
 }
 
 function strategyParameterGroups(config: StrategyConfig): Array<{ title: string; description: string; keys: string[] }> {
-  if (config.strategy_name === "long_momentum" && String(config.strategy_version || "").toLowerCase() === "v9") {
+  if (config.strategy_name === "long_momentum" && ["v9", "v10"].includes(String(config.strategy_version || "").toLowerCase())) {
     return V9_STRATEGY_PARAMETER_GROUPS;
   }
   return STRATEGY_PARAMETER_GROUPS;
 }
 
 function strategyVisibleParams(config: StrategyConfig): Record<string, StrategyParamValue> {
-  if (config.strategy_name !== "long_momentum" || String(config.strategy_version || "").toLowerCase() !== "v9") {
+  const version = String(config.strategy_version || "").toLowerCase();
+  if (config.strategy_name !== "long_momentum" || !["v9", "v10"].includes(version)) {
     return config.strategy_params;
   }
+  const staleKeys = version === "v10" ? V10_STALE_STRATEGY_PARAMETER_KEYS : V9_STALE_STRATEGY_PARAMETER_KEYS;
   return Object.fromEntries(
-    Object.entries(config.strategy_params).filter(([key]) => !V9_STALE_STRATEGY_PARAMETER_KEYS.has(key))
+    Object.entries(config.strategy_params).filter(([key]) => !staleKeys.has(key))
   ) as Record<string, StrategyParamValue>;
 }
 
@@ -3076,7 +3094,8 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
   const version = String(config.strategy_version || "").toLowerCase();
   const minPrice = strategyNumberParam(params, "min_price", 1);
   const maxPrice = strategyNumberParam(params, "max_price", 10);
-  if (version !== "v9") return interactiveDebugStrategyFilterPresets(config);
+  if (!["v9", "v10"].includes(version)) return interactiveDebugStrategyFilterPresets(config);
+  const versionLabel = version || "v9";
   return [
     {
       filters: {
@@ -3085,8 +3104,8 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
         last_volume: gteFilter(strategyNumberParam(params, "min_watchlist_add_volume", 8_000)),
         last_transactions: gteFilter(strategyNumberParam(params, "min_first_entry_transactions", 100)),
       },
-      label: "v9 Watchlist Add Raw",
-      title: "Apply only the raw/provider inputs for adding a ticker to the v9 watchlist: price range, same-session 5m return, last-bar volume, and transactions.",
+      label: `${versionLabel} Watchlist Add Raw`,
+      title: `Apply only the raw/provider inputs for adding a ticker to the ${versionLabel} watchlist: price range, same-session 5m return, last-bar volume, and transactions.`,
     },
     {
       filters: {
@@ -3099,8 +3118,8 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
         current_open: gteFilter(0),
         long_momentum_v9_high_break_day_high_break_ok: trueFilter(),
       },
-      label: "v9 High Break Raw",
-      title: "Apply the raw/provider inputs for v9 High Break Hold: eligible price, trading window, a known prior day high, and current open hitting or breaking that prior day high.",
+      label: `${versionLabel} High Break Raw`,
+      title: `Apply the raw/provider inputs for ${versionLabel} High Break Hold: eligible price, trading window, a known prior day high, and current open hitting or breaking that prior day high.`,
     },
     {
       filters: {
@@ -3116,15 +3135,15 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
         current_open_above_last_2_body_high: trueFilter(),
         long_momentum_v9_vwap_reclaim_open_not_below_last_body: trueFilter(),
       },
-      label: "v9 VWAP Reclaim Raw",
-      title: "Apply the visible v9 VWAP Reclaim inputs: last close is above the VWAP buffer, last_close >= last_open, last TEMA9 is above buffered TEMA20, 1m BVD is not above the threshold, current_open breaks the highest body of the last two completed bars, and current_open is not below the prior body.",
+      label: `${versionLabel} VWAP Reclaim Raw`,
+      title: `Apply the visible ${versionLabel} VWAP Reclaim inputs: last close is above the VWAP buffer, last_close >= last_open, last TEMA9 is above buffered TEMA20, 1m BVD is not above the threshold, current_open breaks the highest body of the last two completed bars, and current_open is not below the prior body.`,
     },
     {
       filters: {
         last_double_timeframe_bearish_volume_divergence_score: gtFilter(strategyNumberParam(params, "double_bvd_exit_score", 50)),
         last_is_red: trueFilter(),
       },
-      label: "v9 Exit Raw",
+      label: `${versionLabel} Exit Raw`,
       title: "Apply the raw/provider 2xBVD exit input threshold and the non-green completed-candle confirmation. TEMA and pocket exits are visible in the step filter groups and order tags because they compare multiple fields and position state.",
     },
   ];
@@ -3144,7 +3163,8 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
   const maxSpreadBpsMax = strategyNumberParam(params, "max_spread_bps_max", 150);
   const minQuoteValidRatio = strategyNumberParam(params, "min_quote_valid_ratio", 0.8);
   const maxLockedOrCrossedCount = strategyNumberParam(params, "max_locked_or_crossed_count", 0);
-  if (version === "v9") {
+  if (["v9", "v10"].includes(version)) {
+    const versionLabel = version || "v9";
     return [
       {
         filters: {
@@ -3153,8 +3173,8 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
           last_volume: gteFilter(strategyNumberParam(params, "min_watchlist_add_volume", 8_000)),
           last_transactions: gteFilter(strategyNumberParam(params, "min_first_entry_transactions", 100)),
         },
-        label: "v9 Watchlist Add",
-        title: "Apply the visible v9 watchlist-add inputs: price range, provider-built same-session return threshold, last-bar volume, and transactions.",
+        label: `${versionLabel} Watchlist Add`,
+        title: `Apply the visible ${versionLabel} watchlist-add inputs: price range, provider-built same-session return threshold, last-bar volume, and transactions.`,
       },
       {
         filters: {
@@ -3170,8 +3190,8 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
           long_momentum_v9_high_break_hold_available: trueFilter(),
           long_momentum_v9_high_break_hold_entry_open: trueFilter(),
         },
-        label: "v9 High Break Hold",
-        title: "Apply the v9 High Break Hold gates: ticker is on the momentum watchlist, a day-high break was detected, the later-bar hold confirmation passed, and no position or pending order exists.",
+        label: `${versionLabel} High Break Hold`,
+        title: `Apply the ${versionLabel} High Break Hold gates: ticker is on the momentum watchlist, a day-high break was detected, the later-bar hold confirmation passed, and no position or pending order exists.`,
       },
       {
         filters: {
@@ -3190,15 +3210,15 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
           long_momentum_v9_vwap_reclaim_body_break_ok: trueFilter(),
           long_momentum_v9_vwap_reclaim_open_not_below_last_body: trueFilter(),
         },
-        label: "v9 VWAP Reclaim",
-        title: "Apply the v9 VWAP Reclaim gates: ticker is on the momentum watchlist, is not held/pending, last close is above the VWAP buffer, the reclaim bar is not red, last TEMA is open, 1m BVD is not above the threshold, current_open breaks the highest body of the last two completed bars, and current_open is not below the prior body.",
+        label: `${versionLabel} VWAP Reclaim`,
+        title: `Apply the ${versionLabel} VWAP Reclaim gates: ticker is on the momentum watchlist, is not held/pending, last close is above the VWAP buffer, the reclaim bar is not red, last TEMA is open, 1m BVD is not above the threshold, current_open breaks the highest body of the last two completed bars, and current_open is not below the prior body.`,
       },
       {
         filters: {
           long_momentum_v9_entry_open: trueFilter(),
         },
-        label: "v9 Final Entry",
-        title: "Apply the exact v9 final entry decision.",
+        label: `${versionLabel} Final Entry`,
+        title: `Apply the exact ${versionLabel} final entry decision.`,
       },
     ];
   }

@@ -377,7 +377,7 @@ class StepBacktestDebugger(BacktestEngine):
         return copied
 
     def _filter_group_rows(self, rows: list[dict]) -> list[dict]:
-        if self.config.strategy_name == "long_momentum" and str(self.config.strategy_version).lower() == "v9":
+        if self.config.strategy_name == "long_momentum" and str(self.config.strategy_version).lower() in {"v9", "v10"}:
             return self._long_momentum_v9_filter_group_rows(rows)
         if self.config.strategy_name == "long_momentum" and str(self.config.strategy_version).lower() in {"v2", "v3", "v7"}:
             return self._long_momentum_v2_family_filter_group_rows(rows)
