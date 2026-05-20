@@ -2662,7 +2662,7 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
           strategyNumberParam(params, "trading_start_minute", 240),
           strategyNumberParam(params, "trading_end_minute", 1200) - 1,
         ),
-        last_bearish_volume_divergence_score: lteFilter(strategyNumberParam(params, "max_reentry_bvd_score", 50)),
+        last_bearish_volume_divergence_score: lteFilter(strategyNumberParam(params, "max_reentry_bvd_score", 80)),
       },
       label: "v9 Watchlist Entry Raw",
       title: "Apply the raw/provider inputs available before v9 checks watchlist state, last_close > last_vwap, last_close >= last_open, and 1m BVD is not above the threshold.",
