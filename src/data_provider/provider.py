@@ -172,6 +172,44 @@ def add_provider_compatibility_columns(frame: pl.DataFrame, feature_groups: list
         if "session_bar_count" not in names and group_columns:
             result = result.with_columns(pl.cum_count("close").over(group_columns).alias("session_bar_count"))
         result = add_double_timeframe_bearish_volume_divergence(result)
+        names = set(result.columns)
+    if (
+        "volatility" in requested
+        and {"true_range", "close"}.issubset(names)
+        and not {"true_range_ema5", "true_range_ema5_pct"}.issubset(names)
+    ):
+        if "true_range_ema5" not in names:
+            ema5 = pl.col("true_range").ewm_mean(span=5, adjust=False)
+            if group_columns:
+                ema5 = ema5.over(group_columns)
+            result = result.with_columns(ema5.alias("true_range_ema5"))
+            names = set(result.columns)
+        if "true_range_ema5_pct" not in names:
+            result = result.with_columns(
+                pl.when(pl.col("close") > 0)
+                .then(pl.col("true_range_ema5") / pl.col("close"))
+                .otherwise(None)
+                .alias("true_range_ema5_pct")
+            )
+            names = set(result.columns)
+    if (
+        "volatility" in requested
+        and {"true_range", "close"}.issubset(names)
+        and not {"true_range_ema20", "true_range_ema20_pct"}.issubset(names)
+    ):
+        if "true_range_ema20" not in names:
+            ema20 = pl.col("true_range").ewm_mean(span=20, adjust=False)
+            if group_columns:
+                ema20 = ema20.over(group_columns)
+            result = result.with_columns(ema20.alias("true_range_ema20"))
+            names = set(result.columns)
+        if "true_range_ema20_pct" not in names:
+            result = result.with_columns(
+                pl.when(pl.col("close") > 0)
+                .then(pl.col("true_range_ema20") / pl.col("close"))
+                .otherwise(None)
+                .alias("true_range_ema20_pct")
+            )
     return result
 
 
