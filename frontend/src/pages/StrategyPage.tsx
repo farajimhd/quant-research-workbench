@@ -1835,6 +1835,11 @@ const STRATEGY_PARAMETER_LABELS: Record<string, string> = {
   tema9_exit_buffer_pct: "TEMA9 Exit Buffer Ratio"
 };
 
+const WHOLE_PERCENT_STRATEGY_PARAMETERS = new Set([
+  "reentry_vwap_buffer_pct",
+  "vwap_stop_offset_pct"
+]);
+
 function formatParamLabel(key: string): string {
   const labelOverride = STRATEGY_PARAMETER_LABELS[key];
   if (labelOverride) return labelOverride;
@@ -1846,7 +1851,7 @@ function formatParamLabel(key: string): string {
     max: "Max",
     min: "Min",
     orb: "ORB",
-    pct: "%",
+    pct: WHOLE_PERCENT_STRATEGY_PARAMETERS.has(key) ? "%" : "Ratio",
     per: "Per",
     tema: "TEMA",
     to: "to"
