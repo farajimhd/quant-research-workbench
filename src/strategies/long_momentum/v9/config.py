@@ -20,6 +20,7 @@ V9_PARAMETER_FIELDS = (
     "max_risk_fraction_of_cash",
     "max_entry_order_quantity",
     "max_reentry_bvd_score",
+    "min_reentry_macd_hist_z_since_open",
     "vwap_stop_offset_pct",
     "double_bvd_exit_score",
     "profit_giveback_exit_pct",
@@ -44,6 +45,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     max_risk_fraction_of_cash: float = 0.25
     max_entry_order_quantity: int = 3_000
     max_reentry_bvd_score: float = 80.0
+    min_reentry_macd_hist_z_since_open: float = 0.2
     double_bvd_exit_score: float = 50.0
     profit_giveback_exit_pct: float = 0.15
     tema9_exit_buffer_pct: float = -0.01

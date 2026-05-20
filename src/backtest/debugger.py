@@ -403,8 +403,8 @@ class StepBacktestDebugger(BacktestEngine):
                     self._range_check(row, "minute_of_day", self._strategy_param("trading_start_minute", 240.0), self._strategy_param("trading_end_minute", 1200.0) - 1),
                     self._gt_check(row, "last_close", self._number(row, "last_vwap") or 0.0),
                     self._gte_check(row, "last_close", self._number(row, "last_open") or 0.0),
-                    self._lte_check(row, "last_bearish_volume_divergence_score", self._strategy_param("max_reentry_bvd_score", 50.0)),
-                    self._v9_tema_reentry_check(row),
+                    self._lte_check(row, "last_bearish_volume_divergence_score", self._strategy_param("max_reentry_bvd_score", 80.0)),
+                    self._v9_macd_reentry_check(row),
                 ],
                 "Watchlist VWAP Entry Strategy State": [
                     self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
@@ -414,7 +414,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._gt_check(row, "long_momentum_v9_close_minus_vwap", 0.0),
                     self._bool_check(row, "long_momentum_v9_reentry_last_bar_not_red", True),
                     self._bool_check(row, "long_momentum_v9_reentry_bvd_ok", True),
-                    self._bool_check(row, "long_momentum_v9_reentry_tema_ok", True),
+                    self._bool_check(row, "long_momentum_v9_reentry_macd_ok", True),
                 ],
                 "Exit": [
                     self._gt_check(row, "last_double_timeframe_bearish_volume_divergence_score", self._strategy_param("double_bvd_exit_score", 50.0)),
@@ -513,15 +513,14 @@ class StepBacktestDebugger(BacktestEngine):
             f">= current_open_tema9 * (1 + {buffer_pct:g})",
         )
 
-    def _v9_tema_reentry_check(self, row: dict) -> dict:
-        tema9 = self._number(row, "current_open_tema9")
-        tema20 = self._number(row, "current_open_tema20")
-        passed = tema9 is not None and tema20 is not None and tema9 > tema20
+    def _v9_macd_reentry_check(self, row: dict) -> dict:
+        macd_z = self._number(row, "last_macd_hist_z_since_open")
+        threshold = self._strategy_param("min_reentry_macd_hist_z_since_open", 0.2)
         return self._check(
-            "current_open_tema9_above_current_open_tema20",
-            f"current_open_tema9={tema9}, current_open_tema20={tema20}",
-            passed,
-            "> current_open_tema20",
+            "last_macd_hist_z_since_open",
+            macd_z,
+            macd_z is not None and macd_z > threshold,
+            f"> {threshold:g}",
         )
 
     def _lte_check(self, row: dict, key: str, threshold: float, fallback_key: str | None = None) -> dict:
