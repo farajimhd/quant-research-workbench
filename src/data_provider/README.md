@@ -186,6 +186,10 @@ Feature artifacts are split by group so consumers can load only what they need. 
 ### Volatility
 
 - `true_range`: max of current range, `abs(high - prior_close)`, and `abs(low - prior_close)`.
+- `true_range_ema5`: 5-bar EMA of `true_range`, reset per ticker/session.
+- `true_range_ema20`: 20-bar EMA of `true_range`, reset per ticker/session.
+- `true_range_ema5_pct`: `true_range_ema5 / close`.
+- `true_range_ema20_pct`: `true_range_ema20 / close`.
 - `atr14`: 14-bar mean of `true_range`.
 - `bb_mid20`: 20-bar SMA of close.
 - `bb_upper20`: `bb_mid20 + 2 * rolling_std20(close)`.

@@ -178,14 +178,33 @@ Pocketing:
 estimated_bid = current_open - limit_order_offset_dollars
 estimated_ask = current_open
 
-if estimated_bid >= entry_price * (1 + pocket_profit_pct):
+if adaptive_pocket_enabled:
+    raw_pocket_pct = last_true_range_ema5_pct * adaptive_pocket_vol_multiplier
+    active_pocket_pct = clamp(
+        raw_pocket_pct,
+        adaptive_pocket_min_profit_pct,
+        adaptive_pocket_max_profit_pct,
+    )
+else:
+    active_pocket_pct = pocket_profit_pct
+
+if estimated_bid >= entry_price * (1 + active_pocket_pct):
     sell current position at estimated_bid
 ```
 
-The default `pocket_profit_pct` is `0.03`. Pocketing only exits the current
-position. v9 does not reenter on the pocket candle; after the fill is reported
-back to the strategy, the ticker remains on the day momentum watchlist and can
-enter again on a later bar only through the normal watchlist reentry gates.
+Adaptive pocketing is enabled by default. Its default parameters are
+`adaptive_pocket_vol_multiplier = 1.5`, `adaptive_pocket_min_profit_pct = 0.025`,
+and `adaptive_pocket_max_profit_pct = 0.06`. The fixed `pocket_profit_pct`
+default remains `0.03`; it is used when `adaptive_pocket_enabled = false`, and
+as an explicit fallback if adaptive mode cannot read provider-built short
+volatility. The debug scanner rows expose the pocket mode, volatility input,
+calculated pocket percent, trigger price, estimated bid, and remaining distance
+to the trigger on every evaluated position bar.
+
+Pocketing only exits the current position. v9 does not reenter on the pocket
+candle; after the fill is reported back to the strategy, the ticker remains on
+the day momentum watchlist and can enter again on a later bar only through the
+normal watchlist reentry gates.
 
 Emergency exit:
 

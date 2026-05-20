@@ -95,6 +95,10 @@ FEATURE_COLUMNS: dict[str, list[str]] = {
     "volatility": [
         "bar_id",
         "true_range",
+        "true_range_ema5",
+        "true_range_ema20",
+        "true_range_ema5_pct",
+        "true_range_ema20_pct",
         "atr14",
         "bb_mid20",
         "bb_upper20",
@@ -624,6 +628,14 @@ def add_feature_columns(frame: FeatureFrame) -> FeatureFrame:
             rolling_z("transactions", 20, "transactions_z20"),
             pl.col("volume").rolling_mean(3, min_samples=1).over(["ticker", "session_date"]).alias("volume_avg_3"),
             (pl.col("volume").cum_sum().over(["ticker", "session_date"]) / pl.cum_count("volume").over(["ticker", "session_date"])).alias("avg_volume_so_far"),
+        )
+        .with_columns(
+            pl.col("true_range").ewm_mean(span=5, adjust=False).over(session_group).alias("true_range_ema5"),
+            pl.col("true_range").ewm_mean(span=20, adjust=False).over(session_group).alias("true_range_ema20"),
+        )
+        .with_columns(
+            pl.when(pl.col("close") > 0).then(pl.col("true_range_ema5") / pl.col("close")).otherwise(None).alias("true_range_ema5_pct"),
+            pl.when(pl.col("close") > 0).then(pl.col("true_range_ema20") / pl.col("close")).otherwise(None).alias("true_range_ema20_pct"),
         )
         .with_columns(
             pl.when(pl.col("avg_volume_so_far") > 0)

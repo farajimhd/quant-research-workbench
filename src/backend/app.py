@@ -1084,7 +1084,7 @@ def submit_long_momentum_v9_feature_build(payload: BuildSubmit) -> dict[str, Any
         start_date=build_start,
         end_date=payload.end_date,
         timeframes=["1m"],
-        feature_groups=["core", "momentum", "session", "volume_liquidity"],
+        feature_groups=["core", "momentum", "session", "volatility", "volume_liquidity"],
         supervision_groups=[],
         rebuild_mode="force_rebuild",
         tickers=None,

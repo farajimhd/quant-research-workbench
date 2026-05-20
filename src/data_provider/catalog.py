@@ -2076,7 +2076,7 @@ def knowledge_for_column(column: str, group: str, category: str, title: str) -> 
                 "RSI ignores volume and intrabar path, so confirm with participation and structure.",
             ],
         )
-    if lower.startswith("atr") or lower == "true_range":
+    if lower.startswith("atr") or lower.startswith("true_range"):
         return knowledge_block(
             short="Volatility measure based on true range.",
             detailed="ATR smooths true range to estimate recent realized volatility.",

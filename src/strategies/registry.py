@@ -410,8 +410,8 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
         "Live-safe day momentum watchlist version: completed-bar 5-minute return, volume, and transactions add a ticker "
         "to a separate day watchlist, strict 1-minute transaction impulse rules trigger First Entry, simultaneous First Entries split "
         "cash, no-cash First Entries rotate out existing positions, lower-priority VWAP/TEMA/two-bar body-break reentries remain "
-        "available after exits, and in-position pocketing immediately rebuys by default with a tight dedicated stop. "
-        "Main exits use red-candle 2-minute BVD."
+        "available after exits, and in-position pocketing can use either a fixed threshold or an adaptive short-volatility threshold. "
+        "Pocket exits do not reenter on the same bar. Main exits use red-candle 2-minute BVD."
     ),
     ("orb_5m_momentum", "v1"): (
         "Baseline provider-backed ORB momentum version with daily context, opening-range setup scoring, 5-minute momentum "

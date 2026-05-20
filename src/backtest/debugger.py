@@ -437,6 +437,10 @@ class StepBacktestDebugger(BacktestEngine):
                     self._bool_check(row, "long_momentum_v9_double_bvd_exit_red_ok", True),
                     self._v9_tema_exit_check(row),
                 ],
+                "Pocket Exit": [
+                    self._gt_check(row, "held_quantity", 0.0),
+                    self._v9_pocket_threshold_check(row),
+                ],
                 "Final Strategy Decision": [
                     self._check(
                         "long_momentum_v9_immediate_or_watchlist_entry_open",
@@ -551,6 +555,20 @@ class StepBacktestDebugger(BacktestEngine):
             f"current_open={current_open}, last_2_body_high={threshold}",
             current_open is not None and threshold is not None and current_open > threshold,
             "current_open > last_2_body_high",
+        )
+
+    def _v9_pocket_threshold_check(self, row: dict) -> dict:
+        estimated_bid = self._number(row, "long_momentum_v9_pocket_estimated_bid")
+        trigger_price = self._number(row, "long_momentum_v9_pocket_trigger_price")
+        pocket_pct = self._number(row, "long_momentum_v9_pocket_pct")
+        vol_pct = self._number(row, "long_momentum_v9_pocket_vol_pct")
+        mode = row.get("long_momentum_v9_pocket_mode")
+        passed = estimated_bid is not None and trigger_price is not None and estimated_bid >= trigger_price
+        return self._check(
+            "long_momentum_v9_pocket_estimated_bid_vs_trigger",
+            f"mode={mode}, estimated_bid={estimated_bid}, trigger={trigger_price}, pocket_pct={pocket_pct}, vol_pct={vol_pct}",
+            passed,
+            "estimated bid >= entry * (1 + pocket pct)",
         )
 
     def _lte_check(self, row: dict, key: str, threshold: float, fallback_key: str | None = None) -> dict:

@@ -33,6 +33,11 @@ REQUIRED_V9_COLUMNS = (
     "last_double_timeframe_bearish_volume_divergence_score",
 )
 
+ADAPTIVE_POCKET_V9_COLUMNS = (
+    "last_true_range_ema5",
+    "last_true_range_ema5_pct",
+)
+
 
 @dataclass(slots=True)
 class MomentumWatch:
@@ -66,9 +71,12 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         self.last_scanner_rows: list[dict] = []
 
     def data_requirements(self) -> DataRequirements:
+        feature_groups = ["core", "momentum", "session", "volume_liquidity"]
+        if self.config.adaptive_pocket_enabled:
+            feature_groups.append("volatility")
         return DataRequirements(
             event_timeframe="1m",
-            feature_groups=("core", "momentum", "session", "volume_liquidity"),
+            feature_groups=tuple(feature_groups),
             required_columns=(
                 "ticker",
                 "bar_time_market",
@@ -235,12 +243,16 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         return max(0.01, open_price - offset)
 
     def _validate_provider_columns(self, frame: pl.DataFrame) -> None:
-        missing = [column for column in REQUIRED_V9_COLUMNS if column not in frame.columns]
+        required_columns = list(REQUIRED_V9_COLUMNS)
+        if self.config.adaptive_pocket_enabled:
+            required_columns.extend(ADAPTIVE_POCKET_V9_COLUMNS)
+        missing = [column for column in required_columns if column not in frame.columns]
         if missing:
             date_text = self.session_date.isoformat() if self.session_date else "unknown session"
+            feature_text = "core, momentum, volatility, and volume_liquidity" if self.config.adaptive_pocket_enabled else "core, momentum, and volume_liquidity"
             raise ValueError(
-                f"Long Momentum v9 requires provider-built strategy-time core, momentum, and volume/liquidity features for {date_text}; "
-                f"missing columns: {', '.join(missing)}. Rebuild market data with current core, momentum, and volume_liquidity features."
+                f"Long Momentum v9 requires provider-built strategy-time {feature_text} features for {date_text}; "
+                f"missing columns: {', '.join(missing)}. Rebuild market data with current core, momentum, volatility, and volume_liquidity features."
             )
 
     def _with_last_5m_return(self, frame: pl.DataFrame) -> pl.DataFrame:
@@ -400,6 +412,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         double_bvd_exit_score = self._float(row.get("last_double_timeframe_bearish_volume_divergence_score"))
         double_bvd_exit_red_ok = last_close < last_open
         double_bvd_exit_open = double_bvd_exit_score > self.config.double_bvd_exit_score and double_bvd_exit_red_ok
+        pocket_state = self._pocket_state(row, portfolio.positions.get(ticker))
         immediate_entry_open = (
             price_eligible
             and bool(watch)
@@ -459,6 +472,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_reentry_body_break_threshold": reentry_body_break_threshold,
             "long_momentum_v9_double_bvd_exit_red_ok": double_bvd_exit_red_ok,
             "long_momentum_v9_double_bvd_exit_open": double_bvd_exit_open,
+            **pocket_state,
             "long_momentum_v9_immediate_entry_open": immediate_entry_open,
             "long_momentum_v9_reentry_open": reentry_open,
             "long_momentum_v9_entry_priority": 2 if immediate_entry_open else 1 if reentry_open else 0,
@@ -501,6 +515,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             meta = self._position_meta(symbol, position)
             if str(meta.get("entry_type") or "") == "WATCHLIST_REENTRY":
                 self._trail_reentry_stop(position, bar, meta)
+            pocket_state = self._pocket_state(bar, position)
+            self._trace_pocket_evaluation(context.timestamp, symbol, position, bar, meta, pocket_state)
             double_bvd_score = self._float(bar.get("last_double_timeframe_bearish_volume_divergence_score"))
             double_bvd_red_ok = self._float(bar.get("last_close")) < self._float(bar.get("last_open"))
             if double_bvd_score > self.config.double_bvd_exit_score and double_bvd_red_ok:
@@ -519,7 +535,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     )
                 )
                 continue
-            pocket_requests = self._pocket_requests(context.timestamp, symbol, position, bar, meta, portfolio)
+            pocket_requests = self._pocket_requests(context.timestamp, symbol, position, bar, meta, portfolio, pocket_state)
             if pocket_requests:
                 requests.extend(pocket_requests)
                 continue
@@ -656,13 +672,14 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         bar: dict,
         meta: dict,
         portfolio: Portfolio,
+        pocket_state: dict[str, Any],
     ) -> list[OrderRequest]:
-        pocket_pct = max(0.0, self.config.pocket_profit_pct)
+        pocket_pct = self._float(pocket_state.get("long_momentum_v9_pocket_pct"))
         if pocket_pct <= 0:
             return []
-        sell_limit = self._liquid_limit_price("SELL", bar)
-        trigger_price = position.entry_price * (1.0 + pocket_pct)
-        if sell_limit <= 0 or sell_limit < trigger_price:
+        sell_limit = self._float(pocket_state.get("long_momentum_v9_pocket_estimated_bid"))
+        trigger_price = self._float(pocket_state.get("long_momentum_v9_pocket_trigger_price"))
+        if not pocket_state.get("long_momentum_v9_pocket_open"):
             return []
         quantity = int(position.quantity)
         if quantity <= 0:
@@ -674,7 +691,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
 
         sell_tag = (
             self._exit_tag("POCKET_PROFIT", position, bar, meta)
-            + f"|limit={sell_limit:.4f}|pocketPct={pocket_pct:.4f}|trigger={trigger_price:.4f}"
+            + f"|limit={sell_limit:.4f}|pocketMode={pocket_state.get('long_momentum_v9_pocket_mode')}"
+            + f"|pocketPct={pocket_pct:.4f}|trigger={trigger_price:.4f}"
+            + f"|volPct={self._float(pocket_state.get('long_momentum_v9_pocket_vol_pct')):.4f}"
+            + f"|fixedPct={self.config.pocket_profit_pct:.4f}"
         )
         self._trace_exit(timestamp, symbol, "POCKET_PROFIT", position, bar, meta)
         requests = [
@@ -690,6 +710,92 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             ),
         ]
         return requests
+
+    def _pocket_state(self, row: dict, position) -> dict[str, Any]:
+        fixed_pct = max(0.0, self.config.pocket_profit_pct)
+        min_pct = max(0.0, self.config.adaptive_pocket_min_profit_pct)
+        max_pct = max(min_pct, self.config.adaptive_pocket_max_profit_pct)
+        vol_pct = self._float(row.get("last_true_range_ema5_pct"))
+        if vol_pct <= 0:
+            true_range_ema5 = self._float(row.get("last_true_range_ema5"))
+            last_close = self._float(row.get("last_close"))
+            vol_pct = true_range_ema5 / last_close if true_range_ema5 > 0 and last_close > 0 else 0.0
+
+        mode = "fixed"
+        unclamped_pct = fixed_pct
+        pocket_pct = fixed_pct
+        if self.config.adaptive_pocket_enabled:
+            if vol_pct > 0:
+                mode = "adaptive"
+                unclamped_pct = vol_pct * max(0.0, self.config.adaptive_pocket_vol_multiplier)
+                pocket_pct = min(max(unclamped_pct, min_pct), max_pct)
+            else:
+                mode = "adaptive_missing_vol_fixed"
+
+        estimated_bid = self._liquid_limit_price("SELL", row)
+        entry_price = self._float(getattr(position, "entry_price", 0.0)) if position is not None else 0.0
+        quantity = int(getattr(position, "quantity", 0) or 0) if position is not None else 0
+        trigger_price = entry_price * (1.0 + pocket_pct) if entry_price > 0 and pocket_pct > 0 else 0.0
+        remaining_to_trigger = trigger_price - estimated_bid if trigger_price > 0 and estimated_bid > 0 else None
+        pocket_open = bool(quantity > 0 and estimated_bid > 0 and trigger_price > 0 and estimated_bid >= trigger_price)
+        return {
+            "long_momentum_v9_pocket_active": quantity > 0,
+            "long_momentum_v9_pocket_open": pocket_open,
+            "long_momentum_v9_pocket_mode": mode,
+            "long_momentum_v9_pocket_pct": pocket_pct,
+            "long_momentum_v9_pocket_fixed_pct": fixed_pct,
+            "long_momentum_v9_pocket_unclamped_pct": unclamped_pct,
+            "long_momentum_v9_pocket_vol_pct": vol_pct,
+            "long_momentum_v9_pocket_vol_multiplier": self.config.adaptive_pocket_vol_multiplier,
+            "long_momentum_v9_pocket_min_profit_pct": min_pct,
+            "long_momentum_v9_pocket_max_profit_pct": max_pct,
+            "long_momentum_v9_pocket_estimated_bid": estimated_bid,
+            "long_momentum_v9_pocket_entry_price": entry_price,
+            "long_momentum_v9_pocket_trigger_price": trigger_price,
+            "long_momentum_v9_pocket_remaining_to_trigger": remaining_to_trigger,
+            "long_momentum_v9_pocket_true_range_ema5": self._float(row.get("last_true_range_ema5")),
+        }
+
+    def _trace_pocket_evaluation(
+        self,
+        timestamp: datetime,
+        symbol: str,
+        position,
+        bar: dict,
+        meta: dict,
+        pocket_state: dict[str, Any],
+    ) -> None:
+        if not self.observability:
+            return
+        self.observability.trace(
+            timestamp=timestamp,
+            ticker=symbol,
+            stage="exit",
+            event_type="pocket_evaluation",
+            decision="submit_order" if pocket_state.get("long_momentum_v9_pocket_open") else "hold_position",
+            reason_code="POCKET_PROFIT_READY" if pocket_state.get("long_momentum_v9_pocket_open") else "POCKET_WAIT",
+            reason="Evaluated Long Momentum v9 pocket-profit threshold for the open position.",
+            values={
+                "entry_price": getattr(position, "entry_price", None),
+                "quantity": getattr(position, "quantity", None),
+                "current_open": self._bar_open(bar),
+                "estimated_bid": pocket_state.get("long_momentum_v9_pocket_estimated_bid"),
+                "pocket_mode": pocket_state.get("long_momentum_v9_pocket_mode"),
+                "pocket_pct": pocket_state.get("long_momentum_v9_pocket_pct"),
+                "fixed_pct": pocket_state.get("long_momentum_v9_pocket_fixed_pct"),
+                "vol_pct": pocket_state.get("long_momentum_v9_pocket_vol_pct"),
+                "vol_multiplier": pocket_state.get("long_momentum_v9_pocket_vol_multiplier"),
+                "min_profit_pct": pocket_state.get("long_momentum_v9_pocket_min_profit_pct"),
+                "max_profit_pct": pocket_state.get("long_momentum_v9_pocket_max_profit_pct"),
+                "unclamped_pct": pocket_state.get("long_momentum_v9_pocket_unclamped_pct"),
+                "trigger_price": pocket_state.get("long_momentum_v9_pocket_trigger_price"),
+                "remaining_to_trigger": pocket_state.get("long_momentum_v9_pocket_remaining_to_trigger"),
+                "last_true_range_ema5": pocket_state.get("long_momentum_v9_pocket_true_range_ema5"),
+                "last_true_range_ema5_pct": bar.get("last_true_range_ema5_pct"),
+                "entry_type": meta.get("entry_type"),
+            },
+            force=True,
+        )
 
     def _exit_tag(self, reason: str, position, bar: dict | None, meta: dict) -> str:
         current_open = self._bar_open(bar or {})
@@ -760,6 +866,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             row = self.states.get(watch.ticker).row if watch.ticker in self.states else {}
             last_close = self._float(row.get("last_close"))
             last_vwap = self._float(row.get("last_vwap"))
+            pocket_state = self._pocket_state(row, portfolio.positions.get(watch.ticker))
             rows.append(
                 {
                     "timestamp": context.timestamp,
@@ -782,6 +889,14 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     "last_close_minus_vwap": last_close - last_vwap if last_vwap > 0 else None,
                     "last_tema_open": row.get("last_tema_open"),
                     "last_double_timeframe_bearish_volume_divergence_score": row.get("last_double_timeframe_bearish_volume_divergence_score"),
+                    "long_momentum_v9_pocket_mode": pocket_state.get("long_momentum_v9_pocket_mode"),
+                    "long_momentum_v9_pocket_pct": pocket_state.get("long_momentum_v9_pocket_pct"),
+                    "long_momentum_v9_pocket_vol_pct": pocket_state.get("long_momentum_v9_pocket_vol_pct"),
+                    "long_momentum_v9_pocket_estimated_bid": pocket_state.get("long_momentum_v9_pocket_estimated_bid"),
+                    "long_momentum_v9_pocket_trigger_price": pocket_state.get("long_momentum_v9_pocket_trigger_price"),
+                    "long_momentum_v9_pocket_remaining_to_trigger": pocket_state.get("long_momentum_v9_pocket_remaining_to_trigger"),
+                    "long_momentum_v9_pocket_open": pocket_state.get("long_momentum_v9_pocket_open"),
+                    "last_true_range_ema5_pct": row.get("last_true_range_ema5_pct"),
                 }
             )
         rows.sort(key=lambda item: (str(item["watchlist_state"]) == "held", self._float(item.get("last_5m_return"))), reverse=True)
