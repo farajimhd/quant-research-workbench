@@ -732,7 +732,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             else:
                 mode = "adaptive_missing_vol_fixed"
 
-        estimated_bid = self._liquid_limit_price("SELL", row)
+        current_open = self._bar_open(row)
+        estimated_bid = current_open
         entry_price = self._float(getattr(position, "entry_price", 0.0)) if position is not None else 0.0
         quantity = int(getattr(position, "quantity", 0) or 0) if position is not None else 0
         trigger_price = entry_price * (1.0 + pocket_pct) if entry_price > 0 and pocket_pct > 0 else 0.0
@@ -749,6 +750,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_pocket_vol_multiplier": self.config.adaptive_pocket_vol_multiplier,
             "long_momentum_v9_pocket_min_profit_pct": min_pct,
             "long_momentum_v9_pocket_max_profit_pct": max_pct,
+            "long_momentum_v9_pocket_current_open": current_open,
+            "long_momentum_v9_pocket_sell_offset": self.config.limit_order_offset_dollars,
             "long_momentum_v9_pocket_estimated_bid": estimated_bid,
             "long_momentum_v9_pocket_entry_price": entry_price,
             "long_momentum_v9_pocket_trigger_price": trigger_price,
@@ -780,6 +783,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 "quantity": getattr(position, "quantity", None),
                 "current_open": self._bar_open(bar),
                 "estimated_bid": pocket_state.get("long_momentum_v9_pocket_estimated_bid"),
+                "sell_offset_not_applied_to_pocket_bid": pocket_state.get("long_momentum_v9_pocket_sell_offset"),
                 "pocket_mode": pocket_state.get("long_momentum_v9_pocket_mode"),
                 "pocket_pct": pocket_state.get("long_momentum_v9_pocket_pct"),
                 "fixed_pct": pocket_state.get("long_momentum_v9_pocket_fixed_pct"),
@@ -889,9 +893,12 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     "last_close_minus_vwap": last_close - last_vwap if last_vwap > 0 else None,
                     "last_tema_open": row.get("last_tema_open"),
                     "last_double_timeframe_bearish_volume_divergence_score": row.get("last_double_timeframe_bearish_volume_divergence_score"),
+                    "current_open": row.get("current_open"),
                     "long_momentum_v9_pocket_mode": pocket_state.get("long_momentum_v9_pocket_mode"),
                     "long_momentum_v9_pocket_pct": pocket_state.get("long_momentum_v9_pocket_pct"),
                     "long_momentum_v9_pocket_vol_pct": pocket_state.get("long_momentum_v9_pocket_vol_pct"),
+                    "long_momentum_v9_pocket_current_open": pocket_state.get("long_momentum_v9_pocket_current_open"),
+                    "long_momentum_v9_pocket_sell_offset": pocket_state.get("long_momentum_v9_pocket_sell_offset"),
                     "long_momentum_v9_pocket_estimated_bid": pocket_state.get("long_momentum_v9_pocket_estimated_bid"),
                     "long_momentum_v9_pocket_trigger_price": pocket_state.get("long_momentum_v9_pocket_trigger_price"),
                     "long_momentum_v9_pocket_remaining_to_trigger": pocket_state.get("long_momentum_v9_pocket_remaining_to_trigger"),

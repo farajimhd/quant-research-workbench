@@ -3350,6 +3350,8 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_pocket_fixed_pct",
   "long_momentum_v9_pocket_unclamped_pct",
   "long_momentum_v9_pocket_vol_pct",
+  "long_momentum_v9_pocket_current_open",
+  "long_momentum_v9_pocket_sell_offset",
   "long_momentum_v9_pocket_estimated_bid",
   "long_momentum_v9_pocket_entry_price",
   "long_momentum_v9_pocket_trigger_price",

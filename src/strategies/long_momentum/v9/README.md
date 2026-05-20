@@ -175,7 +175,7 @@ red bar, v9 exits immediately at the current open.
 Pocketing:
 
 ```text
-estimated_bid = current_open - limit_order_offset_dollars
+estimated_bid = current_open
 estimated_ask = current_open
 
 if adaptive_pocket_enabled:
@@ -197,9 +197,11 @@ Adaptive pocketing is enabled by default. Its default parameters are
 and `adaptive_pocket_max_profit_pct = 0.06`. The fixed `pocket_profit_pct`
 default remains `0.03`; it is used when `adaptive_pocket_enabled = false`, and
 as an explicit fallback if adaptive mode cannot read provider-built short
-volatility. The debug scanner rows expose the pocket mode, volatility input,
-calculated pocket percent, trigger price, estimated bid, and remaining distance
-to the trigger on every evaluated position bar.
+volatility. Pocketing uses the actionable `current_open` directly as the
+estimated bid, instead of the prior completed close or the general sell-order
+offset. The debug scanner rows expose the pocket mode, volatility input,
+calculated pocket percent, current open, trigger price, estimated bid, and
+remaining distance to the trigger on every evaluated position bar.
 
 Pocketing only exits the current position. v9 does not reenter on the pocket
 candle; after the fill is reported back to the strategy, the ticker remains on
