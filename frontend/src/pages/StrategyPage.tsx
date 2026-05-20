@@ -286,6 +286,11 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   max_first_entry_candidates_per_bar: "Maximum Long Momentum v9 First Entry day-high-break candidates the strategy can process on one bar before cash allocation.",
   max_reentry_candidates_per_bar: "Maximum Long Momentum v9 watchlist reentry candidates the strategy can process on one bar after First Entries.",
   first_entry_soft_exit_wait_bars: "Number of completed bars after a Long Momentum v9 First Entry fill where TEMA, 2xBVD, and pocket exits are disabled while the protective VWAP stop remains active.",
+  first_entry_body_lifecycle_exit_enabled: "When enabled, Long Momentum v9 First Entry soft exits require green-body momentum to contract from its peak before TEMA, 2xBVD, or pocketing can close the position.",
+  first_entry_body_fast_ema_bars: "Fast EMA length for the First Entry green-body percentage lifecycle tracker.",
+  first_entry_body_slow_ema_bars: "Slow EMA length for the First Entry green-body percentage lifecycle tracker shown in debug.",
+  first_entry_body_contraction_ratio: "First Entry body-strength ratio threshold as a ratio, not whole percent. 0.65 means soft exits wait until fast green-body EMA contracts below 65% of its peak.",
+  first_entry_body_contraction_bars: "Number of consecutive First Entry body-contraction bars required before TEMA, 2xBVD, and pocket exits are allowed.",
   watchlist_snapshot_limit: "Maximum Long Momentum v9 day-momentum watchlist rows saved in debug and observability snapshots.",
   min_macd_hist_z_since_open: "Minimum MACD histogram z-score since the open required before a Long Momentum entry.",
   trading_start_minute: "First minute of day where the strategy can evaluate entries. 240 is 04:00 ET.",
@@ -502,6 +507,11 @@ const STRATEGY_PARAMETER_GROUPS = [
       "vwap_stop_buffer_pct",
       "vwap_stop_offset_pct",
       "first_entry_soft_exit_wait_bars",
+      "first_entry_body_lifecycle_exit_enabled",
+      "first_entry_body_fast_ema_bars",
+      "first_entry_body_slow_ema_bars",
+      "first_entry_body_contraction_ratio",
+      "first_entry_body_contraction_bars",
       "adaptive_pocket_enabled",
       "pocket_profit_pct",
       "adaptive_pocket_vol_multiplier",
@@ -1834,7 +1844,8 @@ function HelpButton({ help, label }: { help: string; label: string }) {
 
 const STRATEGY_PARAMETER_LABELS: Record<string, string> = {
   tema9_open_buffer_pct: "TEMA9 Open Buffer Ratio",
-  tema9_exit_buffer_pct: "TEMA9 Exit Buffer Ratio"
+  tema9_exit_buffer_pct: "TEMA9 Exit Buffer Ratio",
+  first_entry_body_contraction_ratio: "First Entry Body Contraction Ratio"
 };
 
 const WHOLE_PERCENT_STRATEGY_PARAMETERS = new Set([
@@ -3374,6 +3385,21 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_pocket_trigger_price",
   "long_momentum_v9_pocket_remaining_to_trigger",
   "long_momentum_v9_pocket_true_range_ema5",
+  "long_momentum_v9_first_entry_body_lifecycle_enabled",
+  "long_momentum_v9_first_entry_body_bars_observed",
+  "long_momentum_v9_first_entry_green_body",
+  "long_momentum_v9_first_entry_green_body_pct",
+  "long_momentum_v9_first_entry_green_body_ema_fast",
+  "long_momentum_v9_first_entry_green_body_ema_slow",
+  "long_momentum_v9_first_entry_green_body_peak_ema_fast",
+  "long_momentum_v9_first_entry_body_strength_ratio",
+  "long_momentum_v9_first_entry_body_contracting_now",
+  "long_momentum_v9_first_entry_body_contraction_count",
+  "long_momentum_v9_first_entry_body_contraction_required",
+  "long_momentum_v9_first_entry_body_contraction_ratio_threshold",
+  "long_momentum_v9_first_entry_body_contraction_confirmed",
+  "long_momentum_v9_first_entry_soft_exit_wait_bars_remaining",
+  "long_momentum_v9_first_entry_soft_exits_allowed",
   "last_true_range_ema5",
   "last_true_range_ema5_pct",
   "long_momentum_v9_immediate_entry_open",

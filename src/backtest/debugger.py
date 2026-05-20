@@ -442,6 +442,22 @@ class StepBacktestDebugger(BacktestEngine):
                     self._gt_check(row, "held_quantity", 0.0),
                     self._v9_pocket_threshold_check(row),
                 ],
+                "First Entry Body Lifecycle": [
+                    self._bool_check(row, "long_momentum_v9_first_entry_body_lifecycle_enabled", True),
+                    self._gte_check(row, "long_momentum_v9_first_entry_body_bars_observed", 0.0),
+                    self._lte_check(
+                        row,
+                        "long_momentum_v9_first_entry_body_strength_ratio",
+                        self._strategy_param("first_entry_body_contraction_ratio", 0.65),
+                    ),
+                    self._gte_check(
+                        row,
+                        "long_momentum_v9_first_entry_body_contraction_count",
+                        self._strategy_param("first_entry_body_contraction_bars", 2.0),
+                    ),
+                    self._bool_check(row, "long_momentum_v9_first_entry_body_contraction_confirmed", True),
+                    self._bool_check(row, "long_momentum_v9_first_entry_soft_exits_allowed", True),
+                ],
                 "Final Strategy Decision": [
                     self._check(
                         "long_momentum_v9_first_or_watchlist_entry_open",

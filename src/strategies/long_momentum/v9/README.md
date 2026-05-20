@@ -79,6 +79,35 @@ Entry fill, the soft exits are disabled:
 The protective VWAP stop remains active during this wait. The default wait is
 `3` bars.
 
+After that fixed wait, First Entry can optionally keep soft exits disabled until
+the green-body lifecycle contracts from its peak. This is controlled by
+`first_entry_body_lifecycle_exit_enabled`, which is enabled by default.
+
+On each completed bar after the First Entry fill, v9 calculates:
+
+```text
+green_body = max(last_close - last_open, 0)
+green_body_pct = green_body / last_open
+green_body_ema_fast = EMA(green_body_pct, first_entry_body_fast_ema_bars)
+green_body_ema_slow = EMA(green_body_pct, first_entry_body_slow_ema_bars)
+peak_green_body_ema_fast = max(green_body_ema_fast since First Entry)
+body_strength_ratio = green_body_ema_fast / peak_green_body_ema_fast
+```
+
+Soft exits become eligible only when:
+
+```text
+body_strength_ratio <= first_entry_body_contraction_ratio
+for first_entry_body_contraction_bars consecutive completed bars
+```
+
+Defaults are `first_entry_body_fast_ema_bars = 3`,
+`first_entry_body_slow_ema_bars = 8`,
+`first_entry_body_contraction_ratio = 0.65`, and
+`first_entry_body_contraction_bars = 2`. This lets First Entry stay open during
+the body-expansion phase and makes TEMA, 2xBVD, and pocketing act only after
+the move has started to contract. The stop remains active the whole time.
+
 ## Watchlist VWAP Reentry
 
 A ticker can only use the VWAP reentry after its First Entry has filled at

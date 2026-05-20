@@ -326,6 +326,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                         meta["entry_type"] = "FIRST_ENTRY"
                         if "soft_exit_wait_bars_remaining" not in meta:
                             meta["soft_exit_wait_bars_remaining"] = max(0, int(self.config.first_entry_soft_exit_wait_bars))
+                        meta.setdefault("first_entry_body_bars_observed", 0)
                         meta["entry_fill_timestamp"] = context.timestamp
                     elif "WATCHLIST_REENTRY" in tag:
                         meta["entry_type"] = "WATCHLIST_REENTRY"
@@ -447,6 +448,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         double_bvd_exit_red_ok = last_close <= last_open
         double_bvd_exit_open = double_bvd_exit_score > self.config.double_bvd_exit_score and double_bvd_exit_red_ok
         pocket_state = self._pocket_state(row, portfolio.positions.get(ticker))
+        first_entry_body_state = self._first_entry_body_cycle_state(self.position_meta.get(ticker, {}))
         first_entry_open = (
             price_eligible
             and bool(watch)
@@ -512,6 +514,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_double_bvd_exit_red_ok": double_bvd_exit_red_ok,
             "long_momentum_v9_double_bvd_exit_open": double_bvd_exit_open,
             **pocket_state,
+            **first_entry_body_state,
             "long_momentum_v9_immediate_entry_open": False,
             "long_momentum_v9_first_entry_open": first_entry_open,
             "long_momentum_v9_reentry_open": reentry_open,
@@ -560,6 +563,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 self._trail_reentry_stop(position, bar, meta)
             pocket_state = self._pocket_state(bar, position)
             self._trace_pocket_evaluation(context.timestamp, symbol, position, bar, meta, pocket_state)
+            body_state = self._update_first_entry_body_cycle(context.timestamp, symbol, bar, meta)
             soft_exits_blocked = self._first_entry_soft_exits_blocked(context.timestamp, symbol, meta)
             if soft_exits_blocked:
                 self._trace_first_entry_soft_exit_wait(context.timestamp, symbol, position, bar, meta)
@@ -573,6 +577,28 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                         reason=stop_reason,
                         stop_price=position.stop_price,
                         tag=self._exit_tag(stop_reason, position, bar, meta) + f"|softExitWaitBarsRemaining={int(meta.get('soft_exit_wait_bars_remaining') or 0)}",
+                        allow_same_bar_fill=True,
+                        expire_on_bar_close=True,
+                    )
+                )
+                continue
+            lifecycle_exits_blocked = self._first_entry_lifecycle_exits_blocked(meta)
+            if lifecycle_exits_blocked:
+                self._trace_first_entry_lifecycle_wait(context.timestamp, symbol, position, bar, meta, body_state)
+                stop_reason = "VWAP_TRAIL_STOP" if self._uses_vwap_trail(meta) else "INITIAL_STOP"
+                requests.append(
+                    OrderRequest(
+                        symbol=symbol,
+                        side="SELL",
+                        quantity=position.quantity,
+                        order_type="STOP",
+                        reason=stop_reason,
+                        stop_price=position.stop_price,
+                        tag=(
+                            self._exit_tag(stop_reason, position, bar, meta)
+                            + f"|bodyLifecycleWait=True|bodyStrengthRatio={self._float(body_state.get('long_momentum_v9_first_entry_body_strength_ratio')):.4f}"
+                            + f"|contractionBars={int(self._float(body_state.get('long_momentum_v9_first_entry_body_contraction_count')))}"
+                        ),
                         allow_same_bar_fill=True,
                         expire_on_bar_close=True,
                     )
@@ -742,6 +768,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "entry_type": entry_type,
             "peak_completed_close_profit_per_share": 0.0,
             "soft_exit_wait_bars_remaining": max(0, int(self.config.first_entry_soft_exit_wait_bars)) if entry_type == "FIRST_ENTRY" else 0,
+            "first_entry_body_bars_observed": 0,
         }
         watch = self.momentum_watchlist.get(symbol)
         if watch is not None:
@@ -929,11 +956,20 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         current_open = self._bar_open(bar or {})
         last_close = self._float((bar or {}).get("last_close"))
         stop = self._float(meta.get("initial_stop")) or position.stop_price
+        body_suffix = ""
+        if str(meta.get("entry_type") or "") == "FIRST_ENTRY":
+            body_suffix = (
+                f"|bodyStrengthRatio={self._float(meta.get('first_entry_body_strength_ratio')):.4f}"
+                f"|bodyContractionCount={int(self._float(meta.get('first_entry_body_contraction_count')))}"
+                f"|bodyContractionConfirmed={bool(meta.get('first_entry_body_contraction_confirmed'))}"
+                f"|softExitWaitBarsRemaining={int(self._float(meta.get('soft_exit_wait_bars_remaining')))}"
+            )
         return (
             f"EXIT|reason={reason}|price={current_open:.4f}|entry={position.entry_price:.4f}"
             f"|qty={position.quantity}|stop={stop:.4f}|R={self._float(meta.get('initial_r')):.4f}"
             f"|entryType={str(meta.get('entry_type') or '')}"
             f"|currentOpen={current_open:.4f}|lastClose={last_close:.4f}"
+            f"{body_suffix}"
         )
 
     def _tema_closed(self, bar: dict) -> bool:
@@ -979,6 +1015,79 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
     def _uses_vwap_trail(self, meta: dict) -> bool:
         return str(meta.get("entry_type") or "") in {"FIRST_ENTRY", "WATCHLIST_REENTRY"}
 
+    def _update_first_entry_body_cycle(self, timestamp: datetime, symbol: str, bar: dict, meta: dict) -> dict[str, Any]:
+        if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
+            return self._first_entry_body_cycle_state(meta)
+        if meta.get("_first_entry_body_last_timestamp") == timestamp:
+            return self._first_entry_body_cycle_state(meta)
+
+        last_open = self._float(bar.get("last_open"))
+        last_close = self._float(bar.get("last_close"))
+        green_body = max(0.0, last_close - last_open)
+        green_body_pct = green_body / last_open if last_open > 0 else 0.0
+
+        fast_bars = max(1.0, self._float(self.config.first_entry_body_fast_ema_bars))
+        slow_bars = max(fast_bars, self._float(self.config.first_entry_body_slow_ema_bars))
+        fast_alpha = 2.0 / (fast_bars + 1.0)
+        slow_alpha = 2.0 / (slow_bars + 1.0)
+        previous_fast = meta.get("first_entry_green_body_ema_fast")
+        previous_slow = meta.get("first_entry_green_body_ema_slow")
+        previous_fast_float = self._float(previous_fast)
+        previous_slow_float = self._float(previous_slow)
+        fast_ema = green_body_pct if previous_fast is None else (fast_alpha * green_body_pct) + ((1.0 - fast_alpha) * previous_fast_float)
+        slow_ema = green_body_pct if previous_slow is None else (slow_alpha * green_body_pct) + ((1.0 - slow_alpha) * previous_slow_float)
+        peak_fast = max(self._float(meta.get("first_entry_green_body_peak_ema_fast")), fast_ema)
+        strength_ratio = fast_ema / peak_fast if peak_fast > 0 else 1.0
+        threshold = max(0.0, self.config.first_entry_body_contraction_ratio)
+        observed_bars = int(self._float(meta.get("first_entry_body_bars_observed")))
+        no_green_weakness = peak_fast <= 0 and green_body_pct <= 0 and observed_bars > 0
+        contracting_now = bool(
+            no_green_weakness
+            or (
+                peak_fast > 0
+                and strength_ratio <= threshold
+                and (previous_fast is None or fast_ema < previous_fast_float or green_body_pct <= 0)
+            )
+        )
+        contraction_count = int(self._float(meta.get("first_entry_body_contraction_count")))
+        contraction_count = contraction_count + 1 if contracting_now else 0
+        required_contraction_bars = max(1, int(self.config.first_entry_body_contraction_bars))
+        confirmed = contraction_count >= required_contraction_bars
+
+        meta["first_entry_body_bars_observed"] = observed_bars + 1
+        meta["first_entry_green_body"] = green_body
+        meta["first_entry_green_body_pct"] = green_body_pct
+        meta["first_entry_green_body_ema_fast"] = fast_ema
+        meta["first_entry_green_body_ema_slow"] = slow_ema
+        meta["first_entry_green_body_peak_ema_fast"] = peak_fast
+        meta["first_entry_body_strength_ratio"] = strength_ratio
+        meta["first_entry_body_contracting_now"] = contracting_now
+        meta["first_entry_body_contraction_count"] = contraction_count
+        meta["first_entry_body_contraction_confirmed"] = confirmed
+        meta["_first_entry_body_last_timestamp"] = timestamp
+        return self._first_entry_body_cycle_state(meta)
+
+    def _first_entry_body_cycle_state(self, meta: dict) -> dict[str, Any]:
+        enabled = bool(self.config.first_entry_body_lifecycle_exit_enabled)
+        strength_ratio = self._float(meta.get("first_entry_body_strength_ratio")) if "first_entry_body_strength_ratio" in meta else 1.0
+        return {
+            "long_momentum_v9_first_entry_body_lifecycle_enabled": enabled,
+            "long_momentum_v9_first_entry_body_bars_observed": int(self._float(meta.get("first_entry_body_bars_observed"))),
+            "long_momentum_v9_first_entry_green_body": self._float(meta.get("first_entry_green_body")),
+            "long_momentum_v9_first_entry_green_body_pct": self._float(meta.get("first_entry_green_body_pct")),
+            "long_momentum_v9_first_entry_green_body_ema_fast": self._float(meta.get("first_entry_green_body_ema_fast")),
+            "long_momentum_v9_first_entry_green_body_ema_slow": self._float(meta.get("first_entry_green_body_ema_slow")),
+            "long_momentum_v9_first_entry_green_body_peak_ema_fast": self._float(meta.get("first_entry_green_body_peak_ema_fast")),
+            "long_momentum_v9_first_entry_body_strength_ratio": strength_ratio,
+            "long_momentum_v9_first_entry_body_contracting_now": bool(meta.get("first_entry_body_contracting_now")),
+            "long_momentum_v9_first_entry_body_contraction_count": int(self._float(meta.get("first_entry_body_contraction_count"))),
+            "long_momentum_v9_first_entry_body_contraction_required": max(1, int(self.config.first_entry_body_contraction_bars)),
+            "long_momentum_v9_first_entry_body_contraction_ratio_threshold": max(0.0, self.config.first_entry_body_contraction_ratio),
+            "long_momentum_v9_first_entry_body_contraction_confirmed": bool(meta.get("first_entry_body_contraction_confirmed")),
+            "long_momentum_v9_first_entry_soft_exit_wait_bars_remaining": int(self._float(meta.get("soft_exit_wait_bars_remaining"))),
+            "long_momentum_v9_first_entry_soft_exits_allowed": self._first_entry_soft_exits_allowed(meta),
+        }
+
     def _first_entry_soft_exits_blocked(self, timestamp: datetime, symbol: str, meta: dict) -> bool:
         if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
             return False
@@ -988,6 +1097,22 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         if meta.get("_soft_exit_wait_last_timestamp") != timestamp:
             meta["soft_exit_wait_bars_remaining"] = max(0, remaining - 1)
             meta["_soft_exit_wait_last_timestamp"] = timestamp
+        return True
+
+    def _first_entry_lifecycle_exits_blocked(self, meta: dict) -> bool:
+        if not self.config.first_entry_body_lifecycle_exit_enabled:
+            return False
+        if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
+            return False
+        return not bool(meta.get("first_entry_body_contraction_confirmed"))
+
+    def _first_entry_soft_exits_allowed(self, meta: dict) -> bool:
+        if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
+            return True
+        if int(self._float(meta.get("soft_exit_wait_bars_remaining"))) > 0:
+            return False
+        if self.config.first_entry_body_lifecycle_exit_enabled and not bool(meta.get("first_entry_body_contraction_confirmed")):
+            return False
         return True
 
     def _trace_first_entry_soft_exit_wait(
@@ -1019,6 +1144,43 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             force=True,
         )
 
+    def _trace_first_entry_lifecycle_wait(
+        self,
+        timestamp: datetime,
+        symbol: str,
+        position,
+        bar: dict,
+        meta: dict,
+        body_state: dict[str, Any],
+    ) -> None:
+        if not self.observability:
+            return
+        self.observability.trace(
+            timestamp=timestamp,
+            ticker=symbol,
+            stage="exit",
+            event_type="first_entry_body_lifecycle_wait",
+            decision="hold_position",
+            reason_code="FIRST_ENTRY_BODY_CONTRACTION_WAIT",
+            reason="First-entry soft exits are waiting for green-body momentum to contract from its peak.",
+            values={
+                "entry_price": getattr(position, "entry_price", None),
+                "quantity": getattr(position, "quantity", None),
+                "current_open": self._bar_open(bar),
+                "stop_price": getattr(position, "stop_price", None),
+                "green_body": body_state.get("long_momentum_v9_first_entry_green_body"),
+                "green_body_pct": body_state.get("long_momentum_v9_first_entry_green_body_pct"),
+                "green_body_ema_fast": body_state.get("long_momentum_v9_first_entry_green_body_ema_fast"),
+                "green_body_ema_slow": body_state.get("long_momentum_v9_first_entry_green_body_ema_slow"),
+                "peak_green_body_ema_fast": body_state.get("long_momentum_v9_first_entry_green_body_peak_ema_fast"),
+                "body_strength_ratio": body_state.get("long_momentum_v9_first_entry_body_strength_ratio"),
+                "contraction_count": body_state.get("long_momentum_v9_first_entry_body_contraction_count"),
+                "required_contraction_bars": body_state.get("long_momentum_v9_first_entry_body_contraction_required"),
+                "contraction_ratio_threshold": body_state.get("long_momentum_v9_first_entry_body_contraction_ratio_threshold"),
+            },
+            force=True,
+        )
+
     def _trail_reentry_stop(self, position, bar: dict, meta: dict) -> None:
         vwap = self._float(bar.get("last_vwap"))
         if vwap <= 0:
@@ -1040,7 +1202,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             current_open = self._float(row.get("current_open"))
             last_day_high_so_far = self._float(row.get("last_day_high_so_far"))
             first_entry_day_high_break_ok = current_open > 0 and last_day_high_so_far > 0 and current_open > last_day_high_so_far
-            pocket_state = self._pocket_state(row, portfolio.positions.get(watch.ticker))
+            position = portfolio.positions.get(watch.ticker)
+            meta = self.position_meta.get(watch.ticker, {})
+            pocket_state = self._pocket_state(row, position)
+            body_state = self._first_entry_body_cycle_state(meta)
             rows.append(
                 {
                     "timestamp": context.timestamp,
@@ -1079,6 +1244,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     "long_momentum_v9_pocket_remaining_to_trigger": pocket_state.get("long_momentum_v9_pocket_remaining_to_trigger"),
                     "long_momentum_v9_pocket_open": pocket_state.get("long_momentum_v9_pocket_open"),
                     "last_true_range_ema5_pct": row.get("last_true_range_ema5_pct"),
+                    **body_state,
                 }
             )
         rows.sort(key=lambda item: (str(item["watchlist_state"]) == "held", self._float(item.get("last_5m_return"))), reverse=True)
