@@ -25,8 +25,6 @@ V9_PARAMETER_FIELDS = (
     "vwap_stop_offset_pct",
     "double_bvd_exit_score",
     "pocket_profit_pct",
-    "pocket_immediate_reentry_enabled",
-    "pocket_reentry_initial_stop_offset_dollars",
     "tema9_open_buffer_pct",
     "tema9_exit_buffer_pct",
     "limit_order_offset_dollars",
@@ -53,8 +51,6 @@ class LongMomentumV9Config(LongMomentumV3Config):
     reentry_vwap_buffer_pct: float = 2.0
     double_bvd_exit_score: float = 50.0
     pocket_profit_pct: float = 0.03
-    pocket_immediate_reentry_enabled: bool = True
-    pocket_reentry_initial_stop_offset_dollars: float = 0.01
     tema9_open_buffer_pct: float = 0.002
     tema9_exit_buffer_pct: float = 0.002
     vwap_stop_offset_pct: float = 3.0
