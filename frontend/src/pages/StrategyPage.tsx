@@ -329,7 +329,8 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   max_risk_fraction_of_cash: "Long Momentum v9 maximum cash-slice risk used for position sizing.",
   cash_buffer_dollars: "Cash kept out of Long Momentum sizing so estimated fees and rounding do not overdraw the account.",
   double_bvd_exit_score: "Long Momentum v9 main exit threshold for provider-built double-timeframe bearish volume divergence score.",
-  pocket_profit_pct: "Long Momentum v9 pocket threshold. When estimated bid reaches entry price times 1 plus this fraction, v9 sells and immediately rebuys without reentry filters.",
+  pocket_profit_pct: "Long Momentum v9 pocket threshold. When estimated bid reaches entry price times 1 plus this fraction, v9 sells to pocket profit.",
+  pocket_immediate_reentry_enabled: "When true, Long Momentum v9 immediately rebuys after pocketing. When false, it waits for a later candle and normal reentry gates.",
   tema9_exit_buffer_pct: "Long Momentum v9 TEMA exit threshold as a fraction of TEMA9. -0.01 means exit when TEMA20 reaches 99% of TEMA9, before the crossover.",
   vwap_stop_offset_pct: "Long Momentum v9 VWAP reentry protective stop offset, expressed as n percent of VWAP. For example, 3 means stop = VWAP - 3% of VWAP.",
   limit_order_offset_dollars: "Long Momentum v9 liquid-limit execution offset. Buys use current open plus this value; sells use current open minus this value.",
@@ -489,6 +490,7 @@ const STRATEGY_PARAMETER_GROUPS = [
       "vwap_stop_buffer_pct",
       "vwap_stop_offset_pct",
       "pocket_profit_pct",
+      "pocket_immediate_reentry_enabled",
       "tema9_exit_buffer_pct",
       "limit_order_offset_dollars",
       "double_bvd_exit_score"

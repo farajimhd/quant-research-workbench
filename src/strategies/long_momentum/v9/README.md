@@ -156,13 +156,14 @@ estimated_ask = current_open + limit_order_offset_dollars
 
 if estimated_bid >= entry_price * (1 + pocket_profit_pct):
     sell current position at estimated_bid
-    immediately buy back at estimated_ask
 ```
 
 The default `pocket_profit_pct` is `0.03`. Pocketing does not check the scanner
-or watchlist reentry gates; it is an in-position profit capture and immediate
-same-bar reentry. The new reentry uses the existing trailing stop if possible,
-otherwise the current VWAP-offset stop.
+or watchlist reentry gates for the pocket sell itself. By default
+`pocket_immediate_reentry_enabled` is `False`, so after pocketing v9 waits for a
+later candle and uses the normal watchlist reentry gates. If
+`pocket_immediate_reentry_enabled` is set to `True`, v9 immediately buys back at
+`estimated_ask` on the same bar without checking reentry gates.
 
 Emergency exit:
 

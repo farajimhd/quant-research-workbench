@@ -287,8 +287,14 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     watch.last_entry_type = "WATCHLIST_REENTRY"
                 watch.last_state = "in_position"
             elif side == "SELL":
+                tag = str(fill.get("tag") or "")
                 watch.last_exit_timestamp = context.timestamp
-                watch.last_state = "watching_after_exit"
+                if "POCKET_PROFIT" in tag:
+                    watch.entry_submitted = False
+                    watch.last_entry_type = "POCKET_PROFIT"
+                    watch.last_state = "pocketed_waiting_reentry"
+                else:
+                    watch.last_state = "watching_after_exit"
 
     def _update_momentum_watch(self, timestamp: datetime, row: dict[str, Any]) -> None:
         ticker = str(row.get("ticker") or "").upper()
@@ -634,6 +640,33 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         if sell_limit <= 0 or buy_limit <= 0 or sell_limit < trigger_price:
             return []
         quantity = int(position.quantity)
+        if quantity <= 0:
+            return []
+        watch = self.momentum_watchlist.get(symbol)
+        if watch is not None:
+            watch.last_entry_type = "POCKET_PROFIT"
+            watch.last_state = "pocket_exit_submitted"
+
+        sell_tag = (
+            self._exit_tag("POCKET_PROFIT", position, bar, meta)
+            + f"|limit={sell_limit:.4f}|pocketPct={pocket_pct:.4f}|trigger={trigger_price:.4f}"
+        )
+        self._trace_exit(timestamp, symbol, "POCKET_PROFIT", position, bar, meta)
+        requests = [
+            OrderRequest(
+                symbol=symbol,
+                side="SELL",
+                quantity=quantity,
+                order_type="LIMIT",
+                reason="POCKET_PROFIT",
+                limit_price=sell_limit,
+                allow_same_bar_fill=True,
+                tag=sell_tag,
+            ),
+        ]
+        if not self.config.pocket_immediate_reentry_enabled:
+            return requests
+
         reentry_quantity = min(
             quantity,
             self._cash_quantity(
@@ -642,12 +675,12 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             ),
         )
         reentry_quantity = self._capped_entry_quantity(reentry_quantity)
-        if quantity <= 0 or reentry_quantity <= 0:
-            return []
+        if reentry_quantity <= 0:
+            return requests
 
         stop_price = self._pocket_reentry_stop(position, bar, buy_limit)
         if stop_price <= 0 or stop_price >= buy_limit:
-            return []
+            return requests
 
         risk_per_share = buy_limit - stop_price
         self.position_meta[symbol] = {
@@ -667,34 +700,17 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "stop_price": stop_price,
             "entry_type": "WATCHLIST_REENTRY",
         }
-        watch = self.momentum_watchlist.get(symbol)
         if watch is not None:
             watch.entry_submitted = True
             watch.last_entry_type = "POCKET_REENTRY"
             watch.last_state = "pocket_reentry_submitted"
-
-        sell_tag = (
-            self._exit_tag("POCKET_PROFIT", position, bar, meta)
-            + f"|limit={sell_limit:.4f}|pocketPct={pocket_pct:.4f}|trigger={trigger_price:.4f}"
-        )
         buy_tag = (
             f"ENTRY|rule=LONG_MOMENTUM_V9|trigger=POCKET_REENTRY|rank={position.live_rank}"
             f"|qty={reentry_quantity}|signal_open={self._bar_open(bar):.4f}|limit={buy_limit:.4f}"
             f"|entry={buy_limit:.4f}|stop={stop_price:.4f}|risk={risk_per_share:.4f}"
             f"|pocket_exit_limit={sell_limit:.4f}|pocket_from_entry={position.entry_price:.4f}"
         )
-        self._trace_exit(timestamp, symbol, "POCKET_PROFIT", position, bar, meta)
-        return [
-            OrderRequest(
-                symbol=symbol,
-                side="SELL",
-                quantity=quantity,
-                order_type="LIMIT",
-                reason="POCKET_PROFIT",
-                limit_price=sell_limit,
-                allow_same_bar_fill=True,
-                tag=sell_tag,
-            ),
+        requests.append(
             OrderRequest(
                 symbol=symbol,
                 side="BUY",
@@ -705,8 +721,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 allow_same_bar_fill=True,
                 protective_stop_price=stop_price,
                 tag=buy_tag,
-            ),
-        ]
+            )
+        )
+        return requests
 
     def _pocket_reentry_stop(self, position, bar: dict, entry_price: float) -> float:
         existing_stop = self._float(position.stop_price)
