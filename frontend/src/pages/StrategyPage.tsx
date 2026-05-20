@@ -925,9 +925,10 @@ function NewRunPanel({
           `/api/backtests/debug/sessions/${debugSession.session_id}/next`,
           { method: "POST" }
         );
+        setDebugSession(payload);
+        await waitForDebugProgressPaint();
         if (debugSessionIsComplete(payload) || debugStepHasPrimaryAction(payload.step ?? null)) break;
       }
-      setDebugSession(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2858,6 +2859,14 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
 function strategyNumberParam(params: Record<string, StrategyParamValue>, key: string, fallback: number): number {
   const value = Number(params[key]);
   return Number.isFinite(value) ? value : fallback;
+}
+
+function waitForDebugProgressPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
 }
 
 type DebugStepCounts = {

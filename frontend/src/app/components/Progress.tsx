@@ -81,6 +81,10 @@ export function ProgressMeter({
 }) {
   const boundedProgress = Math.max(0, Math.min(100, progress || 0));
   const visibleLabel = label.trim();
+  const fillStyle = {
+    minWidth: boundedProgress > 0 && boundedProgress < 1 ? "3px" : undefined,
+    width: `${boundedProgress}%`
+  };
   return (
     <div className={showLabel ? "progress-meter" : "progress-meter compact"}>
       {showLabel ? (
@@ -90,7 +94,7 @@ export function ProgressMeter({
         </div>
       ) : null}
       <span aria-label={ariaLabel ?? visibleLabel} className="progress-meter-track" role="meter" aria-valuemax={100} aria-valuemin={0} aria-valuenow={Math.round(boundedProgress)}>
-        <span className={`progress-meter-fill ${progressTone(status, boundedProgress)}`} style={{ width: `${boundedProgress}%` }} />
+        <span className={`progress-meter-fill ${progressTone(status, boundedProgress)}`} style={fillStyle} />
       </span>
     </div>
   );
