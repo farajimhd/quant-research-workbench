@@ -217,6 +217,11 @@ class StepBacktestDebugger(BacktestEngine):
         if not scanner_rows:
             scanner_rows = self._delta_rows(artifacts.get("candidate_rankings", []), before["candidate_rankings"], after["candidate_rankings"])
         watchlist_rows = self._delta_rows(artifacts.get("watchlist_snapshots", []), before["watchlist_snapshots"], after["watchlist_snapshots"])
+        high_break_watchlist_rows = self._delta_rows(
+            artifacts.get("high_break_hold_snapshots", []),
+            before.get("high_break_hold_snapshots", 0),
+            after.get("high_break_hold_snapshots", 0),
+        )
         return {
             "type": "bar",
             "timestamp": timestamp.isoformat(),
@@ -226,6 +231,7 @@ class StepBacktestDebugger(BacktestEngine):
             "execution_rows": execution_rows,
             "strategy_scanner_rows": scanner_rows,
             "strategy_watchlist_rows": watchlist_rows,
+            "strategy_high_break_watchlist_rows": high_break_watchlist_rows,
             "filter_groups": self._filter_group_rows(scanner_rows or updates),
             "strategy_requests": requests,
             "orders": self.orders[before["orders"] : after["orders"]],
@@ -263,6 +269,7 @@ class StepBacktestDebugger(BacktestEngine):
             "rejection_events": len(artifacts.get("rejection_events", [])),
             "signal_events": len(artifacts.get("signal_events", [])),
             "trades": len(self.trades),
+            "high_break_hold_snapshots": len(artifacts.get("high_break_hold_snapshots", [])),
             "watchlist_snapshots": len(artifacts.get("watchlist_snapshots", [])),
         }
 
@@ -394,20 +401,25 @@ class StepBacktestDebugger(BacktestEngine):
                     self._gte_check(row, "last_volume", self._strategy_param("min_watchlist_add_volume", 8_000.0)),
                     self._gte_check(row, "last_transactions", self._strategy_param("min_first_entry_transactions", 100.0)),
                 ],
-                "First Entry Raw Inputs": [
+                "High Break Hold Watch Raw Inputs": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._range_check(row, "minute_of_day", self._strategy_param("trading_start_minute", 240.0), self._strategy_param("trading_end_minute", 1200.0) - 1),
                     self._gt_check(row, "last_day_high_so_far", 0.0),
-                    self._gt_check(row, "current_open", self._number(row, "last_day_high_so_far") or 0.0),
+                    self._gte_check(row, "current_open", self._number(row, "last_day_high_so_far") or 0.0),
                 ],
-                "First Entry Strategy State": [
-                    self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
+                "High Break Hold Confirmation": [
+                    self._present_check(row, "long_momentum_v9_high_break_hold_detected_timestamp"),
+                    self._gte_check(row, "long_momentum_v9_high_break_hold_count", self._strategy_param("high_break_hold_confirmation_bars", 1.0)),
+                    self._bool_check(row, "long_momentum_v9_high_break_hold_ready", True),
+                    self._bool_check(row, "long_momentum_v9_high_break_hold_available", True),
+                ],
+                "High Break Hold Entry State": [
                     self._lte_check(row, "held_quantity", 0.0),
                     self._bool_check(row, "long_momentum_v9_pending_symbol_order", False),
-                    self._bool_check(row, "long_momentum_v9_first_entry_available", True),
-                    self._bool_check(row, "long_momentum_v9_first_entry_day_high_break_ok", True),
+                    self._bool_check(row, "long_momentum_v9_high_break_hold_ready", True),
+                    self._bool_check(row, "long_momentum_v9_high_break_hold_entry_open", True),
                 ],
-                "Watchlist VWAP Entry Raw Inputs": [
+                "VWAP Reclaim Raw Inputs": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._range_check(row, "minute_of_day", self._strategy_param("trading_start_minute", 240.0), self._strategy_param("trading_end_minute", 1200.0) - 1),
                     self._gt_check(row, "last_vwap", 0.0),
@@ -422,17 +434,16 @@ class StepBacktestDebugger(BacktestEngine):
                     self._lte_check(row, "last_bearish_volume_divergence_score", self._strategy_param("max_reentry_bvd_score", 80.0)),
                     self._v9_two_bar_body_reentry_check(row),
                 ],
-                "Watchlist VWAP Entry Strategy State": [
+                "VWAP Reclaim Entry State": [
                     self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
-                    self._bool_check(row, "long_momentum_v9_watchlist_first_entry_filled", True),
                     self._bool_check(row, "long_momentum_v9_watchlist_entry_ready", True),
                     self._lte_check(row, "held_quantity", 0.0),
                     self._bool_check(row, "long_momentum_v9_pending_symbol_order", False),
-                    self._bool_check(row, "long_momentum_v9_reentry_vwap_buffer_ok", True),
-                    self._bool_check(row, "long_momentum_v9_reentry_last_bar_not_red", True),
-                    self._bool_check(row, "long_momentum_v9_reentry_last_tema_open_ok", True),
-                    self._bool_check(row, "long_momentum_v9_reentry_bvd_ok", True),
-                    self._bool_check(row, "long_momentum_v9_reentry_body_break_ok", True),
+                    self._bool_check(row, "long_momentum_v9_vwap_reclaim_vwap_buffer_ok", True, fallback_key="long_momentum_v9_reentry_vwap_buffer_ok"),
+                    self._bool_check(row, "long_momentum_v9_vwap_reclaim_last_bar_not_red", True, fallback_key="long_momentum_v9_reentry_last_bar_not_red"),
+                    self._bool_check(row, "long_momentum_v9_vwap_reclaim_last_tema_open_ok", True, fallback_key="long_momentum_v9_reentry_last_tema_open_ok"),
+                    self._bool_check(row, "long_momentum_v9_vwap_reclaim_bvd_ok", True, fallback_key="long_momentum_v9_reentry_bvd_ok"),
+                    self._bool_check(row, "long_momentum_v9_vwap_reclaim_body_break_ok", True, fallback_key="long_momentum_v9_reentry_body_break_ok"),
                 ],
                 "Exit": [
                     self._gt_check(row, "last_double_timeframe_bearish_volume_divergence_score", self._strategy_param("double_bvd_exit_score", 50.0)),
@@ -443,7 +454,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._gt_check(row, "held_quantity", 0.0),
                     self._v9_pocket_threshold_check(row),
                 ],
-                "First Entry High Lifecycle": [
+                "High Break Hold High Lifecycle": [
                     self._bool_check(row, "long_momentum_v9_first_entry_high_lifecycle_enabled", True),
                     self._gte_check(row, "long_momentum_v9_first_entry_high_bars_observed", 0.0),
                     self._gte_check(row, "long_momentum_v9_first_entry_highest_high", 0.0),
@@ -451,7 +462,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._bool_check(row, "long_momentum_v9_first_entry_high_stall_confirmed", True),
                     self._bool_check(row, "long_momentum_v9_first_entry_soft_exits_allowed", True),
                 ],
-                "First Entry Body Lifecycle": (
+                "High Break Hold Body Lifecycle": (
                     [
                         self._bool_check(row, "long_momentum_v9_first_entry_body_lifecycle_enabled", True),
                         self._gte_check(row, "long_momentum_v9_first_entry_body_bars_observed", 0.0),
@@ -475,11 +486,11 @@ class StepBacktestDebugger(BacktestEngine):
                 ),
                 "Final Strategy Decision": [
                     self._check(
-                        "long_momentum_v9_first_or_watchlist_entry_open",
-                        f"first={self._bool_value(row, 'long_momentum_v9_first_entry_open')}, reentry={self._bool_value(row, 'long_momentum_v9_reentry_open')}",
+                        "long_momentum_v9_high_break_or_vwap_reclaim_open",
+                        f"high_break={self._bool_value(row, 'long_momentum_v9_high_break_hold_entry_open')}, vwap_reclaim={self._bool_value(row, 'long_momentum_v9_vwap_reclaim_entry_open')}",
                         bool(
-                            self._bool_value(row, "long_momentum_v9_first_entry_open")
-                            or self._bool_value(row, "long_momentum_v9_reentry_open")
+                            self._bool_value(row, "long_momentum_v9_high_break_hold_entry_open")
+                            or self._bool_value(row, "long_momentum_v9_vwap_reclaim_entry_open")
                         ),
                         "is True",
                     ),

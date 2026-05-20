@@ -63,6 +63,23 @@ class MomentumWatch:
         return self.transaction_sum / self.transaction_count
 
 
+@dataclass(slots=True)
+class HighBreakHoldWatch:
+    ticker: str
+    detected_timestamp: datetime
+    breakout_level: float
+    detected_current_open: float
+    hold_count: int = 0
+    entry_submitted: bool = False
+    entry_filled: bool = False
+    last_hold_ok: bool = False
+    last_state: str = "waiting_hold"
+
+    @property
+    def ready(self) -> bool:
+        return self.hold_count > 0
+
+
 class LongMomentumV9Strategy(LongMomentumV3Strategy):
     name = "long_momentum"
 
@@ -70,7 +87,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         super().__init__(config or LongMomentumV9Config())
         self.config: LongMomentumV9Config
         self.momentum_watchlist: dict[str, MomentumWatch] = {}
+        self.high_break_hold_watchlist: dict[str, HighBreakHoldWatch] = {}
         self.watchlist_snapshots: list[dict] = []
+        self.high_break_hold_snapshots: list[dict] = []
         self.last_scanner_rows: list[dict] = []
 
     def data_requirements(self) -> DataRequirements:
@@ -104,6 +123,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         self.entry_order_metadata = {}
         self.position_meta = {}
         self.momentum_watchlist = {}
+        self.high_break_hold_watchlist = {}
         self.last_scanner_rows = []
         frame = frames.event_frame.filter(
             (pl.col("minute_of_day") >= self.config.trading_start_minute)
@@ -115,6 +135,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
     def artifacts(self) -> dict[str, list[dict]]:
         artifacts = super().artifacts()
         artifacts["watchlist_snapshots"] = self.watchlist_snapshots
+        artifacts["high_break_hold_snapshots"] = self.high_break_hold_snapshots
         return artifacts
 
     def on_bar(self, context: BarContext, portfolio: Portfolio, pending_orders: list[Order]) -> list[OrderRequest]:
@@ -128,9 +149,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         requests.extend(self._exit_requests(context, portfolio, active_pending_orders, current_bar_residual_symbols))
 
         rows = self._scanner_rows(context, portfolio, active_pending_orders)
-        first_entry_candidates = [row for row in rows if row.get("long_momentum_v9_first_entry_open")]
-        reentry_candidates = [row for row in rows if row.get("long_momentum_v9_reentry_open")]
-        self._record_scanner(context, rows, first_entry_candidates + reentry_candidates, portfolio, active_pending_orders)
+        high_break_candidates = [row for row in rows if row.get("long_momentum_v9_high_break_hold_entry_open")]
+        vwap_reclaim_candidates = [row for row in rows if row.get("long_momentum_v9_vwap_reclaim_entry_open")]
+        self._record_scanner(context, rows, high_break_candidates + vwap_reclaim_candidates, portfolio, active_pending_orders)
 
         blocked_symbols = {
             order.symbol for order in active_pending_orders if order.side == "BUY"
@@ -144,13 +165,13 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             context=context,
         )
 
-        first_entry_candidates = [
-            row for row in first_entry_candidates
+        high_break_candidates = [
+            row for row in high_break_candidates
             if str(row.get("ticker") or "") not in blocked_symbols
-        ][: max(0, int(self.config.max_first_entry_candidates_per_bar))]
-        if first_entry_candidates:
+        ][: max(0, int(self.config.max_high_break_hold_candidates_per_bar))]
+        if high_break_candidates:
             rotation_requests = self._rotation_sell_requests_for_first_entries(
-                candidates=first_entry_candidates,
+                candidates=high_break_candidates,
                 context=context,
                 portfolio=portfolio,
                 existing_requests=requests,
@@ -163,12 +184,12 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     requests=requests,
                     context=context,
                 )
-        if first_entry_candidates and available_cash > 0:
+        if high_break_candidates and available_cash > 0:
             submitted = self._submit_entry_group(
-                candidates=first_entry_candidates,
+                candidates=high_break_candidates,
                 context=context,
                 available_cash=available_cash,
-                entry_type="FIRST_ENTRY",
+                entry_type="HIGH_BREAK_HOLD",
             )
             requests.extend(submitted)
             blocked_symbols |= {request.symbol for request in submitted if request.side == "BUY"}
@@ -178,20 +199,21 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 context=context,
             )
 
-        reentry_candidates = [
-            row for row in reentry_candidates
+        vwap_reclaim_candidates = [
+            row for row in vwap_reclaim_candidates
             if str(row.get("ticker") or "") not in blocked_symbols
         ][: max(0, int(self.config.max_reentry_candidates_per_bar))]
-        if reentry_candidates and available_cash > 0:
+        if vwap_reclaim_candidates and available_cash > 0:
             requests.extend(
                 self._submit_entry_group(
-                    candidates=reentry_candidates,
+                    candidates=vwap_reclaim_candidates,
                     context=context,
                     available_cash=available_cash,
-                    entry_type="WATCHLIST_REENTRY",
+                    entry_type="VWAP_RECLAIM",
                 )
             )
         self._record_watchlist_snapshot(context, portfolio)
+        self._record_high_break_hold_snapshot(context, portfolio)
         return requests
 
     def _partial_residual_requests(self, context: BarContext, portfolio: Portfolio) -> list[OrderRequest]:
@@ -314,16 +336,21 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 existing_entry_type = str((meta or {}).get("entry_type") or "")
                 if "POCKET_REENTRY" in tag:
                     watch.last_entry_type = "POCKET_REENTRY"
-                elif "FIRST_ENTRY" in tag or existing_entry_type == "FIRST_ENTRY":
+                elif "HIGH_BREAK_HOLD" in tag or "FIRST_ENTRY" in tag or existing_entry_type in {"HIGH_BREAK_HOLD", "FIRST_ENTRY"}:
                     watch.first_entry_submitted = True
                     watch.first_entry_filled = True
-                    watch.last_entry_type = "FIRST_ENTRY"
+                    watch.last_entry_type = "HIGH_BREAK_HOLD"
+                    high_watch = self.high_break_hold_watchlist.get(symbol)
+                    if high_watch is not None:
+                        high_watch.entry_submitted = True
+                        high_watch.entry_filled = True
+                        high_watch.last_state = "filled"
                 else:
-                    watch.last_entry_type = "WATCHLIST_REENTRY"
+                    watch.last_entry_type = "VWAP_RECLAIM"
                 watch.last_state = "in_position"
                 if meta is not None:
-                    if "FIRST_ENTRY" in tag or existing_entry_type == "FIRST_ENTRY":
-                        meta["entry_type"] = "FIRST_ENTRY"
+                    if "HIGH_BREAK_HOLD" in tag or "FIRST_ENTRY" in tag or existing_entry_type in {"HIGH_BREAK_HOLD", "FIRST_ENTRY"}:
+                        meta["entry_type"] = "HIGH_BREAK_HOLD"
                         if "soft_exit_wait_bars_remaining" not in meta:
                             meta["soft_exit_wait_bars_remaining"] = max(0, int(self.config.first_entry_soft_exit_wait_bars))
                         meta.setdefault("first_entry_body_bars_observed", 0)
@@ -331,8 +358,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                         if self._float(meta.get("first_entry_highest_high")) <= 0:
                             meta["first_entry_highest_high"] = self._float(fill.get("price"))
                         meta["entry_fill_timestamp"] = context.timestamp
-                    elif "WATCHLIST_REENTRY" in tag:
-                        meta["entry_type"] = "WATCHLIST_REENTRY"
+                    elif "VWAP_RECLAIM" in tag or "WATCHLIST_REENTRY" in tag:
+                        meta["entry_type"] = "VWAP_RECLAIM"
             elif side == "SELL":
                 tag = str(fill.get("tag") or "")
                 watch.last_exit_timestamp = context.timestamp
@@ -373,6 +400,41 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         if transactions > 0:
             watch.transaction_sum += transactions
             watch.transaction_count += 1
+        self._update_high_break_hold_watch(timestamp, row, watch)
+
+    def _update_high_break_hold_watch(self, timestamp: datetime, row: dict[str, Any], watch: MomentumWatch) -> None:
+        ticker = watch.ticker
+        high_watch = self.high_break_hold_watchlist.get(ticker)
+        current_open = self._float(row.get("current_open"))
+        last_day_high_so_far = self._float(row.get("last_day_high_so_far"))
+        minute_of_day = int(self._float(row.get("minute_of_day")))
+        entry_time_ok = self.config.trading_start_minute <= minute_of_day < self.config.trading_end_minute
+        day_high_break_ok = current_open > 0 and last_day_high_so_far > 0 and current_open >= last_day_high_so_far
+        if high_watch is None:
+            if watch.first_entry_filled or watch.first_entry_submitted or not entry_time_ok or not day_high_break_ok:
+                return
+            high_watch = HighBreakHoldWatch(
+                ticker=ticker,
+                detected_timestamp=timestamp,
+                breakout_level=last_day_high_so_far,
+                detected_current_open=current_open,
+                last_state="waiting_next_bar",
+            )
+            self.high_break_hold_watchlist[ticker] = high_watch
+            self._trace_high_break_hold_add(timestamp, ticker, row, high_watch)
+            return
+        if high_watch.entry_submitted or high_watch.entry_filled or watch.first_entry_filled:
+            return
+        if timestamp <= high_watch.detected_timestamp:
+            return
+        threshold = high_watch.breakout_level * (1.0 - max(0.0, self.config.high_break_hold_tolerance_ratio))
+        last_close = self._float(row.get("last_close"))
+        last_open = self._float(row.get("last_open"))
+        hold_ok = threshold > 0 and last_close >= threshold and (last_close >= last_open or last_close >= high_watch.breakout_level)
+        high_watch.last_hold_ok = hold_ok
+        high_watch.hold_count = high_watch.hold_count + 1 if hold_ok else 0
+        required = max(1, int(self.config.high_break_hold_confirmation_bars))
+        high_watch.last_state = "ready" if high_watch.hold_count >= required else "waiting_hold"
 
     def _scanner_rows(self, context: BarContext, portfolio: Portfolio, pending_orders: list[Order]) -> list[dict]:
         if context.updates.is_empty():
@@ -440,9 +502,27 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         reentry_bvd_ok = reentry_bvd_score <= self.config.max_reentry_bvd_score
         current_open = self._float(row.get("current_open"))
         last_day_high_so_far = self._float(row.get("last_day_high_so_far"))
-        first_entry_day_high_break_ok = current_open > 0 and last_day_high_so_far > 0 and current_open > last_day_high_so_far
-        first_entry_available = bool(watch and not watch.first_entry_submitted and not watch.first_entry_filled)
-        watch_first_entry_filled = bool(watch and watch.first_entry_filled)
+        high_break_day_high_break_ok = current_open > 0 and last_day_high_so_far > 0 and current_open >= last_day_high_so_far
+        high_break_watch = self.high_break_hold_watchlist.get(ticker)
+        high_break_available = bool(
+            high_break_watch
+            and not high_break_watch.entry_submitted
+            and not high_break_watch.entry_filled
+            and watch
+            and not watch.first_entry_submitted
+            and not watch.first_entry_filled
+        )
+        high_break_hold_threshold = (
+            high_break_watch.breakout_level * (1.0 - max(0.0, self.config.high_break_hold_tolerance_ratio))
+            if high_break_watch
+            else 0.0
+        )
+        high_break_hold_ready = bool(
+            high_break_watch
+            and high_break_watch.hold_count >= max(1, int(self.config.high_break_hold_confirmation_bars))
+            and isinstance(current_timestamp, datetime)
+            and high_break_watch.detected_timestamp < current_timestamp
+        )
         reentry_body_break_threshold = self._float(row.get("last_2_body_high"))
         reentry_body_break_ok = current_open > 0 and reentry_body_break_threshold > 0 and current_open > reentry_body_break_threshold
         reentry_close_minus_vwap = last_close - last_vwap if last_vwap > 0 else None
@@ -454,18 +534,17 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         first_entry_meta = self.position_meta.get(ticker, {})
         first_entry_body_state = self._first_entry_body_cycle_state(first_entry_meta)
         first_entry_high_state = self._first_entry_high_cycle_state(first_entry_meta)
-        first_entry_open = (
+        high_break_hold_entry_open = (
             price_eligible
             and bool(watch)
-            and first_entry_available
+            and high_break_available
+            and high_break_hold_ready
             and no_symbol_position
             and entry_time_ok
-            and first_entry_day_high_break_ok
         )
-        reentry_open = (
+        vwap_reclaim_entry_open = (
             price_eligible
             and bool(watch)
-            and watch_first_entry_filled
             and watch_entry_ready
             and no_symbol_position
             and entry_time_ok
@@ -474,7 +553,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             and reentry_last_tema_open_ok
             and reentry_bvd_ok
             and reentry_body_break_ok
-            and not first_entry_open
+            and not high_break_hold_entry_open
         )
         return {
             "long_momentum_v9_price_eligible": price_eligible,
@@ -487,7 +566,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_watchlist_entry_ready": watch_entry_ready,
             "long_momentum_v9_watchlist_entry_submitted": bool(watch and watch.entry_submitted),
             "long_momentum_v9_watchlist_first_entry_submitted": bool(watch and watch.first_entry_submitted),
-            "long_momentum_v9_watchlist_first_entry_filled": watch_first_entry_filled,
+            "long_momentum_v9_watchlist_first_entry_filled": bool(watch and watch.first_entry_filled),
             "long_momentum_v9_watchlist_last_entry_type": watch.last_entry_type if watch else "",
             "long_momentum_v9_watchlist_last_state": watch.last_state if watch else "",
             "long_momentum_v9_watchlist_max_vwap": max_vwap,
@@ -500,11 +579,38 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_entry_time_ok": entry_time_ok,
             "long_momentum_v9_pending_symbol_order": pending_symbol_order,
             "long_momentum_v9_no_symbol_position": no_symbol_position,
-            "long_momentum_v9_first_entry_available": first_entry_available,
-            "long_momentum_v9_first_entry_day_high_break_ok": first_entry_day_high_break_ok,
+            "long_momentum_v9_high_break_hold_watch_active": high_break_watch is not None,
+            "long_momentum_v9_high_break_hold_detected_timestamp": high_break_watch.detected_timestamp.isoformat() if high_break_watch else "",
+            "long_momentum_v9_high_break_hold_breakout_level": high_break_watch.breakout_level if high_break_watch else None,
+            "long_momentum_v9_high_break_hold_detected_current_open": high_break_watch.detected_current_open if high_break_watch else None,
+            "long_momentum_v9_high_break_hold_threshold": high_break_hold_threshold if high_break_hold_threshold > 0 else None,
+            "long_momentum_v9_high_break_hold_count": high_break_watch.hold_count if high_break_watch else 0,
+            "long_momentum_v9_high_break_hold_confirmation_bars": max(1, int(self.config.high_break_hold_confirmation_bars)),
+            "long_momentum_v9_high_break_hold_ok": bool(high_break_watch and high_break_watch.last_hold_ok),
+            "long_momentum_v9_high_break_hold_ready": high_break_hold_ready,
+            "long_momentum_v9_high_break_hold_available": high_break_available,
+            "long_momentum_v9_high_break_hold_entry_submitted": bool(high_break_watch and high_break_watch.entry_submitted),
+            "long_momentum_v9_high_break_hold_entry_filled": bool(high_break_watch and high_break_watch.entry_filled),
+            "long_momentum_v9_high_break_hold_state": high_break_watch.last_state if high_break_watch else "",
+            "long_momentum_v9_high_break_day_high_break_ok": high_break_day_high_break_ok,
+            "long_momentum_v9_high_break_day_high_break_threshold": last_day_high_so_far if last_day_high_so_far > 0 else None,
+            "long_momentum_v9_high_break_close_minus_day_high": last_close - last_day_high_so_far if last_day_high_so_far > 0 else None,
+            "long_momentum_v9_first_entry_available": high_break_available,
+            "long_momentum_v9_first_entry_day_high_break_ok": high_break_day_high_break_ok,
             "long_momentum_v9_first_entry_day_high_break_threshold": last_day_high_so_far if last_day_high_so_far > 0 else None,
             "long_momentum_v9_first_entry_close_minus_day_high": last_close - last_day_high_so_far if last_day_high_so_far > 0 else None,
             "long_momentum_v9_close_minus_vwap": reentry_close_minus_vwap,
+            "long_momentum_v9_vwap_reclaim_vwap_threshold": reentry_vwap_threshold if reentry_vwap_threshold > 0 else None,
+            "long_momentum_v9_close_minus_vwap_reclaim_threshold": reentry_close_minus_vwap_threshold,
+            "long_momentum_v9_vwap_reclaim_price_reclaim": reentry_price_reclaim,
+            "long_momentum_v9_vwap_reclaim_vwap_buffer_ok": reentry_price_reclaim,
+            "long_momentum_v9_vwap_reclaim_last_bar_not_red": reentry_last_bar_not_red,
+            "long_momentum_v9_vwap_reclaim_last_tema_open_ok": reentry_last_tema_open_ok,
+            "long_momentum_v9_vwap_reclaim_tema_open_threshold": reentry_tema_open_threshold if reentry_tema_open_threshold > 0 else None,
+            "long_momentum_v9_vwap_reclaim_bvd_ok": reentry_bvd_ok,
+            "long_momentum_v9_vwap_reclaim_bvd_score": reentry_bvd_score,
+            "long_momentum_v9_vwap_reclaim_body_break_ok": reentry_body_break_ok,
+            "long_momentum_v9_vwap_reclaim_body_break_threshold": reentry_body_break_threshold,
             "long_momentum_v9_reentry_vwap_threshold": reentry_vwap_threshold if reentry_vwap_threshold > 0 else None,
             "long_momentum_v9_close_minus_reentry_vwap_threshold": reentry_close_minus_vwap_threshold,
             "long_momentum_v9_reentry_price_reclaim": reentry_price_reclaim,
@@ -522,17 +628,20 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             **first_entry_high_state,
             **first_entry_body_state,
             "long_momentum_v9_immediate_entry_open": False,
-            "long_momentum_v9_first_entry_open": first_entry_open,
-            "long_momentum_v9_reentry_open": reentry_open,
-            "long_momentum_v9_entry_priority": 2 if first_entry_open else 1 if reentry_open else 0,
-            "long_momentum_v9_entry_open": first_entry_open or reentry_open,
-            "entry_trigger": "FIRST_ENTRY" if first_entry_open else "WATCHLIST_REENTRY" if reentry_open else "",
+            "long_momentum_v9_high_break_hold_entry_open": high_break_hold_entry_open,
+            "long_momentum_v9_vwap_reclaim_entry_open": vwap_reclaim_entry_open,
+            "long_momentum_v9_first_entry_open": high_break_hold_entry_open,
+            "long_momentum_v9_reentry_open": vwap_reclaim_entry_open,
+            "long_momentum_v9_entry_priority": 2 if high_break_hold_entry_open else 1 if vwap_reclaim_entry_open else 0,
+            "long_momentum_v9_entry_open": high_break_hold_entry_open or vwap_reclaim_entry_open,
+            "entry_trigger": "HIGH_BREAK_HOLD" if high_break_hold_entry_open else "VWAP_RECLAIM" if vwap_reclaim_entry_open else "",
             "long_momentum_v9_reject_reason": self._v9_reject_reason(
                 price_eligible=price_eligible,
                 watch_active=watch is not None,
-                first_entry_available=first_entry_available,
-                first_entry_day_high_break_ok=first_entry_day_high_break_ok,
-                watch_first_entry_filled=watch_first_entry_filled,
+                high_break_watch_active=high_break_watch is not None,
+                high_break_available=high_break_available,
+                high_break_hold_ready=high_break_hold_ready,
+                high_break_day_high_break_ok=high_break_day_high_break_ok,
                 watch_entry_ready=watch_entry_ready,
                 entry_time_ok=entry_time_ok,
                 return_ok=return_ok,
@@ -705,16 +814,16 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         if shortfall <= 0:
             return []
 
-        first_entry_symbols = {str(candidate.get("ticker") or "").upper() for candidate in candidates}
+        high_break_symbols = {str(candidate.get("ticker") or "").upper() for candidate in candidates}
         existing_sell_symbols = {request.symbol for request in existing_requests if request.side == "SELL"}
         requests: list[OrderRequest] = []
         for symbol, position in list(portfolio.positions.items()):
             if shortfall <= 0:
                 break
-            if symbol in first_entry_symbols or symbol in existing_sell_symbols:
+            if symbol in high_break_symbols or symbol in existing_sell_symbols:
                 continue
             meta = self._position_meta(symbol, position)
-            if str(meta.get("entry_type") or "") == "FIRST_ENTRY":
+            if self._is_high_break_entry_type(meta):
                 continue
             row = context.updates_by_symbol.get(symbol) or context.latest_by_symbol.get(symbol)
             if row is None:
@@ -731,11 +840,11 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     side="SELL",
                     quantity=quantity,
                     order_type="LIMIT",
-                    reason="FIRST_ENTRY_CASH_ROTATION",
+                    reason="HIGH_BREAK_HOLD_CASH_ROTATION",
                     limit_price=limit_price,
                     allow_same_bar_fill=True,
                     tag=(
-                        self._exit_tag("FIRST_ENTRY_CASH_ROTATION", position, row, meta)
+                        self._exit_tag("HIGH_BREAK_HOLD_CASH_ROTATION", position, row, meta)
                         + f"|limit={limit_price:.4f}|qtyReleased={quantity}|cashShortfall={shortfall:.2f}"
                     ),
                 )
@@ -776,18 +885,22 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "entry_score": score,
             "entry_type": entry_type,
             "peak_completed_close_profit_per_share": 0.0,
-            "soft_exit_wait_bars_remaining": max(0, int(self.config.first_entry_soft_exit_wait_bars)) if entry_type == "FIRST_ENTRY" else 0,
+            "soft_exit_wait_bars_remaining": max(0, int(self.config.first_entry_soft_exit_wait_bars)) if entry_type == "HIGH_BREAK_HOLD" else 0,
             "first_entry_body_bars_observed": 0,
             "first_entry_high_bars_observed": 0,
-            "first_entry_highest_high": entry_price if entry_type == "FIRST_ENTRY" else 0.0,
+            "first_entry_highest_high": entry_price if entry_type == "HIGH_BREAK_HOLD" else 0.0,
         }
         watch = self.momentum_watchlist.get(symbol)
         if watch is not None:
             watch.entry_submitted = True
-            if entry_type == "FIRST_ENTRY":
+            if entry_type == "HIGH_BREAK_HOLD":
                 watch.first_entry_submitted = True
             watch.last_entry_type = entry_type
             watch.last_state = "entry_submitted"
+        high_watch = self.high_break_hold_watchlist.get(symbol)
+        if high_watch is not None and entry_type == "HIGH_BREAK_HOLD":
+            high_watch.entry_submitted = True
+            high_watch.last_state = "entry_submitted"
         self._trace_entry(context.timestamp, candidate, quantity, entry_price, stop_price)
         return OrderRequest(
             symbol=symbol,
@@ -807,7 +920,14 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         )
 
     def _entry_stop_for_type(self, candidate: dict, entry_price: float, entry_type: str) -> float:
-        if entry_type in {"FIRST_ENTRY", "WATCHLIST_REENTRY"}:
+        if entry_type in {"HIGH_BREAK_HOLD", "FIRST_ENTRY"}:
+            vwap = self._float(candidate.get("last_vwap"))
+            vwap_stop = self._vwap_offset_stop(vwap)
+            high_break_level = self._float(candidate.get("long_momentum_v9_high_break_hold_breakout_level"))
+            high_break_stop = high_break_level * (1.0 - max(0.0, self.config.high_break_stop_offset_ratio)) if high_break_level > 0 else 0.0
+            stop = max(vwap_stop, high_break_stop)
+            return stop if 0 < stop < entry_price else 0.0
+        if entry_type in {"VWAP_RECLAIM", "WATCHLIST_REENTRY"}:
             vwap = self._float(candidate.get("last_vwap"))
             stop = self._vwap_offset_stop(vwap)
             return stop if 0 < stop < entry_price else 0.0
@@ -968,7 +1088,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         last_close = self._float((bar or {}).get("last_close"))
         stop = self._float(meta.get("initial_stop")) or position.stop_price
         body_suffix = ""
-        if str(meta.get("entry_type") or "") == "FIRST_ENTRY":
+        if self._is_high_break_entry_type(meta):
             body_suffix = (
                 f"|highestHigh={self._float(meta.get('first_entry_highest_high')):.4f}"
                 f"|lastHigh={self._float(meta.get('first_entry_last_high')):.4f}"
@@ -1028,7 +1148,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         return max(0.0, cash)
 
     def _uses_vwap_trail(self, meta: dict) -> bool:
-        return str(meta.get("entry_type") or "") in {"FIRST_ENTRY", "WATCHLIST_REENTRY"}
+        return str(meta.get("entry_type") or "") in {"HIGH_BREAK_HOLD", "VWAP_RECLAIM", "FIRST_ENTRY", "WATCHLIST_REENTRY"}
+
+    def _is_high_break_entry_type(self, meta: dict) -> bool:
+        return str(meta.get("entry_type") or "") in {"HIGH_BREAK_HOLD", "FIRST_ENTRY"}
 
     def _update_first_entry_high_cycle(
         self,
@@ -1038,7 +1161,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         bar: dict,
         meta: dict,
     ) -> dict[str, Any]:
-        if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
+        if not self._is_high_break_entry_type(meta):
             return self._first_entry_high_cycle_state(meta)
         if meta.get("_first_entry_high_last_timestamp") == timestamp:
             return self._first_entry_high_cycle_state(meta)
@@ -1085,7 +1208,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         }
 
     def _update_first_entry_body_cycle(self, timestamp: datetime, symbol: str, bar: dict, meta: dict) -> dict[str, Any]:
-        if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
+        if not self._is_high_break_entry_type(meta):
             return self._first_entry_body_cycle_state(meta)
         if meta.get("_first_entry_body_last_timestamp") == timestamp:
             return self._first_entry_body_cycle_state(meta)
@@ -1158,7 +1281,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         }
 
     def _first_entry_soft_exits_blocked(self, timestamp: datetime, symbol: str, meta: dict) -> bool:
-        if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
+        if not self._is_high_break_entry_type(meta):
             return False
         remaining = int(self._float(meta.get("soft_exit_wait_bars_remaining")))
         if remaining <= 0:
@@ -1169,7 +1292,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         return True
 
     def _first_entry_lifecycle_exits_blocked(self, meta: dict) -> bool:
-        if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
+        if not self._is_high_break_entry_type(meta):
             return False
         if self.config.first_entry_high_lifecycle_exit_enabled and not bool(meta.get("first_entry_high_stall_confirmed")):
             return True
@@ -1178,7 +1301,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         return False
 
     def _first_entry_soft_exits_allowed(self, meta: dict) -> bool:
-        if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
+        if not self._is_high_break_entry_type(meta):
             return True
         if int(self._float(meta.get("soft_exit_wait_bars_remaining"))) > 0:
             return False
@@ -1202,10 +1325,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             timestamp=timestamp,
             ticker=symbol,
             stage="exit",
-            event_type="first_entry_soft_exit_wait",
+            event_type="high_break_hold_soft_exit_wait",
             decision="hold_position",
-            reason_code="FIRST_ENTRY_SOFT_EXIT_WAIT",
-            reason="First-entry TEMA, 2xBVD, and pocket exits are disabled during the configured wait; the protective VWAP stop remains active.",
+            reason_code="HIGH_BREAK_HOLD_SOFT_EXIT_WAIT",
+            reason="High Break Hold TEMA, 2xBVD, and pocket exits are disabled during the configured wait; the protective stop remains active.",
             values={
                 "entry_price": getattr(position, "entry_price", None),
                 "quantity": getattr(position, "quantity", None),
@@ -1233,10 +1356,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             timestamp=timestamp,
             ticker=symbol,
             stage="exit",
-            event_type="first_entry_lifecycle_wait",
+            event_type="high_break_hold_lifecycle_wait",
             decision="hold_position",
-            reason_code="FIRST_ENTRY_LIFECYCLE_WAIT",
-            reason="First-entry soft exits are waiting for the high structure to stall and any enabled body lifecycle gate to pass.",
+            reason_code="HIGH_BREAK_HOLD_LIFECYCLE_WAIT",
+            reason="High Break Hold soft exits are waiting for the high structure to stall and any enabled body lifecycle gate to pass.",
             values={
                 "entry_price": getattr(position, "entry_price", None),
                 "quantity": getattr(position, "quantity", None),
@@ -1284,7 +1407,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             last_vwap = self._float(row.get("last_vwap"))
             current_open = self._float(row.get("current_open"))
             last_day_high_so_far = self._float(row.get("last_day_high_so_far"))
-            first_entry_day_high_break_ok = current_open > 0 and last_day_high_so_far > 0 and current_open > last_day_high_so_far
+            high_break_day_high_break_ok = current_open > 0 and last_day_high_so_far > 0 and current_open >= last_day_high_so_far
+            high_watch = self.high_break_hold_watchlist.get(watch.ticker)
             position = portfolio.positions.get(watch.ticker)
             meta = self.position_meta.get(watch.ticker, {})
             pocket_state = self._pocket_state(row, position)
@@ -1313,7 +1437,15 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     "last_vwap": row.get("last_vwap"),
                     "last_day_high_so_far": row.get("last_day_high_so_far"),
                     "first_entry_day_high_break_threshold": last_day_high_so_far if last_day_high_so_far > 0 else None,
-                    "first_entry_day_high_break_ok": first_entry_day_high_break_ok,
+                    "first_entry_day_high_break_ok": high_break_day_high_break_ok,
+                    "high_break_hold_watch_active": high_watch is not None,
+                    "high_break_hold_detected_timestamp": high_watch.detected_timestamp if high_watch else None,
+                    "high_break_hold_breakout_level": high_watch.breakout_level if high_watch else None,
+                    "high_break_hold_threshold": high_watch.breakout_level * (1.0 - max(0.0, self.config.high_break_hold_tolerance_ratio)) if high_watch else None,
+                    "high_break_hold_count": high_watch.hold_count if high_watch else 0,
+                    "high_break_hold_confirmation_bars": max(1, int(self.config.high_break_hold_confirmation_bars)),
+                    "high_break_hold_ok": bool(high_watch and high_watch.last_hold_ok),
+                    "high_break_hold_ready": bool(high_watch and high_watch.hold_count >= max(1, int(self.config.high_break_hold_confirmation_bars))),
                     "last_close_minus_vwap": last_close - last_vwap if last_vwap > 0 else None,
                     "last_tema_open": row.get("last_tema_open"),
                     "last_double_timeframe_bearish_volume_divergence_score": row.get("last_double_timeframe_bearish_volume_divergence_score"),
@@ -1346,6 +1478,55 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 },
             )
 
+    def _record_high_break_hold_snapshot(self, context: BarContext, portfolio: Portfolio) -> None:
+        if not self.high_break_hold_watchlist:
+            return
+        rows = []
+        required = max(1, int(self.config.high_break_hold_confirmation_bars))
+        tolerance = max(0.0, self.config.high_break_hold_tolerance_ratio)
+        for watch in self.high_break_hold_watchlist.values():
+            row = self.states.get(watch.ticker).row if watch.ticker in self.states else {}
+            position = portfolio.positions.get(watch.ticker)
+            threshold = watch.breakout_level * (1.0 - tolerance) if watch.breakout_level > 0 else None
+            rows.append(
+                {
+                    "timestamp": context.timestamp,
+                    "session_date": self.session_date.isoformat() if self.session_date else "",
+                    "ticker": watch.ticker,
+                    "detected_timestamp": watch.detected_timestamp,
+                    "breakout_level": watch.breakout_level,
+                    "detected_current_open": watch.detected_current_open,
+                    "hold_threshold": threshold,
+                    "hold_count": watch.hold_count,
+                    "confirmation_bars": required,
+                    "hold_ok": watch.last_hold_ok,
+                    "ready": watch.hold_count >= required,
+                    "entry_submitted": watch.entry_submitted,
+                    "entry_filled": watch.entry_filled,
+                    "state": "held" if position is not None else watch.last_state,
+                    "current_open": row.get("current_open"),
+                    "last_open": row.get("last_open"),
+                    "last_close": row.get("last_close"),
+                    "last_high": row.get("last_high"),
+                    "last_day_high_so_far": row.get("last_day_high_so_far"),
+                    "last_vwap": row.get("last_vwap"),
+                    "last_5m_return": row.get("last_5m_return"),
+                    "last_transactions": row.get("last_transactions"),
+                }
+            )
+        rows.sort(key=lambda item: (bool(item.get("ready")), self._float(item.get("last_5m_return"))), reverse=True)
+        self.high_break_hold_snapshots.extend(rows[: max(1, int(self.config.watchlist_snapshot_limit))])
+        if self.observability:
+            self.observability.state(
+                timestamp=context.timestamp,
+                scope="long_momentum_v9_high_break_hold_watchlist",
+                state={
+                    "watchlist_count": len(self.high_break_hold_watchlist),
+                    "ready_count": len([watch for watch in self.high_break_hold_watchlist.values() if watch.hold_count >= required]),
+                    "entry_submitted_count": len([watch for watch in self.high_break_hold_watchlist.values() if watch.entry_submitted]),
+                },
+            )
+
     def _record_scanner(
         self,
         context: BarContext,
@@ -1362,10 +1543,13 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 "timestamp": context.timestamp,
                 "session_date": self.session_date.isoformat() if self.session_date else "",
                 "candidate_count": len(candidates),
-                "first_entry_count": len([row for row in candidates if row.get("long_momentum_v9_first_entry_open")]),
-                "watchlist_entry_count": len([row for row in candidates if row.get("long_momentum_v9_reentry_open")]),
+                "high_break_hold_count": len([row for row in candidates if row.get("long_momentum_v9_high_break_hold_entry_open")]),
+                "vwap_reclaim_count": len([row for row in candidates if row.get("long_momentum_v9_vwap_reclaim_entry_open")]),
+                "first_entry_count": len([row for row in candidates if row.get("long_momentum_v9_high_break_hold_entry_open")]),
+                "watchlist_entry_count": len([row for row in candidates if row.get("long_momentum_v9_vwap_reclaim_entry_open")]),
                 "scanned_count": len(rows),
                 "watchlist_count": len(self.momentum_watchlist),
+                "high_break_watchlist_count": len(self.high_break_hold_watchlist),
             }
         )
         if not self.observability or not rows:
@@ -1377,9 +1561,12 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             state={
                 "scanned_count": len(rows),
                 "entry_open_count": len(candidates),
-                "first_entry_count": len([row for row in candidates if row.get("long_momentum_v9_first_entry_open")]),
-                "watchlist_entry_count": len([row for row in candidates if row.get("long_momentum_v9_reentry_open")]),
+                "high_break_hold_count": len([row for row in candidates if row.get("long_momentum_v9_high_break_hold_entry_open")]),
+                "vwap_reclaim_count": len([row for row in candidates if row.get("long_momentum_v9_vwap_reclaim_entry_open")]),
+                "first_entry_count": len([row for row in candidates if row.get("long_momentum_v9_high_break_hold_entry_open")]),
+                "watchlist_entry_count": len([row for row in candidates if row.get("long_momentum_v9_vwap_reclaim_entry_open")]),
                 "watchlist_count": len(self.momentum_watchlist),
+                "high_break_watchlist_count": len(self.high_break_hold_watchlist),
                 "open_positions": len(portfolio.positions),
                 "pending_orders": len([order for order in pending_orders if order.status == "OPEN"]),
             },
@@ -1407,6 +1594,27 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 "min_price": self.config.min_price,
                 "max_price": self.config.max_price,
             },
+        )
+
+    def _trace_high_break_hold_add(self, timestamp: datetime, ticker: str, row: dict[str, Any], watch: HighBreakHoldWatch) -> None:
+        if not self.observability:
+            return
+        self.observability.trace(
+            timestamp=timestamp,
+            ticker=ticker,
+            stage="watchlist",
+            event_type="high_break_hold_watch_add",
+            decision="add_to_high_break_hold_watchlist",
+            reason_code="DAY_HIGH_BREAK_WAIT_FOR_HOLD",
+            reason="Ticker hit the day-high break trigger; high-break hold entry now waits for configured hold confirmation on later bars.",
+            values={
+                "current_open": row.get("current_open"),
+                "last_day_high_so_far": row.get("last_day_high_so_far"),
+                "breakout_level": watch.breakout_level,
+                "hold_tolerance_ratio": self.config.high_break_hold_tolerance_ratio,
+                "confirmation_bars": self.config.high_break_hold_confirmation_bars,
+            },
+            force=True,
         )
 
     def _trace_entry(self, timestamp: datetime, candidate: dict, quantity: int, entry_price: float, stop_price: float) -> None:
@@ -1437,7 +1645,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             event_type="entry_intent",
             decision="submit_order",
             reason_code=f"LONG_MOMENTUM_V9_{entry_type}",
-            reason="Ticker passed the first-entry day-high break or the post-first-entry watchlist reentry; eligible candidates share available cash.",
+            reason="Ticker passed either the high-break hold entry or the VWAP reclaim entry; eligible candidates share available cash by priority group.",
             values={
                 "entry_type": entry_type,
                 "quantity": quantity,
@@ -1449,7 +1657,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 "last_transactions_vs_prior_3": candidate.get("last_transactions_vs_prior_3"),
                 "last_vwap": candidate.get("last_vwap"),
                 "last_day_high_so_far": candidate.get("last_day_high_so_far"),
-                "first_entry_day_high_break_threshold": candidate.get("long_momentum_v9_first_entry_day_high_break_threshold"),
+                "high_break_hold_breakout_level": candidate.get("long_momentum_v9_high_break_hold_breakout_level"),
+                "high_break_hold_count": candidate.get("long_momentum_v9_high_break_hold_count"),
+                "high_break_hold_confirmation_bars": candidate.get("long_momentum_v9_high_break_hold_confirmation_bars"),
                 "close_minus_vwap": candidate.get("long_momentum_v9_close_minus_vwap"),
                 "watchlist_max_vwap": candidate.get("long_momentum_v9_watchlist_max_vwap"),
             },
@@ -1461,10 +1671,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         )
 
     def _v9_entry_state(self, row: dict[str, Any]) -> str:
-        if row.get("long_momentum_v9_first_entry_open"):
-            return "FIRST_ENTRY"
-        if row.get("long_momentum_v9_reentry_open"):
-            return "WATCHLIST_VWAP_ENTRY"
+        if row.get("long_momentum_v9_high_break_hold_entry_open"):
+            return "HIGH_BREAK_HOLD"
+        if row.get("long_momentum_v9_vwap_reclaim_entry_open"):
+            return "VWAP_RECLAIM"
         return str(row.get("long_momentum_v9_reject_reason") or "filtered")
 
     def _v9_reject_reason(
@@ -1472,9 +1682,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         *,
         price_eligible: bool,
         watch_active: bool,
-        first_entry_available: bool,
-        first_entry_day_high_break_ok: bool,
-        watch_first_entry_filled: bool,
+        high_break_watch_active: bool,
+        high_break_available: bool,
+        high_break_hold_ready: bool,
+        high_break_day_high_break_ok: bool,
         watch_entry_ready: bool,
         entry_time_ok: bool,
         return_ok: bool,
@@ -1495,22 +1706,22 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return "entry_time"
         if not no_symbol_position:
             return "already_held_or_pending"
-        if first_entry_available and not first_entry_day_high_break_ok:
-            return "first_entry_wait_day_high_break"
-        if not watch_first_entry_filled:
-            return "reentry_wait_first_entry"
+        if watch_active and not high_break_watch_active and not high_break_day_high_break_ok:
+            return "high_break_wait_day_high_break"
+        if high_break_available and not high_break_hold_ready:
+            return "high_break_wait_hold_confirmation"
         if not watch_entry_ready:
             return "watchlist_entry_wait_next_bar"
         if not reentry_price_reclaim:
-            return "watchlist_entry_below_vwap_buffer"
+            return "vwap_reclaim_below_vwap_buffer"
         if not reentry_last_bar_not_red:
-            return "watchlist_entry_red_vwap_reclaim_bar"
+            return "vwap_reclaim_red_reclaim_bar"
         if not reentry_last_tema_open_ok:
-            return "watchlist_entry_last_tema_not_open"
+            return "vwap_reclaim_last_tema_not_open"
         if not reentry_bvd_ok:
-            return "watchlist_entry_bearish_volume_divergence"
+            return "vwap_reclaim_bearish_volume_divergence"
         if not reentry_body_break_ok:
-            return "watchlist_entry_two_bar_body_break"
+            return "vwap_reclaim_two_bar_body_break"
         return "filtered"
 
 __all__ = ["LongMomentumV9Strategy"]

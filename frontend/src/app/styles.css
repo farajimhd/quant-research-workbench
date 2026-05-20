@@ -7160,15 +7160,28 @@ button {
   min-width: 220px;
 }
 
-.step-debug-current-card {
+.step-debug-overview-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(240px, 1fr) minmax(320px, 1.3fr);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 1fr);
   margin-top: 12px;
 }
 
+.step-debug-current-card,
+.step-debug-positions-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface) 82%, var(--card));
+  padding: 12px;
+}
+
 .step-debug-current-card span,
-.step-debug-list-item small {
+.step-debug-list-item small,
+.step-debug-positions-card span,
+.step-debug-position-card small {
   color: var(--muted-foreground);
   font-size: 0.78rem;
 }
@@ -7182,6 +7195,53 @@ button {
 .step-debug-current-card p {
   color: var(--muted-foreground);
   margin: 4px 0 0;
+}
+
+.step-debug-card-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.step-debug-position-list {
+  display: grid;
+  gap: 8px;
+}
+
+.step-debug-position-card {
+  border: 1px solid color-mix(in oklab, var(--border) 74%, transparent);
+  border-radius: 8px;
+  background: var(--card);
+  padding: 10px;
+}
+
+.step-debug-position-card > div:first-child {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.step-debug-position-card dl {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 8px 0 0;
+}
+
+.step-debug-position-card dt {
+  color: var(--muted-foreground);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.step-debug-position-card dd {
+  color: var(--foreground);
+  font-size: 0.86rem;
+  font-weight: 750;
+  margin: 2px 0 0;
 }
 
 .step-debug-step-facts {

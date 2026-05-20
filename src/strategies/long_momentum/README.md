@@ -20,9 +20,10 @@ Version details live in each version folder:
 - `v6`: oracle-supervised benchmark version for supervision validation.
 - `v7`: live-safe May 1 learned version based on the v3 rule family.
 - `v8`: news-shock continuation version using provider shock features.
-- `v9`: day momentum watchlist version. A completed-bar 5-minute return adds a
-  ticker to the strategy watchlist, strict 1-minute transaction impulse rules
-  trigger First Entry, simultaneous First Entries split cash, no-cash First
-  Entries rotate out existing positions, lower-priority VWAP/two-bar
-  body-break reentries remain available after exits, and in-position pocketing
-  captures configured gains before immediately rebuying.
+- `v9`: day momentum watchlist version. A completed-bar 5-minute return,
+  volume, and transactions add a ticker to the strategy watchlist. The
+  high-priority High Break Hold entry waits for a day-high break to hold for
+  later bars before entering, while the lower-priority VWAP Reclaim entry can
+  enter whenever the watchlist ticker reclaims VWAP and breaks the last two
+  bodies. High Break Hold candidates can rotate out lower-priority positions,
+  and in-position pocketing captures configured or adaptive gains.

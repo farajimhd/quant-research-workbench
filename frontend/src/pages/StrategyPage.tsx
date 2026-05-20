@@ -103,6 +103,7 @@ type InteractiveDebugStep = {
   rejection_events?: DataRow[];
   signal_events?: DataRow[];
   strategy_requests?: DataRow[];
+  strategy_high_break_watchlist_rows?: DataRow[];
   strategy_scanner_rows?: DataRow[];
   strategy_watchlist_rows?: DataRow[];
   summary?: Record<string, unknown>;
@@ -278,22 +279,26 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_transactions: "Minimum current bar transaction count required before a Long Momentum entry.",
   min_watchlist_add_volume: "Long Momentum v9 last-bar volume threshold needed to add a ticker to the day momentum watchlist.",
   min_first_entry_transactions: "Long Momentum v9 1-minute transaction threshold needed to add a ticker to the day momentum watchlist. This is calibrated for 1m bars and should be retuned for other timeframes.",
-  min_first_entry_transactions_vs_prior_3: "Legacy Long Momentum v9 transaction impulse threshold retained for review; current v9 first entry waits for a day-high break after watchlist add.",
+  min_first_entry_transactions_vs_prior_3: "Legacy Long Momentum v9 transaction impulse threshold retained for review; current v9 entries use the momentum watchlist, High Break Hold, and VWAP Reclaim paths.",
   min_last_5m_return: "Long Momentum v9 provider-built same-session return_5 threshold needed to add a ticker to the day momentum watchlist.",
   max_entry_order_quantity: "Maximum BUY shares Long Momentum v9 is allowed to send to the backtest for a single entry or partial-entry remainder order.",
-  max_reentry_bvd_score: "Maximum 1-minute bearish volume divergence score allowed for Long Momentum v9 watchlist reentry. Scores above this block reentry.",
-  reentry_vwap_buffer_pct: "Minimum Long Momentum v9 watchlist reentry buffer above VWAP. For example, 2 means last close must be at least 2% above VWAP.",
-  max_first_entry_candidates_per_bar: "Maximum Long Momentum v9 First Entry day-high-break candidates the strategy can process on one bar before cash allocation.",
-  max_reentry_candidates_per_bar: "Maximum Long Momentum v9 watchlist reentry candidates the strategy can process on one bar after First Entries.",
-  first_entry_soft_exit_wait_bars: "Number of completed bars after a Long Momentum v9 First Entry fill where TEMA, 2xBVD, and pocket exits are disabled while the protective VWAP stop remains active.",
-  first_entry_high_lifecycle_exit_enabled: "When enabled, Long Momentum v9 First Entry soft exits wait until the position stops making or staying near highs.",
-  first_entry_high_near_tolerance_ratio: "First Entry high lifecycle tolerance as a ratio, not whole percent. 0.003 means a completed-bar high within 0.3% of the highest high still counts as near-high continuation.",
-  first_entry_high_stall_bars: "Number of consecutive completed bars not making or staying near highs before First Entry soft exits are allowed.",
-  first_entry_body_lifecycle_exit_enabled: "When enabled, Long Momentum v9 First Entry soft exits require green-body momentum to contract from its peak before TEMA, 2xBVD, or pocketing can close the position.",
-  first_entry_body_fast_ema_bars: "Fast EMA length for the First Entry green-body percentage lifecycle tracker.",
-  first_entry_body_slow_ema_bars: "Slow EMA length for the First Entry green-body percentage lifecycle tracker shown in debug.",
-  first_entry_body_contraction_ratio: "First Entry body-strength ratio threshold as a ratio, not whole percent. 0.65 means soft exits wait until fast green-body EMA contracts below 65% of its peak.",
-  first_entry_body_contraction_bars: "Number of consecutive First Entry body-contraction bars required before TEMA, 2xBVD, and pocket exits are allowed.",
+  max_reentry_bvd_score: "Maximum 1-minute bearish volume divergence score allowed for Long Momentum v9 VWAP Reclaim. Scores above this block VWAP Reclaim.",
+  reentry_vwap_buffer_pct: "Minimum Long Momentum v9 VWAP Reclaim buffer above VWAP. For example, 2 means last close must be at least 2% above VWAP.",
+  max_high_break_hold_candidates_per_bar: "Maximum Long Momentum v9 High Break Hold candidates the strategy can process on one bar before cash allocation.",
+  max_first_entry_candidates_per_bar: "Legacy alias for the maximum Long Momentum v9 High Break Hold candidates per bar.",
+  max_reentry_candidates_per_bar: "Maximum Long Momentum v9 VWAP Reclaim candidates the strategy can process on one bar after High Break Hold entries.",
+  high_break_hold_confirmation_bars: "Number of later bars that must hold the day-high break level before Long Momentum v9 can submit a High Break Hold entry.",
+  high_break_hold_tolerance_ratio: "High Break Hold confirmation tolerance as a ratio, not whole percent. 0.003 means a close within 0.3% below the breakout level still counts as holding.",
+  high_break_stop_offset_ratio: "High Break Hold stop offset as a ratio, not whole percent. 0.015 means the tight stop candidate is 1.5% below the breakout level.",
+  first_entry_soft_exit_wait_bars: "Number of completed bars after a Long Momentum v9 High Break Hold fill where TEMA, 2xBVD, and pocket exits are disabled while the protective stop remains active.",
+  first_entry_high_lifecycle_exit_enabled: "When enabled, Long Momentum v9 High Break Hold soft exits wait until the position stops making or staying near highs.",
+  first_entry_high_near_tolerance_ratio: "High Break Hold high lifecycle tolerance as a ratio, not whole percent. 0.003 means a completed-bar high within 0.3% of the highest high still counts as near-high continuation.",
+  first_entry_high_stall_bars: "Number of consecutive completed bars not making or staying near highs before High Break Hold soft exits are allowed.",
+  first_entry_body_lifecycle_exit_enabled: "When enabled, Long Momentum v9 High Break Hold soft exits require green-body momentum to contract from its peak before TEMA, 2xBVD, or pocketing can close the position.",
+  first_entry_body_fast_ema_bars: "Fast EMA length for the High Break Hold green-body percentage lifecycle tracker.",
+  first_entry_body_slow_ema_bars: "Slow EMA length for the High Break Hold green-body percentage lifecycle tracker shown in debug.",
+  first_entry_body_contraction_ratio: "High Break Hold body-strength ratio threshold as a ratio, not whole percent. 0.65 means soft exits wait until fast green-body EMA contracts below 65% of its peak.",
+  first_entry_body_contraction_bars: "Number of consecutive High Break Hold body-contraction bars required before TEMA, 2xBVD, and pocket exits are allowed.",
   watchlist_snapshot_limit: "Maximum Long Momentum v9 day-momentum watchlist rows saved in debug and observability snapshots.",
   min_macd_hist_z_since_open: "Minimum MACD histogram z-score since the open required before a Long Momentum entry.",
   trading_start_minute: "First minute of day where the strategy can evaluate entries. 240 is 04:00 ET.",
@@ -348,9 +353,9 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   adaptive_pocket_vol_multiplier: "Multiplier applied to last true-range EMA5 percent when adaptive pocketing is enabled.",
   adaptive_pocket_min_profit_pct: "Minimum adaptive pocket threshold. The volatility-based threshold will not go below this value.",
   adaptive_pocket_max_profit_pct: "Maximum adaptive pocket threshold. The volatility-based threshold will not go above this value.",
-  tema9_open_buffer_pct: "Long Momentum v9 TEMA open buffer as a ratio, not whole percent. 0.002 means +0.2%, so reentry requires TEMA9 to reach 100.2% of TEMA20.",
+  tema9_open_buffer_pct: "Long Momentum v9 TEMA open buffer as a ratio, not whole percent. 0.002 means +0.2%, so VWAP Reclaim requires TEMA9 to reach 100.2% of TEMA20.",
   tema9_exit_buffer_pct: "Long Momentum v9 TEMA exit buffer as a ratio, not whole percent. -0.002 means -0.2%, so exit triggers when TEMA20 reaches 99.8% of TEMA9.",
-  vwap_stop_offset_pct: "Long Momentum v9 VWAP reentry protective stop offset, expressed as n percent of VWAP. For example, 3 means stop = VWAP - 3% of VWAP.",
+  vwap_stop_offset_pct: "Long Momentum v9 VWAP-based protective stop offset, expressed as n percent of VWAP. For example, 3 means stop = VWAP - 3% of VWAP.",
   limit_order_offset_dollars: "Long Momentum v9 liquid-limit sell offset. Buys use current open because v9 treats the bar open as the executable ask; sells use current open minus this value.",
   trailing_activation_r: "Open R multiple required before the trailing stop tightens.",
   trailing_lock_r: "R multiple locked in after trailing activation.",
@@ -440,6 +445,7 @@ const STRATEGY_PARAMETER_GROUPS = [
       "watchlist_size",
       "max_active_positions",
       "replacement_score_buffer",
+      "max_high_break_hold_candidates_per_bar",
       "max_first_entry_candidates_per_bar",
       "max_reentry_candidates_per_bar",
       "watchlist_snapshot_limit"
@@ -509,6 +515,9 @@ const STRATEGY_PARAMETER_GROUPS = [
       "structural_trail_activation_r",
       "vwap_stop_buffer_pct",
       "vwap_stop_offset_pct",
+      "high_break_hold_confirmation_bars",
+      "high_break_hold_tolerance_ratio",
+      "high_break_stop_offset_ratio",
       "first_entry_soft_exit_wait_bars",
       "first_entry_high_lifecycle_exit_enabled",
       "first_entry_high_near_tolerance_ratio",
@@ -1111,7 +1120,9 @@ function InteractiveStepDebugPanel({
   const rawScannerFilterPresets = useMemo(() => interactiveDebugRawFilterPresets(config), [config]);
   const defaultRawFilterPreset = rawScannerFilterPresets?.[0];
   const rawRows = step?.raw_scanner_rows ?? [];
+  const visibleRawRows = useMemo(() => rawRows.slice(0, DEBUG_BACKTEST_SCANNER_MAX_ROWS), [rawRows]);
   const strategyWatchlistRows = step?.strategy_watchlist_rows ?? [];
+  const highBreakWatchlistRows = step?.strategy_high_break_watchlist_rows ?? [];
   const actionRows = step?.observability_trace ?? [];
   const counts = debugStepCounts(step);
   const metrics = useMemo(() => buildInteractiveDebugMetrics(config, summary, rawRows.length, strategyWatchlistRows.length, counts), [config, counts, rawRows.length, strategyWatchlistRows.length, summary]);
@@ -1167,25 +1178,31 @@ function InteractiveStepDebugPanel({
                 {step?.timestamp ? <SemanticBadge tone="neutral">{formatObservationTimestamp(step.timestamp)}</SemanticBadge> : null}
               </div>
               <NewRunMetricStrip metrics={metrics} />
-              <div className="step-debug-current-card">
-                <div>
+              <div className="step-debug-overview-grid">
+                <div className="step-debug-current-card">
                   <span>Backtest Response</span>
                   <DebugStepResponseSummary counts={counts} step={step} />
-                  <p>
-                    Pressing Next calls the strategy for exactly one timestamp, then the backtest engine responds with submitted requests, accepted orders, fills, portfolio state, and traces.
-                  </p>
+                  <DebugStepCountBadges counts={counts} />
                 </div>
-                <DebugStepCountBadges counts={counts} />
+                <DebugOpenPositionsCard positions={step?.positions ?? []} />
               </div>
             </div>
 
             <div className="step-debug-detail">
               <ObservationEvidenceTable
-                description="The exact rows passed to strategy.on_bar as context.updates. Toolbar presets here use only raw/provider columns and do not depend on strategy watchlist or order state."
+                description="Trace rows emitted by the strategy while evaluating this bar."
+                presentation="cards"
+                rows={actionRows}
+                title="Strategy Actions"
+              />
+              <ObservationEvidenceTable
+                description={rawRows.length > visibleRawRows.length
+                  ? `Showing the first ${formatNumber(visibleRawRows.length)} of ${formatNumber(rawRows.length)} raw/provider rows for render performance. Toolbar presets here use only raw/provider columns and do not depend on strategy watchlist or order state.`
+                  : "The exact rows passed to strategy.on_bar as context.updates. Toolbar presets here use only raw/provider columns and do not depend on strategy watchlist or order state."}
                 defaultFilterPreset={defaultRawFilterPreset}
                 filterPresets={rawScannerFilterPresets}
                 onOpenChart={setSelectedDebugChart}
-                rows={rawRows}
+                rows={visibleRawRows}
                 title="Scanner Raw Input"
               />
               <ObservationEvidenceTable
@@ -1194,17 +1211,18 @@ function InteractiveStepDebugPanel({
                 title="Filter Groups"
               />
               <ObservationEvidenceTable
-                description="Strategy-maintained day momentum watchlist state for this bar, including max VWAP, first-entry status, and reentry inputs."
+                description="Strategy-maintained day momentum watchlist state for this bar, including max VWAP, High Break Hold state, and VWAP Reclaim inputs."
                 onOpenChart={setSelectedDebugChart}
                 rows={strategyWatchlistRows}
                 showWhenEmpty
                 title="Momentum Watchlist"
               />
               <ObservationEvidenceTable
-                description="Trace rows emitted by the strategy while evaluating this bar."
-                presentation="cards"
-                rows={actionRows}
-                title="Strategy Actions"
+                description="Separate high-break hold watchlist. A ticker enters here after hitting the day-high break trigger, then must hold that level for the configured number of later bars before the high-break entry can submit."
+                onOpenChart={setSelectedDebugChart}
+                rows={highBreakWatchlistRows}
+                showWhenEmpty
+                title="High Break Hold Watchlist"
               />
               <ObservationEvidenceTable
                 description="OrderRequest objects returned by strategy.on_bar before the engine handles them."
@@ -1851,8 +1869,16 @@ function HelpButton({ help, label }: { help: string; label: string }) {
 const STRATEGY_PARAMETER_LABELS: Record<string, string> = {
   tema9_open_buffer_pct: "TEMA9 Open Buffer Ratio",
   tema9_exit_buffer_pct: "TEMA9 Exit Buffer Ratio",
-  first_entry_high_near_tolerance_ratio: "First Entry High Near Tolerance Ratio",
-  first_entry_body_contraction_ratio: "First Entry Body Contraction Ratio"
+  high_break_hold_confirmation_bars: "High Break Hold Confirmation Bars",
+  high_break_hold_tolerance_ratio: "High Break Hold Tolerance Ratio",
+  high_break_stop_offset_ratio: "High Break Stop Offset Ratio",
+  max_high_break_hold_candidates_per_bar: "Max High Break Hold Candidates Per Bar",
+  max_first_entry_candidates_per_bar: "Max High Break Hold Candidates Per Bar (Legacy)",
+  max_reentry_candidates_per_bar: "Max VWAP Reclaim Candidates Per Bar",
+  first_entry_soft_exit_wait_bars: "High Break Hold Soft Exit Wait Bars",
+  first_entry_high_near_tolerance_ratio: "High Break Hold High Near Tolerance Ratio",
+  first_entry_high_stall_bars: "High Break Hold High Stall Bars",
+  first_entry_body_contraction_ratio: "High Break Hold Body Contraction Ratio"
 };
 
 const WHOLE_PERCENT_STRATEGY_PARAMETERS = new Set([
@@ -2868,10 +2894,11 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
           strategyNumberParam(params, "trading_end_minute", 1200) - 1,
         ),
         last_day_high_so_far: gtFilter(0),
-        long_momentum_v9_first_entry_day_high_break_ok: trueFilter(),
+        current_open: gteFilter(0),
+        long_momentum_v9_high_break_day_high_break_ok: trueFilter(),
       },
-      label: "v9 First Entry Raw",
-      title: "Apply the raw/provider inputs for v9 First Entry: eligible price, trading window, a known prior day high, and current open breaking that prior day high.",
+      label: "v9 High Break Raw",
+      title: "Apply the raw/provider inputs for v9 High Break Hold: eligible price, trading window, a known prior day high, and current open hitting or breaking that prior day high.",
     },
     {
       filters: {
@@ -2881,13 +2908,13 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
           strategyNumberParam(params, "trading_end_minute", 1200) - 1,
         ),
         last_vwap: gtFilter(0),
-        long_momentum_v9_reentry_vwap_buffer_ok: trueFilter(),
-        long_momentum_v9_reentry_last_tema_open_ok: trueFilter(),
+        long_momentum_v9_vwap_reclaim_vwap_buffer_ok: trueFilter(),
+        long_momentum_v9_vwap_reclaim_last_tema_open_ok: trueFilter(),
         last_bearish_volume_divergence_score: lteFilter(strategyNumberParam(params, "max_reentry_bvd_score", 80)),
         current_open_above_last_2_body_high: trueFilter(),
       },
-      label: "v9 Watchlist Entry Raw",
-      title: "Apply the visible v9 watchlist-entry inputs: last close is above the VWAP buffer, last_close >= last_open, last TEMA9 is above buffered TEMA20, 1m BVD is not above the threshold, and current_open breaks the highest body of the last two completed bars.",
+      label: "v9 VWAP Reclaim Raw",
+      title: "Apply the visible v9 VWAP Reclaim inputs: last close is above the VWAP buffer, last_close >= last_open, last TEMA9 is above buffered TEMA20, 1m BVD is not above the threshold, and current_open breaks the highest body of the last two completed bars.",
     },
     {
       filters: {
@@ -2936,11 +2963,12 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
           ),
           held_quantity: lteFilter(0),
           long_momentum_v9_pending_symbol_order: { operator: "eq", presetLabel: "Is false", valueText: "false" },
-          long_momentum_v9_first_entry_available: trueFilter(),
-          long_momentum_v9_first_entry_day_high_break_ok: trueFilter(),
+          long_momentum_v9_high_break_hold_ready: trueFilter(),
+          long_momentum_v9_high_break_hold_available: trueFilter(),
+          long_momentum_v9_high_break_hold_entry_open: trueFilter(),
         },
-        label: "v9 First Entry",
-        title: "Apply the v9 First Entry gates: ticker is on the watchlist, no position or pending order exists, it has not used its one First Entry, and current_open breaks the prior day high.",
+        label: "v9 High Break Hold",
+        title: "Apply the v9 High Break Hold gates: ticker is on the momentum watchlist, a day-high break was detected, the later-bar hold confirmation passed, and no position or pending order exists.",
       },
       {
         filters: {
@@ -2952,15 +2980,14 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
           ),
           held_quantity: lteFilter(0),
           long_momentum_v9_pending_symbol_order: { operator: "eq", presetLabel: "Is false", valueText: "false" },
-          long_momentum_v9_watchlist_first_entry_filled: trueFilter(),
-          long_momentum_v9_reentry_vwap_buffer_ok: trueFilter(),
-          long_momentum_v9_reentry_last_bar_not_red: trueFilter(),
-          long_momentum_v9_reentry_last_tema_open_ok: trueFilter(),
-          long_momentum_v9_reentry_bvd_ok: trueFilter(),
-          long_momentum_v9_reentry_body_break_ok: trueFilter(),
+          long_momentum_v9_vwap_reclaim_vwap_buffer_ok: trueFilter(),
+          long_momentum_v9_vwap_reclaim_last_bar_not_red: trueFilter(),
+          long_momentum_v9_vwap_reclaim_last_tema_open_ok: trueFilter(),
+          long_momentum_v9_vwap_reclaim_bvd_ok: trueFilter(),
+          long_momentum_v9_vwap_reclaim_body_break_ok: trueFilter(),
         },
-        label: "v9 Watchlist VWAP Entry",
-        title: "Apply the v9 watchlist reentry gates: ticker already had its First Entry filled, is not held/pending, last close is above the VWAP buffer, the reclaim bar is not red, last TEMA is open, 1m BVD is not above the threshold, and current_open breaks the highest body of the last two completed bars.",
+        label: "v9 VWAP Reclaim",
+        title: "Apply the v9 VWAP Reclaim gates: ticker is on the momentum watchlist, is not held/pending, last close is above the VWAP buffer, the reclaim bar is not red, last TEMA is open, 1m BVD is not above the threshold, and current_open breaks the highest body of the last two completed bars.",
       },
       {
         filters: {
@@ -3284,6 +3311,62 @@ function DebugStepCountBadges({ counts }: { counts: DebugStepCounts }) {
   );
 }
 
+function DebugOpenPositionsCard({ positions }: { positions: DataRow[] }) {
+  const openPositions = positions.filter((row) => {
+    const quantity = Number(row.quantity ?? row.qty ?? row.position_quantity ?? 0);
+    return Number.isFinite(quantity) ? Math.abs(quantity) > 0 : true;
+  });
+  return (
+    <div className="step-debug-positions-card">
+      <div className="step-debug-card-heading">
+        <span>Open Positions</span>
+        <SemanticBadge tone={openPositions.length > 0 ? "info" : "neutral"}>{formatNumber(openPositions.length)}</SemanticBadge>
+      </div>
+      {openPositions.length ? (
+        <div className="step-debug-position-list">
+          {openPositions.slice(0, 4).map((row, index) => {
+            const symbol = rowText(row, "ticker") || rowText(row, "symbol") || `Position ${index + 1}`;
+            const quantity = row.quantity ?? row.qty ?? row.position_quantity ?? "";
+            const entry = row.entry_price ?? row.avg_entry_price ?? row.average_price ?? "";
+            const mark = row.mark_price ?? row.current_price ?? row.last_price ?? "";
+            const pnl = row.unrealized_pnl ?? row.unrealized_pl ?? row.pnl ?? "";
+            const stop = row.stop_price ?? row.protective_stop_price ?? "";
+            return (
+              <article className="step-debug-position-card" key={`${symbol}-${index}`}>
+                <div>
+                  <strong>{symbol}</strong>
+                  <small>Qty {formatCompactValue(quantity)}</small>
+                </div>
+                <dl>
+                  <div><dt>Entry</dt><dd>{formatCompactValue(entry)}</dd></div>
+                  <div><dt>Mark</dt><dd>{formatCompactValue(mark)}</dd></div>
+                  <div><dt>Stop</dt><dd>{formatCompactValue(stop)}</dd></div>
+                  <div><dt>Unrealized</dt><dd>{formatCompactValue(pnl)}</dd></div>
+                </dl>
+              </article>
+            );
+          })}
+          {openPositions.length > 4 ? <small className="muted">+{formatNumber(openPositions.length - 4)} more positions in the Positions section below.</small> : null}
+        </div>
+      ) : (
+        <p>No open positions at this step.</p>
+      )}
+    </div>
+  );
+}
+
+function formatCompactValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return "-";
+    if (Math.abs(value) >= 1_000) return formatNumber(value);
+    return value.toFixed(Math.abs(value) >= 10 ? 2 : 4).replace(/\.?0+$/, "");
+  }
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && String(value).trim() !== "") return formatCompactValue(numeric);
+  return String(value);
+}
+
 function DebugCountBadge({ label, tone, value }: { label: string; tone: SemanticTone; value: number }) {
   return (
     <span className="step-debug-count-badge" data-tone={tone}>
@@ -3360,10 +3443,30 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_entry_time_ok",
   "long_momentum_v9_pending_symbol_order",
   "long_momentum_v9_no_symbol_position",
+  "long_momentum_v9_high_break_hold_entry_open",
+  "long_momentum_v9_high_break_hold_watch_active",
+  "long_momentum_v9_high_break_hold_detected_timestamp",
+  "long_momentum_v9_high_break_hold_breakout_level",
+  "long_momentum_v9_high_break_hold_threshold",
+  "long_momentum_v9_high_break_hold_count",
+  "long_momentum_v9_high_break_hold_confirmation_bars",
+  "long_momentum_v9_high_break_hold_ok",
+  "long_momentum_v9_high_break_hold_ready",
+  "long_momentum_v9_high_break_hold_available",
+  "long_momentum_v9_high_break_day_high_break_ok",
   "long_momentum_v9_first_entry_available",
   "long_momentum_v9_first_entry_day_high_break_ok",
   "long_momentum_v9_first_entry_day_high_break_threshold",
   "long_momentum_v9_first_entry_close_minus_day_high",
+  "long_momentum_v9_vwap_reclaim_entry_open",
+  "long_momentum_v9_vwap_reclaim_vwap_threshold",
+  "long_momentum_v9_close_minus_vwap_reclaim_threshold",
+  "long_momentum_v9_vwap_reclaim_price_reclaim",
+  "long_momentum_v9_vwap_reclaim_vwap_buffer_ok",
+  "long_momentum_v9_vwap_reclaim_last_bar_not_red",
+  "long_momentum_v9_vwap_reclaim_last_tema_open_ok",
+  "long_momentum_v9_vwap_reclaim_bvd_ok",
+  "long_momentum_v9_vwap_reclaim_body_break_ok",
   "long_momentum_v9_close_minus_vwap",
   "long_momentum_v9_reentry_vwap_threshold",
   "long_momentum_v9_close_minus_reentry_vwap_threshold",

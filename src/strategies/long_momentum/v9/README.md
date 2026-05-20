@@ -20,8 +20,7 @@ A ticker is eligible for the watchlist when:
 The default `min_watchlist_add_volume` is `8000`.
 
 Passing the watchlist filters does not submit an entry by itself. The ticker
-must first prove continuation with the First Entry day-high break described
-below.
+can later enter through either High Break Hold or VWAP Reclaim.
 
 For 1-minute bars:
 
@@ -37,40 +36,56 @@ completed-bar inputs, `last_5m_return` at the current open is always based on
 the previous completed candle. It never uses prior-session prices or future
 bars.
 
-## First Entry
+## High Break Hold Entry
 
-Each day-watchlist ticker is eligible for one First Entry. First Entry has the
-highest priority and is only allowed when:
+Each day-watchlist ticker is eligible for one High Break Hold entry. High Break
+Hold has the highest priority, but it does not enter immediately when the day
+high is touched. It first adds the ticker to a separate high-break watchlist
+when:
 
 - the ticker is already in the day momentum watchlist
-- the ticker has not already submitted or filled its one First Entry
-- there is no open position or pending order for the ticker
 - the current minute is inside the configured trading window
-- `current_open > last_day_high_so_far`
+- `current_open >= last_day_high_so_far`
+- the ticker has not already submitted or filled its High Break Hold entry
 
 `last_day_high_so_far` is the session high known before the current actionable
 bar, so the breakout check does not use the current bar high or any future bar.
 
-If First Entry candidates appear while cash is tied up in lower-priority
-watchlist reentry positions, v9 submits same-bar sell orders for enough of
-those lower-priority positions to fund the First Entry target size. Existing
-First Entry positions are not rotated out by this rule. If multiple First Entry
-candidates appear on the same bar, v9 splits available cash equally across
+After a ticker enters the high-break watchlist, v9 waits for later bars to hold
+the breakout level:
+
+```text
+hold_threshold = breakout_level * (1 - high_break_hold_tolerance_ratio)
+hold_ok = last_close >= hold_threshold
+          and (last_close >= last_open or last_close >= breakout_level)
+```
+
+The entry can submit only when `hold_ok` has been true for
+`high_break_hold_confirmation_bars` consecutive later bars. The default is `1`.
+
+If High Break Hold candidates appear while cash is tied up in lower-priority
+VWAP Reclaim positions, v9 submits same-bar sell orders for enough of those
+lower-priority positions to fund the High Break Hold target size. Existing High
+Break Hold positions are not rotated out by this rule. If multiple High Break
+Hold candidates appear on the same bar, v9 splits available cash equally across
 them, respecting the configured maximum entry order size.
 
-First Entry uses the VWAP stop:
+High Break Hold uses the tighter valid stop from the VWAP stop and breakout
+stop:
 
 ```text
 limit_price = current_open
 entry_price = filled limit_price
-stop_price = last_vwap - (last_vwap * vwap_stop_offset_pct / 100)
+vwap_stop = last_vwap - (last_vwap * vwap_stop_offset_pct / 100)
+breakout_stop = breakout_level * (1 - high_break_stop_offset_ratio)
+stop_price = max(vwap_stop, breakout_stop)
 ```
 
-The VWAP stop is active immediately and trails upward while the position is
-open.
+The stop is active immediately and trails upward with VWAP while the position
+is open.
 
-For the first `first_entry_soft_exit_wait_bars` completed bars after a First
-Entry fill, the soft exits are disabled:
+For the first `first_entry_soft_exit_wait_bars` completed bars after a High
+Break Hold fill, the soft exits are disabled:
 
 - TEMA close
 - 2xBVD
@@ -79,12 +94,12 @@ Entry fill, the soft exits are disabled:
 The protective VWAP stop remains active during this wait. The default wait is
 `3` bars.
 
-After that fixed wait, First Entry keeps soft exits disabled while the position
-keeps making new highs or staying close to the highest high since entry. This
-is controlled by `first_entry_high_lifecycle_exit_enabled`, which is enabled by
-default.
+After that fixed wait, High Break Hold keeps soft exits disabled while the
+position keeps making new highs or staying close to the highest high since
+entry. This is controlled by `first_entry_high_lifecycle_exit_enabled`, which
+is enabled by default.
 
-On each completed bar after the First Entry fill, v9 calculates:
+On each completed bar after the High Break Hold fill, v9 calculates:
 
 ```text
 highest_high_since_entry = max(highest_high_since_entry, last_high)
@@ -111,17 +126,17 @@ too early. The stop remains active the whole time.
 
 The older green-body lifecycle values are still calculated and shown in debug,
 but body lifecycle exit gating is off by default. If
-`first_entry_body_lifecycle_exit_enabled = true`, First Entry also keeps soft
-exits disabled until the green-body lifecycle contracts from its peak.
+`first_entry_body_lifecycle_exit_enabled = true`, High Break Hold also keeps
+soft exits disabled until the green-body lifecycle contracts from its peak.
 
-On each completed bar after the First Entry fill, v9 calculates:
+On each completed bar after the High Break Hold fill, v9 calculates:
 
 ```text
 green_body = max(last_close - last_open, 0)
 green_body_pct = green_body / last_open
 green_body_ema_fast = EMA(green_body_pct, first_entry_body_fast_ema_bars)
 green_body_ema_slow = EMA(green_body_pct, first_entry_body_slow_ema_bars)
-peak_green_body_ema_fast = max(green_body_ema_fast since First Entry)
+peak_green_body_ema_fast = max(green_body_ema_fast since High Break Hold entry)
 body_strength_ratio = green_body_ema_fast / peak_green_body_ema_fast
 ```
 
@@ -137,13 +152,12 @@ Body lifecycle defaults are `first_entry_body_fast_ema_bars = 3`,
 `first_entry_body_contraction_ratio = 0.65`, and
 `first_entry_body_contraction_bars = 2`.
 
-## Watchlist VWAP Reentry
+## VWAP Reclaim Entry
 
-A ticker can only use the VWAP reentry after its First Entry has filled at
-least once. It can enter later when all VWAP reentry rules are true:
+VWAP Reclaim is the second entry method. It does not require High Break Hold to
+have happened. A ticker can enter when all VWAP Reclaim rules are true:
 
 - the ticker was added to the watchlist on a prior bar, not the current bar
-- the ticker already has `watchlist_first_entry_filled = true`
 - there is no open position or pending order for the ticker
 - the current minute is inside the configured trading window
 - `min_price <= last_close <= max_price`
@@ -153,14 +167,14 @@ least once. It can enter later when all VWAP reentry rules are true:
   `last_tema9 >= last_tema20 * (1 + tema9_open_buffer_pct)`
 
 The 5-minute return, volume, and transaction thresholds are used to add the
-ticker to the watchlist. For later reentry, the gate is the VWAP/body-break
-reentry rule, and the first possible VWAP reentry is the next bar after a prior
-First Entry has filled and exited.
+ticker to the watchlist. For VWAP Reclaim, the gate is the VWAP/body-break
+rule, and the first possible VWAP Reclaim entry is the next bar after
+the ticker entered the day momentum watchlist.
 
 If multiple watchlist VWAP entry candidates appear on the same bar, v9 splits
 available cash equally across them and submits them at the same current open.
 
-Watchlist VWAP reentry also blocks bearish exhaustion on the last completed
+VWAP Reclaim also blocks bearish exhaustion on the last completed
 candle:
 
 ```text
@@ -168,9 +182,9 @@ last_bearish_volume_divergence_score <= max_reentry_bvd_score
 ```
 
 The default `max_reentry_bvd_score` is `80.0`, so a 1-minute BVD score above
-80 blocks watchlist reentry. This does not block First Entry.
+80 blocks VWAP Reclaim. This does not block High Break Hold.
 
-Watchlist VWAP reentry requires the last completed candle to close above VWAP
+VWAP Reclaim requires the last completed candle to close above VWAP
 by the configured buffer:
 
 ```text
@@ -179,7 +193,7 @@ last_close >= last_vwap * (1 + reentry_vwap_buffer_pct / 100)
 
 The default `reentry_vwap_buffer_pct` is `2.0`.
 
-Watchlist VWAP reentry also requires the last completed candle TEMA stack to be
+VWAP Reclaim also requires the last completed candle TEMA stack to be
 open:
 
 ```text
@@ -187,10 +201,10 @@ last_tema9 >= last_tema20 * (1 + tema9_open_buffer_pct)
 ```
 
 The default `tema9_open_buffer_pct` is `0.002`, which is a ratio equal to
-`+0.2%`, so watchlist reentry requires the completed-bar TEMA9 to reach 100.2%
+`+0.2%`, so VWAP Reclaim requires the completed-bar TEMA9 to reach 100.2%
 of completed-bar TEMA20.
 
-Watchlist VWAP reentry also requires the current bar open to break the highest
+VWAP Reclaim also requires the current bar open to break the highest
 body high of the last two completed bars:
 
 ```text
@@ -200,11 +214,11 @@ current_open > max(
 )
 ```
 
-This reentry body-break rule does not use MACD.
+This VWAP Reclaim body-break rule does not use MACD.
 
 ## Entry Sizing And Stop
 
-First Entry and watchlist VWAP reentry use a stop slightly below VWAP:
+VWAP Reclaim uses a stop slightly below VWAP:
 
 ```text
 limit_price = current_open
@@ -301,7 +315,7 @@ remaining distance to the trigger on every evaluated position bar.
 Pocketing only exits the current position. v9 does not reenter on the pocket
 candle; after the fill is reported back to the strategy, the ticker remains on
 the day momentum watchlist and can enter again on a later bar only through the
-normal watchlist reentry gates.
+normal VWAP Reclaim gates.
 
 Emergency exit:
 
