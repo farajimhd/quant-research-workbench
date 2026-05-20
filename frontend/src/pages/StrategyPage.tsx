@@ -2438,7 +2438,9 @@ function ObservationEvidenceTable({
           </span>
           <small>{formatNumber(displayRows.length)} rows</small>
         </div>
-        {presentation === "cards" ? (
+        {presentation === "cards" && title === "Strategy Actions" ? (
+          <StrategyActionCards rows={displayRows} />
+        ) : presentation === "cards" ? (
           <ObservationEvidenceCards rows={displayRows} title={title} />
         ) : displayRows.length ? (
           <DataTable
@@ -2489,6 +2491,101 @@ function ObservationEvidenceCards({ rows, title }: { rows: DataRow[]; title: str
       ))}
     </div>
   );
+}
+
+function StrategyActionCards({ rows }: { rows: DataRow[] }) {
+  return (
+    <div className="strategy-action-card-list">
+      {rows.map((row, index) => (
+        <StrategyActionCard index={index} key={`strategy-action:${evidenceRowIdentity(row, index)}:${index}`} row={row} />
+      ))}
+    </div>
+  );
+}
+
+function StrategyActionCard({ index, row }: { index: number; row: DataRow }) {
+  const ticker = rowText(row, "ticker") || rowText(row, "symbol") || "Strategy";
+  const stage = rowText(row, "stage") || "strategy";
+  const eventType = rowText(row, "event_type") || rowText(row, "event") || `action_${index + 1}`;
+  const decision = rowText(row, "decision") || rowText(row, "reason_code") || "";
+  const reasonCode = rowText(row, "reason_code");
+  const reason = rowText(row, "reason");
+  const time = rowText(row, "timestamp") || rowText(row, "created_at");
+  const values = strategyActionPayload(row, "values_json") ?? strategyActionPayload(row, "values") ?? {};
+  const state = strategyActionPayload(row, "state_json") ?? strategyActionPayload(row, "state") ?? {};
+  const primaryFields = strategyActionFields(values, state);
+  const badgeTone = observabilitySemanticTone(decision || reasonCode || stage, "Strategy Actions");
+  return (
+    <article className="strategy-action-card">
+      <div className="strategy-action-main">
+        <div className="strategy-action-heading">
+          <span className="strategy-action-stage">{formatObservationLabel(stage)}</span>
+          <strong>{ticker}</strong>
+          <small>{formatObservationLabel(eventType)}</small>
+        </div>
+        <div className="strategy-action-badges">
+          {decision ? <SemanticBadge tone={badgeTone}>{formatObservationLabel(decision)}</SemanticBadge> : null}
+          {reasonCode && reasonCode !== decision ? <SemanticBadge tone="neutral">{formatObservationLabel(reasonCode)}</SemanticBadge> : null}
+        </div>
+      </div>
+      {time ? <div className="strategy-action-time">{formatObservationTimestamp(time)}</div> : null}
+      {reason ? <p className="strategy-action-reason">{reason}</p> : null}
+      {primaryFields.length ? (
+        <div className="strategy-action-field-grid">
+          {primaryFields.map((field) => (
+            <div className="strategy-action-field" key={field.key}>
+              <span>{field.label}</span>
+              <strong>{formatObservationValue(field.value, field.key)}</strong>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function strategyActionPayload(row: DataRow, key: string): Record<string, unknown> | null {
+  const value = row[key];
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  const parsed = parseObservationJson(value);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  return null;
+}
+
+function strategyActionFields(values: Record<string, unknown>, state: Record<string, unknown>): ObservationFieldValue[] {
+  const merged = { ...state, ...values };
+  const preferredKeys = [
+    "entry_type",
+    "quantity",
+    "current_open",
+    "entry_price",
+    "stop",
+    "stop_price",
+    "risk_per_share",
+    "last_5m_return",
+    "last_transactions",
+    "last_transactions_vs_prior_3",
+    "last_vwap",
+    "high_break_hold_breakout_level",
+    "high_break_hold_count",
+    "high_break_hold_confirmation_bars",
+    "watchlist_count",
+    "entry_submitted",
+    "pocket_mode",
+    "pocket_pct",
+    "trigger_price",
+    "remaining_to_trigger",
+    "estimated_bid",
+    "soft_exit_wait_bars_remaining",
+    "highest_high",
+    "last_high",
+    "no_new_high_count",
+    "required_stall_bars",
+  ];
+  return preferredKeys
+    .filter((key) => merged[key] !== undefined && merged[key] !== null && merged[key] !== "")
+    .slice(0, 10)
+    .map((key) => ({ key, label: formatObservationLabel(key), value: normalizeObservationTableValue(merged[key]) }));
 }
 
 function ObservationEvidenceCard({ index, row, title }: { index: number; row: DataRow; title: string }) {

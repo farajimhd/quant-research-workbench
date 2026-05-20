@@ -8208,6 +8208,114 @@ button {
   white-space: nowrap;
 }
 
+.strategy-action-card-list {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.strategy-action-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  border-left: 4px solid var(--primary);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--card) 92%, var(--surface));
+  padding: 10px 12px;
+}
+
+.strategy-action-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.strategy-action-heading {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.strategy-action-heading strong {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 15px;
+  font-weight: 780;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strategy-action-heading small,
+.strategy-action-stage,
+.strategy-action-time {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.strategy-action-stage {
+  text-transform: uppercase;
+}
+
+.strategy-action-badges {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 54%;
+}
+
+.strategy-action-time {
+  margin-top: -4px;
+}
+
+.strategy-action-reason {
+  color: var(--foreground);
+  font-size: 12.5px;
+  line-height: 1.38;
+  margin: 0;
+}
+
+.strategy-action-field-grid {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.strategy-action-field {
+  min-width: 0;
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--surface) 78%, var(--card));
+  padding: 6px 7px;
+}
+
+.strategy-action-field span {
+  display: block;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.strategy-action-field strong {
+  display: block;
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1.25;
+  margin-top: 2px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .observability-evidence-card-field .semantic-badge {
   max-width: 100%;
   overflow: hidden;
@@ -8331,6 +8439,7 @@ button {
   .observability-action-overview,
   .observability-detail-grid,
   .observability-evidence-card-list,
+  .strategy-action-card-list,
   .observability-state-card-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -8371,8 +8480,13 @@ button {
   .observability-action-overview,
   .observability-detail-grid,
   .observability-evidence-card-list,
+  .strategy-action-card-list,
   .observability-state-card-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .strategy-action-field-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .observability-action-header {
