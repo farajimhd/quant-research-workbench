@@ -159,7 +159,7 @@ if estimated_bid >= entry_price * (1 + pocket_profit_pct):
     immediately buy back at estimated_ask
 ```
 
-The default `pocket_profit_pct` is `0.035`. Pocketing does not check the scanner
+The default `pocket_profit_pct` is `0.3`. Pocketing does not check the scanner
 or watchlist reentry gates; it is an in-position profit capture and immediate
 same-bar reentry. The new reentry uses the existing trailing stop if possible,
 otherwise the current VWAP-offset stop.

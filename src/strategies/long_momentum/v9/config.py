@@ -45,7 +45,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     max_entry_order_quantity: int = 3_000
     max_reentry_bvd_score: float = 80.0
     double_bvd_exit_score: float = 50.0
-    pocket_profit_pct: float = 0.035
+    pocket_profit_pct: float = 0.3
     tema9_exit_buffer_pct: float = -0.01
     vwap_stop_offset_pct: float = 3.0
     limit_order_offset_dollars: float = 0.01
