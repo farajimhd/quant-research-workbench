@@ -7138,6 +7138,17 @@ button {
   flex: 0 0 auto;
 }
 
+.interactive-debug-panel .progress-meter {
+  margin-bottom: 12px;
+}
+
+.interactive-debug-panel .new-run-metric-strip {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 0 10px;
+}
+
 .step-debug-control-row {
   align-items: end;
   display: flex;
@@ -7150,12 +7161,10 @@ button {
 }
 
 .step-debug-current-card {
-  border-top: 1px solid var(--border);
   display: grid;
   gap: 12px;
   grid-template-columns: minmax(240px, 1fr) minmax(320px, 1.3fr);
   margin-top: 12px;
-  padding-top: 12px;
 }
 
 .step-debug-current-card span,
@@ -7179,6 +7188,84 @@ button {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.step-debug-response-summary {
+  display: grid;
+  gap: 8px;
+  margin-top: 3px;
+}
+
+.step-debug-response-title {
+  color: var(--foreground);
+  font-size: 1rem;
+  font-weight: 750;
+}
+
+.step-debug-response-badges,
+.step-debug-count-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.step-debug-count-grid {
+  align-content: start;
+  justify-content: end;
+}
+
+.step-debug-count-badge {
+  --debug-count-tone: var(--muted-foreground);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid color-mix(in oklab, var(--debug-count-tone) 32%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--debug-count-tone) 8%, var(--card));
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 6px 8px 6px 10px;
+}
+
+.step-debug-count-badge[data-tone="danger"] {
+  --debug-count-tone: var(--danger);
+}
+
+.step-debug-count-badge[data-tone="info"] {
+  --debug-count-tone: var(--info);
+}
+
+.step-debug-count-badge[data-tone="success"] {
+  --debug-count-tone: var(--success);
+}
+
+.step-debug-count-badge[data-tone="warning"] {
+  --debug-count-tone: #f97316;
+}
+
+.step-debug-count-badge strong {
+  min-width: 22px;
+  border-radius: 999px;
+  background: var(--debug-count-tone);
+  color: var(--background);
+  font-size: 12px;
+  line-height: 1;
+  margin: 0;
+  padding: 4px 7px;
+  text-align: center;
+}
+
+.step-debug-count-badge[data-tone="neutral"] strong,
+.step-debug-count-badge[data-tone="muted"] strong {
+  background: color-mix(in oklab, var(--muted-foreground) 18%, var(--surface));
+  color: var(--muted-foreground);
+}
+
+.step-debug-no-action {
+  color: var(--muted-foreground);
+  font-size: 12px;
 }
 
 .step-debug-grid {

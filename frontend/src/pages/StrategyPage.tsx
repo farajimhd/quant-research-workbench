@@ -838,6 +838,7 @@ function NewRunPanel({
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<Record<string, unknown> | null>(null);
   const [debugSession, setDebugSession] = useState<InteractiveDebugSession | null>(null);
+  const [debugBusy, setDebugBusy] = useState<"next" | "previous" | "until-action" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditTarget | null>(null);
   const [draftConfig, setDraftConfig] = useState(config);
@@ -899,6 +900,7 @@ function NewRunPanel({
   async function moveDebug(direction: "next" | "previous") {
     if (!debugSession?.session_id) return;
     setError(null);
+    setDebugBusy(direction);
     try {
       const payload = await api<InteractiveDebugSession>(
         `/api/backtests/debug/sessions/${debugSession.session_id}/${direction}`,
@@ -907,6 +909,29 @@ function NewRunPanel({
       setDebugSession(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDebugBusy(null);
+    }
+  }
+
+  async function runDebugUntilAction() {
+    if (!debugSession?.session_id) return;
+    setError(null);
+    setDebugBusy("until-action");
+    try {
+      let payload = debugSession;
+      for (let index = 0; index < Math.max(1, debugSession.total_event_bars); index += 1) {
+        payload = await api<InteractiveDebugSession>(
+          `/api/backtests/debug/sessions/${debugSession.session_id}/next`,
+          { method: "POST" }
+        );
+        if (debugSessionIsComplete(payload) || debugStepHasPrimaryAction(payload.step ?? null)) break;
+      }
+      setDebugSession(payload);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDebugBusy(null);
     }
   }
 
@@ -964,9 +989,11 @@ function NewRunPanel({
       {error ? <div className="error-panel" style={{ marginTop: 12 }}>{error}</div> : null}
       {debugSession ? (
         <InteractiveStepDebugPanel
+          busy={debugBusy}
           config={config}
           onNext={() => moveDebug("next")}
           onPrevious={() => moveDebug("previous")}
+          onRunUntilAction={runDebugUntilAction}
           session={debugSession}
         />
       ) : (
@@ -1023,26 +1050,35 @@ function SavedRunPanel({
 }
 
 function InteractiveStepDebugPanel({
+  busy,
   config,
   onNext,
   onPrevious,
+  onRunUntilAction,
   session
 }: {
+  busy: "next" | "previous" | "until-action" | null;
   config: StrategyConfig;
   onNext: () => void;
   onPrevious: () => void;
+  onRunUntilAction: () => void;
   session: InteractiveDebugSession;
 }) {
   const step = session.step ?? null;
   const summary = step?.summary ?? session.summary ?? {};
   const complete = session.status === "complete" || step?.type === "complete";
   const canGoPrevious = session.current_step_index > 0;
+  const progressDone = Math.max(0, Math.min(session.processed_event_bars, session.total_event_bars));
+  const progressTotal = Math.max(session.total_event_bars, 1);
+  const progressPct = progressTotal > 0 ? (progressDone / progressTotal) * 100 : 0;
   const parameters = useMemo(() => interactiveDebugParameterRows(session.config, config.strategy_params), [config.strategy_params, session.config]);
   const rawScannerFilterPresets = useMemo(() => interactiveDebugRawFilterPresets(config), [config]);
   const defaultRawFilterPreset = rawScannerFilterPresets?.[0];
   const rawRows = step?.raw_scanner_rows ?? [];
   const strategyWatchlistRows = step?.strategy_watchlist_rows ?? [];
   const actionRows = step?.observability_trace ?? [];
+  const counts = debugStepCounts(step);
+  const metrics = useMemo(() => buildInteractiveDebugMetrics(config, summary, rawRows.length, strategyWatchlistRows.length, counts), [config, counts, rawRows.length, strategyWatchlistRows.length, summary]);
   const [selectedDebugChart, setSelectedDebugChart] = useState<ObservationChartTarget | null>(null);
   return (
     <section className="panel backtest-results-panel interactive-debug-panel" style={{ marginTop: 16 }}>
@@ -1059,12 +1095,24 @@ function InteractiveStepDebugPanel({
         <SemanticBadge tone={complete ? "success" : "info"}>{complete ? "complete" : "waiting for next"}</SemanticBadge>
       </div>
       <div className="step-debug-control-panel">
+        <ProgressMeter
+          ariaLabel="Interactive debug progress"
+          done={progressDone}
+          elapsed_sec={0}
+          label="Debug progress"
+          progress={progressPct}
+          status={complete ? "complete" : "running"}
+          total={progressTotal}
+        />
         <div className="step-debug-control-row">
-          <button className="button secondary" disabled={!canGoPrevious} onClick={onPrevious} type="button">
-            Previous
+          <button className="button secondary" disabled={!canGoPrevious || busy !== null} onClick={onPrevious} type="button">
+            {busy === "previous" ? "Running..." : "Previous"}
           </button>
-          <button className="button primary" disabled={complete} onClick={onNext} type="button">
-            Next Bar
+          <button className="button primary" disabled={complete || busy !== null} onClick={onNext} type="button">
+            {busy === "next" ? "Running..." : "Next Bar"}
+          </button>
+          <button className="button secondary" disabled={complete || busy !== null} onClick={onRunUntilAction} type="button">
+            {busy === "until-action" ? "Running..." : "Run Until Action"}
           </button>
           <SemanticBadge tone="neutral">
             Step {formatNumber(Math.max(0, session.current_step_index + 1))} of {formatNumber(session.total_history_steps)}
@@ -1072,24 +1120,16 @@ function InteractiveStepDebugPanel({
           <SemanticBadge tone="info">{config.strategy_name} {config.strategy_version}</SemanticBadge>
           {step?.timestamp ? <SemanticBadge tone="neutral">{formatObservationTimestamp(step.timestamp)}</SemanticBadge> : null}
         </div>
+        <NewRunMetricStrip metrics={metrics} />
         <div className="step-debug-current-card">
           <div>
             <span>Backtest Response</span>
-            <strong>{step?.message || debugStepTitle(step)}</strong>
+            <DebugStepResponseSummary counts={counts} step={step} />
             <p>
               Pressing Next calls the strategy for exactly one timestamp, then the backtest engine responds with submitted requests, accepted orders, fills, portfolio state, and traces.
             </p>
           </div>
-          <div className="step-debug-step-facts">
-            <ObservationFact label="P/L" value={summary.total_pnl ?? 0} />
-            <ObservationFact label="Equity" value={summary.final_equity ?? config.initial_cash} />
-            <ObservationFact label="Raw Scanner Rows" value={rawRows.length} />
-            <ObservationFact label="Watchlist Rows" value={strategyWatchlistRows.length} />
-            <ObservationFact label="Actions" value={actionRows.length} />
-            <ObservationFact label="Requests" value={step?.strategy_requests?.length ?? 0} />
-            <ObservationFact label="Orders" value={step?.orders?.length ?? 0} />
-            <ObservationFact label="Fills" value={step?.fills?.length ?? 0} />
-          </div>
+          <DebugStepCountBadges counts={counts} />
         </div>
       </div>
 
@@ -2820,13 +2860,178 @@ function strategyNumberParam(params: Record<string, StrategyParamValue>, key: st
   return Number.isFinite(value) ? value : fallback;
 }
 
-function debugStepTitle(step: InteractiveDebugStep | null): string {
-  if (!step) return "Session ready. Press Next Bar to evaluate the first timestamp.";
-  if (step.type === "complete") return "Debug backtest is complete.";
-  const timestamp = step.timestamp ? formatObservationTimestamp(step.timestamp) : "current bar";
-  const requestCount = step.strategy_requests?.length ?? 0;
-  const fillCount = step.fills?.length ?? 0;
-  return `${timestamp}: ${formatNumber(requestCount)} strategy requests, ${formatNumber(fillCount)} fills`;
+type DebugStepCounts = {
+  actions: number;
+  fills: number;
+  orders: number;
+  pendingOrders: number;
+  positions: number;
+  rejections: number;
+  requests: number;
+  trades: number;
+};
+
+function debugSessionIsComplete(session: InteractiveDebugSession): boolean {
+  return session.status === "complete" || session.step?.type === "complete";
+}
+
+function debugStepCounts(step: InteractiveDebugStep | null): DebugStepCounts {
+  return {
+    actions: step?.observability_trace?.length ?? 0,
+    fills: step?.fills?.length ?? 0,
+    orders: step?.orders?.length ?? 0,
+    pendingOrders: step?.pending_orders?.length ?? 0,
+    positions: step?.positions?.length ?? 0,
+    rejections: step?.rejection_events?.length ?? 0,
+    requests: step?.strategy_requests?.length ?? 0,
+    trades: step?.trades?.length ?? 0
+  };
+}
+
+function debugStepHasPrimaryAction(step: InteractiveDebugStep | null): boolean {
+  const counts = debugStepCounts(step);
+  return counts.actions > 0 || counts.requests > 0 || counts.orders > 0 || counts.fills > 0;
+}
+
+function buildInteractiveDebugMetrics(
+  config: StrategyConfig,
+  summary: Record<string, unknown>,
+  rawScannerRows: number,
+  watchlistRows: number,
+  counts: DebugStepCounts
+): NewRunMetric[] {
+  const pnl = finiteNumber(summary.total_pnl);
+  const equity = finiteNumber(summary.final_equity ?? config.initial_cash);
+  return [
+    {
+      detail: "Mark-to-market P/L after this debug bar",
+      icon: <Banknote size={15} />,
+      label: "P/L",
+      tone: signedTone(pnl),
+      value: formatMoney(pnl)
+    },
+    {
+      detail: "Portfolio equity after this debug bar",
+      icon: <Banknote size={15} />,
+      label: "Equity",
+      tone: signedTone(equity - config.initial_cash),
+      value: formatMoney(equity)
+    },
+    {
+      detail: "Open positions after this bar",
+      icon: <Activity size={15} />,
+      label: "Open Positions",
+      tone: countTone(counts.positions),
+      value: formatNumber(counts.positions)
+    },
+    {
+      detail: "Orders still pending after this bar",
+      icon: <ListChecks size={15} />,
+      label: "Pending Orders",
+      tone: countTone(counts.pendingOrders),
+      value: formatNumber(counts.pendingOrders)
+    },
+    {
+      detail: "Raw provider rows passed into the strategy for this timestamp",
+      icon: <Database size={15} />,
+      label: "Raw Scanner",
+      tone: countTone(rawScannerRows),
+      value: formatNumber(rawScannerRows)
+    },
+    {
+      detail: "Strategy-maintained momentum watchlist rows at this timestamp",
+      icon: <ListChecks size={15} />,
+      label: "Watchlist",
+      tone: countTone(watchlistRows),
+      value: formatNumber(watchlistRows)
+    },
+    {
+      detail: "Strategy trace actions emitted on this bar",
+      icon: <Activity size={15} />,
+      label: "Actions",
+      tone: countTone(counts.actions),
+      value: formatNumber(counts.actions)
+    },
+    {
+      detail: "Order requests submitted by the strategy to the backtest engine",
+      icon: <BarChart3 size={15} />,
+      label: "Requests",
+      tone: countTone(counts.requests),
+      value: formatNumber(counts.requests)
+    },
+    {
+      detail: "Backtest orders created or updated on this bar",
+      icon: <Shield size={15} />,
+      label: "Orders",
+      tone: countTone(counts.orders),
+      value: formatNumber(counts.orders)
+    },
+    {
+      detail: "Backtest fills produced on this bar",
+      icon: <Gauge size={15} />,
+      label: "Fills",
+      tone: countTone(counts.fills),
+      value: formatNumber(counts.fills)
+    },
+    {
+      detail: "Trades closed on this bar",
+      icon: <Percent size={15} />,
+      label: "Trades",
+      tone: countTone(counts.trades),
+      value: formatNumber(counts.trades)
+    },
+    {
+      detail: "Strategy or engine rejection rows on this bar",
+      icon: <StopCircle size={15} />,
+      label: "Rejections",
+      tone: counts.rejections > 0 ? "warning" : "neutral",
+      value: formatNumber(counts.rejections)
+    }
+  ];
+}
+
+function DebugStepResponseSummary({ counts, step }: { counts: DebugStepCounts; step: InteractiveDebugStep | null }) {
+  if (!step) {
+    return <strong className="step-debug-response-title">Session ready. Press Next Bar to evaluate the first timestamp.</strong>;
+  }
+  if (step.type === "complete") {
+    return <strong className="step-debug-response-title">Debug backtest is complete.</strong>;
+  }
+  const noAction = !debugStepHasPrimaryAction(step);
+  return (
+    <div className="step-debug-response-summary">
+      <strong className="step-debug-response-title">{step.timestamp ? formatObservationTimestamp(step.timestamp) : "Current bar"}</strong>
+      <span className="step-debug-response-badges" aria-label="Backtest response counts">
+        <DebugCountBadge label="Actions" tone={counts.actions > 0 ? "info" : "neutral"} value={counts.actions} />
+        <DebugCountBadge label="Requests" tone={counts.requests > 0 ? "warning" : "neutral"} value={counts.requests} />
+        <DebugCountBadge label="Orders" tone={counts.orders > 0 ? "info" : "neutral"} value={counts.orders} />
+        <DebugCountBadge label="Fills" tone={counts.fills > 0 ? "success" : "neutral"} value={counts.fills} />
+        <DebugCountBadge label="Trades" tone={counts.trades > 0 ? "success" : "neutral"} value={counts.trades} />
+        <DebugCountBadge label="Rejections" tone={counts.rejections > 0 ? "warning" : "neutral"} value={counts.rejections} />
+      </span>
+      {noAction ? <span className="step-debug-no-action">No strategy or backtest action on this bar.</span> : null}
+    </div>
+  );
+}
+
+function DebugStepCountBadges({ counts }: { counts: DebugStepCounts }) {
+  return (
+    <div className="step-debug-count-grid" aria-label="Debug state counts">
+      <DebugCountBadge label="Open Positions" tone={counts.positions > 0 ? "info" : "neutral"} value={counts.positions} />
+      <DebugCountBadge label="Pending Orders" tone={counts.pendingOrders > 0 ? "warning" : "neutral"} value={counts.pendingOrders} />
+      <DebugCountBadge label="Closed Trades" tone={counts.trades > 0 ? "success" : "neutral"} value={counts.trades} />
+      <DebugCountBadge label="Rejections" tone={counts.rejections > 0 ? "warning" : "neutral"} value={counts.rejections} />
+    </div>
+  );
+}
+
+function DebugCountBadge({ label, tone, value }: { label: string; tone: SemanticTone; value: number }) {
+  return (
+    <span className="step-debug-count-badge" data-tone={tone}>
+      <span>{label}</span>
+      <strong>{formatNumber(value)}</strong>
+    </span>
+  );
 }
 
 function relatedScannerRows(rows: DataRow[], trace: DataRow): DataRow[] {
