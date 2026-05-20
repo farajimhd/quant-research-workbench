@@ -68,7 +68,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     double_bvd_exit_score: float = 50.0
     high_break_hold_confirmation_bars: int = 1
     high_break_hold_tolerance_ratio: float = 0.003
-    high_break_stop_offset_ratio: float = 0.015
+    high_break_stop_offset_ratio: float = 0.08
     first_entry_soft_exit_wait_bars: int = 3
     first_entry_high_lifecycle_exit_enabled: bool = True
     first_entry_high_near_tolerance_ratio: float = 0.003

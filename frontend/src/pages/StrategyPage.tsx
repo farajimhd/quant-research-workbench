@@ -289,7 +289,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   max_reentry_candidates_per_bar: "Maximum Long Momentum v9 VWAP Reclaim candidates the strategy can process on one bar after High Break Hold entries.",
   high_break_hold_confirmation_bars: "Number of later bars that must hold the day-high break level before Long Momentum v9 can submit a High Break Hold entry.",
   high_break_hold_tolerance_ratio: "High Break Hold confirmation tolerance as a ratio, not whole percent. 0.003 means a close within 0.3% below the breakout level still counts as holding.",
-  high_break_stop_offset_ratio: "High Break Hold stop offset as a ratio, not whole percent. 0.015 means the tight stop candidate is 1.5% below the breakout level.",
+  high_break_stop_offset_ratio: "High Break Hold stop offset as a ratio, not whole percent. 0.08 means the fixed stop is 8% below the breakout level.",
   first_entry_soft_exit_wait_bars: "Number of completed bars after a Long Momentum v9 High Break Hold fill where TEMA, 2xBVD, and pocket exits are disabled while the protective stop remains active.",
   first_entry_high_lifecycle_exit_enabled: "When enabled, Long Momentum v9 High Break Hold soft exits wait until the position stops making or staying near highs.",
   first_entry_high_near_tolerance_ratio: "High Break Hold high lifecycle tolerance as a ratio, not whole percent. 0.003 means a completed-bar high within 0.3% of the highest high still counts as near-high continuation.",
