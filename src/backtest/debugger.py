@@ -520,7 +520,7 @@ class StepBacktestDebugger(BacktestEngine):
     def _v9_tema_exit_check(self, row: dict) -> dict:
         tema9 = self._number(row, "current_open_tema9")
         tema20 = self._number(row, "current_open_tema20")
-        buffer_pct = self._strategy_param("tema9_exit_buffer_pct", 0.005)
+        buffer_pct = self._strategy_param("tema9_exit_buffer_pct", 0.002)
         threshold = tema9 * (1.0 + buffer_pct) if tema9 is not None else None
         passed = tema20 is not None and threshold is not None and tema20 >= threshold
         return self._check(
@@ -533,12 +533,14 @@ class StepBacktestDebugger(BacktestEngine):
     def _v9_last_tema_open_check(self, row: dict) -> dict:
         tema9 = self._number(row, "last_tema9")
         tema20 = self._number(row, "last_tema20")
-        passed = tema9 is not None and tema20 is not None and tema9 > tema20
+        buffer_pct = self._strategy_param("tema9_open_buffer_pct", 0.002)
+        threshold = tema20 * (1.0 + buffer_pct) if tema20 is not None else None
+        passed = tema9 is not None and threshold is not None and tema9 >= threshold
         return self._check(
-            "last_tema_open",
-            f"last_tema9={tema9}, last_tema20={tema20}",
+            "last_tema9_vs_tema20_open_buffer",
+            f"last_tema9={tema9}, threshold={threshold}",
             passed,
-            "last_tema9 > last_tema20",
+            f">= last_tema20 * (1 + {buffer_pct:g})",
         )
 
     def _v9_two_bar_body_reentry_check(self, row: dict) -> dict:

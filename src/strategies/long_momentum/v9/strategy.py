@@ -388,7 +388,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         reentry_last_bar_not_red = last_close >= last_open
         last_tema9 = self._float(row.get("last_tema9"))
         last_tema20 = self._float(row.get("last_tema20"))
-        reentry_last_tema_open_ok = last_tema9 > 0 and last_tema20 > 0 and last_tema9 > last_tema20
+        reentry_tema_open_threshold = self._tema_open_threshold(last_tema20) if last_tema20 > 0 else 0.0
+        reentry_last_tema_open_ok = last_tema9 > 0 and reentry_tema_open_threshold > 0 and last_tema9 >= reentry_tema_open_threshold
         reentry_bvd_score = self._float(row.get("last_bearish_volume_divergence_score"))
         reentry_bvd_ok = reentry_bvd_score <= self.config.max_reentry_bvd_score
         current_open = self._float(row.get("current_open"))
@@ -451,6 +452,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_reentry_vwap_buffer_ok": reentry_price_reclaim,
             "long_momentum_v9_reentry_last_bar_not_red": reentry_last_bar_not_red,
             "long_momentum_v9_reentry_last_tema_open_ok": reentry_last_tema_open_ok,
+            "long_momentum_v9_reentry_tema_open_threshold": reentry_tema_open_threshold if reentry_tema_open_threshold > 0 else None,
             "long_momentum_v9_reentry_bvd_ok": reentry_bvd_ok,
             "long_momentum_v9_reentry_bvd_score": reentry_bvd_score,
             "long_momentum_v9_reentry_body_break_ok": reentry_body_break_ok,
@@ -796,6 +798,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
 
     def _tema_exit_threshold(self, tema9: float) -> float:
         return tema9 * (1.0 + self.config.tema9_exit_buffer_pct)
+
+    def _tema_open_threshold(self, tema20: float) -> float:
+        return tema20 * (1.0 + self.config.tema9_open_buffer_pct)
 
     def _tema_exit_tag(self, bar: dict) -> str:
         tema9 = self._float(bar.get("current_open_tema9"))

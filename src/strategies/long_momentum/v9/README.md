@@ -51,7 +51,8 @@ momentum watchlist. It can enter later when all VWAP entry rules are true:
 - `min_price <= last_close <= max_price`
 - `last_close >= last_vwap * (1 + reentry_vwap_buffer_pct / 100)`
 - the completed VWAP reclaim bar is not red: `last_close >= last_open`
-- last completed candle TEMA is open: `last_tema9 > last_tema20`
+- last completed candle TEMA is open by the configured buffer:
+  `last_tema9 >= last_tema20 * (1 + tema9_open_buffer_pct)`
 
 The 5-minute return and transaction threshold are used only to add the ticker to
 the watchlist unless the same bar also passes the transaction-impulse threshold.
@@ -84,8 +85,11 @@ Watchlist VWAP reentry also requires the last completed candle TEMA stack to be
 open:
 
 ```text
-last_tema9 > last_tema20
+last_tema9 >= last_tema20 * (1 + tema9_open_buffer_pct)
 ```
+
+The default `tema9_open_buffer_pct` is `0.002`, so watchlist reentry requires
+the completed-bar TEMA9 to reach 100.2% of completed-bar TEMA20.
 
 Watchlist VWAP reentry also requires the current bar open to break the highest
 body high of the last two completed bars:
@@ -97,9 +101,7 @@ current_open > max(
 )
 ```
 
-This reentry body-break rule does not use MACD. `tema9_exit_buffer_pct` is only
-used by the emergency TEMA exit; reentry TEMA-open uses the completed candle's
-plain `last_tema9 > last_tema20` comparison.
+This reentry body-break rule does not use MACD.
 
 ## Entry Sizing And Stop
 
@@ -209,8 +211,8 @@ Emergency exit:
 current_open_tema20 >= current_open_tema9 * (1 + tema9_exit_buffer_pct)
 ```
 
-The default `tema9_exit_buffer_pct` is `0.005`, so the TEMA emergency exit
-triggers when the current-open TEMA20 estimate reaches 100.5% of the
+The default `tema9_exit_buffer_pct` is `0.002`, so the TEMA emergency exit
+triggers when the current-open TEMA20 estimate reaches 100.2% of the
 current-open TEMA9 estimate. Normal `tema9` and `tema20` remain close-of-bar
 indicators; only the active decision bar also has `current_open_tema9` and
 `current_open_tema20`. If no main exit is active and TEMA is closed, v9 exits at
