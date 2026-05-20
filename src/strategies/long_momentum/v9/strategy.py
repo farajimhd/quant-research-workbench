@@ -231,7 +231,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return 0.0
         offset = max(0.0, self.config.limit_order_offset_dollars)
         if side == "BUY":
-            return open_price + offset
+            return open_price
         return max(0.01, open_price - offset)
 
     def _validate_provider_columns(self, frame: pl.DataFrame) -> None:

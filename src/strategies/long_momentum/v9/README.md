@@ -106,7 +106,7 @@ plain `last_tema9 > last_tema20` comparison.
 Immediate entry uses the previous candle open as the stop reference:
 
 ```text
-limit_price = current_open + limit_order_offset_dollars
+limit_price = current_open
 entry_price = filled limit_price
 stop_price = last_open
 ```
@@ -114,7 +114,7 @@ stop_price = last_open
 Watchlist VWAP entry uses a stop slightly below VWAP:
 
 ```text
-limit_price = current_open + limit_order_offset_dollars
+limit_price = current_open
 entry_price = filled limit_price
 stop_price = last_vwap - (last_vwap * vwap_stop_offset_pct / 100)
 ```
@@ -134,9 +134,9 @@ The default `max_entry_order_quantity` is `3000`, so v9 does not submit a BUY
 order larger than 3000 shares to the backtest.
 
 The default `limit_order_offset_dollars` is `0.01`. For liquid-limit execution,
-v9 submits buys at `current_open + 0.01` as an ask estimate and sells at
-`current_open - 0.01` as a bid estimate. The backtest fills matched limit orders
-at the submitted limit price.
+v9 treats the bar open as the executable ask, so buys submit at `current_open`.
+Sells submit at `current_open - 0.01` as a bid estimate. The backtest fills
+matched limit orders at the submitted limit price.
 
 While the position remains open, the stop trails upward with VWAP:
 
@@ -150,7 +150,7 @@ When the backtest partially fills a v9 order, v9 submits the remaining quantity
 on the next strategy step as an aggressive limit order:
 
 ```text
-BUY remainder:  limit_price = current_open + limit_order_offset_dollars
+BUY remainder:  limit_price = current_open
 SELL remainder: limit_price = current_open - limit_order_offset_dollars
 ```
 
@@ -174,7 +174,7 @@ Pocketing:
 
 ```text
 estimated_bid = current_open - limit_order_offset_dollars
-estimated_ask = current_open + limit_order_offset_dollars
+estimated_ask = current_open
 
 if estimated_bid >= entry_price * (1 + pocket_profit_pct):
     sell current position at estimated_bid
@@ -186,8 +186,8 @@ if estimated_bid >= entry_price * (1 + pocket_profit_pct):
 The default `pocket_profit_pct` is `0.03`. Pocketing does not check the scanner
 or watchlist reentry gates for the pocket sell itself. By default
 `pocket_immediate_reentry_enabled` is `True`, so after pocketing v9 immediately
-buys back at `estimated_ask` on the same bar without checking normal reentry
-gates. The immediate pocket reentry uses a tight stop:
+buys back at `estimated_ask`, which is `current_open`, on the same bar without
+checking normal reentry gates. The immediate pocket reentry uses a tight stop:
 
 ```text
 pocket_reentry_stop = current_open * (1 - pocket_reentry_stop_loss_pct / 100)

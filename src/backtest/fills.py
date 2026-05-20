@@ -15,9 +15,9 @@ class BarFillModel:
         if order.order_type == "STOP" and order.side == "SELL" and order.stop_price is not None:
             return float(bar["low"]) <= order.stop_price
         if order.order_type == "LIMIT" and order.side == "BUY" and order.limit_price is not None:
-            return float(bar["low"]) <= order.limit_price
+            return float(bar["open"]) <= order.limit_price or float(bar["low"]) <= order.limit_price
         if order.order_type == "LIMIT" and order.side == "SELL" and order.limit_price is not None:
-            return float(bar["high"]) >= order.limit_price
+            return float(bar["open"]) >= order.limit_price or float(bar["high"]) >= order.limit_price
         return False
 
     def fill_price(self, order: Order, bar: dict, slippage_bps: float) -> float:

@@ -339,7 +339,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   pocket_reentry_stop_loss_pct: "Long Momentum v9 immediate pocket-reentry stop loss as a percent of the current open. For example, 2 means stop = current open - 2%.",
   tema9_exit_buffer_pct: "Long Momentum v9 TEMA exit threshold as a fraction of TEMA9. 0.005 means exit when TEMA20 reaches 100.5% of TEMA9.",
   vwap_stop_offset_pct: "Long Momentum v9 VWAP reentry protective stop offset, expressed as n percent of VWAP. For example, 3 means stop = VWAP - 3% of VWAP.",
-  limit_order_offset_dollars: "Long Momentum v9 liquid-limit execution offset. Buys use current open plus this value; sells use current open minus this value.",
+  limit_order_offset_dollars: "Long Momentum v9 liquid-limit sell offset. Buys use current open because v9 treats the bar open as the executable ask; sells use current open minus this value.",
   trailing_activation_r: "Open R multiple required before the trailing stop tightens.",
   trailing_lock_r: "R multiple locked in after trailing activation.",
   trailing_giveback_r: "R multiple allowed to give back from the best price.",

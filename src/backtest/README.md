@@ -150,9 +150,10 @@ mark positions, but they should not trigger fills unless a later execution model
 explicitly supports that behavior.
 
 For liquid-limit simulation, matched limit orders fill at the submitted limit
-price. A strategy that wants an immediate liquid buy should submit a buy limit at
-the current bar open plus its ask-offset estimate; an immediate liquid sell
-should submit a sell limit at the current bar open minus its bid-offset estimate.
+price. With the current Long Momentum v9 convention, bar prices are treated as
+the executable ask for buys, so an immediate liquid buy submits at the current
+bar open. Sells still estimate the bid by submitting at the current bar open
+minus the configured bid-offset estimate.
 
 Stop orders are intentionally asymmetric to avoid same-bar high lookahead. Sell
 stops can fill on the same bar when that bar's low crosses the stop. Buy stops
