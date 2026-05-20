@@ -672,6 +672,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             meta = self._position_meta(symbol, position)
             if self._uses_vwap_trail(meta):
                 self._trail_reentry_stop(position, bar, meta)
+            self._update_high_break_soft_exit_profit_unlock(position, bar, meta)
             pocket_state = self._pocket_state(bar, position)
             self._trace_pocket_evaluation(context.timestamp, symbol, position, bar, meta, pocket_state)
             body_state = self._update_first_entry_body_cycle(context.timestamp, symbol, bar, meta)
@@ -1093,6 +1094,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 f"|bodyContractionCount={int(self._float(meta.get('first_entry_body_contraction_count')))}"
                 f"|bodyContractionConfirmed={bool(meta.get('first_entry_body_contraction_confirmed'))}"
                 f"|softExitWaitBarsRemaining={int(self._float(meta.get('soft_exit_wait_bars_remaining')))}"
+                f"|softExitProfitPct={self._float(meta.get('high_break_soft_exit_profit_pct')):.4f}"
+                f"|softExitProfitUnlockPct={max(0.0, self.config.high_break_soft_exit_unlock_profit_pct):.4f}"
+                f"|softExitProfitUnlocked={bool(meta.get('high_break_soft_exit_profit_unlocked'))}"
             )
         return (
             f"EXIT|reason={reason}|price={current_open:.4f}|entry={position.entry_price:.4f}"
@@ -1154,6 +1158,35 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         if self._uses_vwap_trail(meta):
             return "VWAP_TRAIL_STOP"
         return "INITIAL_STOP"
+
+    def _update_high_break_soft_exit_profit_unlock(self, position, bar: dict, meta: dict) -> None:
+        if not self._is_high_break_entry_type(meta):
+            return
+        entry_price = self._float(getattr(position, "entry_price", 0.0))
+        current_open = self._bar_open(bar)
+        threshold_pct = max(0.0, self.config.high_break_soft_exit_unlock_profit_pct)
+        unlock_price = entry_price * (1.0 + threshold_pct) if entry_price > 0 else 0.0
+        profit_pct = (current_open / entry_price) - 1.0 if entry_price > 0 and current_open > 0 else 0.0
+        previously_unlocked = bool(meta.get("high_break_soft_exit_profit_unlocked"))
+        unlocked = previously_unlocked or threshold_pct <= 0 or (unlock_price > 0 and current_open >= unlock_price)
+        meta["high_break_soft_exit_profit_pct"] = profit_pct
+        meta["high_break_soft_exit_unlock_profit_pct"] = threshold_pct
+        meta["high_break_soft_exit_unlock_price"] = unlock_price
+        meta["high_break_soft_exit_profit_unlocked"] = unlocked
+        if unlocked and not previously_unlocked:
+            meta["high_break_soft_exit_profit_unlocked_at_open"] = current_open
+
+    def _high_break_soft_exit_profit_unlock_state(self, meta: dict) -> dict[str, Any]:
+        return {
+            "long_momentum_v9_high_break_soft_exit_profit_pct": self._float(meta.get("high_break_soft_exit_profit_pct")),
+            "long_momentum_v9_high_break_soft_exit_unlock_profit_pct": max(0.0, self.config.high_break_soft_exit_unlock_profit_pct),
+            "long_momentum_v9_high_break_soft_exit_unlock_price": self._float(meta.get("high_break_soft_exit_unlock_price")),
+            "long_momentum_v9_high_break_soft_exit_profit_unlocked": bool(meta.get("high_break_soft_exit_profit_unlocked")),
+            "long_momentum_v9_high_break_soft_exit_profit_unlocked_at_open": self._float(meta.get("high_break_soft_exit_profit_unlocked_at_open")),
+        }
+
+    def _high_break_soft_exit_profit_unlocked(self, meta: dict) -> bool:
+        return bool(meta.get("high_break_soft_exit_profit_unlocked"))
 
     def _update_first_entry_high_cycle(
         self,
@@ -1280,10 +1313,13 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_first_entry_body_contraction_confirmed": bool(meta.get("first_entry_body_contraction_confirmed")),
             "long_momentum_v9_first_entry_soft_exit_wait_bars_remaining": int(self._float(meta.get("soft_exit_wait_bars_remaining"))),
             "long_momentum_v9_first_entry_soft_exits_allowed": self._first_entry_soft_exits_allowed(meta),
+            **self._high_break_soft_exit_profit_unlock_state(meta),
         }
 
     def _first_entry_soft_exits_blocked(self, timestamp: datetime, symbol: str, meta: dict) -> bool:
         if not self._is_high_break_entry_type(meta):
+            return False
+        if self._high_break_soft_exit_profit_unlocked(meta):
             return False
         remaining = int(self._float(meta.get("soft_exit_wait_bars_remaining")))
         if remaining <= 0:
@@ -1296,6 +1332,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
     def _first_entry_lifecycle_exits_blocked(self, meta: dict) -> bool:
         if not self._is_high_break_entry_type(meta):
             return False
+        if self._high_break_soft_exit_profit_unlocked(meta):
+            return False
         if self.config.first_entry_high_lifecycle_exit_enabled and not bool(meta.get("first_entry_high_stall_confirmed")):
             return True
         if self.config.first_entry_body_lifecycle_exit_enabled and not bool(meta.get("first_entry_body_contraction_confirmed")):
@@ -1304,6 +1342,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
 
     def _first_entry_soft_exits_allowed(self, meta: dict) -> bool:
         if not self._is_high_break_entry_type(meta):
+            return True
+        if self._high_break_soft_exit_profit_unlocked(meta):
             return True
         if int(self._float(meta.get("soft_exit_wait_bars_remaining"))) > 0:
             return False
@@ -1338,6 +1378,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 "stop_price": getattr(position, "stop_price", None),
                 "soft_exit_wait_bars_remaining": meta.get("soft_exit_wait_bars_remaining"),
                 "configured_wait_bars": self.config.first_entry_soft_exit_wait_bars,
+                **self._high_break_soft_exit_profit_unlock_state(meta),
             },
             force=True,
         )
@@ -1385,6 +1426,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 "contraction_count": body_state.get("long_momentum_v9_first_entry_body_contraction_count"),
                 "required_contraction_bars": body_state.get("long_momentum_v9_first_entry_body_contraction_required"),
                 "contraction_ratio_threshold": body_state.get("long_momentum_v9_first_entry_body_contraction_ratio_threshold"),
+                **self._high_break_soft_exit_profit_unlock_state(meta),
             },
             force=True,
         )

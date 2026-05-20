@@ -80,7 +80,9 @@ stop_price = breakout_stop
 ```
 
 The stop is active immediately and does not trail with VWAP. High Break Hold
-stop exits are reported as `HIGH_BREAK_HOLD_STOP`.
+stop exits are reported as `HIGH_BREAK_HOLD_STOP`. The default
+`high_break_stop_offset_ratio` is `0.035`, so the fixed stop is 3.5% below the
+breakout level.
 
 For the first `first_entry_soft_exit_wait_bars` completed bars after a High
 Break Hold fill, the soft exits are disabled:
@@ -91,6 +93,20 @@ Break Hold fill, the soft exits are disabled:
 
 The protective fixed stop remains active during this wait. The default wait is
 `3` bars.
+
+If a High Break Hold position moves far enough in favor of the trade, v9 turns
+the regular soft exits back on immediately for that position. The default
+threshold is:
+
+```text
+current_open >= entry_price * (1 + high_break_soft_exit_unlock_profit_pct)
+high_break_soft_exit_unlock_profit_pct = 0.10
+```
+
+Once this 10% profit unlock has happened, it remains active for that position,
+and TEMA close, 2xBVD, and pocketing are allowed even if the high lifecycle has
+not stalled yet. The protective fixed stop remains active before and after the
+unlock.
 
 After that fixed wait, High Break Hold keeps soft exits disabled while the
 position keeps making new highs or staying close to the highest high since
