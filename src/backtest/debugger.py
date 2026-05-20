@@ -57,6 +57,7 @@ class StepBacktestDebugger(BacktestEngine):
             "total_history_steps": len(self.history),
             "total_event_bars": self._expected_event_bar_count(self.sessions, self.requirements),
             "summary": self._summary("debug"),
+            "trades": list(self.trades),
             "step": self.history[self.history_cursor] if 0 <= self.history_cursor < len(self.history) else None,
         }
 
@@ -193,6 +194,7 @@ class StepBacktestDebugger(BacktestEngine):
             "session_date": self.session_date.isoformat() if self.session_date else None,
             "message": "Debug backtest is complete.",
             "summary": self._summary("debug"),
+            "cumulative_trades": list(self.trades),
             "portfolio": self.portfolio_rows[-1:] if self.portfolio_rows else [],
             "positions": self.position_rows[-20:],
         }
@@ -229,6 +231,7 @@ class StepBacktestDebugger(BacktestEngine):
             "orders": self.orders[before["orders"] : after["orders"]],
             "fills": self.fills[before["fills"] : after["fills"]],
             "trades": self.trades[before["trades"] : after["trades"]],
+            "cumulative_trades": list(self.trades),
             "portfolio": self.portfolio_rows[before["portfolio"] : after["portfolio"]],
             "positions": self.position_rows[before["positions"] : after["positions"]],
             "signal_events": self._delta_rows(artifacts.get("signal_events", []), before["signal_events"], after["signal_events"]),

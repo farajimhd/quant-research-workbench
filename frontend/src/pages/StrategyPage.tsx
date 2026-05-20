@@ -85,6 +85,7 @@ type ObservationChartTarget = {
 };
 
 type InteractiveDebugStep = {
+  cumulative_trades?: DataRow[];
   execution_rows?: DataRow[];
   fills?: DataRow[];
   filter_groups?: DataRow[];
@@ -121,6 +122,7 @@ type InteractiveDebugSession = {
   step?: InteractiveDebugStep | null;
   strategy?: Record<string, unknown>;
   summary?: Record<string, unknown>;
+  trades?: DataRow[];
   total_event_bars: number;
   total_history_steps: number;
 };
@@ -184,6 +186,7 @@ const OBSERVABILITY_SCANNER_FILTER_PRESETS = [
 ];
 const DEBUG_BACKTEST_SCANNER_MAX_ROWS = 500;
 const BACKTEST_RESULT_TABS = ["Backtest Results", "Observability", "Daily", "Trades", "Orders", "Fills", "Positions", "Watchlist"];
+const INTERACTIVE_DEBUG_TABS = ["Interactive Step Debug", "Trades"];
 
 function scannerBooleanFilters(columns: string[]): DataTableFilterPreset["filters"] {
   return Object.fromEntries(columns.map((column) => [column, { operator: "eq", presetLabel: "Is true", valueText: "true" }]));
@@ -1086,11 +1089,17 @@ function InteractiveStepDebugPanel({
   const actionRows = step?.observability_trace ?? [];
   const counts = debugStepCounts(step);
   const metrics = useMemo(() => buildInteractiveDebugMetrics(config, summary, rawRows.length, strategyWatchlistRows.length, counts), [config, counts, rawRows.length, strategyWatchlistRows.length, summary]);
+  const cumulativeTrades = step?.cumulative_trades ?? session.trades ?? [];
+  const { activeTab: debugTab, isTabMounted: isDebugTabMounted, setActiveTab: setDebugTab } = useCachedTabState("Interactive Step Debug");
   const [selectedDebugChart, setSelectedDebugChart] = useState<ObservationChartTarget | null>(null);
+  const [selectedDebugTrade, setSelectedDebugTrade] = useState<DataRow | null>(null);
   return (
     <section className="panel backtest-results-panel interactive-debug-panel" style={{ marginTop: 16 }}>
       {selectedDebugChart ? (
         <DebugScannerRowChartModal config={config} onClose={() => setSelectedDebugChart(null)} target={selectedDebugChart} />
+      ) : null}
+      {selectedDebugTrade ? (
+        <DebugTradeChartModal config={config} onClose={() => setSelectedDebugTrade(null)} selectedTrade={selectedDebugTrade} trades={cumulativeTrades} />
       ) : null}
       <div className="toolbar" style={{ justifyContent: "space-between" }}>
         <div>
@@ -1101,127 +1110,143 @@ function InteractiveStepDebugPanel({
         </div>
         <SemanticBadge tone={complete ? "success" : "info"}>{complete ? "complete" : "waiting for next"}</SemanticBadge>
       </div>
-      <div className="step-debug-control-panel">
-        <ProgressMeter
-          ariaLabel="Interactive debug progress"
-          done={progressDone}
-          elapsed_sec={0}
-          label="Debug progress"
-          progress={progressPct}
-          status={complete ? "complete" : "running"}
-          total={progressTotal}
-        />
-        <div className="step-debug-control-row">
-          <button className="button secondary" disabled={!canGoPrevious || busy !== null} onClick={onPrevious} type="button">
-            {busy === "previous" ? "Running..." : "Previous"}
-          </button>
-          <button className="button primary" disabled={complete || busy !== null} onClick={onNext} type="button">
-            {busy === "next" ? "Running..." : "Next Bar"}
-          </button>
-          <button className="button secondary" disabled={complete || busy !== null} onClick={onRunUntilAction} type="button">
-            {busy === "until-action" ? "Running..." : "Run Until Action"}
-          </button>
-          <SemanticBadge tone="neutral">
-            Step {formatNumber(Math.max(0, session.current_step_index + 1))} of {formatNumber(session.total_history_steps)}
-          </SemanticBadge>
-          <SemanticBadge tone="info">{config.strategy_name} {config.strategy_version}</SemanticBadge>
-          {step?.timestamp ? <SemanticBadge tone="neutral">{formatObservationTimestamp(step.timestamp)}</SemanticBadge> : null}
-        </div>
-        <NewRunMetricStrip metrics={metrics} />
-        <div className="step-debug-current-card">
-          <div>
-            <span>Backtest Response</span>
-            <DebugStepResponseSummary counts={counts} step={step} />
-            <p>
-              Pressing Next calls the strategy for exactly one timestamp, then the backtest engine responds with submitted requests, accepted orders, fills, portfolio state, and traces.
-            </p>
-          </div>
-          <DebugStepCountBadges counts={counts} />
-        </div>
-      </div>
+      <Tabs tabs={INTERACTIVE_DEBUG_TABS} active={debugTab} onChange={setDebugTab} />
+      <div className="backtest-results-tab-content">
+        <CachedTabPanel active={debugTab === "Interactive Step Debug"} mounted={isDebugTabMounted("Interactive Step Debug")}>
+          <>
+            <div className="step-debug-control-panel">
+              <ProgressMeter
+                ariaLabel="Interactive debug progress"
+                done={progressDone}
+                elapsed_sec={0}
+                label="Debug progress"
+                progress={progressPct}
+                status={complete ? "complete" : "running"}
+                total={progressTotal}
+              />
+              <div className="step-debug-control-row">
+                <button className="button secondary" disabled={!canGoPrevious || busy !== null} onClick={onPrevious} type="button">
+                  {busy === "previous" ? "Running..." : "Previous"}
+                </button>
+                <button className="button primary" disabled={complete || busy !== null} onClick={onNext} type="button">
+                  {busy === "next" ? "Running..." : "Next Bar"}
+                </button>
+                <button className="button secondary" disabled={complete || busy !== null} onClick={onRunUntilAction} type="button">
+                  {busy === "until-action" ? "Running..." : "Run Until Action"}
+                </button>
+                <SemanticBadge tone="neutral">
+                  Step {formatNumber(Math.max(0, session.current_step_index + 1))} of {formatNumber(session.total_history_steps)}
+                </SemanticBadge>
+                <SemanticBadge tone="info">{config.strategy_name} {config.strategy_version}</SemanticBadge>
+                {step?.timestamp ? <SemanticBadge tone="neutral">{formatObservationTimestamp(step.timestamp)}</SemanticBadge> : null}
+              </div>
+              <NewRunMetricStrip metrics={metrics} />
+              <div className="step-debug-current-card">
+                <div>
+                  <span>Backtest Response</span>
+                  <DebugStepResponseSummary counts={counts} step={step} />
+                  <p>
+                    Pressing Next calls the strategy for exactly one timestamp, then the backtest engine responds with submitted requests, accepted orders, fills, portfolio state, and traces.
+                  </p>
+                </div>
+                <DebugStepCountBadges counts={counts} />
+              </div>
+            </div>
 
-      <div className="step-debug-detail">
-        <ObservationEvidenceTable
-          description="The exact rows passed to strategy.on_bar as context.updates. Toolbar presets here use only raw/provider columns and do not depend on strategy watchlist or order state."
-          defaultFilterPreset={defaultRawFilterPreset}
-          filterPresets={rawScannerFilterPresets}
-          onOpenChart={setSelectedDebugChart}
-          rows={rawRows}
-          title="Scanner Raw Input"
-        />
-        <ObservationEvidenceTable
-          description="Grouped boolean filters detected from the strategy scanner rows or raw inputs."
-          rows={step?.filter_groups ?? []}
-          title="Filter Groups"
-        />
-        <ObservationEvidenceTable
-          description="Strategy-maintained day momentum watchlist state for this bar, including max VWAP, first-entry status, and reentry inputs."
-          onOpenChart={setSelectedDebugChart}
-          rows={strategyWatchlistRows}
-          showWhenEmpty
-          title="Momentum Watchlist"
-        />
-        <ObservationEvidenceTable
-          description="Trace rows emitted by the strategy while evaluating this bar."
-          presentation="cards"
-          rows={actionRows}
-          title="Strategy Actions"
-        />
-        <ObservationEvidenceTable
-          description="OrderRequest objects returned by strategy.on_bar before the engine handles them."
-          rows={step?.strategy_requests ?? []}
-          title="Strategy Submitted To Backtest"
-        />
-        <ObservationEvidenceTable
-          description="Orders created, filled, rejected, cancelled, or left pending by the engine on this bar."
-          rows={step?.orders ?? []}
-          title="Backtest Orders Response"
-        />
-        <ObservationEvidenceTable
-          description="Fills created by the fill model on this bar."
-          rows={step?.fills ?? []}
-          title="Backtest Fills Response"
-        />
-        <ObservationEvidenceTable
-          description="Trades closed at this bar."
-          rows={step?.trades ?? []}
-          title="Trades"
-        />
-        <ObservationEvidenceTable
-          description="Portfolio row after this bar is processed."
-          rows={step?.portfolio ?? []}
-          title="Portfolio"
-        />
-        <ObservationEvidenceTable
-          description="Open positions after this bar is processed."
-          rows={step?.positions ?? []}
-          title="Positions"
-        />
-        <ObservationEvidenceTable
-          description="Orders still pending after this bar."
-          rows={step?.pending_orders ?? []}
-          title="Pending Orders"
-        />
-        <ObservationEvidenceTable
-          description="Orders and fills that will be passed to the strategy on the next bar as recent_orders and recent_fills."
-          rows={[...(step?.recent_orders_for_next_bar ?? []), ...(step?.recent_fills_for_next_bar ?? [])]}
-          title="Recent Execution For Next Strategy Step"
-        />
-        <ObservationEvidenceTable
-          description="Strategy and engine rejection rows for this bar."
-          rows={step?.rejection_events ?? []}
-          title="Rejections"
-        />
-        <ObservationEvidenceTable
-          description="State rows emitted by the strategy or engine for this bar."
-          rows={step?.observability_state ?? []}
-          title="State"
-        />
-        <ObservationEvidenceTable
-          description="The backtest and strategy parameters used when this debug session was created. Change parameters, then press Start Step Debug again to create a new path."
-          rows={parameters}
-          title="Parameters"
-        />
+            <div className="step-debug-detail">
+              <ObservationEvidenceTable
+                description="The exact rows passed to strategy.on_bar as context.updates. Toolbar presets here use only raw/provider columns and do not depend on strategy watchlist or order state."
+                defaultFilterPreset={defaultRawFilterPreset}
+                filterPresets={rawScannerFilterPresets}
+                onOpenChart={setSelectedDebugChart}
+                rows={rawRows}
+                title="Scanner Raw Input"
+              />
+              <ObservationEvidenceTable
+                description="Grouped boolean filters detected from the strategy scanner rows or raw inputs."
+                rows={step?.filter_groups ?? []}
+                title="Filter Groups"
+              />
+              <ObservationEvidenceTable
+                description="Strategy-maintained day momentum watchlist state for this bar, including max VWAP, first-entry status, and reentry inputs."
+                onOpenChart={setSelectedDebugChart}
+                rows={strategyWatchlistRows}
+                showWhenEmpty
+                title="Momentum Watchlist"
+              />
+              <ObservationEvidenceTable
+                description="Trace rows emitted by the strategy while evaluating this bar."
+                presentation="cards"
+                rows={actionRows}
+                title="Strategy Actions"
+              />
+              <ObservationEvidenceTable
+                description="OrderRequest objects returned by strategy.on_bar before the engine handles them."
+                rows={step?.strategy_requests ?? []}
+                title="Strategy Submitted To Backtest"
+              />
+              <ObservationEvidenceTable
+                description="Orders created, filled, rejected, cancelled, or left pending by the engine on this bar."
+                rows={step?.orders ?? []}
+                title="Backtest Orders Response"
+              />
+              <ObservationEvidenceTable
+                description="Fills created by the fill model on this bar."
+                rows={step?.fills ?? []}
+                title="Backtest Fills Response"
+              />
+              <ObservationEvidenceTable
+                description="Trades closed at this bar."
+                rows={step?.trades ?? []}
+                title="Trades This Bar"
+              />
+              <ObservationEvidenceTable
+                description="Portfolio row after this bar is processed."
+                rows={step?.portfolio ?? []}
+                title="Portfolio"
+              />
+              <ObservationEvidenceTable
+                description="Open positions after this bar is processed."
+                rows={step?.positions ?? []}
+                title="Positions"
+              />
+              <ObservationEvidenceTable
+                description="Orders still pending after this bar."
+                rows={step?.pending_orders ?? []}
+                title="Pending Orders"
+              />
+              <ObservationEvidenceTable
+                description="Orders and fills that will be passed to the strategy on the next bar as recent_orders and recent_fills."
+                rows={[...(step?.recent_orders_for_next_bar ?? []), ...(step?.recent_fills_for_next_bar ?? [])]}
+                title="Recent Execution For Next Strategy Step"
+              />
+              <ObservationEvidenceTable
+                description="Strategy and engine rejection rows for this bar."
+                rows={step?.rejection_events ?? []}
+                title="Rejections"
+              />
+              <ObservationEvidenceTable
+                description="State rows emitted by the strategy or engine for this bar."
+                rows={step?.observability_state ?? []}
+                title="State"
+              />
+              <ObservationEvidenceTable
+                description="The backtest and strategy parameters used when this debug session was created. Change parameters, then press Start Step Debug again to create a new path."
+                rows={parameters}
+                title="Parameters"
+              />
+            </div>
+          </>
+        </CachedTabPanel>
+        <CachedTabPanel active={debugTab === "Trades"} mounted={isDebugTabMounted("Trades")}>
+          <div className="trades-table-fill">
+            <DataTable
+              isRowSelected={(row) => tradeRowKey(row) === tradeRowKey(selectedDebugTrade)}
+              onRowClick={setSelectedDebugTrade}
+              rows={cumulativeTrades}
+            />
+          </div>
+        </CachedTabPanel>
       </div>
     </section>
   );
@@ -1345,6 +1370,153 @@ function DebugScannerRowChartModal({
         visibleColumns={visibleColumns}
         visibleSupervisionGroups={[]}
       />
+    </Modal>
+  );
+}
+
+function DebugTradeChartModal({
+  config,
+  onClose,
+  selectedTrade,
+  trades,
+}: {
+  config: StrategyConfig;
+  onClose: () => void;
+  selectedTrade: DataRow;
+  trades: DataRow[];
+}) {
+  const symbol = tradeSymbol(selectedTrade);
+  const sessionDate = tradeMarketDate(selectedTrade);
+  const processedRoot = config.processed_data_root;
+  const [timeframe, setTimeframe] = useState("1m");
+  const [payload, setPayload] = useState<ChartPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [visibleColumns, setVisibleColumns] = useState<string[]>([]);
+  const [customVisibleColumns, setCustomVisibleColumns] = useState(false);
+  const [period, setPeriod] = useState({ end: sessionDate, start: sessionDate });
+  const selectedKey = tradeRowKey(selectedTrade);
+  const sameSymbolTrades = useMemo(
+    () => trades.filter((trade) => tradeSymbol(trade) === symbol && (!sessionDate || tradeMarketDate(trade) === sessionDate)),
+    [sessionDate, symbol, trades]
+  );
+  const reference = useMemo<ChartReference | null>(() => selectedTradeReference(selectedTrade), [selectedTrade]);
+  const displayItemsRequest = customVisibleColumns ? (visibleColumns.length ? visibleColumns.join(",") : CHART_DISPLAY_ITEMS_NONE) : undefined;
+  const displayItemsRequestKey = displayItemsRequest ?? "";
+  const periodBounds = useMemo(() => chartPayloadPeriodBounds(payload, sessionDate), [payload, sessionDate]);
+
+  useEffect(() => {
+    setPeriod({ end: sessionDate, start: sessionDate });
+    setCustomVisibleColumns(false);
+    setVisibleColumns([]);
+  }, [sessionDate, symbol]);
+
+  useEffect(() => {
+    if (!processedRoot || !sessionDate || !symbol || !timeframe) return;
+    let active = true;
+    setLoading(true);
+    setError("");
+    api<ChartPayload>(
+      `/api/market-data/chart${query({
+        display_items: displayItemsRequest,
+        marker_limit: 100,
+        processed_root: processedRoot,
+        session_date: sessionDate,
+        ticker: symbol,
+        timeframe,
+      })}`
+    )
+      .then((nextPayload) => {
+        if (!active) return;
+        setPayload(nextPayload);
+        if (!customVisibleColumns) setVisibleColumns(debugChartVisibleColumns(nextPayload));
+      })
+      .catch((err) => {
+        if (!active) return;
+        setPayload(null);
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [customVisibleColumns, displayItemsRequestKey, processedRoot, sessionDate, symbol, timeframe]);
+
+  function updatePeriod(start: string, end: string) {
+    setPeriod(start <= end ? { start, end } : { start: end, end: start });
+  }
+
+  const chartPayload = useMemo(() => {
+    if (!payload) return null;
+    return {
+      ...payload,
+      trade_annotations: tradeAnnotations(sameSymbolTrades, selectedKey),
+    };
+  }, [payload, sameSymbolTrades, selectedKey]);
+
+  const filteredPayload = useMemo(() => {
+    if (!chartPayload) return null;
+    const candles = chartPayload.candles.filter((candle) => candleInChartPeriod(candle, period.start, period.end));
+    const visibleTimes = new Set(candles.map((candle) => Number(candle.time)));
+    return {
+      ...chartPayload,
+      candles,
+      markers: chartPayload.markers.filter((marker) => visibleTimes.has(Number(marker.time))),
+      overlay_series: chartPayload.overlay_series.map((series) => ({ ...series, data: series.data.filter((point) => visibleTimes.has(Number(point.time))) })),
+      oscillator_series: chartPayload.oscillator_series.map((series) => ({ ...series, data: series.data.filter((point) => visibleTimes.has(Number(point.time))) })),
+      price_zones: (chartPayload.price_zones ?? []).filter((zone) => candles.some((candle) => candle.time >= zone.start && candle.time <= zone.end)),
+      volume: chartPayload.volume.filter((point) => visibleTimes.has(Number(point.time))),
+    };
+  }, [chartPayload, period.end, period.start]);
+
+  return (
+    <Modal className="trade-chart-modal-panel" onClose={onClose} title={`${symbol || "Trade"} Chart`}>
+      <section className="trade-chart-modal-body">
+        <div className="trade-chart-summary">
+          <span className="trade-chart-subtitle">
+            Showing {sameSymbolTrades.length} debug trade{sameSymbolTrades.length === 1 ? "" : "s"} for this ticker so far. The selected trade is annotated on the chart.
+          </span>
+          <SemanticBadge tone={Number(selectedTrade.pnl ?? 0) >= 0 ? "success" : "danger"}>
+            {formatMoney(Number(selectedTrade.pnl ?? 0))}
+          </SemanticBadge>
+        </div>
+        <ChartPanel
+          displayItemOptions={payload?.options?.display_items ?? []}
+          emptyMessage={symbol ? `No provider chart data found for ${symbol} on ${sessionDate}.` : "This trade does not include a symbol."}
+          errorMessage={error}
+          featureOptions={payload?.options?.feature_columns ?? []}
+          indicatorOptions={payload?.options?.standard_indicators ?? []}
+          labelOptions={payload?.options?.supervision_groups ?? []}
+          loading={loading}
+          normalizeTicker={false}
+          onPeriodChange={updatePeriod}
+          onTickerChange={() => undefined}
+          onTimeframeChange={setTimeframe}
+          onVisibleColumnsChange={(nextColumns) => {
+            setCustomVisibleColumns(true);
+            setVisibleColumns(nextColumns);
+          }}
+          onVisibleSupervisionGroupsChange={() => undefined}
+          payload={filteredPayload}
+          periodEnd={period.end || periodBounds.end}
+          periodMax={periodBounds.max}
+          periodMin={periodBounds.min}
+          periodStart={period.start || periodBounds.start}
+          reference={reference}
+          showIndicatorControls
+          showReferenceLine={false}
+          showSupervisionControls={false}
+          ticker={symbol || "Trade"}
+          tickerInputWidth={112}
+          tickerMaxLength={16}
+          timeframe={timeframe}
+          timeframes={["1m", "5m"]}
+          visibleColumns={visibleColumns}
+          visibleSupervisionGroups={[]}
+        />
+      </section>
     </Modal>
   );
 }
