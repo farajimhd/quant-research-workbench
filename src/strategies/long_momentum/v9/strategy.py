@@ -625,6 +625,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         current_per_share, peak_per_share = self._completed_close_profit_state(position, bar, meta)
         if peak_per_share <= 0:
             return False
+        initial_r = self._float(meta.get("initial_r"))
+        activation_r = max(0.0, self.config.profit_giveback_activation_r)
+        if initial_r > 0 and activation_r > 0 and peak_per_share < (initial_r * activation_r):
+            return False
         giveback = peak_per_share - current_per_share
         threshold = peak_per_share * max(0.0, self.config.profit_giveback_exit_pct)
         return giveback > threshold + 1e-9
@@ -652,9 +656,12 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         current_profit = current_per_share * position.quantity
         giveback = peak_profit - current_profit
         giveback_pct = (giveback / peak_profit) if peak_profit > 0 else 0.0
+        initial_r = self._float(meta.get("initial_r"))
+        peak_close_r = (peak_per_share / initial_r) if initial_r > 0 else 0.0
         return (
-            f"|peakClosePnl={peak_profit:.2f}|currentClosePnl={current_profit:.2f}"
-            f"|givebackPct={giveback_pct:.4f}"
+            f"|grossPeakClosePnl={peak_profit:.2f}|grossCurrentClosePnl={current_profit:.2f}"
+            f"|peakCloseR={peak_close_r:.2f}|givebackPct={giveback_pct:.4f}"
+            f"|givebackActivationR={self.config.profit_giveback_activation_r:.2f}"
         )
 
     def _exit_tag(self, reason: str, position, bar: dict | None, meta: dict) -> str:

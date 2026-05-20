@@ -144,15 +144,17 @@ bar, v9 exits immediately at the current open.
 Secondary main exit:
 
 ```text
-peak_completed_close_pnl > 0
+peak_completed_close_profit_per_share >= initial_r * profit_giveback_activation_r
 and (peak_completed_close_pnl - current_completed_bar_pnl) / peak_completed_close_pnl > profit_giveback_exit_pct
 ```
 
-The default `profit_giveback_exit_pct` is `0.15`, so v9 exits at the current
-open when the completed-bar P/L has given back more than 15% of the best
-completed-close P/L seen so far. This intentionally ignores candle highs for
-profit giveback; highs still update trade MFE and stop-loss simulation still
-uses intrabar lows.
+The default `profit_giveback_activation_r` is `1.0` and
+`profit_giveback_exit_pct` is `0.15`, so v9 only arms profit giveback after the
+best gross completed-close profit reaches at least 1R. After it is armed, v9
+exits at the current open when gross completed-bar P/L gives back more than 15%
+of the best gross completed-close P/L seen so far. This intentionally ignores
+candle highs and fees for profit giveback; highs still update trade MFE and
+stop-loss simulation still uses intrabar lows.
 
 Emergency exit:
 

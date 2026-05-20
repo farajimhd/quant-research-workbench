@@ -22,6 +22,7 @@ V9_PARAMETER_FIELDS = (
     "max_reentry_bvd_score",
     "vwap_stop_offset_pct",
     "double_bvd_exit_score",
+    "profit_giveback_activation_r",
     "profit_giveback_exit_pct",
     "tema9_exit_buffer_pct",
     "partial_fill_reprice_offset",
@@ -45,6 +46,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     max_entry_order_quantity: int = 3_000
     max_reentry_bvd_score: float = 80.0
     double_bvd_exit_score: float = 50.0
+    profit_giveback_activation_r: float = 1.0
     profit_giveback_exit_pct: float = 0.15
     tema9_exit_buffer_pct: float = -0.01
     vwap_stop_offset_pct: float = 3.0
