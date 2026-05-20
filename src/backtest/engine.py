@@ -394,7 +394,17 @@ class BacktestEngine:
                 ).alias("last_3_candle_low_price")
             )
         decision = frame.with_columns(shifted_exprs) if shifted_exprs else frame
-        alias_exprs = [pl.col("open").alias("current_open"), pl.col("open").shift(1).over("ticker").alias("last_open")]
+        alias_exprs = [
+            pl.col("open").alias("current_open"),
+            pl.col("open").shift(1).over("ticker").alias("last_open"),
+        ]
+        if {"open", "close"}.issubset(frame.columns):
+            alias_exprs.extend(
+                [
+                    pl.col("open").shift(2).over("ticker").alias("second_last_open"),
+                    pl.col("close").shift(1).over("ticker").alias("second_last_close"),
+                ]
+            )
         alias_exprs.extend(
             pl.col(column).alias(f"last_{column}")
             for column in frame.columns
@@ -404,6 +414,15 @@ class BacktestEngine:
         if {"current_open", "last_high"}.issubset(decision.columns):
             decision = decision.with_columns(
                 (pl.col("current_open") >= pl.col("last_high")).alias("current_open_above_last_body_high")
+            )
+        if {"current_open", "last_open", "last_close", "second_last_open", "second_last_close"}.issubset(decision.columns):
+            last_2_body_high = pl.max_horizontal(
+                pl.max_horizontal(pl.col("last_open"), pl.col("last_close")),
+                pl.max_horizontal(pl.col("second_last_open"), pl.col("second_last_close")),
+            )
+            decision = decision.with_columns(
+                last_2_body_high.alias("last_2_body_high"),
+                (pl.col("current_open") > last_2_body_high).alias("current_open_above_last_2_body_high"),
             )
         return decision
 

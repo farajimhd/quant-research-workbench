@@ -587,7 +587,17 @@ def apply_strategy_decision_view(scan: pl.LazyFrame, schema: pl.Schema) -> pl.La
             ).alias("last_3_candle_low_price")
         )
     decision = scan.with_columns(shifted_exprs) if shifted_exprs else scan
-    alias_exprs = [pl.col("open").alias("current_open"), pl.col("open").shift(1).over("ticker").alias("last_open")]
+    alias_exprs = [
+        pl.col("open").alias("current_open"),
+        pl.col("open").shift(1).over("ticker").alias("last_open"),
+    ]
+    if {"open", "close"}.issubset(names):
+        alias_exprs.extend(
+            [
+                pl.col("open").shift(2).over("ticker").alias("second_last_open"),
+                pl.col("close").shift(1).over("ticker").alias("second_last_close"),
+            ]
+        )
     alias_exprs.extend(
         pl.col(column).alias(f"last_{column}")
         for column in names
@@ -616,6 +626,17 @@ def apply_strategy_decision_price_action_columns(scan: pl.LazyFrame, names: list
         (pl.col("current_open") >= last_body_high).alias("current_open_above_last_body_high_actual"),
         (pl.col("current_open") >= pl.col("last_high")).alias("current_open_above_last_body_high"),
     ]
+    if {"current_open", "second_last_open", "second_last_close"}.issubset(names):
+        last_2_body_high = pl.max_horizontal(
+            last_body_high,
+            pl.max_horizontal(pl.col("second_last_open"), pl.col("second_last_close")),
+        )
+        exprs.extend(
+            [
+                last_2_body_high.alias("last_2_body_high"),
+                (pl.col("current_open") > last_2_body_high).alias("current_open_above_last_2_body_high"),
+            ]
+        )
     if {"last_high", "last_low"}.issubset(names):
         exprs.extend(
             [
@@ -1459,9 +1480,13 @@ def default_scanner_columns(schema_names: list[str]) -> list[str]:
         "bar_time_market",
         "current_open",
         "last_open",
+        "second_last_open",
+        "second_last_close",
         "last_high",
         "last_low",
         "last_close",
+        "last_2_body_high",
+        "current_open_above_last_2_body_high",
         "current_open_above_last_body_high",
         "current_open_above_last_body_high_actual",
         "last_body_high",

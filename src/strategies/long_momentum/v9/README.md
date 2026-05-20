@@ -67,16 +67,18 @@ last_bearish_volume_divergence_score <= max_reentry_bvd_score
 The default `max_reentry_bvd_score` is `80.0`, so a 1-minute BVD score above
 80 blocks watchlist reentry. This does not block same-bar immediate First Entry.
 
-Watchlist VWAP reentry also requires the completed-bar MACD histogram z-score
-since the open to be constructive:
+Watchlist VWAP reentry also requires the current bar open to break the highest
+body high of the last two completed bars:
 
 ```text
-last_macd_hist_z_since_open > min_reentry_macd_hist_z_since_open
+current_open > max(
+  max(last_open, last_close),
+  max(second_last_open, second_last_close)
+)
 ```
 
-The default `min_reentry_macd_hist_z_since_open` is `0.2`. Current-open TEMA is
-not used for reentry; `tema9_exit_buffer_pct` is only used by the emergency TEMA
-exit.
+This reentry body-break rule does not use TEMA or MACD. `tema9_exit_buffer_pct`
+is only used by the emergency TEMA exit.
 
 ## Entry Sizing And Stop
 

@@ -23,5 +23,5 @@ Version details live in each version folder:
 - `v9`: day momentum watchlist version. A completed-bar 5-minute return adds a
   ticker to the strategy watchlist, strict 1-minute transaction impulse rules
   trigger First Entry, simultaneous First Entries split cash, no-cash First
-  Entries rotate out existing positions, and lower-priority VWAP/TEMA reentries
-  remain available after exits.
+  Entries rotate out existing positions, and lower-priority VWAP/two-bar
+  body-break reentries remain available after exits.

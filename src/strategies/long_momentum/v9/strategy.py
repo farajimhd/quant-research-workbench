@@ -26,7 +26,8 @@ REQUIRED_V9_COLUMNS = (
     "current_open_tema9",
     "current_open_tema20",
     "last_vwap",
-    "last_macd_hist_z_since_open",
+    "last_2_body_high",
+    "current_open_above_last_2_body_high",
     "last_bearish_volume_divergence_score",
     "last_double_timeframe_bearish_volume_divergence_score",
 )
@@ -378,8 +379,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         reentry_last_bar_not_red = last_close >= last_open
         reentry_bvd_score = self._float(row.get("last_bearish_volume_divergence_score"))
         reentry_bvd_ok = reentry_bvd_score <= self.config.max_reentry_bvd_score
-        reentry_macd_hist_z = self._float(row.get("last_macd_hist_z_since_open"))
-        reentry_macd_ok = reentry_macd_hist_z > self.config.min_reentry_macd_hist_z_since_open
+        current_open = self._float(row.get("current_open"))
+        reentry_body_break_threshold = self._float(row.get("last_2_body_high"))
+        reentry_body_break_ok = current_open > 0 and reentry_body_break_threshold > 0 and current_open > reentry_body_break_threshold
         reentry_close_minus_vwap = last_close - last_vwap if last_vwap > 0 else None
         immediate_entry_open = (
             price_eligible
@@ -399,7 +401,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             and reentry_price_reclaim
             and reentry_last_bar_not_red
             and reentry_bvd_ok
-            and reentry_macd_ok
+            and reentry_body_break_ok
             and not immediate_entry_open
         )
         return {
@@ -428,9 +430,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_reentry_last_bar_not_red": reentry_last_bar_not_red,
             "long_momentum_v9_reentry_bvd_ok": reentry_bvd_ok,
             "long_momentum_v9_reentry_bvd_score": reentry_bvd_score,
-            "long_momentum_v9_reentry_macd_ok": reentry_macd_ok,
-            "long_momentum_v9_reentry_macd_hist_z": reentry_macd_hist_z,
-            "long_momentum_v9_reentry_macd_hist_z_threshold": self.config.min_reentry_macd_hist_z_since_open,
+            "long_momentum_v9_reentry_body_break_ok": reentry_body_break_ok,
+            "long_momentum_v9_reentry_body_break_threshold": reentry_body_break_threshold,
             "long_momentum_v9_immediate_entry_open": immediate_entry_open,
             "long_momentum_v9_reentry_open": reentry_open,
             "long_momentum_v9_entry_priority": 2 if immediate_entry_open else 1 if reentry_open else 0,
@@ -447,7 +448,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 reentry_price_reclaim=reentry_price_reclaim,
                 reentry_last_bar_not_red=reentry_last_bar_not_red,
                 reentry_bvd_ok=reentry_bvd_ok,
-                reentry_macd_ok=reentry_macd_ok,
+                reentry_body_break_ok=reentry_body_break_ok,
                 no_symbol_position=no_symbol_position,
             ),
         }
@@ -878,7 +879,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         reentry_price_reclaim: bool,
         reentry_last_bar_not_red: bool,
         reentry_bvd_ok: bool,
-        reentry_macd_ok: bool,
+        reentry_body_break_ok: bool,
         no_symbol_position: bool,
     ) -> str:
         if not price_eligible:
@@ -899,8 +900,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return "watchlist_entry_red_vwap_reclaim_bar"
         if not reentry_bvd_ok:
             return "watchlist_entry_bearish_volume_divergence"
-        if not reentry_macd_ok:
-            return "watchlist_entry_macd_z"
+        if not reentry_body_break_ok:
+            return "watchlist_entry_two_bar_body_break"
         return "filtered"
 
 __all__ = ["LongMomentumV9Strategy"]
