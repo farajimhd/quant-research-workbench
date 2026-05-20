@@ -279,7 +279,12 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             if side == "BUY":
                 watch.entry_submitted = True
                 tag = str(fill.get("tag") or "")
-                watch.last_entry_type = "IMMEDIATE_ENTRY" if "IMMEDIATE_ENTRY" in tag else "WATCHLIST_REENTRY"
+                if "POCKET_REENTRY" in tag:
+                    watch.last_entry_type = "POCKET_REENTRY"
+                elif "IMMEDIATE_ENTRY" in tag:
+                    watch.last_entry_type = "IMMEDIATE_ENTRY"
+                else:
+                    watch.last_entry_type = "WATCHLIST_REENTRY"
                 watch.last_state = "in_position"
             elif side == "SELL":
                 watch.last_exit_timestamp = context.timestamp
@@ -482,21 +487,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     )
                 )
                 continue
-            if self._profit_giveback_exit_triggered(position, bar, meta):
-                limit_price = self._liquid_limit_price("SELL", bar)
-                self._trace_exit(context.timestamp, symbol, "PROFIT_GIVEBACK", position, bar, meta)
-                requests.append(
-                    OrderRequest(
-                        symbol=symbol,
-                        side="SELL",
-                        quantity=position.quantity,
-                        order_type="LIMIT",
-                        reason="PROFIT_GIVEBACK",
-                        limit_price=limit_price,
-                        allow_same_bar_fill=True,
-                        tag=self._exit_tag("PROFIT_GIVEBACK", position, bar, meta) + f"|limit={limit_price:.4f}" + self._profit_giveback_exit_tag(position, bar, meta),
-                    )
-                )
+            pocket_requests = self._pocket_requests(context.timestamp, symbol, position, bar, meta, portfolio)
+            if pocket_requests:
+                requests.extend(pocket_requests)
                 continue
             if self._tema_closed(bar):
                 limit_price = self._liquid_limit_price("SELL", bar)
@@ -623,48 +616,105 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         offset_fraction = max(0.0, self.config.vwap_stop_offset_pct) / 100.0
         return vwap * (1.0 - offset_fraction)
 
-    def _profit_giveback_exit_triggered(self, position, bar: dict, meta: dict) -> bool:
-        current_per_share, peak_per_share = self._completed_close_profit_state(position, bar, meta)
-        if peak_per_share <= 0:
-            return False
-        initial_r = self._float(meta.get("initial_r"))
-        activation_r = max(0.0, self.config.profit_giveback_activation_r)
-        if initial_r > 0 and activation_r > 0 and peak_per_share < (initial_r * activation_r):
-            return False
-        giveback = peak_per_share - current_per_share
-        threshold = peak_per_share * max(0.0, self.config.profit_giveback_exit_pct)
-        return giveback > threshold + 1e-9
-
-    def _completed_close_profit_state(self, position, bar: dict, meta: dict) -> tuple[float, float]:
-        current_per_share = self._current_completed_bar_profit_per_share(position, bar)
-        peak_per_share = max(
-            0.0,
-            self._float(meta.get("peak_completed_close_profit_per_share")),
-            current_per_share,
+    def _pocket_requests(
+        self,
+        timestamp: datetime,
+        symbol: str,
+        position,
+        bar: dict,
+        meta: dict,
+        portfolio: Portfolio,
+    ) -> list[OrderRequest]:
+        pocket_pct = max(0.0, self.config.pocket_profit_pct)
+        if pocket_pct <= 0:
+            return []
+        sell_limit = self._liquid_limit_price("SELL", bar)
+        buy_limit = self._liquid_limit_price("BUY", bar)
+        trigger_price = position.entry_price * (1.0 + pocket_pct)
+        if sell_limit <= 0 or buy_limit <= 0 or sell_limit < trigger_price:
+            return []
+        quantity = int(position.quantity)
+        reentry_quantity = min(
+            quantity,
+            self._cash_quantity(
+                buy_limit,
+                max(0.0, portfolio.cash + (sell_limit * quantity) - self.config.cash_buffer_dollars),
+            ),
         )
-        meta["last_completed_close_profit_per_share"] = current_per_share
-        meta["peak_completed_close_profit_per_share"] = peak_per_share
-        return current_per_share, peak_per_share
+        reentry_quantity = self._capped_entry_quantity(reentry_quantity)
+        if quantity <= 0 or reentry_quantity <= 0:
+            return []
 
-    def _current_completed_bar_profit_per_share(self, position, bar: dict) -> float:
-        last_close = self._float(bar.get("last_close"))
-        if last_close <= 0:
-            last_close = self._bar_open(bar)
-        return last_close - position.entry_price
+        stop_price = self._pocket_reentry_stop(position, bar, buy_limit)
+        if stop_price <= 0 or stop_price >= buy_limit:
+            return []
 
-    def _profit_giveback_exit_tag(self, position, bar: dict, meta: dict) -> str:
-        current_per_share, peak_per_share = self._completed_close_profit_state(position, bar, meta)
-        peak_profit = peak_per_share * position.quantity
-        current_profit = current_per_share * position.quantity
-        giveback = peak_profit - current_profit
-        giveback_pct = (giveback / peak_profit) if peak_profit > 0 else 0.0
-        initial_r = self._float(meta.get("initial_r"))
-        peak_close_r = (peak_per_share / initial_r) if initial_r > 0 else 0.0
-        return (
-            f"|grossPeakClosePnl={peak_profit:.2f}|grossCurrentClosePnl={current_profit:.2f}"
-            f"|peakCloseR={peak_close_r:.2f}|givebackPct={giveback_pct:.4f}"
-            f"|givebackActivationR={self.config.profit_giveback_activation_r:.2f}"
+        risk_per_share = buy_limit - stop_price
+        self.position_meta[symbol] = {
+            "initial_stop": stop_price,
+            "initial_r": risk_per_share,
+            "entry_score": self._float(meta.get("entry_score")),
+            "entry_type": "WATCHLIST_REENTRY",
+            "pocketed_from_entry": position.entry_price,
+            "pocket_trigger_price": trigger_price,
+        }
+        self.entry_order_metadata[symbol] = {
+            **self.entry_order_metadata.get(symbol, {}),
+            "setup_rank": position.setup_rank,
+            "live_rank": position.live_rank,
+            "setup_score": position.setup_score,
+            "live_score": position.live_score,
+            "stop_price": stop_price,
+            "entry_type": "WATCHLIST_REENTRY",
+        }
+        watch = self.momentum_watchlist.get(symbol)
+        if watch is not None:
+            watch.entry_submitted = True
+            watch.last_entry_type = "POCKET_REENTRY"
+            watch.last_state = "pocket_reentry_submitted"
+
+        sell_tag = (
+            self._exit_tag("POCKET_PROFIT", position, bar, meta)
+            + f"|limit={sell_limit:.4f}|pocketPct={pocket_pct:.4f}|trigger={trigger_price:.4f}"
         )
+        buy_tag = (
+            f"ENTRY|rule=LONG_MOMENTUM_V9|trigger=POCKET_REENTRY|rank={position.live_rank}"
+            f"|qty={reentry_quantity}|signal_open={self._bar_open(bar):.4f}|limit={buy_limit:.4f}"
+            f"|entry={buy_limit:.4f}|stop={stop_price:.4f}|risk={risk_per_share:.4f}"
+            f"|pocket_exit_limit={sell_limit:.4f}|pocket_from_entry={position.entry_price:.4f}"
+        )
+        self._trace_exit(timestamp, symbol, "POCKET_PROFIT", position, bar, meta)
+        return [
+            OrderRequest(
+                symbol=symbol,
+                side="SELL",
+                quantity=quantity,
+                order_type="LIMIT",
+                reason="POCKET_PROFIT",
+                limit_price=sell_limit,
+                allow_same_bar_fill=True,
+                tag=sell_tag,
+            ),
+            OrderRequest(
+                symbol=symbol,
+                side="BUY",
+                quantity=reentry_quantity,
+                order_type="LIMIT",
+                reason="LONG_MOMENTUM_V9_POCKET_REENTRY",
+                limit_price=buy_limit,
+                allow_same_bar_fill=True,
+                protective_stop_price=stop_price,
+                tag=buy_tag,
+            ),
+        ]
+
+    def _pocket_reentry_stop(self, position, bar: dict, entry_price: float) -> float:
+        existing_stop = self._float(position.stop_price)
+        vwap_stop = self._vwap_offset_stop(self._float(bar.get("last_vwap")))
+        stop = max(existing_stop, vwap_stop)
+        if stop <= 0 or stop >= entry_price:
+            stop = min(existing_stop, vwap_stop) if min(existing_stop, vwap_stop) > 0 else 0.0
+        return stop
 
     def _exit_tag(self, reason: str, position, bar: dict | None, meta: dict) -> str:
         current_open = self._bar_open(bar or {})

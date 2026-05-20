@@ -409,8 +409,8 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("long_momentum", "v9"): (
         "Live-safe day momentum watchlist version: completed-bar 5-minute return adds a ticker to a separate day "
         "watchlist, strict 1-minute transaction impulse rules trigger First Entry, simultaneous First Entries split "
-        "cash, no-cash First Entries rotate out existing positions, and lower-priority VWAP/two-bar body-break reentries remain "
-        "available after exits. Main exits use 2-minute BVD at the current open."
+        "cash, no-cash First Entries rotate out existing positions, lower-priority VWAP/two-bar body-break reentries remain "
+        "available after exits, and in-position pocketing sells and immediately rebuys at liquid-limit prices. Main exits use 2-minute BVD."
     ),
     ("orb_5m_momentum", "v1"): (
         "Baseline provider-backed ORB momentum version with daily context, opening-range setup scoring, 5-minute momentum "

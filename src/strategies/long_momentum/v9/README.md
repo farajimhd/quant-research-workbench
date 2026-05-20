@@ -148,20 +148,21 @@ last_double_timeframe_bearish_volume_divergence_score > double_bvd_exit_score
 On 1-minute data this is 2-minute BVD. When it triggers on the last completed
 bar, v9 exits immediately at the current open.
 
-Secondary main exit:
+Pocketing:
 
 ```text
-peak_completed_close_profit_per_share >= initial_r * profit_giveback_activation_r
-and (peak_completed_close_pnl - current_completed_bar_pnl) / peak_completed_close_pnl > profit_giveback_exit_pct
+estimated_bid = current_open - limit_order_offset_dollars
+estimated_ask = current_open + limit_order_offset_dollars
+
+if estimated_bid >= entry_price * (1 + pocket_profit_pct):
+    sell current position at estimated_bid
+    immediately buy back at estimated_ask
 ```
 
-The default `profit_giveback_activation_r` is `1.0` and
-`profit_giveback_exit_pct` is `0.15`, so v9 only arms profit giveback after the
-best gross completed-close profit reaches at least 1R. After it is armed, v9
-exits at the current open when gross completed-bar P/L gives back more than 15%
-of the best gross completed-close P/L seen so far. This intentionally ignores
-candle highs and fees for profit giveback; highs still update trade MFE and
-stop-loss simulation still uses intrabar lows.
+The default `pocket_profit_pct` is `0.035`. Pocketing does not check the scanner
+or watchlist reentry gates; it is an in-position profit capture and immediate
+same-bar reentry. The new reentry uses the existing trailing stop if possible,
+otherwise the current VWAP-offset stop.
 
 Emergency exit:
 

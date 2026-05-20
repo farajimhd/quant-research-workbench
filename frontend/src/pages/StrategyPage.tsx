@@ -329,8 +329,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   max_risk_fraction_of_cash: "Long Momentum v9 maximum cash-slice risk used for position sizing.",
   cash_buffer_dollars: "Cash kept out of Long Momentum sizing so estimated fees and rounding do not overdraw the account.",
   double_bvd_exit_score: "Long Momentum v9 main exit threshold for provider-built double-timeframe bearish volume divergence score.",
-  profit_giveback_activation_r: "Minimum gross completed-close profit, measured in R, required before Long Momentum v9 profit giveback can trigger.",
-  profit_giveback_exit_pct: "Long Momentum v9 secondary main exit. Exits when gross completed-bar P/L gives back more than this fraction of peak gross completed-close P/L.",
+  pocket_profit_pct: "Long Momentum v9 pocket threshold. When estimated bid reaches entry price times 1 plus this fraction, v9 sells and immediately rebuys without reentry filters.",
   tema9_exit_buffer_pct: "Long Momentum v9 TEMA exit threshold as a fraction of TEMA9. -0.01 means exit when TEMA20 reaches 99% of TEMA9, before the crossover.",
   vwap_stop_offset_pct: "Long Momentum v9 VWAP reentry protective stop offset, expressed as n percent of VWAP. For example, 3 means stop = VWAP - 3% of VWAP.",
   limit_order_offset_dollars: "Long Momentum v9 liquid-limit execution offset. Buys use current open plus this value; sells use current open minus this value.",
@@ -489,8 +488,7 @@ const STRATEGY_PARAMETER_GROUPS = [
       "structural_trail_activation_r",
       "vwap_stop_buffer_pct",
       "vwap_stop_offset_pct",
-      "profit_giveback_activation_r",
-      "profit_giveback_exit_pct",
+      "pocket_profit_pct",
       "tema9_exit_buffer_pct",
       "limit_order_offset_dollars",
       "double_bvd_exit_score"
@@ -2675,7 +2673,7 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
         last_double_timeframe_bearish_volume_divergence_score: gtFilter(strategyNumberParam(params, "double_bvd_exit_score", 50)),
       },
       label: "v9 Exit Raw",
-      title: "Apply the raw/provider 2xBVD exit input threshold. TEMA and P/L giveback exits are visible in the step filter groups and order tags because they compare multiple fields and position state.",
+      title: "Apply the raw/provider 2xBVD exit input threshold. TEMA and pocket exits are visible in the step filter groups and order tags because they compare multiple fields and position state.",
     },
   ];
 }
