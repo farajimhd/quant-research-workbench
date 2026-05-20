@@ -379,8 +379,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         reentry_bvd_ok = reentry_bvd_score <= self.config.max_reentry_bvd_score
         current_open_tema9 = self._float(row.get("current_open_tema9"))
         current_open_tema20 = self._float(row.get("current_open_tema20"))
-        reentry_tema_threshold = self._tema_exit_threshold(current_open_tema9) if current_open_tema9 > 0 else 0.0
-        reentry_tema_ok = current_open_tema9 > 0 and current_open_tema20 > 0 and current_open_tema20 < reentry_tema_threshold
+        reentry_tema_ok = current_open_tema9 > 0 and current_open_tema20 > 0 and current_open_tema9 > current_open_tema20
         reentry_close_minus_vwap = last_close - last_vwap if last_vwap > 0 else None
         immediate_entry_open = (
             price_eligible
@@ -430,7 +429,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_reentry_bvd_ok": reentry_bvd_ok,
             "long_momentum_v9_reentry_bvd_score": reentry_bvd_score,
             "long_momentum_v9_reentry_tema_ok": reentry_tema_ok,
-            "long_momentum_v9_reentry_tema_threshold": reentry_tema_threshold,
+            "long_momentum_v9_reentry_tema_threshold": current_open_tema9,
             "long_momentum_v9_immediate_entry_open": immediate_entry_open,
             "long_momentum_v9_reentry_open": reentry_open,
             "long_momentum_v9_entry_priority": 2 if immediate_entry_open else 1 if reentry_open else 0,

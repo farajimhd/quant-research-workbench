@@ -68,15 +68,14 @@ The default `max_reentry_bvd_score` is `80.0`, so a 1-minute BVD score above
 80 blocks watchlist reentry. This does not block same-bar immediate First Entry.
 
 Watchlist VWAP reentry also requires the current-open TEMA stack to remain
-constructive using the same buffer as the TEMA exit, but with the inverse
-condition:
+constructive:
 
 ```text
-current_open_tema20 < current_open_tema9 * (1 + tema9_exit_buffer_pct)
+current_open_tema9 > current_open_tema20
 ```
 
-With the default `tema9_exit_buffer_pct = -0.01`, reentry is allowed only while
-current-open TEMA20 is still below 99% of current-open TEMA9.
+The `tema9_exit_buffer_pct` offset is not used for reentry. It is only used by
+the emergency TEMA exit.
 
 ## Entry Sizing And Stop
 
