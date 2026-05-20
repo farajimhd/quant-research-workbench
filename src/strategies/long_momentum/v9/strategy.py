@@ -327,6 +327,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                         if "soft_exit_wait_bars_remaining" not in meta:
                             meta["soft_exit_wait_bars_remaining"] = max(0, int(self.config.first_entry_soft_exit_wait_bars))
                         meta.setdefault("first_entry_body_bars_observed", 0)
+                        meta.setdefault("first_entry_high_bars_observed", 0)
+                        if self._float(meta.get("first_entry_highest_high")) <= 0:
+                            meta["first_entry_highest_high"] = self._float(fill.get("price"))
                         meta["entry_fill_timestamp"] = context.timestamp
                     elif "WATCHLIST_REENTRY" in tag:
                         meta["entry_type"] = "WATCHLIST_REENTRY"
@@ -448,7 +451,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         double_bvd_exit_red_ok = last_close <= last_open
         double_bvd_exit_open = double_bvd_exit_score > self.config.double_bvd_exit_score and double_bvd_exit_red_ok
         pocket_state = self._pocket_state(row, portfolio.positions.get(ticker))
-        first_entry_body_state = self._first_entry_body_cycle_state(self.position_meta.get(ticker, {}))
+        first_entry_meta = self.position_meta.get(ticker, {})
+        first_entry_body_state = self._first_entry_body_cycle_state(first_entry_meta)
+        first_entry_high_state = self._first_entry_high_cycle_state(first_entry_meta)
         first_entry_open = (
             price_eligible
             and bool(watch)
@@ -514,6 +519,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_double_bvd_exit_red_ok": double_bvd_exit_red_ok,
             "long_momentum_v9_double_bvd_exit_open": double_bvd_exit_open,
             **pocket_state,
+            **first_entry_high_state,
             **first_entry_body_state,
             "long_momentum_v9_immediate_entry_open": False,
             "long_momentum_v9_first_entry_open": first_entry_open,
@@ -564,6 +570,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             pocket_state = self._pocket_state(bar, position)
             self._trace_pocket_evaluation(context.timestamp, symbol, position, bar, meta, pocket_state)
             body_state = self._update_first_entry_body_cycle(context.timestamp, symbol, bar, meta)
+            high_state = self._update_first_entry_high_cycle(context.timestamp, symbol, position, bar, meta)
             soft_exits_blocked = self._first_entry_soft_exits_blocked(context.timestamp, symbol, meta)
             if soft_exits_blocked:
                 self._trace_first_entry_soft_exit_wait(context.timestamp, symbol, position, bar, meta)
@@ -584,7 +591,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 continue
             lifecycle_exits_blocked = self._first_entry_lifecycle_exits_blocked(meta)
             if lifecycle_exits_blocked:
-                self._trace_first_entry_lifecycle_wait(context.timestamp, symbol, position, bar, meta, body_state)
+                self._trace_first_entry_lifecycle_wait(context.timestamp, symbol, position, bar, meta, body_state, high_state)
                 stop_reason = "VWAP_TRAIL_STOP" if self._uses_vwap_trail(meta) else "INITIAL_STOP"
                 requests.append(
                     OrderRequest(
@@ -596,7 +603,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                         stop_price=position.stop_price,
                         tag=(
                             self._exit_tag(stop_reason, position, bar, meta)
-                            + f"|bodyLifecycleWait=True|bodyStrengthRatio={self._float(body_state.get('long_momentum_v9_first_entry_body_strength_ratio')):.4f}"
+                            + f"|lifecycleWait=True|highStallConfirmed={bool(high_state.get('long_momentum_v9_first_entry_high_stall_confirmed'))}"
+                            + f"|noNewHighBars={int(self._float(high_state.get('long_momentum_v9_first_entry_no_new_high_count')))}"
+                            + f"|bodyStrengthRatio={self._float(body_state.get('long_momentum_v9_first_entry_body_strength_ratio')):.4f}"
                             + f"|contractionBars={int(self._float(body_state.get('long_momentum_v9_first_entry_body_contraction_count')))}"
                         ),
                         allow_same_bar_fill=True,
@@ -769,6 +778,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "peak_completed_close_profit_per_share": 0.0,
             "soft_exit_wait_bars_remaining": max(0, int(self.config.first_entry_soft_exit_wait_bars)) if entry_type == "FIRST_ENTRY" else 0,
             "first_entry_body_bars_observed": 0,
+            "first_entry_high_bars_observed": 0,
+            "first_entry_highest_high": entry_price if entry_type == "FIRST_ENTRY" else 0.0,
         }
         watch = self.momentum_watchlist.get(symbol)
         if watch is not None:
@@ -959,6 +970,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         body_suffix = ""
         if str(meta.get("entry_type") or "") == "FIRST_ENTRY":
             body_suffix = (
+                f"|highestHigh={self._float(meta.get('first_entry_highest_high')):.4f}"
+                f"|lastHigh={self._float(meta.get('first_entry_last_high')):.4f}"
+                f"|noNewHighBars={int(self._float(meta.get('first_entry_no_new_high_count')))}"
+                f"|highStallConfirmed={bool(meta.get('first_entry_high_stall_confirmed'))}"
                 f"|bodyStrengthRatio={self._float(meta.get('first_entry_body_strength_ratio')):.4f}"
                 f"|bodyContractionCount={int(self._float(meta.get('first_entry_body_contraction_count')))}"
                 f"|bodyContractionConfirmed={bool(meta.get('first_entry_body_contraction_confirmed'))}"
@@ -1014,6 +1029,60 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
 
     def _uses_vwap_trail(self, meta: dict) -> bool:
         return str(meta.get("entry_type") or "") in {"FIRST_ENTRY", "WATCHLIST_REENTRY"}
+
+    def _update_first_entry_high_cycle(
+        self,
+        timestamp: datetime,
+        symbol: str,
+        position,
+        bar: dict,
+        meta: dict,
+    ) -> dict[str, Any]:
+        if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
+            return self._first_entry_high_cycle_state(meta)
+        if meta.get("_first_entry_high_last_timestamp") == timestamp:
+            return self._first_entry_high_cycle_state(meta)
+
+        last_high = self._float(bar.get("last_high"))
+        entry_price = self._float(getattr(position, "entry_price", 0.0))
+        previous_highest = max(self._float(meta.get("first_entry_highest_high")), entry_price)
+        tolerance = max(0.0, self.config.first_entry_high_near_tolerance_ratio)
+        near_high_threshold = previous_highest * (1.0 - tolerance) if previous_highest > 0 else 0.0
+        new_high = last_high > previous_highest if previous_highest > 0 else last_high > 0
+        near_high = last_high >= near_high_threshold if near_high_threshold > 0 else last_high > 0
+        highest_high = max(previous_highest, last_high)
+        observed_bars = int(self._float(meta.get("first_entry_high_bars_observed")))
+        no_new_high_count = int(self._float(meta.get("first_entry_no_new_high_count")))
+        no_new_high_count = 0 if new_high or near_high else no_new_high_count + 1
+        required_stall_bars = max(1, int(self.config.first_entry_high_stall_bars))
+        stall_confirmed = no_new_high_count >= required_stall_bars
+
+        meta["first_entry_high_bars_observed"] = observed_bars + 1
+        meta["first_entry_last_high"] = last_high
+        meta["first_entry_highest_high"] = highest_high
+        meta["first_entry_near_high_threshold"] = near_high_threshold
+        meta["first_entry_new_high"] = new_high
+        meta["first_entry_near_high"] = near_high
+        meta["first_entry_no_new_high_count"] = no_new_high_count
+        meta["first_entry_high_stall_confirmed"] = stall_confirmed
+        meta["_first_entry_high_last_timestamp"] = timestamp
+        return self._first_entry_high_cycle_state(meta)
+
+    def _first_entry_high_cycle_state(self, meta: dict) -> dict[str, Any]:
+        enabled = bool(self.config.first_entry_high_lifecycle_exit_enabled)
+        return {
+            "long_momentum_v9_first_entry_high_lifecycle_enabled": enabled,
+            "long_momentum_v9_first_entry_high_bars_observed": int(self._float(meta.get("first_entry_high_bars_observed"))),
+            "long_momentum_v9_first_entry_last_high": self._float(meta.get("first_entry_last_high")),
+            "long_momentum_v9_first_entry_highest_high": self._float(meta.get("first_entry_highest_high")),
+            "long_momentum_v9_first_entry_near_high_threshold": self._float(meta.get("first_entry_near_high_threshold")),
+            "long_momentum_v9_first_entry_new_high": bool(meta.get("first_entry_new_high")),
+            "long_momentum_v9_first_entry_near_high": bool(meta.get("first_entry_near_high")),
+            "long_momentum_v9_first_entry_no_new_high_count": int(self._float(meta.get("first_entry_no_new_high_count"))),
+            "long_momentum_v9_first_entry_high_stall_required": max(1, int(self.config.first_entry_high_stall_bars)),
+            "long_momentum_v9_first_entry_high_near_tolerance_ratio": max(0.0, self.config.first_entry_high_near_tolerance_ratio),
+            "long_momentum_v9_first_entry_high_stall_confirmed": bool(meta.get("first_entry_high_stall_confirmed")),
+        }
 
     def _update_first_entry_body_cycle(self, timestamp: datetime, symbol: str, bar: dict, meta: dict) -> dict[str, Any]:
         if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
@@ -1100,16 +1169,20 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         return True
 
     def _first_entry_lifecycle_exits_blocked(self, meta: dict) -> bool:
-        if not self.config.first_entry_body_lifecycle_exit_enabled:
-            return False
         if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
             return False
-        return not bool(meta.get("first_entry_body_contraction_confirmed"))
+        if self.config.first_entry_high_lifecycle_exit_enabled and not bool(meta.get("first_entry_high_stall_confirmed")):
+            return True
+        if self.config.first_entry_body_lifecycle_exit_enabled and not bool(meta.get("first_entry_body_contraction_confirmed")):
+            return True
+        return False
 
     def _first_entry_soft_exits_allowed(self, meta: dict) -> bool:
         if str(meta.get("entry_type") or "") != "FIRST_ENTRY":
             return True
         if int(self._float(meta.get("soft_exit_wait_bars_remaining"))) > 0:
+            return False
+        if self.config.first_entry_high_lifecycle_exit_enabled and not bool(meta.get("first_entry_high_stall_confirmed")):
             return False
         if self.config.first_entry_body_lifecycle_exit_enabled and not bool(meta.get("first_entry_body_contraction_confirmed")):
             return False
@@ -1152,6 +1225,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         bar: dict,
         meta: dict,
         body_state: dict[str, Any],
+        high_state: dict[str, Any],
     ) -> None:
         if not self.observability:
             return
@@ -1159,15 +1233,24 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             timestamp=timestamp,
             ticker=symbol,
             stage="exit",
-            event_type="first_entry_body_lifecycle_wait",
+            event_type="first_entry_lifecycle_wait",
             decision="hold_position",
-            reason_code="FIRST_ENTRY_BODY_CONTRACTION_WAIT",
-            reason="First-entry soft exits are waiting for green-body momentum to contract from its peak.",
+            reason_code="FIRST_ENTRY_LIFECYCLE_WAIT",
+            reason="First-entry soft exits are waiting for the high structure to stall and any enabled body lifecycle gate to pass.",
             values={
                 "entry_price": getattr(position, "entry_price", None),
                 "quantity": getattr(position, "quantity", None),
                 "current_open": self._bar_open(bar),
                 "stop_price": getattr(position, "stop_price", None),
+                "highest_high": high_state.get("long_momentum_v9_first_entry_highest_high"),
+                "last_high": high_state.get("long_momentum_v9_first_entry_last_high"),
+                "near_high_threshold": high_state.get("long_momentum_v9_first_entry_near_high_threshold"),
+                "new_high": high_state.get("long_momentum_v9_first_entry_new_high"),
+                "near_high": high_state.get("long_momentum_v9_first_entry_near_high"),
+                "no_new_high_count": high_state.get("long_momentum_v9_first_entry_no_new_high_count"),
+                "required_stall_bars": high_state.get("long_momentum_v9_first_entry_high_stall_required"),
+                "high_stall_confirmed": high_state.get("long_momentum_v9_first_entry_high_stall_confirmed"),
+                "high_near_tolerance_ratio": high_state.get("long_momentum_v9_first_entry_high_near_tolerance_ratio"),
                 "green_body": body_state.get("long_momentum_v9_first_entry_green_body"),
                 "green_body_pct": body_state.get("long_momentum_v9_first_entry_green_body_pct"),
                 "green_body_ema_fast": body_state.get("long_momentum_v9_first_entry_green_body_ema_fast"),
@@ -1205,6 +1288,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             position = portfolio.positions.get(watch.ticker)
             meta = self.position_meta.get(watch.ticker, {})
             pocket_state = self._pocket_state(row, position)
+            high_state = self._first_entry_high_cycle_state(meta)
             body_state = self._first_entry_body_cycle_state(meta)
             rows.append(
                 {
@@ -1244,6 +1328,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     "long_momentum_v9_pocket_remaining_to_trigger": pocket_state.get("long_momentum_v9_pocket_remaining_to_trigger"),
                     "long_momentum_v9_pocket_open": pocket_state.get("long_momentum_v9_pocket_open"),
                     "last_true_range_ema5_pct": row.get("last_true_range_ema5_pct"),
+                    **high_state,
                     **body_state,
                 }
             )

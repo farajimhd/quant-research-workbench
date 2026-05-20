@@ -24,6 +24,9 @@ V9_PARAMETER_FIELDS = (
     "reentry_vwap_buffer_pct",
     "vwap_stop_offset_pct",
     "first_entry_soft_exit_wait_bars",
+    "first_entry_high_lifecycle_exit_enabled",
+    "first_entry_high_near_tolerance_ratio",
+    "first_entry_high_stall_bars",
     "first_entry_body_lifecycle_exit_enabled",
     "first_entry_body_fast_ema_bars",
     "first_entry_body_slow_ema_bars",
@@ -61,7 +64,10 @@ class LongMomentumV9Config(LongMomentumV3Config):
     reentry_vwap_buffer_pct: float = 2.0
     double_bvd_exit_score: float = 50.0
     first_entry_soft_exit_wait_bars: int = 3
-    first_entry_body_lifecycle_exit_enabled: bool = True
+    first_entry_high_lifecycle_exit_enabled: bool = True
+    first_entry_high_near_tolerance_ratio: float = 0.003
+    first_entry_high_stall_bars: int = 3
+    first_entry_body_lifecycle_exit_enabled: bool = False
     first_entry_body_fast_ema_bars: int = 3
     first_entry_body_slow_ema_bars: int = 8
     first_entry_body_contraction_ratio: float = 0.65

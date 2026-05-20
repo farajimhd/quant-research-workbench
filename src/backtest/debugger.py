@@ -383,6 +383,7 @@ class StepBacktestDebugger(BacktestEngine):
         filter_rows: list[dict] = []
         for row in rows:
             ticker = str(row.get("ticker") or row.get("symbol") or "")
+            body_lifecycle_enabled = bool(self._strategy_param("first_entry_body_lifecycle_exit_enabled", 0.0))
             checks_by_group = {
                 "Price Eligibility": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
@@ -442,22 +443,36 @@ class StepBacktestDebugger(BacktestEngine):
                     self._gt_check(row, "held_quantity", 0.0),
                     self._v9_pocket_threshold_check(row),
                 ],
-                "First Entry Body Lifecycle": [
-                    self._bool_check(row, "long_momentum_v9_first_entry_body_lifecycle_enabled", True),
-                    self._gte_check(row, "long_momentum_v9_first_entry_body_bars_observed", 0.0),
-                    self._lte_check(
-                        row,
-                        "long_momentum_v9_first_entry_body_strength_ratio",
-                        self._strategy_param("first_entry_body_contraction_ratio", 0.65),
-                    ),
-                    self._gte_check(
-                        row,
-                        "long_momentum_v9_first_entry_body_contraction_count",
-                        self._strategy_param("first_entry_body_contraction_bars", 2.0),
-                    ),
-                    self._bool_check(row, "long_momentum_v9_first_entry_body_contraction_confirmed", True),
+                "First Entry High Lifecycle": [
+                    self._bool_check(row, "long_momentum_v9_first_entry_high_lifecycle_enabled", True),
+                    self._gte_check(row, "long_momentum_v9_first_entry_high_bars_observed", 0.0),
+                    self._gte_check(row, "long_momentum_v9_first_entry_highest_high", 0.0),
+                    self._gte_check(row, "long_momentum_v9_first_entry_no_new_high_count", self._strategy_param("first_entry_high_stall_bars", 3.0)),
+                    self._bool_check(row, "long_momentum_v9_first_entry_high_stall_confirmed", True),
                     self._bool_check(row, "long_momentum_v9_first_entry_soft_exits_allowed", True),
                 ],
+                "First Entry Body Lifecycle": (
+                    [
+                        self._bool_check(row, "long_momentum_v9_first_entry_body_lifecycle_enabled", True),
+                        self._gte_check(row, "long_momentum_v9_first_entry_body_bars_observed", 0.0),
+                        self._lte_check(
+                            row,
+                            "long_momentum_v9_first_entry_body_strength_ratio",
+                            self._strategy_param("first_entry_body_contraction_ratio", 0.65),
+                        ),
+                        self._gte_check(
+                            row,
+                            "long_momentum_v9_first_entry_body_contraction_count",
+                            self._strategy_param("first_entry_body_contraction_bars", 2.0),
+                        ),
+                        self._bool_check(row, "long_momentum_v9_first_entry_body_contraction_confirmed", True),
+                    ]
+                    if body_lifecycle_enabled
+                    else [
+                        self._bool_check(row, "long_momentum_v9_first_entry_body_lifecycle_enabled", False),
+                        self._gte_check(row, "long_momentum_v9_first_entry_body_bars_observed", 0.0),
+                    ]
+                ),
                 "Final Strategy Decision": [
                     self._check(
                         "long_momentum_v9_first_or_watchlist_entry_open",

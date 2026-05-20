@@ -79,9 +79,40 @@ Entry fill, the soft exits are disabled:
 The protective VWAP stop remains active during this wait. The default wait is
 `3` bars.
 
-After that fixed wait, First Entry can optionally keep soft exits disabled until
-the green-body lifecycle contracts from its peak. This is controlled by
-`first_entry_body_lifecycle_exit_enabled`, which is enabled by default.
+After that fixed wait, First Entry keeps soft exits disabled while the position
+keeps making new highs or staying close to the highest high since entry. This
+is controlled by `first_entry_high_lifecycle_exit_enabled`, which is enabled by
+default.
+
+On each completed bar after the First Entry fill, v9 calculates:
+
+```text
+highest_high_since_entry = max(highest_high_since_entry, last_high)
+near_high_threshold = highest_high_since_entry * (1 - first_entry_high_near_tolerance_ratio)
+
+if last_high > previous_highest_high:
+    no_new_high_count = 0
+elif last_high >= near_high_threshold:
+    no_new_high_count = 0
+else:
+    no_new_high_count += 1
+```
+
+Soft exits become eligible only when:
+
+```text
+no_new_high_count >= first_entry_high_stall_bars
+```
+
+Defaults are `first_entry_high_near_tolerance_ratio = 0.003`, equal to 0.3%,
+and `first_entry_high_stall_bars = 3`. This gives the first entry room to pause
+near the high without allowing TEMA, 2xBVD, or pocketing to close the position
+too early. The stop remains active the whole time.
+
+The older green-body lifecycle values are still calculated and shown in debug,
+but body lifecycle exit gating is off by default. If
+`first_entry_body_lifecycle_exit_enabled = true`, First Entry also keeps soft
+exits disabled until the green-body lifecycle contracts from its peak.
 
 On each completed bar after the First Entry fill, v9 calculates:
 
@@ -101,12 +132,10 @@ body_strength_ratio <= first_entry_body_contraction_ratio
 for first_entry_body_contraction_bars consecutive completed bars
 ```
 
-Defaults are `first_entry_body_fast_ema_bars = 3`,
+Body lifecycle defaults are `first_entry_body_fast_ema_bars = 3`,
 `first_entry_body_slow_ema_bars = 8`,
 `first_entry_body_contraction_ratio = 0.65`, and
-`first_entry_body_contraction_bars = 2`. This lets First Entry stay open during
-the body-expansion phase and makes TEMA, 2xBVD, and pocketing act only after
-the move has started to contract. The stop remains active the whole time.
+`first_entry_body_contraction_bars = 2`.
 
 ## Watchlist VWAP Reentry
 
