@@ -70,19 +70,17 @@ Break Hold positions are not rotated out by this rule. If multiple High Break
 Hold candidates appear on the same bar, v9 splits available cash equally across
 them, respecting the configured maximum entry order size.
 
-High Break Hold uses the tighter valid stop from the VWAP stop and breakout
-stop:
+High Break Hold uses a fixed breakout-level stop:
 
 ```text
 limit_price = current_open
 entry_price = filled limit_price
-vwap_stop = last_vwap - (last_vwap * vwap_stop_offset_pct / 100)
 breakout_stop = breakout_level * (1 - high_break_stop_offset_ratio)
-stop_price = max(vwap_stop, breakout_stop)
+stop_price = breakout_stop
 ```
 
-The stop is active immediately and trails upward with VWAP while the position
-is open.
+The stop is active immediately and does not trail with VWAP. High Break Hold
+stop exits are reported as `HIGH_BREAK_HOLD_STOP`.
 
 For the first `first_entry_soft_exit_wait_bars` completed bars after a High
 Break Hold fill, the soft exits are disabled:
@@ -91,7 +89,7 @@ Break Hold fill, the soft exits are disabled:
 - 2xBVD
 - pocketing
 
-The protective VWAP stop remains active during this wait. The default wait is
+The protective fixed stop remains active during this wait. The default wait is
 `3` bars.
 
 After that fixed wait, High Break Hold keeps soft exits disabled while the
@@ -249,11 +247,14 @@ v9 treats the bar open as the executable ask, so buys submit at `current_open`.
 Sells submit at `current_open - 0.01` as a bid estimate. The backtest fills
 matched limit orders at the submitted limit price.
 
-While the position remains open, the stop trails upward with VWAP:
+VWAP Reclaim positions trail the stop upward with VWAP while open:
 
 ```text
 stop_price = max(previous_stop_price, last_vwap - (last_vwap * vwap_stop_offset_pct / 100))
 ```
+
+High Break Hold positions keep their fixed breakout-level stop instead of using
+the VWAP trail.
 
 ## Partial Fill Remainders
 

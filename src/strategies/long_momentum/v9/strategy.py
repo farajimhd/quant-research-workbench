@@ -683,7 +683,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             soft_exits_blocked = self._first_entry_soft_exits_blocked(context.timestamp, symbol, meta)
             if soft_exits_blocked:
                 self._trace_first_entry_soft_exit_wait(context.timestamp, symbol, position, bar, meta)
-                stop_reason = "VWAP_TRAIL_STOP" if self._uses_vwap_trail(meta) else "INITIAL_STOP"
+                stop_reason = self._protective_stop_reason(meta)
                 requests.append(
                     OrderRequest(
                         symbol=symbol,
@@ -701,7 +701,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             lifecycle_exits_blocked = self._first_entry_lifecycle_exits_blocked(meta)
             if lifecycle_exits_blocked:
                 self._trace_first_entry_lifecycle_wait(context.timestamp, symbol, position, bar, meta, body_state, high_state)
-                stop_reason = "VWAP_TRAIL_STOP" if self._uses_vwap_trail(meta) else "INITIAL_STOP"
+                stop_reason = self._protective_stop_reason(meta)
                 requests.append(
                     OrderRequest(
                         symbol=symbol,
@@ -760,7 +760,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     )
                 )
                 continue
-            stop_reason = "VWAP_TRAIL_STOP" if self._uses_vwap_trail(meta) else "INITIAL_STOP"
+            stop_reason = self._protective_stop_reason(meta)
             requests.append(
                 OrderRequest(
                     symbol=symbol,
@@ -884,6 +884,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "initial_r": risk_per_share,
             "entry_score": score,
             "entry_type": entry_type,
+            "high_break_hold_breakout_level": candidate.get("long_momentum_v9_high_break_hold_breakout_level"),
+            "high_break_stop_offset_ratio": self.config.high_break_stop_offset_ratio if entry_type == "HIGH_BREAK_HOLD" else None,
             "peak_completed_close_profit_per_share": 0.0,
             "soft_exit_wait_bars_remaining": max(0, int(self.config.first_entry_soft_exit_wait_bars)) if entry_type == "HIGH_BREAK_HOLD" else 0,
             "first_entry_body_bars_observed": 0,
@@ -921,12 +923,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
 
     def _entry_stop_for_type(self, candidate: dict, entry_price: float, entry_type: str) -> float:
         if entry_type in {"HIGH_BREAK_HOLD", "FIRST_ENTRY"}:
-            vwap = self._float(candidate.get("last_vwap"))
-            vwap_stop = self._vwap_offset_stop(vwap)
             high_break_level = self._float(candidate.get("long_momentum_v9_high_break_hold_breakout_level"))
             high_break_stop = high_break_level * (1.0 - max(0.0, self.config.high_break_stop_offset_ratio)) if high_break_level > 0 else 0.0
-            stop = max(vwap_stop, high_break_stop)
-            return stop if 0 < stop < entry_price else 0.0
+            return high_break_stop if 0 < high_break_stop < entry_price else 0.0
         if entry_type in {"VWAP_RECLAIM", "WATCHLIST_REENTRY"}:
             vwap = self._float(candidate.get("last_vwap"))
             stop = self._vwap_offset_stop(vwap)
@@ -1148,10 +1147,17 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         return max(0.0, cash)
 
     def _uses_vwap_trail(self, meta: dict) -> bool:
-        return str(meta.get("entry_type") or "") in {"HIGH_BREAK_HOLD", "VWAP_RECLAIM", "FIRST_ENTRY", "WATCHLIST_REENTRY"}
+        return str(meta.get("entry_type") or "") in {"VWAP_RECLAIM", "WATCHLIST_REENTRY"}
 
     def _is_high_break_entry_type(self, meta: dict) -> bool:
         return str(meta.get("entry_type") or "") in {"HIGH_BREAK_HOLD", "FIRST_ENTRY"}
+
+    def _protective_stop_reason(self, meta: dict) -> str:
+        if self._is_high_break_entry_type(meta):
+            return "HIGH_BREAK_HOLD_STOP"
+        if self._uses_vwap_trail(meta):
+            return "VWAP_TRAIL_STOP"
+        return "INITIAL_STOP"
 
     def _update_first_entry_high_cycle(
         self,
