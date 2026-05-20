@@ -3105,6 +3105,8 @@ function buildInteractiveDebugMetrics(
   const realizedPnl = finiteNumber(summary.realized_pnl);
   const unrealizedPnl = finiteNumber(summary.open_unrealized_pnl);
   const equity = finiteNumber(summary.final_equity ?? config.initial_cash);
+  const tradeCount = finiteNumber(summary.trade_count);
+  const winRate = finiteNumber(summary.win_rate);
   return [
     {
       detail: "Mark-to-market P/L after this debug bar",
@@ -3140,6 +3142,13 @@ function buildInteractiveDebugMetrics(
       label: "Open Positions",
       tone: countTone(counts.positions),
       value: formatNumber(counts.positions)
+    },
+    {
+      detail: "Winning closed trades so far in this debug run",
+      icon: <Percent size={15} />,
+      label: "Win %",
+      tone: winRateTone(winRate, tradeCount),
+      value: formatPct(winRate)
     },
     {
       detail: "Orders still pending after this bar",
