@@ -387,12 +387,14 @@ class StepBacktestDebugger(BacktestEngine):
                 "Watchlist Add": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.05), fallback_key="last_5m_return"),
+                    self._gte_check(row, "last_volume", self._strategy_param("min_watchlist_add_volume", 8_000.0)),
                     self._gte_check(row, "last_transactions", self._strategy_param("min_first_entry_transactions", 100.0)),
                 ],
                 "Immediate Entry Raw Inputs": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._range_check(row, "minute_of_day", self._strategy_param("trading_start_minute", 240.0), self._strategy_param("trading_end_minute", 1200.0) - 1),
                     self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.05), fallback_key="last_5m_return"),
+                    self._gte_check(row, "last_volume", self._strategy_param("min_watchlist_add_volume", 8_000.0)),
                     self._gte_check(row, "last_transactions", self._strategy_param("min_first_entry_transactions", 100.0)),
                     self._gte_check(row, "last_transactions_vs_prior_3", self._strategy_param("min_first_entry_transactions_vs_prior_3", 20.0)),
                 ],

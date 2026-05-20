@@ -19,6 +19,7 @@ REQUIRED_V9_COLUMNS = (
     "last_open",
     "last_return_5",
     "current_open",
+    "last_volume",
     "last_transactions",
     "last_transactions_vs_prior_3",
     "last_tema9",
@@ -302,12 +303,14 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return
         last_close = self._float(row.get("last_close"))
         last_5m_return = self._float(row.get("last_5m_return"))
+        volume = self._float(row.get("last_volume"))
         transactions = self._float(row.get("last_transactions"))
         price_eligible = self.config.min_price <= last_close <= self.config.max_price
         return_ok = last_5m_return >= self.config.min_last_5m_return
+        volume_ok = volume >= self.config.min_watchlist_add_volume
         transactions_ok = transactions >= self.config.min_first_entry_transactions
         watch = self.momentum_watchlist.get(ticker)
-        if watch is None and price_eligible and return_ok and transactions_ok:
+        if watch is None and price_eligible and return_ok and volume_ok and transactions_ok:
             watch = MomentumWatch(
                 ticker=ticker,
                 added_timestamp=timestamp,
@@ -363,10 +366,12 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         watch = self.momentum_watchlist.get(ticker)
         last_close = self._float(row.get("last_close"))
         last_5m_return = self._float(row.get("last_5m_return"))
+        volume = self._float(row.get("last_volume"))
         transactions = self._float(row.get("last_transactions"))
         transactions_vs_prior_3 = self._float(row.get("last_transactions_vs_prior_3"))
         price_eligible = self.config.min_price <= last_close <= self.config.max_price
         return_ok = last_5m_return >= self.config.min_last_5m_return
+        watchlist_add_volume_ok = volume >= self.config.min_watchlist_add_volume
         watchlist_add_transactions_ok = transactions >= self.config.min_first_entry_transactions
         immediate_transactions_vs_prior_3_ok = transactions_vs_prior_3 >= self.config.min_first_entry_transactions_vs_prior_3
         entry_time_ok = self.config.trading_start_minute <= int(self._float(row.get("minute_of_day"))) < self.config.trading_end_minute
@@ -400,6 +405,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             and no_symbol_position
             and entry_time_ok
             and return_ok
+            and watchlist_add_volume_ok
             and watchlist_add_transactions_ok
             and immediate_transactions_vs_prior_3_ok
         )
@@ -418,7 +424,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         )
         return {
             "long_momentum_v9_price_eligible": price_eligible,
-            "long_momentum_v9_watchlist_add_open": price_eligible and return_ok and watchlist_add_transactions_ok,
+            "long_momentum_v9_watchlist_add_open": price_eligible and return_ok and watchlist_add_volume_ok and watchlist_add_transactions_ok,
             "long_momentum_v9_watchlist_active": watch is not None,
             "long_momentum_v9_watchlist_added_timestamp": watch.added_timestamp.isoformat() if watch else "",
             "long_momentum_v9_watchlist_added_last_close": watch.added_last_close if watch else None,
@@ -432,6 +438,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_watchlist_avg_transactions": watch.avg_transactions_since_watchlist if watch else 0.0,
             "long_momentum_v9_last_5m_return": last_5m_return,
             "long_momentum_v9_return_ok": return_ok,
+            "long_momentum_v9_watchlist_add_volume_ok": watchlist_add_volume_ok,
             "long_momentum_v9_watchlist_add_transactions_ok": watchlist_add_transactions_ok,
             "long_momentum_v9_immediate_transactions_vs_prior_3_ok": immediate_transactions_vs_prior_3_ok,
             "long_momentum_v9_entry_time_ok": entry_time_ok,
@@ -831,6 +838,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     "watchlist_avg_transactions": watch.avg_transactions_since_watchlist,
                     "last_close": row.get("last_close"),
                     "last_5m_return": row.get("last_5m_return"),
+                    "last_volume": row.get("last_volume"),
                     "last_transactions": row.get("last_transactions"),
                     "last_transactions_vs_prior_3": row.get("last_transactions_vs_prior_3"),
                     "last_vwap": row.get("last_vwap"),
@@ -901,13 +909,15 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             stage="watchlist",
             event_type="watchlist_add",
             decision="add_to_day_momentum_watchlist",
-            reason_code="PRICE_RETURN_TRANSACTIONS",
-            reason="Ticker entered the day momentum watchlist from price, completed-bar 5m return, and transactions.",
+            reason_code="PRICE_RETURN_VOLUME_TRANSACTIONS",
+            reason="Ticker entered the day momentum watchlist from price, completed-bar 5m return, volume, and transactions.",
             values={
                 "last_close": row.get("last_close"),
                 "last_5m_return": watch.added_last_5m_return,
+                "last_volume": row.get("last_volume"),
                 "last_transactions": row.get("last_transactions"),
                 "min_last_5m_return": self.config.min_last_5m_return,
+                "min_watchlist_add_volume": self.config.min_watchlist_add_volume,
                 "min_first_entry_transactions": self.config.min_first_entry_transactions,
                 "min_price": self.config.min_price,
                 "max_price": self.config.max_price,

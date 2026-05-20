@@ -15,6 +15,7 @@ V9_PARAMETER_FIELDS = (
     "sizing_fee_per_share",
     "sizing_min_fee",
     "min_last_5m_return",
+    "min_watchlist_add_volume",
     "min_first_entry_transactions",
     "min_first_entry_transactions_vs_prior_3",
     "max_risk_fraction_of_cash",
@@ -41,6 +42,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     trading_end_minute: int = 20 * 60
 
     min_last_5m_return: float = 0.05
+    min_watchlist_add_volume: float = 8_000.0
     min_first_entry_transactions: float = 100.0
     min_first_entry_transactions_vs_prior_3: float = 20.0
     max_risk_fraction_of_cash: float = 0.25

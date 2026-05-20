@@ -14,7 +14,10 @@ A ticker is eligible for the watchlist when:
 
 - `min_price <= last_close <= max_price`
 - `last_5m_return >= min_last_5m_return`
+- `last_volume >= min_watchlist_add_volume`
 - `last_transactions >= min_first_entry_transactions`
+
+The default `min_watchlist_add_volume` is `8000`.
 
 If the same bar also has:
 

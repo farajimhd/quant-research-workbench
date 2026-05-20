@@ -273,6 +273,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_recent_transactions: "Minimum rolling recent transaction count required before entry.",
   min_volume: "Minimum current bar share volume required before a Long Momentum entry.",
   min_transactions: "Minimum current bar transaction count required before a Long Momentum entry.",
+  min_watchlist_add_volume: "Long Momentum v9 last-bar volume threshold needed to add a ticker to the day momentum watchlist.",
   min_first_entry_transactions: "Long Momentum v9 1-minute transaction threshold needed to add a ticker to the day momentum watchlist. This is calibrated for 1m bars and should be retuned for other timeframes.",
   min_first_entry_transactions_vs_prior_3: "Long Momentum v9 immediate-entry transaction impulse threshold versus the prior three transactions average. This is calibrated for 1m bars.",
   min_last_5m_return: "Long Momentum v9 provider-built same-session return_5 threshold needed to add a ticker to the day momentum watchlist.",
@@ -393,6 +394,7 @@ const STRATEGY_PARAMETER_GROUPS = [
       "min_recent_transactions",
       "min_volume",
       "min_transactions",
+      "min_watchlist_add_volume",
       "min_first_entry_transactions",
       "min_first_entry_transactions_vs_prior_3",
       "max_spread_below_5",
@@ -2640,10 +2642,11 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
       filters: {
         last_close: betweenFilter(minPrice, maxPrice),
         last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.05)),
+        last_volume: gteFilter(strategyNumberParam(params, "min_watchlist_add_volume", 8_000)),
         last_transactions: gteFilter(strategyNumberParam(params, "min_first_entry_transactions", 100)),
       },
       label: "v9 Watchlist Add Raw",
-      title: "Apply only the raw/provider inputs for adding a ticker to the v9 watchlist: price range, same-session 5m return, and transactions.",
+      title: "Apply only the raw/provider inputs for adding a ticker to the v9 watchlist: price range, same-session 5m return, last-bar volume, and transactions.",
     },
     {
       filters: {
@@ -2653,6 +2656,7 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
           strategyNumberParam(params, "trading_end_minute", 1200) - 1,
         ),
         last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.05)),
+        last_volume: gteFilter(strategyNumberParam(params, "min_watchlist_add_volume", 8_000)),
         last_transactions: gteFilter(strategyNumberParam(params, "min_first_entry_transactions", 100)),
         last_transactions_vs_prior_3: gteFilter(strategyNumberParam(params, "min_first_entry_transactions_vs_prior_3", 20)),
       },
@@ -2706,10 +2710,11 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
         filters: {
           last_close: betweenFilter(minPrice, maxPrice),
           long_momentum_v9_last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.05)),
+          last_volume: gteFilter(strategyNumberParam(params, "min_watchlist_add_volume", 8_000)),
           last_transactions: gteFilter(strategyNumberParam(params, "min_first_entry_transactions", 100)),
         },
         label: "v9 Watchlist Add",
-        title: "Apply the visible v9 watchlist-add inputs: price range, provider-built same-session return threshold, and transactions.",
+        title: "Apply the visible v9 watchlist-add inputs: price range, provider-built same-session return threshold, last-bar volume, and transactions.",
       },
       {
         filters: {
@@ -2722,6 +2727,7 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
           held_quantity: lteFilter(0),
           long_momentum_v9_pending_symbol_order: { operator: "eq", presetLabel: "Is false", valueText: "false" },
           long_momentum_v9_last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.05)),
+          last_volume: gteFilter(strategyNumberParam(params, "min_watchlist_add_volume", 8_000)),
           last_transactions: gteFilter(strategyNumberParam(params, "min_first_entry_transactions", 100)),
           last_transactions_vs_prior_3: gteFilter(strategyNumberParam(params, "min_first_entry_transactions_vs_prior_3", 20)),
         },
@@ -3128,6 +3134,7 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_watchlist_max_vwap",
   "long_momentum_v9_watchlist_avg_transactions",
   "long_momentum_v9_return_ok",
+  "long_momentum_v9_watchlist_add_volume_ok",
   "long_momentum_v9_watchlist_add_transactions_ok",
   "long_momentum_v9_immediate_transactions_vs_prior_3_ok",
   "long_momentum_v9_entry_time_ok",
