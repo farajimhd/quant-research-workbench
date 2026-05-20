@@ -228,6 +228,14 @@ current_open > max(
 )
 ```
 
+VWAP Reclaim rejects a gap-down open through the prior completed candle body.
+The current open must not be lower than the lower side of the last completed
+body:
+
+```text
+current_open >= min(last_open, last_close)
+```
+
 This VWAP Reclaim body-break rule does not use MACD.
 
 ## Entry Sizing And Stop

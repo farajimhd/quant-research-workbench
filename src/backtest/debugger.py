@@ -296,17 +296,23 @@ class StepBacktestDebugger(BacktestEngine):
             before.get("high_break_hold_snapshots", 0),
             after.get("high_break_hold_snapshots", 0),
         )
+        raw_scanner_rows = self._limit_debug_rows(updates)
+        execution_payload_rows = self._limit_debug_rows(execution_rows)
+        scanner_payload_rows = self._limit_debug_rows(scanner_rows)
         return {
             "type": "bar",
             "timestamp": timestamp.isoformat(),
             "session_date": self.session_date.isoformat() if self.session_date else None,
             "bar_index": self.processed_event_bars,
-            "raw_scanner_rows": updates,
-            "execution_rows": execution_rows,
-            "strategy_scanner_rows": scanner_rows,
+            "raw_scanner_rows": raw_scanner_rows,
+            "raw_scanner_total_rows": len(updates),
+            "execution_rows": execution_payload_rows,
+            "execution_total_rows": len(execution_rows),
+            "strategy_scanner_rows": scanner_payload_rows,
+            "strategy_scanner_total_rows": len(scanner_rows),
             "strategy_watchlist_rows": watchlist_rows,
             "strategy_high_break_watchlist_rows": high_break_watchlist_rows,
-            "filter_groups": self._filter_group_rows(scanner_rows or updates),
+            "filter_groups": self._filter_group_rows(scanner_payload_rows or raw_scanner_rows),
             "strategy_requests": requests,
             "orders": self.orders[before["orders"] : after["orders"]],
             "fills": self.fills[before["fills"] : after["fills"]],
@@ -350,11 +356,25 @@ class StepBacktestDebugger(BacktestEngine):
     def _delta_rows(self, rows: list[dict], before: int, after: int) -> list[dict]:
         return rows[before:after]
 
+    def _debug_payload_row_limit(self) -> int:
+        limit = int(getattr(self.config, "observability_scanner_max_rows", 0) or 0)
+        return max(1, limit or 500)
+
+    def _limit_debug_rows(self, rows: list[dict]) -> list[dict]:
+        return rows[: self._debug_payload_row_limit()]
+
     def _last_strategy_scanner_rows(self) -> list[dict]:
         rows = getattr(self.strategy, "last_scanner_rows", None)
         if not isinstance(rows, list):
             return []
-        return [dict(row) for row in rows if isinstance(row, dict)]
+        limit = self._debug_payload_row_limit()
+        copied: list[dict] = []
+        for row in rows:
+            if isinstance(row, dict):
+                copied.append(dict(row))
+            if len(copied) >= limit:
+                break
+        return copied
 
     def _filter_group_rows(self, rows: list[dict]) -> list[dict]:
         if self.config.strategy_name == "long_momentum" and str(self.config.strategy_version).lower() == "v9":
@@ -507,6 +527,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._v9_last_tema_open_check(row),
                     self._lte_check(row, "last_bearish_volume_divergence_score", self._strategy_param("max_reentry_bvd_score", 80.0)),
                     self._v9_two_bar_body_reentry_check(row),
+                    self._bool_check(row, "long_momentum_v9_vwap_reclaim_open_not_below_last_body", True, fallback_key="long_momentum_v9_reentry_open_not_below_last_body"),
                 ],
                 "VWAP Reclaim Entry State": [
                     self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
@@ -518,6 +539,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._bool_check(row, "long_momentum_v9_vwap_reclaim_last_tema_open_ok", True, fallback_key="long_momentum_v9_reentry_last_tema_open_ok"),
                     self._bool_check(row, "long_momentum_v9_vwap_reclaim_bvd_ok", True, fallback_key="long_momentum_v9_reentry_bvd_ok"),
                     self._bool_check(row, "long_momentum_v9_vwap_reclaim_body_break_ok", True, fallback_key="long_momentum_v9_reentry_body_break_ok"),
+                    self._bool_check(row, "long_momentum_v9_vwap_reclaim_open_not_below_last_body", True, fallback_key="long_momentum_v9_reentry_open_not_below_last_body"),
                 ],
                 "Exit": [
                     self._gt_check(row, "last_double_timeframe_bearish_volume_divergence_score", self._strategy_param("double_bvd_exit_score", 50.0)),

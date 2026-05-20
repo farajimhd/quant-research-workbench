@@ -87,6 +87,7 @@ type ObservationChartTarget = {
 type InteractiveDebugStep = {
   cumulative_trades?: DataRow[];
   execution_rows?: DataRow[];
+  execution_total_rows?: number;
   fills?: DataRow[];
   filter_groups?: DataRow[];
   message?: string;
@@ -98,6 +99,7 @@ type InteractiveDebugStep = {
   portfolio?: DataRow[];
   positions?: DataRow[];
   raw_scanner_rows?: DataRow[];
+  raw_scanner_total_rows?: number;
   recent_fills_for_next_bar?: DataRow[];
   recent_orders_for_next_bar?: DataRow[];
   rejection_events?: DataRow[];
@@ -105,6 +107,7 @@ type InteractiveDebugStep = {
   strategy_requests?: DataRow[];
   strategy_high_break_watchlist_rows?: DataRow[];
   strategy_scanner_rows?: DataRow[];
+  strategy_scanner_total_rows?: number;
   strategy_watchlist_rows?: DataRow[];
   summary?: Record<string, unknown>;
   timestamp?: string | null;
@@ -1209,7 +1212,8 @@ function InteractiveStepDebugPanel({
   const highBreakWatchlistRows = step?.strategy_high_break_watchlist_rows ?? [];
   const actionRows = step?.observability_trace ?? [];
   const counts = debugStepCounts(step);
-  const metrics = useMemo(() => buildInteractiveDebugMetrics(config, summary, rawRows.length, strategyWatchlistRows.length, counts), [config, counts, rawRows.length, strategyWatchlistRows.length, summary]);
+  const rawScannerRowCount = finiteNumber(step?.raw_scanner_total_rows ?? rawRows.length);
+  const metrics = useMemo(() => buildInteractiveDebugMetrics(config, summary, rawScannerRowCount, strategyWatchlistRows.length, counts), [config, counts, rawScannerRowCount, strategyWatchlistRows.length, summary]);
   const cumulativeTrades = step?.cumulative_trades ?? session.trades ?? [];
   const { activeTab: debugTab, isTabMounted: isDebugTabMounted, setActiveTab: setDebugTab } = useCachedTabState("Interactive Step Debug");
   const [selectedDebugChart, setSelectedDebugChart] = useState<ObservationChartTarget | null>(null);
@@ -3110,9 +3114,10 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
         long_momentum_v9_vwap_reclaim_last_tema_open_ok: trueFilter(),
         last_bearish_volume_divergence_score: lteFilter(strategyNumberParam(params, "max_reentry_bvd_score", 80)),
         current_open_above_last_2_body_high: trueFilter(),
+        long_momentum_v9_vwap_reclaim_open_not_below_last_body: trueFilter(),
       },
       label: "v9 VWAP Reclaim Raw",
-      title: "Apply the visible v9 VWAP Reclaim inputs: last close is above the VWAP buffer, last_close >= last_open, last TEMA9 is above buffered TEMA20, 1m BVD is not above the threshold, and current_open breaks the highest body of the last two completed bars.",
+      title: "Apply the visible v9 VWAP Reclaim inputs: last close is above the VWAP buffer, last_close >= last_open, last TEMA9 is above buffered TEMA20, 1m BVD is not above the threshold, current_open breaks the highest body of the last two completed bars, and current_open is not below the prior body.",
     },
     {
       filters: {
@@ -3183,9 +3188,10 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
           long_momentum_v9_vwap_reclaim_last_tema_open_ok: trueFilter(),
           long_momentum_v9_vwap_reclaim_bvd_ok: trueFilter(),
           long_momentum_v9_vwap_reclaim_body_break_ok: trueFilter(),
+          long_momentum_v9_vwap_reclaim_open_not_below_last_body: trueFilter(),
         },
         label: "v9 VWAP Reclaim",
-        title: "Apply the v9 VWAP Reclaim gates: ticker is on the momentum watchlist, is not held/pending, last close is above the VWAP buffer, the reclaim bar is not red, last TEMA is open, 1m BVD is not above the threshold, and current_open breaks the highest body of the last two completed bars.",
+        title: "Apply the v9 VWAP Reclaim gates: ticker is on the momentum watchlist, is not held/pending, last close is above the VWAP buffer, the reclaim bar is not red, last TEMA is open, 1m BVD is not above the threshold, current_open breaks the highest body of the last two completed bars, and current_open is not below the prior body.",
       },
       {
         filters: {
@@ -3704,6 +3710,8 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_vwap_reclaim_last_tema_open_ok",
   "long_momentum_v9_vwap_reclaim_bvd_ok",
   "long_momentum_v9_vwap_reclaim_body_break_ok",
+  "long_momentum_v9_vwap_reclaim_last_body_floor",
+  "long_momentum_v9_vwap_reclaim_open_not_below_last_body",
   "long_momentum_v9_close_minus_vwap",
   "long_momentum_v9_reentry_vwap_threshold",
   "long_momentum_v9_close_minus_reentry_vwap_threshold",
@@ -3716,6 +3724,8 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_reentry_bvd_score",
   "long_momentum_v9_reentry_body_break_ok",
   "long_momentum_v9_reentry_body_break_threshold",
+  "long_momentum_v9_reentry_last_body_floor",
+  "long_momentum_v9_reentry_open_not_below_last_body",
   "long_momentum_v9_double_bvd_exit_red_ok",
   "long_momentum_v9_double_bvd_exit_open",
   "long_momentum_v9_pocket_active",

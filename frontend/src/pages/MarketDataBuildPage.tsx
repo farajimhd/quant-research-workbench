@@ -654,7 +654,7 @@ function BuildStartPage({
             {startRunning ? "Starting..." : "New build"}
           </button>
           <button className="button" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV9Running || oracleSupervisionRunning} onClick={onLongMomentumV9Build} type="button">
-            {longMomentumV9Running ? "Starting..." : "Build LM v9 features"}
+            {longMomentumV9Running ? "Starting..." : "Build LM v9 1m strategy features"}
           </button>
           <button className="button" disabled={!scope || startRunning || spreadBackfillRunning || longMomentumV9Running || oracleSupervisionRunning} onClick={onSelectOracle} type="button">
             Build oracle supervision

@@ -292,7 +292,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             feature_text = "core, momentum, volatility, and volume_liquidity" if self.config.adaptive_pocket_enabled else "core, momentum, and volume_liquidity"
             raise ValueError(
                 f"Long Momentum v9 requires provider-built strategy-time {feature_text} features for {date_text}; "
-                f"missing columns: {', '.join(missing)}. Rebuild market data with current core, momentum, volatility, and volume_liquidity features."
+                f"missing columns: {', '.join(missing)}. In the Build Data page, run the Long Momentum v9 feature build "
+                f"for a range that includes {date_text}; it rebuilds 1m core, momentum, session, volatility, and volume_liquidity features."
             )
 
     def _with_last_5m_return(self, frame: pl.DataFrame) -> pl.DataFrame:
@@ -523,6 +524,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         )
         reentry_body_break_threshold = self._float(row.get("last_2_body_high"))
         reentry_body_break_ok = current_open > 0 and reentry_body_break_threshold > 0 and current_open > reentry_body_break_threshold
+        reentry_last_body_floor = min(last_open, last_close) if last_open > 0 and last_close > 0 else 0.0
+        reentry_open_not_below_last_body = current_open > 0 and reentry_last_body_floor > 0 and current_open >= reentry_last_body_floor
         reentry_close_minus_vwap = last_close - last_vwap if last_vwap > 0 else None
         reentry_close_minus_vwap_threshold = last_close - reentry_vwap_threshold if reentry_vwap_threshold > 0 else None
         double_bvd_exit_score = self._float(row.get("last_double_timeframe_bearish_volume_divergence_score"))
@@ -551,6 +554,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             and reentry_last_tema_open_ok
             and reentry_bvd_ok
             and reentry_body_break_ok
+            and reentry_open_not_below_last_body
             and not high_break_hold_entry_open
         )
         return {
@@ -608,6 +612,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_vwap_reclaim_bvd_score": reentry_bvd_score,
             "long_momentum_v9_vwap_reclaim_body_break_ok": reentry_body_break_ok,
             "long_momentum_v9_vwap_reclaim_body_break_threshold": reentry_body_break_threshold,
+            "long_momentum_v9_vwap_reclaim_last_body_floor": reentry_last_body_floor if reentry_last_body_floor > 0 else None,
+            "long_momentum_v9_vwap_reclaim_open_not_below_last_body": reentry_open_not_below_last_body,
             "long_momentum_v9_reentry_vwap_threshold": reentry_vwap_threshold if reentry_vwap_threshold > 0 else None,
             "long_momentum_v9_close_minus_reentry_vwap_threshold": reentry_close_minus_vwap_threshold,
             "long_momentum_v9_reentry_price_reclaim": reentry_price_reclaim,
@@ -619,6 +625,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_reentry_bvd_score": reentry_bvd_score,
             "long_momentum_v9_reentry_body_break_ok": reentry_body_break_ok,
             "long_momentum_v9_reentry_body_break_threshold": reentry_body_break_threshold,
+            "long_momentum_v9_reentry_last_body_floor": reentry_last_body_floor if reentry_last_body_floor > 0 else None,
+            "long_momentum_v9_reentry_open_not_below_last_body": reentry_open_not_below_last_body,
             "long_momentum_v9_double_bvd_exit_red_ok": double_bvd_exit_red_ok,
             "long_momentum_v9_double_bvd_exit_open": double_bvd_exit_open,
             **pocket_state,
@@ -648,6 +656,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 reentry_last_tema_open_ok=reentry_last_tema_open_ok,
                 reentry_bvd_ok=reentry_bvd_ok,
                 reentry_body_break_ok=reentry_body_break_ok,
+                reentry_open_not_below_last_body=reentry_open_not_below_last_body,
                 no_symbol_position=no_symbol_position,
             ),
         }
@@ -1580,7 +1589,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         pending_orders: list[Order],
     ) -> None:
         captured = rows[: max(25, len(candidates))]
-        self.last_scanner_rows = [dict(row) for row in rows]
+        debug_limit = max(500, max(1, int(self.config.watchlist_snapshot_limit)), len(candidates))
+        debug_rows = rows[:debug_limit]
+        self.last_scanner_rows = [dict(row) for row in debug_rows]
         self.live_rankings.extend(captured)
         self.scanner_snapshots.append(
             {
@@ -1598,7 +1609,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         )
         if not self.observability or not rows:
             return
-        self.observability.scanner(timestamp=context.timestamp, rows=rows, score_key="scanner_score", stage="long_momentum_v9_scanner")
+        self.observability.scanner(timestamp=context.timestamp, rows=debug_rows, score_key="scanner_score", stage="long_momentum_v9_scanner")
         self.observability.state(
             timestamp=context.timestamp,
             scope="strategy",
@@ -1739,6 +1750,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         reentry_last_tema_open_ok: bool,
         reentry_bvd_ok: bool,
         reentry_body_break_ok: bool,
+        reentry_open_not_below_last_body: bool,
         no_symbol_position: bool,
     ) -> str:
         if not price_eligible:
@@ -1765,6 +1777,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return "vwap_reclaim_bearish_volume_divergence"
         if not reentry_body_break_ok:
             return "vwap_reclaim_two_bar_body_break"
+        if not reentry_open_not_below_last_body:
+            return "vwap_reclaim_open_below_last_body"
         return "filtered"
 
 __all__ = ["LongMomentumV9Strategy"]
