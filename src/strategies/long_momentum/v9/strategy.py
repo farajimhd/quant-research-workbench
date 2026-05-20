@@ -831,7 +831,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         threshold = self._tema_exit_threshold(tema9) if tema9 > 0 else 0.0
         return (
             f"|currentOpenTema9={tema9:.4f}|currentOpenTema20={tema20:.4f}"
-            f"|temaThreshold={threshold:.4f}|tema9BufferPct={self.config.tema9_exit_buffer_pct:.4f}"
+            f"|temaThreshold={threshold:.4f}|tema9BufferRatio={self.config.tema9_exit_buffer_pct:.4f}"
         )
 
     def _available_cash_after_submitted_requests(

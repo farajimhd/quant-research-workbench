@@ -60,7 +60,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     adaptive_pocket_min_profit_pct: float = 0.025
     adaptive_pocket_max_profit_pct: float = 0.06
     tema9_open_buffer_pct: float = 0.002
-    tema9_exit_buffer_pct: float = 0.002
+    tema9_exit_buffer_pct: float = -0.002
     vwap_stop_offset_pct: float = 3.0
     limit_order_offset_dollars: float = 0.01
 

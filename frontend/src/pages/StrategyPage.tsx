@@ -339,8 +339,8 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   adaptive_pocket_vol_multiplier: "Multiplier applied to last true-range EMA5 percent when adaptive pocketing is enabled.",
   adaptive_pocket_min_profit_pct: "Minimum adaptive pocket threshold. The volatility-based threshold will not go below this value.",
   adaptive_pocket_max_profit_pct: "Maximum adaptive pocket threshold. The volatility-based threshold will not go above this value.",
-  tema9_open_buffer_pct: "Long Momentum v9 TEMA open threshold as a fraction of TEMA20. 0.002 means reentry requires TEMA9 to reach 100.2% of TEMA20.",
-  tema9_exit_buffer_pct: "Long Momentum v9 TEMA exit threshold as a fraction of TEMA9. 0.002 means exit when TEMA20 reaches 100.2% of TEMA9.",
+  tema9_open_buffer_pct: "Long Momentum v9 TEMA open buffer as a ratio, not whole percent. 0.002 means +0.2%, so reentry requires TEMA9 to reach 100.2% of TEMA20.",
+  tema9_exit_buffer_pct: "Long Momentum v9 TEMA exit buffer as a ratio, not whole percent. -0.002 means -0.2%, so exit triggers when TEMA20 reaches 99.8% of TEMA9.",
   vwap_stop_offset_pct: "Long Momentum v9 VWAP reentry protective stop offset, expressed as n percent of VWAP. For example, 3 means stop = VWAP - 3% of VWAP.",
   limit_order_offset_dollars: "Long Momentum v9 liquid-limit sell offset. Buys use current open because v9 treats the bar open as the executable ask; sells use current open minus this value.",
   trailing_activation_r: "Open R multiple required before the trailing stop tightens.",
@@ -1830,7 +1830,14 @@ function HelpButton({ help, label }: { help: string; label: string }) {
   );
 }
 
+const STRATEGY_PARAMETER_LABELS: Record<string, string> = {
+  tema9_open_buffer_pct: "TEMA9 Open Buffer Ratio",
+  tema9_exit_buffer_pct: "TEMA9 Exit Buffer Ratio"
+};
+
 function formatParamLabel(key: string): string {
+  const labelOverride = STRATEGY_PARAMETER_LABELS[key];
+  if (labelOverride) return labelOverride;
   const tokenOverrides: Record<string, string> = {
     atr: "ATR",
     avg: "Avg",

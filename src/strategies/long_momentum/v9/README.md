@@ -88,8 +88,9 @@ open:
 last_tema9 >= last_tema20 * (1 + tema9_open_buffer_pct)
 ```
 
-The default `tema9_open_buffer_pct` is `0.002`, so watchlist reentry requires
-the completed-bar TEMA9 to reach 100.2% of completed-bar TEMA20.
+The default `tema9_open_buffer_pct` is `0.002`, which is a ratio equal to
+`+0.2%`, so watchlist reentry requires the completed-bar TEMA9 to reach 100.2%
+of completed-bar TEMA20.
 
 Watchlist VWAP reentry also requires the current bar open to break the highest
 body high of the last two completed bars:
@@ -214,12 +215,12 @@ Emergency exit:
 current_open_tema20 >= current_open_tema9 * (1 + tema9_exit_buffer_pct)
 ```
 
-The default `tema9_exit_buffer_pct` is `0.002`, so the TEMA emergency exit
-triggers when the current-open TEMA20 estimate reaches 100.2% of the
-current-open TEMA9 estimate. Normal `tema9` and `tema20` remain close-of-bar
-indicators; only the active decision bar also has `current_open_tema9` and
-`current_open_tema20`. If no main exit is active and TEMA is closed, v9 exits at
-the current open.
+The default `tema9_exit_buffer_pct` is `-0.002`, which is a ratio equal to
+`-0.2%`, so the TEMA emergency exit triggers when the current-open TEMA20
+estimate reaches 99.8% of the current-open TEMA9 estimate. Normal `tema9` and
+`tema20` remain close-of-bar indicators; only the active decision bar also has
+`current_open_tema9` and `current_open_tema20`. If no main exit is active and
+TEMA is closed, v9 exits at the current open.
 
 After exit, the ticker stays in the day momentum watchlist and the same VWAP
 entry rule can open another position later in the session.
