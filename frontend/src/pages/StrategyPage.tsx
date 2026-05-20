@@ -333,7 +333,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   profit_giveback_exit_pct: "Long Momentum v9 secondary main exit. Exits when gross completed-bar P/L gives back more than this fraction of peak gross completed-close P/L.",
   tema9_exit_buffer_pct: "Long Momentum v9 TEMA exit threshold as a fraction of TEMA9. -0.01 means exit when TEMA20 reaches 99% of TEMA9, before the crossover.",
   vwap_stop_offset_pct: "Long Momentum v9 VWAP reentry protective stop offset, expressed as n percent of VWAP. For example, 3 means stop = VWAP - 3% of VWAP.",
-  partial_fill_reprice_offset: "Long Momentum v9 price improvement used when resubmitting a partial-fill remainder. Buys add this to bid/open; sells subtract it from ask/open.",
+  limit_order_offset_dollars: "Long Momentum v9 liquid-limit execution offset. Buys use current open plus this value; sells use current open minus this value.",
   trailing_activation_r: "Open R multiple required before the trailing stop tightens.",
   trailing_lock_r: "R multiple locked in after trailing activation.",
   trailing_giveback_r: "R multiple allowed to give back from the best price.",
@@ -492,7 +492,7 @@ const STRATEGY_PARAMETER_GROUPS = [
       "profit_giveback_activation_r",
       "profit_giveback_exit_pct",
       "tema9_exit_buffer_pct",
-      "partial_fill_reprice_offset",
+      "limit_order_offset_dollars",
       "double_bvd_exit_score"
     ]
   },

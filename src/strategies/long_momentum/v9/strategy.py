@@ -214,7 +214,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                     protective_stop_price=protective_stop_price,
                     tag=(
                         f"{'ENTRY' if side == 'BUY' else 'EXIT'}|reason=PARTIAL_{'ENTRY' if side == 'BUY' else 'EXIT'}_REST"
-                        f"|qty={quantity}|limit={limit_price:.2f}|offset={self.config.partial_fill_reprice_offset:.2f}"
+                        f"|qty={quantity}|limit={limit_price:.4f}|offset={self.config.limit_order_offset_dollars:.4f}"
                         f"|source_fill={fill.get('fill_id')}"
                     ),
                 )
@@ -222,24 +222,16 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         return requests
 
     def _partial_residual_limit_price(self, side: str, row: dict[str, Any]) -> float:
+        return self._liquid_limit_price(side, row)
+
+    def _liquid_limit_price(self, side: str, row: dict[str, Any]) -> float:
         open_price = self._bar_open(row)
         if open_price <= 0:
             return 0.0
-        offset = max(0.0, self.config.partial_fill_reprice_offset)
+        offset = max(0.0, self.config.limit_order_offset_dollars)
         if side == "BUY":
-            bid = self._first_positive(row, ("quote_bid_price", "last_quote_bid_price", "current_bid", "last_bid"))
-            reference = max(open_price, bid or open_price)
-            return reference + offset
-        ask = self._first_positive(row, ("quote_ask_price", "last_quote_ask_price", "current_ask", "last_ask"))
-        reference = min(open_price, ask or open_price)
-        return max(0.01, reference - offset)
-
-    def _first_positive(self, row: dict[str, Any], keys: tuple[str, ...]) -> float | None:
-        for key in keys:
-            value = self._float(row.get(key))
-            if value > 0:
-                return value
-        return None
+            return open_price + offset
+        return max(0.01, open_price - offset)
 
     def _validate_provider_columns(self, frame: pl.DataFrame) -> None:
         missing = [column for column in REQUIRED_V9_COLUMNS if column not in frame.columns]
@@ -475,41 +467,50 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 self._trail_reentry_stop(position, bar, meta)
             double_bvd_score = self._float(bar.get("last_double_timeframe_bearish_volume_divergence_score"))
             if double_bvd_score > self.config.double_bvd_exit_score:
+                limit_price = self._liquid_limit_price("SELL", bar)
                 self._trace_exit(context.timestamp, symbol, "DOUBLE_BVD", position, bar, meta)
                 requests.append(
                     OrderRequest(
                         symbol=symbol,
                         side="SELL",
                         quantity=position.quantity,
-                        order_type="MARKET",
+                        order_type="LIMIT",
                         reason="DOUBLE_BVD",
-                        tag=self._exit_tag("DOUBLE_BVD", position, bar, meta) + f"|2xBVD={double_bvd_score:.2f}",
+                        limit_price=limit_price,
+                        allow_same_bar_fill=True,
+                        tag=self._exit_tag("DOUBLE_BVD", position, bar, meta) + f"|limit={limit_price:.4f}|2xBVD={double_bvd_score:.2f}",
                     )
                 )
                 continue
             if self._profit_giveback_exit_triggered(position, bar, meta):
+                limit_price = self._liquid_limit_price("SELL", bar)
                 self._trace_exit(context.timestamp, symbol, "PROFIT_GIVEBACK", position, bar, meta)
                 requests.append(
                     OrderRequest(
                         symbol=symbol,
                         side="SELL",
                         quantity=position.quantity,
-                        order_type="MARKET",
+                        order_type="LIMIT",
                         reason="PROFIT_GIVEBACK",
-                        tag=self._exit_tag("PROFIT_GIVEBACK", position, bar, meta) + self._profit_giveback_exit_tag(position, bar, meta),
+                        limit_price=limit_price,
+                        allow_same_bar_fill=True,
+                        tag=self._exit_tag("PROFIT_GIVEBACK", position, bar, meta) + f"|limit={limit_price:.4f}" + self._profit_giveback_exit_tag(position, bar, meta),
                     )
                 )
                 continue
             if self._tema_closed(bar):
+                limit_price = self._liquid_limit_price("SELL", bar)
                 self._trace_exit(context.timestamp, symbol, "TEMA_CLOSE", position, bar, meta)
                 requests.append(
                     OrderRequest(
                         symbol=symbol,
                         side="SELL",
                         quantity=position.quantity,
-                        order_type="MARKET",
+                        order_type="LIMIT",
                         reason="TEMA_CLOSE",
-                        tag=self._exit_tag("TEMA_CLOSE", position, bar, meta) + self._tema_exit_tag(bar),
+                        limit_price=limit_price,
+                        allow_same_bar_fill=True,
+                        tag=self._exit_tag("TEMA_CLOSE", position, bar, meta) + f"|limit={limit_price:.4f}" + self._tema_exit_tag(bar),
                     )
                 )
                 continue
@@ -554,7 +555,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         entry_type: str,
     ) -> OrderRequest | None:
         symbol = str(candidate["ticker"])
-        entry_price = self._float(candidate.get("current_open"))
+        signal_open = self._float(candidate.get("current_open"))
+        entry_price = self._liquid_limit_price("BUY", candidate)
         stop_price = self._entry_stop_for_type(candidate, entry_price, entry_type)
         risk_per_share = entry_price - stop_price
         if entry_price <= 0 or stop_price <= 0 or risk_per_share <= 0:
@@ -595,7 +597,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             protective_stop_price=stop_price,
             tag=(
                 f"ENTRY|rule=LONG_MOMENTUM_V9|trigger={entry_type}|rank={rank}|qty={quantity}"
-                f"|entry={entry_price:.2f}|stop={stop_price:.2f}|risk={risk_per_share:.4f}"
+                f"|signal_open={signal_open:.4f}|limit={entry_price:.4f}|entry={entry_price:.4f}|stop={stop_price:.4f}|risk={risk_per_share:.4f}"
                 f"|last_5m_return={self._float(candidate.get('long_momentum_v9_last_5m_return')):.4f}"
                 f"|transactions={self._float(candidate.get('last_transactions')):.0f}"
             ),

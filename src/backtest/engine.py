@@ -523,7 +523,12 @@ class BacktestEngine:
             else:
                 bar = bars_by_symbol.get(order.symbol)
                 if request.allow_same_bar_fill and bar is not None and self.fill_model.crossed(order, bar) and self._order_bar_filter_passes(order, bar):
-                    self._fill_order(order, self._bar_fill_timestamp(timestamp, bar), bar, order.reason)
+                    if self.fill_model.should_defer_to_next_open(order):
+                        order.deferred_fill_at_next_open = True
+                        self.pending_orders.append(order)
+                        self.orders.append(asdict(order))
+                    else:
+                        self._fill_order(order, self._bar_fill_timestamp(timestamp, bar), bar, order.reason)
                 elif request.allow_same_bar_fill and request.expire_on_bar_close:
                     order.status = "EXPIRED"
                     self.orders.append(asdict(order))
@@ -556,10 +561,18 @@ class BacktestEngine:
                 still_open.append(order)
                 continue
 
+            if order.deferred_fill_at_next_open:
+                self._fill_order(order, self._bar_fill_timestamp(timestamp, bar), bar, order.reason)
+                continue
+
             should_fill = self.fill_model.crossed(order, bar) and self._order_bar_filter_passes(order, bar)
 
             if should_fill:
-                self._fill_order(order, self._bar_fill_timestamp(timestamp, bar), bar, order.reason)
+                if self.fill_model.should_defer_to_next_open(order):
+                    order.deferred_fill_at_next_open = True
+                    still_open.append(order)
+                else:
+                    self._fill_order(order, self._bar_fill_timestamp(timestamp, bar), bar, order.reason)
             else:
                 still_open.append(order)
         new_pending_orders = [order for order in self.pending_orders if order.order_id not in starting_pending_ids]

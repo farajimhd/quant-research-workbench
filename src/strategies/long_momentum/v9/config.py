@@ -25,7 +25,7 @@ V9_PARAMETER_FIELDS = (
     "profit_giveback_activation_r",
     "profit_giveback_exit_pct",
     "tema9_exit_buffer_pct",
-    "partial_fill_reprice_offset",
+    "limit_order_offset_dollars",
     "max_immediate_entry_candidates_per_bar",
     "max_reentry_candidates_per_bar",
     "watchlist_snapshot_limit",
@@ -50,7 +50,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     profit_giveback_exit_pct: float = 0.15
     tema9_exit_buffer_pct: float = -0.01
     vwap_stop_offset_pct: float = 3.0
-    partial_fill_reprice_offset: float = 0.01
+    limit_order_offset_dollars: float = 0.01
 
     max_immediate_entry_candidates_per_bar: int = 50
     max_reentry_candidates_per_bar: int = 50

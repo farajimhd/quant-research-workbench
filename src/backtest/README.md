@@ -149,6 +149,16 @@ symbol's high or low crossed a stop or limit at that time. Latest-known rows can
 mark positions, but they should not trigger fills unless a later execution model
 explicitly supports that behavior.
 
+For liquid-limit simulation, matched limit orders fill at the submitted limit
+price. A strategy that wants an immediate liquid buy should submit a buy limit at
+the current bar open plus its ask-offset estimate; an immediate liquid sell
+should submit a sell limit at the current bar open minus its bid-offset estimate.
+
+Stop orders are intentionally asymmetric to avoid same-bar high lookahead. Sell
+stops can fill on the same bar when that bar's low crosses the stop. Buy stops
+whose fill depends on a bar high are deferred and filled at the next fresh bar
+open after the crossing bar.
+
 Partial fills are controlled by backtest configuration, not by provider quote
 size. When `enable_partial_fills` is true, each BUY or SELL order can fill up to
 `max_allowable_entry_fill_size` shares on the candle where the order crosses. If

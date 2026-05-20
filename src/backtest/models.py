@@ -60,6 +60,7 @@ class Order:
     fill_requires_close_through_stop: bool = False
     expire_on_bar_close: bool = False
     protective_stop_price: float | None = None
+    deferred_fill_at_next_open: bool = False
 
 
 @dataclass(slots=True)

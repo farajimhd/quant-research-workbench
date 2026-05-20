@@ -85,14 +85,16 @@ is only used by the emergency TEMA exit.
 Immediate entry uses the previous candle open as the stop reference:
 
 ```text
-entry_price = current_open
+limit_price = current_open + limit_order_offset_dollars
+entry_price = filled limit_price
 stop_price = last_open
 ```
 
 Watchlist VWAP entry uses a stop slightly below VWAP:
 
 ```text
-entry_price = current_open
+limit_price = current_open + limit_order_offset_dollars
+entry_price = filled limit_price
 stop_price = last_vwap - (last_vwap * vwap_stop_offset_pct / 100)
 ```
 
@@ -103,12 +105,17 @@ For each candidate cash slice:
 ```text
 max_risk_cash = cash_slice * max_risk_fraction_of_cash
 risk_size = max_risk_cash / risk_per_share
-cash_size = cash_slice / current_open
+cash_size = cash_slice / limit_price
 quantity = floor(min(risk_size, cash_size, max_entry_order_quantity))
 ```
 
 The default `max_entry_order_quantity` is `3000`, so v9 does not submit a BUY
 order larger than 3000 shares to the backtest.
+
+The default `limit_order_offset_dollars` is `0.01`. For liquid-limit execution,
+v9 submits buys at `current_open + 0.01` as an ask estimate and sells at
+`current_open - 0.01` as a bid estimate. The backtest fills matched limit orders
+at the submitted limit price.
 
 While the position remains open, the stop trails upward with VWAP:
 
@@ -122,13 +129,13 @@ When the backtest partially fills a v9 order, v9 submits the remaining quantity
 on the next strategy step as an aggressive limit order:
 
 ```text
-BUY remainder:  limit_price = max(current_open, bid) + partial_fill_reprice_offset
-SELL remainder: limit_price = min(current_open, ask) - partial_fill_reprice_offset
+BUY remainder:  limit_price = current_open + limit_order_offset_dollars
+SELL remainder: limit_price = current_open - limit_order_offset_dollars
 ```
 
-The default `partial_fill_reprice_offset` is `0.01`. BUY remainder orders are
-also capped by `max_entry_order_quantity`; v9 does not submit an oversized BUY
-remainder just because the original desired position was larger.
+BUY remainder orders are also capped by `max_entry_order_quantity`; v9 does not
+submit an oversized BUY remainder just because the original desired position was
+larger.
 
 ## Exit
 
