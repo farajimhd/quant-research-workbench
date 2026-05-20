@@ -5581,6 +5581,22 @@ button {
   color: var(--muted-foreground);
 }
 
+.input-with-suffix {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.input-with-suffix input {
+  min-width: 0;
+}
+
+.input-with-suffix span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .preview-row-limit {
   display: block;
 }

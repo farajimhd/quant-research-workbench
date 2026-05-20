@@ -108,6 +108,33 @@ type ScannerSnapshot = {
   timeframe: string;
   total_columns: number;
 };
+type MomentumDiscoveryQueryState = {
+  columns: string;
+  endDate: string;
+  featureGroups: string;
+  minDayHighMovePct: number;
+  rowLimit: number;
+  rowOffset: number;
+  startDate: string;
+  startMovePct: number;
+};
+type MomentumDiscoveryPayload = {
+  columns: string[];
+  daily_candidates: number;
+  end_date: string;
+  feature_groups: string[];
+  has_more?: boolean;
+  min_day_high_move_pct: number;
+  missing_1m_sessions?: string[];
+  reason?: string;
+  row_count: number;
+  row_limit: number;
+  row_offset: number;
+  rows: Record<string, unknown>[];
+  start_date: string;
+  start_move_pct: number;
+  timeframe: string;
+};
 type CatalogKnowledge = {
   shortDescription: string;
   detailedDescription: string;
@@ -196,7 +223,7 @@ type PreviewBarContext = {
 };
 type ParsedProviderBarId = Pick<PreviewBarContext, "barId" | "ticker" | "time" | "timeframe" | "utcText">;
 
-const tabs = ["Overview", "Preview", "Scanner", "Chart", "Coverage", "Artifacts", "Schema", "Catalog"];
+const tabs = ["Overview", "Preview", "Scanner", "Momentum Discovery", "Chart", "Coverage", "Artifacts", "Schema", "Catalog"];
 const DEFAULT_CHART_FEATURE_GROUPS = ["core", "momentum"];
 const DEFAULT_CHART_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
 const DEFAULT_CHART_MIN_CONFIDENCE = 0.7;
@@ -582,6 +609,9 @@ export function MarketDataReviewPage() {
       </CachedTabPanel>
       <CachedTabPanel active={activeTab === "Scanner"} mounted={isTabMounted("Scanner") && Boolean(scope && review)}>
         {scope && review ? <ScannerTab catalog={catalog} scope={scope} records={review.records} /> : null}
+      </CachedTabPanel>
+      <CachedTabPanel active={activeTab === "Momentum Discovery"} mounted={isTabMounted("Momentum Discovery") && Boolean(scope && review)}>
+        {scope && review ? <MomentumDiscoveryTab catalog={catalog} scope={scope} records={review.records} /> : null}
       </CachedTabPanel>
       <CachedTabPanel active={activeTab === "Schema"} mounted={isTabMounted("Schema") && Boolean(scope && review)}>
         {scope && review ? <Schema scope={scope} records={review.records} /> : null}
@@ -1086,6 +1116,220 @@ function ScannerTab({ catalog, scope, records }: { catalog: CatalogPayload | nul
       ) : null}
     </section>
   );
+}
+
+function MomentumDiscoveryTab({ catalog, scope, records }: { catalog: CatalogPayload | null; scope: Scope; records: RecordRow[] }) {
+  const hasDailyBars = records.some((record) => record.exists && record.group === "bars" && record.timeframe === "1d");
+  const hasMinuteBars = records.some((record) => record.exists && record.group === "bars" && record.timeframe === "1m");
+  const featureOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          records
+            .filter((record) => record.exists && record.group.startsWith("features_") && record.timeframe === "1m" && record.session_date >= scope.start_date && record.session_date <= scope.end_date)
+            .map((record) => record.group.replace(/^features_/, ""))
+        )
+      ).sort(),
+    [records, scope.end_date, scope.start_date]
+  );
+  const defaultFeatureGroups = useMemo(
+    () => featureOptions.filter((group) => ["core", "session", "momentum", "volume_liquidity", "price_action", "volatility"].includes(group)).join(","),
+    [featureOptions]
+  );
+  const [draft, setDraft] = useState<MomentumDiscoveryQueryState>({
+    columns: "",
+    endDate: scope.end_date,
+    featureGroups: defaultFeatureGroups,
+    minDayHighMovePct: 10,
+    rowLimit: 2000,
+    rowOffset: 0,
+    startDate: scope.start_date,
+    startMovePct: 5,
+  });
+  const [applied, setApplied] = useState<MomentumDiscoveryQueryState | null>(null);
+  const [runId, setRunId] = useState(0);
+  const [discovery, setDiscovery] = useState<MomentumDiscoveryPayload | null>(null);
+  const [chartTarget, setChartTarget] = useState<PreviewChartTarget | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const queryKey = applied ? JSON.stringify(applied) : "momentum-discovery-idle";
+  const fillPanel = useViewportFillPanel(`${queryKey}:${discovery?.rows.length ?? 0}`);
+
+  useEffect(() => {
+    setDraft((current) => ({
+      ...current,
+      endDate: scope.end_date,
+      featureGroups: current.featureGroups || defaultFeatureGroups,
+      startDate: scope.start_date,
+    }));
+  }, [defaultFeatureGroups, scope.end_date, scope.start_date]);
+
+  useEffect(() => {
+    if (!applied || runId === 0) return;
+    let active = true;
+    setLoading(true);
+    setError("");
+    api<{ discovery: MomentumDiscoveryPayload }>(
+      `/api/market-data/momentum-discovery${query({
+        processed_root: scope.processed_root,
+        start_date: applied.startDate,
+        end_date: applied.endDate,
+        feature_groups: applied.featureGroups,
+        columns: applied.columns,
+        min_day_high_move_pct: applied.minDayHighMovePct / 100,
+        start_move_pct: applied.startMovePct / 100,
+        row_limit: applied.rowLimit,
+        row_offset: applied.rowOffset,
+      })}`
+    )
+      .then((payload) => {
+        if (!active) return;
+        setDiscovery(payload.discovery);
+      })
+      .catch((requestError: Error) => {
+        if (!active) return;
+        setDiscovery(null);
+        setError(requestError.message || "Momentum discovery request failed.");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [applied, runId, scope.processed_root]);
+
+  if (!hasDailyBars || !hasMinuteBars) {
+    return <div className="empty-state panel">Momentum Discovery needs both 1d bars and 1m bars in the selected processed store.</div>;
+  }
+
+  const startRow = discovery?.rows.length ? (discovery.row_offset ?? 0) + 1 : 0;
+  const endRow = discovery ? (discovery.row_offset ?? 0) + discovery.rows.length : 0;
+  const canPageBack = Boolean(applied && (discovery?.row_offset ?? 0) > 0);
+  const canPageForward = Boolean(applied && discovery?.has_more);
+  const runDiscovery = (rowOffset = 0) => {
+    setApplied({
+      ...draft,
+      featureGroups: draft.featureGroups || defaultFeatureGroups,
+      minDayHighMovePct: Math.max(0, Number(draft.minDayHighMovePct) || 10),
+      rowLimit: Math.max(10, Math.min(5000, Math.round(Number(draft.rowLimit) || 2000))),
+      rowOffset,
+      startMovePct: Math.max(0, Number(draft.startMovePct) || 5),
+    });
+    setRunId((value) => value + 1);
+  };
+
+  return (
+    <section className="panel table-fill-panel" ref={fillPanel.ref} style={fillPanel.style}>
+      <div className="scanner-query-shell">
+        <div className="toolbar scanner-query-bar">
+          <InlineField label="Start" type="date" value={draft.startDate} onChange={(value) => setDraft({ ...draft, startDate: value })} />
+          <InlineField label="End" type="date" value={draft.endDate} onChange={(value) => setDraft({ ...draft, endDate: value })} />
+          <InlineNumberField label="Daily high >=" suffix="%" value={draft.minDayHighMovePct} onChange={(value) => setDraft({ ...draft, minDayHighMovePct: value })} />
+          <InlineNumberField label="Start move" suffix="%" value={draft.startMovePct} onChange={(value) => setDraft({ ...draft, startMovePct: value })} />
+          <InlineField label="Feature groups" value={draft.featureGroups || defaultFeatureGroups} width={340} onChange={(value) => setDraft({ ...draft, featureGroups: value })} />
+          <InlineNumberField label="Rows" value={draft.rowLimit} onChange={(value) => setDraft({ ...draft, rowLimit: value })} />
+          <button className="button primary" disabled={loading} onClick={() => runDiscovery(0)} type="button">Run Discovery</button>
+          <div className="preview-query-summary">
+            <span>{discovery?.rows.length ?? 0} rows</span>
+            <span>{discovery?.daily_candidates ?? 0} daily candidates</span>
+            <span>{discovery?.feature_groups?.length ? discovery.feature_groups.join(", ") : "bars only"}</span>
+            <span>{discovery?.columns?.length ?? 0} columns</span>
+          </div>
+        </div>
+      </div>
+      {error ? <div className="preview-sample-status error">Momentum discovery failed: {error}</div> : null}
+      {discovery?.reason ? <div className="preview-sample-status error">{discovery.reason}</div> : null}
+      {loading ? (
+        <div className="preview-sample-status">
+          <span className="loading-spinner" aria-hidden="true" />
+          Finding historical momentum starts...
+        </div>
+      ) : null}
+      {!discovery && !loading && !error ? (
+        <div className="preview-sample-status">Run discovery to find daily +10% movers and inspect the first 1m bar where momentum crossed the start threshold.</div>
+      ) : null}
+      {discovery ? (
+        <div className="preview-page-status">
+          <span>
+            Showing {startRow.toLocaleString()}-{endRow.toLocaleString()}
+            {discovery.has_more ? " with more rows available" : ""}
+          </span>
+          <button
+            className="table-text-button"
+            disabled={!canPageBack || loading}
+            onClick={() => {
+              if (!applied || !discovery) return;
+              setApplied({ ...applied, rowOffset: Math.max(0, discovery.row_offset - discovery.row_limit) });
+            }}
+            type="button"
+          >
+            Previous page
+          </button>
+          <button
+            className="table-text-button"
+            disabled={!canPageForward || loading}
+            onClick={() => {
+              if (!applied || !discovery) return;
+              setApplied({ ...applied, rowOffset: discovery.row_offset + discovery.row_limit });
+            }}
+            type="button"
+          >
+            Next page
+          </button>
+        </div>
+      ) : null}
+      <DataTable
+        columns={discovery?.columns}
+        empty={runId === 0 ? "Run discovery to show rows." : "No momentum starts matched the query."}
+        onRowClick={(row) => setChartTarget({ rangeMode: "session", record: momentumDiscoveryChartRecord(row), row: momentumDiscoveryChartRow(row) })}
+        preserveFiltersOnDataChange
+        rowAction={{
+          isAvailable: (row) => rowHasChartContext(momentumDiscoveryChartRow(row), momentumDiscoveryChartRecord(row)),
+          label: "Open momentum start in chart",
+          onSelect: (row) => setChartTarget({ rangeMode: "session", record: momentumDiscoveryChartRecord(row), row: momentumDiscoveryChartRow(row) }),
+        }}
+        rows={discovery?.rows ?? []}
+        transposeHelper
+      />
+      {chartTarget ? (
+        <PreviewRowChartModal
+          catalog={catalog}
+          key={`${chartTarget.record.key}:${rowStringValue(chartTarget.row, "ticker")}:${rowStringValue(chartTarget.row, "bar_time_market")}:${rowStringValue(chartTarget.row, "minute_of_day")}`}
+          onClose={() => setChartTarget(null)}
+          records={records}
+          scope={scope}
+          target={chartTarget}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function momentumDiscoveryChartRecord(row: Record<string, unknown>): RecordRow {
+  const sessionDate = rowStringValue(row, "discovery_session_date") || rowStringValue(row, "session_date");
+  return {
+    built_at: "",
+    column_count: Object.keys(row).length,
+    columns: Object.keys(row),
+    exists: true,
+    group: "bars",
+    key: `momentum-discovery|1m|${sessionDate}|${rowStringValue(row, "ticker")}`,
+    path: "",
+    rows: 1,
+    session_date: sessionDate,
+    size: "",
+    timeframe: "1m",
+  };
+}
+
+function momentumDiscoveryChartRow(row: Record<string, unknown>): Record<string, unknown> {
+  const sessionDate = rowStringValue(row, "discovery_session_date") || rowStringValue(row, "session_date");
+  return {
+    ...row,
+    session_date: sessionDate,
+    timeframe: "1m",
+  };
 }
 
 function ScannerFormulaPanel({
@@ -2752,18 +2996,42 @@ function InlineField({
   label,
   value,
   onChange,
-  type = "text"
+  type = "text",
+  width = 150,
 }: {
   disabled?: boolean;
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: string;
+  width?: number;
 }) {
   return (
-    <div className="field" style={{ width: 150 }}>
+    <div className="field" style={{ width }}>
       <label>{label}</label>
       <input disabled={disabled} type={type} value={value} onChange={(event) => onChange(event.target.value)} />
+    </div>
+  );
+}
+
+function InlineNumberField({
+  label,
+  onChange,
+  suffix = "",
+  value,
+}: {
+  label: string;
+  onChange: (value: number) => void;
+  suffix?: string;
+  value: number;
+}) {
+  return (
+    <div className="field" style={{ width: 130 }}>
+      <label>{label}</label>
+      <div className="input-with-suffix">
+        <input type="number" value={Number.isFinite(value) ? value : 0} onChange={(event) => onChange(Number(event.target.value))} />
+        {suffix ? <span>{suffix}</span> : null}
+      </div>
     </div>
   );
 }

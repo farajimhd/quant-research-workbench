@@ -524,6 +524,222 @@ def load_scanner_snapshot(
     }
 
 
+def load_momentum_discovery(
+    records: list[dict[str, Any]],
+    *,
+    start_date: date,
+    end_date: date,
+    feature_groups: list[str],
+    columns: list[str],
+    min_day_high_move_pct: float,
+    start_move_pct: float,
+    row_limit: int,
+    row_offset: int = 0,
+    table_query: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    daily_records = matching_artifacts(records, "bars", "1d", start_date, end_date)
+    if not daily_records:
+        return momentum_discovery_empty_payload(start_date, end_date, row_limit, row_offset, "No 1d bar artifacts found for the selected range")
+
+    daily_scan = pl.scan_parquet([str(record_path(record)) for record in daily_records])
+    daily_schema = daily_scan.collect_schema()
+    required_daily = {"ticker", "session_date", "open", "high", "low", "close", "volume"}
+    if not required_daily.issubset(set(daily_schema.names())):
+        missing = ", ".join(sorted(required_daily - set(daily_schema.names())))
+        return momentum_discovery_empty_payload(start_date, end_date, row_limit, row_offset, f"1d bars are missing required columns: {missing}")
+
+    daily_winners = (
+        daily_scan
+        .filter(pl.col("open") > 0)
+        .with_columns(
+            pl.col("session_date").cast(pl.Utf8).alias("session_date"),
+            pl.col("open").alias("day_open"),
+            pl.col("high").alias("day_high"),
+            pl.col("low").alias("day_low"),
+            pl.col("close").alias("day_close"),
+            pl.col("volume").alias("day_volume"),
+            ((pl.col("high") / pl.col("open")) - 1.0).alias("day_high_move_pct"),
+            ((pl.col("close") / pl.col("open")) - 1.0).alias("day_close_move_pct"),
+        )
+        .filter(pl.col("day_high_move_pct") >= max(0.0, min_day_high_move_pct))
+        .select(
+            "ticker",
+            "session_date",
+            "day_open",
+            "day_high",
+            "day_low",
+            "day_close",
+            "day_volume",
+            "day_high_move_pct",
+            "day_close_move_pct",
+        )
+        .collect()
+    )
+    if daily_winners.is_empty():
+        return momentum_discovery_empty_payload(start_date, end_date, row_limit, row_offset, "No daily bars reached the selected high-move threshold")
+
+    session_frames: list[pl.DataFrame] = []
+    joined_feature_groups: set[str] = set()
+    missing_1m_sessions: list[str] = []
+    for session_text in sorted(daily_winners.get_column("session_date").unique().to_list()):
+        session_winners = daily_winners.filter(pl.col("session_date") == session_text)
+        if session_winners.is_empty():
+            continue
+        bars_record = first_matching_artifact(records, "bars", "1m", str(session_text))
+        if not bars_record or not bars_record.get("exists"):
+            missing_1m_sessions.append(str(session_text))
+            continue
+        scan = pl.scan_parquet(str(record_path(bars_record)))
+        schema = scan.collect_schema()
+        if "ticker" not in schema.names():
+            continue
+        tickers = session_winners.get_column("ticker").cast(pl.Utf8).to_list()
+        scan = scan.filter(pl.col("ticker").is_in(tickers))
+        for group in feature_groups:
+            feature_record = first_matching_artifact(records, f"features_{group}", "1m", str(session_text))
+            if not feature_record or not feature_record.get("exists"):
+                continue
+            feature_scan = pl.scan_parquet(str(record_path(feature_record)))
+            feature_schema = feature_scan.collect_schema()
+            if "bar_id" not in feature_schema.names():
+                continue
+            duplicate_columns = [column for column in feature_schema.names() if column != "bar_id" and column in scan.collect_schema().names()]
+            if duplicate_columns:
+                feature_scan = feature_scan.drop(duplicate_columns)
+            scan = scan.join(feature_scan, on="bar_id", how="left", coalesce=True)
+            joined_feature_groups.add(group)
+
+        joined_schema = scan.collect_schema()
+        scan = apply_scanner_compatibility_columns(scan, joined_schema)
+        joined_schema = scan.collect_schema()
+        scan = apply_scanner_liquidity_capacity_columns(scan, joined_schema.names())
+        joined_schema = scan.collect_schema()
+        scan = apply_long_momentum_scanner_columns(scan, joined_schema.names())
+        winner_join = session_winners.lazy().rename({"session_date": "winner_session_date"})
+        scan = scan.join(winner_join, on="ticker", how="inner")
+        scan_schema = scan.collect_schema()
+        order_columns = [column for column in ["ticker", "bar_time_market", "minute_of_day"] if column in scan_schema.names()]
+        start_threshold = max(0.0, start_move_pct)
+        scan = (
+            scan
+            .with_columns(
+                (pl.col("day_open") * (1.0 + start_threshold)).alias("momentum_start_threshold_price"),
+                ((pl.col("high") / pl.col("day_open")) - 1.0).alias("momentum_bar_high_move_pct"),
+                ((pl.col("close") / pl.col("day_open")) - 1.0).alias("momentum_bar_close_move_pct"),
+                (pl.col("high") >= (pl.col("day_open") * (1.0 + start_threshold))).alias("momentum_start_bar_open"),
+            )
+            .filter(pl.col("momentum_start_bar_open"))
+        )
+        if order_columns:
+            scan = scan.sort(order_columns)
+        frame = scan.group_by("ticker", maintain_order=True).first().with_columns(
+            pl.col("winner_session_date").alias("discovery_session_date"),
+            pl.lit(start_threshold).alias("momentum_start_move_pct"),
+            pl.lit(max(0.0, min_day_high_move_pct)).alias("discovery_min_day_high_move_pct"),
+        ).collect()
+        if not frame.is_empty():
+            session_frames.append(frame)
+
+    if not session_frames:
+        reason = "No 1m bars crossed the selected momentum-start threshold"
+        if missing_1m_sessions:
+            reason += f"; missing 1m bars for {len(missing_1m_sessions)} matching sessions"
+        return momentum_discovery_empty_payload(start_date, end_date, row_limit, row_offset, reason)
+
+    combined = pl.concat(session_frames, how="diagonal_relaxed")
+    preferred_sort = [column for column in ["discovery_session_date", "ticker", "bar_time_market", "minute_of_day"] if column in combined.columns]
+    if preferred_sort:
+        combined = combined.sort(preferred_sort)
+    scan = combined.lazy()
+    schema = scan.collect_schema()
+    scan = apply_table_query(scan, schema, table_query)
+    schema = scan.collect_schema()
+    selected_columns = [column for column in columns if column in schema.names()]
+    if not selected_columns:
+        selected_columns = momentum_discovery_default_columns(schema.names())
+    if selected_columns:
+        scan = scan.select(selected_columns)
+    row_count = int(scan.select(pl.len().alias("row_count")).collect().item(0, "row_count"))
+    row_offset = max(0, min(row_offset, row_count))
+    row_limit = max(1, min(row_limit, 5000))
+    frame = scan.slice(row_offset, row_limit + 1).collect()
+    has_more = frame.height > row_limit
+    if has_more:
+        frame = frame.head(row_limit)
+    rows = frame.to_dicts()
+    return {
+        "columns": frame.columns,
+        "daily_candidates": daily_winners.height,
+        "feature_groups": sorted(joined_feature_groups),
+        "has_more": has_more,
+        "missing_1m_sessions": missing_1m_sessions[:20],
+        "reason": "",
+        "row_count": row_count,
+        "row_limit": row_limit,
+        "row_offset": row_offset,
+        "rows": json_safe(rows),
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "min_day_high_move_pct": max(0.0, min_day_high_move_pct),
+        "start_move_pct": max(0.0, start_move_pct),
+        "timeframe": "1m",
+    }
+
+
+def momentum_discovery_empty_payload(start_date: date, end_date: date, row_limit: int, row_offset: int, reason: str) -> dict[str, Any]:
+    return {
+        "columns": [],
+        "daily_candidates": 0,
+        "feature_groups": [],
+        "has_more": False,
+        "missing_1m_sessions": [],
+        "reason": reason,
+        "row_count": 0,
+        "row_limit": row_limit,
+        "row_offset": row_offset,
+        "rows": [],
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "min_day_high_move_pct": 0.0,
+        "start_move_pct": 0.0,
+        "timeframe": "1m",
+    }
+
+
+def momentum_discovery_default_columns(schema_names: list[str]) -> list[str]:
+    preferred = [
+        "ticker",
+        "discovery_session_date",
+        "bar_time_market",
+        "minute_of_day",
+        "day_open",
+        "day_high",
+        "day_high_move_pct",
+        "day_close",
+        "day_close_move_pct",
+        "momentum_start_threshold_price",
+        "momentum_bar_high_move_pct",
+        "momentum_bar_close_move_pct",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "transactions",
+        "vwap",
+        "tema9",
+        "tema20",
+        "macd",
+        "macd_signal",
+        "macd_hist",
+        "bearish_volume_divergence_score",
+        "double_timeframe_bearish_volume_divergence_score",
+    ]
+    selected = [column for column in preferred if column in schema_names]
+    selected.extend([column for column in schema_names if column not in selected])
+    return selected
+
+
 def scanner_minute_filter(schema_names: list[str], session_date: date, minute: int) -> pl.Expr | None:
     if "minute_of_day" in schema_names:
         return pl.col("minute_of_day") == minute

@@ -6,7 +6,7 @@ import shutil
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
 import polars as pl
@@ -45,6 +45,7 @@ from src.backend.market_data_service import (
     feature_groups_for_display_items,
     first_matching_artifact,
     first_ticker_in_range,
+    load_momentum_discovery,
     load_artifact_query_sample,
     load_artifact_sample,
     load_scanner_snapshot,
@@ -1351,6 +1352,39 @@ def market_scanner_snapshot(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"snapshot": snapshot}
+
+
+@app.get("/api/market-data/momentum-discovery")
+def market_momentum_discovery(
+    processed_root: str,
+    start_date: date,
+    end_date: date,
+    feature_groups: str | None = None,
+    columns: str | None = None,
+    table_query: str | None = None,
+    min_day_high_move_pct: Annotated[float, Query(ge=0.0, le=10.0)] = 0.10,
+    start_move_pct: Annotated[float, Query(ge=0.0, le=10.0)] = 0.05,
+    row_limit: Annotated[int, Query(ge=1, le=5000)] = 2000,
+    row_offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+    range_start, range_end = (start_date, end_date) if start_date <= end_date else (end_date, start_date)
+    selected_feature_groups = parse_csv_list(feature_groups) or ["core", "session", "momentum", "volume_liquidity", "price_action", "volatility"]
+    try:
+        discovery = load_momentum_discovery(
+            artifact_records(Path(processed_root)),
+            start_date=range_start,
+            end_date=range_end,
+            feature_groups=selected_feature_groups,
+            columns=parse_csv_list(columns),
+            min_day_high_move_pct=min_day_high_move_pct,
+            start_move_pct=start_move_pct,
+            row_limit=row_limit,
+            row_offset=row_offset,
+            table_query=parse_table_query(table_query),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"discovery": discovery}
 
 
 @app.get("/api/market-data/catalog")
