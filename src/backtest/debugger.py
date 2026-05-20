@@ -40,7 +40,9 @@ class StepBacktestDebugger(BacktestEngine):
         self.complete = False
         self._load_session(0)
 
-    def payload(self) -> dict:
+    def payload(self, *, include_summary: bool = True) -> dict:
+        current_step = self.history[self.history_cursor] if 0 <= self.history_cursor < len(self.history) else None
+        summary = self._summary("debug") if include_summary else ((current_step or {}).get("summary") or {})
         return {
             "session_id": self.debug_session_id,
             "status": "complete" if self.complete else "ready",
@@ -56,9 +58,9 @@ class StepBacktestDebugger(BacktestEngine):
             "processed_event_bars": self.processed_event_bars,
             "total_history_steps": len(self.history),
             "total_event_bars": self._expected_event_bar_count(self.sessions, self.requirements),
-            "summary": self._summary("debug"),
+            "summary": summary,
             "trades": list(self.trades),
-            "step": self.history[self.history_cursor] if 0 <= self.history_cursor < len(self.history) else None,
+            "step": current_step,
         }
 
     def previous_step(self) -> dict:
@@ -76,6 +78,44 @@ class StepBacktestDebugger(BacktestEngine):
         self.history.append(step)
         self.history_cursor = len(self.history) - 1
         return self.payload()
+
+    def run_until_action(self, max_steps: int = 100) -> dict:
+        max_steps = max(1, int(max_steps or 1))
+        advanced = 0
+        action_found = False
+
+        while advanced < max_steps:
+            if self.history_cursor < len(self.history) - 1:
+                self.history_cursor += 1
+                advanced += 1
+                step = self.history[self.history_cursor]
+                action_found = self._step_has_primary_action(step)
+                if action_found:
+                    break
+                continue
+
+            if self.complete:
+                break
+
+            step = self._advance_one_bar(build_payload=False)
+            advanced += 1
+            if step.get("type") == "complete":
+                self.history.append(step)
+                self.history_cursor = len(self.history) - 1
+                break
+            if self._step_has_primary_action(step):
+                self.history.append(step)
+                self.history_cursor = len(self.history) - 1
+                action_found = True
+                break
+
+        payload = self.payload(include_summary=action_found or self.complete or advanced == 0)
+        payload["seek"] = {
+            "action_found": action_found,
+            "advanced_steps": advanced,
+            "complete": self.complete,
+        }
+        return payload
 
     def _load_session(self, session_index: int) -> None:
         self.session_index = session_index
@@ -103,7 +143,7 @@ class StepBacktestDebugger(BacktestEngine):
         self.latest_bars = {}
         self.latest_execution_bars = {}
 
-    def _advance_one_bar(self) -> dict:
+    def _advance_one_bar(self, *, build_payload: bool = True) -> dict:
         while self.slice_index >= len(self.event_slices):
             if self.session_index < len(self.sessions) - 1:
                 self._record_day_end(self.event_slices[-1][0] if self.event_slices else datetime.combine(self.session_date, datetime.min.time()))
@@ -157,6 +197,22 @@ class StepBacktestDebugger(BacktestEngine):
         )
         self.processed_event_bars += 1
         after = self._counts()
+        has_action = self._has_primary_action_delta(requests_payload, before, after)
+        if not build_payload and not has_action:
+            return {
+                "type": "bar",
+                "timestamp": timestamp.isoformat(),
+                "session_date": self.session_date.isoformat() if self.session_date else None,
+                "bar_index": self.processed_event_bars,
+                "strategy_requests": [],
+                "orders": [],
+                "fills": [],
+                "trades": [],
+                "observability_trace": [],
+                "rejection_events": [],
+                "summary": None,
+                "seek_skipped": True,
+            }
         return self._step_payload(
             timestamp=timestamp,
             updates=update_rows,
@@ -164,6 +220,24 @@ class StepBacktestDebugger(BacktestEngine):
             requests=requests_payload,
             before=before,
             after=after,
+        )
+
+    def _has_primary_action_delta(self, requests: list[dict], before: dict[str, int], after: dict[str, int]) -> bool:
+        return (
+            bool(requests)
+            or after["orders"] > before["orders"]
+            or after["fills"] > before["fills"]
+            or after["observability_trace"] > before["observability_trace"]
+        )
+
+    def _step_has_primary_action(self, step: dict | None) -> bool:
+        if not step:
+            return False
+        return (
+            bool(step.get("strategy_requests"))
+            or bool(step.get("orders"))
+            or bool(step.get("fills"))
+            or bool(step.get("observability_trace"))
         )
 
     def _record_day_end(self, timestamp: datetime) -> None:

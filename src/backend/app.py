@@ -948,6 +948,14 @@ def next_backtest_debug_step(session_id: str) -> dict[str, Any]:
     return json_safe(debugger.next_step())
 
 
+@app.post("/api/backtests/debug/sessions/{session_id}/run-until-action")
+def run_backtest_debug_until_action(session_id: str, max_steps: int = Query(100, ge=1, le=5000)) -> dict[str, Any]:
+    debugger = DEBUG_SESSIONS.get(session_id)
+    if debugger is None:
+        raise HTTPException(status_code=404, detail="Debug session not found")
+    return json_safe(debugger.run_until_action(max_steps=max_steps))
+
+
 @app.post("/api/backtests/debug/sessions/{session_id}/previous")
 def previous_backtest_debug_step(session_id: str) -> dict[str, Any]:
     debugger = DEBUG_SESSIONS.get(session_id)

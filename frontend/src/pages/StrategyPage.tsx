@@ -117,6 +117,11 @@ type InteractiveDebugSession = {
   current_session?: string | null;
   current_step_index: number;
   processed_event_bars: number;
+  seek?: {
+    action_found?: boolean;
+    advanced_steps?: number;
+    complete?: boolean;
+  };
   session_id: string;
   sessions: string[];
   status: string;
@@ -186,6 +191,7 @@ const OBSERVABILITY_SCANNER_FILTER_PRESETS = [
   OBSERVABILITY_SCANNER_SPREAD_FILTER_PRESET,
 ];
 const DEBUG_BACKTEST_SCANNER_MAX_ROWS = 500;
+const DEBUG_RUN_UNTIL_ACTION_CHUNK_BARS = 100;
 const BACKTEST_RESULT_TABS = ["Backtest Results", "Observability", "Daily", "Trades", "Orders", "Fills", "Positions", "Watchlist"];
 const INTERACTIVE_DEBUG_TABS = ["Interactive Step Debug", "Trades"];
 
@@ -1038,14 +1044,15 @@ function NewRunPanel({
     setDebugBusy("until-action");
     try {
       let payload = debugSession;
-      for (let index = 0; index < Math.max(1, debugSession.total_event_bars); index += 1) {
+      for (let index = 0; index < Math.max(1, debugSession.total_event_bars); index += DEBUG_RUN_UNTIL_ACTION_CHUNK_BARS) {
         payload = await api<InteractiveDebugSession>(
-          `/api/backtests/debug/sessions/${debugSession.session_id}/next`,
+          `/api/backtests/debug/sessions/${debugSession.session_id}/run-until-action${query({ max_steps: DEBUG_RUN_UNTIL_ACTION_CHUNK_BARS })}`,
           { method: "POST" }
         );
         setDebugSession(payload);
         await waitForDebugProgressPaint();
-        if (debugSessionIsComplete(payload) || debugStepHasPrimaryAction(payload.step ?? null)) break;
+        if (debugSessionIsComplete(payload) || payload.seek?.action_found) break;
+        if ((payload.seek?.advanced_steps ?? 0) <= 0) break;
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
