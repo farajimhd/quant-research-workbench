@@ -2877,7 +2877,7 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
         last_is_red: trueFilter(),
       },
       label: "v9 Exit Raw",
-      title: "Apply the raw/provider 2xBVD exit input threshold and the red-candle confirmation. TEMA and pocket exits are visible in the step filter groups and order tags because they compare multiple fields and position state.",
+      title: "Apply the raw/provider 2xBVD exit input threshold and the non-green completed-candle confirmation. TEMA and pocket exits are visible in the step filter groups and order tags because they compare multiple fields and position state.",
     },
   ];
 }

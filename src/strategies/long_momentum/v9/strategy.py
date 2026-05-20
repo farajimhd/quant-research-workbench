@@ -410,7 +410,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         reentry_close_minus_vwap = last_close - last_vwap if last_vwap > 0 else None
         reentry_close_minus_vwap_threshold = last_close - reentry_vwap_threshold if reentry_vwap_threshold > 0 else None
         double_bvd_exit_score = self._float(row.get("last_double_timeframe_bearish_volume_divergence_score"))
-        double_bvd_exit_red_ok = last_close < last_open
+        double_bvd_exit_red_ok = last_close <= last_open
         double_bvd_exit_open = double_bvd_exit_score > self.config.double_bvd_exit_score and double_bvd_exit_red_ok
         pocket_state = self._pocket_state(row, portfolio.positions.get(ticker))
         immediate_entry_open = (
@@ -518,7 +518,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             pocket_state = self._pocket_state(bar, position)
             self._trace_pocket_evaluation(context.timestamp, symbol, position, bar, meta, pocket_state)
             double_bvd_score = self._float(bar.get("last_double_timeframe_bearish_volume_divergence_score"))
-            double_bvd_red_ok = self._float(bar.get("last_close")) < self._float(bar.get("last_open"))
+            double_bvd_red_ok = self._float(bar.get("last_close")) <= self._float(bar.get("last_open"))
             if double_bvd_score > self.config.double_bvd_exit_score and double_bvd_red_ok:
                 limit_price = self._liquid_limit_price("SELL", bar)
                 self._trace_exit(context.timestamp, symbol, "DOUBLE_BVD", position, bar, meta)

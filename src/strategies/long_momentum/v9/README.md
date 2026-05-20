@@ -167,11 +167,11 @@ Main exit has priority:
 
 ```text
 last_double_timeframe_bearish_volume_divergence_score > double_bvd_exit_score
-and last_close < last_open
+and last_close <= last_open
 ```
 
 On 1-minute data this is 2-minute BVD. When it triggers on the last completed
-red bar, v9 exits immediately at the current open.
+red or flat bar, v9 exits immediately at the current open.
 
 Pocketing:
 
