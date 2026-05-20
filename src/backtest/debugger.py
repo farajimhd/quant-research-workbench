@@ -150,7 +150,10 @@ class StepBacktestDebugger(BacktestEngine):
         self._handle_requests(timestamp, requests, execution_fresh_bars)
         self._fill_pending_orders(timestamp, execution_fresh_bars, eligible_order_ids=pending_order_ids_at_open)
         self.portfolio.update_peaks(execution_fresh_bars)
-        self._record_portfolio(timestamp, self.latest_execution_bars)
+        self._record_portfolio(
+            timestamp,
+            self._portfolio_mark_bars_at_current_open(self.latest_execution_bars, execution_fresh_bars),
+        )
         self.processed_event_bars += 1
         after = self._counts()
         return self._step_payload(

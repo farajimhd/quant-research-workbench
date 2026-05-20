@@ -657,6 +657,17 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             f"|givebackPct={giveback_pct:.4f}"
         )
 
+    def _exit_tag(self, reason: str, position, bar: dict | None, meta: dict) -> str:
+        current_open = self._bar_open(bar or {})
+        last_close = self._float((bar or {}).get("last_close"))
+        stop = self._float(meta.get("initial_stop")) or position.stop_price
+        return (
+            f"EXIT|reason={reason}|price={current_open:.4f}|entry={position.entry_price:.4f}"
+            f"|qty={position.quantity}|stop={stop:.4f}|R={self._float(meta.get('initial_r')):.4f}"
+            f"|entryType={str(meta.get('entry_type') or '')}"
+            f"|currentOpen={current_open:.4f}|lastClose={last_close:.4f}"
+        )
+
     def _tema_closed(self, bar: dict) -> bool:
         tema9 = self._float(bar.get("current_open_tema9"))
         tema20 = self._float(bar.get("current_open_tema20"))

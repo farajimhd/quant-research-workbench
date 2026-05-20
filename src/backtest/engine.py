@@ -227,7 +227,10 @@ class BacktestEngine:
                         self._fill_pending_orders(timestamp, execution_fresh_bars, eligible_order_ids=pending_order_ids_at_open)
                         live_trade_count = self._write_live_trades_if_needed(run_dir, artifact_writer, live_trade_count)
                         self.portfolio.update_peaks(execution_fresh_bars)
-                        self._record_portfolio(timestamp, latest_execution_bars)
+                        self._record_portfolio(
+                            timestamp,
+                            self._portfolio_mark_bars_at_current_open(latest_execution_bars, execution_fresh_bars),
+                        )
                         processed_event_bars += 1
                         session_processed_bars += 1
                         total_event_bars = max(total_event_bars, processed_event_bars)
@@ -942,6 +945,23 @@ class BacktestEngine:
             }
         )
         self.position_rows.extend(self.portfolio.snapshot_rows(timestamp, bars_by_symbol))
+
+    def _portfolio_mark_bars_at_current_open(
+        self,
+        latest_bars: dict[str, dict],
+        fresh_bars: dict[str, dict],
+    ) -> dict[str, dict]:
+        if not fresh_bars:
+            return latest_bars
+        mark_bars = dict(latest_bars)
+        for symbol, bar in fresh_bars.items():
+            open_price = bar.get("open")
+            if open_price is None:
+                continue
+            mark_bar = dict(bar)
+            mark_bar["close"] = open_price
+            mark_bars[symbol] = mark_bar
+        return mark_bars
 
     def _symbol_bar_rows(self, minute_bars: pl.DataFrame, session_date) -> list[dict]:
         selected_cols = [
