@@ -447,7 +447,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._bool_check(row, "long_momentum_v9_first_entry_high_lifecycle_enabled", True),
                     self._gte_check(row, "long_momentum_v9_first_entry_high_bars_observed", 0.0),
                     self._gte_check(row, "long_momentum_v9_first_entry_highest_high", 0.0),
-                    self._gte_check(row, "long_momentum_v9_first_entry_no_new_high_count", self._strategy_param("first_entry_high_stall_bars", 3.0)),
+                    self._gte_check(row, "long_momentum_v9_first_entry_no_new_high_count", self._strategy_param("first_entry_high_stall_bars", 6.0)),
                     self._bool_check(row, "long_momentum_v9_first_entry_high_stall_confirmed", True),
                     self._bool_check(row, "long_momentum_v9_first_entry_soft_exits_allowed", True),
                 ],

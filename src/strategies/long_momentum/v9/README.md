@@ -105,7 +105,7 @@ no_new_high_count >= first_entry_high_stall_bars
 ```
 
 Defaults are `first_entry_high_near_tolerance_ratio = 0.003`, equal to 0.3%,
-and `first_entry_high_stall_bars = 3`. This gives the first entry room to pause
+and `first_entry_high_stall_bars = 6`. This gives the first entry room to pause
 near the high without allowing TEMA, 2xBVD, or pocketing to close the position
 too early. The stop remains active the whole time.
 

@@ -66,7 +66,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     first_entry_soft_exit_wait_bars: int = 3
     first_entry_high_lifecycle_exit_enabled: bool = True
     first_entry_high_near_tolerance_ratio: float = 0.003
-    first_entry_high_stall_bars: int = 3
+    first_entry_high_stall_bars: int = 6
     first_entry_body_lifecycle_exit_enabled: bool = False
     first_entry_body_fast_ema_bars: int = 3
     first_entry_body_slow_ema_bars: int = 8
