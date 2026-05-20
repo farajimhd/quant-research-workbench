@@ -3428,6 +3428,10 @@ function DebugOpenPositionsCard({ positions }: { positions: DataRow[] }) {
             const mark = row.mark_price ?? row.current_price ?? row.last_price ?? "";
             const pnl = row.unrealized_pnl ?? row.unrealized_pl ?? row.pnl ?? "";
             const stop = row.stop_price ?? row.protective_stop_price ?? "";
+            const entryNumber = numericCompactValue(entry);
+            const markNumber = numericCompactValue(mark);
+            const stopNumber = numericCompactValue(stop);
+            const pnlNumber = numericCompactValue(pnl);
             return (
               <article className="step-debug-position-card" key={`${symbol}-${index}`}>
                 <div>
@@ -3435,10 +3439,10 @@ function DebugOpenPositionsCard({ positions }: { positions: DataRow[] }) {
                   <small>Qty {formatCompactValue(quantity)}</small>
                 </div>
                 <dl>
-                  <div><dt>Entry</dt><dd>{formatCompactValue(entry)}</dd></div>
-                  <div><dt>Mark</dt><dd>{formatCompactValue(mark)}</dd></div>
-                  <div><dt>Stop</dt><dd>{formatCompactValue(stop)}</dd></div>
-                  <div><dt>Unrealized</dt><dd>{formatCompactValue(pnl)}</dd></div>
+                  <DebugPositionCell label="Entry" tone="neutral" value={entry} />
+                  <DebugPositionCell label="Mark" tone={debugMarkTone(markNumber, entryNumber)} value={mark} />
+                  <DebugPositionCell label="Stop" tone={debugStopTone(stopNumber, markNumber, entryNumber)} value={stop} />
+                  <DebugPositionCell label="Unrealized" tone={debugSignedTone(pnlNumber)} value={pnl} />
                 </dl>
               </article>
             );
@@ -3448,6 +3452,15 @@ function DebugOpenPositionsCard({ positions }: { positions: DataRow[] }) {
       ) : (
         <p>No open positions at this step.</p>
       )}
+    </div>
+  );
+}
+
+function DebugPositionCell({ label, tone, value }: { label: string; tone: SemanticTone; value: unknown }) {
+  return (
+    <div data-tone={tone}>
+      <dt>{label}</dt>
+      <dd>{formatCompactValue(value)}</dd>
     </div>
   );
 }
@@ -3462,6 +3475,33 @@ function formatCompactValue(value: unknown): string {
   const numeric = Number(value);
   if (Number.isFinite(numeric) && String(value).trim() !== "") return formatCompactValue(numeric);
   return String(value);
+}
+
+function numericCompactValue(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function debugSignedTone(value: number | null): SemanticTone {
+  if (value === null) return "neutral";
+  if (value > 0) return "success";
+  if (value < 0) return "danger";
+  return "neutral";
+}
+
+function debugMarkTone(mark: number | null, entry: number | null): SemanticTone {
+  if (mark === null || entry === null) return "neutral";
+  if (mark > entry) return "success";
+  if (mark < entry) return "danger";
+  return "neutral";
+}
+
+function debugStopTone(stop: number | null, mark: number | null, entry: number | null): SemanticTone {
+  if (stop === null) return "neutral";
+  if (mark !== null && mark <= stop) return "danger";
+  if (entry !== null && stop >= entry) return "success";
+  return "warning";
 }
 
 function DebugCountBadge({ label, tone, value }: { label: string; tone: SemanticTone; value: number }) {

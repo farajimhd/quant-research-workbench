@@ -7230,18 +7230,50 @@ button {
   margin: 8px 0 0;
 }
 
+.step-debug-position-card dl > div {
+  --position-cell-tone: var(--muted-foreground);
+  border: 1px solid color-mix(in oklab, var(--position-cell-tone) 28%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--position-cell-tone) 8%, var(--card));
+  min-width: 0;
+  padding: 7px 8px;
+}
+
+.step-debug-position-card dl > div[data-tone="success"] {
+  --position-cell-tone: var(--success);
+}
+
+.step-debug-position-card dl > div[data-tone="danger"] {
+  --position-cell-tone: var(--danger);
+}
+
+.step-debug-position-card dl > div[data-tone="warning"] {
+  --position-cell-tone: #f97316;
+}
+
+.step-debug-position-card dl > div[data-tone="info"] {
+  --position-cell-tone: var(--info);
+}
+
+.step-debug-position-card dl > div[data-tone="accent"] {
+  --position-cell-tone: var(--accent);
+}
+
 .step-debug-position-card dt {
-  color: var(--muted-foreground);
+  color: color-mix(in oklab, var(--position-cell-tone) 78%, var(--muted-foreground));
   font-size: 0.68rem;
   font-weight: 700;
   text-transform: uppercase;
 }
 
 .step-debug-position-card dd {
-  color: var(--foreground);
+  color: color-mix(in oklab, var(--position-cell-tone) 52%, var(--foreground));
   font-size: 0.86rem;
   font-weight: 750;
   margin: 2px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .step-debug-step-facts {
