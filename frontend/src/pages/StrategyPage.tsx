@@ -2668,11 +2668,12 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
         ),
         last_vwap: gtFilter(0),
         long_momentum_v9_reentry_vwap_buffer_ok: trueFilter(),
+        last_tema_open: trueFilter(),
         last_bearish_volume_divergence_score: lteFilter(strategyNumberParam(params, "max_reentry_bvd_score", 80)),
         current_open_above_last_2_body_high: trueFilter(),
       },
       label: "v9 Watchlist Entry Raw",
-      title: "Apply the raw/provider inputs available before v9 checks watchlist state, last close is above the VWAP buffer, last_close >= last_open, 1m BVD is not above the threshold, and current_open breaks the highest body of the last two completed bars.",
+      title: "Apply the raw/provider inputs available before v9 checks watchlist state, last close is above the VWAP buffer, last_close >= last_open, last TEMA is open, 1m BVD is not above the threshold, and current_open breaks the highest body of the last two completed bars.",
     },
     {
       filters: {
@@ -2739,11 +2740,12 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
           long_momentum_v9_pending_symbol_order: { operator: "eq", presetLabel: "Is false", valueText: "false" },
           long_momentum_v9_reentry_vwap_buffer_ok: trueFilter(),
           long_momentum_v9_reentry_last_bar_not_red: trueFilter(),
+          long_momentum_v9_reentry_last_tema_open_ok: trueFilter(),
           long_momentum_v9_reentry_bvd_ok: trueFilter(),
           long_momentum_v9_reentry_body_break_ok: trueFilter(),
         },
         label: "v9 Watchlist VWAP Entry",
-        title: "Apply the v9 watchlist entry gates: ticker is on watchlist, not held/pending, last close is above the VWAP buffer, the reclaim bar is not red, 1m BVD is not above the threshold, and current_open breaks the highest body of the last two completed bars.",
+        title: "Apply the v9 watchlist entry gates: ticker is on watchlist, not held/pending, last close is above the VWAP buffer, the reclaim bar is not red, last TEMA is open, 1m BVD is not above the threshold, and current_open breaks the highest body of the last two completed bars.",
       },
       {
         filters: {
@@ -3137,6 +3139,7 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_reentry_price_reclaim",
   "long_momentum_v9_reentry_vwap_buffer_ok",
   "long_momentum_v9_reentry_last_bar_not_red",
+  "long_momentum_v9_reentry_last_tema_open_ok",
   "long_momentum_v9_reentry_bvd_ok",
   "long_momentum_v9_reentry_bvd_score",
   "long_momentum_v9_reentry_body_break_ok",

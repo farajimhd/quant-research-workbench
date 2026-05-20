@@ -381,6 +381,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         reentry_vwap_threshold = last_vwap * (1.0 + max(0.0, self.config.reentry_vwap_buffer_pct) / 100.0) if last_vwap > 0 else 0.0
         reentry_price_reclaim = reentry_vwap_threshold > 0 and last_close >= reentry_vwap_threshold
         reentry_last_bar_not_red = last_close >= last_open
+        last_tema9 = self._float(row.get("last_tema9"))
+        last_tema20 = self._float(row.get("last_tema20"))
+        reentry_last_tema_open_ok = last_tema9 > 0 and last_tema20 > 0 and last_tema9 > last_tema20
         reentry_bvd_score = self._float(row.get("last_bearish_volume_divergence_score"))
         reentry_bvd_ok = reentry_bvd_score <= self.config.max_reentry_bvd_score
         current_open = self._float(row.get("current_open"))
@@ -408,6 +411,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             and entry_time_ok
             and reentry_price_reclaim
             and reentry_last_bar_not_red
+            and reentry_last_tema_open_ok
             and reentry_bvd_ok
             and reentry_body_break_ok
             and not immediate_entry_open
@@ -439,6 +443,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_reentry_price_reclaim": reentry_price_reclaim,
             "long_momentum_v9_reentry_vwap_buffer_ok": reentry_price_reclaim,
             "long_momentum_v9_reentry_last_bar_not_red": reentry_last_bar_not_red,
+            "long_momentum_v9_reentry_last_tema_open_ok": reentry_last_tema_open_ok,
             "long_momentum_v9_reentry_bvd_ok": reentry_bvd_ok,
             "long_momentum_v9_reentry_bvd_score": reentry_bvd_score,
             "long_momentum_v9_reentry_body_break_ok": reentry_body_break_ok,
@@ -460,6 +465,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 immediate_transactions_vs_prior_3_ok=immediate_transactions_vs_prior_3_ok,
                 reentry_price_reclaim=reentry_price_reclaim,
                 reentry_last_bar_not_red=reentry_last_bar_not_red,
+                reentry_last_tema_open_ok=reentry_last_tema_open_ok,
                 reentry_bvd_ok=reentry_bvd_ok,
                 reentry_body_break_ok=reentry_body_break_ok,
                 no_symbol_position=no_symbol_position,
@@ -976,6 +982,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         immediate_transactions_vs_prior_3_ok: bool,
         reentry_price_reclaim: bool,
         reentry_last_bar_not_red: bool,
+        reentry_last_tema_open_ok: bool,
         reentry_bvd_ok: bool,
         reentry_body_break_ok: bool,
         no_symbol_position: bool,
@@ -996,6 +1003,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             return "watchlist_entry_below_vwap_buffer"
         if not reentry_last_bar_not_red:
             return "watchlist_entry_red_vwap_reclaim_bar"
+        if not reentry_last_tema_open_ok:
+            return "watchlist_entry_last_tema_not_open"
         if not reentry_bvd_ok:
             return "watchlist_entry_bearish_volume_divergence"
         if not reentry_body_break_ok:

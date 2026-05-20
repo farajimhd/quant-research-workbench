@@ -48,6 +48,7 @@ momentum watchlist. It can enter later when all VWAP entry rules are true:
 - `min_price <= last_close <= max_price`
 - `last_close >= last_vwap * (1 + reentry_vwap_buffer_pct / 100)`
 - the completed VWAP reclaim bar is not red: `last_close >= last_open`
+- last completed candle TEMA is open: `last_tema9 > last_tema20`
 
 The 5-minute return and transaction threshold are used only to add the ticker to
 the watchlist unless the same bar also passes the transaction-impulse threshold.
@@ -76,6 +77,13 @@ last_close >= last_vwap * (1 + reentry_vwap_buffer_pct / 100)
 
 The default `reentry_vwap_buffer_pct` is `2.0`.
 
+Watchlist VWAP reentry also requires the last completed candle TEMA stack to be
+open:
+
+```text
+last_tema9 > last_tema20
+```
+
 Watchlist VWAP reentry also requires the current bar open to break the highest
 body high of the last two completed bars:
 
@@ -86,8 +94,9 @@ current_open > max(
 )
 ```
 
-This reentry body-break rule does not use TEMA or MACD. `tema9_exit_buffer_pct`
-is only used by the emergency TEMA exit.
+This reentry body-break rule does not use MACD. `tema9_exit_buffer_pct` is only
+used by the emergency TEMA exit; reentry TEMA-open uses the completed candle's
+plain `last_tema9 > last_tema20` comparison.
 
 ## Entry Sizing And Stop
 

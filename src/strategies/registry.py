@@ -409,7 +409,7 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("long_momentum", "v9"): (
         "Live-safe day momentum watchlist version: completed-bar 5-minute return adds a ticker to a separate day "
         "watchlist, strict 1-minute transaction impulse rules trigger First Entry, simultaneous First Entries split "
-        "cash, no-cash First Entries rotate out existing positions, lower-priority VWAP/two-bar body-break reentries remain "
+        "cash, no-cash First Entries rotate out existing positions, lower-priority VWAP/TEMA/two-bar body-break reentries remain "
         "available after exits, and in-position pocketing sells before later gated reentry unless immediate pocket reentry is enabled. "
         "Main exits use red-candle 2-minute BVD."
     ),

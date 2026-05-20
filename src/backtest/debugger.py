@@ -412,6 +412,7 @@ class StepBacktestDebugger(BacktestEngine):
                         * (1.0 + max(0.0, self._strategy_param("reentry_vwap_buffer_pct", 2.0)) / 100.0),
                     ),
                     self._gte_check(row, "last_close", self._number(row, "last_open") or 0.0),
+                    self._v9_last_tema_open_check(row),
                     self._lte_check(row, "last_bearish_volume_divergence_score", self._strategy_param("max_reentry_bvd_score", 80.0)),
                     self._v9_two_bar_body_reentry_check(row),
                 ],
@@ -422,6 +423,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._bool_check(row, "long_momentum_v9_pending_symbol_order", False),
                     self._bool_check(row, "long_momentum_v9_reentry_vwap_buffer_ok", True),
                     self._bool_check(row, "long_momentum_v9_reentry_last_bar_not_red", True),
+                    self._bool_check(row, "long_momentum_v9_reentry_last_tema_open_ok", True),
                     self._bool_check(row, "long_momentum_v9_reentry_bvd_ok", True),
                     self._bool_check(row, "long_momentum_v9_reentry_body_break_ok", True),
                 ],
@@ -521,6 +523,17 @@ class StepBacktestDebugger(BacktestEngine):
             f"current_open_tema20={tema20}, threshold={threshold}",
             passed,
             f">= current_open_tema9 * (1 + {buffer_pct:g})",
+        )
+
+    def _v9_last_tema_open_check(self, row: dict) -> dict:
+        tema9 = self._number(row, "last_tema9")
+        tema20 = self._number(row, "last_tema20")
+        passed = tema9 is not None and tema20 is not None and tema9 > tema20
+        return self._check(
+            "last_tema_open",
+            f"last_tema9={tema9}, last_tema20={tema20}",
+            passed,
+            "last_tema9 > last_tema20",
         )
 
     def _v9_two_bar_body_reentry_check(self, row: dict) -> dict:
