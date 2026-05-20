@@ -180,7 +180,8 @@ if estimated_bid >= entry_price * (1 + pocket_profit_pct):
     sell current position at estimated_bid
     if pocket_immediate_reentry_enabled:
         immediately buy back at estimated_ask
-        stop = current_open * (1 - pocket_reentry_stop_loss_pct / 100)
+        stop = current_open - pocket_reentry_initial_stop_offset_dollars
+        same_bar_buy_stop = max(last_open, last_close)
 ```
 
 The default `pocket_profit_pct` is `0.03`. Pocketing does not check the scanner
@@ -190,11 +191,16 @@ buys back at `estimated_ask`, which is `current_open`, on the same bar without
 checking normal reentry gates. The immediate pocket reentry uses a tight stop:
 
 ```text
-pocket_reentry_stop = current_open * (1 - pocket_reentry_stop_loss_pct / 100)
+pocket_reentry_stop = current_open - pocket_reentry_initial_stop_offset_dollars
 ```
 
-The default `pocket_reentry_stop_loss_pct` is `2.0`. If
-`pocket_immediate_reentry_enabled` is set to `False`, v9 waits for a later
+The default `pocket_reentry_initial_stop_offset_dollars` is `0.01`. If that
+initial stop is hit on the entry candle, v9 can model the wick sequence by first
+executing the attached stop and then, only if the same candle's high crosses
+`max(last_open, last_close)`, immediately opening the same quantity again at the
+same candle open. That synthetic same-bar reentry keeps the same one-cent
+protective stop and is tagged as `LONG_MOMENTUM_V9_POCKET_REENTRY_SAME_BAR`.
+If `pocket_immediate_reentry_enabled` is set to `False`, v9 waits for a later
 candle and uses the normal watchlist reentry gates.
 
 Emergency exit:

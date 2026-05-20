@@ -160,6 +160,12 @@ stops can fill on the same bar when that bar's low crosses the stop. Buy stops
 whose fill depends on a bar high are deferred and filled at the next fresh bar
 open after the crossing bar.
 
+A strategy can opt into a narrower same-bar recovery model by attaching
+`same_bar_reentry_*` fields to a BUY order with a protective stop. In that case,
+if the attached entry stop is hit on the entry candle, the engine first fills the
+stop exit and then fills the synthetic recovery BUY only if the same candle's
+high crosses the strategy-provided recovery trigger.
+
 Partial fills are controlled by backtest configuration, not by provider quote
 size. When `enable_partial_fills` is true, each BUY or SELL order can fill up to
 `max_allowable_entry_fill_size` shares on the candle where the order crosses. If

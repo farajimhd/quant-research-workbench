@@ -706,6 +706,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         stop_price = self._pocket_reentry_stop(position, bar, signal_open)
         if stop_price <= 0 or stop_price >= buy_limit:
             return requests
+        same_bar_reentry_trigger = self._pocket_same_bar_reentry_trigger(bar)
+        if same_bar_reentry_trigger <= 0:
+            return requests
 
         risk_per_share = buy_limit - stop_price
         self.position_meta[symbol] = {
@@ -734,8 +737,9 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             f"|qty={reentry_quantity}|signal_open={signal_open:.4f}|limit={buy_limit:.4f}"
             f"|entry={buy_limit:.4f}|stop={stop_price:.4f}|risk={risk_per_share:.4f}"
             f"|pocket_exit_limit={sell_limit:.4f}|pocket_from_entry={position.entry_price:.4f}"
-            f"|pocketReentryStopPct={self.config.pocket_reentry_stop_loss_pct:.4f}"
+            f"|pocketReentryStopOffset={self.config.pocket_reentry_initial_stop_offset_dollars:.4f}"
             f"|pocketReentryStopBase={signal_open:.4f}"
+            f"|sameBarBuyStop={same_bar_reentry_trigger:.4f}"
         )
         requests.append(
             OrderRequest(
@@ -747,16 +751,30 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 limit_price=buy_limit,
                 allow_same_bar_fill=True,
                 protective_stop_price=stop_price,
+                same_bar_reentry_stop_price=same_bar_reentry_trigger,
+                same_bar_reentry_limit_price=buy_limit,
+                same_bar_reentry_protective_stop_price=stop_price,
+                same_bar_reentry_reason="LONG_MOMENTUM_V9_POCKET_REENTRY_SAME_BAR",
+                same_bar_reentry_tag=(
+                    buy_tag
+                    + f"|sameBarReentry=true|sameBarBuyStop={same_bar_reentry_trigger:.4f}"
+                    + f"|sameBarReentryLimit={buy_limit:.4f}|sameBarReentryStop={stop_price:.4f}"
+                ),
                 tag=buy_tag,
             )
         )
         return requests
 
     def _pocket_reentry_stop(self, position, bar: dict, signal_open: float) -> float:
-        stop_loss_fraction = max(0.0, self.config.pocket_reentry_stop_loss_pct) / 100.0
-        if signal_open <= 0 or stop_loss_fraction <= 0:
+        stop_offset = max(0.0, self.config.pocket_reentry_initial_stop_offset_dollars)
+        if signal_open <= 0 or stop_offset <= 0:
             return 0.0
-        return signal_open * (1.0 - stop_loss_fraction)
+        return max(0.01, signal_open - stop_offset)
+
+    def _pocket_same_bar_reentry_trigger(self, bar: dict) -> float:
+        last_open = self._float(bar.get("last_open"))
+        last_close = self._float(bar.get("last_close"))
+        return max(last_open, last_close)
 
     def _exit_tag(self, reason: str, position, bar: dict | None, meta: dict) -> str:
         current_open = self._bar_open(bar or {})

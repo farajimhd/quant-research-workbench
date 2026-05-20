@@ -34,6 +34,11 @@ class OrderRequest:
     fill_requires_close_through_stop: bool = False
     expire_on_bar_close: bool = False
     protective_stop_price: float | None = None
+    same_bar_reentry_stop_price: float | None = None
+    same_bar_reentry_limit_price: float | None = None
+    same_bar_reentry_protective_stop_price: float | None = None
+    same_bar_reentry_reason: str = ""
+    same_bar_reentry_tag: str = ""
 
 
 @dataclass(slots=True)
@@ -61,6 +66,11 @@ class Order:
     expire_on_bar_close: bool = False
     protective_stop_price: float | None = None
     deferred_fill_at_next_open: bool = False
+    same_bar_reentry_stop_price: float | None = None
+    same_bar_reentry_limit_price: float | None = None
+    same_bar_reentry_protective_stop_price: float | None = None
+    same_bar_reentry_reason: str = ""
+    same_bar_reentry_tag: str = ""
 
 
 @dataclass(slots=True)

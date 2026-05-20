@@ -510,6 +510,11 @@ class BacktestEngine:
                 fill_requires_close_through_stop=request.fill_requires_close_through_stop,
                 expire_on_bar_close=request.expire_on_bar_close,
                 protective_stop_price=request.protective_stop_price,
+                same_bar_reentry_stop_price=request.same_bar_reentry_stop_price,
+                same_bar_reentry_limit_price=request.same_bar_reentry_limit_price,
+                same_bar_reentry_protective_stop_price=request.same_bar_reentry_protective_stop_price,
+                same_bar_reentry_reason=request.same_bar_reentry_reason,
+                same_bar_reentry_tag=request.same_bar_reentry_tag,
             )
             self.next_order_id += 1
 
@@ -617,6 +622,11 @@ class BacktestEngine:
             fill_requires_close_through_stop=request.fill_requires_close_through_stop,
             expire_on_bar_close=request.expire_on_bar_close,
             protective_stop_price=request.protective_stop_price,
+            same_bar_reentry_stop_price=request.same_bar_reentry_stop_price,
+            same_bar_reentry_limit_price=request.same_bar_reentry_limit_price,
+            same_bar_reentry_protective_stop_price=request.same_bar_reentry_protective_stop_price,
+            same_bar_reentry_reason=request.same_bar_reentry_reason,
+            same_bar_reentry_tag=request.same_bar_reentry_tag,
         )
         self.next_order_id += 1
         self.orders.append(asdict(order))
@@ -789,6 +799,69 @@ class BacktestEngine:
         )
         self.next_order_id += 1
         self._fill_order(stop_order, timestamp, bar, stop_order.reason)
+        self._fill_same_bar_reentry_after_attached_stop(entry_order, stop_order, timestamp, bar)
+
+    def _fill_same_bar_reentry_after_attached_stop(self, entry_order: Order, stop_order: Order, timestamp: datetime, bar: dict) -> None:
+        if stop_order.status not in {"FILLED", "PARTIALLY_FILLED"}:
+            return
+        if self.portfolio.positions.get(entry_order.symbol) is not None:
+            return
+        try:
+            trigger_price = float(entry_order.same_bar_reentry_stop_price)
+            limit_price = float(entry_order.same_bar_reentry_limit_price)
+            protective_stop_price = float(entry_order.same_bar_reentry_protective_stop_price)
+            high = float(bar.get("high"))
+        except (TypeError, ValueError):
+            return
+        if trigger_price <= 0 or limit_price <= 0 or protective_stop_price <= 0 or high < trigger_price:
+            return
+        quantity = int(entry_order.quantity)
+        if quantity <= 0:
+            return
+        reason = entry_order.same_bar_reentry_reason or f"{entry_order.reason}_SAME_BAR_REENTRY"
+        tag = entry_order.same_bar_reentry_tag or (
+            f"ENTRY|reason={reason}|source_entry_order_id={entry_order.order_id}|source_stop_order_id={stop_order.order_id}"
+            f"|trigger={trigger_price:.4f}|limit={limit_price:.4f}|stop={protective_stop_price:.4f}"
+        )
+        order = Order(
+            order_id=self.next_order_id,
+            symbol=entry_order.symbol,
+            side="BUY",
+            quantity=quantity,
+            order_type="STOP",
+            reason=reason,
+            created_at=timestamp,
+            stop_price=trigger_price,
+            limit_price=limit_price,
+            tag=tag,
+            protective_stop_price=protective_stop_price,
+        )
+        self.next_order_id += 1
+        fill_price = limit_price * (1.0 + (self.config.slippage_bps / 10_000.0))
+        metadata = self.strategy.entry_metadata(entry_order)
+        fee = self.fee_model.estimate(side=order.side, quantity=order.quantity, fill_price=fill_price)
+        order.filled_at = timestamp
+        order.fill_price = fill_price
+        if not self.portfolio.can_afford(fill_price, order.quantity, fee.total):
+            order.status = "REJECTED_CASH"
+            self.orders.append(asdict(order))
+            self._record_strategy_order_event(order)
+            self._record_engine_rejection(timestamp, order, "same_bar_reentry_cash")
+            return
+        order.status = "FILLED"
+        self._apply_fee_to_order(order, fee)
+        self._record_fill(order, timestamp, bar, fill_price, fee, self.config.slippage_bps)
+        self.portfolio.open_position(
+            order,
+            setup_rank=int(metadata.get("setup_rank", 0)),
+            live_rank=int(metadata.get("live_rank", 0)),
+            setup_score=float(metadata.get("setup_score", 0.0)),
+            live_score=float(metadata.get("live_score", 0.0)),
+            stop_price=protective_stop_price,
+            fee=fee.total,
+        )
+        self.orders.append(asdict(order))
+        self._record_strategy_order_event(order)
 
     def _cancel_orphaned_sell_orders(self, timestamp: datetime, symbol: str, source_reason: str) -> None:
         still_open = []
