@@ -180,7 +180,7 @@ if estimated_bid >= entry_price * (1 + pocket_profit_pct):
     sell current position at estimated_bid
     if pocket_immediate_reentry_enabled:
         immediately buy back at estimated_ask
-        stop = estimated_ask * (1 - pocket_reentry_stop_loss_pct / 100)
+        stop = current_open * (1 - pocket_reentry_stop_loss_pct / 100)
 ```
 
 The default `pocket_profit_pct` is `0.03`. Pocketing does not check the scanner
@@ -190,10 +190,10 @@ buys back at `estimated_ask` on the same bar without checking normal reentry
 gates. The immediate pocket reentry uses a tight stop:
 
 ```text
-pocket_reentry_stop = estimated_ask * (1 - pocket_reentry_stop_loss_pct / 100)
+pocket_reentry_stop = current_open * (1 - pocket_reentry_stop_loss_pct / 100)
 ```
 
-The default `pocket_reentry_stop_loss_pct` is `1.3`. If
+The default `pocket_reentry_stop_loss_pct` is `2.0`. If
 `pocket_immediate_reentry_enabled` is set to `False`, v9 waits for a later
 candle and uses the normal watchlist reentry gates.
 

@@ -702,7 +702,8 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         if reentry_quantity <= 0:
             return requests
 
-        stop_price = self._pocket_reentry_stop(position, bar, buy_limit)
+        signal_open = self._bar_open(bar)
+        stop_price = self._pocket_reentry_stop(position, bar, signal_open)
         if stop_price <= 0 or stop_price >= buy_limit:
             return requests
 
@@ -730,10 +731,11 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             watch.last_state = "pocket_reentry_submitted"
         buy_tag = (
             f"ENTRY|rule=LONG_MOMENTUM_V9|trigger=POCKET_REENTRY|rank={position.live_rank}"
-            f"|qty={reentry_quantity}|signal_open={self._bar_open(bar):.4f}|limit={buy_limit:.4f}"
+            f"|qty={reentry_quantity}|signal_open={signal_open:.4f}|limit={buy_limit:.4f}"
             f"|entry={buy_limit:.4f}|stop={stop_price:.4f}|risk={risk_per_share:.4f}"
             f"|pocket_exit_limit={sell_limit:.4f}|pocket_from_entry={position.entry_price:.4f}"
             f"|pocketReentryStopPct={self.config.pocket_reentry_stop_loss_pct:.4f}"
+            f"|pocketReentryStopBase={signal_open:.4f}"
         )
         requests.append(
             OrderRequest(
@@ -750,11 +752,11 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         )
         return requests
 
-    def _pocket_reentry_stop(self, position, bar: dict, entry_price: float) -> float:
+    def _pocket_reentry_stop(self, position, bar: dict, signal_open: float) -> float:
         stop_loss_fraction = max(0.0, self.config.pocket_reentry_stop_loss_pct) / 100.0
-        if entry_price <= 0 or stop_loss_fraction <= 0:
+        if signal_open <= 0 or stop_loss_fraction <= 0:
             return 0.0
-        return entry_price * (1.0 - stop_loss_fraction)
+        return signal_open * (1.0 - stop_loss_fraction)
 
     def _exit_tag(self, reason: str, position, bar: dict | None, meta: dict) -> str:
         current_open = self._bar_open(bar or {})

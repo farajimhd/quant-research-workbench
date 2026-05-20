@@ -336,7 +336,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   double_bvd_exit_score: "Long Momentum v9 main exit threshold for provider-built double-timeframe bearish volume divergence score.",
   pocket_profit_pct: "Long Momentum v9 pocket threshold. When estimated bid reaches entry price times 1 plus this fraction, v9 sells to pocket profit.",
   pocket_immediate_reentry_enabled: "When true, Long Momentum v9 immediately rebuys after pocketing without normal reentry gates. When false, it waits for a later candle and normal reentry gates.",
-  pocket_reentry_stop_loss_pct: "Long Momentum v9 immediate pocket-reentry stop loss as a percent of the reentry price. For example, 1.3 means stop = reentry price - 1.3%.",
+  pocket_reentry_stop_loss_pct: "Long Momentum v9 immediate pocket-reentry stop loss as a percent of the current open. For example, 2 means stop = current open - 2%.",
   tema9_exit_buffer_pct: "Long Momentum v9 TEMA exit threshold as a fraction of TEMA9. 0.005 means exit when TEMA20 reaches 100.5% of TEMA9.",
   vwap_stop_offset_pct: "Long Momentum v9 VWAP reentry protective stop offset, expressed as n percent of VWAP. For example, 3 means stop = VWAP - 3% of VWAP.",
   limit_order_offset_dollars: "Long Momentum v9 liquid-limit execution offset. Buys use current open plus this value; sells use current open minus this value.",
