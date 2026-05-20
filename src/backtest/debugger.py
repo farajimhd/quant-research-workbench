@@ -393,18 +393,18 @@ class StepBacktestDebugger(BacktestEngine):
                     self._gte_check(row, "last_volume", self._strategy_param("min_watchlist_add_volume", 8_000.0)),
                     self._gte_check(row, "last_transactions", self._strategy_param("min_first_entry_transactions", 100.0)),
                 ],
-                "Immediate Entry Raw Inputs": [
+                "First Entry Raw Inputs": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._range_check(row, "minute_of_day", self._strategy_param("trading_start_minute", 240.0), self._strategy_param("trading_end_minute", 1200.0) - 1),
-                    self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.05), fallback_key="last_5m_return"),
-                    self._gte_check(row, "last_volume", self._strategy_param("min_watchlist_add_volume", 8_000.0)),
-                    self._gte_check(row, "last_transactions", self._strategy_param("min_first_entry_transactions", 100.0)),
-                    self._gte_check(row, "last_transactions_vs_prior_3", self._strategy_param("min_first_entry_transactions_vs_prior_3", 20.0)),
+                    self._gt_check(row, "last_day_high_so_far", 0.0),
+                    self._gt_check(row, "current_open", self._number(row, "last_day_high_so_far") or 0.0),
                 ],
-                "Immediate Entry Strategy State": [
+                "First Entry Strategy State": [
                     self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
                     self._lte_check(row, "held_quantity", 0.0),
                     self._bool_check(row, "long_momentum_v9_pending_symbol_order", False),
+                    self._bool_check(row, "long_momentum_v9_first_entry_available", True),
+                    self._bool_check(row, "long_momentum_v9_first_entry_day_high_break_ok", True),
                 ],
                 "Watchlist VWAP Entry Raw Inputs": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
@@ -423,6 +423,7 @@ class StepBacktestDebugger(BacktestEngine):
                 ],
                 "Watchlist VWAP Entry Strategy State": [
                     self._present_check(row, "long_momentum_v9_watchlist_added_timestamp"),
+                    self._bool_check(row, "long_momentum_v9_watchlist_first_entry_filled", True),
                     self._bool_check(row, "long_momentum_v9_watchlist_entry_ready", True),
                     self._lte_check(row, "held_quantity", 0.0),
                     self._bool_check(row, "long_momentum_v9_pending_symbol_order", False),
@@ -443,10 +444,10 @@ class StepBacktestDebugger(BacktestEngine):
                 ],
                 "Final Strategy Decision": [
                     self._check(
-                        "long_momentum_v9_immediate_or_watchlist_entry_open",
-                        f"immediate={self._bool_value(row, 'long_momentum_v9_immediate_entry_open')}, reentry={self._bool_value(row, 'long_momentum_v9_reentry_open')}",
+                        "long_momentum_v9_first_or_watchlist_entry_open",
+                        f"first={self._bool_value(row, 'long_momentum_v9_first_entry_open')}, reentry={self._bool_value(row, 'long_momentum_v9_reentry_open')}",
                         bool(
-                            self._bool_value(row, "long_momentum_v9_immediate_entry_open")
+                            self._bool_value(row, "long_momentum_v9_first_entry_open")
                             or self._bool_value(row, "long_momentum_v9_reentry_open")
                         ),
                         "is True",

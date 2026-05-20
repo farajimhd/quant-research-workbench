@@ -19,12 +19,9 @@ A ticker is eligible for the watchlist when:
 
 The default `min_watchlist_add_volume` is `8000`.
 
-If the same bar also has:
-
-- `last_transactions_vs_prior_3 >= min_first_entry_transactions_vs_prior_3`
-
-then v9 can enter immediately on that current bar without waiting for the next
-bar VWAP entry rule.
+Passing the watchlist filters does not submit an entry by itself. The ticker
+must first prove continuation with the First Entry day-high break described
+below.
 
 For 1-minute bars:
 
@@ -40,12 +37,55 @@ completed-bar inputs, `last_5m_return` at the current open is always based on
 the previous completed candle. It never uses prior-session prices or future
 bars.
 
-## Watchlist VWAP Entry
+## First Entry
 
-If a ticker only passes the watchlist-add conditions, it waits in the day
-momentum watchlist. It can enter later when all VWAP entry rules are true:
+Each day-watchlist ticker is eligible for one First Entry. First Entry has the
+highest priority and is only allowed when:
+
+- the ticker is already in the day momentum watchlist
+- the ticker has not already submitted or filled its one First Entry
+- there is no open position or pending order for the ticker
+- the current minute is inside the configured trading window
+- `current_open > last_day_high_so_far`
+
+`last_day_high_so_far` is the session high known before the current actionable
+bar, so the breakout check does not use the current bar high or any future bar.
+
+If First Entry candidates appear while cash is tied up in lower-priority
+watchlist reentry positions, v9 submits same-bar sell orders for enough of
+those lower-priority positions to fund the First Entry target size. Existing
+First Entry positions are not rotated out by this rule. If multiple First Entry
+candidates appear on the same bar, v9 splits available cash equally across
+them, respecting the configured maximum entry order size.
+
+First Entry uses the VWAP stop:
+
+```text
+limit_price = current_open
+entry_price = filled limit_price
+stop_price = last_vwap - (last_vwap * vwap_stop_offset_pct / 100)
+```
+
+The VWAP stop is active immediately and trails upward while the position is
+open.
+
+For the first `first_entry_soft_exit_wait_bars` completed bars after a First
+Entry fill, the soft exits are disabled:
+
+- TEMA close
+- 2xBVD
+- pocketing
+
+The protective VWAP stop remains active during this wait. The default wait is
+`3` bars.
+
+## Watchlist VWAP Reentry
+
+A ticker can only use the VWAP reentry after its First Entry has filled at
+least once. It can enter later when all VWAP reentry rules are true:
 
 - the ticker was added to the watchlist on a prior bar, not the current bar
+- the ticker already has `watchlist_first_entry_filled = true`
 - there is no open position or pending order for the ticker
 - the current minute is inside the configured trading window
 - `min_price <= last_close <= max_price`
@@ -54,10 +94,10 @@ momentum watchlist. It can enter later when all VWAP entry rules are true:
 - last completed candle TEMA is open by the configured buffer:
   `last_tema9 >= last_tema20 * (1 + tema9_open_buffer_pct)`
 
-The 5-minute return and transaction threshold are used only to add the ticker to
-the watchlist unless the same bar also passes the transaction-impulse threshold.
-For watchlist-only names, the entry gate is the VWAP cross, and the first
-possible VWAP entry is the next bar after the watchlist add.
+The 5-minute return, volume, and transaction thresholds are used to add the
+ticker to the watchlist. For later reentry, the gate is the VWAP/body-break
+reentry rule, and the first possible VWAP reentry is the next bar after a prior
+First Entry has filled and exited.
 
 If multiple watchlist VWAP entry candidates appear on the same bar, v9 splits
 available cash equally across them and submits them at the same current open.
@@ -70,7 +110,7 @@ last_bearish_volume_divergence_score <= max_reentry_bvd_score
 ```
 
 The default `max_reentry_bvd_score` is `80.0`, so a 1-minute BVD score above
-80 blocks watchlist reentry. This does not block same-bar immediate First Entry.
+80 blocks watchlist reentry. This does not block First Entry.
 
 Watchlist VWAP reentry requires the last completed candle to close above VWAP
 by the configured buffer:
@@ -106,21 +146,17 @@ This reentry body-break rule does not use MACD.
 
 ## Entry Sizing And Stop
 
-Immediate entry uses the previous candle open as the stop reference:
-
-```text
-limit_price = current_open
-entry_price = filled limit_price
-stop_price = last_open
-```
-
-Watchlist VWAP entry uses a stop slightly below VWAP:
+First Entry and watchlist VWAP reentry use a stop slightly below VWAP:
 
 ```text
 limit_price = current_open
 entry_price = filled limit_price
 stop_price = last_vwap - (last_vwap * vwap_stop_offset_pct / 100)
 ```
+
+Legacy immediate transaction-impulse entry is disabled in current v9. The
+`min_first_entry_transactions_vs_prior_3` parameter may still appear in older
+debug views, but it no longer opens a same-bar entry.
 
 If `risk_per_share <= 0`, the entry is skipped.
 

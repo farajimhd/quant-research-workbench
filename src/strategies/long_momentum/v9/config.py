@@ -23,6 +23,7 @@ V9_PARAMETER_FIELDS = (
     "max_reentry_bvd_score",
     "reentry_vwap_buffer_pct",
     "vwap_stop_offset_pct",
+    "first_entry_soft_exit_wait_bars",
     "double_bvd_exit_score",
     "adaptive_pocket_enabled",
     "pocket_profit_pct",
@@ -32,7 +33,7 @@ V9_PARAMETER_FIELDS = (
     "tema9_open_buffer_pct",
     "tema9_exit_buffer_pct",
     "limit_order_offset_dollars",
-    "max_immediate_entry_candidates_per_bar",
+    "max_first_entry_candidates_per_bar",
     "max_reentry_candidates_per_bar",
     "watchlist_snapshot_limit",
 )
@@ -54,6 +55,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     max_reentry_bvd_score: float = 80.0
     reentry_vwap_buffer_pct: float = 2.0
     double_bvd_exit_score: float = 50.0
+    first_entry_soft_exit_wait_bars: int = 3
     adaptive_pocket_enabled: bool = True
     pocket_profit_pct: float = 0.03
     adaptive_pocket_vol_multiplier: float = 1.25
@@ -64,7 +66,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     vwap_stop_offset_pct: float = 3.0
     limit_order_offset_dollars: float = 0.01
 
-    max_immediate_entry_candidates_per_bar: int = 50
+    max_first_entry_candidates_per_bar: int = 50
     max_reentry_candidates_per_bar: int = 50
     watchlist_snapshot_limit: int = 250
 
@@ -72,6 +74,9 @@ class LongMomentumV9Config(LongMomentumV3Config):
     def from_dict(cls, raw: dict[str, Any] | None) -> "LongMomentumV9Config":
         if raw is None:
             return cls()
+        raw = dict(raw)
+        if "max_first_entry_candidates_per_bar" not in raw and "max_immediate_entry_candidates_per_bar" in raw:
+            raw["max_first_entry_candidates_per_bar"] = raw["max_immediate_entry_candidates_per_bar"]
         allowed = {field: value for field, value in raw.items() if field in cls.__dataclass_fields__}
         return cls(**allowed)
 
