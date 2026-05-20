@@ -516,12 +516,12 @@ class StepBacktestDebugger(BacktestEngine):
                 "VWAP Reclaim Raw Inputs": [
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._range_check(row, "minute_of_day", self._strategy_param("trading_start_minute", 240.0), self._strategy_param("trading_end_minute", 1200.0) - 1),
-                    self._gt_check(row, "last_vwap", 0.0),
+                    self._gt_check(row, "long_momentum_v9_day_max_vwap", 0.0, fallback_key="long_momentum_v9_watchlist_max_vwap"),
                     self._gte_check(
                         row,
                         "last_close",
-                        (self._number(row, "last_vwap") or 0.0)
-                        * (1.0 + max(0.0, self._strategy_param("reentry_vwap_buffer_pct", 2.0)) / 100.0),
+                        (self._number(row, "long_momentum_v9_day_max_vwap") or self._number(row, "long_momentum_v9_watchlist_max_vwap") or 0.0)
+                        * (1.0 + max(0.0, self._strategy_param("reentry_vwap_buffer_pct", 1.0)) / 100.0),
                     ),
                     self._gte_check(row, "last_close", self._number(row, "last_open") or 0.0),
                     self._v9_last_tema_open_check(row),

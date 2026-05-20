@@ -175,7 +175,7 @@ have happened. A ticker can enter when all VWAP Reclaim rules are true:
 - there is no open position or pending order for the ticker
 - the current minute is inside the configured trading window
 - `min_price <= last_close <= max_price`
-- `last_close >= last_vwap * (1 + reentry_vwap_buffer_pct / 100)`
+- `last_close >= day_max_vwap * (1 + reentry_vwap_buffer_pct / 100)`
 - the completed VWAP reclaim bar is not red: `last_close >= last_open`
 - last completed candle TEMA is open by the configured buffer:
   `last_tema9 >= last_tema20 * (1 + tema9_open_buffer_pct)`
@@ -198,14 +198,14 @@ last_bearish_volume_divergence_score <= max_reentry_bvd_score
 The default `max_reentry_bvd_score` is `80.0`, so a 1-minute BVD score above
 80 blocks VWAP Reclaim. This does not block High Break Hold.
 
-VWAP Reclaim requires the last completed candle to close above VWAP
-by the configured buffer:
+VWAP Reclaim requires the last completed candle to close above the maximum
+VWAP of the day by the configured buffer:
 
 ```text
-last_close >= last_vwap * (1 + reentry_vwap_buffer_pct / 100)
+last_close >= day_max_vwap * (1 + reentry_vwap_buffer_pct / 100)
 ```
 
-The default `reentry_vwap_buffer_pct` is `2.0`.
+The default `reentry_vwap_buffer_pct` is `1.0`.
 
 VWAP Reclaim also requires the last completed candle TEMA stack to be
 open:

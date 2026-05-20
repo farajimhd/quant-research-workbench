@@ -63,7 +63,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     max_risk_fraction_of_cash: float = 0.25
     max_entry_order_quantity: int = 3_000
     max_reentry_bvd_score: float = 80.0
-    reentry_vwap_buffer_pct: float = 2.0
+    reentry_vwap_buffer_pct: float = 1.0
     double_bvd_exit_score: float = 50.0
     high_break_hold_confirmation_bars: int = 1
     high_break_hold_tolerance_ratio: float = 0.003

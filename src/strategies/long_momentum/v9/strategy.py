@@ -88,6 +88,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         self.config: LongMomentumV9Config
         self.momentum_watchlist: dict[str, MomentumWatch] = {}
         self.high_break_hold_watchlist: dict[str, HighBreakHoldWatch] = {}
+        self.day_max_vwap_by_ticker: dict[str, float] = {}
         self.watchlist_snapshots: list[dict] = []
         self.high_break_hold_snapshots: list[dict] = []
         self.last_scanner_rows: list[dict] = []
@@ -124,6 +125,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         self.position_meta = {}
         self.momentum_watchlist = {}
         self.high_break_hold_watchlist = {}
+        self.day_max_vwap_by_ticker = {}
         self.last_scanner_rows = []
         frame = frames.event_frame.filter(
             (pl.col("minute_of_day") >= self.config.trading_start_minute)
@@ -375,6 +377,11 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         ticker = str(row.get("ticker") or "").upper()
         if not ticker:
             return
+        last_vwap = self._float(row.get("last_vwap"))
+        day_max_vwap = self.day_max_vwap_by_ticker.get(ticker, 0.0)
+        if last_vwap > 0:
+            day_max_vwap = max(day_max_vwap, last_vwap)
+            self.day_max_vwap_by_ticker[ticker] = day_max_vwap
         last_close = self._float(row.get("last_close"))
         last_5m_return = self._float(row.get("last_5m_return"))
         volume = self._float(row.get("last_volume"))
@@ -390,14 +397,14 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 added_timestamp=timestamp,
                 added_last_close=last_close,
                 added_last_5m_return=last_5m_return,
+                max_vwap=day_max_vwap,
             )
             self.momentum_watchlist[ticker] = watch
             self._trace_watchlist_add(timestamp, ticker, row, watch)
         if watch is None:
             return
-        last_vwap = self._float(row.get("last_vwap"))
-        if last_vwap > 0:
-            watch.max_vwap = max(watch.max_vwap, last_vwap)
+        if day_max_vwap > 0:
+            watch.max_vwap = max(watch.max_vwap, day_max_vwap)
         if transactions > 0:
             watch.transaction_sum += transactions
             watch.transaction_count += 1
@@ -487,10 +494,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         current_timestamp = row.get("timestamp")
         watch_added_this_bar = bool(watch and current_timestamp == watch.added_timestamp)
         watch_entry_ready = bool(watch and isinstance(current_timestamp, datetime) and watch.added_timestamp < current_timestamp)
-        max_vwap = watch.max_vwap if watch else 0.0
+        max_vwap = self.day_max_vwap_by_ticker.get(ticker, 0.0) or (watch.max_vwap if watch else 0.0)
         last_vwap = self._float(row.get("last_vwap"))
         last_open = self._float(row.get("last_open"))
-        reentry_vwap_threshold = last_vwap * (1.0 + max(0.0, self.config.reentry_vwap_buffer_pct) / 100.0) if last_vwap > 0 else 0.0
+        reentry_vwap_threshold = max_vwap * (1.0 + max(0.0, self.config.reentry_vwap_buffer_pct) / 100.0) if max_vwap > 0 else 0.0
         reentry_price_reclaim = reentry_vwap_threshold > 0 and last_close >= reentry_vwap_threshold
         reentry_last_bar_not_red = last_close >= last_open
         last_tema9 = self._float(row.get("last_tema9"))
@@ -572,6 +579,7 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_watchlist_last_entry_type": watch.last_entry_type if watch else "",
             "long_momentum_v9_watchlist_last_state": watch.last_state if watch else "",
             "long_momentum_v9_watchlist_max_vwap": max_vwap,
+            "long_momentum_v9_day_max_vwap": max_vwap,
             "long_momentum_v9_watchlist_avg_transactions": watch.avg_transactions_since_watchlist if watch else 0.0,
             "long_momentum_v9_last_5m_return": last_5m_return,
             "long_momentum_v9_return_ok": return_ok,
