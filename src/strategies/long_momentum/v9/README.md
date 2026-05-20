@@ -193,12 +193,12 @@ Emergency exit:
 current_open_tema20 >= current_open_tema9 * (1 + tema9_exit_buffer_pct)
 ```
 
-The default `tema9_exit_buffer_pct` is `-0.01`, so the TEMA emergency exit
-triggers when the current-open TEMA20 estimate reaches 99% of the current-open
-TEMA9 estimate. Normal `tema9` and `tema20` remain close-of-bar indicators;
-only the active decision bar also has `current_open_tema9` and
-`current_open_tema20`. If no main exit is active and TEMA is closed, v9 exits
-at the current open.
+The default `tema9_exit_buffer_pct` is `0.005`, so the TEMA emergency exit
+triggers when the current-open TEMA20 estimate reaches 100.5% of the
+current-open TEMA9 estimate. Normal `tema9` and `tema20` remain close-of-bar
+indicators; only the active decision bar also has `current_open_tema9` and
+`current_open_tema20`. If no main exit is active and TEMA is closed, v9 exits at
+the current open.
 
 After exit, the ticker stays in the day momentum watchlist and the same VWAP
 entry rule can open another position later in the session.
