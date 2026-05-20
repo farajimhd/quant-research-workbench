@@ -1,4 +1,4 @@
-import { Activity, Banknote, BarChart3, ChevronDown, ChevronRight, CircleHelp, Database, Gauge, ListChecks, MoreHorizontal, Percent, Play, Shield, SlidersHorizontal, StopCircle, Trash2 } from "lucide-react";
+import { Activity, Banknote, BarChart3, ChevronDown, ChevronRight, CircleDollarSign, CircleHelp, Database, Gauge, ListChecks, MoreHorizontal, Percent, Play, Shield, SlidersHorizontal, StopCircle, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
@@ -2918,14 +2918,30 @@ function buildInteractiveDebugMetrics(
   counts: DebugStepCounts
 ): NewRunMetric[] {
   const pnl = finiteNumber(summary.total_pnl);
+  const realizedPnl = finiteNumber(summary.realized_pnl);
+  const unrealizedPnl = finiteNumber(summary.open_unrealized_pnl);
   const equity = finiteNumber(summary.final_equity ?? config.initial_cash);
   return [
     {
       detail: "Mark-to-market P/L after this debug bar",
       icon: <Banknote size={15} />,
-      label: "P/L",
+      label: "Total P/L",
       tone: signedTone(pnl),
       value: formatMoney(pnl)
+    },
+    {
+      detail: "Closed-trade realized P/L after this debug bar",
+      icon: <CircleDollarSign size={15} />,
+      label: "Realized P/L",
+      tone: signedTone(realizedPnl),
+      value: formatMoney(realizedPnl)
+    },
+    {
+      detail: "Open-position unrealized P/L after this debug bar",
+      icon: <Activity size={15} />,
+      label: "Unrealized P/L",
+      tone: signedTone(unrealizedPnl),
+      value: formatMoney(unrealizedPnl)
     },
     {
       detail: "Portfolio equity after this debug bar",
