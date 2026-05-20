@@ -193,7 +193,7 @@ if estimated_bid >= entry_price * (1 + active_pocket_pct):
 ```
 
 Adaptive pocketing is enabled by default. Its default parameters are
-`adaptive_pocket_vol_multiplier = 1.5`, `adaptive_pocket_min_profit_pct = 0.025`,
+`adaptive_pocket_vol_multiplier = 1.25`, `adaptive_pocket_min_profit_pct = 0.025`,
 and `adaptive_pocket_max_profit_pct = 0.06`. The fixed `pocket_profit_pct`
 default remains `0.03`; it is used when `adaptive_pocket_enabled = false`, and
 as an explicit fallback if adaptive mode cannot read provider-built short

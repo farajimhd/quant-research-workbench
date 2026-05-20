@@ -56,7 +56,7 @@ class LongMomentumV9Config(LongMomentumV3Config):
     double_bvd_exit_score: float = 50.0
     adaptive_pocket_enabled: bool = True
     pocket_profit_pct: float = 0.03
-    adaptive_pocket_vol_multiplier: float = 1.5
+    adaptive_pocket_vol_multiplier: float = 1.25
     adaptive_pocket_min_profit_pct: float = 0.025
     adaptive_pocket_max_profit_pct: float = 0.06
     tema9_open_buffer_pct: float = 0.002
