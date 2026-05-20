@@ -6,11 +6,22 @@ from typing import Any
 from src.strategies.long_momentum.v9.config import LongMomentumV9Config, V9_PARAMETER_FIELDS
 
 
-V10_PARAMETER_FIELDS = tuple(dict.fromkeys((*V9_PARAMETER_FIELDS, "high_break_take_profit_pct")))
+V10_PARAMETER_FIELDS = tuple(
+    dict.fromkeys(
+        (
+            *V9_PARAMETER_FIELDS,
+            "enable_high_break_hold_entry",
+            "enable_vwap_reclaim_entry",
+            "high_break_take_profit_pct",
+        )
+    )
+)
 
 
 @dataclass(slots=True)
 class LongMomentumV10Config(LongMomentumV9Config):
+    enable_high_break_hold_entry: bool = True
+    enable_vwap_reclaim_entry: bool = False
     high_break_take_profit_pct: float = 0.15
 
     @classmethod

@@ -428,7 +428,8 @@ STRATEGY_VERSION_DESCRIPTIONS: dict[tuple[str, str], str] = {
         "Pocket exits do not reenter on the same bar. Main exits use red-candle 2-minute BVD."
     ),
     ("long_momentum", "v10"): (
-        "Starts from Long Momentum v9 and keeps the same watchlist, High Break Hold entry, sizing, execution, and VWAP Reclaim path. "
+        "Starts from Long Momentum v9 and keeps the same watchlist, sizing, execution, and entry methods, but makes High Break Hold "
+        "and VWAP Reclaim independently switchable. High Break Hold is enabled by default and VWAP Reclaim is disabled by default. "
         "High Break Hold positions hold longer: they exit only when price touches back to the day max VWAP stop or when the current "
         "open is above the configured take-profit threshold, then require a fresh day-high break before another High Break entry."
     ),

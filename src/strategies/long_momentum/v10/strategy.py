@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import polars as pl
 
@@ -34,6 +35,49 @@ class LongMomentumV10Strategy(LongMomentumV9Strategy):
                 f"missing columns: {', '.join(missing)}. In the Build Data page, run the Long Momentum v9 feature build "
                 f"for a range that includes {date_text}; v10 uses the same 1m core, momentum, session, volatility, and volume_liquidity features."
             )
+
+    def _update_high_break_hold_watch(self, timestamp: datetime, row: dict[str, Any], watch) -> None:
+        if not self.config.enable_high_break_hold_entry:
+            return
+        super()._update_high_break_hold_watch(timestamp, row, watch)
+
+    def _evaluate_v9_row(self, row: dict[str, Any], ticker: str, portfolio: Portfolio, pending_symbols: set[str]) -> dict[str, Any]:
+        result = super()._evaluate_v9_row(row, ticker, portfolio, pending_symbols)
+        high_break_enabled = bool(self.config.enable_high_break_hold_entry)
+        vwap_reclaim_enabled = bool(self.config.enable_vwap_reclaim_entry)
+        high_break_open = high_break_enabled and bool(result.get("long_momentum_v9_high_break_hold_entry_open"))
+        vwap_reclaim_base_open = bool(
+            result.get("long_momentum_v9_price_eligible")
+            and result.get("long_momentum_v9_watchlist_active")
+            and result.get("long_momentum_v9_watchlist_entry_ready")
+            and result.get("long_momentum_v9_no_symbol_position")
+            and result.get("long_momentum_v9_entry_time_ok")
+            and result.get("long_momentum_v9_vwap_reclaim_price_reclaim")
+            and result.get("long_momentum_v9_vwap_reclaim_last_bar_not_red")
+            and result.get("long_momentum_v9_vwap_reclaim_last_tema_open_ok")
+            and result.get("long_momentum_v9_vwap_reclaim_bvd_ok")
+            and result.get("long_momentum_v9_vwap_reclaim_body_break_ok")
+            and result.get("long_momentum_v9_vwap_reclaim_open_not_below_last_body")
+        )
+        vwap_reclaim_open = vwap_reclaim_enabled and vwap_reclaim_base_open and not high_break_open
+        result.update(
+            {
+                "long_momentum_v10_high_break_hold_enabled": high_break_enabled,
+                "long_momentum_v10_vwap_reclaim_enabled": vwap_reclaim_enabled,
+                "long_momentum_v9_high_break_hold_entry_open": high_break_open,
+                "long_momentum_v9_vwap_reclaim_entry_open": vwap_reclaim_open,
+                "long_momentum_v9_first_entry_open": high_break_open,
+                "long_momentum_v9_reentry_open": vwap_reclaim_open,
+                "long_momentum_v9_entry_priority": 2 if high_break_open else 1 if vwap_reclaim_open else 0,
+                "long_momentum_v9_entry_open": high_break_open or vwap_reclaim_open,
+                "entry_trigger": "HIGH_BREAK_HOLD" if high_break_open else "VWAP_RECLAIM" if vwap_reclaim_open else "",
+            }
+        )
+        if not high_break_enabled and bool(result.get("long_momentum_v9_high_break_hold_ready")):
+            result["long_momentum_v9_reject_reason"] = "high_break_hold_disabled"
+        elif not vwap_reclaim_enabled and vwap_reclaim_base_open:
+            result["long_momentum_v9_reject_reason"] = "vwap_reclaim_disabled"
+        return result
 
     def _exit_requests(
         self,

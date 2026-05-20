@@ -290,6 +290,8 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_first_entry_transactions: "Long Momentum v9 1-minute transaction threshold needed to add a ticker to the day momentum watchlist. This is calibrated for 1m bars and should be retuned for other timeframes.",
   min_last_5m_return: "Long Momentum v9 provider-built same-session return_5 threshold needed to add a ticker to the day momentum watchlist.",
   max_entry_order_quantity: "Maximum BUY shares Long Momentum v9 is allowed to send to the backtest for a single entry or partial-entry remainder order.",
+  enable_high_break_hold_entry: "Long Momentum v10 switch for the High Break Hold entry method. Enabled by default.",
+  enable_vwap_reclaim_entry: "Long Momentum v10 switch for the VWAP Reclaim entry method. Disabled by default so v10 can focus on fewer, longer High Break Hold trades.",
   max_reentry_bvd_score: "Maximum 1-minute bearish volume divergence score allowed for Long Momentum v9 VWAP Reclaim. Scores above this block VWAP Reclaim.",
   reentry_vwap_buffer_pct: "Minimum Long Momentum v9 VWAP Reclaim buffer above the max VWAP of the day. For example, 1 means last close must be at least 1% above day max VWAP.",
   high_break_take_profit_pct: "Long Momentum v10 High Break Hold take-profit threshold as a ratio, not whole percent. 0.15 means exit when the current open is more than 15% above entry.",
@@ -608,6 +610,7 @@ const V9_STRATEGY_PARAMETER_GROUPS = [
     title: "High Break Hold",
     description: "High-priority entry path: day-high break detection, hold confirmation, fixed stop, and longer high lifecycle.",
     keys: [
+      "enable_high_break_hold_entry",
       "max_high_break_hold_candidates_per_bar",
       "high_break_hold_confirmation_bars",
       "high_break_hold_tolerance_ratio",
@@ -628,6 +631,7 @@ const V9_STRATEGY_PARAMETER_GROUPS = [
     title: "VWAP Reclaim",
     description: "Lower-priority entry path: VWAP reclaim, completed-bar TEMA/BVD checks, body break, and VWAP trailing stop.",
     keys: [
+      "enable_vwap_reclaim_entry",
       "max_reentry_candidates_per_bar",
       "reentry_vwap_buffer_pct",
       "max_reentry_bvd_score",
@@ -1990,6 +1994,8 @@ function HelpButton({ help, label }: { help: string; label: string }) {
 }
 
 const STRATEGY_PARAMETER_LABELS: Record<string, string> = {
+  enable_high_break_hold_entry: "Enable High Break Hold",
+  enable_vwap_reclaim_entry: "Enable VWAP Reclaim",
   tema9_open_buffer_pct: "TEMA9 Open Buffer Ratio",
   tema9_exit_buffer_pct: "TEMA9 Exit Buffer Ratio",
   high_break_hold_confirmation_bars: "High Break Hold Confirmation Bars",
