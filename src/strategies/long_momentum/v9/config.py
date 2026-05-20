@@ -17,7 +17,6 @@ V9_PARAMETER_FIELDS = (
     "min_last_5m_return",
     "min_watchlist_add_volume",
     "min_first_entry_transactions",
-    "min_first_entry_transactions_vs_prior_3",
     "max_risk_fraction_of_cash",
     "max_entry_order_quantity",
     "max_reentry_bvd_score",
@@ -60,7 +59,6 @@ class LongMomentumV9Config(LongMomentumV3Config):
     min_last_5m_return: float = 0.05
     min_watchlist_add_volume: float = 8_000.0
     min_first_entry_transactions: float = 100.0
-    min_first_entry_transactions_vs_prior_3: float = 20.0
     max_risk_fraction_of_cash: float = 0.25
     max_entry_order_quantity: int = 3_000
     max_reentry_bvd_score: float = 80.0
@@ -89,7 +87,6 @@ class LongMomentumV9Config(LongMomentumV3Config):
     limit_order_offset_dollars: float = 0.01
 
     max_high_break_hold_candidates_per_bar: int = 50
-    max_first_entry_candidates_per_bar: int = 50
     max_reentry_candidates_per_bar: int = 50
     watchlist_snapshot_limit: int = 250
 
@@ -102,8 +99,6 @@ class LongMomentumV9Config(LongMomentumV3Config):
             raw["max_high_break_hold_candidates_per_bar"] = raw["max_first_entry_candidates_per_bar"]
         if "max_high_break_hold_candidates_per_bar" not in raw and "max_immediate_entry_candidates_per_bar" in raw:
             raw["max_high_break_hold_candidates_per_bar"] = raw["max_immediate_entry_candidates_per_bar"]
-        if "max_first_entry_candidates_per_bar" not in raw and "max_immediate_entry_candidates_per_bar" in raw:
-            raw["max_first_entry_candidates_per_bar"] = raw["max_immediate_entry_candidates_per_bar"]
         allowed = {field: value for field, value in raw.items() if field in cls.__dataclass_fields__}
         return cls(**allowed)
 

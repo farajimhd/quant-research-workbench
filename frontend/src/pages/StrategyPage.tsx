@@ -279,13 +279,11 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   min_transactions: "Minimum current bar transaction count required before a Long Momentum entry.",
   min_watchlist_add_volume: "Long Momentum v9 last-bar volume threshold needed to add a ticker to the day momentum watchlist.",
   min_first_entry_transactions: "Long Momentum v9 1-minute transaction threshold needed to add a ticker to the day momentum watchlist. This is calibrated for 1m bars and should be retuned for other timeframes.",
-  min_first_entry_transactions_vs_prior_3: "Legacy Long Momentum v9 transaction impulse threshold retained for review; current v9 entries use the momentum watchlist, High Break Hold, and VWAP Reclaim paths.",
   min_last_5m_return: "Long Momentum v9 provider-built same-session return_5 threshold needed to add a ticker to the day momentum watchlist.",
   max_entry_order_quantity: "Maximum BUY shares Long Momentum v9 is allowed to send to the backtest for a single entry or partial-entry remainder order.",
   max_reentry_bvd_score: "Maximum 1-minute bearish volume divergence score allowed for Long Momentum v9 VWAP Reclaim. Scores above this block VWAP Reclaim.",
   reentry_vwap_buffer_pct: "Minimum Long Momentum v9 VWAP Reclaim buffer above VWAP. For example, 2 means last close must be at least 2% above VWAP.",
   max_high_break_hold_candidates_per_bar: "Maximum Long Momentum v9 High Break Hold candidates the strategy can process on one bar before cash allocation.",
-  max_first_entry_candidates_per_bar: "Legacy alias for the maximum Long Momentum v9 High Break Hold candidates per bar.",
   max_reentry_candidates_per_bar: "Maximum Long Momentum v9 VWAP Reclaim candidates the strategy can process on one bar after High Break Hold entries.",
   high_break_hold_confirmation_bars: "Number of later bars that must hold the day-high break level before Long Momentum v9 can submit a High Break Hold entry.",
   high_break_hold_tolerance_ratio: "High Break Hold confirmation tolerance as a ratio, not whole percent. 0.003 means a close within 0.3% below the breakout level still counts as holding.",
@@ -417,7 +415,6 @@ const STRATEGY_PARAMETER_GROUPS = [
       "min_transactions",
       "min_watchlist_add_volume",
       "min_first_entry_transactions",
-      "min_first_entry_transactions_vs_prior_3",
       "max_spread_below_5",
       "max_spread_5_to_10",
       "liquidity_window_minutes"
@@ -446,7 +443,6 @@ const STRATEGY_PARAMETER_GROUPS = [
       "max_active_positions",
       "replacement_score_buffer",
       "max_high_break_hold_candidates_per_bar",
-      "max_first_entry_candidates_per_bar",
       "max_reentry_candidates_per_bar",
       "watchlist_snapshot_limit"
     ]
@@ -567,6 +563,84 @@ const STRATEGY_PARAMETER_GROUPS = [
     ]
   }
 ] satisfies Array<{ title: string; description: string; keys: string[] }>;
+
+const V9_STRATEGY_PARAMETER_GROUPS = [
+  {
+    title: "Watchlist",
+    description: "Raw gates that add a ticker to the Long Momentum v9 day momentum watchlist.",
+    keys: [
+      "min_price",
+      "max_price",
+      "trading_start_minute",
+      "trading_end_minute",
+      "min_last_5m_return",
+      "min_watchlist_add_volume",
+      "min_first_entry_transactions",
+      "watchlist_snapshot_limit",
+    ]
+  },
+  {
+    title: "Sizing & Execution",
+    description: "Cash allocation, order sizing, fees, and liquid-limit execution assumptions shared by v9 entry paths.",
+    keys: [
+      "cash_buffer_dollars",
+      "max_risk_fraction_of_cash",
+      "max_entry_order_quantity",
+      "sizing_fee_per_share",
+      "sizing_min_fee",
+      "limit_order_offset_dollars",
+    ]
+  },
+  {
+    title: "High Break Hold",
+    description: "High-priority entry path: day-high break detection, hold confirmation, fixed stop, and longer high lifecycle.",
+    keys: [
+      "max_high_break_hold_candidates_per_bar",
+      "high_break_hold_confirmation_bars",
+      "high_break_hold_tolerance_ratio",
+      "high_break_stop_offset_ratio",
+      "first_entry_soft_exit_wait_bars",
+      "first_entry_high_lifecycle_exit_enabled",
+      "first_entry_high_near_tolerance_ratio",
+      "first_entry_high_stall_bars",
+      "first_entry_body_lifecycle_exit_enabled",
+      "first_entry_body_fast_ema_bars",
+      "first_entry_body_slow_ema_bars",
+      "first_entry_body_contraction_ratio",
+      "first_entry_body_contraction_bars",
+    ]
+  },
+  {
+    title: "VWAP Reclaim",
+    description: "Lower-priority entry path: VWAP reclaim, completed-bar TEMA/BVD checks, body break, and VWAP trailing stop.",
+    keys: [
+      "max_reentry_candidates_per_bar",
+      "reentry_vwap_buffer_pct",
+      "max_reentry_bvd_score",
+      "tema9_open_buffer_pct",
+      "vwap_stop_offset_pct",
+    ]
+  },
+  {
+    title: "Exits & Pocketing",
+    description: "Shared v9 soft exits, TEMA close threshold, double-timeframe BVD exit, and fixed/adaptive pocketing.",
+    keys: [
+      "double_bvd_exit_score",
+      "tema9_exit_buffer_pct",
+      "adaptive_pocket_enabled",
+      "pocket_profit_pct",
+      "adaptive_pocket_vol_multiplier",
+      "adaptive_pocket_min_profit_pct",
+      "adaptive_pocket_max_profit_pct",
+    ]
+  },
+] satisfies Array<{ title: string; description: string; keys: string[] }>;
+
+const V9_STALE_STRATEGY_PARAMETER_KEYS = new Set([
+  "min_first_entry_transactions_vs_prior_3",
+  "max_first_entry_candidates_per_bar",
+  "max_immediate_entry_candidates_per_bar",
+]);
 
 const IMPORTANT_STRATEGY_PARAMETER_KEYS = [
   "max_active_positions",
@@ -1665,8 +1739,9 @@ function EditReadonlyField({ help, label, value }: { help: string; label: string
 }
 
 function StrategyParameterEditor({ config, onChange }: { config: StrategyConfig; onChange: (config: StrategyConfig) => void }) {
-  const params = config.strategy_params;
-  const knownKeys = new Set(STRATEGY_PARAMETER_GROUPS.flatMap((group) => group.keys));
+  const params = strategyVisibleParams(config);
+  const parameterGroups = strategyParameterGroups(config);
+  const knownKeys = new Set(parameterGroups.flatMap((group) => group.keys));
   const importantKeys = IMPORTANT_STRATEGY_PARAMETER_KEYS.filter((key) => key in params);
   const importantKeySet = new Set(importantKeys);
   const remaining = Object.keys(params).filter((key) => !knownKeys.has(key));
@@ -1704,7 +1779,7 @@ function StrategyParameterEditor({ config, onChange }: { config: StrategyConfig;
           ))}
         </EditSection>
       ) : null}
-      {STRATEGY_PARAMETER_GROUPS.map((group) => {
+      {parameterGroups.map((group) => {
         const keys = group.keys.filter((key) => key in params && !importantKeySet.has(key));
         if (!keys.length) return null;
         return (
@@ -1736,6 +1811,22 @@ function StrategyParameterEditor({ config, onChange }: { config: StrategyConfig;
       ) : null}
     </ParameterEditorShell>
   );
+}
+
+function strategyParameterGroups(config: StrategyConfig): Array<{ title: string; description: string; keys: string[] }> {
+  if (config.strategy_name === "long_momentum" && String(config.strategy_version || "").toLowerCase() === "v9") {
+    return V9_STRATEGY_PARAMETER_GROUPS;
+  }
+  return STRATEGY_PARAMETER_GROUPS;
+}
+
+function strategyVisibleParams(config: StrategyConfig): Record<string, StrategyParamValue> {
+  if (config.strategy_name !== "long_momentum" || String(config.strategy_version || "").toLowerCase() !== "v9") {
+    return config.strategy_params;
+  }
+  return Object.fromEntries(
+    Object.entries(config.strategy_params).filter(([key]) => !V9_STALE_STRATEGY_PARAMETER_KEYS.has(key))
+  ) as Record<string, StrategyParamValue>;
 }
 
 function ParameterEditorShell({
@@ -1873,7 +1964,6 @@ const STRATEGY_PARAMETER_LABELS: Record<string, string> = {
   high_break_hold_tolerance_ratio: "High Break Hold Tolerance Ratio",
   high_break_stop_offset_ratio: "High Break Stop Offset Ratio",
   max_high_break_hold_candidates_per_bar: "Max High Break Hold Candidates Per Bar",
-  max_first_entry_candidates_per_bar: "Max High Break Hold Candidates Per Bar (Legacy)",
   max_reentry_candidates_per_bar: "Max VWAP Reclaim Candidates Per Bar",
   first_entry_soft_exit_wait_bars: "High Break Hold Soft Exit Wait Bars",
   first_entry_high_near_tolerance_ratio: "High Break Hold High Near Tolerance Ratio",
@@ -3576,7 +3666,6 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "long_momentum_v9_return_ok",
   "long_momentum_v9_watchlist_add_volume_ok",
   "long_momentum_v9_watchlist_add_transactions_ok",
-  "long_momentum_v9_immediate_transactions_vs_prior_3_ok",
   "long_momentum_v9_entry_time_ok",
   "long_momentum_v9_pending_symbol_order",
   "long_momentum_v9_no_symbol_position",

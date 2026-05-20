@@ -476,12 +476,10 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         last_5m_return = self._float(row.get("last_5m_return"))
         volume = self._float(row.get("last_volume"))
         transactions = self._float(row.get("last_transactions"))
-        transactions_vs_prior_3 = self._float(row.get("last_transactions_vs_prior_3"))
         price_eligible = self.config.min_price <= last_close <= self.config.max_price
         return_ok = last_5m_return >= self.config.min_last_5m_return
         watchlist_add_volume_ok = volume >= self.config.min_watchlist_add_volume
         watchlist_add_transactions_ok = transactions >= self.config.min_first_entry_transactions
-        immediate_transactions_vs_prior_3_ok = transactions_vs_prior_3 >= self.config.min_first_entry_transactions_vs_prior_3
         entry_time_ok = self.config.trading_start_minute <= int(self._float(row.get("minute_of_day"))) < self.config.trading_end_minute
         pending_symbol_order = ticker in pending_symbols
         no_symbol_position = ticker not in portfolio.positions and not pending_symbol_order
@@ -575,7 +573,6 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
             "long_momentum_v9_return_ok": return_ok,
             "long_momentum_v9_watchlist_add_volume_ok": watchlist_add_volume_ok,
             "long_momentum_v9_watchlist_add_transactions_ok": watchlist_add_transactions_ok,
-            "long_momentum_v9_immediate_transactions_vs_prior_3_ok": immediate_transactions_vs_prior_3_ok,
             "long_momentum_v9_entry_time_ok": entry_time_ok,
             "long_momentum_v9_pending_symbol_order": pending_symbol_order,
             "long_momentum_v9_no_symbol_position": no_symbol_position,
@@ -646,7 +643,6 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
                 entry_time_ok=entry_time_ok,
                 return_ok=return_ok,
                 watchlist_add_transactions_ok=watchlist_add_transactions_ok,
-                immediate_transactions_vs_prior_3_ok=immediate_transactions_vs_prior_3_ok,
                 reentry_price_reclaim=reentry_price_reclaim,
                 reentry_last_bar_not_red=reentry_last_bar_not_red,
                 reentry_last_tema_open_ok=reentry_last_tema_open_ok,
@@ -1696,7 +1692,6 @@ class LongMomentumV9Strategy(LongMomentumV3Strategy):
         entry_time_ok: bool,
         return_ok: bool,
         watchlist_add_transactions_ok: bool,
-        immediate_transactions_vs_prior_3_ok: bool,
         reentry_price_reclaim: bool,
         reentry_last_bar_not_red: bool,
         reentry_last_tema_open_ok: bool,

@@ -224,9 +224,8 @@ entry_price = filled limit_price
 stop_price = last_vwap - (last_vwap * vwap_stop_offset_pct / 100)
 ```
 
-Legacy immediate transaction-impulse entry is disabled in current v9. The
-`min_first_entry_transactions_vs_prior_3` parameter may still appear in older
-debug views, but it no longer opens a same-bar entry.
+Legacy immediate transaction-impulse entry is disabled in current v9 and is no
+longer exposed as a tunable strategy parameter.
 
 If `risk_per_share <= 0`, the entry is skipped.
 
