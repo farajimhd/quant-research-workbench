@@ -9285,7 +9285,10 @@ button {
 }
 
 .live-window-actions .live-canvas-target-row {
-  max-width: 98px;
+  border-right: 1px solid var(--border);
+  margin-right: 3px;
+  max-width: 112px;
+  padding-right: 8px;
 }
 
 .live-workspace {
@@ -9420,8 +9423,11 @@ button {
 }
 
 .live-window-actions {
+  align-items: center;
   display: flex;
-  gap: 4px;
+  flex: 0 0 auto;
+  gap: 5px;
+  min-width: 0;
 }
 
 .live-window-actions .toolbar-button.compact {
