@@ -9286,9 +9286,10 @@ button {
 
 .live-window-actions .live-canvas-target-row {
   border-right: 1px solid var(--border);
-  margin-right: 3px;
-  max-width: 112px;
-  padding-right: 8px;
+  max-width: none;
+  min-width: 0;
+  padding-right: 6px;
+  width: 72px;
 }
 
 .live-workspace {
@@ -9399,9 +9400,9 @@ button {
   background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface));
   border-bottom: 1px solid var(--border);
   cursor: move;
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) auto;
   padding: 5px 8px;
   touch-action: none;
   user-select: none;
@@ -9424,17 +9425,17 @@ button {
 
 .live-window-actions {
   align-items: center;
-  display: flex;
-  flex: 0 0 auto;
-  gap: 5px;
-  min-width: 0;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: 79px repeat(4, 20px);
+  justify-content: end;
 }
 
 .live-window-actions .toolbar-button.compact {
-  height: 22px;
-  min-height: 22px;
+  height: 20px;
+  min-height: 20px;
   padding: 0;
-  width: 22px;
+  width: 20px;
 }
 
 .live-window-body {
