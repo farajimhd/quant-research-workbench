@@ -4,6 +4,9 @@ import {
   ChevronDown,
   ChevronUp,
   Eye,
+  ExternalLink,
+  FolderOpen,
+  LayoutGrid,
   Maximize2,
   Minimize2,
   Move,
@@ -16,6 +19,7 @@ import {
   Target,
   TrendingUp,
   WalletCards,
+  X,
 } from "lucide-react";
 import type { Time } from "lightweight-charts";
 
@@ -87,7 +91,7 @@ type ScannerSetupGroup = {
   requireBodyBreak: boolean;
 };
 
-type WindowId = "scanner" | "portfolio" | "trade" | "charts";
+type WindowId = string;
 
 type WindowLayout = {
   fullscreen: boolean;
@@ -97,6 +101,19 @@ type WindowLayout = {
   x: number;
   y: number;
   z: number;
+};
+
+type ChartWindow = {
+  id: WindowId;
+  row: Record<string, unknown>;
+  ticker: string;
+};
+
+type SavedCanvasLayout = {
+  chartWindows: ChartWindow[];
+  layouts: Record<WindowId, WindowLayout>;
+  name: string;
+  windows: WindowId[];
 };
 
 type DecisionState = "approved" | "skipped" | "watching";
@@ -125,6 +142,8 @@ type PositionRow = {
 
 const LIVE_SESSION_STORAGE_KEY = "quant-research-workbench.live-trading.session";
 const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.live-trading.layout";
+const LIVE_LAYOUTS_STORAGE_KEY = "quant-research-workbench.live-trading.named-layouts";
+const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.live-trading.shared-state";
 const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-setups";
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const MAIN_DISPLAY_ITEMS = ["vwap", "tema9", "tema20", "macd"];
@@ -151,12 +170,7 @@ const LIVE_SCANNER_COLUMNS = [
   "spread_bps_abs",
 ];
 
-const DEFAULT_LAYOUT: Record<WindowId, WindowLayout> = {
-  scanner: { fullscreen: false, h: 520, minimized: false, w: 670, x: 12, y: 12, z: 1 },
-  portfolio: { fullscreen: false, h: 360, minimized: false, w: 670, x: 12, y: 548, z: 2 },
-  trade: { fullscreen: false, h: 360, minimized: false, w: 410, x: 700, y: 548, z: 3 },
-  charts: { fullscreen: false, h: 895, minimized: false, w: 870, x: 700, y: 12, z: 4 },
-};
+const CORE_WINDOW_IDS: WindowId[] = ["portfolio", "scanner", "trade"];
 
 const DEFAULT_SETUP_GROUPS: ScannerSetupGroup[] = [
   {
@@ -200,35 +214,62 @@ const DEFAULT_SETUP_GROUPS: ScannerSetupGroup[] = [
   },
 ];
 
+function buildDefaultCanvasLayout(childCanvas: boolean): { chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] } {
+  const width = Math.max(1180, window.innerWidth - 112);
+  const height = Math.max(780, window.innerHeight - 86);
+  const gap = 10;
+  const margin = 12;
+  const portfolioH = 224;
+  const mainY = margin + portfolioH + gap;
+  const availableH = Math.max(420, height - mainY - margin);
+  const leftW = Math.max(180, Math.round(width * 0.125));
+  const scannerH = Math.round(availableH * 0.65) - Math.round(gap / 2);
+  const tradeH = availableH - scannerH - gap;
+  const chartX = margin + leftW + gap;
+  const chartW = Math.round(width * 0.4);
+  const layouts: Record<WindowId, WindowLayout> = {
+    portfolio: { fullscreen: false, h: portfolioH, minimized: false, w: width - margin * 2, x: margin, y: margin, z: 3 },
+    scanner: { fullscreen: false, h: scannerH, minimized: false, w: leftW, x: margin, y: mainY, z: 1 },
+    trade: { fullscreen: false, h: tradeH, minimized: false, w: leftW, x: margin, y: mainY + scannerH + gap, z: 2 },
+    chart: { fullscreen: false, h: availableH, minimized: false, w: chartW, x: chartX, y: mainY, z: 4 },
+  };
+  return { chartWindows: [], layouts, windows: childCanvas ? [] : [...CORE_WINDOW_IDS] };
+}
+
 export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
+  const canvasId = useMemo(() => new URLSearchParams(window.location.search).get("liveCanvas") || "main", []);
+  const isChildCanvas = canvasId !== "main";
+  const initialCanvas = useMemo(() => readStoredCanvas(canvasId, isChildCanvas), [canvasId, isChildCanvas]);
+  const initialSharedState = useMemo(readSharedTradingState, []);
   const [scope, setScope] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
   const [session, setSession] = useState<TradingSession>(() => readStoredSession() ?? { barTime: "04:00", sessionDate: "" });
-  const [started, setStarted] = useState(false);
+  const [started, setStarted] = useState(isChildCanvas);
   const [setupGroups, setSetupGroups] = useState<ScannerSetupGroup[]>(readStoredSetupGroups);
   const [newSetupName, setNewSetupName] = useState("");
   const [snapshot, setSnapshot] = useState<ScannerSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selectedRow, setSelectedRow] = useState<Record<string, unknown> | null>(null);
-  const [mainChartPayload, setMainChartPayload] = useState<ChartPayload | null>(null);
-  const [dayChartPayload, setDayChartPayload] = useState<ChartPayload | null>(null);
-  const [fiveMinuteChartPayload, setFiveMinuteChartPayload] = useState<ChartPayload | null>(null);
-  const [chartLoading, setChartLoading] = useState(false);
-  const [chartError, setChartError] = useState("");
   const [mainTimeframe, setMainTimeframe] = useState("1m");
   const [mainVisibleColumns, setMainVisibleColumns] = useState<string[]>(MAIN_DISPLAY_ITEMS);
   const [compactVisibleColumns, setCompactVisibleColumns] = useState<string[]>(LOWER_DISPLAY_ITEMS);
   const [headerCollapsed, setHeaderCollapsed] = useState(true);
   const [showDayChart, setShowDayChart] = useState(true);
   const [showFiveMinuteChart, setShowFiveMinuteChart] = useState(true);
-  const [decisions, setDecisions] = useState<Record<string, DecisionState>>({});
-  const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [positions, setPositions] = useState<PositionRow[]>([]);
+  const [decisions, setDecisions] = useState<Record<string, DecisionState>>(initialSharedState.decisions);
+  const [orders, setOrders] = useState<OrderRow[]>(initialSharedState.orders);
+  const [positions, setPositions] = useState<PositionRow[]>(initialSharedState.positions);
   const [portfolioTab, setPortfolioTab] = useState("Open Positions");
+  const [portfolioDetailsOpen, setPortfolioDetailsOpen] = useState(false);
   const [tradeDraft, setTradeDraft] = useState({ limit: "", quantity: "3000", side: "BUY" as "BUY" | "SELL", stop: "", type: "LIMIT" });
-  const [layouts, setLayouts] = useState<Record<WindowId, WindowLayout>>(readStoredLayout);
+  const [layouts, setLayouts] = useState<Record<WindowId, WindowLayout>>(initialCanvas.layouts);
+  const [openWindows, setOpenWindows] = useState<WindowId[]>(initialCanvas.windows);
+  const [chartWindows, setChartWindows] = useState<ChartWindow[]>(initialCanvas.chartWindows);
+  const [layoutName, setLayoutName] = useState("Momentum Desk");
+  const [savedLayouts, setSavedLayouts] = useState<SavedCanvasLayout[]>(readSavedCanvasLayouts);
+  const [selectedLayoutName, setSelectedLayoutName] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -264,10 +305,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }, [setupGroups]);
 
   useEffect(() => {
-    window.localStorage.setItem(LIVE_LAYOUT_STORAGE_KEY, JSON.stringify(layouts));
-  }, [layouts]);
-
-  useEffect(() => {
     if (!started || !onTopbarCenterChange) {
       onTopbarCenterChange?.(null);
       return;
@@ -286,7 +323,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const activeSetups = setupGroups.filter((item) => item.enabled);
   const selectedTicker = stringValue(selectedRow, "ticker");
   const selectedOpen = numberValue(selectedRow, "current_open") || numberValue(selectedRow, "open");
-  const selectedTime = selectedRow ? rowTimestampSeconds(selectedRow, session.sessionDate, session.barTime) : null;
   const selectedProfile = selectedRow ? enrichLiveCandidate(selectedRow, activeSetups) : null;
   const scannerRows = useMemo(
     () =>
@@ -296,56 +332,38 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         .sort((a, b) => numberValue(b, "live_priority") - numberValue(a, "live_priority")),
     [activeSetups, snapshot]
   );
-  const mainOpenOnlyPayload = useMemo(() => {
-    if (mainTimeframe === "1d") return dayOpenOnlyChartPayload(mainChartPayload, session.sessionDate, selectedOpen, selectedTime);
-    if (mainTimeframe === "5m") return castOpenChartPayload(mainChartPayload, selectedTime, selectedOpen, `${session.barTime} open`);
-    return openOnlyChartPayload(mainChartPayload, selectedTime, selectedOpen, session.barTime);
-  }, [mainChartPayload, mainTimeframe, selectedOpen, selectedTime, session.barTime, session.sessionDate]);
-  const dayOpenOnlyPayload = useMemo(
-    () => dayOpenOnlyChartPayload(dayChartPayload, session.sessionDate, selectedOpen, selectedTime),
-    [dayChartPayload, selectedOpen, selectedTime, session.sessionDate]
-  );
-  const fiveMinuteOpenOnlyPayload = useMemo(
-    () => castOpenChartPayload(fiveMinuteChartPayload, selectedTime, selectedOpen, `${session.barTime} open`),
-    [fiveMinuteChartPayload, selectedOpen, selectedTime, session.barTime]
-  );
+  const portfolioMetrics = useMemo(() => buildPortfolioMetrics(orders, positions), [orders, positions]);
 
   useEffect(() => {
     if (!selectedRow && scannerRows.length) setSelectedRow(scannerRows[0]);
   }, [scannerRows, selectedRow]);
 
   useEffect(() => {
-    if (!scope || !selectedTicker || !session.sessionDate || !started) {
-      setMainChartPayload(null);
-      setDayChartPayload(null);
-      setFiveMinuteChartPayload(null);
-      return;
-    }
-    let active = true;
-    setChartLoading(true);
-    setChartError("");
-    const dayStart = dateOffset(session.sessionDate, -90);
-    const fiveMinuteStart = previousSessionDate(sessions, session.sessionDate, 2);
-    Promise.allSettled([
-      loadChart(scope.processed_root, session.sessionDate, session.sessionDate, mainTimeframe, selectedTicker, mainVisibleColumns),
-      loadChart(scope.processed_root, dayStart, session.sessionDate, "1d", selectedTicker, compactVisibleColumns),
-      loadChart(scope.processed_root, fiveMinuteStart, session.sessionDate, "5m", selectedTicker, compactVisibleColumns),
-    ])
-      .then(([mainResult, dayResult, fiveResult]) => {
-        if (!active) return;
-        setMainChartPayload(mainResult.status === "fulfilled" ? mainResult.value : null);
-        setDayChartPayload(dayResult.status === "fulfilled" ? dayResult.value : null);
-        setFiveMinuteChartPayload(fiveResult.status === "fulfilled" ? fiveResult.value : null);
-        const firstError = [mainResult, dayResult, fiveResult].find((result) => result.status === "rejected");
-        setChartError(firstError && firstError.status === "rejected" ? firstError.reason?.message ?? "One chart failed to load." : "");
-      })
-      .finally(() => {
-        if (active) setChartLoading(false);
-      });
-    return () => {
-      active = false;
+    const payload = { decisions, orders, positions };
+    window.localStorage.setItem(LIVE_SHARED_STATE_STORAGE_KEY, JSON.stringify(payload));
+  }, [decisions, orders, positions]);
+
+  useEffect(() => {
+    const payload = { chartWindows, layouts, windows: openWindows };
+    window.localStorage.setItem(canvasStorageKey(canvasId), JSON.stringify(payload));
+  }, [canvasId, chartWindows, layouts, openWindows]);
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === LIVE_SHARED_STATE_STORAGE_KEY && event.newValue) {
+        try {
+          const parsed = JSON.parse(event.newValue) as { decisions?: Record<string, DecisionState>; orders?: OrderRow[]; positions?: PositionRow[] };
+          setDecisions(parsed.decisions ?? {});
+          setOrders(parsed.orders ?? []);
+          setPositions(parsed.positions ?? []);
+        } catch {
+          // Ignore malformed cross-tab state.
+        }
+      }
     };
-  }, [compactVisibleColumns, mainTimeframe, mainVisibleColumns, scope, selectedTicker, session.sessionDate, sessions, started]);
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   function startTrading() {
     const nextSession = { ...session, sessionDate: session.sessionDate || sessions.at(-1) || "" };
@@ -429,10 +447,70 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
 
   function bringWindowForward(id: WindowId) {
     setLayouts((current) => {
-      const topZ = Math.max(...Object.values(current).map((layout) => layout.z));
+      const topZ = Math.max(0, ...Object.values(current).map((layout) => layout.z));
       if (current[id].z >= topZ) return current;
       return { ...current, [id]: { ...current[id], z: topZ + 1 } };
     });
+  }
+
+  function openChartForRow(row: Record<string, unknown>) {
+    setSelectedRow(row);
+    const ticker = stringValue(row, "ticker");
+    if (!ticker) return;
+    const id = `chart-${ticker}`;
+    setChartWindows((current) => [{ id, row, ticker }, ...current.filter((chart) => chart.id !== id)]);
+    setOpenWindows((current) => [id, ...current.filter((windowId) => windowId !== id)]);
+    setLayouts((current) => {
+      const chartDefaults = current.chart ?? buildDefaultCanvasLayout(false).layouts.chart;
+      const existingChartIds = chartWindows.filter((chart) => chart.id !== id).map((chart) => chart.id);
+      const shifted = Object.fromEntries(
+        Object.entries(current).map(([layoutId, layout]) => {
+          const shiftedIndex = existingChartIds.indexOf(layoutId);
+          return shiftedIndex >= 0
+            ? [layoutId, { ...layout, h: chartDefaults.h, w: chartDefaults.w, x: chartDefaults.x + (shiftedIndex + 1) * (chartDefaults.w + 10), y: chartDefaults.y, z: Math.max(1, layout.z - 1) }]
+            : [layoutId, layout];
+        })
+      ) as Record<WindowId, WindowLayout>;
+      return { ...shifted, [id]: { ...chartDefaults, x: chartDefaults.x, z: Math.max(0, ...Object.values(current).map((layout) => layout.z)) + 1 } };
+    });
+  }
+
+  function closeWindow(id: WindowId) {
+    setOpenWindows((current) => current.filter((windowId) => windowId !== id));
+    setChartWindows((current) => current.filter((chart) => chart.id !== id));
+  }
+
+  function createChildCanvas(windowId?: WindowId) {
+    const nextCanvasId = `canvas-${Date.now()}`;
+    if (windowId) {
+      const transfer = { chartWindows, layout: layouts[windowId], windowId };
+      window.localStorage.setItem(canvasTransferKey(nextCanvasId), JSON.stringify(transfer));
+      closeWindow(windowId);
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.set("liveCanvas", nextCanvasId);
+    url.hash = "live-trading";
+    window.open(url.toString(), "_blank", "noopener,noreferrer");
+  }
+
+  function saveNamedLayout() {
+    const name = layoutName.trim() || "Momentum Desk";
+    const nextLayout: SavedCanvasLayout = { chartWindows, layouts, name, windows: openWindows };
+    setSavedLayouts((current) => {
+      const next = [nextLayout, ...current.filter((item) => item.name !== name)];
+      window.localStorage.setItem(LIVE_LAYOUTS_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+    setSelectedLayoutName(name);
+  }
+
+  function loadNamedLayout(name: string) {
+    setSelectedLayoutName(name);
+    const saved = savedLayouts.find((item) => item.name === name);
+    if (!saved) return;
+    setLayouts(saved.layouts);
+    setOpenWindows(saved.windows);
+    setChartWindows(saved.chartWindows);
   }
 
   if (!started) {
@@ -460,8 +538,19 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                 <div className="live-session-toolbar">
                   <LiveSelect label="Date" value={session.sessionDate} values={sessions} onChange={(value) => setSession({ ...session, sessionDate: value })} />
                   <LiveField label="Bar open" type="time" value={session.barTime} onChange={(value) => setSession({ ...session, barTime: value })} />
+                  <LiveField label="Layout name" type="text" value={layoutName} onChange={setLayoutName} />
+                  <LiveSelect label="Load layout" value={selectedLayoutName} values={["", ...savedLayouts.map((layout) => layout.name)]} onChange={loadNamedLayout} />
                   <button className="button primary" disabled={loading} onClick={loadScanner} type="button">
                     {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={15} />} Load
+                  </button>
+                  <button className="button secondary" onClick={saveNamedLayout} type="button">
+                    <Save size={15} /> Save Layout
+                  </button>
+                  <button className="button secondary" onClick={() => setOpenWindows((current) => Array.from(new Set([...current, ...CORE_WINDOW_IDS])))} type="button">
+                    <FolderOpen size={15} /> Core Windows
+                  </button>
+                  <button className="button secondary" onClick={() => createChildCanvas()} type="button">
+                    <LayoutGrid size={15} /> Child Canvas
                   </button>
                   <button className="button secondary" onClick={() => setStarted(false)} type="button">
                     <Settings size={15} /> Session
@@ -475,59 +564,84 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         </section>
       ) : null}
       <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace">
-        <WorkspaceWindow id="scanner" layout={layouts.scanner} title="Scanner" icon={<TrendingUp size={15} />} onFocus={bringWindowForward} onLayoutChange={updateLayout}>
-          <ScannerContainer
-            activeSetups={activeSetups}
-            loading={loading}
-            newSetupName={newSetupName}
-            rows={scannerRows}
-            selectedTicker={selectedTicker}
-            setupGroups={setupGroups}
-            snapshot={snapshot}
-            onAddSetup={addSetupGroup}
-            onLoad={loadScanner}
-            onNewSetupNameChange={setNewSetupName}
-            onRowSelect={setSelectedRow}
-            onSetupGroupsChange={setSetupGroups}
-          />
-        </WorkspaceWindow>
-        <WorkspaceWindow id="portfolio" layout={layouts.portfolio} title="Portfolio" icon={<WalletCards size={15} />} onFocus={bringWindowForward} onLayoutChange={updateLayout}>
-          <PortfolioContainer orders={orders} positions={positions} selectedTab={portfolioTab} onTabChange={setPortfolioTab} />
-        </WorkspaceWindow>
-        <WorkspaceWindow id="trade" layout={layouts.trade} title="Trade" icon={<Target size={15} />} onFocus={bringWindowForward} onLayoutChange={updateLayout}>
-          <TradeContainer
-            decisions={decisions}
-            draft={tradeDraft}
-            selectedOpen={selectedOpen}
-            selectedProfile={selectedProfile}
-            selectedTicker={selectedTicker}
-            onDecision={markDecision}
-            onDraftChange={setTradeDraft}
-            onStage={stageOrder}
-          />
-        </WorkspaceWindow>
-        <WorkspaceWindow id="charts" layout={layouts.charts} title="Charts" icon={<BarChart3 size={15} />} onFocus={bringWindowForward} onLayoutChange={updateLayout}>
-          <ChartsContainer
-            catalog={catalog}
-            chartError={chartError}
-            chartLoading={chartLoading}
-            compactVisibleColumns={compactVisibleColumns}
-            dayPayload={dayOpenOnlyPayload}
-            fiveMinutePayload={fiveMinuteOpenOnlyPayload}
-            mainPayload={mainOpenOnlyPayload}
-            mainTimeframe={mainTimeframe}
-            mainVisibleColumns={mainVisibleColumns}
-            selectedTicker={selectedTicker}
-            session={session}
-            showDayChart={showDayChart}
-            showFiveMinuteChart={showFiveMinuteChart}
-            onCompactVisibleColumnsChange={setCompactVisibleColumns}
-            onMainTimeframeChange={setMainTimeframe}
-            onMainVisibleColumnsChange={setMainVisibleColumns}
-            onToggleDayChart={() => setShowDayChart((value) => !value)}
-            onToggleFiveMinuteChart={() => setShowFiveMinuteChart((value) => !value)}
-          />
-        </WorkspaceWindow>
+        {!openWindows.length ? <div className="live-empty-canvas">This canvas is empty. Open scanner rows here or pop containers into this canvas from another tab.</div> : null}
+        {openWindows.map((windowId) => {
+          const layout = layouts[windowId] ?? layouts.chart ?? buildDefaultCanvasLayout(false).layouts.chart;
+          if (windowId === "scanner") {
+            return (
+              <WorkspaceWindow key={windowId} id={windowId} layout={layout} title="Scanner" icon={<TrendingUp size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onPopOut={createChildCanvas}>
+                <ScannerContainer
+                  activeSetups={activeSetups}
+                  loading={loading}
+                  newSetupName={newSetupName}
+                  rows={scannerRows}
+                  selectedTicker={selectedTicker}
+                  setupGroups={setupGroups}
+                  snapshot={snapshot}
+                  onAddSetup={addSetupGroup}
+                  onLoad={loadScanner}
+                  onNewSetupNameChange={setNewSetupName}
+                  onRowSelect={openChartForRow}
+                  onSetupGroupsChange={setSetupGroups}
+                />
+              </WorkspaceWindow>
+            );
+          }
+          if (windowId === "portfolio") {
+            return (
+              <WorkspaceWindow key={windowId} id={windowId} layout={layout} title="Portfolio" icon={<WalletCards size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onPopOut={createChildCanvas}>
+                <PortfolioContainer
+                  detailsOpen={portfolioDetailsOpen}
+                  metrics={portfolioMetrics}
+                  orders={orders}
+                  positions={positions}
+                  selectedTab={portfolioTab}
+                  onTabChange={setPortfolioTab}
+                  onToggleDetails={() => setPortfolioDetailsOpen((value) => !value)}
+                />
+              </WorkspaceWindow>
+            );
+          }
+          if (windowId === "trade") {
+            return (
+              <WorkspaceWindow key={windowId} id={windowId} layout={layout} title="Trade" icon={<Target size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onPopOut={createChildCanvas}>
+                <TradeContainer
+                  decisions={decisions}
+                  draft={tradeDraft}
+                  selectedOpen={selectedOpen}
+                  selectedProfile={selectedProfile}
+                  selectedTicker={selectedTicker}
+                  onDecision={markDecision}
+                  onDraftChange={setTradeDraft}
+                  onStage={stageOrder}
+                />
+              </WorkspaceWindow>
+            );
+          }
+          const chart = chartWindows.find((item) => item.id === windowId);
+          if (!chart || !scope) return null;
+          return (
+            <WorkspaceWindow key={windowId} id={windowId} layout={layout} title={chart.ticker} icon={<BarChart3 size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onPopOut={createChildCanvas}>
+              <LiveChartWindow
+                catalog={catalog}
+                chart={chart}
+                compactVisibleColumns={compactVisibleColumns}
+                mainTimeframe={mainTimeframe}
+                mainVisibleColumns={mainVisibleColumns}
+                scope={scope}
+                session={session}
+                sessions={sessions}
+                showDayChart={showDayChart}
+                showFiveMinuteChart={showFiveMinuteChart}
+                onCompactVisibleColumnsChange={setCompactVisibleColumns}
+                onMainTimeframeChange={setMainTimeframe}
+                onMainVisibleColumnsChange={setMainVisibleColumns}
+                onToggleDayChart={() => setShowDayChart((value) => !value)}
+                onToggleFiveMinuteChart={() => setShowFiveMinuteChart((value) => !value)}
+              />
+            </WorkspaceWindow>
+          );
+        })}
       </section>
     </>
   );
@@ -580,16 +694,20 @@ function WorkspaceWindow({
   icon,
   id,
   layout,
+  onClose,
   onFocus,
   onLayoutChange,
+  onPopOut,
   title,
 }: {
   children: ReactNode;
   icon: ReactNode;
   id: WindowId;
   layout: WindowLayout;
+  onClose: (id: WindowId) => void;
   onFocus: (id: WindowId) => void;
   onLayoutChange: (id: WindowId, patch: Partial<WindowLayout>) => void;
+  onPopOut: (id: WindowId) => void;
   title: string;
 }) {
   const style = layout.fullscreen
@@ -650,12 +768,18 @@ function WorkspaceWindow({
           {icon}
           <strong>{title}</strong>
         </div>
-        <div className="live-window-actions">
-          <button className="toolbar-button" onClick={() => onLayoutChange(id, { minimized: !layout.minimized })} title={layout.minimized ? "Restore" : "Minimize"} type="button">
-            <Minimize2 size={14} />
+        <div className="live-window-actions" onPointerDown={(event) => event.stopPropagation()}>
+          <button className="toolbar-button compact" onClick={() => onPopOut(id)} title="Move to child canvas" type="button">
+            <ExternalLink size={12} />
           </button>
-          <button className="toolbar-button" onClick={() => onLayoutChange(id, { fullscreen: !layout.fullscreen, minimized: false })} title={layout.fullscreen ? "Exit fullscreen" : "Fullscreen"} type="button">
-            <Maximize2 size={14} />
+          <button className="toolbar-button compact" onClick={() => onLayoutChange(id, { minimized: !layout.minimized })} title={layout.minimized ? "Restore" : "Minimize"} type="button">
+            <Minimize2 size={12} />
+          </button>
+          <button className="toolbar-button compact" onClick={() => onLayoutChange(id, { fullscreen: !layout.fullscreen, minimized: false })} title={layout.fullscreen ? "Exit fullscreen" : "Fullscreen"} type="button">
+            <Maximize2 size={12} />
+          </button>
+          <button className="toolbar-button compact" onClick={() => onClose(id)} title="Close" type="button">
+            <X size={12} />
           </button>
         </div>
       </div>
@@ -731,37 +855,72 @@ function ScannerContainer({
 }
 
 function PortfolioContainer({
+  detailsOpen,
+  metrics,
+  onToggleDetails,
   onTabChange,
   orders,
   positions,
   selectedTab,
 }: {
+  detailsOpen: boolean;
+  metrics: ReturnType<typeof buildPortfolioMetrics>;
+  onToggleDetails: () => void;
   onTabChange: (tab: string) => void;
   orders: OrderRow[];
   positions: PositionRow[];
   selectedTab: string;
 }) {
-  const realized = 0;
-  const unrealized = positions.reduce((total, row) => total + row.unrealized_pnl, 0);
   const tabs = ["Open Positions", "P/L", "Trades", "Orders"];
   return (
     <div className="live-container-stack">
-      <MetricStrip
-        items={[
-          { label: "Equity", value: money(10_000 + unrealized), kind: "status" },
-          { label: "Realized", value: money(realized), kind: "status" },
-          { label: "Unrealized", value: money(unrealized), kind: "status" },
-          { label: "Open Positions", value: positions.length, kind: "number" },
-          { label: "Orders", value: orders.length, kind: "number" },
-          { label: "Win Rate", value: "0%", kind: "status" },
-        ]}
-      />
-      <Tabs tabs={tabs} active={selectedTab} onChange={onTabChange} />
-      {selectedTab === "Open Positions" ? <DataTable rows={positions} empty="No open positions." /> : null}
-      {selectedTab === "P/L" ? <DataTable rows={positions.map((row) => ({ symbol: row.symbol, unrealized_pnl: row.unrealized_pnl, unrealized_pnl_pct: row.unrealized_pnl_pct, mark: row.mark, avg_price: row.avg_price }))} empty="No P/L rows." /> : null}
-      {selectedTab === "Trades" ? <DataTable rows={[]} empty="No completed trades yet." /> : null}
-      {selectedTab === "Orders" ? <DataTable rows={orders} empty="No staged orders." /> : null}
+      <div className="live-portfolio-header">
+        <MetricStrip items={metrics.items} />
+        <button className="toolbar-button compact" onClick={onToggleDetails} title={detailsOpen ? "Hide tabs" : "Show tabs"} type="button">
+          {detailsOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        </button>
+      </div>
+      <div className="live-position-cards">
+        {positions.length ? positions.map((position) => <PositionCard key={position.symbol} position={position} />) : <div className="live-empty-positions">No open positions.</div>}
+      </div>
+      {detailsOpen ? (
+        <>
+          <Tabs tabs={tabs} active={selectedTab} onChange={onTabChange} />
+          {selectedTab === "Open Positions" ? <DataTable rows={positions} empty="No open positions." /> : null}
+          {selectedTab === "P/L" ? <DataTable rows={positions.map((row) => ({ symbol: row.symbol, unrealized_pnl: row.unrealized_pnl, unrealized_pnl_pct: row.unrealized_pnl_pct, mark: row.mark, avg_price: row.avg_price }))} empty="No P/L rows." /> : null}
+          {selectedTab === "Trades" ? <DataTable rows={[]} empty="No completed trades yet." /> : null}
+          {selectedTab === "Orders" ? <DataTable rows={orders} empty="No staged orders." /> : null}
+        </>
+      ) : null}
     </div>
+  );
+}
+
+function PositionCard({ position }: { position: PositionRow }) {
+  const pnlTone = position.unrealized_pnl >= 0 ? "positive" : "negative";
+  return (
+    <article className={`live-position-card ${pnlTone}`}>
+      <div>
+        <strong>{position.symbol}</strong>
+        <span>{integer(position.quantity)} sh</span>
+      </div>
+      <div>
+        <span>Avg</span>
+        <strong>{money(position.avg_price)}</strong>
+      </div>
+      <div>
+        <span>Mark</span>
+        <strong>{money(position.mark)}</strong>
+      </div>
+      <div>
+        <span>Stop</span>
+        <strong>{money(position.stop)}</strong>
+      </div>
+      <div>
+        <span>P/L</span>
+        <strong>{money(position.unrealized_pnl)} / {percent(position.unrealized_pnl_pct)}</strong>
+      </div>
+    </article>
   );
 }
 
@@ -824,6 +983,111 @@ function TradeContainer({
         <ReasonList icon={<ShieldAlert size={15} />} items={splitList(selectedProfile?.live_risks)} title="Risks" />
       </div>
     </div>
+  );
+}
+
+function LiveChartWindow({
+  catalog,
+  chart,
+  compactVisibleColumns,
+  mainTimeframe,
+  mainVisibleColumns,
+  onCompactVisibleColumnsChange,
+  onMainTimeframeChange,
+  onMainVisibleColumnsChange,
+  onToggleDayChart,
+  onToggleFiveMinuteChart,
+  scope,
+  session,
+  sessions,
+  showDayChart,
+  showFiveMinuteChart,
+}: {
+  catalog: CatalogPayload | null;
+  chart: ChartWindow;
+  compactVisibleColumns: string[];
+  mainTimeframe: string;
+  mainVisibleColumns: string[];
+  scope: Scope;
+  session: TradingSession;
+  sessions: string[];
+  showDayChart: boolean;
+  showFiveMinuteChart: boolean;
+  onCompactVisibleColumnsChange: (columns: string[]) => void;
+  onMainTimeframeChange: (timeframe: string) => void;
+  onMainVisibleColumnsChange: (columns: string[]) => void;
+  onToggleDayChart: () => void;
+  onToggleFiveMinuteChart: () => void;
+}) {
+  const [mainPayload, setMainPayload] = useState<ChartPayload | null>(null);
+  const [dayPayload, setDayPayload] = useState<ChartPayload | null>(null);
+  const [fiveMinutePayload, setFiveMinutePayload] = useState<ChartPayload | null>(null);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartError, setChartError] = useState("");
+  const selectedOpen = numberValue(chart.row, "current_open") || numberValue(chart.row, "open");
+  const selectedTime = rowTimestampSeconds(chart.row, session.sessionDate, session.barTime);
+  const mainOpenOnlyPayload = useMemo(() => {
+    if (mainTimeframe === "1d") return dayOpenOnlyChartPayload(mainPayload, session.sessionDate, selectedOpen, selectedTime);
+    if (mainTimeframe === "5m") return castOpenChartPayload(mainPayload, selectedTime, selectedOpen, `${session.barTime} open`);
+    return openOnlyChartPayload(mainPayload, selectedTime, selectedOpen, session.barTime);
+  }, [mainPayload, mainTimeframe, selectedOpen, selectedTime, session.barTime, session.sessionDate]);
+  const dayOpenOnlyPayload = useMemo(
+    () => dayOpenOnlyChartPayload(dayPayload, session.sessionDate, selectedOpen, selectedTime),
+    [dayPayload, selectedOpen, selectedTime, session.sessionDate]
+  );
+  const fiveMinuteOpenOnlyPayload = useMemo(
+    () => castOpenChartPayload(fiveMinutePayload, selectedTime, selectedOpen, `${session.barTime} open`),
+    [fiveMinutePayload, selectedOpen, selectedTime, session.barTime]
+  );
+
+  useEffect(() => {
+    let active = true;
+    setChartLoading(true);
+    setChartError("");
+    const dayStart = dateOffset(session.sessionDate, -90);
+    const fiveMinuteStart = previousSessionDate(sessions, session.sessionDate, 2);
+    Promise.allSettled([
+      loadChart(scope.processed_root, session.sessionDate, session.sessionDate, mainTimeframe, chart.ticker, mainVisibleColumns),
+      loadChart(scope.processed_root, dayStart, session.sessionDate, "1d", chart.ticker, compactVisibleColumns),
+      loadChart(scope.processed_root, fiveMinuteStart, session.sessionDate, "5m", chart.ticker, compactVisibleColumns),
+    ])
+      .then(([mainResult, dayResult, fiveResult]) => {
+        if (!active) return;
+        setMainPayload(mainResult.status === "fulfilled" ? mainResult.value : null);
+        setDayPayload(dayResult.status === "fulfilled" ? dayResult.value : null);
+        setFiveMinutePayload(fiveResult.status === "fulfilled" ? fiveResult.value : null);
+        const firstError = [mainResult, dayResult, fiveResult].find((result) => result.status === "rejected");
+        setChartError(firstError && firstError.status === "rejected" ? firstError.reason?.message ?? "One chart failed to load." : "");
+      })
+      .finally(() => {
+        if (active) setChartLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [chart.ticker, compactVisibleColumns, mainTimeframe, mainVisibleColumns, scope.processed_root, session.sessionDate, sessions]);
+
+  return (
+    <ChartsContainer
+      catalog={catalog}
+      chartError={chartError}
+      chartLoading={chartLoading}
+      compactVisibleColumns={compactVisibleColumns}
+      dayPayload={dayOpenOnlyPayload}
+      fiveMinutePayload={fiveMinuteOpenOnlyPayload}
+      mainPayload={mainOpenOnlyPayload}
+      mainTimeframe={mainTimeframe}
+      mainVisibleColumns={mainVisibleColumns}
+      selectedTicker={chart.ticker}
+      session={session}
+      showDayChart={showDayChart}
+      showFiveMinuteChart={showFiveMinuteChart}
+      onCompactVisibleColumnsChange={onCompactVisibleColumnsChange}
+      onMainTimeframeChange={onMainTimeframeChange}
+      onMainVisibleColumnsChange={onMainVisibleColumnsChange}
+      onToggleDayChart={onToggleDayChart}
+      onToggleFiveMinuteChart={onToggleFiveMinuteChart}
+    />
   );
 }
 
@@ -1205,6 +1469,25 @@ function upsertPosition(rows: PositionRow[], symbol: string, quantity: number, p
   return [row, ...rows.filter((item) => item.symbol !== symbol)];
 }
 
+function buildPortfolioMetrics(orders: OrderRow[], positions: PositionRow[]) {
+  const realized = 0;
+  const unrealized = positions.reduce((total, row) => total + row.unrealized_pnl, 0);
+  const exposure = positions.reduce((total, row) => total + row.mark * row.quantity, 0);
+  return {
+    items: [
+      { label: "P/L", value: money(realized + unrealized), kind: "status" as const },
+      { label: "Equity", value: money(10_000 + realized + unrealized), kind: "status" as const },
+      { label: "Realized", value: money(realized), kind: "status" as const },
+      { label: "Unrealized", value: money(unrealized), kind: "status" as const },
+      { label: "Exposure", value: money(exposure), kind: "status" as const },
+      { label: "Open Positions", value: positions.length, kind: "number" as const },
+      { label: "Orders", value: orders.length, kind: "number" as const },
+      { label: "Fills", value: orders.filter((order) => order.status === "FILLED").length, kind: "number" as const },
+      { label: "Win Rate", value: "0%", kind: "status" as const },
+    ],
+  };
+}
+
 function readStoredSession(): TradingSession | null {
   try {
     const value = JSON.parse(window.localStorage.getItem(LIVE_SESSION_STORAGE_KEY) || "null");
@@ -1214,15 +1497,68 @@ function readStoredSession(): TradingSession | null {
   }
 }
 
-function readStoredLayout(): Record<WindowId, WindowLayout> {
+function canvasStorageKey(canvasId: string) {
+  return `${LIVE_LAYOUT_STORAGE_KEY}.${canvasId}`;
+}
+
+function canvasTransferKey(canvasId: string) {
+  return `${LIVE_LAYOUT_STORAGE_KEY}.transfer.${canvasId}`;
+}
+
+function readStoredCanvas(canvasId: string, isChildCanvas: boolean): { chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] } {
+  const defaults = buildDefaultCanvasLayout(isChildCanvas);
+  const transfer = readCanvasTransfer(canvasId);
+  if (transfer) {
+    const chartWindows = transfer.chartWindows.filter((chart) => chart.id === transfer.windowId);
+    return {
+      chartWindows,
+      layouts: { ...defaults.layouts, [transfer.windowId]: transfer.layout ?? defaults.layouts.chart },
+      windows: [transfer.windowId],
+    };
+  }
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(LIVE_LAYOUT_STORAGE_KEY) || "{}") as Partial<Record<WindowId, Partial<WindowLayout>>>;
-    return (Object.keys(DEFAULT_LAYOUT) as WindowId[]).reduce(
-      (layouts, id) => ({ ...layouts, [id]: { ...DEFAULT_LAYOUT[id], ...(parsed[id] ?? {}) } }),
-      {} as Record<WindowId, WindowLayout>
-    );
+    const parsed = JSON.parse(window.localStorage.getItem(canvasStorageKey(canvasId)) || "null") as Partial<{ chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] }> | null;
+    if (!parsed) return defaults;
+    return {
+      chartWindows: Array.isArray(parsed.chartWindows) ? parsed.chartWindows : defaults.chartWindows,
+      layouts: { ...defaults.layouts, ...(parsed.layouts ?? {}) },
+      windows: Array.isArray(parsed.windows) ? parsed.windows : defaults.windows,
+    };
   } catch {
-    return DEFAULT_LAYOUT;
+    return defaults;
+  }
+}
+
+function readCanvasTransfer(canvasId: string): { chartWindows: ChartWindow[]; layout?: WindowLayout; windowId: WindowId } | null {
+  try {
+    const key = canvasTransferKey(canvasId);
+    const parsed = JSON.parse(window.localStorage.getItem(key) || "null");
+    window.localStorage.removeItem(key);
+    return parsed?.windowId ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readSavedCanvasLayouts(): SavedCanvasLayout[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LIVE_LAYOUTS_STORAGE_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function readSharedTradingState(): { decisions: Record<string, DecisionState>; orders: OrderRow[]; positions: PositionRow[] } {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LIVE_SHARED_STATE_STORAGE_KEY) || "null");
+    return {
+      decisions: parsed?.decisions ?? {},
+      orders: Array.isArray(parsed?.orders) ? parsed.orders : [],
+      positions: Array.isArray(parsed?.positions) ? parsed.positions : [],
+    };
+  } catch {
+    return { decisions: {}, orders: [], positions: [] };
   }
 }
 

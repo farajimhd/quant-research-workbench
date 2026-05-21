@@ -59,6 +59,10 @@ export function Layout({
     window.localStorage.setItem(THEME_STORAGE_KEY, themeId);
   }, [themeId]);
 
+  useEffect(() => {
+    if (page === "live-trading") setCollapsed(true);
+  }, [page]);
+
   function selectTheme(nextThemeId: AppThemeId) {
     setThemeId(nextThemeId);
     setThemeMenuOpen(false);

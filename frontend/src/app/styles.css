@@ -8990,7 +8990,7 @@ button {
   align-items: end;
   display: grid;
   gap: 10px;
-  grid-template-columns: 150px 130px auto auto;
+  grid-template-columns: 150px 130px 180px 170px auto auto auto auto auto;
 }
 
 .live-top-shell {
@@ -9118,6 +9118,13 @@ button {
 .live-window-actions {
   display: flex;
   gap: 4px;
+}
+
+.live-window-actions .toolbar-button.compact {
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  width: 22px;
 }
 
 .live-window-body {
@@ -9303,6 +9310,95 @@ button {
 
 .live-window .data-table-wrap {
   max-height: 360px;
+}
+
+.live-empty-canvas {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface) 84%, transparent);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 13px;
+  font-weight: 700;
+  justify-content: center;
+  left: 12px;
+  min-height: 120px;
+  padding: 24px;
+  position: absolute;
+  right: 12px;
+  top: 12px;
+}
+
+.live-portfolio-header {
+  align-items: start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.live-portfolio-header .metric-strip {
+  grid-template-columns: repeat(9, minmax(92px, 1fr));
+}
+
+.live-position-cards {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+
+.live-position-card {
+  background: color-mix(in oklab, var(--surface-alt) 40%, var(--surface));
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted-foreground);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1.1fr repeat(4, minmax(70px, 1fr));
+  padding: 9px 10px;
+}
+
+.live-position-card.positive {
+  border-left-color: var(--success);
+}
+
+.live-position-card.negative {
+  border-left-color: var(--danger);
+}
+
+.live-position-card div {
+  display: grid;
+  gap: 2px;
+}
+
+.live-position-card span,
+.live-empty-positions {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.live-position-card strong {
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.15;
+}
+
+.live-position-card.positive div:last-child strong {
+  color: var(--success);
+}
+
+.live-position-card.negative div:last-child strong {
+  color: var(--danger);
+}
+
+.live-empty-positions {
+  align-items: center;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  display: flex;
+  min-height: 42px;
+  padding: 0 12px;
 }
 
 @media (max-width: 1420px) {
