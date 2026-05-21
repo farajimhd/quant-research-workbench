@@ -8993,6 +8993,11 @@ button {
   grid-template-columns: minmax(250px, 1.35fr) 120px 180px 170px auto auto auto auto auto;
 }
 
+.live-session-toolbar.layout-only {
+  grid-template-columns: minmax(180px, 260px) minmax(180px, 240px) auto auto auto;
+  justify-content: end;
+}
+
 .live-session-status {
   background: color-mix(in oklab, var(--surface-alt) 42%, var(--surface));
   border: 1px solid var(--border);
@@ -9103,17 +9108,17 @@ button {
   border: 1px solid var(--border);
   border-radius: 8px;
   display: grid;
-  gap: 10px;
+  gap: 12px;
   grid-template-columns: minmax(0, 1fr) auto;
   margin-bottom: 6px;
-  min-height: 72px;
-  padding: 8px 10px;
+  min-height: 76px;
+  padding: 8px 12px;
 }
 
 .live-global-status-cells {
   display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 0;
+  grid-template-columns: repeat(auto-fit, minmax(122px, 1fr));
   min-width: 0;
 }
 
@@ -9428,12 +9433,11 @@ button {
 }
 
 .live-debug-metric-strip {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 8px;
-  justify-content: stretch;
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   overflow-x: auto;
-  padding: 5px 30px 9px 0;
+  padding: 8px 30px 10px 10px;
   scrollbar-color: color-mix(in oklab, var(--muted-foreground) 42%, transparent) transparent;
   scrollbar-width: thin;
 }
@@ -9442,37 +9446,30 @@ button {
 .live-global-status-card {
   --metric-tone: var(--muted-foreground);
   align-content: center;
-  background: color-mix(in oklab, var(--surface-alt) 36%, var(--surface));
-  border: 1px solid color-mix(in oklab, var(--border) 82%, transparent);
-  border-radius: 8px;
   display: grid;
-  flex: 1 0 108px;
-  gap: 5px;
+  gap: 4px 6px;
   grid-template-areas:
     "icon label"
     "value value";
   grid-template-columns: 16px minmax(0, 1fr);
+  justify-content: center;
   justify-items: center;
-  min-height: 62px;
+  min-height: 52px;
   min-width: 0;
   overflow: hidden;
-  padding: 7px 8px;
+  padding: 0 5px;
   text-align: center;
 }
 
 .live-global-status-card {
-  align-content: stretch;
-  flex-basis: auto;
-  justify-items: start;
-  min-height: 54px;
-  padding: 8px 9px;
-  text-align: left;
+  min-height: 58px;
+  padding: 0 6px;
 }
 
 .live-global-status-card .live-debug-metric-label {
-  overflow: visible;
-  text-overflow: clip;
-  white-space: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .live-debug-metric-card[data-tone="danger"],
@@ -9508,7 +9505,7 @@ button {
 .live-debug-metric-label {
   color: var(--muted-foreground);
   font-size: 11px;
-  font-weight: 760;
+  font-weight: 600;
   grid-area: label;
   line-height: 1.15;
   overflow: hidden;
@@ -9519,10 +9516,10 @@ button {
 
 .live-debug-metric-card strong,
 .live-global-status-card strong {
-  color: var(--metric-tone);
+  color: var(--foreground);
   font-family: var(--font-display);
-  font-size: 20px;
-  font-weight: 620;
+  font-size: 22px;
+  font-weight: 500;
   grid-area: value;
   line-height: 1.08;
   overflow: hidden;
@@ -9536,8 +9533,33 @@ button {
 }
 
 .live-global-status-card strong {
-  font-size: 17px;
-  text-align: left;
+  font-size: 20px;
+  text-align: center;
+}
+
+.live-debug-metric-card:first-child strong {
+  font-size: 23px;
+  font-weight: 700;
+}
+
+.live-debug-metric-card[data-tone="danger"] strong,
+.live-global-status-card[data-tone="danger"] strong {
+  color: var(--danger);
+}
+
+.live-debug-metric-card[data-tone="success"] strong,
+.live-global-status-card[data-tone="success"] strong {
+  color: var(--success);
+}
+
+.live-debug-metric-card[data-tone="warning"] strong,
+.live-global-status-card[data-tone="warning"] strong {
+  color: #f97316;
+}
+
+.live-debug-metric-card[data-tone="info"] strong,
+.live-global-status-card[data-tone="info"] strong {
+  color: var(--info);
 }
 
 .live-position-cards {

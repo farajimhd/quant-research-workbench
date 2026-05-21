@@ -351,8 +351,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     }
     onTopbarCenterChange(
       <button className="live-topbar-session" onClick={() => setHeaderCollapsed((value) => !value)} type="button">
-        <span>Semi-Auto Trading · {liveClockMode}</span>
-        <strong>{session.sessionDate} {session.barTime} ET · {scannerRows.length} signals</strong>
+        <span>Semi-Auto Trading - {liveClockMode}</span>
+        <strong>{session.sessionDate} {session.barTime} ET - {scannerRows.length} signals</strong>
         {headerCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
       </button>
     );
@@ -694,30 +694,12 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           <div className="live-top-content">
             <PageIntro
               groupLabel="Live Trading"
-              title="Semi-Auto Trading"
-              description="Session clock, scanner replay pace, and layout controls for the active trading date."
+              title="Workspace Layout"
+              description="Saved canvas layout and multi-monitor workspace controls."
               actions={
-                <div className="live-session-toolbar">
-                  <div className="live-session-status">
-                    <span>Trading now</span>
-                    <strong>{session.sessionDate} {session.barTime} ET</strong>
-                    <small>{liveClockMessage || "Session ready."}{lastActionTime ? ` Last signal ${lastActionTime} ET.` : ""}</small>
-                  </div>
-                  <LiveField label="Seconds / 1m" type="number" value={secondsPerMinute} onChange={setSecondsPerMinute} />
+                <div className="live-session-toolbar layout-only">
                   <LiveField label="Layout name" type="text" value={layoutName} onChange={setLayoutName} />
                   <LiveSelect label="Load layout" value={selectedLayoutName} values={["", ...savedLayouts.map((layout) => layout.name)]} onChange={loadNamedLayout} />
-                  <button className="button primary" disabled={loading || liveClockMode === "seeking"} onClick={() => void seekNextSignal()} type="button">
-                    {loading || liveClockMode === "seeking" ? <span className="loading-spinner" aria-hidden="true" /> : <SkipForward size={15} />} Next Signal
-                  </button>
-                  <button className="button secondary" disabled={loading} onClick={advanceOneBar} type="button">
-                    <StepForward size={15} /> Next Bar
-                  </button>
-                  <button className="button secondary" disabled={loading && liveClockMode !== "seeking"} onClick={toggleLiveClock} type="button">
-                    {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={15} /> : <Play size={15} />} {liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}
-                  </button>
-                  <button className="button secondary" disabled={loading} onClick={refreshCurrentBar} type="button">
-                    <RefreshCw size={15} /> Refresh
-                  </button>
                   <button className="button secondary" onClick={saveNamedLayout} type="button">
                     <Save size={15} /> Save Layout
                   </button>
@@ -726,9 +708,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                   </button>
                   <button className="button secondary" onClick={() => createChildCanvas()} type="button">
                     <LayoutGrid size={15} /> Child Canvas
-                  </button>
-                  <button className="button secondary" onClick={closeSession} type="button">
-                    <Settings size={15} /> Close Session
                   </button>
                 </div>
               }
@@ -739,7 +718,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         </section>
       ) : null}
       <section className="live-global-status-strip" aria-label="Live session state">
-        <div className="live-global-status-cells">
+        <div className="live-global-status-cells" style={{ gridTemplateColumns: `repeat(${Math.max(globalMetrics.items.length, 1)}, minmax(108px, 1fr))` }}>
           {globalMetrics.items.map((item) => (
             <article className="live-global-status-card" data-tone={item.tone} key={item.label}>
               <span className="live-debug-metric-icon">{item.icon}</span>
@@ -764,6 +743,9 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           </button>
           <button className="button secondary compact" disabled={loading && liveClockMode !== "seeking"} onClick={toggleLiveClock} type="button">
             {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={14} /> : <Play size={14} />} {liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}
+          </button>
+          <button className="button secondary compact" onClick={closeSession} type="button">
+            <Settings size={14} /> Close
           </button>
         </div>
       </section>
@@ -1078,7 +1060,7 @@ function PortfolioContainer({
   return (
     <div className="live-container-stack">
       <div className="live-portfolio-header">
-        <div className="live-debug-metric-strip">
+        <div className="live-debug-metric-strip" style={{ gridTemplateColumns: `repeat(${Math.max(metrics.items.length, 1)}, minmax(106px, 1fr))` }}>
           {metrics.items.map((item) => (
             <article className="live-debug-metric-card" data-tone={item.tone} key={item.label}>
               <span className="live-debug-metric-icon">{item.icon}</span>
@@ -1722,6 +1704,7 @@ function buildGlobalLiveMetrics({
   const decisionsCount = Object.keys(decisions).length;
   return {
     items: [
+      { icon: <Clock3 size={14} />, label: "Date", tone: "info", value: session.sessionDate || "-" },
       { icon: <Clock3 size={14} />, label: "Clock", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: `${session.barTime} ET` },
       { icon: <Activity size={14} />, label: "Mode", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: liveClockMode },
       { icon: <TableProperties size={14} />, label: "Raw Scanner Rows", tone: snapshot?.row_count ? "info" : "muted", value: integer(snapshot?.row_count ?? 0) },
