@@ -27,3 +27,9 @@ Version details live in each version folder:
   enter whenever the watchlist ticker reclaims VWAP and breaks the last two
   bodies. High Break Hold candidates can rotate out lower-priority positions,
   and in-position pocketing captures configured or adaptive gains.
+- `v10`: v9-derived longer High Break Hold version with switchable High Break
+  Hold and VWAP Reclaim entry methods.
+- `v11`: price-pop continuation version. A ticker enters the pop watchlist only
+  after a 5-minute return and transaction shock versus the three pre-pop bars;
+  entry uses a buy stop above the pop high, VWAP-based risk, and VWAP
+  slope/distance exits.

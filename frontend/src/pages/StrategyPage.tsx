@@ -292,6 +292,17 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   max_entry_order_quantity: "Maximum BUY shares Long Momentum v9 is allowed to send to the backtest for a single entry or partial-entry remainder order.",
   enable_high_break_hold_entry: "Long Momentum v10 switch for the High Break Hold entry method. Enabled by default.",
   enable_vwap_reclaim_entry: "Long Momentum v10 switch for the VWAP Reclaim entry method. Disabled by default so v10 can focus on fewer, longer High Break Hold trades.",
+  min_pop_transaction_ratio: "Long Momentum v11 watchlist-add liquidity gate. The pop bar transactions must be this multiple of the average transactions from the three bars before the pop.",
+  min_entry_transaction_ratio: "Long Momentum v11 first-entry liquidity gate. The entry-authorizing completed bar transactions must be this multiple of the same pre-pop transaction baseline.",
+  pop_entry_stop_offset_dollars: "Long Momentum v11 buy-stop offset above the stored pop high.",
+  pop_entry_limit_offset_dollars: "Long Momentum v11 stop-limit allowance above the buy-stop trigger.",
+  entry_expire_bars: "Number of bars after the pop where the Long Momentum v11 buy-stop setup remains valid.",
+  max_pop_breakout_candidates_per_bar: "Maximum Long Momentum v11 pop-breakout candidates processed on one bar.",
+  max_entry_extension_above_pop_high_pct: "Maximum current-open extension above the pop high allowed before Long Momentum v11 submits the buy stop. This is a ratio, so 0.03 means 3%.",
+  vwap_trail_offset_pct: "Long Momentum v11 VWAP trailing-stop offset, expressed as n percent of VWAP. For example, 0.5 means stop = VWAP - 0.5% of VWAP.",
+  vwap_slope_down_bars: "Number of consecutive completed bars with non-rising VWAP before Long Momentum v11 exits.",
+  vwap_distance_giveback_pct: "Long Momentum v11 giveback fraction from the maximum distance above VWAP. 0.40 means exit after giving back 40% of that expansion.",
+  min_vwap_distance_for_giveback_pct: "Minimum distance above VWAP required before the Long Momentum v11 distance-giveback exit can trigger. This is a ratio, so 0.04 means 4%.",
   max_reentry_bvd_score: "Maximum 1-minute bearish volume divergence score allowed for Long Momentum v9 VWAP Reclaim. Scores above this block VWAP Reclaim.",
   reentry_vwap_buffer_pct: "Minimum Long Momentum v9 VWAP Reclaim buffer above the max VWAP of the day. For example, 1 means last close must be at least 1% above day max VWAP.",
   high_break_take_profit_pct: "Long Momentum v10 High Break Hold take-profit threshold as a ratio, not whole percent. 0.15 means exit when the current open is more than 15% above entry.",
@@ -672,6 +683,81 @@ const V10_STALE_STRATEGY_PARAMETER_KEYS = new Set([
   "first_entry_body_slow_ema_bars",
   "first_entry_body_contraction_ratio",
   "first_entry_body_contraction_bars",
+]);
+
+const V11_STRATEGY_PARAMETER_GROUPS = [
+  {
+    title: "Pop Watchlist",
+    description: "Raw price, volume, and transaction-shock gates that add a ticker to the v11 pop watchlist.",
+    keys: [
+      "min_price",
+      "max_price",
+      "trading_start_minute",
+      "trading_end_minute",
+      "min_last_5m_return",
+      "min_watchlist_add_volume",
+      "min_pop_transaction_ratio",
+      "watchlist_snapshot_limit",
+    ]
+  },
+  {
+    title: "Pop Breakout Entry",
+    description: "First-entry liquidity gate and buy-stop behavior after the stored pop.",
+    keys: [
+      "min_entry_transaction_ratio",
+      "pop_entry_stop_offset_dollars",
+      "pop_entry_limit_offset_dollars",
+      "entry_expire_bars",
+      "max_pop_breakout_candidates_per_bar",
+      "max_entry_extension_above_pop_high_pct",
+    ]
+  },
+  {
+    title: "Sizing & Execution",
+    description: "Cash allocation, order sizing, fees, and liquid-limit execution assumptions.",
+    keys: [
+      "cash_buffer_dollars",
+      "max_risk_fraction_of_cash",
+      "max_entry_order_quantity",
+      "sizing_fee_per_share",
+      "sizing_min_fee",
+      "limit_order_offset_dollars",
+    ]
+  },
+  {
+    title: "VWAP Management",
+    description: "VWAP-based initial stop, trailing stop, VWAP slope exit, and distance-above-VWAP giveback exit.",
+    keys: [
+      "vwap_stop_offset_pct",
+      "vwap_trail_offset_pct",
+      "vwap_slope_down_bars",
+      "vwap_distance_giveback_pct",
+      "min_vwap_distance_for_giveback_pct",
+    ]
+  },
+] satisfies Array<{ title: string; description: string; keys: string[] }>;
+
+const V11_STALE_STRATEGY_PARAMETER_KEYS = new Set([
+  ...V10_STALE_STRATEGY_PARAMETER_KEYS,
+  "enable_high_break_hold_entry",
+  "enable_vwap_reclaim_entry",
+  "high_break_take_profit_pct",
+  "min_first_entry_transactions",
+  "max_reentry_bvd_score",
+  "reentry_vwap_buffer_pct",
+  "high_break_hold_confirmation_bars",
+  "high_break_hold_tolerance_ratio",
+  "high_break_stop_offset_ratio",
+  "double_bvd_exit_score",
+  "adaptive_pocket_enabled",
+  "pocket_profit_pct",
+  "adaptive_pocket_vol_multiplier",
+  "adaptive_pocket_min_profit_pct",
+  "adaptive_pocket_max_profit_pct",
+  "tema9_open_buffer_pct",
+  "tema9_exit_buffer_pct",
+  "max_high_break_hold_candidates_per_bar",
+  "max_reentry_candidates_per_bar",
 ]);
 
 const IMPORTANT_STRATEGY_PARAMETER_KEYS = [
@@ -1848,6 +1934,9 @@ function StrategyParameterEditor({ config, onChange }: { config: StrategyConfig;
 }
 
 function strategyParameterGroups(config: StrategyConfig): Array<{ title: string; description: string; keys: string[] }> {
+  if (config.strategy_name === "long_momentum" && String(config.strategy_version || "").toLowerCase() === "v11") {
+    return V11_STRATEGY_PARAMETER_GROUPS;
+  }
   if (config.strategy_name === "long_momentum" && ["v9", "v10"].includes(String(config.strategy_version || "").toLowerCase())) {
     return V9_STRATEGY_PARAMETER_GROUPS;
   }
@@ -1856,10 +1945,10 @@ function strategyParameterGroups(config: StrategyConfig): Array<{ title: string;
 
 function strategyVisibleParams(config: StrategyConfig): Record<string, StrategyParamValue> {
   const version = String(config.strategy_version || "").toLowerCase();
-  if (config.strategy_name !== "long_momentum" || !["v9", "v10"].includes(version)) {
+  if (config.strategy_name !== "long_momentum" || !["v9", "v10", "v11"].includes(version)) {
     return config.strategy_params;
   }
-  const staleKeys = version === "v10" ? V10_STALE_STRATEGY_PARAMETER_KEYS : V9_STALE_STRATEGY_PARAMETER_KEYS;
+  const staleKeys = version === "v11" ? V11_STALE_STRATEGY_PARAMETER_KEYS : version === "v10" ? V10_STALE_STRATEGY_PARAMETER_KEYS : V9_STALE_STRATEGY_PARAMETER_KEYS;
   return Object.fromEntries(
     Object.entries(config.strategy_params).filter(([key]) => !staleKeys.has(key))
   ) as Record<string, StrategyParamValue>;
@@ -1996,6 +2085,17 @@ function HelpButton({ help, label }: { help: string; label: string }) {
 const STRATEGY_PARAMETER_LABELS: Record<string, string> = {
   enable_high_break_hold_entry: "Enable High Break Hold",
   enable_vwap_reclaim_entry: "Enable VWAP Reclaim",
+  min_pop_transaction_ratio: "Min Pop Transaction Ratio",
+  min_entry_transaction_ratio: "Min Entry Transaction Ratio",
+  pop_entry_stop_offset_dollars: "Pop Entry Stop Offset Dollars",
+  pop_entry_limit_offset_dollars: "Pop Entry Limit Offset Dollars",
+  entry_expire_bars: "Entry Expire Bars",
+  max_pop_breakout_candidates_per_bar: "Max Pop Breakout Candidates Per Bar",
+  max_entry_extension_above_pop_high_pct: "Max Entry Extension Above Pop High Ratio",
+  vwap_trail_offset_pct: "VWAP Trail Offset Percent",
+  vwap_slope_down_bars: "VWAP Slope Down Bars",
+  vwap_distance_giveback_pct: "VWAP Distance Giveback Ratio",
+  min_vwap_distance_for_giveback_pct: "Min VWAP Distance For Giveback Ratio",
   tema9_open_buffer_pct: "TEMA9 Open Buffer Ratio",
   tema9_exit_buffer_pct: "TEMA9 Exit Buffer Ratio",
   high_break_hold_confirmation_bars: "High Break Hold Confirmation Bars",
@@ -2694,6 +2794,15 @@ function strategyActionFields(values: Record<string, unknown>, state: Record<str
     "last_5m_return",
     "last_transactions",
     "last_transactions_vs_prior_3",
+    "pop_transaction_ratio",
+    "entry_transaction_ratio",
+    "pop_high",
+    "pop_vwap",
+    "buy_stop",
+    "current_distance_above_vwap",
+    "max_distance_above_vwap",
+    "vwap_slope",
+    "vwap_slope_down_count",
     "last_vwap",
     "high_break_hold_breakout_level",
     "high_break_hold_count",
@@ -3100,6 +3209,35 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
   const version = String(config.strategy_version || "").toLowerCase();
   const minPrice = strategyNumberParam(params, "min_price", 1);
   const maxPrice = strategyNumberParam(params, "max_price", 10);
+  if (version === "v11") {
+    const versionLabel = version;
+    return [
+      {
+        filters: {
+          last_close: betweenFilter(minPrice, maxPrice),
+          last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.08)),
+          last_volume: gteFilter(strategyNumberParam(params, "min_watchlist_add_volume", 8_000)),
+          last_transactions_avg_prior_3: gtFilter(0),
+          long_momentum_v11_raw_pop_transaction_ratio: gteFilter(strategyNumberParam(params, "min_pop_transaction_ratio", 20)),
+          last_vwap: gtFilter(0),
+        },
+        label: `${versionLabel} Pop Watchlist Raw`,
+        title: `Apply the raw/provider inputs for adding a ticker to the ${versionLabel} pop watchlist: price range, 5m return, volume, pre-pop transaction average, pop transaction ratio, and VWAP.`,
+      },
+      {
+        filters: {
+          long_momentum_v11_watchlist_active: trueFilter(),
+          long_momentum_v11_entry_not_expired: trueFilter(),
+          long_momentum_v11_entry_transaction_ratio: gteFilter(strategyNumberParam(params, "min_entry_transaction_ratio", 10)),
+          long_momentum_v11_entry_above_pop_vwap: trueFilter(),
+          long_momentum_v11_entry_not_too_extended: trueFilter(),
+          long_momentum_v11_risk_ok: trueFilter(),
+        },
+        label: `${versionLabel} Pop Breakout Raw`,
+        title: `Apply the visible ${versionLabel} first-entry inputs: active pop watch, valid window, entry transaction ratio, price above pop VWAP, not too extended, and valid VWAP stop.`,
+      },
+    ];
+  }
   if (!["v9", "v10"].includes(version)) return interactiveDebugStrategyFilterPresets(config);
   const versionLabel = version || "v9";
   return [
@@ -3169,6 +3307,42 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
   const maxSpreadBpsMax = strategyNumberParam(params, "max_spread_bps_max", 150);
   const minQuoteValidRatio = strategyNumberParam(params, "min_quote_valid_ratio", 0.8);
   const maxLockedOrCrossedCount = strategyNumberParam(params, "max_locked_or_crossed_count", 0);
+  if (version === "v11") {
+    const versionLabel = version;
+    return [
+      {
+        filters: {
+          last_close: betweenFilter(minPrice, maxPrice),
+          long_momentum_v9_last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.08)),
+          last_volume: gteFilter(strategyNumberParam(params, "min_watchlist_add_volume", 8_000)),
+          long_momentum_v11_raw_pop_transaction_ratio: gteFilter(strategyNumberParam(params, "min_pop_transaction_ratio", 20)),
+          long_momentum_v11_watchlist_add_open: trueFilter(),
+        },
+        label: `${versionLabel} Pop Watchlist Add`,
+        title: `Apply the visible ${versionLabel} pop-watchlist gates: price, 5m return, volume, transaction shock, and VWAP availability.`,
+      },
+      {
+        filters: {
+          long_momentum_v11_watchlist_active: trueFilter(),
+          long_momentum_v11_entry_not_expired: trueFilter(),
+          long_momentum_v11_entry_liquidity_ok: trueFilter(),
+          long_momentum_v11_entry_above_pop_vwap: trueFilter(),
+          long_momentum_v11_entry_not_too_extended: trueFilter(),
+          long_momentum_v11_risk_ok: trueFilter(),
+          long_momentum_v11_entry_open: trueFilter(),
+        },
+        label: `${versionLabel} Pop Breakout`,
+        title: `Apply the exact ${versionLabel} pop-breakout gates before the buy stop is submitted.`,
+      },
+      {
+        filters: {
+          long_momentum_v11_entry_open: trueFilter(),
+        },
+        label: `${versionLabel} Final Entry`,
+        title: `Apply the exact ${versionLabel} final entry decision.`,
+      },
+    ];
+  }
   if (["v9", "v10"].includes(version)) {
     const versionLabel = version || "v9";
     return [
@@ -3690,6 +3864,29 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "session_return_bps",
   "recent_return_bps",
   "last_5m_return",
+  "long_momentum_v11_entry_open",
+  "long_momentum_v11_watchlist_add_open",
+  "long_momentum_v11_watchlist_active",
+  "long_momentum_v11_pop_added_timestamp",
+  "long_momentum_v11_pop_high",
+  "long_momentum_v11_pop_vwap",
+  "long_momentum_v11_pop_transactions",
+  "long_momentum_v11_pop_prior_3_avg_transactions",
+  "long_momentum_v11_pop_transaction_ratio",
+  "long_momentum_v11_raw_pop_transaction_ratio",
+  "long_momentum_v11_entry_transaction_ratio",
+  "long_momentum_v11_entry_liquidity_ok",
+  "long_momentum_v11_entry_not_expired",
+  "long_momentum_v11_entry_above_pop_vwap",
+  "long_momentum_v11_entry_not_too_extended",
+  "long_momentum_v11_buy_stop",
+  "long_momentum_v11_buy_limit",
+  "long_momentum_v11_initial_stop",
+  "long_momentum_v11_current_distance_above_vwap",
+  "long_momentum_v11_max_distance_above_vwap",
+  "long_momentum_v11_vwap_slope",
+  "long_momentum_v11_vwap_slope_down_count",
+  "long_momentum_v11_reject_reason",
   "long_momentum_v9_last_5m_return",
   "long_momentum_v9_price_eligible",
   "long_momentum_v9_watchlist_add_open",

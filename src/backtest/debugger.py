@@ -377,6 +377,8 @@ class StepBacktestDebugger(BacktestEngine):
         return copied
 
     def _filter_group_rows(self, rows: list[dict]) -> list[dict]:
+        if self.config.strategy_name == "long_momentum" and str(self.config.strategy_version).lower() == "v11":
+            return self._long_momentum_v11_filter_group_rows(rows)
         if self.config.strategy_name == "long_momentum" and str(self.config.strategy_version).lower() in {"v9", "v10"}:
             return self._long_momentum_v9_filter_group_rows(rows)
         if self.config.strategy_name == "long_momentum" and str(self.config.strategy_version).lower() in {"v2", "v3", "v7"}:
@@ -464,6 +466,58 @@ class StepBacktestDebugger(BacktestEngine):
             if version in {"v3", "v7"}:
                 price_quality_checks = checks_by_group.setdefault("Price Quality", [])
                 price_quality_checks.append(self._gte_check(row, "last_close_location", self._strategy_param("min_close_location", 0.85)))
+            for group, checks in checks_by_group.items():
+                passed_count = sum(1 for check in checks if check["passed"])
+                failed_checks = [check for check in checks if not check["passed"]]
+                filter_rows.append(
+                    {
+                        "ticker": ticker,
+                        "filter_group": group,
+                        "passed": passed_count,
+                        "failed": len(failed_checks),
+                        "all_passed": not failed_checks,
+                        "failed_filters": " | ".join(check["name"] for check in failed_checks),
+                        "filters": " | ".join(check["label"] for check in checks),
+                    }
+                )
+        return filter_rows
+
+    def _long_momentum_v11_filter_group_rows(self, rows: list[dict]) -> list[dict]:
+        filter_rows: list[dict] = []
+        for row in rows:
+            ticker = str(row.get("ticker") or row.get("symbol") or "")
+            checks_by_group = {
+                "Pop Watchlist Add": [
+                    self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
+                    self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.08), fallback_key="last_5m_return"),
+                    self._gte_check(row, "last_volume", self._strategy_param("min_watchlist_add_volume", 8_000.0)),
+                    self._gt_check(row, "last_transactions_avg_prior_3", 0.0),
+                    self._gte_check(row, "long_momentum_v11_raw_pop_transaction_ratio", self._strategy_param("min_pop_transaction_ratio", 20.0)),
+                    self._gt_check(row, "last_vwap", 0.0),
+                ],
+                "Pop Breakout Entry": [
+                    self._present_check(row, "long_momentum_v11_pop_added_timestamp"),
+                    self._bool_check(row, "long_momentum_v11_entry_not_expired", True),
+                    self._gte_check(row, "long_momentum_v11_entry_transaction_ratio", self._strategy_param("min_entry_transaction_ratio", 10.0)),
+                    self._bool_check(row, "long_momentum_v11_entry_above_pop_vwap", True),
+                    self._bool_check(row, "long_momentum_v11_entry_not_too_extended", True),
+                    self._bool_check(row, "long_momentum_v11_risk_ok", True),
+                ],
+                "Order State": [
+                    self._lte_check(row, "held_quantity", 0.0),
+                    self._bool_check(row, "long_momentum_v11_pending_symbol_order", False),
+                    self._bool_check(row, "long_momentum_v11_no_symbol_position", True),
+                    self._bool_check(row, "long_momentum_v11_entry_time_ok", True),
+                ],
+                "VWAP Management": [
+                    self._gte_check(row, "long_momentum_v11_current_distance_above_vwap", 0.0),
+                    self._gte_check(row, "long_momentum_v11_max_distance_above_vwap", self._strategy_param("min_vwap_distance_for_giveback_pct", 0.04)),
+                    self._lte_check(row, "long_momentum_v11_vwap_slope_down_count", self._strategy_param("vwap_slope_down_bars", 2.0) - 1),
+                ],
+                "Final Strategy Decision": [
+                    self._bool_check(row, "long_momentum_v11_entry_open", True, fallback_key="entry_open"),
+                ],
+            }
             for group, checks in checks_by_group.items():
                 passed_count = sum(1 for check in checks if check["passed"])
                 failed_checks = [check for check in checks if not check["passed"]]
