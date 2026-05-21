@@ -128,6 +128,15 @@ type SavedCanvasLayout = {
 
 type LiveClockMode = "idle" | "seeking" | "running" | "paused" | "complete";
 
+type LiveWindowSummary = {
+  fullscreen: boolean;
+  id: WindowId;
+  minimized: boolean;
+  title: string;
+  type: "core" | "chart";
+  z: number;
+};
+
 type DecisionState = "approved" | "skipped" | "watching";
 
 type OrderRow = {
@@ -345,18 +354,23 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     () => buildGlobalLiveMetrics({ decisions, lastActionTime, liveClockMode, scannerRows, secondsPerMinute, session, snapshot }),
     [decisions, lastActionTime, liveClockMode, scannerRows, secondsPerMinute, session, snapshot]
   );
+  const liveWindowSummaries = useMemo(
+    () => buildLiveWindowSummaries(openWindows, chartWindows, layouts),
+    [chartWindows, layouts, openWindows]
+  );
   const topbarWorkspaceInfo = useMemo(() => {
     const knownPageCount = countKnownLiveCanvases();
     const canvasLabel = isChildCanvas ? `Child canvas ${canvasId.replace(/^canvas-/, "")}` : "Main canvas";
     const layoutLabel = selectedLayoutName || layoutName || "Unsaved layout";
     const pageLabel = `${knownPageCount} page${knownPageCount === 1 ? "" : "s"}`;
-    const windowLabel = `${openWindows.length} window${openWindows.length === 1 ? "" : "s"}`;
-    const chartLabel = `${chartWindows.length} chart${chartWindows.length === 1 ? "" : "s"}`;
+    const windowNames = liveWindowSummaries.map((windowItem) => windowItem.title);
+    const windowLabel = windowNames.length ? windowNames.slice(0, 4).join(", ") : "No windows";
+    const extraWindowCount = Math.max(0, windowNames.length - 4);
     return {
-      detail: `${layoutLabel} - ${pageLabel} - ${windowLabel} - ${chartLabel}`,
+      detail: `${layoutLabel} - ${pageLabel} - ${windowLabel}${extraWindowCount ? ` +${extraWindowCount}` : ""}`,
       title: `Semi-Auto Trading - ${canvasLabel}`,
     };
-  }, [canvasId, chartWindows.length, isChildCanvas, layoutName, openWindows.length, selectedLayoutName]);
+  }, [canvasId, isChildCanvas, layoutName, liveWindowSummaries, selectedLayoutName]);
 
   useEffect(() => {
     if (!started || !onTopbarCenterChange) {
@@ -726,6 +740,17 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                 </div>
               }
             />
+            <LiveWindowManager
+              windows={liveWindowSummaries}
+              onClose={closeWindow}
+              onFocus={(id) => {
+                updateLayout(id, { minimized: false });
+                bringWindowForward(id);
+              }}
+              onMinimize={(id, minimized) => updateLayout(id, { minimized })}
+              onPopOut={createChildCanvas}
+              onShowCoreWindows={() => setOpenWindows((current) => Array.from(new Set([...current, ...CORE_WINDOW_IDS])))}
+            />
             {error ? <div className="preview-sample-status error">{error}</div> : null}
             {snapshot?.reason ? <div className="preview-sample-status error">{snapshot.reason}</div> : null}
           </div>
@@ -984,6 +1009,65 @@ function WorkspaceWindow({
       </div>
       {!layout.minimized ? <div className="live-window-body">{children}</div> : null}
       {!layout.minimized ? <div className="live-window-resize" onPointerDown={startResize} /> : null}
+    </section>
+  );
+}
+
+function LiveWindowManager({
+  onClose,
+  onFocus,
+  onMinimize,
+  onPopOut,
+  onShowCoreWindows,
+  windows,
+}: {
+  onClose: (id: WindowId) => void;
+  onFocus: (id: WindowId) => void;
+  onMinimize: (id: WindowId, minimized: boolean) => void;
+  onPopOut: (id: WindowId) => void;
+  onShowCoreWindows: () => void;
+  windows: LiveWindowSummary[];
+}) {
+  return (
+    <section className="live-window-manager" aria-label="Open workspace windows">
+      <div className="live-window-manager-heading">
+        <div>
+          <span>Open Windows</span>
+          <strong>{windows.length ? `${windows.length} active` : "No active windows"}</strong>
+        </div>
+        <button className="button secondary compact" onClick={onShowCoreWindows} type="button">
+          <FolderOpen size={14} /> Core Windows
+        </button>
+      </div>
+      {windows.length ? (
+        <div className="live-window-chip-grid">
+          {windows.map((windowItem) => (
+            <article className="live-window-chip" data-type={windowItem.type} key={windowItem.id}>
+              <button className="live-window-chip-main" onClick={() => onFocus(windowItem.id)} type="button">
+                {windowItem.type === "chart" ? <BarChart3 size={14} /> : <LayoutGrid size={14} />}
+                <span>{windowItem.title}</span>
+                <small>{windowItem.minimized ? "Minimized" : windowItem.fullscreen ? "Fullscreen" : `Layer ${windowItem.z}`}</small>
+              </button>
+              <div className="live-window-chip-actions">
+                <button className="toolbar-button compact" onClick={() => onFocus(windowItem.id)} title="Show window" type="button">
+                  <Eye size={13} />
+                </button>
+                <button className="toolbar-button compact" onClick={() => onMinimize(windowItem.id, !windowItem.minimized)} title={windowItem.minimized ? "Restore window" : "Minimize window"} type="button">
+                  {windowItem.minimized ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
+                </button>
+                <button className="toolbar-button compact" onClick={() => onPopOut(windowItem.id)} title="Move to child canvas" type="button">
+                  <ExternalLink size={13} />
+                </button>
+                <button className="toolbar-button compact" onClick={() => onClose(windowItem.id)} title="Close window" type="button">
+                  <X size={13} />
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="live-empty-positions">No open windows on this canvas.</div>
+      )}
     </section>
   );
 }
@@ -1728,6 +1812,30 @@ function buildGlobalLiveMetrics({
       { icon: <CheckCircle2 size={14} />, label: "Last Signal", tone: lastActionTime ? "success" : "muted", value: lastActionTime || "-" },
     ],
   };
+}
+
+function buildLiveWindowSummaries(openWindows: WindowId[], chartWindows: ChartWindow[], layouts: Record<WindowId, WindowLayout>): LiveWindowSummary[] {
+  return openWindows
+    .map((id) => {
+      const chart = chartWindows.find((item) => item.id === id);
+      const layout = layouts[id];
+      return {
+        fullscreen: Boolean(layout?.fullscreen),
+        id,
+        minimized: Boolean(layout?.minimized),
+        title: chart?.ticker ?? coreWindowTitle(id),
+        type: chart ? "chart" as const : "core" as const,
+        z: layout?.z ?? 0,
+      };
+    })
+    .sort((a, b) => b.z - a.z);
+}
+
+function coreWindowTitle(id: WindowId) {
+  if (id === "portfolio") return "Portfolio";
+  if (id === "scanner") return "Scanner";
+  if (id === "trade") return "Trade";
+  return id;
 }
 
 function signedMetricTone(value: number) {
