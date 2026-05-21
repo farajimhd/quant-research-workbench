@@ -9098,17 +9098,70 @@ button {
 }
 
 .live-global-status-strip {
+  align-items: center;
   background: color-mix(in oklab, var(--surface) 86%, transparent);
   border: 1px solid var(--border);
   border-radius: 8px;
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 0;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
   margin-bottom: 6px;
-  overflow-x: auto;
-  padding: 4px 10px;
-  scrollbar-color: color-mix(in oklab, var(--muted-foreground) 42%, transparent) transparent;
-  scrollbar-width: thin;
+  min-height: 72px;
+  padding: 8px 10px;
+}
+
+.live-global-status-cells {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  min-width: 0;
+}
+
+.live-global-status-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+  max-width: 560px;
+}
+
+.live-global-status-actions .button.compact {
+  border-radius: 7px;
+  font-size: 12px;
+  min-height: 32px;
+  padding: 0 9px;
+}
+
+.live-pace-control {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 46%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  display: grid;
+  gap: 2px;
+  grid-template-columns: auto 54px;
+  min-height: 32px;
+  padding: 3px 7px;
+}
+
+.live-pace-control span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.live-pace-control input {
+  background: var(--control-bg, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 12px;
+  min-height: 24px;
+  padding: 2px 6px;
+  width: 54px;
 }
 
 .live-window {
@@ -9377,9 +9430,10 @@ button {
 .live-debug-metric-strip {
   display: flex;
   flex-wrap: nowrap;
-  gap: 0;
+  gap: 8px;
+  justify-content: stretch;
   overflow-x: auto;
-  padding: 4px 28px 8px 0;
+  padding: 5px 30px 9px 0;
   scrollbar-color: color-mix(in oklab, var(--muted-foreground) 42%, transparent) transparent;
   scrollbar-width: thin;
 }
@@ -9388,23 +9442,37 @@ button {
 .live-global-status-card {
   --metric-tone: var(--muted-foreground);
   align-content: center;
+  background: color-mix(in oklab, var(--surface-alt) 36%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 82%, transparent);
+  border-radius: 8px;
   display: grid;
-  flex: 0 0 82px;
-  gap: 4px;
+  flex: 1 0 108px;
+  gap: 5px;
   grid-template-areas:
     "icon label"
     "value value";
-  grid-template-columns: 14px minmax(0, 1fr);
+  grid-template-columns: 16px minmax(0, 1fr);
   justify-items: center;
-  min-height: 48px;
+  min-height: 62px;
   min-width: 0;
   overflow: hidden;
-  padding: 0 4px;
+  padding: 7px 8px;
   text-align: center;
 }
 
 .live-global-status-card {
-  flex-basis: 118px;
+  align-content: stretch;
+  flex-basis: auto;
+  justify-items: start;
+  min-height: 54px;
+  padding: 8px 9px;
+  text-align: left;
+}
+
+.live-global-status-card .live-debug-metric-label {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .live-debug-metric-card[data-tone="danger"],
@@ -9432,15 +9500,15 @@ button {
   color: var(--metric-tone);
   display: inline-flex;
   grid-area: icon;
-  height: 14px;
+  height: 16px;
   justify-content: center;
-  width: 14px;
+  width: 16px;
 }
 
 .live-debug-metric-label {
   color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 650;
+  font-size: 11px;
+  font-weight: 760;
   grid-area: label;
   line-height: 1.15;
   overflow: hidden;
@@ -9453,13 +9521,23 @@ button {
 .live-global-status-card strong {
   color: var(--metric-tone);
   font-family: var(--font-display);
-  font-size: 16px;
-  font-weight: 550;
+  font-size: 20px;
+  font-weight: 620;
   grid-area: value;
   line-height: 1.08;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  width: 100%;
+}
+
+.live-debug-metric-card strong {
+  text-align: center;
+}
+
+.live-global-status-card strong {
+  font-size: 17px;
+  text-align: left;
 }
 
 .live-position-cards {
@@ -9560,6 +9638,15 @@ button {
   .live-session-toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .live-global-status-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .live-global-status-actions {
+    justify-content: flex-start;
+    max-width: none;
+  }
 }
 
 @media (max-width: 760px) {
@@ -9570,5 +9657,18 @@ button {
   .live-trade-form,
   .live-session-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .live-global-status-cells {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .live-global-status-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .live-pace-control {
+    grid-column: 1 / -1;
   }
 }

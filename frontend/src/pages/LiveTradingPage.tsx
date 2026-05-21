@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from "react";
 import {
   Activity,
   BarChart3,
@@ -19,10 +19,12 @@ import {
   PauseCircle,
   Play,
   Plus,
+  RefreshCw,
   Save,
   Settings,
   ShieldAlert,
   SkipForward,
+  StepForward,
   TableProperties,
   Target,
   TrendingUp,
@@ -285,6 +287,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [layoutName, setLayoutName] = useState("Momentum Desk");
   const [savedLayouts, setSavedLayouts] = useState<SavedCanvasLayout[]>(readSavedCanvasLayouts);
   const [selectedLayoutName, setSelectedLayoutName] = useState("");
+  const seekCancelRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -391,11 +394,13 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     if (!started || !scope || !session.sessionDate || isChildCanvas) return;
     let canceled = false;
     const start = session.barTime;
+    const runId = seekCancelRef.current + 1;
+    seekCancelRef.current = runId;
     setLiveClockMode("seeking");
     setLiveClockMessage("Fast-forwarding to the next scanner signal.");
-    runUntilNextAction(start, () => canceled)
+    runUntilNextAction(start, () => canceled || seekCancelRef.current !== runId)
       .then((found) => {
-        if (canceled) return;
+        if (canceled || seekCancelRef.current !== runId) return;
         if (found) {
           setLiveClockMode("running");
           setLiveClockMessage("Scanner signal found. Live clock is pacing from this timestamp.");
@@ -405,7 +410,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         }
       })
       .catch((requestError: Error) => {
-        if (canceled) return;
+        if (canceled || seekCancelRef.current !== runId) return;
         setLiveClockMode("paused");
         setLiveClockMessage(requestError.message || "Scanner fast-forward failed.");
       });
@@ -438,8 +443,49 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setStarted(true);
   }
 
-  function loadScanner() {
-    loadScannerAt(session.barTime, { revealChart: false });
+  function refreshCurrentBar() {
+    loadScannerAt(session.barTime, { revealChart: true });
+  }
+
+  function advanceOneBar() {
+    const nextTime = addClockMinutes(session.barTime, 1);
+    if (!nextTime || isAfterClock(nextTime, "20:00")) {
+      setLiveClockMode("complete");
+      setLiveClockMessage("Session clock reached the end of supported trading time.");
+      return;
+    }
+    setLiveClockMode("paused");
+    setSession((current) => ({ ...current, barTime: nextTime }));
+    loadScannerAt(nextTime, { revealChart: true });
+  }
+
+  async function seekNextSignal() {
+    const runId = seekCancelRef.current + 1;
+    seekCancelRef.current = runId;
+    setLiveClockMode("seeking");
+    setLiveClockMessage("Fast-forwarding to the next scanner signal.");
+    try {
+      const found = await runUntilNextAction(session.barTime, () => seekCancelRef.current !== runId);
+      if (seekCancelRef.current !== runId) return;
+      setLiveClockMode(found ? "running" : "complete");
+      setLiveClockMessage(found ? "Scanner signal found. Live clock is pacing from this timestamp." : "No scanner signal found before the session cutoff.");
+    } catch (requestError) {
+      if (seekCancelRef.current !== runId) return;
+      setLiveClockMode("paused");
+      setLiveClockMessage(requestError instanceof Error ? requestError.message : "Scanner fast-forward failed.");
+    }
+  }
+
+  function toggleLiveClock() {
+    setLiveClockMode((mode) => {
+      if (mode === "running" || mode === "seeking") {
+        seekCancelRef.current += 1;
+        setLiveClockMessage("Live clock paused.");
+        return "paused";
+      }
+      setLiveClockMessage("Live clock resumed.");
+      return "running";
+    });
   }
 
   async function loadScannerAt(barTime: string, options: { revealChart: boolean }) {
@@ -660,14 +706,17 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                   <LiveField label="Seconds / 1m" type="number" value={secondsPerMinute} onChange={setSecondsPerMinute} />
                   <LiveField label="Layout name" type="text" value={layoutName} onChange={setLayoutName} />
                   <LiveSelect label="Load layout" value={selectedLayoutName} values={["", ...savedLayouts.map((layout) => layout.name)]} onChange={loadNamedLayout} />
-                  <button className="button primary" disabled={loading || liveClockMode === "seeking"} onClick={() => {
-                    setLiveClockMode("seeking");
-                    runUntilNextAction(session.barTime, () => false).then((found) => setLiveClockMode(found ? "running" : "complete"));
-                  }} type="button">
+                  <button className="button primary" disabled={loading || liveClockMode === "seeking"} onClick={() => void seekNextSignal()} type="button">
                     {loading || liveClockMode === "seeking" ? <span className="loading-spinner" aria-hidden="true" /> : <SkipForward size={15} />} Next Signal
                   </button>
-                  <button className="button secondary" onClick={() => setLiveClockMode((mode) => (mode === "running" ? "paused" : "running"))} type="button">
-                    {liveClockMode === "running" ? <PauseCircle size={15} /> : <Play size={15} />} {liveClockMode === "running" ? "Pause" : "Resume"}
+                  <button className="button secondary" disabled={loading} onClick={advanceOneBar} type="button">
+                    <StepForward size={15} /> Next Bar
+                  </button>
+                  <button className="button secondary" disabled={loading && liveClockMode !== "seeking"} onClick={toggleLiveClock} type="button">
+                    {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={15} /> : <Play size={15} />} {liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}
+                  </button>
+                  <button className="button secondary" disabled={loading} onClick={refreshCurrentBar} type="button">
+                    <RefreshCw size={15} /> Refresh
                   </button>
                   <button className="button secondary" onClick={saveNamedLayout} type="button">
                     <Save size={15} /> Save Layout
@@ -690,13 +739,33 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         </section>
       ) : null}
       <section className="live-global-status-strip" aria-label="Live session state">
-        {globalMetrics.items.map((item) => (
-          <article className="live-global-status-card" data-tone={item.tone} key={item.label}>
-            <span className="live-debug-metric-icon">{item.icon}</span>
-            <span className="live-debug-metric-label">{item.label}</span>
-            <strong>{item.value}</strong>
-          </article>
-        ))}
+        <div className="live-global-status-cells">
+          {globalMetrics.items.map((item) => (
+            <article className="live-global-status-card" data-tone={item.tone} key={item.label}>
+              <span className="live-debug-metric-icon">{item.icon}</span>
+              <span className="live-debug-metric-label">{item.label}</span>
+              <strong>{item.value}</strong>
+            </article>
+          ))}
+        </div>
+        <div className="live-global-status-actions" aria-label="Simulation controls">
+          <label className="live-pace-control">
+            <span>Pace</span>
+            <input min="1" step="1" type="number" value={secondsPerMinute} onChange={(event) => setSecondsPerMinute(event.target.value)} />
+          </label>
+          <button className="button secondary compact" disabled={loading} onClick={refreshCurrentBar} type="button">
+            <RefreshCw size={14} /> Refresh
+          </button>
+          <button className="button secondary compact" disabled={loading} onClick={advanceOneBar} type="button">
+            <StepForward size={14} /> Next Bar
+          </button>
+          <button className="button primary compact" disabled={loading || liveClockMode === "seeking"} onClick={() => void seekNextSignal()} type="button">
+            {loading || liveClockMode === "seeking" ? <span className="loading-spinner" aria-hidden="true" /> : <SkipForward size={14} />} Next Signal
+          </button>
+          <button className="button secondary compact" disabled={loading && liveClockMode !== "seeking"} onClick={toggleLiveClock} type="button">
+            {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={14} /> : <Play size={14} />} {liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}
+          </button>
+        </div>
       </section>
       <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace">
         {!openWindows.length ? <div className="live-empty-canvas">This canvas is empty. Open scanner rows here or pop containers into this canvas from another tab.</div> : null}
@@ -714,7 +783,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                   setupGroups={setupGroups}
                   snapshot={snapshot}
                   onAddSetup={addSetupGroup}
-                  onLoad={loadScanner}
+                  onLoad={refreshCurrentBar}
                   onNewSetupNameChange={setNewSetupName}
                   onRowSelect={openChartForRow}
                   onSetupGroupsChange={setSetupGroups}
