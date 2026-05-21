@@ -21,7 +21,6 @@ import {
   Plus,
   RefreshCw,
   Save,
-  Settings,
   ShieldAlert,
   SkipForward,
   StepForward,
@@ -784,7 +783,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
             {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={14} /> : <Play size={14} />} {liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}
           </button>
           <button className="button secondary compact" onClick={closeSession} type="button">
-            <Settings size={14} /> Close
+            <X size={14} /> Close
           </button>
         </div>
       </section>
