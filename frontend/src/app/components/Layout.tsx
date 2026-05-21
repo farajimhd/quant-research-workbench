@@ -11,6 +11,7 @@ type LayoutProps = {
   page: PageKey;
   onPageChange: (page: PageKey) => void;
   children: ReactNode;
+  topbarCenter?: ReactNode;
 };
 
 const navGroups = [
@@ -41,7 +42,8 @@ const THEME_STORAGE_KEY = "quant-research-workbench.theme";
 export function Layout({
   children,
   onPageChange,
-  page
+  page,
+  topbarCenter
 }: LayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
@@ -69,6 +71,7 @@ export function Layout({
           <Activity size={24} />
           <h1>Quant Research Workbench</h1>
         </div>
+        {topbarCenter ? <div className="topbar-center">{topbarCenter}</div> : null}
         <div className="topbar-actions">
           <div className="theme-picker">
             <button className="icon-button" type="button" aria-label="Change theme" onClick={() => setThemeMenuOpen((value) => !value)}>

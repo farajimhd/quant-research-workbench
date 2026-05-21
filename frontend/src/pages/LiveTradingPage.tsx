@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from "react";
 import {
   BarChart3,
   ChevronDown,
@@ -200,7 +200,7 @@ const DEFAULT_SETUP_GROUPS: ScannerSetupGroup[] = [
   },
 ];
 
-export function LiveTradingPage() {
+export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
   const [scope, setScope] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
@@ -266,6 +266,21 @@ export function LiveTradingPage() {
   useEffect(() => {
     window.localStorage.setItem(LIVE_LAYOUT_STORAGE_KEY, JSON.stringify(layouts));
   }, [layouts]);
+
+  useEffect(() => {
+    if (!started || !onTopbarCenterChange) {
+      onTopbarCenterChange?.(null);
+      return;
+    }
+    onTopbarCenterChange(
+      <button className="live-topbar-session" onClick={() => setHeaderCollapsed((value) => !value)} type="button">
+        <span>Semi-Auto Trading</span>
+        <strong>{session.sessionDate} {session.barTime} ET</strong>
+        {headerCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+      </button>
+    );
+    return () => onTopbarCenterChange(null);
+  }, [headerCollapsed, onTopbarCenterChange, session.barTime, session.sessionDate, started]);
 
   const sessions = useMemo(() => availableSessionDates(review?.records ?? []), [review]);
   const activeSetups = setupGroups.filter((item) => item.enabled);
@@ -434,17 +449,8 @@ export function LiveTradingPage() {
 
   return (
     <>
-      <section className={headerCollapsed ? "live-top-shell collapsed" : "live-top-shell"}>
-        <div className="live-top-rail">
-          <div>
-            <strong>Semi-Auto Trading</strong>
-            <span>{session.sessionDate} {session.barTime} ET</span>
-          </div>
-          <button className="button secondary" onClick={() => setHeaderCollapsed((value) => !value)} type="button">
-            {headerCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />} {headerCollapsed ? "Show Session" : "Hide Session"}
-          </button>
-        </div>
-        {!headerCollapsed ? (
+      {!headerCollapsed ? (
+        <section className="live-top-shell">
           <div className="live-top-content">
             <PageIntro
               groupLabel="Live Trading"
@@ -466,8 +472,8 @@ export function LiveTradingPage() {
             {error ? <div className="preview-sample-status error">{error}</div> : null}
             {snapshot?.reason ? <div className="preview-sample-status error">{snapshot.reason}</div> : null}
           </div>
-        ) : null}
-      </section>
+        </section>
+      ) : null}
       <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace">
         <WorkspaceWindow id="scanner" layout={layouts.scanner} title="Scanner" icon={<TrendingUp size={15} />} onFocus={bringWindowForward} onLayoutChange={updateLayout}>
           <ScannerContainer

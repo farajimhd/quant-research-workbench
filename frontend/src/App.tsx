@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { Layout, type PageKey } from "./app/components/Layout";
 import { LiveTradingPage } from "./pages/LiveTradingPage";
@@ -15,6 +15,7 @@ export function App() {
     return validPages.includes(hash) ? hash : "build-data";
   });
   const [visitedPages, setVisitedPages] = useState<Set<PageKey>>(() => new Set([page]));
+  const [topbarCenter, setTopbarCenter] = useState<ReactNode>(null);
 
   useEffect(() => {
     window.location.hash = page;
@@ -25,7 +26,7 @@ export function App() {
   }, [page]);
 
   return (
-    <Layout page={page} onPageChange={setPage}>
+    <Layout page={page} onPageChange={setPage} topbarCenter={page === "live-trading" ? topbarCenter : null}>
       <div aria-hidden={page !== "strategy"} className={page === "strategy" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "strategy" || visitedPages.has("strategy") ? <StrategyPage /> : null}
       </div>
@@ -39,7 +40,7 @@ export function App() {
         {page === "review-data" || visitedPages.has("review-data") ? <MarketDataReviewPage /> : null}
       </div>
       <div aria-hidden={page !== "live-trading"} className={page === "live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "live-trading" || visitedPages.has("live-trading") ? <LiveTradingPage /> : null}
+        {page === "live-trading" || visitedPages.has("live-trading") ? <LiveTradingPage onTopbarCenterChange={setTopbarCenter} /> : null}
       </div>
     </Layout>
   );

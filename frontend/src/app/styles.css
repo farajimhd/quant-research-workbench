@@ -126,6 +126,14 @@ button {
   backdrop-filter: blur(10px);
 }
 
+.topbar-center {
+  left: 50%;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+}
+
 .topbar-brand,
 .topbar-actions {
   display: flex;
@@ -135,6 +143,12 @@ button {
 
 .topbar-brand svg {
   color: var(--primary);
+}
+
+.topbar-brand,
+.topbar-actions {
+  position: relative;
+  z-index: 2;
 }
 
 .topbar h1 {
@@ -8989,41 +9003,51 @@ button {
   padding: 8px;
 }
 
-.live-top-shell.collapsed {
-  margin-bottom: 6px;
-  padding: 5px 8px;
-}
-
-.live-top-rail {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-  min-height: 28px;
-}
-
-.live-top-rail > div {
-  align-items: baseline;
-  display: flex;
-  gap: 9px;
-  min-width: 0;
-}
-
-.live-top-rail strong {
-  color: var(--foreground);
-  font-size: 13px;
-  line-height: 1;
-}
-
-.live-top-rail span {
-  color: var(--muted-foreground);
-  font-size: 12px;
-  font-weight: 700;
-}
-
 .live-top-content {
   display: grid;
   gap: 8px;
+}
+
+.live-topbar-session {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 70%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  display: grid;
+  gap: 2px 8px;
+  grid-template-columns: auto auto;
+  justify-items: center;
+  min-width: 260px;
+  padding: 5px 10px 4px 14px;
+}
+
+.live-topbar-session:hover {
+  background: color-mix(in oklab, var(--info) 10%, var(--surface));
+  border-color: color-mix(in oklab, var(--info) 35%, var(--border));
+}
+
+.live-topbar-session span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 800;
+  grid-column: 1;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.live-topbar-session strong {
+  color: var(--foreground);
+  font-size: 12px;
+  grid-column: 1;
+  line-height: 1.1;
+}
+
+.live-topbar-session svg {
+  color: var(--foreground);
+  grid-column: 2;
+  grid-row: 1 / span 2;
 }
 
 .live-top-content .page-intro {
