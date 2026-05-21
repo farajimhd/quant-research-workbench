@@ -305,6 +305,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [savedLayouts, setSavedLayouts] = useState<SavedCanvasLayout[]>(readSavedCanvasLayouts);
   const [selectedLayoutName, setSelectedLayoutName] = useState("");
   const [canvasTargetsVersion, setCanvasTargetsVersion] = useState(0);
+  const canvasRemovedRef = useRef(false);
   const seekCancelRef = useRef(0);
 
   useEffect(() => {
@@ -405,6 +406,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }, [decisions, orders, positions]);
 
   useEffect(() => {
+    if (canvasRemovedRef.current) return;
     const payload = { chartWindows, layoutVersion: LIVE_LAYOUT_VERSION, layouts, windows: openWindows };
     window.localStorage.setItem(canvasStorageKey(canvasId), JSON.stringify(payload));
     setCanvasTargetsVersion((version) => version + 1);
@@ -433,13 +435,21 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           // Ignore malformed canvas state from another tab.
         }
       }
+      if (event.key === canvasStorageKey(canvasId) && event.newValue === null) {
+        canvasRemovedRef.current = true;
+        const defaults = buildDefaultCanvasLayout(isChildCanvas);
+        setLayouts(defaults.layouts);
+        setOpenWindows([]);
+        setChartWindows([]);
+        setStarted(false);
+      }
       if (event.key?.startsWith(`${LIVE_LAYOUT_STORAGE_KEY}.`)) {
         setCanvasTargetsVersion((version) => version + 1);
       }
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  }, [canvasId, isChildCanvas]);
 
   useEffect(() => {
     if (!started || !scope || !session.sessionDate || isChildCanvas) return;
@@ -489,6 +499,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   function startTrading() {
     const nextSession = { ...session, barTime: "04:00", sessionDate: session.sessionDate || sessions.at(-1) || "" };
     if (!nextSession.sessionDate) return;
+    canvasRemovedRef.current = false;
     window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(nextSession));
     setSession(nextSession);
     setStarted(true);
@@ -698,10 +709,21 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     writeCanvasState(nextCanvasId, buildDefaultCanvasLayout(true));
     if (windowId) moveWindowToCanvas(windowId, nextCanvasId);
     setCanvasTargetsVersion((version) => version + 1);
+    openCanvasInNewTab(nextCanvasId);
+  }
+
+  function openCanvasInNewTab(targetCanvasId: string) {
     const url = new URL(window.location.href);
-    url.searchParams.set("liveCanvas", nextCanvasId);
+    url.searchParams.set("liveCanvas", targetCanvasId);
     url.hash = "live-trading";
     window.open(url.toString(), "_blank", "noopener,noreferrer");
+  }
+
+  function removeCanvas(targetCanvasId: string) {
+    if (targetCanvasId === "main" || targetCanvasId === canvasId) return;
+    window.localStorage.removeItem(canvasStorageKey(targetCanvasId));
+    window.localStorage.removeItem(canvasTransferKey(targetCanvasId));
+    setCanvasTargetsVersion((version) => version + 1);
   }
 
   function saveNamedLayout() {
@@ -785,6 +807,12 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                   </button>
                 </div>
               }
+            />
+            <LiveCanvasManager
+              canvases={canvasTargets}
+              onCreate={() => createChildCanvas()}
+              onOpen={openCanvasInNewTab}
+              onRemove={removeCanvas}
             />
             <LiveWindowManager
               canvasTargets={canvasTargets}
@@ -1152,6 +1180,56 @@ function LiveWindowManager({
       ) : (
         <div className="live-empty-positions">No open windows on this canvas.</div>
       )}
+    </section>
+  );
+}
+
+function LiveCanvasManager({
+  canvases,
+  onCreate,
+  onOpen,
+  onRemove,
+}: {
+  canvases: LiveCanvasTarget[];
+  onCreate: () => void;
+  onOpen: (canvasId: string) => void;
+  onRemove: (canvasId: string) => void;
+}) {
+  return (
+    <section className="live-canvas-manager" aria-label="Workspace canvases">
+      <div className="live-window-manager-heading">
+        <div>
+          <span>Canvases</span>
+          <strong>{canvases.length} page{canvases.length === 1 ? "" : "s"}</strong>
+        </div>
+        <button className="button secondary compact" onClick={onCreate} type="button">
+          <LayoutGrid size={14} /> New Canvas
+        </button>
+      </div>
+      <div className="live-canvas-chip-grid">
+        {canvases.map((canvas) => (
+          <article className={canvas.isCurrent ? "live-canvas-chip active" : "live-canvas-chip"} key={canvas.id} style={{ "--canvas-color": canvas.color } as CSSProperties}>
+            <button className="live-canvas-chip-main" onClick={() => onOpen(canvas.id)} type="button" title={`Open ${canvas.label} in a new tab`}>
+              <span>{canvas.label}</span>
+              <small>{canvas.isCurrent ? "Current page" : canvas.id}</small>
+            </button>
+            <div className="live-window-chip-actions">
+              <button className="toolbar-button compact" onClick={() => onOpen(canvas.id)} title="Open canvas in new tab" type="button">
+                <ExternalLink size={13} />
+              </button>
+              <button
+                className="toolbar-button compact"
+                disabled={canvas.id === "main" || canvas.isCurrent}
+                onClick={() => onRemove(canvas.id)}
+                title={canvas.id === "main" ? "Main canvas cannot be removed" : canvas.isCurrent ? "Current canvas cannot be removed from itself" : "Remove canvas"}
+                type="button"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }

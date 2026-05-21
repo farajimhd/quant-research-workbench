@@ -9091,6 +9091,15 @@ button {
   padding: 5px 7px;
 }
 
+.live-canvas-manager {
+  background: color-mix(in oklab, var(--surface-alt) 38%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  padding: 5px 7px;
+}
+
 .live-window-manager-heading {
   align-items: center;
   display: flex;
@@ -9122,6 +9131,60 @@ button {
   display: grid;
   gap: 5px;
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+
+.live-canvas-chip-grid {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.live-canvas-chip {
+  align-items: center;
+  background: color-mix(in oklab, var(--canvas-color) 8%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--canvas-color) 30%, var(--border));
+  border-left: 3px solid var(--canvas-color);
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 34px;
+  padding: 4px 6px;
+}
+
+.live-canvas-chip.active {
+  background: color-mix(in oklab, var(--canvas-color) 14%, var(--surface));
+  border-color: color-mix(in oklab, var(--canvas-color) 52%, var(--border));
+}
+
+.live-canvas-chip-main {
+  background: transparent;
+  border: 0;
+  color: var(--foreground);
+  cursor: pointer;
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.live-canvas-chip-main span {
+  color: var(--canvas-color);
+  font-size: 12px;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-canvas-chip-main small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .live-window-chip {
