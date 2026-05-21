@@ -8914,6 +8914,290 @@ button {
   min-height: 620px;
 }
 
+.live-start-panel {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(320px, 0.9fr) minmax(420px, 1.1fr);
+  min-height: 360px;
+}
+
+.live-start-copy {
+  align-content: center;
+  display: grid;
+  gap: 10px;
+}
+
+.live-start-copy span,
+.live-start-path span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.live-start-copy strong {
+  color: var(--foreground);
+  font-size: 30px;
+  line-height: 1.05;
+}
+
+.live-start-copy p {
+  color: var(--muted-foreground);
+  line-height: 1.55;
+  margin: 0;
+  max-width: 620px;
+}
+
+.live-start-form {
+  align-content: start;
+  background: color-mix(in oklab, var(--surface-alt) 56%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.live-start-path {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.live-start-path strong {
+  color: var(--foreground);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.live-session-toolbar {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 150px 130px auto auto;
+}
+
+.live-workspace {
+  background:
+    linear-gradient(color-mix(in oklab, var(--border) 45%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklab, var(--border) 45%, transparent) 1px, transparent 1px),
+    color-mix(in oklab, var(--surface-alt) 40%, var(--page-bg));
+  background-size: 24px 24px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  height: 1120px;
+  margin-top: 14px;
+  overflow: hidden;
+  position: relative;
+}
+
+.live-window {
+  background: color-mix(in oklab, var(--surface) 96%, var(--surface-alt));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 14px 40px rgba(15, 23, 42, 0.10);
+  display: grid;
+  grid-template-rows: 44px minmax(0, 1fr);
+  min-height: 44px;
+  min-width: 320px;
+  overflow: hidden;
+  position: absolute;
+}
+
+.live-window-header {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 10px;
+  touch-action: none;
+  user-select: none;
+}
+
+.live-window-title {
+  align-items: center;
+  color: var(--foreground);
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+}
+
+.live-window-title strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-window-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.live-window-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.live-window-resize {
+  border-bottom: 12px solid color-mix(in oklab, var(--muted-foreground) 38%, transparent);
+  border-left: 12px solid transparent;
+  bottom: 4px;
+  cursor: nwse-resize;
+  height: 0;
+  position: absolute;
+  right: 4px;
+  touch-action: none;
+  width: 0;
+}
+
+.live-container-stack {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+
+.live-scanner-toolbar {
+  display: grid;
+  gap: 10px;
+}
+
+.live-filter-group-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.live-filter-chip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 6px 10px;
+}
+
+.live-filter-chip.active {
+  background: color-mix(in oklab, var(--info) 12%, var(--surface));
+  border-color: color-mix(in oklab, var(--info) 38%, var(--border));
+  color: var(--info);
+}
+
+.live-new-setup {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(160px, 1fr) auto auto;
+}
+
+.live-new-setup input {
+  background: var(--control-bg, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--foreground);
+  font: inherit;
+  min-height: 36px;
+  padding: 7px 9px;
+}
+
+.live-trade-symbol {
+  background: color-mix(in oklab, var(--surface-alt) 50%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+}
+
+.live-trade-symbol span,
+.live-trade-symbol small {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.live-trade-symbol strong {
+  color: var(--foreground);
+  font-size: 28px;
+  line-height: 1;
+}
+
+.live-trade-form {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.live-chart-stack {
+  display: grid;
+  gap: 10px;
+  grid-template-rows: minmax(470px, 1fr) 320px;
+  min-height: 100%;
+}
+
+.live-chart-stack > .chart-shell {
+  min-height: 470px;
+}
+
+.live-lower-chart-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-height: 0;
+}
+
+.live-compact-chart {
+  background: color-mix(in oklab, var(--surface-alt) 28%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  grid-template-rows: 26px minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.live-compact-chart > span {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0 9px;
+}
+
+.live-compact-chart .chart-component-toolbar {
+  display: none;
+}
+
+.live-compact-chart .chart-shell {
+  border: 0;
+  border-radius: 0;
+  min-height: 0;
+}
+
+.live-compact-chart .chart-canvas-stack {
+  min-height: 250px;
+}
+
+.live-window .metric-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.live-window .metric-card {
+  min-width: 0;
+}
+
+.live-window .data-table-wrap {
+  max-height: 360px;
+}
+
 @media (max-width: 1420px) {
   .live-control-grid {
     grid-template-columns: repeat(4, minmax(120px, 1fr));
@@ -8922,12 +9206,24 @@ button {
   .live-cockpit-grid {
     grid-template-columns: 1fr;
   }
+
+  .live-start-panel,
+  .live-lower-chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .live-session-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
   .live-control-grid,
   .live-ticket-grid,
-  .live-reason-columns {
+  .live-reason-columns,
+  .live-new-setup,
+  .live-trade-form,
+  .live-session-toolbar {
     grid-template-columns: 1fr;
   }
 }
