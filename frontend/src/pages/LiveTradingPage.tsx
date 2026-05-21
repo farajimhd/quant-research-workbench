@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type PointerEvent, type ReactNode } from "react";
 import {
   BarChart3,
+  ChevronDown,
+  ChevronUp,
   Eye,
   Maximize2,
   Minimize2,
@@ -8,7 +10,6 @@ import {
   PauseCircle,
   Play,
   Plus,
-  RotateCcw,
   Save,
   Settings,
   ShieldAlert,
@@ -95,6 +96,7 @@ type WindowLayout = {
   w: number;
   x: number;
   y: number;
+  z: number;
 };
 
 type DecisionState = "approved" | "skipped" | "watching";
@@ -150,10 +152,10 @@ const LIVE_SCANNER_COLUMNS = [
 ];
 
 const DEFAULT_LAYOUT: Record<WindowId, WindowLayout> = {
-  scanner: { fullscreen: false, h: 520, minimized: false, w: 670, x: 12, y: 12 },
-  portfolio: { fullscreen: false, h: 360, minimized: false, w: 670, x: 12, y: 548 },
-  trade: { fullscreen: false, h: 360, minimized: false, w: 410, x: 700, y: 548 },
-  charts: { fullscreen: false, h: 895, minimized: false, w: 870, x: 700, y: 12 },
+  scanner: { fullscreen: false, h: 520, minimized: false, w: 670, x: 12, y: 12, z: 1 },
+  portfolio: { fullscreen: false, h: 360, minimized: false, w: 670, x: 12, y: 548, z: 2 },
+  trade: { fullscreen: false, h: 360, minimized: false, w: 410, x: 700, y: 548, z: 3 },
+  charts: { fullscreen: false, h: 895, minimized: false, w: 870, x: 700, y: 12, z: 4 },
 };
 
 const DEFAULT_SETUP_GROUPS: ScannerSetupGroup[] = [
@@ -218,6 +220,9 @@ export function LiveTradingPage() {
   const [mainTimeframe, setMainTimeframe] = useState("1m");
   const [mainVisibleColumns, setMainVisibleColumns] = useState<string[]>(MAIN_DISPLAY_ITEMS);
   const [compactVisibleColumns, setCompactVisibleColumns] = useState<string[]>(LOWER_DISPLAY_ITEMS);
+  const [headerCollapsed, setHeaderCollapsed] = useState(true);
+  const [showDayChart, setShowDayChart] = useState(true);
+  const [showFiveMinuteChart, setShowFiveMinuteChart] = useState(true);
   const [decisions, setDecisions] = useState<Record<string, DecisionState>>({});
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [positions, setPositions] = useState<PositionRow[]>([]);
@@ -278,7 +283,7 @@ export function LiveTradingPage() {
   );
   const mainOpenOnlyPayload = useMemo(() => {
     if (mainTimeframe === "1d") return dayOpenOnlyChartPayload(mainChartPayload, session.sessionDate, selectedOpen, selectedTime);
-    if (mainTimeframe === "5m") return trimChartPayload(mainChartPayload, selectedTime);
+    if (mainTimeframe === "5m") return castOpenChartPayload(mainChartPayload, selectedTime, selectedOpen, `${session.barTime} open`);
     return openOnlyChartPayload(mainChartPayload, selectedTime, selectedOpen, session.barTime);
   }, [mainChartPayload, mainTimeframe, selectedOpen, selectedTime, session.barTime, session.sessionDate]);
   const dayOpenOnlyPayload = useMemo(
@@ -286,8 +291,8 @@ export function LiveTradingPage() {
     [dayChartPayload, selectedOpen, selectedTime, session.sessionDate]
   );
   const fiveMinuteOpenOnlyPayload = useMemo(
-    () => trimChartPayload(fiveMinuteChartPayload, selectedTime),
-    [fiveMinuteChartPayload, selectedTime]
+    () => castOpenChartPayload(fiveMinuteChartPayload, selectedTime, selectedOpen, `${session.barTime} open`),
+    [fiveMinuteChartPayload, selectedOpen, selectedTime, session.barTime]
   );
 
   useEffect(() => {
@@ -407,6 +412,14 @@ export function LiveTradingPage() {
     setLayouts((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
   }
 
+  function bringWindowForward(id: WindowId) {
+    setLayouts((current) => {
+      const topZ = Math.max(...Object.values(current).map((layout) => layout.z));
+      if (current[id].z >= topZ) return current;
+      return { ...current, [id]: { ...current[id], z: topZ + 1 } };
+    });
+  }
+
   if (!started) {
     return (
       <LiveTradingStart
@@ -421,27 +434,42 @@ export function LiveTradingPage() {
 
   return (
     <>
-      <PageIntro
-        groupLabel="Live Trading"
-        title="Semi-Auto Trading"
-        description="Broker-ready workspace for scanner-led small-cap momentum decisions."
-        actions={
-          <div className="live-session-toolbar">
-            <LiveSelect label="Date" value={session.sessionDate} values={sessions} onChange={(value) => setSession({ ...session, sessionDate: value })} />
-            <LiveField label="Bar open" type="time" value={session.barTime} onChange={(value) => setSession({ ...session, barTime: value })} />
-            <button className="button primary" disabled={loading} onClick={loadScanner} type="button">
-              {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={15} />} Load
-            </button>
-            <button className="button secondary" onClick={() => setStarted(false)} type="button">
-              <Settings size={15} /> Session
-            </button>
+      <section className={headerCollapsed ? "live-top-shell collapsed" : "live-top-shell"}>
+        <div className="live-top-rail">
+          <div>
+            <strong>Semi-Auto Trading</strong>
+            <span>{session.sessionDate} {session.barTime} ET</span>
           </div>
-        }
-      />
-      {error ? <div className="preview-sample-status error">{error}</div> : null}
-      {snapshot?.reason ? <div className="preview-sample-status error">{snapshot.reason}</div> : null}
-      <section className="live-workspace" aria-label="Semi-auto trading workspace">
-        <WorkspaceWindow id="scanner" layout={layouts.scanner} title="Scanner" icon={<TrendingUp size={15} />} onLayoutChange={updateLayout}>
+          <button className="button secondary" onClick={() => setHeaderCollapsed((value) => !value)} type="button">
+            {headerCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />} {headerCollapsed ? "Show Session" : "Hide Session"}
+          </button>
+        </div>
+        {!headerCollapsed ? (
+          <div className="live-top-content">
+            <PageIntro
+              groupLabel="Live Trading"
+              title="Semi-Auto Trading"
+              description="Broker-ready workspace for scanner-led small-cap momentum decisions."
+              actions={
+                <div className="live-session-toolbar">
+                  <LiveSelect label="Date" value={session.sessionDate} values={sessions} onChange={(value) => setSession({ ...session, sessionDate: value })} />
+                  <LiveField label="Bar open" type="time" value={session.barTime} onChange={(value) => setSession({ ...session, barTime: value })} />
+                  <button className="button primary" disabled={loading} onClick={loadScanner} type="button">
+                    {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={15} />} Load
+                  </button>
+                  <button className="button secondary" onClick={() => setStarted(false)} type="button">
+                    <Settings size={15} /> Session
+                  </button>
+                </div>
+              }
+            />
+            {error ? <div className="preview-sample-status error">{error}</div> : null}
+            {snapshot?.reason ? <div className="preview-sample-status error">{snapshot.reason}</div> : null}
+          </div>
+        ) : null}
+      </section>
+      <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace">
+        <WorkspaceWindow id="scanner" layout={layouts.scanner} title="Scanner" icon={<TrendingUp size={15} />} onFocus={bringWindowForward} onLayoutChange={updateLayout}>
           <ScannerContainer
             activeSetups={activeSetups}
             loading={loading}
@@ -457,10 +485,10 @@ export function LiveTradingPage() {
             onSetupGroupsChange={setSetupGroups}
           />
         </WorkspaceWindow>
-        <WorkspaceWindow id="portfolio" layout={layouts.portfolio} title="Portfolio" icon={<WalletCards size={15} />} onLayoutChange={updateLayout}>
+        <WorkspaceWindow id="portfolio" layout={layouts.portfolio} title="Portfolio" icon={<WalletCards size={15} />} onFocus={bringWindowForward} onLayoutChange={updateLayout}>
           <PortfolioContainer orders={orders} positions={positions} selectedTab={portfolioTab} onTabChange={setPortfolioTab} />
         </WorkspaceWindow>
-        <WorkspaceWindow id="trade" layout={layouts.trade} title="Trade" icon={<Target size={15} />} onLayoutChange={updateLayout}>
+        <WorkspaceWindow id="trade" layout={layouts.trade} title="Trade" icon={<Target size={15} />} onFocus={bringWindowForward} onLayoutChange={updateLayout}>
           <TradeContainer
             decisions={decisions}
             draft={tradeDraft}
@@ -472,7 +500,7 @@ export function LiveTradingPage() {
             onStage={stageOrder}
           />
         </WorkspaceWindow>
-        <WorkspaceWindow id="charts" layout={layouts.charts} title="Charts" icon={<BarChart3 size={15} />} onLayoutChange={updateLayout}>
+        <WorkspaceWindow id="charts" layout={layouts.charts} title="Charts" icon={<BarChart3 size={15} />} onFocus={bringWindowForward} onLayoutChange={updateLayout}>
           <ChartsContainer
             catalog={catalog}
             chartError={chartError}
@@ -485,9 +513,13 @@ export function LiveTradingPage() {
             mainVisibleColumns={mainVisibleColumns}
             selectedTicker={selectedTicker}
             session={session}
+            showDayChart={showDayChart}
+            showFiveMinuteChart={showFiveMinuteChart}
             onCompactVisibleColumnsChange={setCompactVisibleColumns}
             onMainTimeframeChange={setMainTimeframe}
             onMainVisibleColumnsChange={setMainVisibleColumns}
+            onToggleDayChart={() => setShowDayChart((value) => !value)}
+            onToggleFiveMinuteChart={() => setShowFiveMinuteChart((value) => !value)}
           />
         </WorkspaceWindow>
       </section>
@@ -542,6 +574,7 @@ function WorkspaceWindow({
   icon,
   id,
   layout,
+  onFocus,
   onLayoutChange,
   title,
 }: {
@@ -549,12 +582,13 @@ function WorkspaceWindow({
   icon: ReactNode;
   id: WindowId;
   layout: WindowLayout;
+  onFocus: (id: WindowId) => void;
   onLayoutChange: (id: WindowId, patch: Partial<WindowLayout>) => void;
   title: string;
 }) {
   const style = layout.fullscreen
-    ? { height: "calc(100% - 24px)", left: 12, top: 12, width: "calc(100% - 24px)", zIndex: 20 }
-    : { height: layout.minimized ? 44 : layout.h, left: layout.x, top: layout.y, width: layout.w };
+    ? { height: "calc(100% - 24px)", left: 12, top: 12, width: "calc(100% - 24px)", zIndex: 1000 + layout.z }
+    : { height: layout.minimized ? 34 : layout.h, left: layout.x, top: layout.y, width: layout.w, zIndex: layout.z };
 
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     if (layout.fullscreen) return;
@@ -603,7 +637,7 @@ function WorkspaceWindow({
   }
 
   return (
-    <section className="live-window" style={style}>
+    <section className="live-window" style={style} onPointerDown={() => onFocus(id)}>
       <div className="live-window-header" onPointerDown={startDrag}>
         <div className="live-window-title">
           <Move size={13} />
@@ -800,8 +834,12 @@ function ChartsContainer({
   onCompactVisibleColumnsChange,
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
+  onToggleDayChart,
+  onToggleFiveMinuteChart,
   selectedTicker,
   session,
+  showDayChart,
+  showFiveMinuteChart,
 }: {
   catalog: CatalogPayload | null;
   chartError: string;
@@ -814,14 +852,28 @@ function ChartsContainer({
   mainVisibleColumns: string[];
   selectedTicker: string;
   session: TradingSession;
+  showDayChart: boolean;
+  showFiveMinuteChart: boolean;
   onCompactVisibleColumnsChange: (columns: string[]) => void;
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
+  onToggleDayChart: () => void;
+  onToggleFiveMinuteChart: () => void;
 }) {
   const mainOptions = mainPayload?.options;
   const compactOptions = fiveMinutePayload?.options ?? dayPayload?.options;
+  const lowerChartCount = Number(showDayChart) + Number(showFiveMinuteChart);
   return (
-    <div className="live-chart-stack">
+    <div className={lowerChartCount ? "live-chart-stack" : "live-chart-stack no-lower"}>
+      <div className="live-chart-toggle-row">
+        <span>Lower charts</span>
+        <button className={showDayChart ? "live-filter-chip active" : "live-filter-chip"} onClick={onToggleDayChart} type="button">
+          Daily
+        </button>
+        <button className={showFiveMinuteChart ? "live-filter-chip active" : "live-filter-chip"} onClick={onToggleFiveMinuteChart} type="button">
+          5m
+        </button>
+      </div>
       <ChartPanel
         catalogColumns={catalog?.columns ?? []}
         displayItemOptions={mainOptions?.display_items ?? catalog?.displayItems ?? []}
@@ -843,48 +895,54 @@ function ChartsContainer({
         timeframes={["1m", "5m", "1d"]}
         visibleColumns={mainVisibleColumns}
       />
-      <div className="live-lower-chart-grid">
-        <div className="live-compact-chart">
-          <span>Daily / 60 days</span>
-          <ChartPanel
-            catalogColumns={catalog?.columns ?? []}
-            displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
-            emptyMessage="No daily chart data."
-            errorMessage={chartError}
-            featureOptions={compactOptions?.feature_columns ?? []}
-            indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
-            loading={chartLoading}
-            onTickerChange={() => undefined}
-            onTimeframeChange={() => undefined}
-            onVisibleColumnsChange={onCompactVisibleColumnsChange}
-            payload={dayPayload}
-            ticker={selectedTicker}
-            timeframe="1d"
-            timeframes={["1d"]}
-            visibleColumns={compactVisibleColumns}
-          />
+      {lowerChartCount ? (
+        <div className={lowerChartCount === 1 ? "live-lower-chart-grid single" : "live-lower-chart-grid"}>
+          {showDayChart ? (
+            <div className="live-compact-chart">
+              <span>Daily / 60 days</span>
+              <ChartPanel
+                catalogColumns={catalog?.columns ?? []}
+                displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
+                emptyMessage="No daily chart data."
+                errorMessage={chartError}
+                featureOptions={compactOptions?.feature_columns ?? []}
+                indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
+                loading={chartLoading}
+                onTickerChange={() => undefined}
+                onTimeframeChange={() => undefined}
+                onVisibleColumnsChange={onCompactVisibleColumnsChange}
+                payload={dayPayload}
+                ticker={selectedTicker}
+                timeframe="1d"
+                timeframes={["1d"]}
+                visibleColumns={compactVisibleColumns}
+              />
+            </div>
+          ) : null}
+          {showFiveMinuteChart ? (
+            <div className="live-compact-chart">
+              <span>5m / last 2 days</span>
+              <ChartPanel
+                catalogColumns={catalog?.columns ?? []}
+                displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
+                emptyMessage="No 5m chart data."
+                errorMessage={chartError}
+                featureOptions={compactOptions?.feature_columns ?? []}
+                indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
+                loading={chartLoading}
+                onTickerChange={() => undefined}
+                onTimeframeChange={() => undefined}
+                onVisibleColumnsChange={onCompactVisibleColumnsChange}
+                payload={fiveMinutePayload}
+                ticker={selectedTicker}
+                timeframe="5m"
+                timeframes={["5m"]}
+                visibleColumns={compactVisibleColumns}
+              />
+            </div>
+          ) : null}
         </div>
-        <div className="live-compact-chart">
-          <span>5m / last 2 days</span>
-          <ChartPanel
-            catalogColumns={catalog?.columns ?? []}
-            displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
-            emptyMessage="No 5m chart data."
-            errorMessage={chartError}
-            featureOptions={compactOptions?.feature_columns ?? []}
-            indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
-            loading={chartLoading}
-            onTickerChange={() => undefined}
-            onTimeframeChange={() => undefined}
-            onVisibleColumnsChange={onCompactVisibleColumnsChange}
-            payload={fiveMinutePayload}
-            ticker={selectedTicker}
-            timeframe="5m"
-            timeframes={["5m"]}
-            visibleColumns={compactVisibleColumns}
-          />
-        </div>
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -1035,6 +1093,10 @@ function loadChart(processedRoot: string, startDate: string, endDate: string, ti
 }
 
 function openOnlyChartPayload(payload: ChartPayload | null, cutoffTime: number | null, currentOpen: number, barTime: string): ChartPayload | null {
+  return castOpenChartPayload(payload, cutoffTime, currentOpen, `${barTime} open`);
+}
+
+function castOpenChartPayload(payload: ChartPayload | null, cutoffTime: number | null, currentOpen: number, label: string): ChartPayload | null {
   if (!payload || !cutoffTime) return payload;
   const priorCandles = payload.candles.filter((candle) => candle.time < cutoffTime);
   const open = currentOpen || priorCandles.at(-1)?.close || 0;
@@ -1045,7 +1107,7 @@ function openOnlyChartPayload(payload: ChartPayload | null, cutoffTime: number |
     candles: [...priorCandles, ...currentCandle],
     markers: [
       ...payload.markers.filter((marker) => Number(marker.time) < cutoffTime),
-      { color: "#2563EB", position: "inBar", shape: "circle", size: 1.2, text: `${barTime} open`, time: cutoffTime as Time },
+      { color: "#2563EB", position: "inBar", shape: "circle", size: 1.2, text: label, time: cutoffTime as Time },
     ],
     volume: [...payload.volume.filter((point) => Number(point.time) < cutoffTime), { color: "rgba(37, 99, 235, 0.25)", time: cutoffTime, value: 0 }],
   };
@@ -1070,15 +1132,29 @@ function dayOpenOnlyChartPayload(payload: ChartPayload | null, sessionDate: stri
   if (!payload || !sessionDate) return payload;
   const dayStart = Date.parse(`${sessionDate}T00:00:00-04:00`);
   const sessionDayTime = Number.isFinite(dayStart) ? Math.floor(dayStart / 1000) : cutoffTime;
-  if (!sessionDayTime) return payload;
+  if (!sessionDayTime || !cutoffTime) return payload;
   const priorCandles = payload.candles.filter((candle) => candle.time < sessionDayTime).slice(-60);
-  if (!currentOpen) return { ...payload, candles: priorCandles };
+  const priorOscillators = payload.oscillator_series.map((series) => ({ ...series, data: series.data.filter((point) => Number(point.time) < sessionDayTime).slice(-60) }));
+  const priorOverlays = payload.overlay_series.map((series) => ({ ...series, data: series.data.filter((point) => Number(point.time) < sessionDayTime).slice(-60) }));
+  if (!currentOpen) {
+    return {
+      ...payload,
+      candles: priorCandles,
+      markers: [],
+      oscillator_series: priorOscillators,
+      overlay_series: priorOverlays,
+      price_zones: [],
+      regions: [],
+      trade_annotations: [],
+      volume: [],
+    };
+  }
   return {
     ...payload,
-    candles: [...priorCandles, { time: sessionDayTime, open: currentOpen, high: currentOpen, low: currentOpen, close: currentOpen }],
-    markers: [],
-    oscillator_series: payload.oscillator_series.map((series) => ({ ...series, data: series.data.filter((point) => Number(point.time) < sessionDayTime).slice(-60) })),
-    overlay_series: payload.overlay_series.map((series) => ({ ...series, data: series.data.filter((point) => Number(point.time) < sessionDayTime).slice(-60) })),
+    candles: [...priorCandles, { time: cutoffTime, open: currentOpen, high: currentOpen, low: currentOpen, close: currentOpen }],
+    markers: [{ color: "#2563EB", position: "inBar", shape: "circle", size: 1.2, text: "1m open", time: cutoffTime as Time }],
+    oscillator_series: priorOscillators,
+    overlay_series: priorOverlays,
     price_zones: [],
     regions: [],
     trade_annotations: [],
@@ -1134,7 +1210,11 @@ function readStoredSession(): TradingSession | null {
 
 function readStoredLayout(): Record<WindowId, WindowLayout> {
   try {
-    return { ...DEFAULT_LAYOUT, ...JSON.parse(window.localStorage.getItem(LIVE_LAYOUT_STORAGE_KEY) || "{}") };
+    const parsed = JSON.parse(window.localStorage.getItem(LIVE_LAYOUT_STORAGE_KEY) || "{}") as Partial<Record<WindowId, Partial<WindowLayout>>>;
+    return (Object.keys(DEFAULT_LAYOUT) as WindowId[]).reduce(
+      (layouts, id) => ({ ...layouts, [id]: { ...DEFAULT_LAYOUT[id], ...(parsed[id] ?? {}) } }),
+      {} as Record<WindowId, WindowLayout>
+    );
   } catch {
     return DEFAULT_LAYOUT;
   }

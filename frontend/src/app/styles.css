@@ -8979,6 +8979,57 @@ button {
   grid-template-columns: 150px 130px auto auto;
 }
 
+.live-top-shell {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface) 94%, var(--surface-alt));
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 8px;
+}
+
+.live-top-shell.collapsed {
+  margin-bottom: 6px;
+  padding: 5px 8px;
+}
+
+.live-top-rail {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-height: 28px;
+}
+
+.live-top-rail > div {
+  align-items: baseline;
+  display: flex;
+  gap: 9px;
+  min-width: 0;
+}
+
+.live-top-rail strong {
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.live-top-rail span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.live-top-content {
+  display: grid;
+  gap: 8px;
+}
+
+.live-top-content .page-intro {
+  margin-bottom: 0;
+}
+
 .live-workspace {
   background:
     linear-gradient(color-mix(in oklab, var(--border) 45%, transparent) 1px, transparent 1px),
@@ -8987,10 +9038,16 @@ button {
   background-size: 24px 24px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  height: 1120px;
-  margin-top: 14px;
+  height: calc(100vh - 156px);
+  min-height: 900px;
+  margin-top: 0;
   overflow: hidden;
   position: relative;
+}
+
+.live-workspace.compact {
+  height: calc(100vh - 76px);
+  min-height: 960px;
 }
 
 .live-window {
@@ -8999,8 +9056,8 @@ button {
   border-radius: 8px;
   box-shadow: 0 14px 40px rgba(15, 23, 42, 0.10);
   display: grid;
-  grid-template-rows: 44px minmax(0, 1fr);
-  min-height: 44px;
+  grid-template-rows: 34px minmax(0, 1fr);
+  min-height: 34px;
   min-width: 320px;
   overflow: hidden;
   position: absolute;
@@ -9012,9 +9069,9 @@ button {
   border-bottom: 1px solid var(--border);
   cursor: move;
   display: flex;
-  gap: 10px;
+  gap: 8px;
   justify-content: space-between;
-  padding: 8px 10px;
+  padding: 5px 8px;
   touch-action: none;
   user-select: none;
 }
@@ -9023,12 +9080,12 @@ button {
   align-items: center;
   color: var(--foreground);
   display: flex;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
 }
 
 .live-window-title strong {
-  font-size: 13px;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -9137,13 +9194,35 @@ button {
 
 .live-chart-stack {
   display: grid;
-  gap: 10px;
-  grid-template-rows: minmax(470px, 1fr) 320px;
+  gap: 8px;
+  grid-template-rows: 30px minmax(470px, 1fr) 320px;
   min-height: 100%;
+}
+
+.live-chart-stack.no-lower {
+  grid-template-rows: 30px minmax(560px, 1fr);
 }
 
 .live-chart-stack > .chart-shell {
   min-height: 470px;
+}
+
+.live-chart-toggle-row {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  min-height: 0;
+}
+
+.live-chart-toggle-row > span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 800;
+  margin-right: 2px;
+}
+
+.live-chart-toggle-row .live-filter-chip {
+  padding: 4px 9px;
 }
 
 .live-lower-chart-grid {
@@ -9151,6 +9230,10 @@ button {
   gap: 10px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   min-height: 0;
+}
+
+.live-lower-chart-grid.single {
+  grid-template-columns: 1fr;
 }
 
 .live-compact-chart {
