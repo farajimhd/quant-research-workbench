@@ -156,8 +156,34 @@ class CatalogPresentationUpdate(BaseModel):
     presentation: dict[str, Any] = Field(default_factory=dict)
 
 
+class LiveTradingPreloadRequest(BaseModel):
+    processed_root: str = Field(default=str(DEFAULT_PROCESSED_ROOT))
+    session_date: date
+
+
+class LiveTradingNextSignalRequest(BaseModel):
+    processed_root: str = Field(default=str(DEFAULT_PROCESSED_ROOT))
+    session_date: date
+    start_time: str = "04:00"
+    feature_groups: list[str] = Field(default_factory=lambda: ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"])
+    columns: list[str] = Field(default_factory=list)
+    table_query: dict[str, Any] | None = None
+    row_limit: int = Field(default=1000, ge=1, le=5000)
+
+
 def parse_date_param(value: date | None, fallback: str) -> date:
     return value or date.fromisoformat(fallback)
+
+
+def parse_live_clock_minute(value: str) -> int | None:
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", value.strip())
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour * 60 + minute
 
 
 def read_table(path: Path, limit: int = 1000) -> dict[str, Any]:
@@ -1352,6 +1378,98 @@ def market_scanner_snapshot(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"snapshot": snapshot}
+
+
+@app.post("/api/live-trading/preload")
+def live_trading_preload(payload: LiveTradingPreloadRequest) -> dict[str, Any]:
+    records = artifact_records(Path(payload.processed_root))
+    session_text = payload.session_date.isoformat()
+    required = [
+        {
+            "label": "Day 1m bars",
+            "group": "bars",
+            "timeframe": "1m",
+            "sessions": [session_text],
+        },
+        {
+            "label": "Recent daily bars",
+            "group": "bars",
+            "timeframe": "1d",
+            "sessions": [session.isoformat() for session in market_sessions(payload.session_date - timedelta(days=45), payload.session_date)][-30:],
+        },
+        {
+            "label": "Recent 5m bars",
+            "group": "bars",
+            "timeframe": "5m",
+            "sessions": [session.isoformat() for session in market_sessions(payload.session_date - timedelta(days=10), payload.session_date)][-7:],
+        },
+    ]
+    artifact_index = {(str(record.get("group")), str(record.get("timeframe")), str(record.get("session_date"))): record for record in records}
+    checks = []
+    for item in required:
+        sessions = item["sessions"]
+        matched = [artifact_index.get((item["group"], item["timeframe"], session)) for session in sessions]
+        ready = [record for record in matched if record and record.get("exists")]
+        checks.append(
+            {
+                "label": item["label"],
+                "group": item["group"],
+                "timeframe": item["timeframe"],
+                "expected_sessions": len(sessions),
+                "ready_sessions": len(ready),
+                "rows": sum(int(record.get("rows") or 0) for record in ready),
+                "status": "ready" if sessions and len(ready) == len(sessions) else "missing",
+                "missing_sessions": [session for session, record in zip(sessions, matched) if not record or not record.get("exists")][:10],
+            }
+        )
+    ready_count = sum(1 for check in checks if check["status"] == "ready")
+    return {
+        "session_date": session_text,
+        "status": "ready" if ready_count == len(checks) else "missing",
+        "progress": round(ready_count / max(1, len(checks)), 4),
+        "checks": checks,
+    }
+
+
+@app.post("/api/live-trading/next-signal")
+def live_trading_next_signal(payload: LiveTradingNextSignalRequest) -> dict[str, Any]:
+    records = artifact_records(Path(payload.processed_root))
+    start_minute = parse_live_clock_minute(payload.start_time)
+    if start_minute is None:
+        raise HTTPException(status_code=400, detail="Invalid start_time")
+    end_minute = 20 * 60
+    for minute in range(start_minute, end_minute + 1):
+        bar_time = f"{minute // 60:02d}:{minute % 60:02d}"
+        snapshot = load_scanner_snapshot(
+            records,
+            session_date=payload.session_date,
+            timeframe="1m",
+            bar_time=bar_time,
+            feature_groups=payload.feature_groups,
+            columns=payload.columns,
+            row_limit=payload.row_limit,
+            row_offset=0,
+            table_query=payload.table_query,
+            derived_columns=None,
+        )
+        if snapshot.get("rows"):
+            return {"found": True, "snapshot": snapshot, "steps": minute - start_minute + 1}
+        if snapshot.get("reason"):
+            return {"found": False, "snapshot": snapshot, "steps": minute - start_minute + 1}
+    return {
+        "found": False,
+        "snapshot": {
+            "bar_time": f"{end_minute // 60:02d}:{end_minute % 60:02d}",
+            "columns": [],
+            "feature_groups": [],
+            "reason": "No scanner signal found before the session cutoff.",
+            "row_count": 0,
+            "rows": [],
+            "session_date": payload.session_date.isoformat(),
+            "timeframe": "1m",
+        },
+        "steps": max(0, end_minute - start_minute + 1),
+    }
 
 
 @app.get("/api/market-data/momentum-discovery")

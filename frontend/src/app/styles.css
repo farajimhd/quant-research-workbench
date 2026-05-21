@@ -9351,6 +9351,78 @@ button {
   white-space: nowrap;
 }
 
+.live-process-status {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-bottom: 6px;
+  min-height: 38px;
+  padding: 6px 10px;
+}
+
+.live-process-status > div:first-child {
+  align-items: center;
+  color: var(--foreground);
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.live-process-status strong {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-preload-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.live-preload-checks span {
+  background: color-mix(in oklab, var(--muted-foreground) 8%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+.live-preload-checks span[data-status="ready"] {
+  background: color-mix(in oklab, var(--success) 12%, var(--surface));
+  border-color: color-mix(in oklab, var(--success) 35%, var(--border));
+  color: var(--success);
+}
+
+.live-preload-checks span[data-status="missing"] {
+  background: color-mix(in oklab, var(--danger) 10%, var(--surface));
+  border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
+  color: var(--danger);
+}
+
+.live-preload-progress {
+  background: color-mix(in oklab, var(--muted-foreground) 12%, transparent);
+  border-radius: 999px;
+  height: 6px;
+  overflow: hidden;
+  width: 180px;
+}
+
+.live-preload-progress span {
+  background: var(--info);
+  display: block;
+  height: 100%;
+  transition: width 180ms ease;
+}
+
 .live-pace-control {
   align-items: center;
   background: color-mix(in oklab, var(--surface-alt) 46%, var(--surface));
@@ -9476,6 +9548,34 @@ button {
 .live-scanner-toolbar {
   display: grid;
   gap: 10px;
+}
+
+.live-scanner-filter-strip {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 40%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.live-scanner-filter-strip span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.live-scanner-filter-strip strong {
+  background: color-mix(in oklab, var(--info) 9%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--info) 26%, var(--border));
+  border-radius: 999px;
+  color: var(--info);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 7px;
 }
 
 .live-filter-group-list {

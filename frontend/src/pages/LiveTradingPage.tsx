@@ -9,6 +9,7 @@ import {
   CircleDollarSign,
   ClipboardList,
   Clock3,
+  Database,
   Eye,
   ExternalLink,
   FolderOpen,
@@ -80,6 +81,30 @@ type ScannerSnapshotPayload = {
   snapshot: ScannerSnapshot;
 };
 
+type LivePreloadCheck = {
+  expected_sessions: number;
+  group: string;
+  label: string;
+  missing_sessions: string[];
+  ready_sessions: number;
+  rows: number;
+  status: string;
+  timeframe: string;
+};
+
+type LivePreloadPayload = {
+  checks: LivePreloadCheck[];
+  progress: number;
+  session_date: string;
+  status: string;
+};
+
+type LiveNextSignalPayload = {
+  found: boolean;
+  snapshot: ScannerSnapshot;
+  steps: number;
+};
+
 type TradingSession = {
   barTime: string;
   sessionDate: string;
@@ -125,7 +150,7 @@ type SavedCanvasLayout = {
   windows: WindowId[];
 };
 
-type LiveClockMode = "idle" | "seeking" | "running" | "paused" | "complete";
+type LiveClockMode = "idle" | "loading_data" | "ready" | "seeking" | "running" | "paused" | "complete";
 
 type LiveWindowSummary = {
   fullscreen: boolean;
@@ -173,6 +198,7 @@ const LIVE_LAYOUT_VERSION = 2;
 const LIVE_LAYOUTS_STORAGE_KEY = "quant-research-workbench.live-trading.named-layouts";
 const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.live-trading.shared-state";
 const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-setups";
+const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-query";
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const LIVE_PORTFOLIO_COLLAPSED_HEIGHT = 224;
 const LIVE_PORTFOLIO_EXPANDED_HEIGHT = LIVE_PORTFOLIO_COLLAPSED_HEIGHT * 3;
@@ -279,6 +305,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [setupGroups, setSetupGroups] = useState<ScannerSetupGroup[]>(readStoredSetupGroups);
   const [newSetupName, setNewSetupName] = useState("");
   const [snapshot, setSnapshot] = useState<ScannerSnapshot | null>(null);
+  const [scannerQuery, setScannerQuery] = useState<BackendTableQuery>(() => readStoredScannerQuery() ?? baseScannerQuery(DEFAULT_SETUP_GROUPS));
+  const [preloadStatus, setPreloadStatus] = useState<LivePreloadPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [liveClockMode, setLiveClockMode] = useState<LiveClockMode>("idle");
@@ -341,6 +369,10 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     window.localStorage.setItem(LIVE_SETUP_STORAGE_KEY, JSON.stringify(setupGroups));
   }, [setupGroups]);
 
+  useEffect(() => {
+    window.localStorage.setItem(LIVE_SCANNER_QUERY_STORAGE_KEY, JSON.stringify(scannerQuery));
+  }, [scannerQuery]);
+
   const sessions = useMemo(() => availableSessionDates(review?.records ?? []), [review]);
   const activeSetups = setupGroups.filter((item) => item.enabled);
   const selectedTicker = stringValue(selectedRow, "ticker");
@@ -350,7 +382,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     () =>
       (snapshot?.rows ?? [])
         .map((row) => enrichLiveCandidate(row, activeSetups))
-        .filter((row) => stringValue(row, "live_setup_group"))
         .sort((a, b) => numberValue(b, "live_priority") - numberValue(a, "live_priority")),
     [activeSetups, snapshot]
   );
@@ -359,8 +390,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     [orders, positions]
   );
   const globalMetrics = useMemo(
-    () => buildGlobalLiveMetrics({ decisions, lastActionTime, liveClockMode, scannerRows, secondsPerMinute, session, snapshot }),
-    [decisions, lastActionTime, liveClockMode, scannerRows, secondsPerMinute, session, snapshot]
+    () => buildGlobalLiveMetrics({ decisions, lastActionTime, liveClockMode, preloadStatus, scannerRows, secondsPerMinute, session, snapshot }),
+    [decisions, lastActionTime, liveClockMode, preloadStatus, scannerRows, secondsPerMinute, session, snapshot]
   );
   const liveWindowSummaries = useMemo(
     () => buildLiveWindowSummaries(openWindows, chartWindows, layouts),
@@ -454,26 +485,32 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   useEffect(() => {
     if (!started || !scope || !session.sessionDate || isChildCanvas) return;
     let canceled = false;
-    const start = session.barTime;
-    const runId = seekCancelRef.current + 1;
-    seekCancelRef.current = runId;
-    setLiveClockMode("seeking");
-    setLiveClockMessage("Fast-forwarding to the next scanner signal.");
-    runUntilNextAction(start, () => canceled || seekCancelRef.current !== runId)
-      .then((found) => {
-        if (canceled || seekCancelRef.current !== runId) return;
-        if (found) {
-          setLiveClockMode("running");
-          setLiveClockMessage("Scanner signal found. Live clock is pacing from this timestamp.");
+    setLoading(true);
+    setPreloadStatus(null);
+    setLiveClockMode("loading_data");
+    setLiveClockMessage("Loading provider data for the selected trading day.");
+    api<LivePreloadPayload>("/api/live-trading/preload", {
+      method: "POST",
+      body: JSON.stringify({ processed_root: scope.processed_root, session_date: session.sessionDate }),
+    })
+      .then((payload) => {
+        if (canceled) return;
+        setPreloadStatus(payload);
+        if (payload.status === "ready") {
+          setLiveClockMode("ready");
+          setLiveClockMessage("Data is ready. Configure the scanner query, then press Start.");
         } else {
-          setLiveClockMode("complete");
-          setLiveClockMessage("No scanner signal found before the session cutoff.");
+          setLiveClockMode("paused");
+          setLiveClockMessage("Some provider artifacts are missing. Review the preload status before starting.");
         }
       })
       .catch((requestError: Error) => {
-        if (canceled || seekCancelRef.current !== runId) return;
+        if (canceled) return;
         setLiveClockMode("paused");
-        setLiveClockMessage(requestError.message || "Scanner fast-forward failed.");
+        setLiveClockMessage(requestError.message || "Data preload failed.");
+      })
+      .finally(() => {
+        if (!canceled) setLoading(false);
       });
     return () => {
       canceled = true;
@@ -505,6 +542,24 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setStarted(true);
   }
 
+  async function beginTradingClock() {
+    if (liveClockMode === "loading_data" || liveClockMode === "seeking") return;
+    const runId = seekCancelRef.current + 1;
+    seekCancelRef.current = runId;
+    setLiveClockMode("seeking");
+    setLiveClockMessage("Backend is scanning to the first signal.");
+    try {
+      const found = await runUntilNextAction(session.barTime, () => seekCancelRef.current !== runId);
+      if (seekCancelRef.current !== runId) return;
+      setLiveClockMode(found ? "running" : "complete");
+      setLiveClockMessage(found ? "Scanner signal found. Simulation pace starts now." : "No scanner signal found before the session cutoff.");
+    } catch (requestError) {
+      if (seekCancelRef.current !== runId) return;
+      setLiveClockMode("paused");
+      setLiveClockMessage(requestError instanceof Error ? requestError.message : "Scanner start failed.");
+    }
+  }
+
   function refreshCurrentBar() {
     loadScannerAt(session.barTime, { revealChart: true });
   }
@@ -527,7 +582,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setLiveClockMode("seeking");
     setLiveClockMessage("Fast-forwarding to the next scanner signal.");
     try {
-      const found = await runUntilNextAction(session.barTime, () => seekCancelRef.current !== runId);
+      const searchStart = lastActionTime === session.barTime ? addClockMinutes(session.barTime, 1) || session.barTime : session.barTime;
+      const found = await runUntilNextAction(searchStart, () => seekCancelRef.current !== runId);
       if (seekCancelRef.current !== runId) return;
       setLiveClockMode(found ? "running" : "complete");
       setLiveClockMessage(found ? "Scanner signal found. Live clock is pacing from this timestamp." : "No scanner signal found before the session cutoff.");
@@ -539,6 +595,10 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }
 
   function toggleLiveClock() {
+    if (liveClockMode === "ready" || liveClockMode === "idle" || liveClockMode === "complete") {
+      void beginTradingClock();
+      return;
+    }
     setLiveClockMode((mode) => {
       if (mode === "running" || mode === "seeking") {
         seekCancelRef.current += 1;
@@ -563,7 +623,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         bar_time: barTime,
         feature_groups: LIVE_FEATURE_GROUPS.join(","),
         columns: LIVE_SCANNER_COLUMNS.join(","),
-        table_query: JSON.stringify(baseScannerQuery(activeSetups)),
+        table_query: JSON.stringify(scannerQuery),
         row_limit: 1000,
         })}`
       );
@@ -585,20 +645,42 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }
 
   async function runUntilNextAction(startTime: string, shouldStop: () => boolean) {
-    let nextTime = startTime;
-    for (let index = 0; index < 960; index += 1) {
-      if (shouldStop() || isAfterClock(nextTime, "20:00")) return false;
-      setSession((current) => ({ ...current, barTime: nextTime }));
-      const result = await loadScannerAt(nextTime, { revealChart: true });
-      if (result?.firstRow) {
-        setLastActionTime(nextTime);
+    if (!scope || !session.sessionDate || shouldStop() || isAfterClock(startTime, "20:00")) return false;
+    setLoading(true);
+    setError("");
+    try {
+      const payload = await api<LiveNextSignalPayload>("/api/live-trading/next-signal", {
+        method: "POST",
+        body: JSON.stringify({
+          processed_root: scope.processed_root,
+          session_date: session.sessionDate,
+          start_time: startTime,
+          feature_groups: LIVE_FEATURE_GROUPS,
+          columns: LIVE_SCANNER_COLUMNS,
+          table_query: scannerQuery,
+          row_limit: 1000,
+        }),
+      });
+      if (shouldStop()) return false;
+      setSnapshot(payload.snapshot);
+      setSession((current) => ({ ...current, barTime: payload.snapshot.bar_time || startTime }));
+      const enrichedRows = payload.snapshot.rows.map((row) => enrichLiveCandidate(row, activeSetups));
+      const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? enrichedRows[0] ?? null;
+      setSelectedRow(firstRow);
+      if (payload.found && firstRow) {
+        setLastActionTime(payload.snapshot.bar_time);
+        openChartForRow(firstRow);
         return true;
       }
-      const advanced = addClockMinutes(nextTime, 1);
-      if (!advanced) return false;
-      nextTime = advanced;
+      return false;
+    } catch (requestError) {
+      setSnapshot(null);
+      setSelectedRow(null);
+      setError(requestError instanceof Error ? requestError.message : "Scanner fast-forward failed.");
+      return false;
+    } finally {
+      setLoading(false);
     }
-    return false;
   }
 
   function markDecision(state: DecisionState) {
@@ -856,14 +938,33 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           <button className="button primary compact" disabled={loading || liveClockMode === "seeking"} onClick={() => void seekNextSignal()} type="button">
             {loading || liveClockMode === "seeking" ? <span className="loading-spinner" aria-hidden="true" /> : <SkipForward size={14} />} Next Signal
           </button>
-          <button className="button secondary compact" disabled={loading && liveClockMode !== "seeking"} onClick={toggleLiveClock} type="button">
-            {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={14} /> : <Play size={14} />} {liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}
+          <button className="button secondary compact" disabled={liveClockMode === "loading_data" || (loading && liveClockMode !== "seeking")} onClick={toggleLiveClock} type="button">
+            {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={14} /> : <Play size={14} />} {liveClockMode === "ready" || liveClockMode === "idle" || liveClockMode === "complete" ? "Start" : liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}
           </button>
           <button className="button secondary compact" onClick={closeSession} type="button">
             <X size={14} /> Close
           </button>
         </div>
       </section>
+      {liveClockMessage || preloadStatus ? (
+        <section className="live-process-status" aria-label="Live process status">
+          <div>
+            <strong>{liveClockMessage || "Session data loaded."}</strong>
+            {liveClockMode === "loading_data" ? <span className="loading-spinner" aria-hidden="true" /> : null}
+          </div>
+          {preloadStatus ? (
+            <div className="live-preload-checks">
+              {preloadStatus.checks.map((check) => (
+                <span data-status={check.status} key={`${check.group}:${check.timeframe}`}>
+                  {check.label}: {integer(check.ready_sessions)}/{integer(check.expected_sessions)}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="live-preload-progress"><span style={{ width: liveClockMode === "loading_data" ? "45%" : "0%" }} /></div>
+          )}
+        </section>
+      ) : null}
       <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace">
         {!openWindows.length ? <div className="live-empty-canvas">This canvas is empty. Open scanner rows here or pop containers into this canvas from another tab.</div> : null}
         {openWindows.map((windowId) => {
@@ -875,6 +976,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                   activeSetups={activeSetups}
                   loading={loading}
                   newSetupName={newSetupName}
+                  query={scannerQuery}
                   rows={scannerRows}
                   selectedTicker={selectedTicker}
                   setupGroups={setupGroups}
@@ -882,6 +984,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                   onAddSetup={addSetupGroup}
                   onLoad={refreshCurrentBar}
                   onNewSetupNameChange={setNewSetupName}
+                  onQueryChange={setScannerQuery}
                   onRowSelect={openChartForRow}
                   onSetupGroupsChange={setSetupGroups}
                 />
@@ -966,7 +1069,7 @@ function LiveTradingStart({
       <PageIntro
         groupLabel="Live Trading"
         title="Start Semi-Auto Session"
-        description="Choose the trading date. The workspace loads that session and starts fast-forwarding to the first scanner signal."
+        description="Choose the trading date. The workspace opens, validates the required provider data, then waits for you to press Start."
       />
       <section className="live-start-panel panel">
         <div className="live-start-copy">
@@ -981,7 +1084,7 @@ function LiveTradingStart({
             <strong>{scope?.processed_root ?? "Loading..."}</strong>
           </div>
           <button className="button primary" disabled={!session.sessionDate} onClick={onStart} type="button">
-            <Play size={15} /> Start Trading
+            <Play size={15} /> Load Session
           </button>
         </div>
       </section>
@@ -1241,8 +1344,10 @@ function ScannerContainer({
   onAddSetup,
   onLoad,
   onNewSetupNameChange,
+  onQueryChange,
   onRowSelect,
   onSetupGroupsChange,
+  query,
   rows,
   selectedTicker,
   setupGroups,
@@ -1251,6 +1356,7 @@ function ScannerContainer({
   activeSetups: ScannerSetupGroup[];
   loading: boolean;
   newSetupName: string;
+  query: BackendTableQuery;
   rows: Record<string, unknown>[];
   selectedTicker: string;
   setupGroups: ScannerSetupGroup[];
@@ -1258,9 +1364,11 @@ function ScannerContainer({
   onAddSetup: () => void;
   onLoad: () => void;
   onNewSetupNameChange: (value: string) => void;
+  onQueryChange: (query: BackendTableQuery) => void;
   onRowSelect: (row: Record<string, unknown>) => void;
   onSetupGroupsChange: (groups: ScannerSetupGroup[]) => void;
 }) {
+  const queryFilterChips = backendQueryFilterChips(query);
   return (
     <div className="live-container-stack">
       <div className="live-scanner-toolbar">
@@ -1286,7 +1394,12 @@ function ScannerContainer({
           </button>
         </div>
       </div>
+      <div className="live-scanner-filter-strip">
+        <span>Scanner query</span>
+        {queryFilterChips.length ? queryFilterChips.map((chip) => <strong key={chip}>{chip}</strong>) : <strong>No backend filters</strong>}
+      </div>
       <DataTable
+        backendQuery={{ columns: snapshot?.columns?.length ? snapshot.columns : LIVE_SCANNER_COLUMNS, loading, onChange: onQueryChange, value: query }}
         columns={liveTableColumns(snapshot?.columns ?? [])}
         empty={loading ? "Loading scanner..." : "Run scanner to load candidates."}
         isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
@@ -1741,6 +1854,17 @@ function baseScannerQuery(setups: ScannerSetupGroup[]): BackendTableQuery {
   };
 }
 
+function backendQueryFilterChips(query: BackendTableQuery) {
+  return (query.conditions ?? []).map((condition) => {
+    const value = condition.operator === "between"
+      ? `${condition.value}..${condition.valueSecondary ?? ""}`
+      : condition.operator === "is_null" || condition.operator === "is_not_null"
+        ? ""
+        : condition.value;
+    return `${condition.column} ${condition.operator}${value ? ` ${value}` : ""}`;
+  });
+}
+
 function enrichLiveCandidate(row: Record<string, unknown>, setups: ScannerSetupGroup[]): Record<string, unknown> {
   const currentOpen = numberValue(row, "current_open") || numberValue(row, "open");
   const lastVwap = numberValue(row, "last_vwap");
@@ -1768,7 +1892,7 @@ function enrichLiveCandidate(row: Record<string, unknown>, setups: ScannerSetupG
     return true;
   });
   const reasons = [
-    matchedSetup ? matchedSetup.name : "",
+    matchedSetup ? matchedSetup.name : "Query match",
     `5m ${percent(last5mReturn)}`,
     `${integer(transactions)} tx`,
     `${number(txRatio, 1)}x tx`,
@@ -1782,8 +1906,8 @@ function enrichLiveCandidate(row: Record<string, unknown>, setups: ScannerSetupG
     bvd > 50 ? `BVD ${number(bvd, 0)}` : "",
     extendedVwap > 0.12 ? `extended ${percent(extendedVwap)} from VWAP` : "",
   ].filter(Boolean);
-  const priority = (matchedSetup ? 100 : 0) + last5mReturn * 100 + Math.min(25, txRatio) + (aboveVwap ? 10 : 0) + (breakingBody ? 8 : 0) - risks.length * 8;
-  const bias = !matchedSetup ? "" : risks.length >= 2 ? "Risk" : aboveVwap && !lastRed ? "Ready" : "Watch";
+  const priority = (matchedSetup ? 100 : 50) + last5mReturn * 100 + Math.min(25, txRatio) + (aboveVwap ? 10 : 0) + (breakingBody ? 8 : 0) - risks.length * 8;
+  const bias = risks.length >= 2 ? "Risk" : aboveVwap && !lastRed ? "Ready" : "Watch";
   const stopBase = lastVwap > 0 ? lastVwap * 0.99 : Math.min(lastLow || currentOpen * 0.98, currentOpen * 0.98);
   return {
     ...row,
@@ -1793,7 +1917,7 @@ function enrichLiveCandidate(row: Record<string, unknown>, setups: ScannerSetupG
     live_priority: priority,
     live_reasons: reasons.join(" | "),
     live_risks: risks.join(" | "),
-    live_setup_group: matchedSetup?.name ?? "",
+    live_setup_group: matchedSetup?.name ?? "Query Match",
     open_vs_vwap_pct: extendedVwap,
     suggested_entry: currentOpen || lastClose,
     suggested_stop: stopBase,
@@ -1948,6 +2072,7 @@ function buildGlobalLiveMetrics({
   decisions,
   lastActionTime,
   liveClockMode,
+  preloadStatus,
   scannerRows,
   secondsPerMinute,
   session,
@@ -1956,17 +2081,20 @@ function buildGlobalLiveMetrics({
   decisions: Record<string, DecisionState>;
   lastActionTime: string;
   liveClockMode: LiveClockMode;
+  preloadStatus: LivePreloadPayload | null;
   scannerRows: Record<string, unknown>[];
   secondsPerMinute: string;
   session: TradingSession;
   snapshot: ScannerSnapshot | null;
 }) {
   const decisionsCount = Object.keys(decisions).length;
+  const preloadProgress = preloadStatus ? `${Math.round(preloadStatus.progress * 100)}%` : liveClockMode === "loading_data" ? "..." : "-";
   return {
     items: [
       { icon: <Clock3 size={14} />, label: "Date", tone: "info", value: session.sessionDate || "-" },
       { icon: <Clock3 size={14} />, label: "Clock", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: `${session.barTime} ET` },
       { icon: <Activity size={14} />, label: "Mode", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: liveClockMode },
+      { icon: <Database size={14} />, label: "Data Load", tone: preloadStatus?.status === "ready" ? "success" : liveClockMode === "loading_data" ? "warning" : "muted", value: preloadProgress },
       { icon: <TableProperties size={14} />, label: "Raw Scanner Rows", tone: snapshot?.row_count ? "info" : "muted", value: integer(snapshot?.row_count ?? 0) },
       { icon: <TrendingUp size={14} />, label: "Signals", tone: scannerRows.length ? "success" : "muted", value: integer(scannerRows.length) },
       { icon: <Target size={14} />, label: "Decisions", tone: decisionsCount ? "info" : "muted", value: integer(decisionsCount) },
@@ -2131,6 +2259,15 @@ function readStoredSetupGroups(): ScannerSetupGroup[] {
     return Array.isArray(parsed) && parsed.length ? parsed : DEFAULT_SETUP_GROUPS;
   } catch {
     return DEFAULT_SETUP_GROUPS;
+  }
+}
+
+function readStoredScannerQuery(): BackendTableQuery | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LIVE_SCANNER_QUERY_STORAGE_KEY) || "null");
+    return parsed?.conditions ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
