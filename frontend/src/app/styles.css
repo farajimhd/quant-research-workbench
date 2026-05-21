@@ -9288,8 +9288,8 @@ button {
   border-right: 1px solid var(--border);
   max-width: none;
   min-width: 0;
-  padding-right: 6px;
-  width: 72px;
+  padding-right: 10px;
+  width: 104px;
 }
 
 .live-workspace {
@@ -9426,8 +9426,8 @@ button {
 .live-window-actions {
   align-items: center;
   display: grid;
-  gap: 4px;
-  grid-template-columns: 79px repeat(4, 20px);
+  column-gap: 8px;
+  grid-template-columns: 115px repeat(4, 20px);
   justify-content: end;
 }
 
