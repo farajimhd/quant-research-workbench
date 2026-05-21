@@ -18,7 +18,6 @@ import {
   Move,
   PauseCircle,
   Play,
-  Plus,
   RefreshCw,
   Save,
   ShieldAlert,
@@ -34,7 +33,7 @@ import type { Time } from "lightweight-charts";
 
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload } from "../app/components/ChartPanel";
-import { DataTable, type BackendTableQuery } from "../app/components/DataTable";
+import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../app/components/DataTable";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
 
@@ -109,18 +108,10 @@ type TradingSession = {
   sessionDate: string;
 };
 
-type ScannerSetupGroup = {
-  enabled: boolean;
+type ScannerQueryGroup = {
   id: string;
-  minLast5mReturn: number;
-  minPrice: number;
-  maxPrice: number;
-  minTransactions: number;
-  minTransactionsRatio: number;
-  minVolume: number;
   name: string;
-  requireAboveVwap: boolean;
-  requireBodyBreak: boolean;
+  query: BackendTableQuery;
 };
 
 type WindowId = string;
@@ -196,7 +187,7 @@ const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.live-trading.layout";
 const LIVE_LAYOUT_VERSION = 2;
 const LIVE_LAYOUTS_STORAGE_KEY = "quant-research-workbench.live-trading.named-layouts";
 const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.live-trading.shared-state";
-const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-setups";
+const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-queries";
 const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-query";
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const LIVE_PORTFOLIO_COLLAPSED_HEIGHT = 224;
@@ -227,45 +218,40 @@ const LIVE_SCANNER_COLUMNS = [
 
 const CORE_WINDOW_IDS: WindowId[] = ["portfolio", "scanner", "trade"];
 
-const DEFAULT_SETUP_GROUPS: ScannerSetupGroup[] = [
+const DEFAULT_SCANNER_QUERY_GROUPS: ScannerQueryGroup[] = [
   {
-    enabled: true,
     id: "pop-liquidity",
-    maxPrice: 10,
-    minLast5mReturn: 0.05,
-    minPrice: 1,
-    minTransactions: 150,
-    minTransactionsRatio: 3,
-    minVolume: 8_000,
     name: "Pop Liquidity",
-    requireAboveVwap: false,
-    requireBodyBreak: false,
+    query: scannerQueryFromConditions([
+      { column: "current_open", id: "price", operator: "between", value: "1", valueSecondary: "10" },
+      { column: "last_5m_return", id: "return", operator: "gte", value: "0.05" },
+      { column: "last_volume", id: "volume", operator: "gte", value: "8000" },
+      { column: "last_transactions", id: "transactions", operator: "gte", value: "150" },
+      { column: "last_transactions_vs_prior_3", id: "transactions-ratio", operator: "gte", value: "3" },
+    ]),
   },
   {
-    enabled: true,
     id: "vwap-reclaim",
-    maxPrice: 10,
-    minLast5mReturn: 0.02,
-    minPrice: 1,
-    minTransactions: 100,
-    minTransactionsRatio: 1.5,
-    minVolume: 5_000,
     name: "VWAP Reclaim",
-    requireAboveVwap: true,
-    requireBodyBreak: true,
+    query: scannerQueryFromConditions([
+      { column: "current_open", id: "price", operator: "between", value: "1", valueSecondary: "10" },
+      { column: "last_5m_return", id: "return", operator: "gte", value: "0.02" },
+      { column: "last_volume", id: "volume", operator: "gte", value: "5000" },
+      { column: "last_transactions", id: "transactions", operator: "gte", value: "100" },
+      { column: "last_transactions_vs_prior_3", id: "transactions-ratio", operator: "gte", value: "1.5" },
+      { column: "current_open_above_last_2_body_high", id: "body-break", operator: "eq", value: "true" },
+    ]),
   },
   {
-    enabled: false,
     id: "day-high-pressure",
-    maxPrice: 10,
-    minLast5mReturn: 0.03,
-    minPrice: 1,
-    minTransactions: 120,
-    minTransactionsRatio: 2,
-    minVolume: 8_000,
     name: "Day High Pressure",
-    requireAboveVwap: true,
-    requireBodyBreak: false,
+    query: scannerQueryFromConditions([
+      { column: "current_open", id: "price", operator: "between", value: "1", valueSecondary: "10" },
+      { column: "last_5m_return", id: "return", operator: "gte", value: "0.03" },
+      { column: "last_volume", id: "volume", operator: "gte", value: "8000" },
+      { column: "last_transactions", id: "transactions", operator: "gte", value: "120" },
+      { column: "last_transactions_vs_prior_3", id: "transactions-ratio", operator: "gte", value: "2" },
+    ]),
   },
 ];
 
@@ -301,10 +287,10 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
   const [session, setSession] = useState<TradingSession>(() => readStoredSession() ?? { barTime: "04:00", sessionDate: "" });
   const [started, setStarted] = useState(isChildCanvas);
-  const [setupGroups, setSetupGroups] = useState<ScannerSetupGroup[]>(readStoredSetupGroups);
-  const [newSetupName, setNewSetupName] = useState("");
+  const [scannerQueryGroups, setScannerQueryGroups] = useState<ScannerQueryGroup[]>(readStoredScannerQueryGroups);
+  const [scannerQueryName, setScannerQueryName] = useState(() => readStoredScannerQueryName() || DEFAULT_SCANNER_QUERY_GROUPS[0]?.name || "Scanner Query");
   const [snapshot, setSnapshot] = useState<ScannerSnapshot | null>(null);
-  const [scannerQuery, setScannerQuery] = useState<BackendTableQuery>(() => readStoredScannerQuery() ?? baseScannerQuery(DEFAULT_SETUP_GROUPS));
+  const [scannerQuery, setScannerQuery] = useState<BackendTableQuery>(() => readStoredScannerQuery() ?? DEFAULT_SCANNER_QUERY_GROUPS[0]?.query ?? emptyScannerQuery());
   const [preloadStatus, setPreloadStatus] = useState<LivePreloadPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -365,24 +351,27 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }, [scope]);
 
   useEffect(() => {
-    window.localStorage.setItem(LIVE_SETUP_STORAGE_KEY, JSON.stringify(setupGroups));
-  }, [setupGroups]);
+    window.localStorage.setItem(LIVE_SETUP_STORAGE_KEY, JSON.stringify(scannerQueryGroups));
+  }, [scannerQueryGroups]);
 
   useEffect(() => {
     window.localStorage.setItem(LIVE_SCANNER_QUERY_STORAGE_KEY, JSON.stringify(scannerQuery));
   }, [scannerQuery]);
 
+  useEffect(() => {
+    window.localStorage.setItem(`${LIVE_SCANNER_QUERY_STORAGE_KEY}.name`, scannerQueryName);
+  }, [scannerQueryName]);
+
   const sessions = useMemo(() => availableSessionDates(review?.records ?? []), [review]);
-  const activeSetups = setupGroups.filter((item) => item.enabled);
   const selectedTicker = stringValue(selectedRow, "ticker");
   const selectedOpen = numberValue(selectedRow, "current_open") || numberValue(selectedRow, "open");
-  const selectedProfile = selectedRow ? enrichLiveCandidate(selectedRow, activeSetups) : null;
+  const selectedProfile = selectedRow ? enrichLiveCandidate(selectedRow, scannerQueryName) : null;
   const scannerRows = useMemo(
     () =>
       (snapshot?.rows ?? [])
-        .map((row) => enrichLiveCandidate(row, activeSetups))
+        .map((row) => enrichLiveCandidate(row, scannerQueryName))
         .sort((a, b) => numberValue(b, "live_priority") - numberValue(a, "live_priority")),
-    [activeSetups, snapshot]
+    [scannerQueryName, snapshot]
   );
   const portfolioMetrics = useMemo(
     () => buildPortfolioMetrics({ orders, positions }),
@@ -623,7 +612,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         row_limit: 1000,
         })}`
       );
-      const enrichedRows = payload.snapshot.rows.map((row) => enrichLiveCandidate(row, activeSetups));
+      const enrichedRows = payload.snapshot.rows.map((row) => enrichLiveCandidate(row, scannerQueryName));
       const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? null;
       setSnapshot(payload.snapshot);
       setSelectedRow(firstRow);
@@ -659,7 +648,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
       if (shouldStop()) return false;
       setSnapshot(payload.snapshot);
       setSession((current) => ({ ...current, barTime: payload.snapshot.bar_time || startTime }));
-      const enrichedRows = payload.snapshot.rows.map((row) => enrichLiveCandidate(row, activeSetups));
+      const enrichedRows = payload.snapshot.rows.map((row) => enrichLiveCandidate(row, scannerQueryName));
       const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? enrichedRows[0] ?? null;
       setSelectedRow(firstRow);
       if (payload.found && firstRow) {
@@ -706,15 +695,18 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     }
   }
 
-  function addSetupGroup() {
-    const name = newSetupName.trim();
-    if (!name) return;
-    const source = setupGroups[0] ?? DEFAULT_SETUP_GROUPS[0];
-    setSetupGroups((current) => [
-      ...current,
-      { ...source, enabled: true, id: `${Date.now()}-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, name },
+  function saveScannerQueryGroup(name: string, savedQuery: BackendTableQuery) {
+    const trimmedName = name.trim() || "Scanner Query";
+    const id = stableScannerQueryId(trimmedName);
+    setScannerQueryGroups((current) => [
+      { id, name: trimmedName, query: savedQuery },
+      ...current.filter((item) => item.id !== id && item.name !== trimmedName),
     ]);
-    setNewSetupName("");
+    setScannerQueryName(trimmedName);
+  }
+
+  function deleteScannerQueryGroup(id: string) {
+    setScannerQueryGroups((current) => current.filter((item) => item.id !== id));
   }
 
   function updateLayout(id: WindowId, patch: Partial<WindowLayout>) {
@@ -949,20 +941,18 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
             return (
               <WorkspaceWindow key={windowId} canvasTargets={canvasTargets} id={windowId} layout={layout} title="Scanner" icon={<TrendingUp size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onMoveToCanvas={moveWindowToCanvas} onPopOut={createChildCanvas}>
                 <ScannerContainer
-                  activeSetups={activeSetups}
                   loading={loading}
-                  newSetupName={newSetupName}
                   query={scannerQuery}
+                  queryGroups={scannerQueryGroups}
+                  queryName={scannerQueryName}
                   rows={scannerRows}
                   selectedTicker={selectedTicker}
-                  setupGroups={setupGroups}
                   snapshot={snapshot}
-                  onAddSetup={addSetupGroup}
-                  onLoad={refreshCurrentBar}
-                  onNewSetupNameChange={setNewSetupName}
+                  onDeleteQueryGroup={deleteScannerQueryGroup}
                   onQueryChange={setScannerQuery}
+                  onQueryNameChange={setScannerQueryName}
                   onRowSelect={openChartForRow}
-                  onSetupGroupsChange={setSetupGroups}
+                  onSaveQueryGroup={saveScannerQueryGroup}
                 />
               </WorkspaceWindow>
             );
@@ -1314,77 +1304,55 @@ function LiveCanvasManager({
 }
 
 function ScannerContainer({
-  activeSetups,
   loading,
-  newSetupName,
-  onAddSetup,
-  onLoad,
-  onNewSetupNameChange,
+  onDeleteQueryGroup,
   onQueryChange,
+  onQueryNameChange,
   onRowSelect,
-  onSetupGroupsChange,
+  onSaveQueryGroup,
   query,
+  queryGroups,
+  queryName,
   rows,
   selectedTicker,
-  setupGroups,
   snapshot,
 }: {
-  activeSetups: ScannerSetupGroup[];
   loading: boolean;
-  newSetupName: string;
   query: BackendTableQuery;
+  queryGroups: ScannerQueryGroup[];
+  queryName: string;
   rows: Record<string, unknown>[];
   selectedTicker: string;
-  setupGroups: ScannerSetupGroup[];
   snapshot: ScannerSnapshot | null;
-  onAddSetup: () => void;
-  onLoad: () => void;
-  onNewSetupNameChange: (value: string) => void;
+  onDeleteQueryGroup: (id: string) => void;
   onQueryChange: (query: BackendTableQuery) => void;
+  onQueryNameChange: (value: string) => void;
   onRowSelect: (row: Record<string, unknown>) => void;
-  onSetupGroupsChange: (groups: ScannerSetupGroup[]) => void;
+  onSaveQueryGroup: (name: string, query: BackendTableQuery) => void;
 }) {
-  const queryFilterChips = backendQueryFilterChips(query);
+  const queryPresets: BackendQueryPreset[] = queryGroups.map((group) => ({ id: group.id, label: group.name, query: group.query }));
   return (
-    <div className="live-container-stack">
-      <div className="live-scanner-toolbar">
-        <div className="live-filter-group-list">
-          {setupGroups.map((group) => (
-            <button
-              className={group.enabled ? "live-filter-chip active" : "live-filter-chip"}
-              key={group.id}
-              onClick={() => onSetupGroupsChange(setupGroups.map((item) => (item.id === group.id ? { ...item, enabled: !item.enabled } : item)))}
-              type="button"
-            >
-              {group.name}
-            </button>
-          ))}
-        </div>
-        <div className="live-new-setup">
-          <input placeholder="New setup group" value={newSetupName} onChange={(event) => onNewSetupNameChange(event.target.value)} />
-          <button className="button secondary" onClick={onAddSetup} type="button">
-            <Plus size={14} /> Add
-          </button>
-          <button className="button primary" disabled={loading || !activeSetups.length} onClick={onLoad} type="button">
-            {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={14} />} Refresh
-          </button>
-        </div>
-      </div>
-      <div className="live-scanner-filter-strip">
-        <span>Scanner query</span>
-        {queryFilterChips.length ? queryFilterChips.map((chip) => <strong key={chip}>{chip}</strong>) : <strong>No backend filters</strong>}
-      </div>
-      <DataTable
-        backendQuery={{ columns: snapshot?.columns?.length ? snapshot.columns : LIVE_SCANNER_COLUMNS, loading, onChange: onQueryChange, value: query }}
-        columns={liveTableColumns(snapshot?.columns ?? [])}
-        empty={loading ? "Loading scanner..." : "Run scanner to load candidates."}
-        isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
-        onRowClick={onRowSelect}
-        preserveFiltersOnDataChange
-        rows={rows}
-        transposeHelper
-      />
-    </div>
+    <DataTable
+      backendQuery={{
+        columns: snapshot?.columns?.length ? snapshot.columns : LIVE_SCANNER_COLUMNS,
+        loading,
+        onChange: onQueryChange,
+        onDeletePreset: onDeleteQueryGroup,
+        onNameChange: onQueryNameChange,
+        onSavePreset: onSaveQueryGroup,
+        presets: queryPresets,
+        queryName,
+        value: query,
+      }}
+      columns={liveTableColumns(snapshot?.columns ?? [])}
+      empty={loading ? "Loading scanner..." : "Scanner signals will appear here after the saved query matches."}
+      isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
+      onRowClick={onRowSelect}
+      preserveFiltersOnDataChange
+      rows={rows}
+      title="Scanner"
+      transposeHelper
+    />
   );
 }
 
@@ -1813,35 +1781,20 @@ function availableSessionDates(records: RecordRow[]) {
   return Array.from(new Set(records.filter((record) => record.exists && record.group === "bars" && record.timeframe === "1m").map((record) => record.session_date))).sort();
 }
 
-function baseScannerQuery(setups: ScannerSetupGroup[]): BackendTableQuery {
-  const minPrice = Math.min(...setups.map((setup) => setup.minPrice), 1);
-  const maxPrice = Math.max(...setups.map((setup) => setup.maxPrice), 10);
-  const minVolume = Math.min(...setups.map((setup) => setup.minVolume), 0);
-  const minTransactions = Math.min(...setups.map((setup) => setup.minTransactions), 0);
+function scannerQueryFromConditions(conditions: BackendTableQuery["conditions"]): BackendTableQuery {
   return {
-    conditions: [
-      { column: "current_open", id: "price", operator: "between", value: String(minPrice), valueSecondary: String(maxPrice) },
-      { column: "last_volume", id: "volume", operator: "gte", value: String(minVolume) },
-      { column: "last_transactions", id: "transactions", operator: "gte", value: String(minTransactions) },
-    ],
+    conditions,
     matchMode: "all",
     sortColumn: "last_5m_return",
     sortDirection: "desc",
   };
 }
 
-function backendQueryFilterChips(query: BackendTableQuery) {
-  return (query.conditions ?? []).map((condition) => {
-    const value = condition.operator === "between"
-      ? `${condition.value}..${condition.valueSecondary ?? ""}`
-      : condition.operator === "is_null" || condition.operator === "is_not_null"
-        ? ""
-        : condition.value;
-    return `${condition.column} ${condition.operator}${value ? ` ${value}` : ""}`;
-  });
+function emptyScannerQuery(): BackendTableQuery {
+  return { conditions: [], matchMode: "all", sortDirection: "asc" };
 }
 
-function enrichLiveCandidate(row: Record<string, unknown>, setups: ScannerSetupGroup[]): Record<string, unknown> {
+function enrichLiveCandidate(row: Record<string, unknown>, queryName: string): Record<string, unknown> {
   const currentOpen = numberValue(row, "current_open") || numberValue(row, "open");
   const lastVwap = numberValue(row, "last_vwap");
   const lastClose = numberValue(row, "last_close");
@@ -1857,18 +1810,8 @@ function enrichLiveCandidate(row: Record<string, unknown>, setups: ScannerSetupG
   const nearDayHigh = dayHigh > 0 && currentOpen >= dayHigh * 0.995;
   const lastRed = lastClose > 0 && lastOpen > 0 && lastClose < lastOpen;
   const extendedVwap = lastVwap > 0 ? (currentOpen / lastVwap) - 1 : 0;
-  const matchedSetup = setups.find((setup) => {
-    if (currentOpen < setup.minPrice || currentOpen > setup.maxPrice) return false;
-    if (last5mReturn < setup.minLast5mReturn) return false;
-    if (numberValue(row, "last_volume") < setup.minVolume) return false;
-    if (transactions < setup.minTransactions) return false;
-    if (txRatio < setup.minTransactionsRatio) return false;
-    if (setup.requireAboveVwap && !aboveVwap) return false;
-    if (setup.requireBodyBreak && !breakingBody) return false;
-    return true;
-  });
   const reasons = [
-    matchedSetup ? matchedSetup.name : "Query match",
+    queryName || "Query match",
     `5m ${percent(last5mReturn)}`,
     `${integer(transactions)} tx`,
     `${number(txRatio, 1)}x tx`,
@@ -1882,7 +1825,7 @@ function enrichLiveCandidate(row: Record<string, unknown>, setups: ScannerSetupG
     bvd > 50 ? `BVD ${number(bvd, 0)}` : "",
     extendedVwap > 0.12 ? `extended ${percent(extendedVwap)} from VWAP` : "",
   ].filter(Boolean);
-  const priority = (matchedSetup ? 100 : 50) + last5mReturn * 100 + Math.min(25, txRatio) + (aboveVwap ? 10 : 0) + (breakingBody ? 8 : 0) - risks.length * 8;
+  const priority = 100 + last5mReturn * 100 + Math.min(25, txRatio) + (aboveVwap ? 10 : 0) + (breakingBody ? 8 : 0) - risks.length * 8;
   const bias = risks.length >= 2 ? "Risk" : aboveVwap && !lastRed ? "Ready" : "Watch";
   const stopBase = lastVwap > 0 ? lastVwap * 0.99 : Math.min(lastLow || currentOpen * 0.98, currentOpen * 0.98);
   return {
@@ -1893,7 +1836,7 @@ function enrichLiveCandidate(row: Record<string, unknown>, setups: ScannerSetupG
     live_priority: priority,
     live_reasons: reasons.join(" | "),
     live_risks: risks.join(" | "),
-    live_setup_group: matchedSetup?.name ?? "Query Match",
+    live_setup_group: queryName || "Query Match",
     open_vs_vwap_pct: extendedVwap,
     suggested_entry: currentOpen || lastClose,
     suggested_stop: stopBase,
@@ -2243,12 +2186,14 @@ function readSharedTradingState(): { decisions: Record<string, DecisionState>; o
   }
 }
 
-function readStoredSetupGroups(): ScannerSetupGroup[] {
+function readStoredScannerQueryGroups(): ScannerQueryGroup[] {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(LIVE_SETUP_STORAGE_KEY) || "[]");
-    return Array.isArray(parsed) && parsed.length ? parsed : DEFAULT_SETUP_GROUPS;
+    return Array.isArray(parsed) && parsed.length
+      ? parsed.filter((item): item is ScannerQueryGroup => Boolean(item?.id && item?.name && item?.query?.conditions))
+      : DEFAULT_SCANNER_QUERY_GROUPS;
   } catch {
-    return DEFAULT_SETUP_GROUPS;
+    return DEFAULT_SCANNER_QUERY_GROUPS;
   }
 }
 
@@ -2259,6 +2204,18 @@ function readStoredScannerQuery(): BackendTableQuery | null {
   } catch {
     return null;
   }
+}
+
+function readStoredScannerQueryName() {
+  try {
+    return window.localStorage.getItem(`${LIVE_SCANNER_QUERY_STORAGE_KEY}.name`) || "";
+  } catch {
+    return "";
+  }
+}
+
+function stableScannerQueryId(name: string) {
+  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `query-${Date.now()}`;
 }
 
 function previousSessionDate(sessions: string[], sessionDate: string, countBack: number) {

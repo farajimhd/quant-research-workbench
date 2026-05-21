@@ -60,10 +60,21 @@ export type BackendTableQuery = {
   sortDirection?: SortDirection;
 };
 
+export type BackendQueryPreset = {
+  id: string;
+  label: string;
+  query: BackendTableQuery;
+};
+
 type BackendQueryConfig = {
   columns: string[];
   loading?: boolean;
   onChange: (query: BackendTableQuery) => void;
+  onDeletePreset?: (id: string) => void;
+  onNameChange?: (name: string) => void;
+  onSavePreset?: (name: string, query: BackendTableQuery) => void;
+  presets?: BackendQueryPreset[];
+  queryName?: string;
   value: BackendTableQuery;
 };
 
@@ -304,6 +315,8 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
   const openProfile = openPopover ? profilesByColumn[openPopover.column] : null;
   const backendQueryColumns = backendQuery?.columns.length ? backendQuery.columns : resolvedColumns;
   const backendQueryActiveCount = backendQuery ? countBackendQueryClauses(backendQuery.value) : 0;
+  const backendQueryChips = useMemo(() => backendQuery ? backendQueryConditionChips(backendQuery.value.conditions ?? []) : [], [backendQuery]);
+  const totalActiveFilterCount = activeFilterCount + backendQueryActiveCount;
   const columnWidthsByName = useMemo(
     () => buildColumnWidthsByName({ layoutMode, rows: sortedRows, visibleColumns: usableColumns }),
     [layoutMode, sortedRows, usableColumns],
@@ -456,6 +469,7 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
     setActiveValueFiltersByColumn({});
     setManualFiltersByColumn({});
     setOpenPopover(null);
+    if (backendQuery) backendQuery.onChange({ ...normalizeBackendQuery(backendQuery.value), conditions: [] });
   };
 
   const removeActiveFilter = (chip: { column: string; type: "manual" | "value" }) => {
@@ -766,18 +780,75 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
     backendQuery.onChange(emptyQuery);
   };
 
+  const saveBackendQueryPreset = () => {
+    if (!backendQuery?.onSavePreset) return;
+    const cleanedQuery = cleanBackendQuery(backendQueryDraft, backendQueryColumns);
+    backendQuery.onSavePreset((backendQuery.queryName ?? "").trim() || "Scanner Query", cleanedQuery);
+    setBackendQueryDraft(cleanedQuery);
+  };
+
+  const applyBackendQueryPreset = (preset: BackendQueryPreset) => {
+    if (!backendQuery) return;
+    const cleanedQuery = cleanBackendQuery(preset.query, backendQueryColumns);
+    setBackendQueryDraft(cleanedQuery);
+    backendQuery.onNameChange?.(preset.label);
+    backendQuery.onChange(cleanedQuery);
+    setBackendQueryOpen(false);
+    setToolbarMenuOpen(false);
+  };
+
+  const removeBackendQueryConditionFromActive = (conditionId: string) => {
+    if (!backendQuery) return;
+    const nextQuery = {
+      ...normalizeBackendQuery(backendQuery.value),
+      conditions: normalizeBackendQuery(backendQuery.value).conditions.filter((condition) => condition.id !== conditionId),
+    };
+    backendQuery.onChange(nextQuery);
+    setBackendQueryDraft(nextQuery);
+  };
+
   const renderBackendQueryPanel = () => {
     if (!backendQuery) return null;
     const draft = normalizeBackendQuery(backendQueryDraft);
     return (
-      <div className="data-table-query-panel">
-        <div className="data-table-query-header">
-          <div>
-            <div className="data-table-popover-title">Backend Query</div>
+        <div className="data-table-query-panel">
+          <div className="data-table-query-header">
+            <div>
+              <div className="data-table-popover-title">Backend Query</div>
+            </div>
+            {backendQuery.loading ? <span className="data-table-query-loading">Running</span> : null}
           </div>
-          {backendQuery.loading ? <span className="data-table-query-loading">Running</span> : null}
-        </div>
-        <div className="data-table-query-body">
+          <div className="data-table-query-section">
+            <div className="table-popover-section-title">Name</div>
+            <input
+              aria-label="Backend query name"
+              className="data-table-query-name-input"
+              onChange={(event) => backendQuery.onNameChange?.(event.target.value)}
+              placeholder="Query name"
+              value={backendQuery.queryName ?? ""}
+            />
+          </div>
+          {backendQuery.presets?.length ? (
+            <div className="data-table-query-section">
+              <div className="table-popover-section-title">Saved Queries</div>
+              <div className="data-table-query-preset-list">
+                {backendQuery.presets.map((preset) => (
+                  <span className="data-table-query-preset" key={preset.id}>
+                    <button className="table-text-button" onClick={() => applyBackendQueryPreset(preset)} type="button">
+                      <Filter size={13} />
+                      {preset.label}
+                    </button>
+                    {backendQuery.onDeletePreset ? (
+                      <button className="table-icon-button danger" onClick={() => backendQuery.onDeletePreset?.(preset.id)} title={`Delete ${preset.label}`} type="button">
+                        <Trash2 size={13} />
+                      </button>
+                    ) : null}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="data-table-query-body">
           <div className="data-table-query-section">
             <div className="table-popover-section-title">Where</div>
             <div className="data-table-query-mode" aria-label="Backend query match mode" role="group">
@@ -884,6 +955,11 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
           <button className="table-text-button" onClick={clearBackendQuery} type="button">
             Clear query
           </button>
+          {backendQuery.onSavePreset ? (
+            <button className="table-text-button" onClick={saveBackendQueryPreset} type="button">
+              Save query
+            </button>
+          ) : null}
           <button className="table-text-button primary" disabled={backendQuery.loading} onClick={applyBackendQuery} type="button">
             Apply query
           </button>
@@ -910,11 +986,17 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
             <span>{formatInteger(sortedRows.length)} rows</span>
             <span>{formatInteger(usableColumns.length)} cols</span>
             <span>{formatInteger(numericColumnCount)} numeric</span>
-            <span>{formatInteger(activeFilterCount)} filters</span>
+            <span>{formatInteger(totalActiveFilterCount)} filters</span>
           </div>
         </div>
         <div className="data-table-toolbar-actions data-table-toolbar-actions-wide">
           {renderFilterPresetButtons()}
+          {backendQuery?.presets?.map((preset) => (
+            <button className="table-text-button" key={preset.id} onClick={() => applyBackendQueryPreset(preset)} title={`Apply ${preset.label}`} type="button">
+              <Database size={13} />
+              {preset.label}
+            </button>
+          ))}
           {renderTransposeButton()}
           <span className="data-table-sort-chip">Sort: {activeSortLabel}</span>
           <div className="data-table-toolbar-control" aria-label="Table density">
@@ -1018,10 +1100,24 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
         </div>
       </div>
 
-      {activeFilterChips.length ? (
+      {activeFilterChips.length || backendQueryChips.length ? (
         <div className="data-table-active-filters" aria-label="Active filters">
           <span className="data-table-active-filters-label">Filters</span>
           <div className="data-table-active-filter-list">
+            {backendQueryChips.map((chip) => (
+              <span className="data-table-active-filter-chip" key={`backend:${chip.id}`}>
+                <span className="data-table-active-filter-column">{displayName(chip.column)}</span>
+                <span className="data-table-active-filter-summary">{chip.summary}</span>
+                <button
+                  aria-label={`Remove ${displayName(chip.column)} query filter`}
+                  onClick={() => removeBackendQueryConditionFromActive(chip.id)}
+                  title={`Remove ${displayName(chip.column)} query filter`}
+                  type="button"
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
             {activeFilterChips.map((chip) => (
               <span className="data-table-active-filter-chip" key={chip.key}>
                 <span className="data-table-active-filter-column">{displayName(chip.column)}</span>
@@ -1428,6 +1524,23 @@ function countBackendQueryClauses(query: BackendTableQuery): number {
     return true;
   }).length;
   return conditions + (cleaned.sortColumn ? 1 : 0);
+}
+
+function backendQueryConditionChips(conditions: BackendQueryCondition[]) {
+  return conditions
+    .filter((condition) => condition.column && condition.operator)
+    .map((condition) => ({
+      column: condition.column,
+      id: condition.id,
+      summary: formatBackendConditionSummary(condition),
+    }));
+}
+
+function formatBackendConditionSummary(condition: BackendQueryCondition) {
+  if (condition.operator === "between") return `between ${condition.value} and ${condition.valueSecondary ?? ""}`;
+  if (condition.operator === "is_null") return "is blank";
+  if (condition.operator === "is_not_null") return "has value";
+  return `${condition.operator.replaceAll("_", " ")} ${condition.value}`;
 }
 
 function buildBackendQueryCondition(columns: string[]): BackendQueryCondition {

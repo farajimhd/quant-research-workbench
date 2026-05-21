@@ -4555,6 +4555,28 @@ button {
   padding: 10px 12px;
 }
 
+.data-table-query-name-input {
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg, var(--surface));
+  color: var(--foreground);
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.data-table-query-preset-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.data-table-query-preset {
+  align-items: center;
+  display: inline-flex;
+  gap: 3px;
+}
+
 .data-table-query-row,
 .data-table-query-sort-row {
   display: grid;
@@ -9473,45 +9495,6 @@ button {
   max-height: 430px;
 }
 
-.live-scanner-toolbar {
-  display: grid;
-  gap: 10px;
-}
-
-.live-scanner-filter-strip {
-  align-items: center;
-  background: color-mix(in oklab, var(--surface-alt) 40%, var(--surface));
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 6px 8px;
-}
-
-.live-scanner-filter-strip span {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  font-weight: 900;
-  text-transform: uppercase;
-}
-
-.live-scanner-filter-strip strong {
-  background: color-mix(in oklab, var(--info) 9%, var(--surface));
-  border: 1px solid color-mix(in oklab, var(--info) 26%, var(--border));
-  border-radius: 999px;
-  color: var(--info);
-  font-size: 11px;
-  font-weight: 800;
-  padding: 4px 7px;
-}
-
-.live-filter-group-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-
 .live-filter-chip {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -9528,22 +9511,6 @@ button {
   background: color-mix(in oklab, var(--info) 12%, var(--surface));
   border-color: color-mix(in oklab, var(--info) 38%, var(--border));
   color: var(--info);
-}
-
-.live-new-setup {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(160px, 1fr) auto auto;
-}
-
-.live-new-setup input {
-  background: var(--control-bg, var(--surface));
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  color: var(--foreground);
-  font: inherit;
-  min-height: 36px;
-  padding: 7px 9px;
 }
 
 .live-trade-symbol {
@@ -9963,7 +9930,6 @@ button {
   .live-control-grid,
   .live-ticket-grid,
   .live-reason-columns,
-  .live-new-setup,
   .live-trade-form,
   .live-session-toolbar {
     grid-template-columns: 1fr;
