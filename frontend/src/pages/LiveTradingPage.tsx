@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from "react";
 import {
   Activity,
   BarChart3,
@@ -134,6 +134,13 @@ type LiveWindowSummary = {
   title: string;
   type: "core" | "chart";
   z: number;
+};
+
+type LiveCanvasTarget = {
+  color: string;
+  id: string;
+  isCurrent: boolean;
+  label: string;
 };
 
 type DecisionState = "approved" | "skipped" | "watching";
@@ -297,6 +304,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [layoutName, setLayoutName] = useState("Momentum Desk");
   const [savedLayouts, setSavedLayouts] = useState<SavedCanvasLayout[]>(readSavedCanvasLayouts);
   const [selectedLayoutName, setSelectedLayoutName] = useState("");
+  const [canvasTargetsVersion, setCanvasTargetsVersion] = useState(0);
   const seekCancelRef = useRef(0);
 
   useEffect(() => {
@@ -357,8 +365,9 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     () => buildLiveWindowSummaries(openWindows, chartWindows, layouts),
     [chartWindows, layouts, openWindows]
   );
+  const canvasTargets = useMemo(() => listKnownLiveCanvases(canvasId), [canvasId, canvasTargetsVersion]);
   const topbarWorkspaceInfo = useMemo(() => {
-    const knownPageCount = countKnownLiveCanvases();
+    const knownPageCount = canvasTargets.length || 1;
     const canvasLabel = isChildCanvas ? `Child canvas ${canvasId.replace(/^canvas-/, "")}` : "Main canvas";
     const layoutLabel = selectedLayoutName || layoutName || "Unsaved layout";
     const pageLabel = `${knownPageCount} page${knownPageCount === 1 ? "" : "s"}`;
@@ -369,7 +378,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
       detail: `${layoutLabel} - ${pageLabel} - ${windowLabel}${extraWindowCount ? ` +${extraWindowCount}` : ""}`,
       title: `Semi-Auto Trading - ${canvasLabel}`,
     };
-  }, [canvasId, isChildCanvas, layoutName, liveWindowSummaries, selectedLayoutName]);
+  }, [canvasId, canvasTargets.length, isChildCanvas, layoutName, liveWindowSummaries, selectedLayoutName]);
 
   useEffect(() => {
     if (!started || !onTopbarCenterChange) {
@@ -398,6 +407,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   useEffect(() => {
     const payload = { chartWindows, layoutVersion: LIVE_LAYOUT_VERSION, layouts, windows: openWindows };
     window.localStorage.setItem(canvasStorageKey(canvasId), JSON.stringify(payload));
+    setCanvasTargetsVersion((version) => version + 1);
   }, [canvasId, chartWindows, layouts, openWindows]);
 
   useEffect(() => {
@@ -411,6 +421,20 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         } catch {
           // Ignore malformed cross-tab state.
         }
+      }
+      if (event.key === canvasStorageKey(canvasId) && event.newValue) {
+        try {
+          const parsed = JSON.parse(event.newValue) as Partial<{ chartWindows: ChartWindow[]; layoutVersion: number; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] }> | null;
+          if (!parsed || parsed.layoutVersion !== LIVE_LAYOUT_VERSION) return;
+          setLayouts((current) => ({ ...current, ...(parsed.layouts ?? {}) }));
+          setOpenWindows(Array.isArray(parsed.windows) ? parsed.windows : []);
+          setChartWindows(Array.isArray(parsed.chartWindows) ? parsed.chartWindows : []);
+        } catch {
+          // Ignore malformed canvas state from another tab.
+        }
+      }
+      if (event.key?.startsWith(`${LIVE_LAYOUT_STORAGE_KEY}.`)) {
+        setCanvasTargetsVersion((version) => version + 1);
       }
     };
     window.addEventListener("storage", onStorage);
@@ -644,13 +668,36 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setChartWindows((current) => current.filter((chart) => chart.id !== id));
   }
 
+  function moveWindowToCanvas(windowId: WindowId, targetCanvasId: string) {
+    if (targetCanvasId === canvasId) {
+      updateLayout(windowId, { minimized: false });
+      bringWindowForward(windowId);
+      return;
+    }
+    const targetState = readCanvasLayoutState(targetCanvasId);
+    const sourceLayout = layouts[windowId] ?? buildDefaultCanvasLayout(targetCanvasId !== "main").layouts.chart;
+    const chart = chartWindows.find((item) => item.id === windowId);
+    const targetLayouts = {
+      ...targetState.layouts,
+      [windowId]: { ...sourceLayout, minimized: false, z: Math.max(0, ...Object.values(targetState.layouts).map((layout) => layout.z)) + 1 },
+    };
+    const targetChartWindows = chart
+      ? [chart, ...targetState.chartWindows.filter((item) => item.id !== chart.id)]
+      : targetState.chartWindows.filter((item) => item.id !== windowId);
+    writeCanvasState(targetCanvasId, {
+      chartWindows: targetChartWindows,
+      layouts: targetLayouts,
+      windows: [windowId, ...targetState.windows.filter((id) => id !== windowId)],
+    });
+    closeWindow(windowId);
+    setCanvasTargetsVersion((version) => version + 1);
+  }
+
   function createChildCanvas(windowId?: WindowId) {
     const nextCanvasId = `canvas-${Date.now()}`;
-    if (windowId) {
-      const transfer = { chartWindows, layout: layouts[windowId], windowId };
-      window.localStorage.setItem(canvasTransferKey(nextCanvasId), JSON.stringify(transfer));
-      closeWindow(windowId);
-    }
+    writeCanvasState(nextCanvasId, buildDefaultCanvasLayout(true));
+    if (windowId) moveWindowToCanvas(windowId, nextCanvasId);
+    setCanvasTargetsVersion((version) => version + 1);
     const url = new URL(window.location.href);
     url.searchParams.set("liveCanvas", nextCanvasId);
     url.hash = "live-trading";
@@ -740,6 +787,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
               }
             />
             <LiveWindowManager
+              canvasTargets={canvasTargets}
               windows={liveWindowSummaries}
               onClose={closeWindow}
               onFocus={(id) => {
@@ -747,6 +795,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                 bringWindowForward(id);
               }}
               onMinimize={(id, minimized) => updateLayout(id, { minimized })}
+              onMoveToCanvas={moveWindowToCanvas}
               onPopOut={createChildCanvas}
               onShowCoreWindows={() => setOpenWindows((current) => Array.from(new Set([...current, ...CORE_WINDOW_IDS])))}
             />
@@ -793,7 +842,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           const layout = layouts[windowId] ?? layouts.chart ?? buildDefaultCanvasLayout(false).layouts.chart;
           if (windowId === "scanner") {
             return (
-              <WorkspaceWindow key={windowId} id={windowId} layout={layout} title="Scanner" icon={<TrendingUp size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onPopOut={createChildCanvas}>
+              <WorkspaceWindow key={windowId} canvasTargets={canvasTargets} id={windowId} layout={layout} title="Scanner" icon={<TrendingUp size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onMoveToCanvas={moveWindowToCanvas} onPopOut={createChildCanvas}>
                 <ScannerContainer
                   activeSetups={activeSetups}
                   loading={loading}
@@ -813,7 +862,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           }
           if (windowId === "portfolio") {
             return (
-              <WorkspaceWindow key={windowId} id={windowId} layout={layout} title="Portfolio" icon={<WalletCards size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onPopOut={createChildCanvas}>
+              <WorkspaceWindow key={windowId} canvasTargets={canvasTargets} id={windowId} layout={layout} title="Portfolio" icon={<WalletCards size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onMoveToCanvas={moveWindowToCanvas} onPopOut={createChildCanvas}>
                 <PortfolioContainer
                   detailsOpen={portfolioDetailsOpen}
                   metrics={portfolioMetrics}
@@ -828,7 +877,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           }
           if (windowId === "trade") {
             return (
-              <WorkspaceWindow key={windowId} id={windowId} layout={layout} title="Trade" icon={<Target size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onPopOut={createChildCanvas}>
+              <WorkspaceWindow key={windowId} canvasTargets={canvasTargets} id={windowId} layout={layout} title="Trade" icon={<Target size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onMoveToCanvas={moveWindowToCanvas} onPopOut={createChildCanvas}>
                 <TradeContainer
                   decisions={decisions}
                   draft={tradeDraft}
@@ -845,7 +894,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           const chart = chartWindows.find((item) => item.id === windowId);
           if (!chart || !scope) return null;
           return (
-            <WorkspaceWindow key={windowId} id={windowId} layout={layout} title={chart.ticker} icon={<BarChart3 size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onPopOut={createChildCanvas}>
+            <WorkspaceWindow key={windowId} canvasTargets={canvasTargets} id={windowId} layout={layout} title={chart.ticker} icon={<BarChart3 size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onMoveToCanvas={moveWindowToCanvas} onPopOut={createChildCanvas}>
               <LiveChartWindow
                 catalog={catalog}
                 chart={chart}
@@ -913,6 +962,7 @@ function LiveTradingStart({
 }
 
 function WorkspaceWindow({
+  canvasTargets,
   children,
   icon,
   id,
@@ -920,9 +970,11 @@ function WorkspaceWindow({
   onClose,
   onFocus,
   onLayoutChange,
+  onMoveToCanvas,
   onPopOut,
   title,
 }: {
+  canvasTargets: LiveCanvasTarget[];
   children: ReactNode;
   icon: ReactNode;
   id: WindowId;
@@ -930,6 +982,7 @@ function WorkspaceWindow({
   onClose: (id: WindowId) => void;
   onFocus: (id: WindowId) => void;
   onLayoutChange: (id: WindowId, patch: Partial<WindowLayout>) => void;
+  onMoveToCanvas: (id: WindowId, canvasId: string) => void;
   onPopOut: (id: WindowId) => void;
   title: string;
 }) {
@@ -992,7 +1045,21 @@ function WorkspaceWindow({
           <strong>{title}</strong>
         </div>
         <div className="live-window-actions" onPointerDown={(event) => event.stopPropagation()}>
-          <button className="toolbar-button compact" onClick={() => onPopOut(id)} title="Move to child canvas" type="button">
+          <div className="live-canvas-target-row" aria-label={`Move ${title} to canvas`}>
+            {canvasTargets.map((target) => (
+              <button
+                className={target.isCurrent ? "live-canvas-target active" : "live-canvas-target"}
+                key={target.id}
+                onClick={() => onMoveToCanvas(id, target.id)}
+                style={{ "--canvas-color": target.color } as CSSProperties}
+                title={target.isCurrent ? `Current: ${target.label}` : `Move to ${target.label}`}
+                type="button"
+              >
+                {target.label.replace("Canvas ", "C").replace("Main", "M")}
+              </button>
+            ))}
+          </div>
+          <button className="toolbar-button compact" onClick={() => onPopOut(id)} title="Move to new child canvas" type="button">
             <ExternalLink size={12} />
           </button>
           <button className="toolbar-button compact" onClick={() => onLayoutChange(id, { minimized: !layout.minimized })} title={layout.minimized ? "Restore" : "Minimize"} type="button">
@@ -1013,16 +1080,20 @@ function WorkspaceWindow({
 }
 
 function LiveWindowManager({
+  canvasTargets,
   onClose,
   onFocus,
   onMinimize,
+  onMoveToCanvas,
   onPopOut,
   onShowCoreWindows,
   windows,
 }: {
+  canvasTargets: LiveCanvasTarget[];
   onClose: (id: WindowId) => void;
   onFocus: (id: WindowId) => void;
   onMinimize: (id: WindowId, minimized: boolean) => void;
+  onMoveToCanvas: (id: WindowId, canvasId: string) => void;
   onPopOut: (id: WindowId) => void;
   onShowCoreWindows: () => void;
   windows: LiveWindowSummary[];
@@ -1048,13 +1119,27 @@ function LiveWindowManager({
                 <small>{windowItem.minimized ? "Minimized" : windowItem.fullscreen ? "Fullscreen" : `Layer ${windowItem.z}`}</small>
               </button>
               <div className="live-window-chip-actions">
+                <div className="live-canvas-target-row" aria-label={`Move ${windowItem.title} to canvas`}>
+                  {canvasTargets.map((target) => (
+                    <button
+                      className={target.isCurrent ? "live-canvas-target active" : "live-canvas-target"}
+                      key={target.id}
+                      onClick={() => onMoveToCanvas(windowItem.id, target.id)}
+                      style={{ "--canvas-color": target.color } as CSSProperties}
+                      title={target.isCurrent ? `Current: ${target.label}` : `Move to ${target.label}`}
+                      type="button"
+                    >
+                      {target.label.replace("Canvas ", "C").replace("Main", "M")}
+                    </button>
+                  ))}
+                </div>
                 <button className="toolbar-button compact" onClick={() => onFocus(windowItem.id)} title="Show window" type="button">
                   <Eye size={13} />
                 </button>
                 <button className="toolbar-button compact" onClick={() => onMinimize(windowItem.id, !windowItem.minimized)} title={windowItem.minimized ? "Restore window" : "Minimize window"} type="button">
                   {windowItem.minimized ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
                 </button>
-                <button className="toolbar-button compact" onClick={() => onPopOut(windowItem.id)} title="Move to child canvas" type="button">
+                <button className="toolbar-button compact" onClick={() => onPopOut(windowItem.id)} title="Move to new child canvas" type="button">
                   <ExternalLink size={13} />
                 </button>
                 <button className="toolbar-button compact" onClick={() => onClose(windowItem.id)} title="Close window" type="button">
@@ -1860,9 +1945,29 @@ function canvasTransferKey(canvasId: string) {
   return `${LIVE_LAYOUT_STORAGE_KEY}.transfer.${canvasId}`;
 }
 
-function countKnownLiveCanvases() {
+function writeCanvasState(canvasId: string, state: { chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] }) {
+  window.localStorage.setItem(canvasStorageKey(canvasId), JSON.stringify({ ...state, layoutVersion: LIVE_LAYOUT_VERSION }));
+}
+
+function readCanvasLayoutState(canvasId: string): { chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] } {
+  const defaults = buildDefaultCanvasLayout(canvasId !== "main");
   try {
-    const canvasIds = new Set<string>(["main"]);
+    const parsed = JSON.parse(window.localStorage.getItem(canvasStorageKey(canvasId)) || "null") as Partial<{ chartWindows: ChartWindow[]; layoutVersion: number; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] }> | null;
+    if (!parsed || parsed.layoutVersion !== LIVE_LAYOUT_VERSION) return defaults;
+    return {
+      chartWindows: Array.isArray(parsed.chartWindows) ? parsed.chartWindows : defaults.chartWindows,
+      layouts: { ...defaults.layouts, ...(parsed.layouts ?? {}) },
+      windows: Array.isArray(parsed.windows) ? parsed.windows : defaults.windows,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function listKnownLiveCanvases(currentCanvasId: string): LiveCanvasTarget[] {
+  const colors = ["#2563eb", "#16a34a", "#f97316", "#9333ea", "#0891b2", "#dc2626", "#4f46e5"];
+  try {
+    const canvasIds = new Set<string>(["main", currentCanvasId]);
     const prefix = `${LIVE_LAYOUT_STORAGE_KEY}.`;
     for (let index = 0; index < window.localStorage.length; index += 1) {
       const key = window.localStorage.key(index);
@@ -1871,9 +1976,16 @@ function countKnownLiveCanvases() {
       if (!suffix) continue;
       canvasIds.add(suffix.startsWith("transfer.") ? suffix.slice("transfer.".length) : suffix);
     }
-    return canvasIds.size;
+    return Array.from(canvasIds)
+      .sort((a, b) => (a === "main" ? -1 : b === "main" ? 1 : a.localeCompare(b)))
+      .map((id, index) => ({
+        color: colors[index % colors.length],
+        id,
+        isCurrent: id === currentCanvasId,
+        label: id === "main" ? "Main" : `Canvas ${index}`,
+      }));
   } catch {
-    return 1;
+    return [{ color: colors[0], id: currentCanvasId, isCurrent: true, label: currentCanvasId === "main" ? "Main" : "Canvas 1" }];
   }
 }
 

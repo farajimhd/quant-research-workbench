@@ -9179,8 +9179,50 @@ button {
 }
 
 .live-window-chip-actions {
+  align-items: center;
   display: flex;
   gap: 3px;
+}
+
+.live-canvas-target-row {
+  align-items: center;
+  display: flex;
+  gap: 3px;
+  max-width: 132px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.live-canvas-target-row::-webkit-scrollbar {
+  display: none;
+}
+
+.live-canvas-target {
+  align-items: center;
+  background: color-mix(in oklab, var(--canvas-color) 10%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--canvas-color) 48%, var(--border));
+  border-radius: 999px;
+  color: var(--canvas-color);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 900;
+  height: 20px;
+  justify-content: center;
+  line-height: 1;
+  min-width: 22px;
+  padding: 0 5px;
+}
+
+.live-canvas-target.active {
+  background: var(--canvas-color);
+  color: white;
+  cursor: default;
+}
+
+.live-window-actions .live-canvas-target-row {
+  max-width: 98px;
 }
 
 .live-workspace {
