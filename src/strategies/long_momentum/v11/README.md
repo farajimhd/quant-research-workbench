@@ -10,6 +10,7 @@ A ticker is added to the pop watchlist only when all are true:
 - `min_price <= last_close <= max_price`, default `$1` to `$10`
 - `last_return_5 >= min_last_5m_return`, default `0.08`
 - `last_volume >= min_watchlist_add_volume`, default `8000`
+- `last_transactions > min_pop_transactions`, default `150`
 - `last_transactions_avg_prior_3 > 0`
 - `last_transactions / last_transactions_avg_prior_3 >= min_pop_transaction_ratio`,
   default `20`

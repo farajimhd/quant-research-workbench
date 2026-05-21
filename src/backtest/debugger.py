@@ -491,6 +491,7 @@ class StepBacktestDebugger(BacktestEngine):
                     self._range_check(row, "last_close", self._strategy_param("min_price", 1.0), self._strategy_param("max_price", 10.0)),
                     self._gte_check(row, "long_momentum_v9_last_5m_return", self._strategy_param("min_last_5m_return", 0.08), fallback_key="last_5m_return"),
                     self._gte_check(row, "last_volume", self._strategy_param("min_watchlist_add_volume", 8_000.0)),
+                    self._gt_check(row, "last_transactions", self._strategy_param("min_pop_transactions", 150.0)),
                     self._gt_check(row, "last_transactions_avg_prior_3", 0.0),
                     self._gte_check(row, "long_momentum_v11_raw_pop_transaction_ratio", self._strategy_param("min_pop_transaction_ratio", 20.0)),
                     self._gt_check(row, "last_vwap", 0.0),

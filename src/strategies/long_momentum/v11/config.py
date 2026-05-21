@@ -11,6 +11,7 @@ V11_PARAMETER_FIELDS = tuple(
         (
             *V9_PARAMETER_FIELDS,
             "min_last_5m_return",
+            "min_pop_transactions",
             "min_pop_transaction_ratio",
             "min_entry_transaction_ratio",
             "pop_entry_stop_offset_dollars",
@@ -30,6 +31,7 @@ V11_PARAMETER_FIELDS = tuple(
 @dataclass(slots=True)
 class LongMomentumV11Config(LongMomentumV9Config):
     min_last_5m_return: float = 0.08
+    min_pop_transactions: float = 150.0
     min_pop_transaction_ratio: float = 20.0
     min_entry_transaction_ratio: float = 10.0
     pop_entry_stop_offset_dollars: float = 0.01

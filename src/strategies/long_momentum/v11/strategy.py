@@ -220,9 +220,10 @@ class LongMomentumV11Strategy(LongMomentumV9Strategy):
         price_ok = self.config.min_price <= last_close <= self.config.max_price
         return_ok = last_5m_return >= self.config.min_last_5m_return
         volume_ok = last_volume >= self.config.min_watchlist_add_volume
+        pop_transactions_ok = last_transactions > self.config.min_pop_transactions
         pop_ratio = last_transactions / prior_avg if prior_avg > 0 else 0.0
         pop_liquidity_ok = pop_ratio >= self.config.min_pop_transaction_ratio
-        if not (price_ok and return_ok and volume_ok and pop_liquidity_ok and pop_vwap > 0 and pop_high > 0):
+        if not (price_ok and return_ok and volume_ok and pop_transactions_ok and pop_liquidity_ok and pop_vwap > 0 and pop_high > 0):
             return
         watch = PopWatch(
             ticker=ticker,
@@ -285,6 +286,7 @@ class LongMomentumV11Strategy(LongMomentumV9Strategy):
         price_ok = self.config.min_price <= last_close <= self.config.max_price
         return_ok = last_5m_return >= self.config.min_last_5m_return
         volume_ok = last_volume >= self.config.min_watchlist_add_volume
+        pop_transactions_ok = last_transactions > self.config.min_pop_transactions
         pop_ratio_raw = last_transactions / prior_avg if prior_avg > 0 else 0.0
         pop_liquidity_ok_raw = pop_ratio_raw >= self.config.min_pop_transaction_ratio
         entry_time_ok = self.config.trading_start_minute <= int(self._float(row.get("minute_of_day"))) < self.config.trading_end_minute
@@ -319,10 +321,11 @@ class LongMomentumV11Strategy(LongMomentumV9Strategy):
             "long_momentum_v11_price_eligible": price_ok,
             "long_momentum_v11_return_ok": return_ok,
             "long_momentum_v11_watchlist_add_volume_ok": volume_ok,
+            "long_momentum_v11_watchlist_add_transactions_ok": pop_transactions_ok,
             "long_momentum_v11_prior_pop_3_avg_transactions": prior_avg,
             "long_momentum_v11_raw_pop_transaction_ratio": pop_ratio_raw,
             "long_momentum_v11_pop_liquidity_ok": pop_liquidity_ok_raw,
-            "long_momentum_v11_watchlist_add_open": price_ok and return_ok and volume_ok and pop_liquidity_ok_raw and last_vwap > 0,
+            "long_momentum_v11_watchlist_add_open": price_ok and return_ok and volume_ok and pop_transactions_ok and pop_liquidity_ok_raw and last_vwap > 0,
             "long_momentum_v11_watchlist_active": watch_active,
             "long_momentum_v11_pop_added_timestamp": watch.added_timestamp.isoformat() if watch else "",
             "long_momentum_v11_pop_high": watch.pop_high if watch else None,
@@ -612,6 +615,7 @@ class LongMomentumV11Strategy(LongMomentumV9Strategy):
                 "pop_transactions": watch.pop_transactions,
                 "prior_pop_3_avg_transactions": watch.prior_pop_3_avg_transactions,
                 "pop_transaction_ratio": watch.pop_transaction_ratio,
+                "min_pop_transactions": self.config.min_pop_transactions,
                 "min_pop_transaction_ratio": self.config.min_pop_transaction_ratio,
             },
         )

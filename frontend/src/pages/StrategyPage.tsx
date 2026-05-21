@@ -292,6 +292,7 @@ const STRATEGY_PARAMETER_HELP: Record<string, string> = {
   max_entry_order_quantity: "Maximum BUY shares Long Momentum v9 is allowed to send to the backtest for a single entry or partial-entry remainder order.",
   enable_high_break_hold_entry: "Long Momentum v10 switch for the High Break Hold entry method. Enabled by default.",
   enable_vwap_reclaim_entry: "Long Momentum v10 switch for the VWAP Reclaim entry method. Disabled by default so v10 can focus on fewer, longer High Break Hold trades.",
+  min_pop_transactions: "Long Momentum v11 watchlist-add absolute liquidity gate. The pop bar must have more transactions than this threshold.",
   min_pop_transaction_ratio: "Long Momentum v11 watchlist-add liquidity gate. The pop bar transactions must be this multiple of the average transactions from the three bars before the pop.",
   min_entry_transaction_ratio: "Long Momentum v11 first-entry liquidity gate. The entry-authorizing completed bar transactions must be this multiple of the same pre-pop transaction baseline.",
   pop_entry_stop_offset_dollars: "Long Momentum v11 buy-stop offset above the stored pop high.",
@@ -696,6 +697,7 @@ const V11_STRATEGY_PARAMETER_GROUPS = [
       "trading_end_minute",
       "min_last_5m_return",
       "min_watchlist_add_volume",
+      "min_pop_transactions",
       "min_pop_transaction_ratio",
       "watchlist_snapshot_limit",
     ]
@@ -2085,6 +2087,7 @@ function HelpButton({ help, label }: { help: string; label: string }) {
 const STRATEGY_PARAMETER_LABELS: Record<string, string> = {
   enable_high_break_hold_entry: "Enable High Break Hold",
   enable_vwap_reclaim_entry: "Enable VWAP Reclaim",
+  min_pop_transactions: "Min Pop Transactions",
   min_pop_transaction_ratio: "Min Pop Transaction Ratio",
   min_entry_transaction_ratio: "Min Entry Transaction Ratio",
   pop_entry_stop_offset_dollars: "Pop Entry Stop Offset Dollars",
@@ -3217,12 +3220,13 @@ function interactiveDebugRawFilterPresets(config: StrategyConfig): DataTableFilt
           last_close: betweenFilter(minPrice, maxPrice),
           last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.08)),
           last_volume: gteFilter(strategyNumberParam(params, "min_watchlist_add_volume", 8_000)),
+          last_transactions: gtFilter(strategyNumberParam(params, "min_pop_transactions", 150)),
           last_transactions_avg_prior_3: gtFilter(0),
           long_momentum_v11_raw_pop_transaction_ratio: gteFilter(strategyNumberParam(params, "min_pop_transaction_ratio", 20)),
           last_vwap: gtFilter(0),
         },
         label: `${versionLabel} Pop Watchlist Raw`,
-        title: `Apply the raw/provider inputs for adding a ticker to the ${versionLabel} pop watchlist: price range, 5m return, volume, pre-pop transaction average, pop transaction ratio, and VWAP.`,
+        title: `Apply the raw/provider inputs for adding a ticker to the ${versionLabel} pop watchlist: price range, 5m return, volume, absolute pop transactions, pre-pop transaction average, pop transaction ratio, and VWAP.`,
       },
       {
         filters: {
@@ -3315,11 +3319,12 @@ function interactiveDebugStrategyFilterPresets(config: StrategyConfig): DataTabl
           last_close: betweenFilter(minPrice, maxPrice),
           long_momentum_v9_last_5m_return: gteFilter(strategyNumberParam(params, "min_last_5m_return", 0.08)),
           last_volume: gteFilter(strategyNumberParam(params, "min_watchlist_add_volume", 8_000)),
+          last_transactions: gtFilter(strategyNumberParam(params, "min_pop_transactions", 150)),
           long_momentum_v11_raw_pop_transaction_ratio: gteFilter(strategyNumberParam(params, "min_pop_transaction_ratio", 20)),
           long_momentum_v11_watchlist_add_open: trueFilter(),
         },
         label: `${versionLabel} Pop Watchlist Add`,
-        title: `Apply the visible ${versionLabel} pop-watchlist gates: price, 5m return, volume, transaction shock, and VWAP availability.`,
+        title: `Apply the visible ${versionLabel} pop-watchlist gates: price, 5m return, volume, absolute pop transactions, transaction shock, and VWAP availability.`,
       },
       {
         filters: {
@@ -3866,6 +3871,7 @@ const SCANNER_IMPORTANT_COLUMNS = [
   "last_5m_return",
   "long_momentum_v11_entry_open",
   "long_momentum_v11_watchlist_add_open",
+  "long_momentum_v11_watchlist_add_transactions_ok",
   "long_momentum_v11_watchlist_active",
   "long_momentum_v11_pop_added_timestamp",
   "long_momentum_v11_pop_high",
