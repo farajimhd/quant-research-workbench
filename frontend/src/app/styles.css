@@ -9242,10 +9242,19 @@ button {
 }
 
 .live-container-stack {
+  align-content: start;
   display: grid;
   gap: 12px;
   min-height: 0;
   position: relative;
+}
+
+.live-container-stack.portfolio-expanded {
+  gap: 9px;
+}
+
+.live-container-stack.portfolio-expanded .data-table-wrap {
+  max-height: 430px;
 }
 
 .live-scanner-toolbar {
@@ -9447,11 +9456,12 @@ button {
   --metric-tone: var(--muted-foreground);
   align-content: center;
   display: grid;
-  gap: 4px 6px;
+  column-gap: 4px;
+  row-gap: 4px;
   grid-template-areas:
     "icon label"
     "value value";
-  grid-template-columns: 16px minmax(0, 1fr);
+  grid-template-columns: 16px minmax(0, max-content);
   justify-content: center;
   justify-items: center;
   min-height: 52px;
@@ -9503,15 +9513,17 @@ button {
 }
 
 .live-debug-metric-label {
+  align-self: center;
   color: var(--muted-foreground);
   font-size: 11px;
   font-weight: 600;
   grid-area: label;
   line-height: 1.15;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  width: 100%;
+  width: auto;
 }
 
 .live-debug-metric-card strong,

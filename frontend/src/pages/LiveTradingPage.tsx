@@ -159,6 +159,8 @@ const LIVE_LAYOUTS_STORAGE_KEY = "quant-research-workbench.live-trading.named-la
 const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.live-trading.shared-state";
 const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-setups";
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
+const LIVE_PORTFOLIO_COLLAPSED_HEIGHT = 224;
+const LIVE_PORTFOLIO_EXPANDED_HEIGHT = LIVE_PORTFOLIO_COLLAPSED_HEIGHT * 3;
 const MAIN_DISPLAY_ITEMS = ["vwap", "tema9", "tema20", "macd"];
 const LOWER_DISPLAY_ITEMS = ["vwap", "tema9", "tema20"];
 const LIVE_SCANNER_COLUMNS = [
@@ -232,7 +234,7 @@ function buildDefaultCanvasLayout(childCanvas: boolean): { chartWindows: ChartWi
   const height = Math.max(780, window.innerHeight - 86);
   const gap = 10;
   const margin = 12;
-  const portfolioH = 224;
+  const portfolioH = LIVE_PORTFOLIO_COLLAPSED_HEIGHT;
   const mainY = margin + portfolioH + gap;
   const availableH = Math.max(420, height - mainY - margin);
   const leftW = Math.max(250, Math.round(width * 0.2));
@@ -343,6 +345,18 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     () => buildGlobalLiveMetrics({ decisions, lastActionTime, liveClockMode, scannerRows, secondsPerMinute, session, snapshot }),
     [decisions, lastActionTime, liveClockMode, scannerRows, secondsPerMinute, session, snapshot]
   );
+  const topbarWorkspaceInfo = useMemo(() => {
+    const knownPageCount = countKnownLiveCanvases();
+    const canvasLabel = isChildCanvas ? `Child canvas ${canvasId.replace(/^canvas-/, "")}` : "Main canvas";
+    const layoutLabel = selectedLayoutName || layoutName || "Unsaved layout";
+    const pageLabel = `${knownPageCount} page${knownPageCount === 1 ? "" : "s"}`;
+    const windowLabel = `${openWindows.length} window${openWindows.length === 1 ? "" : "s"}`;
+    const chartLabel = `${chartWindows.length} chart${chartWindows.length === 1 ? "" : "s"}`;
+    return {
+      detail: `${layoutLabel} - ${pageLabel} - ${windowLabel} - ${chartLabel}`,
+      title: `Semi-Auto Trading - ${canvasLabel}`,
+    };
+  }, [canvasId, chartWindows.length, isChildCanvas, layoutName, openWindows.length, selectedLayoutName]);
 
   useEffect(() => {
     if (!started || !onTopbarCenterChange) {
@@ -351,13 +365,13 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     }
     onTopbarCenterChange(
       <button className="live-topbar-session" onClick={() => setHeaderCollapsed((value) => !value)} type="button">
-        <span>Semi-Auto Trading - {liveClockMode}</span>
-        <strong>{session.sessionDate} {session.barTime} ET - {scannerRows.length} signals</strong>
+        <span>{topbarWorkspaceInfo.title}</span>
+        <strong>{topbarWorkspaceInfo.detail}</strong>
         {headerCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
       </button>
     );
     return () => onTopbarCenterChange(null);
-  }, [headerCollapsed, liveClockMode, onTopbarCenterChange, scannerRows.length, session.barTime, session.sessionDate, started]);
+  }, [headerCollapsed, onTopbarCenterChange, started, topbarWorkspaceInfo]);
 
   useEffect(() => {
     if (!selectedRow && scannerRows.length) setSelectedRow(scannerRows[0]);
@@ -667,7 +681,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         return {
           ...current,
           portfolio: nextOpen
-            ? { ...current.portfolio, fullscreen: false, h: Math.max(620, window.innerHeight - 100), minimized: false, w: Math.max(1180, window.innerWidth - 112) - 24, x: 12, y: 12, z: topZ + 1 }
+            ? { ...current.portfolio, fullscreen: false, h: LIVE_PORTFOLIO_EXPANDED_HEIGHT, minimized: false, w: Math.max(1180, window.innerWidth - 112) - 24, x: 12, y: 12, z: topZ + 1 }
             : { ...defaults.portfolio, z: topZ + 1 },
         };
       });
@@ -1058,7 +1072,7 @@ function PortfolioContainer({
 }) {
   const tabs = ["Open Positions", "P/L", "Trades", "Orders"];
   return (
-    <div className="live-container-stack">
+    <div className={detailsOpen ? "live-container-stack portfolio-expanded" : "live-container-stack"}>
       <div className="live-portfolio-header">
         <div className="live-debug-metric-strip" style={{ gridTemplateColumns: `repeat(${Math.max(metrics.items.length, 1)}, minmax(106px, 1fr))` }}>
           {metrics.items.map((item) => (
@@ -1737,6 +1751,23 @@ function canvasStorageKey(canvasId: string) {
 
 function canvasTransferKey(canvasId: string) {
   return `${LIVE_LAYOUT_STORAGE_KEY}.transfer.${canvasId}`;
+}
+
+function countKnownLiveCanvases() {
+  try {
+    const canvasIds = new Set<string>(["main"]);
+    const prefix = `${LIVE_LAYOUT_STORAGE_KEY}.`;
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      const suffix = key.slice(prefix.length);
+      if (!suffix) continue;
+      canvasIds.add(suffix.startsWith("transfer.") ? suffix.slice("transfer.".length) : suffix);
+    }
+    return canvasIds.size;
+  } catch {
+    return 1;
+  }
 }
 
 function readStoredCanvas(canvasId: string, isChildCanvas: boolean): { chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] } {
