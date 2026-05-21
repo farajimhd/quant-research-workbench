@@ -9351,78 +9351,6 @@ button {
   white-space: nowrap;
 }
 
-.live-process-status {
-  align-items: center;
-  background: color-mix(in oklab, var(--surface) 88%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  margin-bottom: 6px;
-  min-height: 38px;
-  padding: 6px 10px;
-}
-
-.live-process-status > div:first-child {
-  align-items: center;
-  color: var(--foreground);
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-}
-
-.live-process-status strong {
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.live-preload-checks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  justify-content: flex-end;
-}
-
-.live-preload-checks span {
-  background: color-mix(in oklab, var(--muted-foreground) 8%, var(--surface));
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--muted-foreground);
-  font-size: 11px;
-  font-weight: 800;
-  padding: 4px 8px;
-}
-
-.live-preload-checks span[data-status="ready"] {
-  background: color-mix(in oklab, var(--success) 12%, var(--surface));
-  border-color: color-mix(in oklab, var(--success) 35%, var(--border));
-  color: var(--success);
-}
-
-.live-preload-checks span[data-status="missing"] {
-  background: color-mix(in oklab, var(--danger) 10%, var(--surface));
-  border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
-  color: var(--danger);
-}
-
-.live-preload-progress {
-  background: color-mix(in oklab, var(--muted-foreground) 12%, transparent);
-  border-radius: 999px;
-  height: 6px;
-  overflow: hidden;
-  width: 180px;
-}
-
-.live-preload-progress span {
-  background: var(--info);
-  display: block;
-  height: 100%;
-  transition: width 180ms ease;
-}
-
 .live-pace-control {
   align-items: center;
   background: color-mix(in oklab, var(--surface-alt) 46%, var(--surface));
@@ -9863,6 +9791,38 @@ button {
 .live-global-status-card strong {
   font-size: 20px;
   text-align: center;
+}
+
+.live-mode-value {
+  align-items: center;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  line-height: 1;
+  width: 100%;
+}
+
+.live-mode-value > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.live-mode-progress {
+  background: color-mix(in oklab, var(--muted-foreground) 16%, transparent);
+  border-radius: 999px;
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  width: 72px;
+}
+
+.live-mode-progress span {
+  background: #f97316;
+  display: block;
+  height: 100%;
+  transition: width 180ms ease;
 }
 
 .live-debug-metric-card:first-child strong {

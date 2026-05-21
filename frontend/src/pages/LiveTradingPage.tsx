@@ -9,7 +9,6 @@ import {
   CircleDollarSign,
   ClipboardList,
   Clock3,
-  Database,
   Eye,
   ExternalLink,
   FolderOpen,
@@ -489,10 +488,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setPreloadStatus(null);
     setLiveClockMode("loading_data");
     setLiveClockMessage("Loading provider data for the selected trading day.");
-    api<LivePreloadPayload>("/api/live-trading/preload", {
-      method: "POST",
-      body: JSON.stringify({ processed_root: scope.processed_root, session_date: session.sessionDate }),
-    })
+    api<LivePreloadPayload>(`/api/live-trading/preload${query({ processed_root: scope.processed_root, session_date: session.sessionDate })}`)
       .then((payload) => {
         if (canceled) return;
         setPreloadStatus(payload);
@@ -649,18 +645,17 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setLoading(true);
     setError("");
     try {
-      const payload = await api<LiveNextSignalPayload>("/api/live-trading/next-signal", {
-        method: "POST",
-        body: JSON.stringify({
+      const payload = await api<LiveNextSignalPayload>(
+        `/api/live-trading/next-signal${query({
           processed_root: scope.processed_root,
           session_date: session.sessionDate,
           start_time: startTime,
-          feature_groups: LIVE_FEATURE_GROUPS,
-          columns: LIVE_SCANNER_COLUMNS,
-          table_query: scannerQuery,
+          feature_groups: LIVE_FEATURE_GROUPS.join(","),
+          columns: LIVE_SCANNER_COLUMNS.join(","),
+          table_query: JSON.stringify(scannerQuery),
           row_limit: 1000,
-        }),
-      });
+        })}`
+      );
       if (shouldStop()) return false;
       setSnapshot(payload.snapshot);
       setSession((current) => ({ ...current, barTime: payload.snapshot.bar_time || startTime }));
@@ -946,25 +941,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           </button>
         </div>
       </section>
-      {liveClockMessage || preloadStatus ? (
-        <section className="live-process-status" aria-label="Live process status">
-          <div>
-            <strong>{liveClockMessage || "Session data loaded."}</strong>
-            {liveClockMode === "loading_data" ? <span className="loading-spinner" aria-hidden="true" /> : null}
-          </div>
-          {preloadStatus ? (
-            <div className="live-preload-checks">
-              {preloadStatus.checks.map((check) => (
-                <span data-status={check.status} key={`${check.group}:${check.timeframe}`}>
-                  {check.label}: {integer(check.ready_sessions)}/{integer(check.expected_sessions)}
-                </span>
-              ))}
-            </div>
-          ) : (
-            <div className="live-preload-progress"><span style={{ width: liveClockMode === "loading_data" ? "45%" : "0%" }} /></div>
-          )}
-        </section>
-      ) : null}
       <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace">
         {!openWindows.length ? <div className="live-empty-canvas">This canvas is empty. Open scanner rows here or pop containers into this canvas from another tab.</div> : null}
         {openWindows.map((windowId) => {
@@ -2088,13 +2064,22 @@ function buildGlobalLiveMetrics({
   snapshot: ScannerSnapshot | null;
 }) {
   const decisionsCount = Object.keys(decisions).length;
-  const preloadProgress = preloadStatus ? `${Math.round(preloadStatus.progress * 100)}%` : liveClockMode === "loading_data" ? "..." : "-";
+  const preloadProgress = preloadStatus ? preloadStatus.progress : liveClockMode === "loading_data" ? 0.45 : 0;
+  const modeValue = (
+    <span className="live-mode-value">
+      <span>{formatLiveMode(liveClockMode)}</span>
+      {liveClockMode === "loading_data" ? (
+        <span className="live-mode-progress" aria-label="Loading data">
+          <span style={{ width: `${Math.max(8, Math.round(preloadProgress * 100))}%` }} />
+        </span>
+      ) : null}
+    </span>
+  );
   return {
     items: [
       { icon: <Clock3 size={14} />, label: "Date", tone: "info", value: session.sessionDate || "-" },
       { icon: <Clock3 size={14} />, label: "Clock", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: `${session.barTime} ET` },
-      { icon: <Activity size={14} />, label: "Mode", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: liveClockMode },
-      { icon: <Database size={14} />, label: "Data Load", tone: preloadStatus?.status === "ready" ? "success" : liveClockMode === "loading_data" ? "warning" : "muted", value: preloadProgress },
+      { icon: <Activity size={14} />, label: "Mode", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" || liveClockMode === "loading_data" ? "warning" : "muted", value: modeValue },
       { icon: <TableProperties size={14} />, label: "Raw Scanner Rows", tone: snapshot?.row_count ? "info" : "muted", value: integer(snapshot?.row_count ?? 0) },
       { icon: <TrendingUp size={14} />, label: "Signals", tone: scannerRows.length ? "success" : "muted", value: integer(scannerRows.length) },
       { icon: <Target size={14} />, label: "Decisions", tone: decisionsCount ? "info" : "muted", value: integer(decisionsCount) },
@@ -2102,6 +2087,11 @@ function buildGlobalLiveMetrics({
       { icon: <CheckCircle2 size={14} />, label: "Last Signal", tone: lastActionTime ? "success" : "muted", value: lastActionTime || "-" },
     ],
   };
+}
+
+function formatLiveMode(mode: LiveClockMode) {
+  if (mode === "loading_data") return "loading data";
+  return mode;
 }
 
 function buildLiveWindowSummaries(openWindows: WindowId[], chartWindows: ChartWindow[], layouts: Record<WindowId, WindowLayout>): LiveWindowSummary[] {

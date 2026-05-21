@@ -1382,8 +1382,20 @@ def market_scanner_snapshot(
 
 @app.post("/api/live-trading/preload")
 def live_trading_preload(payload: LiveTradingPreloadRequest) -> dict[str, Any]:
-    records = artifact_records(Path(payload.processed_root))
-    session_text = payload.session_date.isoformat()
+    return live_trading_preload_payload(Path(payload.processed_root), payload.session_date)
+
+
+@app.get("/api/live-trading/preload")
+def live_trading_preload_get(
+    processed_root: str = str(DEFAULT_PROCESSED_ROOT),
+    session_date: date = Query(...),
+) -> dict[str, Any]:
+    return live_trading_preload_payload(Path(processed_root), session_date)
+
+
+def live_trading_preload_payload(processed_root: Path, session_date: date) -> dict[str, Any]:
+    records = artifact_records(processed_root)
+    session_text = session_date.isoformat()
     required = [
         {
             "label": "Day 1m bars",
@@ -1395,13 +1407,13 @@ def live_trading_preload(payload: LiveTradingPreloadRequest) -> dict[str, Any]:
             "label": "Recent daily bars",
             "group": "bars",
             "timeframe": "1d",
-            "sessions": [session.isoformat() for session in market_sessions(payload.session_date - timedelta(days=45), payload.session_date)][-30:],
+            "sessions": [session.isoformat() for session in market_sessions(session_date - timedelta(days=45), session_date)][-30:],
         },
         {
             "label": "Recent 5m bars",
             "group": "bars",
             "timeframe": "5m",
-            "sessions": [session.isoformat() for session in market_sessions(payload.session_date - timedelta(days=10), payload.session_date)][-7:],
+            "sessions": [session.isoformat() for session in market_sessions(session_date - timedelta(days=10), session_date)][-7:],
         },
     ]
     artifact_index = {(str(record.get("group")), str(record.get("timeframe")), str(record.get("session_date"))): record for record in records}
@@ -1433,8 +1445,50 @@ def live_trading_preload(payload: LiveTradingPreloadRequest) -> dict[str, Any]:
 
 @app.post("/api/live-trading/next-signal")
 def live_trading_next_signal(payload: LiveTradingNextSignalRequest) -> dict[str, Any]:
-    records = artifact_records(Path(payload.processed_root))
-    start_minute = parse_live_clock_minute(payload.start_time)
+    return live_trading_next_signal_payload(
+        processed_root=Path(payload.processed_root),
+        session_date=payload.session_date,
+        start_time=payload.start_time,
+        feature_groups=payload.feature_groups,
+        columns=payload.columns,
+        table_query=payload.table_query,
+        row_limit=payload.row_limit,
+    )
+
+
+@app.get("/api/live-trading/next-signal")
+def live_trading_next_signal_get(
+    processed_root: str = str(DEFAULT_PROCESSED_ROOT),
+    session_date: date = Query(...),
+    start_time: str = "04:00",
+    feature_groups: str | None = None,
+    columns: str | None = None,
+    table_query: str | None = None,
+    row_limit: int = Query(default=1000, ge=1, le=5000),
+) -> dict[str, Any]:
+    return live_trading_next_signal_payload(
+        processed_root=Path(processed_root),
+        session_date=session_date,
+        start_time=start_time,
+        feature_groups=parse_csv_list(feature_groups) or ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"],
+        columns=parse_csv_list(columns),
+        table_query=parse_table_query(table_query),
+        row_limit=row_limit,
+    )
+
+
+def live_trading_next_signal_payload(
+    *,
+    processed_root: Path,
+    session_date: date,
+    start_time: str,
+    feature_groups: list[str],
+    columns: list[str],
+    table_query: dict[str, Any] | None,
+    row_limit: int,
+) -> dict[str, Any]:
+    records = artifact_records(processed_root)
+    start_minute = parse_live_clock_minute(start_time)
     if start_minute is None:
         raise HTTPException(status_code=400, detail="Invalid start_time")
     end_minute = 20 * 60
@@ -1442,14 +1496,14 @@ def live_trading_next_signal(payload: LiveTradingNextSignalRequest) -> dict[str,
         bar_time = f"{minute // 60:02d}:{minute % 60:02d}"
         snapshot = load_scanner_snapshot(
             records,
-            session_date=payload.session_date,
+            session_date=session_date,
             timeframe="1m",
             bar_time=bar_time,
-            feature_groups=payload.feature_groups,
-            columns=payload.columns,
-            row_limit=payload.row_limit,
+            feature_groups=feature_groups,
+            columns=columns,
+            row_limit=row_limit,
             row_offset=0,
-            table_query=payload.table_query,
+            table_query=table_query,
             derived_columns=None,
         )
         if snapshot.get("rows"):
@@ -1465,7 +1519,7 @@ def live_trading_next_signal(payload: LiveTradingNextSignalRequest) -> dict[str,
             "reason": "No scanner signal found before the session cutoff.",
             "row_count": 0,
             "rows": [],
-            "session_date": payload.session_date.isoformat(),
+            "session_date": session_date.isoformat(),
             "timeframe": "1m",
         },
         "steps": max(0, end_minute - start_minute + 1),
