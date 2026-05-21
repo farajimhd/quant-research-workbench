@@ -304,8 +304,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [mainVisibleColumns, setMainVisibleColumns] = useState<string[]>(MAIN_DISPLAY_ITEMS);
   const [compactVisibleColumns, setCompactVisibleColumns] = useState<string[]>(LOWER_DISPLAY_ITEMS);
   const [headerCollapsed, setHeaderCollapsed] = useState(true);
-  const [showDayChart, setShowDayChart] = useState(true);
-  const [showFiveMinuteChart, setShowFiveMinuteChart] = useState(true);
+  const showDayChart = true;
+  const showFiveMinuteChart = true;
   const [decisions, setDecisions] = useState<Record<string, DecisionState>>(initialSharedState.decisions);
   const [orders, setOrders] = useState<OrderRow[]>(initialSharedState.orders);
   const [positions, setPositions] = useState<PositionRow[]>(initialSharedState.positions);
@@ -321,6 +321,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [canvasTargetsVersion, setCanvasTargetsVersion] = useState(0);
   const canvasRemovedRef = useRef(false);
   const seekCancelRef = useRef(0);
+  const warmedChartCacheKeysRef = useRef(new Set<string>());
   const scannerQueryKey = useMemo(() => JSON.stringify(scannerQuery), [scannerQuery]);
 
   useEffect(() => {
@@ -483,6 +484,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
       setSnapshot(null);
       setSelectedRow(null);
       setLastActionTime("");
+      warmedChartCacheKeysRef.current.clear();
       setTradingStarted(false);
       setLiveClockMode("loading_data");
       setLiveClockMessage("Loading provider data for the selected trading day.");
@@ -492,7 +494,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         setPreloadStatus(payload);
         if (payload.status === "ready") {
           setSession((current) => ({ ...current, barTime: "04:00" }));
-          await loadScannerAt("04:00", { revealChart: false });
+          const initialScanner = await loadScannerAt("04:00", { revealChart: false, warmCharts: false });
+          await warmChartCacheForRows(initialScanner?.snapshot.rows ?? []);
           if (canceled) return;
           setLiveClockMode("ready");
           setLiveClockMessage("Data is ready. Initial scanner is loaded from the first bar. Press Start Trading to seek the first signal.");
@@ -624,7 +627,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     });
   }
 
-  async function loadScannerAt(barTime: string, options: { revealChart: boolean }) {
+  async function loadScannerAt(barTime: string, options: { revealChart: boolean; warmCharts?: boolean }) {
     if (!scope || !session.sessionDate) return null;
     setLoading(true);
     setError("");
@@ -645,6 +648,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
       const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? null;
       setSnapshot(payload.snapshot);
       setSelectedRow(firstRow);
+      if (options.warmCharts !== false) void warmChartCacheForRows(enrichedRows);
       if (firstRow) setLastActionTime(barTime);
       if (firstRow && options.revealChart) openChartForRow(firstRow);
       return { firstRow, snapshot: payload.snapshot };
@@ -680,6 +684,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
       const enrichedRows = payload.snapshot.rows.map((row) => enrichLiveCandidate(row, scannerQueryName));
       const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? enrichedRows[0] ?? null;
       setSelectedRow(firstRow);
+      if (payload.found) await warmChartCacheForRows(enrichedRows);
       if (payload.found && firstRow) {
         setLastActionTime(payload.snapshot.bar_time);
         openChartForRow(firstRow);
@@ -736,6 +741,27 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
 
   function deleteScannerQueryGroup(id: string) {
     setScannerQueryGroups((current) => current.filter((item) => item.id !== id));
+  }
+
+  async function warmChartCacheForRows(rows: Record<string, unknown>[]) {
+    if (!scope || !session.sessionDate || !rows.length) return;
+    const tickers = Array.from(new Set(rows.map((row) => stringValue(row, "ticker")).filter(Boolean)))
+      .filter((ticker) => !warmedChartCacheKeysRef.current.has(`${session.sessionDate}:${ticker}`))
+      .slice(0, 24);
+    if (!tickers.length) return;
+    try {
+      await api(
+        `/api/live-trading/warm-charts${query({
+          processed_root: scope.processed_root,
+          session_date: session.sessionDate,
+          tickers: tickers.join(","),
+          max_tickers: tickers.length,
+        })}`
+      );
+      tickers.forEach((ticker) => warmedChartCacheKeysRef.current.add(`${session.sessionDate}:${ticker}`));
+    } catch {
+      // Chart cache warming is an optimization; chart requests still work without it.
+    }
   }
 
   function updateLayout(id: WindowId, patch: Partial<WindowLayout>) {
@@ -1033,11 +1059,9 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                 sessions={sessions}
                 showDayChart={showDayChart}
                 showFiveMinuteChart={showFiveMinuteChart}
-                onCompactVisibleColumnsChange={setCompactVisibleColumns}
                 onMainTimeframeChange={setMainTimeframe}
                 onMainVisibleColumnsChange={setMainVisibleColumns}
-                onToggleDayChart={() => setShowDayChart((value) => !value)}
-                onToggleFiveMinuteChart={() => setShowFiveMinuteChart((value) => !value)}
+                onCompactVisibleColumnsChange={setCompactVisibleColumns}
               />
             </WorkspaceWindow>
           );
@@ -1164,7 +1188,7 @@ function WorkspaceWindow({
   }
 
   return (
-    <section className="live-window" style={style} onPointerDown={() => onFocus(id)}>
+    <section className="live-window" data-window-kind={id.startsWith("chart-") ? "chart" : "core"} style={style} onPointerDown={() => onFocus(id)}>
       <div className="live-window-header" onPointerDown={startDrag}>
         <div className="live-window-title">
           <Move size={13} />
@@ -1535,8 +1559,6 @@ function LiveChartWindow({
   onCompactVisibleColumnsChange,
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
-  onToggleDayChart,
-  onToggleFiveMinuteChart,
   scope,
   session,
   sessions,
@@ -1556,8 +1578,6 @@ function LiveChartWindow({
   onCompactVisibleColumnsChange: (columns: string[]) => void;
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
-  onToggleDayChart: () => void;
-  onToggleFiveMinuteChart: () => void;
 }) {
   const [mainPayload, setMainPayload] = useState<ChartPayload | null>(null);
   const [dayPayload, setDayPayload] = useState<ChartPayload | null>(null);
@@ -1584,7 +1604,7 @@ function LiveChartWindow({
     let active = true;
     setChartLoading(true);
     setChartError("");
-    const dayStart = dateOffset(session.sessionDate, -90);
+    const dayStart = dateOffset(session.sessionDate, -60);
     const fiveMinuteStart = previousSessionDate(sessions, session.sessionDate, 2);
     Promise.allSettled([
       loadChart(scope.processed_root, session.sessionDate, session.sessionDate, mainTimeframe, chart.ticker, mainVisibleColumns),
@@ -1625,8 +1645,6 @@ function LiveChartWindow({
       onCompactVisibleColumnsChange={onCompactVisibleColumnsChange}
       onMainTimeframeChange={onMainTimeframeChange}
       onMainVisibleColumnsChange={onMainVisibleColumnsChange}
-      onToggleDayChart={onToggleDayChart}
-      onToggleFiveMinuteChart={onToggleFiveMinuteChart}
     />
   );
 }
@@ -1644,8 +1662,6 @@ function ChartsContainer({
   onCompactVisibleColumnsChange,
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
-  onToggleDayChart,
-  onToggleFiveMinuteChart,
   selectedTicker,
   session,
   showDayChart,
@@ -1667,23 +1683,12 @@ function ChartsContainer({
   onCompactVisibleColumnsChange: (columns: string[]) => void;
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
-  onToggleDayChart: () => void;
-  onToggleFiveMinuteChart: () => void;
 }) {
   const mainOptions = mainPayload?.options;
   const compactOptions = fiveMinutePayload?.options ?? dayPayload?.options;
   const lowerChartCount = Number(showDayChart) + Number(showFiveMinuteChart);
   return (
     <div className={lowerChartCount ? "live-chart-stack" : "live-chart-stack no-lower"}>
-      <div className="live-chart-toggle-row">
-        <span>Lower charts</span>
-        <button className={showDayChart ? "live-filter-chip active" : "live-filter-chip"} onClick={onToggleDayChart} type="button">
-          Daily
-        </button>
-        <button className={showFiveMinuteChart ? "live-filter-chip active" : "live-filter-chip"} onClick={onToggleFiveMinuteChart} type="button">
-          5m
-        </button>
-      </div>
       <ChartPanel
         catalogColumns={catalog?.columns ?? []}
         displayItemOptions={mainOptions?.display_items ?? catalog?.displayItems ?? []}
@@ -1718,6 +1723,7 @@ function ChartsContainer({
                 featureOptions={compactOptions?.feature_columns ?? []}
                 indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
                 loading={chartLoading}
+                daySeparatorsVisible={false}
                 onTickerChange={() => undefined}
                 onTimeframeChange={() => undefined}
                 onVisibleColumnsChange={onCompactVisibleColumnsChange}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from functools import lru_cache
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -1603,6 +1604,39 @@ def parse_chart_display_items(value: str | None) -> list[str] | None:
     return items
 
 
+LIVE_LOWER_CHART_DISPLAY_ITEMS = ("vwap", "tema9", "tema20")
+LIVE_CHART_FEATURE_GROUPS = ("core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure")
+
+
+@lru_cache(maxsize=256)
+def cached_chart_payload(
+    processed_root: str,
+    start_date_text: str,
+    end_date_text: str,
+    timeframe: str,
+    ticker: str,
+    feature_groups: tuple[str, ...],
+    selected_columns: tuple[str, ...],
+    selected_display_items: tuple[str, ...] | None,
+    supervision_groups: tuple[str, ...],
+    marker_limit: int,
+    min_confidence: float,
+) -> dict[str, Any]:
+    return chart_payload(
+        Path(processed_root),
+        start_date=date.fromisoformat(start_date_text),
+        end_date=date.fromisoformat(end_date_text),
+        timeframe=timeframe,
+        ticker=ticker,
+        feature_groups_selected=list(feature_groups),
+        selected_columns=list(selected_columns),
+        selected_display_items=list(selected_display_items) if selected_display_items is not None else None,
+        supervision_groups_selected=list(supervision_groups),
+        marker_limit=marker_limit,
+        min_confidence=min_confidence,
+    )
+
+
 @app.get("/api/market-data/chart")
 def market_chart(
     processed_root: str,
@@ -1627,20 +1661,56 @@ def market_chart(
     selected_supervision = parse_csv_list(supervision_groups)
     range_start, range_end = resolve_chart_range(start_date, end_date, session_date)
     return json_safe(
-        chart_payload(
-            processed_root_path,
-            start_date=range_start,
-            end_date=range_end,
-            timeframe=timeframe,
-            ticker=ticker,
-            feature_groups_selected=selected_feature_groups,
-            selected_columns=selected_columns,
-            selected_display_items=selected_display_items,
-            supervision_groups_selected=selected_supervision,
-            marker_limit=marker_limit,
-            min_confidence=min_confidence,
+        cached_chart_payload(
+            str(processed_root_path),
+            range_start.isoformat(),
+            range_end.isoformat(),
+            timeframe,
+            ticker.upper(),
+            tuple(selected_feature_groups),
+            tuple(selected_columns),
+            tuple(selected_display_items) if selected_display_items is not None else None,
+            tuple(selected_supervision),
+            marker_limit,
+            min_confidence,
         )
     )
+
+
+@app.get("/api/live-trading/warm-charts")
+def live_trading_warm_charts(
+    processed_root: str = str(DEFAULT_PROCESSED_ROOT),
+    session_date: date = Query(...),
+    tickers: str | None = None,
+    max_tickers: int = Query(default=24, ge=1, le=100),
+) -> dict[str, Any]:
+    ticker_list = [ticker.upper() for ticker in parse_csv_list(tickers) if ticker][:max_tickers]
+    if not ticker_list:
+        return {"warmed": 0, "tickers": [], "cache": cached_chart_payload.cache_info()._asdict()}
+    daily_start = (session_date - timedelta(days=60)).isoformat()
+    five_sessions = market_sessions(session_date - timedelta(days=10), session_date)
+    five_start = (five_sessions[-3] if len(five_sessions) >= 3 else five_sessions[0]).isoformat() if five_sessions else session_date.isoformat()
+    warmed = 0
+    for ticker in ticker_list:
+        for timeframe, start_text in (("1d", daily_start), ("5m", five_start)):
+            try:
+                cached_chart_payload(
+                    str(Path(processed_root)),
+                    start_text,
+                    session_date.isoformat(),
+                    timeframe,
+                    ticker,
+                    LIVE_CHART_FEATURE_GROUPS,
+                    (),
+                    LIVE_LOWER_CHART_DISPLAY_ITEMS,
+                    (),
+                    100,
+                    0.4,
+                )
+                warmed += 1
+            except Exception:
+                continue
+    return {"warmed": warmed, "tickers": ticker_list, "cache": cached_chart_payload.cache_info()._asdict()}
 
 
 @app.get("/api/market-data/chart/default-ticker")

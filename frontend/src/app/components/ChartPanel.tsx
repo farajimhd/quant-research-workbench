@@ -28,7 +28,7 @@ import {
   SlidersHorizontal,
   X
 } from "lucide-react";
-import { forwardRef, type FormEvent, type ReactNode, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, type FormEvent, type ReactNode, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 import { displayName } from "../format";
 import { buildSegmentButtonClassName } from "../selectionStyles";
@@ -238,6 +238,7 @@ type ChartPanelProps = {
   periodMin?: string;
   periodStart?: string;
   reference?: ChartReference | null;
+  daySeparatorsVisible?: boolean;
   showReferenceLine?: boolean;
   showIndicatorControls?: boolean;
   showSupervisionControls?: boolean;
@@ -300,6 +301,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   periodStart,
   payload,
   reference = null,
+  daySeparatorsVisible,
   showReferenceLine = true,
   showIndicatorControls = true,
   showSupervisionControls = false,
@@ -345,7 +347,14 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const [legendSettings, setLegendSettings] = useState<LegendSettingsMap>(() => loadLegendSettings());
   const [periodMenuOpen, setPeriodMenuOpen] = useState(false);
   const [themeSignature, setThemeSignature] = useState(() => document.documentElement.dataset.shellTheme ?? "");
-  chartSettingsRef.current = chartSettings;
+  const effectiveChartSettings = useMemo(
+    () =>
+      typeof daySeparatorsVisible === "boolean"
+        ? normalizeChartAppearanceSettings({ ...chartSettings, daySeparatorsVisible })
+        : chartSettings,
+    [chartSettings, daySeparatorsVisible]
+  );
+  chartSettingsRef.current = effectiveChartSettings;
   const visibleColumnKey = visibleColumns.map((column) => column.toLowerCase()).join("|");
   const visibleSupervisionKey = visibleSupervisionGroups.map((group) => group.toLowerCase()).join("|");
   const visibleColumnLookup = new Set(visibleColumns.map((column) => column.toLowerCase()));
@@ -485,9 +494,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   }, [legendSettings]);
 
   useEffect(() => {
-    chartSettingsRef.current = chartSettings;
+    chartSettingsRef.current = effectiveChartSettings;
     applyChartAppearance();
-  }, [chartSettings, themeSignature]);
+  }, [effectiveChartSettings, themeSignature]);
 
   useEffect(() => {
     if (!hasChartData) {

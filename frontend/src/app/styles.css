@@ -9543,34 +9543,17 @@ button {
 .live-chart-stack {
   display: grid;
   gap: 8px;
-  grid-template-rows: 30px minmax(470px, 1fr) 320px;
+  grid-template-rows: minmax(320px, 1.45fr) minmax(210px, 0.8fr);
   min-height: 100%;
+  overflow: hidden;
 }
 
 .live-chart-stack.no-lower {
-  grid-template-rows: 30px minmax(560px, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .live-chart-stack > .chart-shell {
-  min-height: 470px;
-}
-
-.live-chart-toggle-row {
-  align-items: center;
-  display: flex;
-  gap: 6px;
   min-height: 0;
-}
-
-.live-chart-toggle-row > span {
-  color: var(--muted-foreground);
-  font-size: 12px;
-  font-weight: 800;
-  margin-right: 2px;
-}
-
-.live-chart-toggle-row .live-filter-chip {
-  padding: 4px 9px;
 }
 
 .live-lower-chart-grid {
@@ -9614,7 +9597,25 @@ button {
 }
 
 .live-compact-chart .chart-canvas-stack {
-  min-height: 250px;
+  min-height: 0;
+}
+
+.live-window[data-window-kind="chart"] .live-window-body {
+  overflow: hidden;
+}
+
+.live-window[data-window-kind="chart"] .chart-price {
+  flex: 1;
+  height: auto;
+  min-height: 180px;
+}
+
+.live-window[data-window-kind="chart"] .chart-osc {
+  height: 120px;
+}
+
+.live-compact-chart .chart-price {
+  min-height: 150px;
 }
 
 .live-window .metric-strip {
