@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from "react";
 import {
+  Activity,
   BarChart3,
+  Banknote,
   ChevronDown,
   ChevronUp,
+  CheckCircle2,
+  CircleDollarSign,
+  ClipboardList,
+  Clock3,
   Eye,
   ExternalLink,
   FolderOpen,
@@ -17,6 +23,7 @@ import {
   Settings,
   ShieldAlert,
   SkipForward,
+  TableProperties,
   Target,
   TrendingUp,
   WalletCards,
@@ -326,8 +333,12 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     [activeSetups, snapshot]
   );
   const portfolioMetrics = useMemo(
-    () => buildPortfolioMetrics({ decisions, liveClockMode, orders, positions, scannerRows, session, snapshot }),
-    [decisions, liveClockMode, orders, positions, scannerRows, session, snapshot]
+    () => buildPortfolioMetrics({ orders, positions }),
+    [orders, positions]
+  );
+  const globalMetrics = useMemo(
+    () => buildGlobalLiveMetrics({ decisions, lastActionTime, liveClockMode, scannerRows, secondsPerMinute, session, snapshot }),
+    [decisions, lastActionTime, liveClockMode, scannerRows, secondsPerMinute, session, snapshot]
   );
 
   useEffect(() => {
@@ -678,6 +689,15 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           </div>
         </section>
       ) : null}
+      <section className="live-global-status-strip" aria-label="Live session state">
+        {globalMetrics.items.map((item) => (
+          <article className="live-global-status-card" data-tone={item.tone} key={item.label}>
+            <span className="live-debug-metric-icon">{item.icon}</span>
+            <span className="live-debug-metric-label">{item.label}</span>
+            <strong>{item.value}</strong>
+          </article>
+        ))}
+      </section>
       <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace">
         {!openWindows.length ? <div className="live-empty-canvas">This canvas is empty. Open scanner rows here or pop containers into this canvas from another tab.</div> : null}
         {openWindows.map((windowId) => {
@@ -992,7 +1012,8 @@ function PortfolioContainer({
         <div className="live-debug-metric-strip">
           {metrics.items.map((item) => (
             <article className="live-debug-metric-card" data-tone={item.tone} key={item.label}>
-              <span>{item.label}</span>
+              <span className="live-debug-metric-icon">{item.icon}</span>
+              <span className="live-debug-metric-label">{item.label}</span>
               <strong>{item.value}</strong>
             </article>
           ))}
@@ -1590,45 +1611,55 @@ function upsertPosition(rows: PositionRow[], symbol: string, quantity: number, p
   return [row, ...rows.filter((item) => item.symbol !== symbol)];
 }
 
-function buildPortfolioMetrics({
-  decisions,
-  liveClockMode,
-  orders,
-  positions,
-  scannerRows,
-  session,
-  snapshot,
-}: {
-  decisions: Record<string, DecisionState>;
-  liveClockMode: LiveClockMode;
-  orders: OrderRow[];
-  positions: PositionRow[];
-  scannerRows: Record<string, unknown>[];
-  session: TradingSession;
-  snapshot: ScannerSnapshot | null;
-}) {
+function buildPortfolioMetrics({ orders, positions }: { orders: OrderRow[]; positions: PositionRow[] }) {
   const realized = 0;
   const unrealized = positions.reduce((total, row) => total + row.unrealized_pnl, 0);
   const exposure = positions.reduce((total, row) => total + row.mark * row.quantity, 0);
   const stagedOrders = orders.filter((order) => order.status === "STAGED").length;
   const fills = orders.filter((order) => order.status === "FILLED").length;
+  return {
+    items: [
+      { icon: <Banknote size={14} />, label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
+      { icon: <CircleDollarSign size={14} />, label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
+      { icon: <Activity size={14} />, label: "Unrealized P/L", tone: signedMetricTone(unrealized), value: money(unrealized) },
+      { icon: <Banknote size={14} />, label: "Equity", tone: signedMetricTone(realized + unrealized), value: money(10_000 + realized + unrealized) },
+      { icon: <BarChart3 size={14} />, label: "Exposure", tone: exposure ? "info" : "muted", value: money(exposure) },
+      { icon: <WalletCards size={14} />, label: "Open Positions", tone: positions.length ? "info" : "muted", value: integer(positions.length) },
+      { icon: <ClipboardList size={14} />, label: "Orders", tone: orders.length ? "info" : "muted", value: integer(orders.length) },
+      { icon: <Save size={14} />, label: "Staged", tone: stagedOrders ? "warning" : "muted", value: integer(stagedOrders) },
+      { icon: <CheckCircle2 size={14} />, label: "Fills", tone: fills ? "success" : "muted", value: integer(fills) },
+      { icon: <ShieldAlert size={14} />, label: "Win Rate", tone: "muted", value: "0%" },
+    ],
+  };
+}
+
+function buildGlobalLiveMetrics({
+  decisions,
+  lastActionTime,
+  liveClockMode,
+  scannerRows,
+  secondsPerMinute,
+  session,
+  snapshot,
+}: {
+  decisions: Record<string, DecisionState>;
+  lastActionTime: string;
+  liveClockMode: LiveClockMode;
+  scannerRows: Record<string, unknown>[];
+  secondsPerMinute: string;
+  session: TradingSession;
+  snapshot: ScannerSnapshot | null;
+}) {
   const decisionsCount = Object.keys(decisions).length;
   return {
     items: [
-      { label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
-      { label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
-      { label: "Unrealized P/L", tone: signedMetricTone(unrealized), value: money(unrealized) },
-      { label: "Equity", tone: signedMetricTone(realized + unrealized), value: money(10_000 + realized + unrealized) },
-      { label: "Exposure", tone: exposure ? "info" : "muted", value: money(exposure) },
-      { label: "Open Positions", tone: positions.length ? "info" : "muted", value: integer(positions.length) },
-      { label: "Raw Scanner Rows", tone: snapshot?.row_count ? "info" : "muted", value: integer(snapshot?.row_count ?? 0) },
-      { label: "Signals", tone: scannerRows.length ? "success" : "muted", value: integer(scannerRows.length) },
-      { label: "Decisions", tone: decisionsCount ? "info" : "muted", value: integer(decisionsCount) },
-      { label: "Orders", tone: orders.length ? "info" : "muted", value: integer(orders.length) },
-      { label: "Staged", tone: stagedOrders ? "warning" : "muted", value: integer(stagedOrders) },
-      { label: "Fills", tone: fills ? "success" : "muted", value: integer(fills) },
-      { label: "Win Rate", tone: "muted", value: "0%" },
-      { label: "Clock", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: session.barTime },
+      { icon: <Clock3 size={14} />, label: "Clock", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: `${session.barTime} ET` },
+      { icon: <Activity size={14} />, label: "Mode", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: liveClockMode },
+      { icon: <TableProperties size={14} />, label: "Raw Scanner Rows", tone: snapshot?.row_count ? "info" : "muted", value: integer(snapshot?.row_count ?? 0) },
+      { icon: <TrendingUp size={14} />, label: "Signals", tone: scannerRows.length ? "success" : "muted", value: integer(scannerRows.length) },
+      { icon: <Target size={14} />, label: "Decisions", tone: decisionsCount ? "info" : "muted", value: integer(decisionsCount) },
+      { icon: <SkipForward size={14} />, label: "Replay Pace", tone: "info", value: `${Math.max(1, Number(secondsPerMinute) || 10)}s / 1m` },
+      { icon: <CheckCircle2 size={14} />, label: "Last Signal", tone: lastActionTime ? "success" : "muted", value: lastActionTime || "-" },
     ],
   };
 }

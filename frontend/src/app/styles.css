@@ -9097,6 +9097,20 @@ button {
   min-height: 960px;
 }
 
+.live-global-status-strip {
+  background: color-mix(in oklab, var(--surface) 86%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0;
+  margin-bottom: 6px;
+  overflow-x: auto;
+  padding: 4px 10px;
+  scrollbar-color: color-mix(in oklab, var(--muted-foreground) 42%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
 .live-window {
   background: color-mix(in oklab, var(--surface) 96%, var(--surface-alt));
   border: 1px solid var(--border);
@@ -9361,59 +9375,87 @@ button {
 }
 
 .live-debug-metric-strip {
-  display: grid;
+  display: flex;
+  flex-wrap: nowrap;
   gap: 0;
-  grid-template-columns: repeat(7, minmax(94px, 1fr));
   overflow-x: auto;
   padding: 4px 28px 8px 0;
   scrollbar-color: color-mix(in oklab, var(--muted-foreground) 42%, transparent) transparent;
   scrollbar-width: thin;
 }
 
-.live-debug-metric-card {
+.live-debug-metric-card,
+.live-global-status-card {
   --metric-tone: var(--muted-foreground);
   align-content: center;
   display: grid;
+  flex: 0 0 82px;
   gap: 4px;
+  grid-template-areas:
+    "icon label"
+    "value value";
+  grid-template-columns: 14px minmax(0, 1fr);
   justify-items: center;
-  min-height: 54px;
+  min-height: 48px;
   min-width: 0;
   overflow: hidden;
-  padding: 0 5px;
+  padding: 0 4px;
   text-align: center;
 }
 
-.live-debug-metric-card[data-tone="danger"] {
+.live-global-status-card {
+  flex-basis: 118px;
+}
+
+.live-debug-metric-card[data-tone="danger"],
+.live-global-status-card[data-tone="danger"] {
   --metric-tone: var(--danger);
 }
 
-.live-debug-metric-card[data-tone="info"] {
+.live-debug-metric-card[data-tone="info"],
+.live-global-status-card[data-tone="info"] {
   --metric-tone: var(--info);
 }
 
-.live-debug-metric-card[data-tone="success"] {
+.live-debug-metric-card[data-tone="success"],
+.live-global-status-card[data-tone="success"] {
   --metric-tone: var(--success);
 }
 
-.live-debug-metric-card[data-tone="warning"] {
+.live-debug-metric-card[data-tone="warning"],
+.live-global-status-card[data-tone="warning"] {
   --metric-tone: #f97316;
 }
 
-.live-debug-metric-card span {
+.live-debug-metric-icon {
+  align-items: center;
+  color: var(--metric-tone);
+  display: inline-flex;
+  grid-area: icon;
+  height: 14px;
+  justify-content: center;
+  width: 14px;
+}
+
+.live-debug-metric-label {
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 650;
+  grid-area: label;
   line-height: 1.15;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  width: 100%;
 }
 
-.live-debug-metric-card strong {
+.live-debug-metric-card strong,
+.live-global-status-card strong {
   color: var(--metric-tone);
   font-family: var(--font-display);
-  font-size: 21px;
+  font-size: 16px;
   font-weight: 550;
+  grid-area: value;
   line-height: 1.08;
   overflow: hidden;
   text-overflow: ellipsis;
