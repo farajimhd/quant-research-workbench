@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, BarChart3, Check, ChevronLeft, ChevronRight, GitCompareArrows, Hammer, LineChart, Palette } from "lucide-react";
+import { Activity, BarChart3, Check, ChevronLeft, ChevronRight, GitCompareArrows, Hammer, LineChart, Palette, RadioTower } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "strategy" | "research-runs" | "build-data" | "review-data";
+export type PageKey = "strategy" | "research-runs" | "build-data" | "review-data" | "live-trading";
 
 type LayoutProps = {
   page: PageKey;
@@ -26,6 +26,12 @@ const navGroups = [
     items: [
       { key: "build-data" as PageKey, label: "Build Data", icon: Hammer },
       { key: "review-data" as PageKey, label: "Review Data", icon: LineChart }
+    ]
+  },
+  {
+    label: "Live Trading",
+    items: [
+      { key: "live-trading" as PageKey, label: "Semi-Auto", icon: RadioTower }
     ]
   }
 ];

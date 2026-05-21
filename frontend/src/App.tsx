@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 
 import { Layout, type PageKey } from "./app/components/Layout";
+import { LiveTradingPage } from "./pages/LiveTradingPage";
 import { MarketDataBuildPage } from "./pages/MarketDataBuildPage";
 import { MarketDataReviewPage } from "./pages/MarketDataReviewPage";
 import { ResearchRunsPage } from "./pages/ResearchRunsPage";
 import { StrategyPage } from "./pages/StrategyPage";
 
-const validPages: PageKey[] = ["strategy", "research-runs", "build-data", "review-data"];
+const validPages: PageKey[] = ["strategy", "research-runs", "build-data", "review-data", "live-trading"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -36,6 +37,9 @@ export function App() {
       </div>
       <div aria-hidden={page !== "review-data"} className={page === "review-data" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "review-data" || visitedPages.has("review-data") ? <MarketDataReviewPage /> : null}
+      </div>
+      <div aria-hidden={page !== "live-trading"} className={page === "live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
+        {page === "live-trading" || visitedPages.has("live-trading") ? <LiveTradingPage /> : null}
       </div>
     </Layout>
   );
