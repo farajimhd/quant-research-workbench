@@ -287,6 +287,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
   const [session, setSession] = useState<TradingSession>(() => readStoredSession() ?? { barTime: "04:00", sessionDate: "" });
   const [started, setStarted] = useState(isChildCanvas);
+  const [tradingStarted, setTradingStarted] = useState(false);
   const [scannerQueryGroups, setScannerQueryGroups] = useState<ScannerQueryGroup[]>(readStoredScannerQueryGroups);
   const [scannerQueryName, setScannerQueryName] = useState(() => readStoredScannerQueryName() || DEFAULT_SCANNER_QUERY_GROUPS[0]?.name || "Scanner Query");
   const [snapshot, setSnapshot] = useState<ScannerSnapshot | null>(null);
@@ -320,6 +321,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [canvasTargetsVersion, setCanvasTargetsVersion] = useState(0);
   const canvasRemovedRef = useRef(false);
   const seekCancelRef = useRef(0);
+  const scannerQueryKey = useMemo(() => JSON.stringify(scannerQuery), [scannerQuery]);
 
   useEffect(() => {
     let active = true;
@@ -461,6 +463,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         setOpenWindows([]);
         setChartWindows([]);
         setStarted(false);
+        setTradingStarted(false);
       }
       if (event.key?.startsWith(`${LIVE_LAYOUT_STORAGE_KEY}.`)) {
         setCanvasTargetsVersion((version) => version + 1);
@@ -473,37 +476,46 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   useEffect(() => {
     if (!started || !scope || !session.sessionDate || isChildCanvas) return;
     let canceled = false;
-    setLoading(true);
-    setPreloadStatus(null);
-    setLiveClockMode("loading_data");
-    setLiveClockMessage("Loading provider data for the selected trading day.");
-    api<LivePreloadPayload>(`/api/live-trading/preload${query({ processed_root: scope.processed_root, session_date: session.sessionDate })}`)
-      .then((payload) => {
+    const processedRoot = scope.processed_root;
+    async function preloadSessionData() {
+      setLoading(true);
+      setPreloadStatus(null);
+      setSnapshot(null);
+      setSelectedRow(null);
+      setLastActionTime("");
+      setTradingStarted(false);
+      setLiveClockMode("loading_data");
+      setLiveClockMessage("Loading provider data for the selected trading day.");
+      try {
+        const payload = await api<LivePreloadPayload>(`/api/live-trading/preload${query({ processed_root: processedRoot, session_date: session.sessionDate })}`);
         if (canceled) return;
         setPreloadStatus(payload);
         if (payload.status === "ready") {
+          setSession((current) => ({ ...current, barTime: "04:00" }));
+          await loadScannerAt("04:00", { revealChart: false });
+          if (canceled) return;
           setLiveClockMode("ready");
-          setLiveClockMessage("Data is ready. Configure the scanner query, then press Start.");
+          setLiveClockMessage("Data is ready. Initial scanner is loaded from the first bar. Press Start Trading to seek the first signal.");
         } else {
           setLiveClockMode("paused");
           setLiveClockMessage("Some provider artifacts are missing. Review the preload status before starting.");
         }
-      })
-      .catch((requestError: Error) => {
+      } catch (requestError) {
         if (canceled) return;
         setLiveClockMode("paused");
-        setLiveClockMessage(requestError.message || "Data preload failed.");
-      })
-      .finally(() => {
+        setLiveClockMessage(requestError instanceof Error ? requestError.message : "Data preload failed.");
+      } finally {
         if (!canceled) setLoading(false);
-      });
+      }
+    }
+    void preloadSessionData();
     return () => {
       canceled = true;
     };
   }, [isChildCanvas, scope, started, session.sessionDate]);
 
   useEffect(() => {
-    if (!started || !scope || !session.sessionDate || liveClockMode !== "running") return;
+    if (!started || !tradingStarted || !scope || !session.sessionDate || liveClockMode !== "running") return;
     const seconds = Math.max(1, Number(secondsPerMinute) || 10);
     const timer = window.setTimeout(() => {
       const nextTime = addClockMinutes(session.barTime, 1);
@@ -516,7 +528,12 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
       loadScannerAt(nextTime, { revealChart: false });
     }, seconds * 1000);
     return () => window.clearTimeout(timer);
-  }, [liveClockMode, scope, secondsPerMinute, session.barTime, session.sessionDate, started]);
+  }, [liveClockMode, scope, secondsPerMinute, session.barTime, session.sessionDate, started, tradingStarted]);
+
+  useEffect(() => {
+    if (!started || tradingStarted || !scope || !session.sessionDate || liveClockMode !== "ready") return;
+    void loadScannerAt(session.barTime || "04:00", { revealChart: false });
+  }, [scannerQueryKey]);
 
   function startTrading() {
     const nextSession = { ...session, barTime: "04:00", sessionDate: session.sessionDate || sessions.at(-1) || "" };
@@ -524,7 +541,14 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     canvasRemovedRef.current = false;
     window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(nextSession));
     setSession(nextSession);
+    setTradingStarted(false);
     setStarted(true);
+  }
+
+  function startTradingSimulation() {
+    if (liveClockMode !== "ready" || loading) return;
+    setTradingStarted(true);
+    void beginTradingClock();
   }
 
   async function beginTradingClock() {
@@ -562,6 +586,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }
 
   async function seekNextSignal() {
+    if (!tradingStarted) return;
     const runId = seekCancelRef.current + 1;
     seekCancelRef.current = runId;
     setLiveClockMode("seeking");
@@ -580,6 +605,10 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }
 
   function toggleLiveClock() {
+    if (!tradingStarted) {
+      startTradingSimulation();
+      return;
+    }
     if (liveClockMode === "ready" || liveClockMode === "idle" || liveClockMode === "complete") {
       void beginTradingClock();
       return;
@@ -817,6 +846,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
 
   function closeSession() {
     setStarted(false);
+    setTradingStarted(false);
     setLiveClockMode("idle");
     setLiveClockMessage("");
     setSnapshot(null);
@@ -916,17 +946,17 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
             <span>Pace</span>
             <input min="1" step="1" type="number" value={secondsPerMinute} onChange={(event) => setSecondsPerMinute(event.target.value)} />
           </label>
-          <button className="button secondary compact" disabled={loading} onClick={refreshCurrentBar} type="button">
+          <button className="button secondary compact" disabled={!tradingStarted || loading} onClick={refreshCurrentBar} type="button">
             <RefreshCw size={14} /> Refresh
           </button>
-          <button className="button secondary compact" disabled={loading} onClick={advanceOneBar} type="button">
+          <button className="button secondary compact" disabled={!tradingStarted || loading} onClick={advanceOneBar} type="button">
             <StepForward size={14} /> Next Bar
           </button>
-          <button className="button primary compact" disabled={loading || liveClockMode === "seeking"} onClick={() => void seekNextSignal()} type="button">
+          <button className="button primary compact" disabled={!tradingStarted || loading || liveClockMode === "seeking"} onClick={() => void seekNextSignal()} type="button">
             {loading || liveClockMode === "seeking" ? <span className="loading-spinner" aria-hidden="true" /> : <SkipForward size={14} />} Next Signal
           </button>
-          <button className="button secondary compact" disabled={liveClockMode === "loading_data" || (loading && liveClockMode !== "seeking")} onClick={toggleLiveClock} type="button">
-            {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={14} /> : <Play size={14} />} {liveClockMode === "ready" || liveClockMode === "idle" || liveClockMode === "complete" ? "Start" : liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}
+          <button className="button secondary compact" disabled={liveClockMode === "loading_data" || (loading && liveClockMode !== "seeking") || (!tradingStarted && liveClockMode !== "ready")} onClick={toggleLiveClock} type="button">
+            {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={14} /> : <Play size={14} />} {!tradingStarted ? "Start Trading" : liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}
           </button>
           <button className="button secondary compact" onClick={closeSession} type="button">
             <X size={14} /> Close
