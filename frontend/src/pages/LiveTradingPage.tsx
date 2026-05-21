@@ -16,6 +16,7 @@ import {
   Save,
   Settings,
   ShieldAlert,
+  SkipForward,
   Target,
   TrendingUp,
   WalletCards,
@@ -26,7 +27,6 @@ import type { Time } from "lightweight-charts";
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload } from "../app/components/ChartPanel";
 import { DataTable, type BackendTableQuery } from "../app/components/DataTable";
-import { MetricStrip } from "../app/components/MetricStrip";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
 
@@ -112,9 +112,12 @@ type ChartWindow = {
 type SavedCanvasLayout = {
   chartWindows: ChartWindow[];
   layouts: Record<WindowId, WindowLayout>;
+  layoutVersion?: number;
   name: string;
   windows: WindowId[];
 };
+
+type LiveClockMode = "idle" | "seeking" | "running" | "paused" | "complete";
 
 type DecisionState = "approved" | "skipped" | "watching";
 
@@ -142,6 +145,7 @@ type PositionRow = {
 
 const LIVE_SESSION_STORAGE_KEY = "quant-research-workbench.live-trading.session";
 const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.live-trading.layout";
+const LIVE_LAYOUT_VERSION = 2;
 const LIVE_LAYOUTS_STORAGE_KEY = "quant-research-workbench.live-trading.named-layouts";
 const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.live-trading.shared-state";
 const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-setups";
@@ -222,7 +226,7 @@ function buildDefaultCanvasLayout(childCanvas: boolean): { chartWindows: ChartWi
   const portfolioH = 224;
   const mainY = margin + portfolioH + gap;
   const availableH = Math.max(420, height - mainY - margin);
-  const leftW = Math.max(180, Math.round(width * 0.125));
+  const leftW = Math.max(250, Math.round(width * 0.2));
   const scannerH = Math.round(availableH * 0.65) - Math.round(gap / 2);
   const tradeH = availableH - scannerH - gap;
   const chartX = margin + leftW + gap;
@@ -251,6 +255,10 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [snapshot, setSnapshot] = useState<ScannerSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [liveClockMode, setLiveClockMode] = useState<LiveClockMode>("idle");
+  const [liveClockMessage, setLiveClockMessage] = useState("");
+  const [secondsPerMinute, setSecondsPerMinute] = useState("10");
+  const [lastActionTime, setLastActionTime] = useState("");
   const [selectedRow, setSelectedRow] = useState<Record<string, unknown> | null>(null);
   const [mainTimeframe, setMainTimeframe] = useState("1m");
   const [mainVisibleColumns, setMainVisibleColumns] = useState<string[]>(MAIN_DISPLAY_ITEMS);
@@ -304,21 +312,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     window.localStorage.setItem(LIVE_SETUP_STORAGE_KEY, JSON.stringify(setupGroups));
   }, [setupGroups]);
 
-  useEffect(() => {
-    if (!started || !onTopbarCenterChange) {
-      onTopbarCenterChange?.(null);
-      return;
-    }
-    onTopbarCenterChange(
-      <button className="live-topbar-session" onClick={() => setHeaderCollapsed((value) => !value)} type="button">
-        <span>Semi-Auto Trading</span>
-        <strong>{session.sessionDate} {session.barTime} ET</strong>
-        {headerCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
-      </button>
-    );
-    return () => onTopbarCenterChange(null);
-  }, [headerCollapsed, onTopbarCenterChange, session.barTime, session.sessionDate, started]);
-
   const sessions = useMemo(() => availableSessionDates(review?.records ?? []), [review]);
   const activeSetups = setupGroups.filter((item) => item.enabled);
   const selectedTicker = stringValue(selectedRow, "ticker");
@@ -332,7 +325,25 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         .sort((a, b) => numberValue(b, "live_priority") - numberValue(a, "live_priority")),
     [activeSetups, snapshot]
   );
-  const portfolioMetrics = useMemo(() => buildPortfolioMetrics(orders, positions), [orders, positions]);
+  const portfolioMetrics = useMemo(
+    () => buildPortfolioMetrics({ decisions, liveClockMode, orders, positions, scannerRows, session, snapshot }),
+    [decisions, liveClockMode, orders, positions, scannerRows, session, snapshot]
+  );
+
+  useEffect(() => {
+    if (!started || !onTopbarCenterChange) {
+      onTopbarCenterChange?.(null);
+      return;
+    }
+    onTopbarCenterChange(
+      <button className="live-topbar-session" onClick={() => setHeaderCollapsed((value) => !value)} type="button">
+        <span>Semi-Auto Trading · {liveClockMode}</span>
+        <strong>{session.sessionDate} {session.barTime} ET · {scannerRows.length} signals</strong>
+        {headerCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+      </button>
+    );
+    return () => onTopbarCenterChange(null);
+  }, [headerCollapsed, liveClockMode, onTopbarCenterChange, scannerRows.length, session.barTime, session.sessionDate, started]);
 
   useEffect(() => {
     if (!selectedRow && scannerRows.length) setSelectedRow(scannerRows[0]);
@@ -344,7 +355,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }, [decisions, orders, positions]);
 
   useEffect(() => {
-    const payload = { chartWindows, layouts, windows: openWindows };
+    const payload = { chartWindows, layoutVersion: LIVE_LAYOUT_VERSION, layouts, windows: openWindows };
     window.localStorage.setItem(canvasStorageKey(canvasId), JSON.stringify(payload));
   }, [canvasId, chartWindows, layouts, openWindows]);
 
@@ -365,8 +376,51 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
+  useEffect(() => {
+    if (!started || !scope || !session.sessionDate || isChildCanvas) return;
+    let canceled = false;
+    const start = session.barTime;
+    setLiveClockMode("seeking");
+    setLiveClockMessage("Fast-forwarding to the next scanner signal.");
+    runUntilNextAction(start, () => canceled)
+      .then((found) => {
+        if (canceled) return;
+        if (found) {
+          setLiveClockMode("running");
+          setLiveClockMessage("Scanner signal found. Live clock is pacing from this timestamp.");
+        } else {
+          setLiveClockMode("complete");
+          setLiveClockMessage("No scanner signal found before the session cutoff.");
+        }
+      })
+      .catch((requestError: Error) => {
+        if (canceled) return;
+        setLiveClockMode("paused");
+        setLiveClockMessage(requestError.message || "Scanner fast-forward failed.");
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [isChildCanvas, scope, started, session.sessionDate]);
+
+  useEffect(() => {
+    if (!started || !scope || !session.sessionDate || liveClockMode !== "running") return;
+    const seconds = Math.max(1, Number(secondsPerMinute) || 10);
+    const timer = window.setTimeout(() => {
+      const nextTime = addClockMinutes(session.barTime, 1);
+      if (!nextTime || isAfterClock(nextTime, "20:00")) {
+        setLiveClockMode("complete");
+        setLiveClockMessage("Session clock reached the end of supported trading time.");
+        return;
+      }
+      setSession((current) => ({ ...current, barTime: nextTime }));
+      loadScannerAt(nextTime, { revealChart: false });
+    }, seconds * 1000);
+    return () => window.clearTimeout(timer);
+  }, [liveClockMode, scope, secondsPerMinute, session.barTime, session.sessionDate, started]);
+
   function startTrading() {
-    const nextSession = { ...session, sessionDate: session.sessionDate || sessions.at(-1) || "" };
+    const nextSession = { ...session, barTime: "04:00", sessionDate: session.sessionDate || sessions.at(-1) || "" };
     if (!nextSession.sessionDate) return;
     window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(nextSession));
     setSession(nextSession);
@@ -374,32 +428,58 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }
 
   function loadScanner() {
-    if (!scope || !session.sessionDate) return;
+    loadScannerAt(session.barTime, { revealChart: false });
+  }
+
+  async function loadScannerAt(barTime: string, options: { revealChart: boolean }) {
+    if (!scope || !session.sessionDate) return null;
     setLoading(true);
     setError("");
-    api<ScannerSnapshotPayload>(
-      `/api/market-data/scanner-snapshot${query({
+    try {
+      const payload = await api<ScannerSnapshotPayload>(
+        `/api/market-data/scanner-snapshot${query({
         processed_root: scope.processed_root,
         session_date: session.sessionDate,
         timeframe: "1m",
-        bar_time: session.barTime,
+        bar_time: barTime,
         feature_groups: LIVE_FEATURE_GROUPS.join(","),
         columns: LIVE_SCANNER_COLUMNS.join(","),
         table_query: JSON.stringify(baseScannerQuery(activeSetups)),
         row_limit: 1000,
-      })}`
-    )
-      .then((payload) => {
-        setSnapshot(payload.snapshot);
-        const firstRow = payload.snapshot.rows.map((row) => enrichLiveCandidate(row, activeSetups)).find((row) => stringValue(row, "live_setup_group")) ?? null;
-        setSelectedRow(firstRow);
-      })
-      .catch((requestError: Error) => {
-        setSnapshot(null);
-        setSelectedRow(null);
-        setError(requestError.message || "Scanner request failed.");
-      })
-      .finally(() => setLoading(false));
+        })}`
+      );
+      const enrichedRows = payload.snapshot.rows.map((row) => enrichLiveCandidate(row, activeSetups));
+      const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? null;
+      setSnapshot(payload.snapshot);
+      setSelectedRow(firstRow);
+      if (firstRow) setLastActionTime(barTime);
+      if (firstRow && options.revealChart) openChartForRow(firstRow);
+      return { firstRow, snapshot: payload.snapshot };
+    } catch (requestError) {
+      setSnapshot(null);
+      setSelectedRow(null);
+      setError(requestError instanceof Error ? requestError.message : "Scanner request failed.");
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runUntilNextAction(startTime: string, shouldStop: () => boolean) {
+    let nextTime = startTime;
+    for (let index = 0; index < 960; index += 1) {
+      if (shouldStop() || isAfterClock(nextTime, "20:00")) return false;
+      setSession((current) => ({ ...current, barTime: nextTime }));
+      const result = await loadScannerAt(nextTime, { revealChart: true });
+      if (result?.firstRow) {
+        setLastActionTime(nextTime);
+        return true;
+      }
+      const advanced = addClockMinutes(nextTime, 1);
+      if (!advanced) return false;
+      nextTime = advanced;
+    }
+    return false;
   }
 
   function markDecision(state: DecisionState) {
@@ -495,7 +575,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
 
   function saveNamedLayout() {
     const name = layoutName.trim() || "Momentum Desk";
-    const nextLayout: SavedCanvasLayout = { chartWindows, layouts, name, windows: openWindows };
+    const nextLayout: SavedCanvasLayout = { chartWindows, layoutVersion: LIVE_LAYOUT_VERSION, layouts, name, windows: openWindows };
     setSavedLayouts((current) => {
       const next = [nextLayout, ...current.filter((item) => item.name !== name)];
       window.localStorage.setItem(LIVE_LAYOUTS_STORAGE_KEY, JSON.stringify(next));
@@ -511,6 +591,31 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setLayouts(saved.layouts);
     setOpenWindows(saved.windows);
     setChartWindows(saved.chartWindows);
+  }
+
+  function closeSession() {
+    setStarted(false);
+    setLiveClockMode("idle");
+    setLiveClockMessage("");
+    setSnapshot(null);
+    setSelectedRow(null);
+  }
+
+  function togglePortfolioDetails() {
+    setPortfolioDetailsOpen((isOpen) => {
+      const nextOpen = !isOpen;
+      setLayouts((current) => {
+        const defaults = buildDefaultCanvasLayout(false).layouts;
+        const topZ = Math.max(0, ...Object.values(current).map((layout) => layout.z));
+        return {
+          ...current,
+          portfolio: nextOpen
+            ? { ...current.portfolio, fullscreen: false, h: Math.max(620, window.innerHeight - 100), minimized: false, w: Math.max(1180, window.innerWidth - 112) - 24, x: 12, y: 12, z: topZ + 1 }
+            : { ...defaults.portfolio, z: topZ + 1 },
+        };
+      });
+      return nextOpen;
+    });
   }
 
   if (!started) {
@@ -533,15 +638,25 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
             <PageIntro
               groupLabel="Live Trading"
               title="Semi-Auto Trading"
-              description="Broker-ready workspace for scanner-led small-cap momentum decisions."
+              description="Session clock, scanner replay pace, and layout controls for the active trading date."
               actions={
                 <div className="live-session-toolbar">
-                  <LiveSelect label="Date" value={session.sessionDate} values={sessions} onChange={(value) => setSession({ ...session, sessionDate: value })} />
-                  <LiveField label="Bar open" type="time" value={session.barTime} onChange={(value) => setSession({ ...session, barTime: value })} />
+                  <div className="live-session-status">
+                    <span>Trading now</span>
+                    <strong>{session.sessionDate} {session.barTime} ET</strong>
+                    <small>{liveClockMessage || "Session ready."}{lastActionTime ? ` Last signal ${lastActionTime} ET.` : ""}</small>
+                  </div>
+                  <LiveField label="Seconds / 1m" type="number" value={secondsPerMinute} onChange={setSecondsPerMinute} />
                   <LiveField label="Layout name" type="text" value={layoutName} onChange={setLayoutName} />
                   <LiveSelect label="Load layout" value={selectedLayoutName} values={["", ...savedLayouts.map((layout) => layout.name)]} onChange={loadNamedLayout} />
-                  <button className="button primary" disabled={loading} onClick={loadScanner} type="button">
-                    {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={15} />} Load
+                  <button className="button primary" disabled={loading || liveClockMode === "seeking"} onClick={() => {
+                    setLiveClockMode("seeking");
+                    runUntilNextAction(session.barTime, () => false).then((found) => setLiveClockMode(found ? "running" : "complete"));
+                  }} type="button">
+                    {loading || liveClockMode === "seeking" ? <span className="loading-spinner" aria-hidden="true" /> : <SkipForward size={15} />} Next Signal
+                  </button>
+                  <button className="button secondary" onClick={() => setLiveClockMode((mode) => (mode === "running" ? "paused" : "running"))} type="button">
+                    {liveClockMode === "running" ? <PauseCircle size={15} /> : <Play size={15} />} {liveClockMode === "running" ? "Pause" : "Resume"}
                   </button>
                   <button className="button secondary" onClick={saveNamedLayout} type="button">
                     <Save size={15} /> Save Layout
@@ -552,8 +667,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                   <button className="button secondary" onClick={() => createChildCanvas()} type="button">
                     <LayoutGrid size={15} /> Child Canvas
                   </button>
-                  <button className="button secondary" onClick={() => setStarted(false)} type="button">
-                    <Settings size={15} /> Session
+                  <button className="button secondary" onClick={closeSession} type="button">
+                    <Settings size={15} /> Close Session
                   </button>
                 </div>
               }
@@ -597,7 +712,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                   positions={positions}
                   selectedTab={portfolioTab}
                   onTabChange={setPortfolioTab}
-                  onToggleDetails={() => setPortfolioDetailsOpen((value) => !value)}
+                  onToggleDetails={togglePortfolioDetails}
                 />
               </WorkspaceWindow>
             );
@@ -665,7 +780,7 @@ function LiveTradingStart({
       <PageIntro
         groupLabel="Live Trading"
         title="Start Semi-Auto Session"
-        description="Choose the trading date and starting bar. The workspace will load provider artifacts for that session only."
+        description="Choose the trading date. The workspace loads that session and starts fast-forwarding to the first scanner signal."
       />
       <section className="live-start-panel panel">
         <div className="live-start-copy">
@@ -675,7 +790,6 @@ function LiveTradingStart({
         </div>
         <div className="live-start-form">
           <LiveSelect label="Trading date" value={session.sessionDate} values={sessions} onChange={(value) => onSessionChange({ ...session, sessionDate: value })} />
-          <LiveField label="First bar open" type="time" value={session.barTime} onChange={(value) => onSessionChange({ ...session, barTime: value })} />
           <div className="live-start-path">
             <span>Processed data</span>
             <strong>{scope?.processed_root ?? "Loading..."}</strong>
@@ -837,7 +951,7 @@ function ScannerContainer({
             <Plus size={14} /> Add
           </button>
           <button className="button primary" disabled={loading || !activeSetups.length} onClick={onLoad} type="button">
-            {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={14} />} Run
+            {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={14} />} Refresh
           </button>
         </div>
       </div>
@@ -875,14 +989,21 @@ function PortfolioContainer({
   return (
     <div className="live-container-stack">
       <div className="live-portfolio-header">
-        <MetricStrip items={metrics.items} />
-        <button className="toolbar-button compact" onClick={onToggleDetails} title={detailsOpen ? "Hide tabs" : "Show tabs"} type="button">
-          {detailsOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-        </button>
+        <div className="live-debug-metric-strip">
+          {metrics.items.map((item) => (
+            <article className="live-debug-metric-card" data-tone={item.tone} key={item.label}>
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </article>
+          ))}
+        </div>
       </div>
       <div className="live-position-cards">
         {positions.length ? positions.map((position) => <PositionCard key={position.symbol} position={position} />) : <div className="live-empty-positions">No open positions.</div>}
       </div>
+      <button className="live-portfolio-expand-button" onClick={onToggleDetails} title={detailsOpen ? "Hide tabs" : "Show tabs"} type="button">
+        {detailsOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+      </button>
       {detailsOpen ? (
         <>
           <Tabs tabs={tabs} active={selectedTab} onChange={onTabChange} />
@@ -1469,23 +1590,53 @@ function upsertPosition(rows: PositionRow[], symbol: string, quantity: number, p
   return [row, ...rows.filter((item) => item.symbol !== symbol)];
 }
 
-function buildPortfolioMetrics(orders: OrderRow[], positions: PositionRow[]) {
+function buildPortfolioMetrics({
+  decisions,
+  liveClockMode,
+  orders,
+  positions,
+  scannerRows,
+  session,
+  snapshot,
+}: {
+  decisions: Record<string, DecisionState>;
+  liveClockMode: LiveClockMode;
+  orders: OrderRow[];
+  positions: PositionRow[];
+  scannerRows: Record<string, unknown>[];
+  session: TradingSession;
+  snapshot: ScannerSnapshot | null;
+}) {
   const realized = 0;
   const unrealized = positions.reduce((total, row) => total + row.unrealized_pnl, 0);
   const exposure = positions.reduce((total, row) => total + row.mark * row.quantity, 0);
+  const stagedOrders = orders.filter((order) => order.status === "STAGED").length;
+  const fills = orders.filter((order) => order.status === "FILLED").length;
+  const decisionsCount = Object.keys(decisions).length;
   return {
     items: [
-      { label: "P/L", value: money(realized + unrealized), kind: "status" as const },
-      { label: "Equity", value: money(10_000 + realized + unrealized), kind: "status" as const },
-      { label: "Realized", value: money(realized), kind: "status" as const },
-      { label: "Unrealized", value: money(unrealized), kind: "status" as const },
-      { label: "Exposure", value: money(exposure), kind: "status" as const },
-      { label: "Open Positions", value: positions.length, kind: "number" as const },
-      { label: "Orders", value: orders.length, kind: "number" as const },
-      { label: "Fills", value: orders.filter((order) => order.status === "FILLED").length, kind: "number" as const },
-      { label: "Win Rate", value: "0%", kind: "status" as const },
+      { label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
+      { label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
+      { label: "Unrealized P/L", tone: signedMetricTone(unrealized), value: money(unrealized) },
+      { label: "Equity", tone: signedMetricTone(realized + unrealized), value: money(10_000 + realized + unrealized) },
+      { label: "Exposure", tone: exposure ? "info" : "muted", value: money(exposure) },
+      { label: "Open Positions", tone: positions.length ? "info" : "muted", value: integer(positions.length) },
+      { label: "Raw Scanner Rows", tone: snapshot?.row_count ? "info" : "muted", value: integer(snapshot?.row_count ?? 0) },
+      { label: "Signals", tone: scannerRows.length ? "success" : "muted", value: integer(scannerRows.length) },
+      { label: "Decisions", tone: decisionsCount ? "info" : "muted", value: integer(decisionsCount) },
+      { label: "Orders", tone: orders.length ? "info" : "muted", value: integer(orders.length) },
+      { label: "Staged", tone: stagedOrders ? "warning" : "muted", value: integer(stagedOrders) },
+      { label: "Fills", tone: fills ? "success" : "muted", value: integer(fills) },
+      { label: "Win Rate", tone: "muted", value: "0%" },
+      { label: "Clock", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: session.barTime },
     ],
   };
+}
+
+function signedMetricTone(value: number) {
+  if (value > 0) return "success";
+  if (value < 0) return "danger";
+  return "muted";
 }
 
 function readStoredSession(): TradingSession | null {
@@ -1517,8 +1668,9 @@ function readStoredCanvas(canvasId: string, isChildCanvas: boolean): { chartWind
     };
   }
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(canvasStorageKey(canvasId)) || "null") as Partial<{ chartWindows: ChartWindow[]; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] }> | null;
+    const parsed = JSON.parse(window.localStorage.getItem(canvasStorageKey(canvasId)) || "null") as Partial<{ chartWindows: ChartWindow[]; layoutVersion: number; layouts: Record<WindowId, WindowLayout>; windows: WindowId[] }> | null;
     if (!parsed) return defaults;
+    if (parsed.layoutVersion !== LIVE_LAYOUT_VERSION) return defaults;
     return {
       chartWindows: Array.isArray(parsed.chartWindows) ? parsed.chartWindows : defaults.chartWindows,
       layouts: { ...defaults.layouts, ...(parsed.layouts ?? {}) },
@@ -1543,7 +1695,7 @@ function readCanvasTransfer(canvasId: string): { chartWindows: ChartWindow[]; la
 function readSavedCanvasLayouts(): SavedCanvasLayout[] {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(LIVE_LAYOUTS_STORAGE_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.filter((layout) => layout?.layoutVersion === LIVE_LAYOUT_VERSION) : [];
   } catch {
     return [];
   }
@@ -1581,6 +1733,30 @@ function dateOffset(value: string, days: number) {
   const parsed = new Date(`${value}T00:00:00`);
   parsed.setDate(parsed.getDate() + days);
   return parsed.toISOString().slice(0, 10);
+}
+
+function addClockMinutes(clock: string, minutes: number) {
+  const [hourText, minuteText] = clock.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return "";
+  const total = hour * 60 + minute + minutes;
+  const nextHour = Math.floor(total / 60);
+  const nextMinute = total % 60;
+  if (nextHour < 0 || nextHour > 23) return "";
+  return `${String(nextHour).padStart(2, "0")}:${String(nextMinute).padStart(2, "0")}`;
+}
+
+function isAfterClock(clock: string, cutoff: string) {
+  return clockToMinutes(clock) > clockToMinutes(cutoff);
+}
+
+function clockToMinutes(clock: string) {
+  const [hourText, minuteText] = clock.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return 0;
+  return hour * 60 + minute;
 }
 
 function rowTimestampSeconds(row: Record<string, unknown>, sessionDate: string, fallbackClock: string) {
