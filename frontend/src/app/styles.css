@@ -9767,6 +9767,22 @@ button {
   width: 100%;
 }
 
+.live-scanner-table {
+  display: flex;
+  min-height: 0;
+  width: 100%;
+}
+
+.live-scanner-signals {
+  flex: 0 0 42%;
+  min-height: 190px;
+}
+
+.live-scanner-market {
+  flex: 1 1 auto;
+  min-height: 220px;
+}
+
 .live-window[data-window-kind="scanner"] .data-table-shell {
   flex: 1 1 auto;
   height: auto;
