@@ -64,6 +64,7 @@ export function Layout({
 
   useEffect(() => {
     document.documentElement.style.setProperty("--app-zoom", String(uiScale));
+    document.documentElement.style.setProperty("--app-readable-scale", String(uiScale < 1 ? 1 / uiScale : 1));
     window.localStorage.setItem(UI_SCALE_STORAGE_KEY, String(uiScale));
     window.setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
   }, [uiScale]);

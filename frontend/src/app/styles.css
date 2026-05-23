@@ -9856,6 +9856,7 @@ button {
 }
 
 .live-chart-trade-panel {
+  --trade-readable-scale: var(--app-readable-scale, 1);
   background:
     linear-gradient(180deg, color-mix(in oklab, var(--surface-alt) 34%, transparent), transparent 140px),
     var(--surface);
@@ -9879,7 +9880,7 @@ button {
 
 .live-chart-trade-header strong {
   display: block;
-  font-size: 25px;
+  font-size: calc(24px * var(--trade-readable-scale));
   font-weight: 950;
   line-height: 1;
 }
@@ -9889,7 +9890,7 @@ button {
   border: 1px solid color-mix(in oklab, var(--border) 86%, var(--surface));
   border-radius: 999px;
   color: var(--muted-foreground);
-  font-size: 10px;
+  font-size: calc(10px * var(--trade-readable-scale));
   font-weight: 900;
   line-height: 1;
   padding: 7px 9px;
@@ -9930,7 +9931,7 @@ button {
 
 .live-quote-price span {
   color: currentColor;
-  font-size: 10px;
+  font-size: calc(10px * var(--trade-readable-scale));
   font-weight: 900;
   line-height: 1;
   opacity: 0.8;
@@ -9939,7 +9940,7 @@ button {
 
 .live-quote-price strong {
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 20px;
+  font-size: calc(20px * var(--trade-readable-scale));
   line-height: 1;
 }
 
@@ -9971,7 +9972,7 @@ button {
 .live-spread-badge span {
   align-items: center;
   display: flex;
-  font-size: 8px;
+  font-size: calc(9px * var(--trade-readable-scale));
   font-weight: 900;
   gap: 3px;
   line-height: 1;
@@ -9980,14 +9981,14 @@ button {
 
 .live-spread-badge strong {
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 14px;
+  font-size: calc(14px * var(--trade-readable-scale));
   font-weight: 900;
   line-height: 1.1;
 }
 
 .live-spread-badge small {
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 9px;
+  font-size: calc(9px * var(--trade-readable-scale));
   font-weight: 800;
   line-height: 1;
 }
@@ -10031,7 +10032,7 @@ button {
   align-items: center;
   color: var(--muted-foreground);
   display: flex;
-  font-size: 10px;
+  font-size: calc(10px * var(--trade-readable-scale));
   font-weight: 900;
   gap: 5px;
   line-height: 1;
@@ -10042,7 +10043,7 @@ button {
 .live-market-row strong {
   color: var(--foreground);
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 13px;
+  font-size: calc(13px * var(--trade-readable-scale));
   font-weight: 900;
   line-height: 1;
 }
@@ -10050,7 +10051,7 @@ button {
 .live-market-row em {
   border-radius: 999px;
   color: var(--muted-foreground);
-  font-size: 9px;
+  font-size: calc(9px * var(--trade-readable-scale));
   font-style: normal;
   font-weight: 900;
   line-height: 1;
@@ -10125,25 +10126,28 @@ button {
 }
 
 .live-execution-panel {
-  background: color-mix(in oklab, var(--surface) 92%, var(--surface-alt));
-  border: 1px solid color-mix(in oklab, var(--border) 82%, var(--surface-alt));
-  border-radius: 7px;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--surface-strong) 86%, transparent), transparent 72px),
+    color-mix(in oklab, var(--surface) 95%, var(--surface-alt));
+  border: 1px solid color-mix(in oklab, var(--border) 78%, var(--surface-alt));
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 70%, transparent);
   display: grid;
-  gap: 8px;
-  padding: 8px;
+  gap: 9px;
+  padding: 9px;
 }
 
 .live-strategy-row {
   align-items: end;
   display: grid;
   gap: 7px;
-  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-columns: minmax(0, 1fr) 34px;
 }
 
 .live-strategy-row .icon-button {
   border-radius: 7px;
-  height: 34px;
-  min-height: 34px;
+  height: 36px;
+  min-height: 36px;
   padding: 0;
 }
 
@@ -10163,6 +10167,16 @@ button {
   padding: 7px;
 }
 
+.live-chart-trade-panel .live-field label {
+  font-size: calc(10px * var(--trade-readable-scale));
+}
+
+.live-chart-trade-panel .live-field input,
+.live-chart-trade-panel .live-field select {
+  font-size: calc(12px * var(--trade-readable-scale));
+  min-height: 34px;
+}
+
 .live-strategy-settings .live-field {
   min-width: 0;
 }
@@ -10176,7 +10190,7 @@ button {
 
 .live-action-panel {
   display: grid;
-  gap: 6px;
+  gap: 7px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
@@ -10185,17 +10199,19 @@ button {
 }
 
 .live-strategy-action {
-  align-items: stretch;
-  background: color-mix(in oklab, var(--surface) 88%, var(--surface-alt));
+  align-items: center;
+  background: color-mix(in oklab, var(--surface) 90%, var(--surface-alt));
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 8px;
   color: var(--foreground);
   cursor: pointer;
   display: grid;
-  gap: 5px;
-  min-height: 76px;
-  padding: 9px;
-  text-align: center;
+  gap: 6px 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 64px;
+  padding: 9px 10px;
+  text-align: left;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
 
 .live-strategy-action:hover:not(:disabled) {
@@ -10209,8 +10225,9 @@ button {
 }
 
 .live-strategy-action span {
+  align-self: end;
   color: currentColor;
-  font-size: 9px;
+  font-size: calc(9px * var(--trade-readable-scale));
   font-weight: 900;
   height: 10px;
   line-height: 1;
@@ -10222,29 +10239,36 @@ button {
 }
 
 .live-strategy-action strong {
-  font-size: 18px;
+  align-self: start;
+  font-size: calc(20px * var(--trade-readable-scale));
   font-weight: 950;
   line-height: 1;
 }
 
 .live-strategy-action small {
+  align-self: end;
   color: currentColor;
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(12px * var(--trade-readable-scale));
   font-weight: 800;
+  grid-column: 1 / 2;
   line-height: 1;
   opacity: 0.84;
 }
 
 .live-strategy-action em {
-  align-self: end;
+  align-self: center;
   border-radius: 999px;
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 12px;
+  font-size: calc(13px * var(--trade-readable-scale));
   font-style: normal;
   font-weight: 900;
+  grid-column: 2;
+  grid-row: 1 / 4;
   line-height: 1;
-  padding: 6px 8px;
+  min-width: 62px;
+  padding: 7px 8px;
+  text-align: center;
 }
 
 .live-strategy-action.buy {
@@ -10266,15 +10290,18 @@ button {
 }
 
 .live-strategy-action.buy em {
-  background: color-mix(in oklab, var(--info) 16%, var(--surface));
+  background: color-mix(in oklab, var(--info) 18%, var(--surface));
+  color: color-mix(in oklab, var(--info) 88%, var(--foreground));
 }
 
 .live-strategy-action.sell em {
-  background: color-mix(in oklab, var(--danger) 16%, var(--surface));
+  background: color-mix(in oklab, var(--danger) 18%, var(--surface));
+  color: color-mix(in oklab, var(--danger) 88%, var(--foreground));
 }
 
 .live-strategy-action.neutral em {
-  background: color-mix(in oklab, var(--warning) 16%, var(--surface));
+  background: color-mix(in oklab, var(--warning) 18%, var(--surface));
+  color: color-mix(in oklab, var(--warning) 88%, var(--foreground));
 }
 
 .live-trade-form.compact {
@@ -10303,7 +10330,7 @@ button {
 
 .live-execution-summary dt {
   color: var(--muted-foreground);
-  font-size: 9px;
+  font-size: calc(9px * var(--trade-readable-scale));
   font-weight: 900;
   line-height: 1;
   text-transform: uppercase;
@@ -10312,7 +10339,7 @@ button {
 .live-execution-summary dd {
   color: var(--foreground);
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(12px * var(--trade-readable-scale));
   font-weight: 900;
   line-height: 1.15;
   overflow: hidden;
@@ -10334,7 +10361,7 @@ button {
 .live-chart-position-strip small {
   color: var(--muted-foreground);
   display: block;
-  font-size: 10px;
+  font-size: calc(10px * var(--trade-readable-scale));
   font-weight: 800;
   line-height: 1.1;
   text-transform: uppercase;
@@ -10343,7 +10370,7 @@ button {
 .live-chart-position-strip strong {
   display: block;
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 14px;
+  font-size: calc(14px * var(--trade-readable-scale));
   line-height: 1.3;
 }
 
