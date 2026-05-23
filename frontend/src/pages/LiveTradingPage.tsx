@@ -99,7 +99,10 @@ type LivePreloadPayload = {
 };
 
 type LiveNextSignalPayload = {
+  complete?: boolean;
   found: boolean;
+  last_checked_time?: string;
+  next_start_time?: string | null;
   snapshot: ScannerSnapshot;
   steps: number;
 };
@@ -202,8 +205,10 @@ const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.live-trading.layout";
 const LIVE_LAYOUT_VERSION = 2;
 const LIVE_LAYOUTS_STORAGE_KEY = "quant-research-workbench.live-trading.named-layouts";
 const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.live-trading.shared-state";
+const LIVE_SAVED_SIMULATIONS_STORAGE_KEY = "quant-research-workbench.live-trading.saved-simulations";
 const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-queries.v2";
 const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-query.v2";
+const LIVE_SIGNAL_SEARCH_BATCH_MINUTES = 10;
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const LIVE_PORTFOLIO_COLLAPSED_HEIGHT = 224;
 const LIVE_PORTFOLIO_EXPANDED_HEIGHT = LIVE_PORTFOLIO_COLLAPSED_HEIGHT * 3;
@@ -273,7 +278,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const canvasId = useMemo(() => new URLSearchParams(window.location.search).get("liveCanvas") || "main", []);
   const isChildCanvas = canvasId !== "main";
   const initialCanvas = useMemo(() => readStoredCanvas(canvasId, isChildCanvas), [canvasId, isChildCanvas]);
-  const initialSharedState = useMemo(readSharedTradingState, []);
   const [scope, setScope] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
@@ -289,6 +293,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [error, setError] = useState("");
   const [liveClockMode, setLiveClockMode] = useState<LiveClockMode>("idle");
   const [liveClockMessage, setLiveClockMessage] = useState("");
+  const [simulationSaveMessage, setSimulationSaveMessage] = useState("");
   const [secondsPerMinute, setSecondsPerMinute] = useState("10");
   const [lastActionTime, setLastActionTime] = useState("");
   const [selectedRow, setSelectedRow] = useState<Record<string, unknown> | null>(null);
@@ -298,9 +303,9 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [headerCollapsed, setHeaderCollapsed] = useState(true);
   const showDayChart = true;
   const showFiveMinuteChart = true;
-  const [decisions, setDecisions] = useState<Record<string, DecisionState>>(initialSharedState.decisions);
-  const [orders, setOrders] = useState<OrderRow[]>(initialSharedState.orders);
-  const [positions, setPositions] = useState<PositionRow[]>(initialSharedState.positions);
+  const [decisions, setDecisions] = useState<Record<string, DecisionState>>({});
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [positions, setPositions] = useState<PositionRow[]>([]);
   const [portfolioTab, setPortfolioTab] = useState("Open Positions");
   const [portfolioDetailsOpen, setPortfolioDetailsOpen] = useState(false);
   const [tradeDraft, setTradeDraft] = useState({ limit: "", quantity: "3000", side: "BUY" as "BUY" | "SELL", stop: "", type: "LIMIT" });
@@ -419,11 +424,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   useEffect(() => {
     if (!selectedRow && scannerRows.length) setSelectedRow(scannerRows[0]);
   }, [scannerRows, selectedRow]);
-
-  useEffect(() => {
-    const payload = { decisions, orders, positions };
-    window.localStorage.setItem(LIVE_SHARED_STATE_STORAGE_KEY, JSON.stringify(payload));
-  }, [decisions, orders, positions]);
 
   useEffect(() => {
     ordersRef.current = orders;
@@ -556,7 +556,13 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     if (!nextSession.sessionDate) return;
     canvasRemovedRef.current = false;
     window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(nextSession));
+    window.localStorage.removeItem(LIVE_SHARED_STATE_STORAGE_KEY);
     setSession(nextSession);
+    setDecisions({});
+    setOrders([]);
+    setPositions([]);
+    setSimulationSaveMessage("");
+    setLastActionTime("");
     setTradingStarted(false);
     setStarted(true);
   }
@@ -680,28 +686,39 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setLoading(true);
     setError("");
     try {
-      const payload = await api<LiveNextSignalPayload>(
-        `/api/live-trading/next-signal${query({
-          processed_root: scope.processed_root,
-          session_date: session.sessionDate,
-          start_time: startTime,
-          feature_groups: LIVE_FEATURE_GROUPS.join(","),
-          columns: LIVE_SCANNER_COLUMNS.join(","),
-          table_query: JSON.stringify(scannerQuery),
-          row_limit: 1000,
-        })}`
-      );
-      if (shouldStop()) return false;
-      setSnapshot(payload.snapshot);
-      setSession((current) => ({ ...current, barTime: payload.snapshot.bar_time || startTime }));
-      const enrichedRows = payload.snapshot.rows.map((row) => enrichLiveCandidate(row, scannerQueryName));
-      const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? enrichedRows[0] ?? null;
-      setSelectedRow(firstRow);
-      if (payload.found) await warmChartCacheForRows(enrichedRows);
-      if (payload.found && firstRow) {
-        setLastActionTime(payload.snapshot.bar_time);
-        openChartForRow(firstRow);
-        return true;
+      let searchStart = startTime;
+      let checkedMinutes = 0;
+      while (!shouldStop() && !isAfterClock(searchStart, "20:00")) {
+        const payload = await api<LiveNextSignalPayload>(
+          `/api/live-trading/next-signal${query({
+            processed_root: scope.processed_root,
+            session_date: session.sessionDate,
+            start_time: searchStart,
+            feature_groups: LIVE_FEATURE_GROUPS.join(","),
+            columns: LIVE_SCANNER_COLUMNS.join(","),
+            table_query: JSON.stringify(scannerQuery),
+            row_limit: 1000,
+            max_steps: LIVE_SIGNAL_SEARCH_BATCH_MINUTES,
+          })}`
+        );
+        if (shouldStop()) return false;
+        checkedMinutes += payload.steps || 0;
+        const checkedTime = payload.last_checked_time || payload.snapshot.bar_time || searchStart;
+        setSnapshot(payload.snapshot);
+        setSession((current) => ({ ...current, barTime: checkedTime }));
+        const enrichedRows = payload.snapshot.rows.map((row) => enrichLiveCandidate(row, scannerQueryName));
+        const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? enrichedRows[0] ?? null;
+        setSelectedRow(firstRow);
+        setLiveClockMessage(`Searching scanner signals at ${checkedTime} ET (${checkedMinutes} minutes checked).`);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        if (payload.found && firstRow) {
+          await warmChartCacheForRows(enrichedRows);
+          setLastActionTime(payload.snapshot.bar_time);
+          openChartForRow(firstRow);
+          return true;
+        }
+        if (payload.complete) return false;
+        searchStart = payload.next_start_time || addClockMinutes(checkedTime, 1) || checkedTime;
       }
       return false;
     } catch (requestError) {
@@ -891,6 +908,29 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setChartWindows(saved.chartWindows);
   }
 
+  function saveSimulation() {
+    const savedAt = new Date().toISOString();
+    const simulation = {
+      decisions,
+      id: `${session.sessionDate || "session"}-${savedAt}`,
+      lastActionTime,
+      orders,
+      positions,
+      savedAt,
+      scannerQuery,
+      scannerQueryName,
+      session,
+      snapshot,
+    };
+    try {
+      const previous = JSON.parse(window.localStorage.getItem(LIVE_SAVED_SIMULATIONS_STORAGE_KEY) || "[]") as unknown[];
+      window.localStorage.setItem(LIVE_SAVED_SIMULATIONS_STORAGE_KEY, JSON.stringify([simulation, ...previous].slice(0, 50)));
+      setSimulationSaveMessage(`Saved ${session.sessionDate || "simulation"} at ${session.barTime} ET.`);
+    } catch {
+      setSimulationSaveMessage("Could not save this simulation in browser storage.");
+    }
+  }
+
   function closeSession() {
     setStarted(false);
     setTradingStarted(false);
@@ -1001,6 +1041,9 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           </button>
           <button className="button primary compact" disabled={!tradingStarted || loading || liveClockMode === "seeking"} onClick={() => void seekNextSignal()} type="button">
             {loading || liveClockMode === "seeking" ? <span className="loading-spinner" aria-hidden="true" /> : <SkipForward size={14} />} Next Signal
+          </button>
+          <button className="button secondary compact" disabled={!started} onClick={saveSimulation} title={simulationSaveMessage || "Save this simulation when you want to keep it"} type="button">
+            <Save size={14} /> Save Simulation
           </button>
           <button className="button secondary compact" disabled={liveClockMode === "loading_data" || (loading && liveClockMode !== "seeking") || (!tradingStarted && liveClockMode !== "ready")} onClick={toggleLiveClock} type="button">
             {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={14} /> : <Play size={14} />} {!tradingStarted ? "Start Trading" : liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}

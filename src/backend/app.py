@@ -170,6 +170,7 @@ class LiveTradingNextSignalRequest(BaseModel):
     columns: list[str] = Field(default_factory=list)
     table_query: dict[str, Any] | None = None
     row_limit: int = Field(default=1000, ge=1, le=5000)
+    max_steps: int | None = Field(default=None, ge=1, le=120)
 
 
 def parse_date_param(value: date | None, fallback: str) -> date:
@@ -1454,6 +1455,7 @@ def live_trading_next_signal(payload: LiveTradingNextSignalRequest) -> dict[str,
         columns=payload.columns,
         table_query=payload.table_query,
         row_limit=payload.row_limit,
+        max_steps=payload.max_steps,
     )
 
 
@@ -1466,6 +1468,7 @@ def live_trading_next_signal_get(
     columns: str | None = None,
     table_query: str | None = None,
     row_limit: int = Query(default=1000, ge=1, le=5000),
+    max_steps: int | None = Query(default=None, ge=1, le=120),
 ) -> dict[str, Any]:
     return live_trading_next_signal_payload(
         processed_root=Path(processed_root),
@@ -1475,6 +1478,7 @@ def live_trading_next_signal_get(
         columns=parse_csv_list(columns),
         table_query=parse_table_query(table_query),
         row_limit=row_limit,
+        max_steps=max_steps,
     )
 
 
@@ -1487,13 +1491,16 @@ def live_trading_next_signal_payload(
     columns: list[str],
     table_query: dict[str, Any] | None,
     row_limit: int,
+    max_steps: int | None,
 ) -> dict[str, Any]:
     records = artifact_records(processed_root)
     start_minute = parse_live_clock_minute(start_time)
     if start_minute is None:
         raise HTTPException(status_code=400, detail="Invalid start_time")
     end_minute = 20 * 60
-    for minute in range(start_minute, end_minute + 1):
+    loop_end_minute = min(end_minute, start_minute + max_steps - 1) if max_steps else end_minute
+    last_snapshot: dict[str, Any] | None = None
+    for minute in range(start_minute, loop_end_minute + 1):
         bar_time = f"{minute // 60:02d}:{minute % 60:02d}"
         snapshot = load_scanner_snapshot(
             records,
@@ -1507,12 +1514,50 @@ def live_trading_next_signal_payload(
             table_query=table_query,
             derived_columns=None,
         )
+        last_snapshot = snapshot
         if snapshot.get("rows"):
-            return {"found": True, "snapshot": snapshot, "steps": minute - start_minute + 1}
+            return {
+                "complete": True,
+                "found": True,
+                "last_checked_time": bar_time,
+                "next_start_time": None,
+                "snapshot": snapshot,
+                "steps": minute - start_minute + 1,
+            }
         if snapshot.get("reason"):
-            return {"found": False, "snapshot": snapshot, "steps": minute - start_minute + 1}
+            return {
+                "complete": True,
+                "found": False,
+                "last_checked_time": bar_time,
+                "next_start_time": None,
+                "snapshot": snapshot,
+                "steps": minute - start_minute + 1,
+            }
+    if loop_end_minute < end_minute:
+        checked_time = f"{loop_end_minute // 60:02d}:{loop_end_minute % 60:02d}"
+        next_minute = loop_end_minute + 1
+        return {
+            "complete": False,
+            "found": False,
+            "last_checked_time": checked_time,
+            "next_start_time": f"{next_minute // 60:02d}:{next_minute % 60:02d}",
+            "snapshot": last_snapshot
+            or {
+                "bar_time": checked_time,
+                "columns": [],
+                "feature_groups": [],
+                "row_count": 0,
+                "rows": [],
+                "session_date": session_date.isoformat(),
+                "timeframe": "1m",
+            },
+            "steps": max(0, loop_end_minute - start_minute + 1),
+        }
     return {
+        "complete": True,
         "found": False,
+        "last_checked_time": f"{end_minute // 60:02d}:{end_minute % 60:02d}",
+        "next_start_time": None,
         "snapshot": {
             "bar_time": f"{end_minute // 60:02d}:{end_minute % 60:02d}",
             "columns": [],
