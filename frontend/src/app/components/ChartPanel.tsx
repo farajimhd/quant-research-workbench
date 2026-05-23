@@ -348,7 +348,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const overlayRedrawFrameRef = useRef<number | null>(null);
   const overlayRedrawTimerRef = useRef<number | null>(null);
   const regionDrawRef = useRef<(() => void) | null>(null);
-  const baseDataSignatureRef = useRef("");
+  const fittedChartKeyRef = useRef("");
   const normalizeTickerValue = (value: string) => (normalizeTicker ? value.toUpperCase() : value);
   const [draftTicker, setDraftTicker] = useState(normalizeTickerValue(ticker));
   const [columnMenuOpen, setColumnMenuOpen] = useState(false);
@@ -546,13 +546,15 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   useEffect(() => {
     payloadRef.current = payload;
     if (!payload || !priceChartRef.current || !candleRef.current || !volumeRef.current) return;
+    const fitKey = buildChartFitKey(ticker, timeframe, referenceKey, payload.candles);
+    const shouldAutoFit = fitKey !== fittedChartKeyRef.current;
+    const currentRange = shouldAutoFit ? null : priceChartRef.current.timeScale().getVisibleLogicalRange();
     const timeline = chartTimelineData(payload.candles, timeframe);
     candleRef.current.setData(timeline as never);
     volumeRef.current.setData(volumeDataForSettings(payload, chartSettingsRef.current) as never);
     updateCandleMarkers();
-    const nextSignature = buildCandleDataSignature(payload.candles);
-    if (nextSignature !== baseDataSignatureRef.current) {
-      baseDataSignatureRef.current = nextSignature;
+    if (shouldAutoFit) {
+      fittedChartKeyRef.current = fitKey;
       if (initialFitTimerRef.current !== null) {
         window.clearTimeout(initialFitTimerRef.current);
       }
@@ -568,10 +570,11 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         initialFitTimerRef.current = null;
       }, 20);
     } else {
+      if (currentRange) priceChartRef.current.timeScale().setVisibleLogicalRange(currentRange);
       drawCurrentRegions();
     }
     refreshInteractionSync();
-  }, [payload, reference, timeframe]);
+  }, [payload, reference, referenceKey, ticker, timeframe]);
 
   useEffect(() => {
     if (!priceChartRef.current || !payload?.candles.length || !reference) return;
@@ -881,7 +884,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     volumeRef.current = null;
     indicatorSeriesRef.current.clear();
     indicatorSourceRef.current.clear();
-    baseDataSignatureRef.current = "";
+    fittedChartKeyRef.current = "";
   }
 
   function resizeCharts() {
@@ -2505,11 +2508,9 @@ function nearestTimelineIndex(timeline: CandleSeriesDatum[], targetTime: number)
   return nearest;
 }
 
-function buildCandleDataSignature(candles: Candle[]) {
-  if (!candles.length) return "empty";
+function buildChartFitKey(ticker: string, timeframe: string, referenceKey: string, candles: Candle[]) {
   const first = candles[0];
-  const last = candles[candles.length - 1];
-  return `${candles.length}:${first.time}:${last.time}:${first.open}:${first.close}:${last.close}`;
+  return `${ticker}:${timeframe}:${referenceKey || "no-reference"}:${first?.time ?? "empty"}`;
 }
 
 function hasMultipleMarketDates(candles: Candle[]) {
