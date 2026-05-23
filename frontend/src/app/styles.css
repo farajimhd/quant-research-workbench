@@ -9734,6 +9734,112 @@ button {
   gap: 8px;
 }
 
+.live-quote-stats-row {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.live-quote-stats-row .live-ticket-metric {
+  min-height: 48px;
+  padding: 7px;
+}
+
+.live-quote-stats-row .live-ticket-metric strong {
+  font-size: 12px;
+}
+
+.live-strategy-row {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 36px;
+}
+
+.live-strategy-row .icon-button {
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+}
+
+.live-strategy-row .icon-button.active {
+  background: color-mix(in oklab, var(--primary) 10%, var(--surface));
+  border-color: color-mix(in oklab, var(--primary) 34%, var(--border));
+  color: var(--primary);
+}
+
+.live-strategy-settings {
+  background: color-mix(in oklab, var(--surface-alt) 46%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 8px;
+}
+
+.live-action-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.live-strategy-action {
+  align-items: start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--foreground);
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  min-height: 64px;
+  padding: 10px;
+  text-align: left;
+}
+
+.live-strategy-action:hover:not(:disabled) {
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.live-strategy-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.live-strategy-action span {
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.live-strategy-action strong {
+  font-size: 15px;
+}
+
+.live-strategy-action small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.live-strategy-action.buy {
+  background: color-mix(in oklab, var(--info) 8%, var(--surface));
+  border-color: color-mix(in oklab, var(--info) 28%, var(--border));
+}
+
+.live-strategy-action.sell {
+  background: color-mix(in oklab, var(--danger) 8%, var(--surface));
+  border-color: color-mix(in oklab, var(--danger) 28%, var(--border));
+}
+
+.live-strategy-action.neutral {
+  background: color-mix(in oklab, var(--warning) 8%, var(--surface));
+  border-color: color-mix(in oklab, var(--warning) 28%, var(--border));
+}
+
 .live-trade-form.compact {
   grid-template-columns: 1fr;
 }

@@ -20,6 +20,7 @@ import {
   Play,
   RefreshCw,
   Save,
+  Settings,
   ShieldAlert,
   SkipForward,
   StepForward,
@@ -1843,18 +1844,48 @@ function ChartTradePanel({
   selectedTicker: string;
 }) {
   const [strategy, setStrategy] = useState("Manual");
-  const [sizeMode, setSizeMode] = useState("risk_pct");
-  const [sizeValue, setSizeValue] = useState("10");
-  const stop = Number(draft.stop) || numberValue(row, "suggested_stop") || Math.max(0, quote.bid * 0.97);
-  const limit = Number(draft.limit) || (draft.side === "SELL" ? quote.bid : quote.ask);
-  const quantity = calculateLiveOrderQuantity({ availableCash, entry: limit, mode: sizeMode, side: draft.side, stop, value: sizeValue });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [strategySettings, setStrategySettings] = useState({ orderType: "LIMIT", sizeMode: "risk_pct", sizeValue: "10", stopBufferPct: "3" });
+  const stopBufferRatio = Math.max(0, Number(strategySettings.stopBufferPct || 3) / 100);
+  const bufferedStop = quote.bid * (1 - stopBufferRatio);
+  const suggestedStop = numberValue(row, "suggested_stop");
+  const vwapStop = numberValue(row, "last_vwap") || bufferedStop;
+  const longStop = Math.max(0, Math.min(suggestedStop || vwapStop, bufferedStop, quote.ask || Number.POSITIVE_INFINITY));
+  const entryQuantity = calculateLiveOrderQuantity({
+    availableCash,
+    entry: quote.ask,
+    mode: strategySettings.sizeMode,
+    side: "BUY",
+    stop: longStop,
+    value: strategySettings.sizeValue,
+  });
   const spreadPct = quote.ask > 0 ? quote.spread / quote.ask : 0;
   const openOrders = orders.filter((order) => order.symbol === selectedTicker && order.status === "STAGED").length;
+  const actions = buildStrategyTradeActions({
+    entryQuantity,
+    longStop,
+    orderType: strategySettings.orderType,
+    position,
+    quote,
+    selectedTicker,
+    strategy,
+  });
 
-  function stageComputedOrder() {
-    const context = { limit, mark: quote.bid, quantity, row, side: draft.side, status: "STAGED", stop, symbol: selectedTicker, type: draft.type };
-    onStage(draft.side, "STAGED", context);
-    onDraftChange({ ...draft, limit: limit.toFixed(4), quantity: String(quantity), stop: stop.toFixed(4) });
+  function stageStrategyAction(action: LiveStrategyTradeAction) {
+    if (action.disabled) return;
+    const context = {
+      limit: action.limit,
+      mark: quote.bid,
+      quantity: action.quantity,
+      row,
+      side: action.side,
+      status: "STAGED",
+      stop: action.stop,
+      symbol: selectedTicker,
+      type: action.type,
+    };
+    onStage(action.side, "STAGED", context);
+    onDraftChange({ ...draft, limit: action.limit.toFixed(4), quantity: String(action.quantity), side: action.side, stop: action.stop.toFixed(4), type: action.type });
   }
 
   return (
@@ -1874,26 +1905,44 @@ function ChartTradePanel({
             <strong>{money(quote.bid)}</strong>
           </div>
         </div>
-        <div className="live-quote-stats">
+        <div className="live-quote-stats-row">
           <TicketMetric label="Spread" value={`${money(quote.spread)} / ${percent(spreadPct)}`} />
           <TicketMetric label="Transactions" value={integer(quote.transactions)} />
           <TicketMetric label="Volume" value={integer(quote.volume)} />
         </div>
       </div>
-      <div className="live-chart-trade-section">
+      <div className="live-strategy-row">
         <LiveSelect label="Strategy" value={strategy} values={["Manual", "Momentum Assist"]} onChange={setStrategy} />
-        <LiveSelect label="Sizing" value={sizeMode} values={["risk_pct", "dollar", "cash_pct", "shares"]} onChange={setSizeMode} />
-        <LiveField label={sizeModeLabel(sizeMode)} type="number" value={sizeValue} onChange={setSizeValue} />
+        <button className={settingsOpen ? "icon-button active" : "icon-button"} title="Strategy settings" type="button" onClick={() => setSettingsOpen((current) => !current)}>
+          <Settings size={16} />
+        </button>
       </div>
-      <div className="live-trade-form compact">
-        <LiveSelect label="Side" value={draft.side} values={["BUY", "SELL"]} onChange={(value) => onDraftChange({ ...draft, side: value as "BUY" | "SELL" })} />
-        <LiveSelect label="Type" value={draft.type} values={["LIMIT", "MARKET", "STOP"]} onChange={(value) => onDraftChange({ ...draft, type: value })} />
-        <LiveField label="Limit" type="number" value={draft.limit || limit.toFixed(4)} onChange={(value) => onDraftChange({ ...draft, limit: value })} />
-        <LiveField label="Stop" type="number" value={draft.stop || stop.toFixed(4)} onChange={(value) => onDraftChange({ ...draft, stop: value })} />
+      {settingsOpen ? (
+        <div className="live-strategy-settings">
+          <LiveSelect label="Sizing" value={strategySettings.sizeMode} values={["risk_pct", "dollar", "cash_pct", "shares"]} onChange={(value) => setStrategySettings((current) => ({ ...current, sizeMode: value }))} />
+          <LiveField label={sizeModeLabel(strategySettings.sizeMode)} type="number" value={strategySettings.sizeValue} onChange={(value) => setStrategySettings((current) => ({ ...current, sizeValue: value }))} />
+          <LiveSelect label="Order Type" value={strategySettings.orderType} values={["LIMIT", "MARKET", "STOP"]} onChange={(value) => setStrategySettings((current) => ({ ...current, orderType: value }))} />
+          <LiveField label="Stop Buffer %" type="number" value={strategySettings.stopBufferPct} onChange={(value) => setStrategySettings((current) => ({ ...current, stopBufferPct: value }))} />
+        </div>
+      ) : null}
+      <div className="live-action-panel">
+        {actions.map((action) => (
+          <button
+            key={action.id}
+            className={`live-strategy-action ${action.tone}`}
+            disabled={action.disabled || !selectedTicker || action.quantity <= 0}
+            type="button"
+            onClick={() => stageStrategyAction(action)}
+          >
+            <span>{action.label}</span>
+            <strong>{integer(action.quantity)} @ {money(action.limit)}</strong>
+            <small>{action.description}</small>
+          </button>
+        ))}
       </div>
       <div className="live-ticket-grid compact">
-        <TicketMetric label="Size" value={`${integer(quantity)} sh`} />
-        <TicketMetric label="Notional" value={money(quantity * limit)} />
+        <TicketMetric label="Entry Size" value={`${integer(entryQuantity)} sh`} />
+        <TicketMetric label="Entry Risk" value={money(Math.max(0, quote.ask - longStop) * entryQuantity)} />
         <TicketMetric label="Cash" value={money(availableCash)} />
         <TicketMetric label="Staged" value={integer(openOrders)} />
       </div>
@@ -1904,11 +1953,99 @@ function ChartTradePanel({
           <small>P/L {money((quote.bid - position.avg_price) * position.quantity)} / {percent(position.avg_price > 0 ? quote.bid / position.avg_price - 1 : 0)}</small>
         </div>
       ) : null}
-      <button className="button primary" disabled={!selectedTicker || quantity <= 0} onClick={stageComputedOrder} type="button">
-        <Save size={15} /> Stage Order
-      </button>
     </aside>
   );
+}
+
+type LiveStrategyTradeAction = {
+  description: string;
+  disabled?: boolean;
+  id: string;
+  label: string;
+  limit: number;
+  quantity: number;
+  side: "BUY" | "SELL";
+  stop: number;
+  tone: "buy" | "sell" | "neutral";
+  type: string;
+};
+
+function buildStrategyTradeActions({
+  entryQuantity,
+  longStop,
+  orderType,
+  position,
+  quote,
+  selectedTicker,
+  strategy,
+}: {
+  entryQuantity: number;
+  longStop: number;
+  orderType: string;
+  position?: PositionRow;
+  quote: ReturnType<typeof quoteFromRow>;
+  selectedTicker: string;
+  strategy: string;
+}): LiveStrategyTradeAction[] {
+  const closeQuantity = Math.max(0, Math.floor(position?.quantity ?? 0));
+  const commonClose = {
+    description: position ? `Sell open position at estimated bid ${money(quote.bid)}` : "Requires an open position",
+    disabled: !position || closeQuantity <= 0,
+    id: `${strategy}-close`,
+    label: "Close",
+    limit: quote.bid,
+    quantity: closeQuantity,
+    side: "SELL" as const,
+    stop: position?.stop ?? 0,
+    tone: "sell" as const,
+    type: "LIMIT",
+  };
+
+  if (strategy === "Momentum Assist") {
+    return [
+      {
+        description: "Strategy long entry at current ask with configured stop",
+        disabled: !selectedTicker || entryQuantity <= 0,
+        id: "momentum-enter",
+        label: "Enter Long",
+        limit: quote.ask,
+        quantity: entryQuantity,
+        side: "BUY",
+        stop: longStop,
+        tone: "buy",
+        type: orderType,
+      },
+      {
+        description: position ? "Take profit or reduce exposure at estimated bid" : "Requires an open position",
+        disabled: !position || closeQuantity <= 0,
+        id: "momentum-pocket",
+        label: "Pocket",
+        limit: quote.bid,
+        quantity: closeQuantity,
+        side: "SELL",
+        stop: position?.stop ?? 0,
+        tone: "neutral",
+        type: "LIMIT",
+      },
+      commonClose,
+    ];
+  }
+
+  return [
+    {
+      description: "Buy at current ask using strategy settings",
+      disabled: !selectedTicker || entryQuantity <= 0,
+      id: "manual-buy",
+      label: "Buy Ask",
+      limit: quote.ask,
+      quantity: entryQuantity,
+      side: "BUY",
+      stop: longStop,
+      tone: "buy",
+      type: orderType,
+    },
+    commonClose,
+  ];
 }
 
 function LiveField({
