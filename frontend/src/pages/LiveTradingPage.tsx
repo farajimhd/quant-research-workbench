@@ -117,6 +117,8 @@ type LiveNewsArticle = {
   recency: string;
   tags: string[];
   ticker: string;
+  ticker_count?: number;
+  tickers?: string[];
   title: string;
   url: string;
 };
@@ -2316,6 +2318,8 @@ function ChartTradePanel({
   ];
   const spreadWarning = spreadTone === "warning" || spreadTone === "danger";
   const newsItems = liveNewsItems(row, session);
+  const companyNewsItems = newsItems.filter((item) => newsTickerCount(item) <= 1);
+  const otherNewsItems = newsItems.filter((item) => newsTickerCount(item) > 1);
   const newsRecency = stringValue(row, "live_news_recency") || "none";
   const actions = buildStrategyTradeActions({
     entryQuantity,
@@ -2395,21 +2399,9 @@ function ChartTradePanel({
           <strong>{newsRecency === "none" ? "No recent news" : newsRecency}</strong>
         </div>
         {newsItems.length ? (
-          <div className="live-news-list">
-            {newsItems.map((item, index) => (
-              <a href={item.url || undefined} key={`${item.published_et}-${index}`} target="_blank" rel="noreferrer" title={item.title}>
-                <div className="live-news-meta">
-                  <time dateTime={item.published_et}>{formatNewsDateTime(item.published_et)}</time>
-                  <span className={`live-news-recency-chip ${item.recency || "cold"}`}>{item.recency || "cold"}</span>
-                </div>
-                <strong>{item.title}</strong>
-                <div className="live-news-labels" aria-label="News labels">
-                  {newsLabels(item).map((label) => (
-                    <span key={label}>{label}</span>
-                  ))}
-                </div>
-              </a>
-            ))}
+          <div className="live-news-sections">
+            <LiveNewsSection empty="No single-company headlines yet." items={companyNewsItems} title="Company News" />
+            <LiveNewsSection empty="No multi-ticker or analyst headlines yet." items={otherNewsItems} title="Other / Analyst News" />
           </div>
         ) : (
           <p>No cached headline has arrived for {selectedTicker} by this replay bar.</p>
@@ -2468,6 +2460,37 @@ function ChartTradePanel({
         ) : null}
       </div>
     </aside>
+  );
+}
+
+function LiveNewsSection({ empty, items, title }: { empty: string; items: LiveNewsArticle[]; title: string }) {
+  return (
+    <section className="live-news-section">
+      <div className="live-news-section-title">
+        <span>{title}</span>
+        <strong>{items.length}</strong>
+      </div>
+      {items.length ? (
+        <div className="live-news-list">
+          {items.map((item, index) => (
+            <a href={item.url || undefined} key={`${item.published_et}-${index}`} target="_blank" rel="noreferrer" title={item.title}>
+              <div className="live-news-meta">
+                <time dateTime={item.published_et}>{formatNewsDateTime(item.published_et)}</time>
+                <span className={`live-news-recency-chip ${item.recency || "cold"}`}>{item.recency || "cold"}</span>
+              </div>
+              <strong>{item.title}</strong>
+              <div className="live-news-labels" aria-label="News labels">
+                {newsLabels(item).map((label) => (
+                  <span key={label}>{label}</span>
+                ))}
+              </div>
+            </a>
+          ))}
+        </div>
+      ) : (
+        <p>{empty}</p>
+      )}
+    </section>
   );
 }
 
@@ -2960,10 +2983,15 @@ function formatNewsDateTime(value: string) {
 }
 
 function newsLabels(item: LiveNewsArticle) {
-  const labels = [item.ticker, ...(item.channels ?? []), ...(item.tags ?? [])]
+  const labels = [...(item.tickers?.length ? item.tickers : [item.ticker]), ...(item.channels ?? []), ...(item.tags ?? [])]
     .map((label) => String(label || "").trim())
     .filter(Boolean);
   return Array.from(new Set(labels)).slice(0, 5);
+}
+
+function newsTickerCount(item: LiveNewsArticle) {
+  if (Number.isFinite(item.ticker_count) && Number(item.ticker_count) > 0) return Number(item.ticker_count);
+  return item.tickers?.length || 1;
 }
 
 function marketStrengthStyle(value: number): CSSProperties {

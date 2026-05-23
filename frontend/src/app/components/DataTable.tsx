@@ -8,7 +8,9 @@ import {
   Database,
   EyeOff,
   Filter,
+  Flame,
   GripVertical,
+  Megaphone,
   MoreHorizontal,
   Newspaper,
   Plus,
@@ -2678,12 +2680,32 @@ function renderCell(row: DataRow, column: string) {
   const latestTitle = stringValue(row.live_news_latest_title);
   const latestTime = stringValue(row.live_news_latest_time);
   const title = [latestTitle, latestTime].filter(Boolean).join(" | ") || "News available";
+  const indicator = tickerNewsIndicator(row);
+  const NewsIcon = indicator.icon;
   return (
     <span className="data-table-ticker-with-news" title={title}>
-      <Newspaper className={`data-table-news-icon ${recency}`} size={14} aria-label={`${recency} news`} />
+      <NewsIcon className={`data-table-news-icon ${indicator.className}`} size={14} aria-label={`${recency} news`} />
       <span>{value}</span>
     </span>
   );
+}
+
+function tickerNewsIndicator(row: DataRow): { className: string; icon: typeof Newspaper } {
+  const latest = newsItemsFromRow(row)[0];
+  if (latest && articleTickerCount(latest) > 1) return { className: "multi", icon: Newspaper };
+  const recency = normalizedNewsRecency(latest?.recency ?? row.live_news_recency);
+  if (recency === "hot") return { className: "hot-company", icon: Megaphone };
+  return { className: "company", icon: Flame };
+}
+
+function newsItemsFromRow(row: DataRow) {
+  return Array.isArray(row.live_news_items) ? row.live_news_items.filter((item): item is DataRow => Boolean(item && typeof item === "object")) : [];
+}
+
+function articleTickerCount(item: DataRow) {
+  const explicitCount = coerceNumber(item.ticker_count);
+  if (Number.isFinite(explicitCount) && explicitCount > 0) return explicitCount;
+  return Array.isArray(item.tickers) ? item.tickers.length : 1;
 }
 
 function normalizedNewsRecency(value: unknown) {

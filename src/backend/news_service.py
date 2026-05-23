@@ -42,6 +42,8 @@ NEWS_COLUMNS: dict[str, pl.DataType] = {
     "title": pl.Utf8,
     "teaser": pl.Utf8,
     "body_text": pl.Utf8,
+    "article_ticker_count": pl.Int64,
+    "article_tickers": pl.List(pl.Utf8),
     "channels": pl.List(pl.Utf8),
     "tags": pl.List(pl.Utf8),
     "url": pl.Utf8,
@@ -233,6 +235,8 @@ def normalize_benzinga_articles(articles: list[dict[str, Any]]) -> list[dict[str
             "title": clean_text(article.get("title")),
             "teaser": clean_text(article.get("teaser")),
             "body_text": html_to_text(raw_body),
+            "article_ticker_count": len(tickers),
+            "article_tickers": tickers,
             "channels": normalize_text_list(article.get("channels")),
             "tags": normalize_text_list(article.get("tags")),
             "url": str(article.get("url") or ""),
@@ -346,6 +350,7 @@ def news_heat_expr(column: str) -> pl.Expr:
 
 
 def news_article_payload(row: dict[str, Any]) -> dict[str, Any]:
+    article_tickers = row.get("article_tickers") or raw_article_tickers(row.get("raw_json"))
     return {
         "age_minutes": float(row.get("news_age_minutes") or 0),
         "channels": row.get("channels") or [],
@@ -353,6 +358,8 @@ def news_article_payload(row: dict[str, Any]) -> dict[str, Any]:
         "recency": row.get("news_recency") or "cold",
         "tags": row.get("tags") or [],
         "ticker": row.get("ticker") or "",
+        "ticker_count": int(row.get("article_ticker_count") or len(article_tickers) or 1),
+        "tickers": article_tickers or [str(row.get("ticker") or "")],
         "title": row.get("title") or "",
         "url": row.get("url") or "",
     }
@@ -366,6 +373,14 @@ def normalize_tickers(value: Any) -> list[str]:
     else:
         items = []
     return sorted({str(item).strip().upper() for item in items if str(item).strip()})
+
+
+def raw_article_tickers(raw_json: Any) -> list[str]:
+    try:
+        article = json.loads(str(raw_json or "{}"))
+    except json.JSONDecodeError:
+        return []
+    return normalize_tickers(article.get("tickers") or article.get("stocks"))
 
 
 def normalize_text_list(value: Any) -> list[str]:
