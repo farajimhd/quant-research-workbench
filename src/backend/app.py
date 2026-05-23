@@ -46,6 +46,8 @@ from src.backend.market_data_service import (
     feature_groups_for_display_items,
     first_matching_artifact,
     first_ticker_in_range,
+    live_scanner_base_frame,
+    load_live_scanner_signal_search,
     load_momentum_discovery,
     load_artifact_query_sample,
     load_artifact_sample,
@@ -1437,6 +1439,11 @@ def live_trading_preload_payload(processed_root: Path, session_date: date) -> di
             }
         )
     ready_count = sum(1 for check in checks if check["status"] == "ready")
+    if ready_count == len(checks):
+        try:
+            live_scanner_base_frame(processed_root, session_date, "1m", list(LIVE_CHART_FEATURE_GROUPS))
+        except Exception:
+            pass
     return {
         "session_date": session_text,
         "status": "ready" if ready_count == len(checks) else "missing",
@@ -1493,46 +1500,43 @@ def live_trading_next_signal_payload(
     row_limit: int,
     max_steps: int | None,
 ) -> dict[str, Any]:
-    records = artifact_records(processed_root)
     start_minute = parse_live_clock_minute(start_time)
     if start_minute is None:
         raise HTTPException(status_code=400, detail="Invalid start_time")
     end_minute = 20 * 60
     loop_end_minute = min(end_minute, start_minute + max_steps - 1) if max_steps else end_minute
-    last_snapshot: dict[str, Any] | None = None
-    for minute in range(start_minute, loop_end_minute + 1):
-        bar_time = f"{minute // 60:02d}:{minute % 60:02d}"
-        snapshot = load_scanner_snapshot(
-            records,
-            session_date=session_date,
-            timeframe="1m",
-            bar_time=bar_time,
-            feature_groups=feature_groups,
-            columns=columns,
-            row_limit=row_limit,
-            row_offset=0,
-            table_query=table_query,
-            derived_columns=None,
-        )
-        last_snapshot = snapshot
-        if snapshot.get("rows"):
-            return {
-                "complete": True,
-                "found": True,
-                "last_checked_time": bar_time,
-                "next_start_time": None,
-                "snapshot": snapshot,
-                "steps": minute - start_minute + 1,
-            }
-        if snapshot.get("reason"):
-            return {
-                "complete": True,
-                "found": False,
-                "last_checked_time": bar_time,
-                "next_start_time": None,
-                "snapshot": snapshot,
-                "steps": minute - start_minute + 1,
-            }
+    search = load_live_scanner_signal_search(
+        processed_root=processed_root,
+        session_date=session_date,
+        timeframe="1m",
+        start_minute=start_minute,
+        end_minute=loop_end_minute,
+        feature_groups=feature_groups,
+        columns=columns,
+        row_limit=row_limit,
+        table_query=table_query,
+    )
+    snapshot = search["snapshot"]
+    if snapshot.get("reason"):
+        return {
+            "complete": True,
+            "found": False,
+            "last_checked_time": snapshot.get("bar_time") or f"{loop_end_minute // 60:02d}:{loop_end_minute % 60:02d}",
+            "next_start_time": None,
+            "snapshot": snapshot,
+            "steps": max(0, loop_end_minute - start_minute + 1),
+        }
+    if search.get("found"):
+        bar_time = str(snapshot.get("bar_time") or f"{loop_end_minute // 60:02d}:{loop_end_minute % 60:02d}")
+        found_minute = parse_live_clock_minute(bar_time) or loop_end_minute
+        return {
+            "complete": True,
+            "found": True,
+            "last_checked_time": bar_time,
+            "next_start_time": None,
+            "snapshot": snapshot,
+            "steps": max(1, found_minute - start_minute + 1),
+        }
     if loop_end_minute < end_minute:
         checked_time = f"{loop_end_minute // 60:02d}:{loop_end_minute % 60:02d}"
         next_minute = loop_end_minute + 1
@@ -1541,15 +1545,9 @@ def live_trading_next_signal_payload(
             "found": False,
             "last_checked_time": checked_time,
             "next_start_time": f"{next_minute // 60:02d}:{next_minute % 60:02d}",
-            "snapshot": last_snapshot
-            or {
+            "snapshot": {
+                **snapshot,
                 "bar_time": checked_time,
-                "columns": [],
-                "feature_groups": [],
-                "row_count": 0,
-                "rows": [],
-                "session_date": session_date.isoformat(),
-                "timeframe": "1m",
             },
             "steps": max(0, loop_end_minute - start_minute + 1),
         }
@@ -1559,14 +1557,9 @@ def live_trading_next_signal_payload(
         "last_checked_time": f"{end_minute // 60:02d}:{end_minute % 60:02d}",
         "next_start_time": None,
         "snapshot": {
+            **snapshot,
             "bar_time": f"{end_minute // 60:02d}:{end_minute % 60:02d}",
-            "columns": [],
-            "feature_groups": [],
             "reason": "No scanner signal found before the session cutoff.",
-            "row_count": 0,
-            "rows": [],
-            "session_date": session_date.isoformat(),
-            "timeframe": "1m",
         },
         "steps": max(0, end_minute - start_minute + 1),
     }

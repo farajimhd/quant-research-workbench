@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 from dataclasses import asdict
 from datetime import date, datetime, time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -522,6 +524,223 @@ def load_scanner_snapshot(
         "timeframe": timeframe,
         "total_columns": len(joined_columns),
     }
+
+
+def load_live_scanner_signal_search(
+    *,
+    processed_root: Path,
+    session_date: date,
+    timeframe: str,
+    start_minute: int,
+    end_minute: int,
+    feature_groups: list[str],
+    columns: list[str],
+    row_limit: int,
+    table_query: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    base = live_scanner_query_frame(processed_root, session_date, timeframe, feature_groups, table_query)
+    bar_time = minute_to_clock(end_minute)
+    if base.get("reason"):
+        snapshot = scanner_empty_payload(timeframe, session_date, bar_time, row_limit, 0, str(base.get("reason") or "Scanner data unavailable"))
+        return {"found": False, "snapshot": snapshot}
+    frame = base["frame"]
+    if not isinstance(frame, pl.DataFrame) or frame.is_empty():
+        snapshot = scanner_empty_payload(timeframe, session_date, bar_time, row_limit, 0, "No scanner rows available")
+        snapshot["reason"] = ""
+        return {"found": False, "snapshot": snapshot}
+    scan = frame.lazy()
+    schema = scan.collect_schema()
+    minute_column = "__live_minute_of_day"
+    if minute_column not in schema.names():
+        snapshot = scanner_empty_payload(timeframe, session_date, bar_time, row_limit, 0, "No minute column available")
+        return {"found": False, "snapshot": snapshot}
+    scan = scan.filter(pl.col(minute_column).is_between(start_minute, end_minute))
+    schema = scan.collect_schema()
+    selected_columns = [column for column in columns if column in schema.names() and column != minute_column]
+    if not selected_columns:
+        selected_columns = default_scanner_columns([column for column in schema.names() if column != minute_column])
+    collect_columns = [minute_column, *[column for column in selected_columns if column != minute_column]]
+    matches = scan.select(collect_columns).collect()
+    if matches.is_empty():
+        snapshot = scanner_empty_payload(timeframe, session_date, bar_time, row_limit, 0, "")
+        snapshot.update(
+            {
+                "columns": selected_columns,
+                "feature_groups": base.get("joined_groups", []),
+                "total_columns": int(base.get("total_columns") or len(frame.columns)),
+            }
+        )
+        return {"found": False, "snapshot": snapshot}
+    first_minute = int(matches.select(pl.col(minute_column).min()).item())
+    first_bar_time = minute_to_clock(first_minute)
+    first_rows = matches.filter(pl.col(minute_column) == first_minute).drop(minute_column)
+    row_limit = max(1, min(row_limit, 5000))
+    has_more = first_rows.height > row_limit
+    if has_more:
+        first_rows = first_rows.head(row_limit)
+    return {
+        "found": True,
+        "snapshot": {
+            "bar_time": first_bar_time,
+            "columns": first_rows.columns,
+            "feature_groups": base.get("joined_groups", []),
+            "has_more": has_more,
+            "reason": "",
+            "row_count": first_rows.height + (1 if has_more else 0),
+            "row_limit": row_limit,
+            "row_offset": 0,
+            "rows": json_safe(first_rows.to_dicts()),
+            "session_date": session_date.isoformat(),
+            "timeframe": timeframe,
+            "total_columns": int(base.get("total_columns") or len(frame.columns)),
+        },
+    }
+
+
+def live_scanner_query_frame(
+    processed_root: Path,
+    session_date: date,
+    timeframe: str,
+    feature_groups: list[str],
+    table_query: dict[str, Any] | None,
+) -> dict[str, Any]:
+    records = live_scanner_records(processed_root, session_date, timeframe, feature_groups)
+    signature = live_scanner_artifact_signature(records, session_date, timeframe, feature_groups)
+    query_key = json.dumps(table_query or {}, sort_keys=True, default=str)
+    return _cached_live_scanner_query_frame(str(processed_root), session_date.isoformat(), timeframe, tuple(feature_groups), signature, query_key)
+
+
+@lru_cache(maxsize=16)
+def _cached_live_scanner_query_frame(
+    processed_root_text: str,
+    session_date_text: str,
+    timeframe: str,
+    feature_groups: tuple[str, ...],
+    signature: tuple[tuple[str, str, int], ...],
+    table_query_key: str,
+) -> dict[str, Any]:
+    base = _cached_live_scanner_base_frame(processed_root_text, session_date_text, timeframe, feature_groups, signature)
+    if base.get("reason"):
+        return base
+    frame = base.get("frame")
+    if not isinstance(frame, pl.DataFrame) or frame.is_empty():
+        return {**base, "frame": pl.DataFrame()}
+    minute_column = "__live_minute_of_day"
+    scan = frame.lazy()
+    schema = scan.collect_schema()
+    minute_expr = scanner_live_minute_expr(schema.names())
+    if minute_expr is None:
+        return {**base, "frame": pl.DataFrame(), "reason": "No minute column available"}
+    scan = scan.with_columns(minute_expr.alias(minute_column))
+    try:
+        parsed_query = json.loads(table_query_key) if table_query_key else None
+    except json.JSONDecodeError:
+        parsed_query = None
+    schema = scan.collect_schema()
+    scan = apply_table_query(scan, schema, parsed_query)
+    return {**base, "frame": scan.collect()}
+
+
+def live_scanner_base_frame(processed_root: Path, session_date: date, timeframe: str, feature_groups: list[str]) -> dict[str, Any]:
+    records = live_scanner_records(processed_root, session_date, timeframe, feature_groups)
+    signature = live_scanner_artifact_signature(records, session_date, timeframe, feature_groups)
+    return _cached_live_scanner_base_frame(str(processed_root), session_date.isoformat(), timeframe, tuple(feature_groups), signature)
+
+
+def live_scanner_records(processed_root: Path, session_date: date, timeframe: str, feature_groups: list[str]) -> list[dict[str, Any]]:
+    session_text = session_date.isoformat()
+    wanted_groups = {"bars", *[f"features_{group}" for group in feature_groups]}
+    records: list[dict[str, Any]] = []
+    for key, record in read_manifest(processed_root).get("artifacts", {}).items():
+        if record.get("group") not in wanted_groups:
+            continue
+        if record.get("timeframe") != timeframe or record.get("session_date") != session_text:
+            continue
+        path = Path(str(record.get("path") or ""))
+        records.append(
+            {
+                "key": key,
+                "group": record.get("group"),
+                "timeframe": record.get("timeframe"),
+                "session_date": record.get("session_date"),
+                "path": str(path),
+                "exists": path.exists(),
+                "rows": int(record.get("rows") or 0),
+                "columns": list(record.get("columns") or []),
+            }
+        )
+    return records
+
+
+def live_scanner_artifact_signature(records: list[dict[str, Any]], session_date: date, timeframe: str, feature_groups: list[str]) -> tuple[tuple[str, str, int], ...]:
+    session_text = session_date.isoformat()
+    groups = ["bars", *[f"features_{group}" for group in feature_groups]]
+    signature: list[tuple[str, str, int]] = []
+    for group in groups:
+        record = first_matching_artifact(records, group, timeframe, session_text)
+        path = record_path(record) if record else Path("")
+        try:
+            mtime_ns = path.stat().st_mtime_ns if path.exists() else 0
+        except OSError:
+            mtime_ns = 0
+        signature.append((group, str(path), mtime_ns))
+    return tuple(signature)
+
+
+@lru_cache(maxsize=16)
+def _cached_live_scanner_base_frame(
+    processed_root_text: str,
+    session_date_text: str,
+    timeframe: str,
+    feature_groups: tuple[str, ...],
+    signature: tuple[tuple[str, str, int], ...],
+) -> dict[str, Any]:
+    records = live_scanner_records(Path(processed_root_text), date.fromisoformat(session_date_text), timeframe, list(feature_groups))
+    bars_record = first_matching_artifact(records, "bars", timeframe, session_date_text)
+    if not bars_record or not bars_record.get("exists"):
+        return {"frame": pl.DataFrame(), "joined_groups": [], "reason": "Bars artifact not found", "total_columns": 0}
+    scan = pl.scan_parquet(str(record_path(bars_record)))
+    schema = scan.collect_schema()
+    joined_groups: list[str] = []
+    for group in feature_groups:
+        feature_record = first_matching_artifact(records, f"features_{group}", timeframe, session_date_text)
+        if not feature_record or not feature_record.get("exists"):
+            continue
+        feature_scan = pl.scan_parquet(str(record_path(feature_record)))
+        feature_schema = feature_scan.collect_schema()
+        if "bar_id" not in feature_schema.names():
+            continue
+        duplicate_columns = [column for column in feature_schema.names() if column != "bar_id" and column in schema.names()]
+        if duplicate_columns:
+            feature_scan = feature_scan.drop(duplicate_columns)
+        scan = scan.join(feature_scan, on="bar_id", how="left", coalesce=True)
+        schema = scan.collect_schema()
+        joined_groups.append(group)
+
+    scan = apply_scanner_compatibility_columns(scan, schema)
+    schema = scan.collect_schema()
+    scan = apply_scanner_liquidity_capacity_columns(scan, schema.names())
+    schema = scan.collect_schema()
+    scan = apply_strategy_decision_view(scan, schema)
+    schema = scan.collect_schema()
+    scan = apply_strategy_decision_price_action_columns(scan, schema.names())
+    schema = scan.collect_schema()
+    scan = apply_long_momentum_scanner_columns(scan, schema.names())
+    schema = scan.collect_schema()
+    return {"frame": scan.collect(), "joined_groups": joined_groups, "reason": "", "total_columns": len(schema.names())}
+
+
+def scanner_live_minute_expr(schema_names: list[str]) -> pl.Expr | None:
+    if "minute_of_day" in schema_names:
+        return pl.col("minute_of_day").cast(pl.Int32)
+    if "bar_time_market" in schema_names:
+        return (pl.col("bar_time_market").dt.hour() * 60 + pl.col("bar_time_market").dt.minute()).cast(pl.Int32)
+    return None
+
+
+def minute_to_clock(minute: int) -> str:
+    bounded = max(0, min(23 * 60 + 59, minute))
+    return f"{bounded // 60:02d}:{bounded % 60:02d}"
 
 
 def load_momentum_discovery(
