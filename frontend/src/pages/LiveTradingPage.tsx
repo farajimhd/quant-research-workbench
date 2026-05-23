@@ -252,6 +252,7 @@ const LIVE_SCANNER_COLUMNS = [
   "last_day_open",
   "last_return_5",
   "last_volume",
+  "last_recent_volume_5",
   "last_transactions",
   "last_transactions_vs_prior_3",
   "last_bearish_volume_divergence_score",
@@ -261,39 +262,30 @@ const LIVE_SCANNER_COLUMNS = [
 ];
 
 const LIVE_SIGNAL_COLUMNS = [
-  "live_signal_time",
-  "live_signal_query",
   "ticker",
   "current_open",
-  "last_close",
-  "last_return_5",
   "last_volume",
+  "last_return_5",
   "last_transactions",
   "last_transactions_vs_prior_3",
-  "last_day_volume_so_far",
-  "last_day_max_change_pct",
-  "last_day_current_change_pct",
-  "last_vwap",
-  "live_bias",
-  "live_reasons",
-  "live_risks",
 ];
 
 const LIVE_MARKET_STATE_COLUMNS = [
   "ticker",
   "current_open",
-  "last_close",
-  "last_return_5",
   "last_volume",
-  "last_transactions",
   "last_day_volume_so_far",
+  "last_recent_volume_5",
+  "last_return_5",
+  "last_day_max_change_pct",
+  "last_day_current_change_pct",
+  "last_close",
+  "last_transactions",
+  "last_transactions_vs_prior_3",
   "last_day_dollar_volume_so_far",
   "last_day_open",
   "last_day_high_so_far",
-  "last_day_max_change_pct",
-  "last_day_current_change_pct",
   "last_vwap",
-  "last_transactions_vs_prior_3",
   "last_bearish_volume_divergence_score",
 ];
 
@@ -595,7 +587,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         setPreloadStatus(payload);
         if (payload.status === "ready") {
           setSession((current) => ({ ...current, barTime: "04:00" }));
-          const initialScanner = await loadScannerAt("04:00", { revealChart: false, warmCharts: false });
+          const initialScanner = await loadScannerAt("04:00", { warmCharts: false });
           await warmChartCacheForRows(initialScanner?.snapshot.rows ?? []);
           if (canceled) return;
           setLiveClockMode("ready");
@@ -629,14 +621,14 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         return;
       }
       setSession((current) => ({ ...current, barTime: nextTime }));
-      loadScannerAt(nextTime, { revealChart: false });
+      loadScannerAt(nextTime);
     }, seconds * 1000);
     return () => window.clearTimeout(timer);
   }, [liveClockMode, scope, secondsPerMinute, session.barTime, session.sessionDate, started, tradingStarted]);
 
   useEffect(() => {
     if (!started || tradingStarted || !scope || !session.sessionDate || liveClockMode !== "ready") return;
-    void loadScannerAt(session.barTime || "04:00", { revealChart: false });
+    void loadScannerAt(session.barTime || "04:00");
   }, [scannerQueryKey]);
 
   function startTrading() {
@@ -683,7 +675,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }
 
   function refreshCurrentBar() {
-    loadScannerAt(session.barTime, { revealChart: true });
+    loadScannerAt(session.barTime);
   }
 
   function advanceOneBar() {
@@ -695,7 +687,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     }
     setLiveClockMode("paused");
     setSession((current) => ({ ...current, barTime: nextTime }));
-    loadScannerAt(nextTime, { revealChart: true });
+    loadScannerAt(nextTime);
   }
 
   async function seekNextSignal() {
@@ -737,7 +729,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     });
   }
 
-  async function loadScannerAt(barTime: string, options: { revealChart: boolean; warmCharts?: boolean }) {
+  async function loadScannerAt(barTime: string, options: { warmCharts?: boolean } = {}) {
     if (!scope || !session.sessionDate) return null;
     setLoading(true);
     setError("");
@@ -755,14 +747,15 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         })}`
       );
       const marketPayload = await loadMarketStateAt(barTime);
-      const enrichedRows = signalPayload.snapshot.rows.map((row) => enrichLiveCandidate(row, scannerQueryName));
+      const enrichedRows = signalPayload.snapshot.rows
+        .map((row) => enrichLiveCandidate(row, scannerQueryName))
+        .filter((row) => rowMatchesBackendQuery(row, scannerQuery));
       const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? null;
       setSnapshot(signalPayload.snapshot);
       setSelectedRow(firstRow);
       if (enrichedRows.length) appendSignalRows(enrichedRows, barTime);
       if (options.warmCharts !== false) void warmChartCacheForRows(enrichedRows);
       if (firstRow) setLastActionTime(barTime);
-      if (firstRow && options.revealChart) openChartForRow(firstRow);
       return { firstRow, marketSnapshot: marketPayload?.snapshot ?? null, snapshot: signalPayload.snapshot };
     } catch (requestError) {
       setSnapshot(null);
@@ -805,7 +798,9 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         } catch {
           // The signal search is still usable if the market-state snapshot fails.
         }
-        const enrichedRows = payload.snapshot.rows.map((row) => enrichLiveCandidate(row, scannerQueryName));
+        const enrichedRows = payload.snapshot.rows
+          .map((row) => enrichLiveCandidate(row, scannerQueryName))
+          .filter((row) => rowMatchesBackendQuery(row, scannerQuery));
         const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? enrichedRows[0] ?? null;
         setSelectedRow(firstRow);
         setLiveClockMessage(`Searching scanner signals at ${checkedTime} ET (${checkedMinutes} minutes checked).`);
@@ -814,7 +809,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           appendSignalRows(enrichedRows, payload.snapshot.bar_time || checkedTime);
           await warmChartCacheForRows(enrichedRows);
           setLastActionTime(payload.snapshot.bar_time);
-          openChartForRow(firstRow);
           return true;
         }
         if (payload.complete) return false;
@@ -1636,7 +1630,7 @@ function ScannerContainer({
             queryName,
             value: query,
           }}
-          columns={liveTableColumns([...LIVE_SIGNAL_COLUMNS, ...(snapshot?.columns ?? [])])}
+          columns={LIVE_SIGNAL_COLUMNS}
           defaultSort={{ column: "live_signal_time", direction: "desc" }}
           empty={loading ? "Loading scanner..." : "No scanner signals detected yet."}
           isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
@@ -2422,6 +2416,56 @@ function normalizeLiveScannerQuery(query: BackendTableQuery | null): BackendTabl
   };
 }
 
+function rowMatchesBackendQuery(row: Record<string, unknown>, query: BackendTableQuery | null) {
+  const conditions = query?.conditions ?? [];
+  if (!conditions.length) return true;
+  const results = conditions.map((condition) => rowMatchesBackendCondition(row, condition));
+  return (query?.matchMode ?? "all") === "any" ? results.some(Boolean) : results.every(Boolean);
+}
+
+function rowMatchesBackendCondition(row: Record<string, unknown>, condition: BackendTableQuery["conditions"][number]) {
+  const column = condition.column === "last_5m_return" ? "last_return_5" : condition.column;
+  const value = row[column];
+  const operator = condition.operator ?? "contains";
+  if (operator === "is_null") return isBlankLiveValue(value);
+  if (operator === "is_not_null") return !isBlankLiveValue(value);
+  if (isBlankLiveValue(value)) return false;
+  if (operator === "contains" || operator === "starts_with" || operator === "ends_with") {
+    const left = String(value).toLowerCase();
+    const right = String(condition.value ?? "").toLowerCase();
+    if (!right) return false;
+    if (operator === "contains") return left.includes(right);
+    if (operator === "starts_with") return left.startsWith(right);
+    return left.endsWith(right);
+  }
+  const leftNumber = Number(value);
+  const rightNumber = Number(condition.value);
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+    if (operator === "eq") return leftNumber === rightNumber;
+    if (operator === "ne") return leftNumber !== rightNumber;
+    if (operator === "gt") return leftNumber > rightNumber;
+    if (operator === "gte") return leftNumber >= rightNumber;
+    if (operator === "lt") return leftNumber < rightNumber;
+    if (operator === "lte") return leftNumber <= rightNumber;
+    if (operator === "between") {
+      const secondaryNumber = Number(condition.valueSecondary);
+      if (!Number.isFinite(secondaryNumber)) return false;
+      const lower = Math.min(rightNumber, secondaryNumber);
+      const upper = Math.max(rightNumber, secondaryNumber);
+      return leftNumber >= lower && leftNumber <= upper;
+    }
+  }
+  const leftText = String(value);
+  const rightText = String(condition.value ?? "");
+  if (operator === "eq") return leftText === rightText;
+  if (operator === "ne") return leftText !== rightText;
+  return false;
+}
+
+function isBlankLiveValue(value: unknown) {
+  return value === null || value === undefined || value === "" || (typeof value === "number" && !Number.isFinite(value));
+}
+
 function buildMarketStateRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
   return rows.map(buildMarketStateRow).sort((a, b) => numberValue(b, "last_day_volume_so_far") - numberValue(a, "last_day_volume_so_far"));
 }
@@ -2570,40 +2614,17 @@ function dayOpenOnlyChartPayload(payload: ChartPayload | null, sessionDate: stri
   };
 }
 
-function liveTableColumns(snapshotColumns: string[]) {
-  return [
-    "ticker",
-    "live_setup_group",
-    "live_bias",
-    "current_open",
-    "last_return_5",
-    "last_volume",
-    "last_transactions",
-    "last_transactions_vs_prior_3",
-    "last_day_volume_so_far",
-    "last_day_max_change_pct",
-    "last_day_current_change_pct",
-    "last_vwap",
-    "open_vs_vwap_pct",
-    "last_bearish_volume_divergence_score",
-    "live_reasons",
-    "live_risks",
-    "suggested_entry",
-    "suggested_stop",
-    ...snapshotColumns.filter((column) => !["ticker", "current_open", "last_return_5", "last_5m_return", "last_volume", "last_transactions", "last_transactions_vs_prior_3", "last_day_volume_so_far", "last_day_max_change_pct", "last_day_current_change_pct", "last_vwap", "last_bearish_volume_divergence_score"].includes(column)),
-  ];
-}
-
 function marketStateTableColumns(snapshotColumns: string[]) {
   const importantColumns = [
     "ticker",
+    "current_open",
+    "last_volume",
     "last_day_volume_so_far",
+    "last_recent_volume_5",
+    "last_return_5",
     "last_day_max_change_pct",
     "last_day_current_change_pct",
-    "last_return_5",
-    "current_open",
     "last_close",
-    "last_volume",
     "last_transactions",
     "last_transactions_vs_prior_3",
     "last_day_dollar_volume_so_far",
