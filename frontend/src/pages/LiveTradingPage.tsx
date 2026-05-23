@@ -1286,7 +1286,7 @@ function WorkspaceWindow({
             <Minimize2 size={12} />
           </button>
           <button className="toolbar-button compact" onClick={() => onLayoutChange(id, { fullscreen: !layout.fullscreen, minimized: false })} title={layout.fullscreen ? "Exit fullscreen" : "Fullscreen"} type="button">
-            <Maximize2 size={12} />
+            {layout.fullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </button>
           <button className="toolbar-button compact" onClick={() => onClose(id)} title="Close" type="button">
             <X size={12} />
@@ -1826,6 +1826,7 @@ function ChartsContainer({
           displayItemOptions={mainOptions?.display_items ?? catalog?.displayItems ?? []}
           emptyMessage="Select a scanner row to load charts."
           errorMessage={chartError}
+          enableFullscreen={false}
           featureOptions={mainOptions?.feature_columns ?? []}
           indicatorOptions={mainOptions?.standard_indicators ?? MAIN_DISPLAY_ITEMS}
           loading={chartLoading}
@@ -1854,6 +1855,7 @@ function ChartsContainer({
                   displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
                   emptyMessage="No daily chart data."
                   errorMessage={chartError}
+                  enableFullscreen={false}
                   featureOptions={compactOptions?.feature_columns ?? []}
                   indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
                   loading={chartLoading}
@@ -1877,6 +1879,7 @@ function ChartsContainer({
                   displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
                   emptyMessage="No 5m chart data."
                   errorMessage={chartError}
+                  enableFullscreen={false}
                   featureOptions={compactOptions?.feature_columns ?? []}
                   indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
                   loading={chartLoading}

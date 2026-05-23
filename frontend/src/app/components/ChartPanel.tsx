@@ -249,6 +249,7 @@ type ChartPanelProps = {
   reference?: ChartReference | null;
   liveEntryLine?: LiveEntryLine | null;
   daySeparatorsVisible?: boolean;
+  enableFullscreen?: boolean;
   showReferenceLine?: boolean;
   showIndicatorControls?: boolean;
   showSupervisionControls?: boolean;
@@ -314,6 +315,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   reference = null,
   liveEntryLine = null,
   daySeparatorsVisible,
+  enableFullscreen = true,
   showReferenceLine = true,
   showIndicatorControls = true,
   showSupervisionControls = false,
@@ -1021,18 +1023,22 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         <span className="toolbar-divider" />
         <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, fitCandles(payload))}><CalendarRange size={15} /></button>
         <button className="toolbar-button" type="button" title={reference ? "Fit selected trade" : "Fit recent"} onClick={() => fitReferenceOrRecent(priceChartRef.current, fitCandles(payload), reference, timeframe)}><LocateFixed size={15} /></button>
-        <span className="toolbar-divider" />
-        <button
-          className="toolbar-button"
-          type="button"
-          title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
-          onClick={() => {
-            setFullscreen((value) => !value);
-            window.setTimeout(() => resizeCharts(), 30);
-          }}
-        >
-          {fullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-        </button>
+        {enableFullscreen ? (
+          <>
+            <span className="toolbar-divider" />
+            <button
+              className="toolbar-button"
+              type="button"
+              title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+              onClick={() => {
+                setFullscreen((value) => !value);
+                window.setTimeout(() => resizeCharts(), 30);
+              }}
+            >
+              {fullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+            </button>
+          </>
+        ) : null}
       </div>
       {chartSettingsOpen ? (
         <ChartSettingsPopover
