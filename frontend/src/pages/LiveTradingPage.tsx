@@ -213,8 +213,8 @@ const LIVE_SIGNAL_SEARCH_BATCH_MINUTES = 10;
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const LIVE_PORTFOLIO_COLLAPSED_HEIGHT = 224;
 const LIVE_PORTFOLIO_EXPANDED_HEIGHT = LIVE_PORTFOLIO_COLLAPSED_HEIGHT * 3;
-const MAIN_DISPLAY_ITEMS = ["vwap", "tema9", "tema20", "indicator.macd", "macd_line", "macd_signal", "macd_hist"];
-const LOWER_DISPLAY_ITEMS = ["vwap", "tema9", "tema20"];
+const MAIN_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
+const LOWER_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend"];
 const LIVE_SCANNER_COLUMNS = [
   "ticker",
   "bar_time_market",
