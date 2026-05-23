@@ -1649,7 +1649,7 @@ function ScannerContainer({
       </section>
       <section className="live-scanner-table live-scanner-market">
         <DataTable
-          columns={liveTableColumns([...LIVE_MARKET_STATE_COLUMNS, ...(marketSnapshot?.columns ?? [])])}
+          columns={marketStateTableColumns(marketSnapshot?.columns ?? [])}
           defaultSort={{ column: "last_day_volume_so_far", direction: "desc" }}
           empty={loading ? "Loading market state..." : "Market state will load at the current simulation time."}
           isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
@@ -2591,6 +2591,33 @@ function liveTableColumns(snapshotColumns: string[]) {
     "suggested_entry",
     "suggested_stop",
     ...snapshotColumns.filter((column) => !["ticker", "current_open", "last_return_5", "last_5m_return", "last_volume", "last_transactions", "last_transactions_vs_prior_3", "last_day_volume_so_far", "last_day_max_change_pct", "last_day_current_change_pct", "last_vwap", "last_bearish_volume_divergence_score"].includes(column)),
+  ];
+}
+
+function marketStateTableColumns(snapshotColumns: string[]) {
+  const importantColumns = [
+    "ticker",
+    "last_day_volume_so_far",
+    "last_day_max_change_pct",
+    "last_day_current_change_pct",
+    "last_return_5",
+    "current_open",
+    "last_close",
+    "last_volume",
+    "last_transactions",
+    "last_transactions_vs_prior_3",
+    "last_day_dollar_volume_so_far",
+    "last_day_open",
+    "last_day_high_so_far",
+    "last_day_low_so_far",
+    "last_vwap",
+    "last_bearish_volume_divergence_score",
+    "last_double_timeframe_bearish_volume_divergence_score",
+    "spread_bps_abs",
+  ];
+  return [
+    ...importantColumns,
+    ...snapshotColumns.filter((column) => !importantColumns.includes(column)),
   ];
 }
 
