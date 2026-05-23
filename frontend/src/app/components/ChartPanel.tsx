@@ -340,6 +340,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const indicatorSourceRef = useRef<Map<string, ChartSeries>>(new Map());
   const oscillatorPaneRuntimesRef = useRef<Map<string, OscillatorPaneRuntime>>(new Map());
   const payloadRef = useRef<ChartPayload | null>(payload);
+  const liveEntryLineRef = useRef<LiveEntryLine | null>(null);
+  const referenceRef = useRef<ChartReference | null>(reference ?? null);
+  const showReferenceLineRef = useRef(showReferenceLine);
   const visibleSelectionRef = useRef<Set<string>>(new Set());
   const chartSettingsRef = useRef<ChartAppearanceSettings>(defaultChartAppearanceSettings);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -390,6 +393,9 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
   const liveEntryLineKey = liveEntryLine ? `${liveEntryLine.price}:${liveEntryLine.quantity}:${liveEntryLine.pnl}:${liveEntryLine.color}` : "";
   const liveEntryLineForDraw = liveEntryLine ? { ...liveEntryLine, onClose: onLiveEntryClose } : null;
+  liveEntryLineRef.current = liveEntryLineForDraw;
+  referenceRef.current = reference ?? null;
+  showReferenceLineRef.current = showReferenceLine;
 
   const updateChartSettings = <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => {
     setChartSettings((current) => {
@@ -824,8 +830,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const currentPayload = payloadRef.current;
     if (!chart || !currentPayload) return;
     const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
-    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, chartSettingsRef.current, liveEntryLineForDraw);
-    drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, showReferenceLine ? reference : null);
+    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, chartSettingsRef.current, liveEntryLineRef.current);
+    drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, showReferenceLineRef.current ? referenceRef.current : null);
   }
 
   function scheduleOverlayRedraw() {
