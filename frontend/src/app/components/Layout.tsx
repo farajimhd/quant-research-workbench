@@ -38,6 +38,8 @@ const navGroups = [
 ];
 
 const THEME_STORAGE_KEY = "quant-research-workbench.theme";
+const UI_SCALE_STORAGE_KEY = "quant-research-workbench.ui-scale";
+const UI_SCALE_OPTIONS = [0.8, 0.9, 1, 1.1, 1.25] as const;
 
 export function Layout({
   children,
@@ -51,6 +53,7 @@ export function Layout({
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
     return stored && isAppThemeId(stored) ? stored : DEFAULT_THEME_ID;
   });
+  const [uiScale, setUiScale] = useState(() => readStoredUiScale());
   const lightThemes = APP_THEMES.filter((theme) => theme.tone === "light");
   const darkThemes = APP_THEMES.filter((theme) => theme.tone === "dark");
 
@@ -58,6 +61,12 @@ export function Layout({
     applyThemeDefinition(document.documentElement, themeId);
     window.localStorage.setItem(THEME_STORAGE_KEY, themeId);
   }, [themeId]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--app-zoom", String(uiScale));
+    window.localStorage.setItem(UI_SCALE_STORAGE_KEY, String(uiScale));
+    window.setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+  }, [uiScale]);
 
   useEffect(() => {
     if (page === "live-trading") setCollapsed(true);
@@ -83,7 +92,22 @@ export function Layout({
             </button>
             {themeMenuOpen ? (
               <div className="theme-menu" role="menu">
-                <div className="theme-menu-title">Select Theme</div>
+                <div className="theme-menu-title">Appearance</div>
+                <div className="theme-scale-group" aria-label="Interface scale">
+                  <div className="theme-menu-group-label">UI Scale</div>
+                  <div className="theme-scale-options">
+                    {UI_SCALE_OPTIONS.map((scale) => (
+                      <button
+                        className={scale === uiScale ? "theme-scale-button active" : "theme-scale-button"}
+                        key={scale}
+                        onClick={() => setUiScale(scale)}
+                        type="button"
+                      >
+                        {Math.round(scale * 100)}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="theme-menu-divider" />
                 <ThemeMenuGroup activeThemeId={themeId} label="Light themes" themes={lightThemes} onSelect={selectTheme} />
                 <div className="theme-menu-divider" />
@@ -130,6 +154,12 @@ export function Layout({
       </div>
     </div>
   );
+}
+
+function readStoredUiScale() {
+  const stored = Number(window.localStorage.getItem(UI_SCALE_STORAGE_KEY));
+  const nearest = UI_SCALE_OPTIONS.find((scale) => Math.abs(scale - stored) < 0.001);
+  return nearest ?? 1;
 }
 
 function ThemeMenuGroup({
