@@ -389,8 +389,14 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const positionsRef = useRef(positions);
   const tradesRef = useRef(trades);
   const seekCancelRef = useRef(0);
+  const paceRunRef = useRef(0);
+  const liveClockModeRef = useRef<LiveClockMode>("idle");
   const warmedChartCacheKeysRef = useRef(new Set<string>());
   const scannerQueryKey = useMemo(() => JSON.stringify(scannerQuery), [scannerQuery]);
+
+  useEffect(() => {
+    liveClockModeRef.current = liveClockMode;
+  }, [liveClockMode]);
 
   useEffect(() => {
     let active = true;
@@ -624,13 +630,17 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   useEffect(() => {
     if (!started || !tradingStarted || !scope || !session.sessionDate || liveClockMode !== "running") return;
     const seconds = Math.max(1, Number(secondsPerMinute) || 10);
+    const runId = ++paceRunRef.current;
     const timer = window.setTimeout(() => {
+      if (paceRunRef.current !== runId || liveClockModeRef.current !== "running") return;
       const nextTime = addClockMinutes(session.barTime, 1);
       if (!nextTime || isAfterClock(nextTime, "20:00")) {
+        if (paceRunRef.current !== runId || liveClockModeRef.current !== "running") return;
         setLiveClockMode("complete");
         setLiveClockMessage("Session clock reached the end of supported trading time.");
         return;
       }
+      if (paceRunRef.current !== runId || liveClockModeRef.current !== "running") return;
       setSession((current) => ({ ...current, barTime: nextTime }));
       loadScannerAt(nextTime);
     }, seconds * 1000);
@@ -669,9 +679,17 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
 
   function beginTradingClock() {
     if (liveClockMode === "loading_data" || liveClockMode === "seeking") return;
+    paceRunRef.current += 1;
     seekCancelRef.current += 1;
     setLiveClockMode("running");
     setLiveClockMessage("Simulation is pacing from the current bar. Use Next Signal to fast-forward.");
+  }
+
+  function pauseTradingClock() {
+    paceRunRef.current += 1;
+    seekCancelRef.current += 1;
+    setLiveClockMode("paused");
+    setLiveClockMessage("Live clock paused.");
   }
 
   function refreshCurrentBar() {
@@ -679,6 +697,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }
 
   function advanceOneBar() {
+    paceRunRef.current += 1;
+    seekCancelRef.current += 1;
     const nextTime = addClockMinutes(session.barTime, 1);
     if (!nextTime || isAfterClock(nextTime, "20:00")) {
       setLiveClockMode("complete");
@@ -692,6 +712,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
 
   async function seekNextSignal() {
     if (!tradingStarted) return;
+    paceRunRef.current += 1;
     const runId = seekCancelRef.current + 1;
     seekCancelRef.current = runId;
     setLiveClockMode("seeking");
@@ -718,15 +739,11 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
       beginTradingClock();
       return;
     }
-    setLiveClockMode((mode) => {
-      if (mode === "running" || mode === "seeking") {
-        seekCancelRef.current += 1;
-        setLiveClockMessage("Live clock paused.");
-        return "paused";
-      }
-      setLiveClockMessage("Live clock resumed.");
-      return "running";
-    });
+    if (liveClockMode === "running" || liveClockMode === "seeking") {
+      pauseTradingClock();
+      return;
+    }
+    beginTradingClock();
   }
 
   async function loadScannerAt(barTime: string, options: { warmCharts?: boolean } = {}) {
@@ -1095,6 +1112,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }
 
   function closeSession() {
+    paceRunRef.current += 1;
+    seekCancelRef.current += 1;
     setStarted(false);
     setTradingStarted(false);
     setLiveClockMode("idle");
@@ -1131,6 +1150,11 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
       />
     );
   }
+
+  const liveClockControlDisabled =
+    liveClockMode === "loading_data" ||
+    (!tradingStarted && liveClockMode !== "ready") ||
+    (loading && liveClockMode !== "running" && liveClockMode !== "seeking");
 
   return (
     <>
@@ -1208,7 +1232,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           <button className="button secondary compact" disabled={!started} onClick={saveSimulation} title={simulationSaveMessage || "Save this simulation when you want to keep it"} type="button">
             <Save size={14} /> Save Simulation
           </button>
-          <button className="button secondary compact" disabled={liveClockMode === "loading_data" || (loading && liveClockMode !== "seeking") || (!tradingStarted && liveClockMode !== "ready")} onClick={toggleLiveClock} type="button">
+          <button className="button secondary compact" disabled={liveClockControlDisabled} onClick={toggleLiveClock} type="button">
             {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={14} /> : <Play size={14} />} {!tradingStarted ? "Start Trading" : liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}
           </button>
           <button className="button secondary compact" onClick={closeSession} type="button">
