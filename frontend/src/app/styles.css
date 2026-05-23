@@ -9400,7 +9400,6 @@ button {
   background-size: 24px 24px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  height: calc(100vh - 156px);
   min-height: 900px;
   margin-top: 0;
   overflow: hidden;
@@ -9408,7 +9407,6 @@ button {
 }
 
 .live-workspace.compact {
-  height: calc(100vh - 76px);
   min-height: 960px;
 }
 

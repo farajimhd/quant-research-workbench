@@ -382,6 +382,10 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     () => buildLiveWindowSummaries(openWindows, chartWindows, layouts),
     [chartWindows, layouts, openWindows]
   );
+  const workspaceMinHeight = useMemo(
+    () => liveWorkspaceMinHeight(openWindows, layouts, headerCollapsed),
+    [headerCollapsed, layouts, openWindows]
+  );
   const canvasTargets = useMemo(() => listKnownLiveCanvases(canvasId), [canvasId, canvasTargetsVersion]);
   const topbarWorkspaceInfo = useMemo(() => {
     const knownPageCount = canvasTargets.length || 1;
@@ -1006,7 +1010,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           </button>
         </div>
       </section>
-      <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace">
+      <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace" style={{ minHeight: workspaceMinHeight }}>
         {!openWindows.length ? <div className="live-empty-canvas">This canvas is empty. Open scanner rows here or pop containers into this canvas from another tab.</div> : null}
         {openWindows.map((windowId) => {
           const layout = layouts[windowId] ?? layouts.chart ?? buildDefaultCanvasLayout(false).layouts.chart;
@@ -2478,6 +2482,18 @@ function buildLiveWindowSummaries(openWindows: WindowId[], chartWindows: ChartWi
       };
     })
     .sort((a, b) => b.z - a.z);
+}
+
+function liveWorkspaceMinHeight(openWindows: WindowId[], layouts: Record<WindowId, WindowLayout>, compact: boolean) {
+  const viewportHeight = typeof window === "undefined" ? 1024 : window.innerHeight;
+  const viewportBase = viewportHeight - (compact ? 76 : 156);
+  const baseHeight = Math.max(compact ? 960 : 900, viewportBase);
+  return openWindows.reduce((height, id) => {
+    const layout = layouts[id];
+    if (!layout || layout.fullscreen) return height;
+    const windowHeight = layout.minimized ? 34 : layout.h;
+    return Math.max(height, layout.y + windowHeight + 24);
+  }, baseHeight);
 }
 
 function coreWindowTitle(id: WindowId) {
