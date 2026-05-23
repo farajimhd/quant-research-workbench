@@ -10,6 +10,7 @@ import {
   Filter,
   GripVertical,
   MoreHorizontal,
+  Newspaper,
   Plus,
   RotateCcw,
   Rows3,
@@ -1222,7 +1223,7 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
                   >
                     {usableColumns.map((column) => (
                       <td className={cellClassName(row[column], column)} key={column}>
-                        {formatCell(column, row[column])}
+                        {renderCell(row, column)}
                       </td>
                     ))}
                   </tr>
@@ -2666,6 +2667,28 @@ function formatDateValue(value: Date) {
   const month = `${value.getMonth() + 1}`.padStart(2, "0");
   const day = `${value.getDate()}`.padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function renderCell(row: DataRow, column: string) {
+  if (column.toLowerCase() !== "ticker") return formatCell(column, row[column]);
+  const value = formatCell(column, row[column]);
+  const newsCount = coerceNumber(row.live_news_count);
+  if (!Number.isFinite(newsCount) || newsCount <= 0) return value;
+  const recency = normalizedNewsRecency(row.live_news_recency);
+  const latestTitle = stringValue(row.live_news_latest_title);
+  const latestTime = stringValue(row.live_news_latest_time);
+  const title = [latestTitle, latestTime].filter(Boolean).join(" | ") || "News available";
+  return (
+    <span className="data-table-ticker-with-news" title={title}>
+      <span>{value}</span>
+      <Newspaper className={`data-table-news-icon ${recency}`} size={14} aria-label={`${recency} news`} />
+    </span>
+  );
+}
+
+function normalizedNewsRecency(value: unknown) {
+  const recency = stringValue(value).toLowerCase();
+  return ["hot", "warm", "recent", "cold"].includes(recency) ? recency : "none";
 }
 
 function cellClassName(value: unknown, column: string) {

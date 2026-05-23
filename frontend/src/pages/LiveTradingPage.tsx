@@ -294,9 +294,6 @@ const LIVE_SIGNAL_COLUMNS = [
   "ticker",
   "bar_time_market",
   "live_signal_time",
-  "live_news_recency",
-  "live_news_count",
-  "live_news_latest_title",
   "current_open",
   "last_volume",
   "last_return_5",
@@ -321,9 +318,6 @@ const LIVE_MARKET_STATE_COLUMNS = [
   "last_recent_volume_5",
   "last_return_5",
   "last_gap_pct",
-  "live_news_recency",
-  "live_news_count",
-  "live_news_latest_title",
   "last_day_max_change_pct",
   "last_day_current_change_pct",
   "last_close",
@@ -2882,6 +2876,7 @@ function dayOpenOnlyChartPayload(payload: ChartPayload | null, sessionDate: stri
 }
 
 function marketStateTableColumns(snapshotColumns: string[]) {
+  const hiddenColumns = new Set(["live_news_recency", "live_news_count", "live_news_latest_title", "live_news_latest_time"]);
   const importantColumns = [
     "ticker",
     "current_open",
@@ -2890,9 +2885,6 @@ function marketStateTableColumns(snapshotColumns: string[]) {
     "last_recent_volume_5",
     "last_return_5",
     "last_gap_pct",
-    "live_news_recency",
-    "live_news_count",
-    "live_news_latest_title",
     "last_day_max_change_pct",
     "last_day_current_change_pct",
     "last_close",
@@ -2909,7 +2901,7 @@ function marketStateTableColumns(snapshotColumns: string[]) {
   ];
   return [
     ...importantColumns,
-    ...snapshotColumns.filter((column) => !importantColumns.includes(column)),
+    ...snapshotColumns.filter((column) => !importantColumns.includes(column) && !hiddenColumns.has(column)),
   ];
 }
 

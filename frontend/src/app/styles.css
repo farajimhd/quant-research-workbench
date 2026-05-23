@@ -4982,6 +4982,40 @@ button {
   background: color-mix(in oklab, var(--muted-foreground) 46%, transparent);
 }
 
+.data-table-ticker-with-news {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+  min-width: 0;
+}
+
+.data-table-ticker-with-news > span {
+  font-weight: 900;
+}
+
+.data-table-news-icon {
+  flex: 0 0 auto;
+  stroke-width: 2.6;
+  vertical-align: -2px;
+}
+
+.data-table-news-icon.hot {
+  color: var(--danger);
+  filter: drop-shadow(0 0 3px color-mix(in oklab, var(--danger) 38%, transparent));
+}
+
+.data-table-news-icon.warm {
+  color: #f97316;
+}
+
+.data-table-news-icon.recent {
+  color: var(--info);
+}
+
+.data-table-news-icon.cold {
+  color: var(--muted-foreground);
+}
+
 .data-table-empty {
   color: var(--muted-foreground);
   text-align: left;
