@@ -4254,6 +4254,10 @@ button {
   font-size: 12px;
 }
 
+.data-table.fit-content-width {
+  min-width: 0;
+}
+
 .data-table.fit-header {
   table-layout: fixed;
 }

@@ -1633,6 +1633,7 @@ function ScannerContainer({
           columns={LIVE_SIGNAL_COLUMNS}
           defaultSort={{ column: "live_signal_time", direction: "desc" }}
           empty={loading ? "Loading scanner..." : "No scanner signals detected yet."}
+          fitToContent
           isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
           onRowClick={onRowSelect}
           preserveFiltersOnDataChange

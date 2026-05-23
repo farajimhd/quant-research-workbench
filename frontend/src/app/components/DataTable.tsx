@@ -159,6 +159,7 @@ type DataTableProps = {
   defaultFilterPreset?: DataTableFilterPreset;
   defaultSort?: SortState;
   empty?: string;
+  fitToContent?: boolean;
   filterPresets?: DataTableFilterPreset[];
   isRowSelected?: (row: DataRow) => boolean;
   onRowClick?: (row: DataRow) => void;
@@ -187,7 +188,7 @@ const BACKEND_QUERY_OPERATORS: Array<{ label: string; needsSecondValue?: boolean
 ];
 let backendQueryConditionSequence = 0;
 
-export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultSort, empty = "No rows.", filterPresets = [], isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title, transposeHelper = false }: DataTableProps) {
+export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultSort, empty = "No rows.", fitToContent = false, filterPresets = [], isRowSelected, onRowClick, preserveFiltersOnDataChange = false, rowAction, rows, title, transposeHelper = false }: DataTableProps) {
   const baseColumns = useMemo(() => {
     if (columns?.length) return columns;
     return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -319,7 +320,7 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
     () => buildColumnWidthsByName({ densityMode, layoutMode, rows: sortedRows, visibleColumns: usableColumns }),
     [densityMode, layoutMode, sortedRows, usableColumns],
   );
-  const fitHeaderWidth = usableColumns.reduce((total, column) => total + (columnWidthsByName[column] ?? 120), 0);
+  const tableContentWidth = usableColumns.reduce((total, column) => total + (columnWidthsByName[column] ?? 120), 0);
 
   useEffect(() => {
     setBackendQueryDraft(normalizeBackendQuery(backendQuery?.value));
@@ -1139,16 +1140,14 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
 
       <div className="data-table-scroll">
         <table
-          className={`data-table ${densityMode} ${layoutMode === "fit_header" ? "fit-header" : "fit-data"}`}
-          style={layoutMode === "fit_header" ? { width: `${fitHeaderWidth}px` } : undefined}
+          className={`data-table ${densityMode} ${layoutMode === "fit_header" ? "fit-header" : "fit-data"}${fitToContent ? " fit-content-width" : ""}`}
+          style={{ width: `${tableContentWidth}px` }}
         >
-          {layoutMode === "fit_header" ? (
-            <colgroup>
-              {usableColumns.map((column) => (
-                <col key={column} style={{ width: `${columnWidthsByName[column] ?? 120}px` }} />
-              ))}
-            </colgroup>
-          ) : null}
+          <colgroup>
+            {usableColumns.map((column) => (
+              <col key={column} style={{ width: `${columnWidthsByName[column] ?? 120}px` }} />
+            ))}
+          </colgroup>
           <thead>
             <tr>
               {usableColumns.map((column) => {
