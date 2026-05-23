@@ -351,6 +351,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const initialFitTimerRef = useRef<number | null>(null);
   const rangeCleanupRef = useRef<(() => void) | null>(null);
   const crosshairCleanupRef = useRef<(() => void) | null>(null);
+  const zoomCrosshairCleanupRef = useRef<(() => void) | null>(null);
   const overlayInteractionCleanupRef = useRef<(() => void) | null>(null);
   const overlayRedrawFrameRef = useRef<number | null>(null);
   const overlayRedrawTimerRef = useRef<number | null>(null);
@@ -815,16 +816,24 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   function refreshInteractionSync() {
     rangeCleanupRef.current?.();
     crosshairCleanupRef.current?.();
+    zoomCrosshairCleanupRef.current?.();
     rangeCleanupRef.current = null;
     crosshairCleanupRef.current = null;
+    zoomCrosshairCleanupRef.current = null;
     const priceChart = priceChartRef.current;
     const candleSeries = candleRef.current;
     const currentPayload = payloadRef.current;
-    if (!priceChart || !candleSeries || !currentPayload) return;
-    const panes = Array.from(oscillatorPaneRuntimesRef.current.values());
+    const priceElement = priceRef.current;
+    if (!priceChart || !candleSeries || !currentPayload || !priceElement) return;
+    const paneEntries = Array.from(oscillatorPaneRuntimesRef.current.entries()).map(([key, runtime]) => ({
+      element: oscillatorPaneRefs.current.get(key) ?? null,
+      runtime,
+    }));
+    const panes = paneEntries.map((entry) => entry.runtime);
     rangeCleanupRef.current = syncChartRanges([priceChart, ...panes.map((pane) => pane.chart)]);
     const closeByTime = new Map(currentPayload.candles.map((candle) => [candle.time, candle.close]));
     crosshairCleanupRef.current = syncCrosshairs(priceChart, panes, candleSeries, closeByTime);
+    zoomCrosshairCleanupRef.current = syncZoomCorrectedCrosshairs(priceElement, priceChart, candleSeries, paneEntries, closeByTime);
   }
 
   function drawCurrentRegions() {
@@ -879,6 +888,8 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     crosshairCleanupRef.current?.();
     rangeCleanupRef.current = null;
     crosshairCleanupRef.current = null;
+    zoomCrosshairCleanupRef.current?.();
+    zoomCrosshairCleanupRef.current = null;
     if (regionDrawRef.current && priceChartRef.current) {
       priceChartRef.current.timeScale().unsubscribeVisibleLogicalRangeChange(regionDrawRef.current);
       regionDrawRef.current = null;
@@ -2682,6 +2693,93 @@ function syncCrosshairs(
   return () => {
     priceChart.unsubscribeCrosshairMove(syncToOscillators);
     paneHandlers.forEach(({ pane, handler }) => pane.chart.unsubscribeCrosshairMove(handler));
+  };
+}
+
+function syncZoomCorrectedCrosshairs(
+  priceElement: HTMLElement,
+  priceChart: IChartApi,
+  candleSeries: AnySeriesApi,
+  oscillatorPaneEntries: Array<{ element: HTMLElement | null; runtime: OscillatorPaneRuntime }>,
+  closeByTime: Map<number, number>
+) {
+  const cleanups: Array<() => void> = [];
+  const setOscillatorCrosshairs = (time: Time, excludedChart?: IChartApi) => {
+    oscillatorPaneEntries.forEach(({ runtime }) => {
+      if (runtime.chart === excludedChart) return;
+      const value = runtime.valuesByTime.get(Number(time));
+      if (runtime.renderer && typeof value === "number" && Number.isFinite(value)) {
+        runtime.chart.setCrosshairPosition(value, time, runtime.renderer);
+      } else if (runtime.timelineRenderer) {
+        runtime.chart.setCrosshairPosition(0, time, runtime.timelineRenderer);
+      } else {
+        runtime.chart.clearCrosshairPosition();
+      }
+    });
+  };
+  const clearPeerCrosshairs = (excludedChart?: IChartApi) => {
+    if (priceChart !== excludedChart) priceChart.clearCrosshairPosition();
+    oscillatorPaneEntries.forEach(({ runtime }) => {
+      if (runtime.chart !== excludedChart) runtime.chart.clearCrosshairPosition();
+    });
+  };
+  const addCorrectedMouseMove = (
+    element: HTMLElement,
+    chart: IChartApi,
+    renderer: AnySeriesApi,
+    onMove: (time: Time, value: number) => void
+  ) => {
+    const handler = (event: MouseEvent) => {
+      const scale = elementRenderedScale(element);
+      if (!scale.needsCorrection) return;
+      const rect = element.getBoundingClientRect();
+      const coordinateX = (event.clientX - rect.left) / scale.x;
+      const coordinateY = (event.clientY - rect.top) / scale.y;
+      const time = chart.timeScale().coordinateToTime(coordinateX);
+      const value = renderer.coordinateToPrice(coordinateY);
+      if (!time || typeof value !== "number" || !Number.isFinite(value)) return;
+      onMove(time, value);
+    };
+    const leaveHandler = () => clearPeerCrosshairs(chart);
+    element.addEventListener("mousemove", handler);
+    element.addEventListener("mouseleave", leaveHandler);
+    cleanups.push(() => {
+      element.removeEventListener("mousemove", handler);
+      element.removeEventListener("mouseleave", leaveHandler);
+    });
+  };
+
+  addCorrectedMouseMove(priceElement, priceChart, candleSeries, (time, value) => {
+    priceChart.setCrosshairPosition(value, time, candleSeries);
+    setOscillatorCrosshairs(time);
+  });
+  oscillatorPaneEntries.forEach(({ element, runtime }) => {
+    const renderer = runtime.renderer ?? runtime.timelineRenderer;
+    if (!element || !renderer) return;
+    addCorrectedMouseMove(element, runtime.chart, renderer, (time, value) => {
+      runtime.chart.setCrosshairPosition(value, time, renderer);
+      const close = closeByTime.get(Number(time));
+      if (typeof close === "number" && Number.isFinite(close)) {
+        priceChart.setCrosshairPosition(close, time, candleSeries);
+      } else {
+        priceChart.clearCrosshairPosition();
+      }
+      setOscillatorCrosshairs(time, runtime.chart);
+    });
+  });
+  return () => cleanups.forEach((cleanup) => cleanup());
+}
+
+function elementRenderedScale(element: HTMLElement) {
+  const rect = element.getBoundingClientRect();
+  const layoutWidth = element.clientWidth || rect.width || 1;
+  const layoutHeight = element.clientHeight || rect.height || 1;
+  const x = rect.width > 0 ? rect.width / layoutWidth : 1;
+  const y = rect.height > 0 ? rect.height / layoutHeight : 1;
+  return {
+    needsCorrection: Math.abs(x - 1) > 0.01 || Math.abs(y - 1) > 0.01,
+    x: x || 1,
+    y: y || 1,
   };
 }
 
