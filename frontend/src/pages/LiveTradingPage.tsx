@@ -208,11 +208,12 @@ const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.live-trading.sha
 const LIVE_SAVED_SIMULATIONS_STORAGE_KEY = "quant-research-workbench.live-trading.saved-simulations";
 const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-queries.v2";
 const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-query.v2";
+const LIVE_CHART_VISIBILITY_STORAGE_KEY = "quant-research-workbench.live-trading.chart-visibility.v1";
 const LIVE_SIGNAL_SEARCH_BATCH_MINUTES = 10;
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const LIVE_PORTFOLIO_COLLAPSED_HEIGHT = 224;
 const LIVE_PORTFOLIO_EXPANDED_HEIGHT = LIVE_PORTFOLIO_COLLAPSED_HEIGHT * 3;
-const MAIN_DISPLAY_ITEMS = ["vwap", "tema9", "tema20", "macd"];
+const MAIN_DISPLAY_ITEMS = ["vwap", "tema9", "tema20", "indicator.macd", "macd_line", "macd_signal", "macd_hist"];
 const LOWER_DISPLAY_ITEMS = ["vwap", "tema9", "tema20"];
 const LIVE_SCANNER_COLUMNS = [
   "ticker",
@@ -301,8 +302,9 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [mainVisibleColumns, setMainVisibleColumns] = useState<string[]>(MAIN_DISPLAY_ITEMS);
   const [compactVisibleColumns, setCompactVisibleColumns] = useState<string[]>(LOWER_DISPLAY_ITEMS);
   const [headerCollapsed, setHeaderCollapsed] = useState(true);
-  const showDayChart = true;
-  const showFiveMinuteChart = true;
+  const [lowerChartVisibility, setLowerChartVisibility] = useState(readStoredLiveChartVisibility);
+  const showDayChart = lowerChartVisibility.day;
+  const showFiveMinuteChart = lowerChartVisibility.fiveMinute;
   const [decisions, setDecisions] = useState<Record<string, DecisionState>>({});
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [positions, setPositions] = useState<PositionRow[]>([]);
@@ -363,6 +365,10 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   useEffect(() => {
     window.localStorage.setItem(`${LIVE_SCANNER_QUERY_STORAGE_KEY}.name`, scannerQueryName);
   }, [scannerQueryName]);
+
+  useEffect(() => {
+    window.localStorage.setItem(LIVE_CHART_VISIBILITY_STORAGE_KEY, JSON.stringify(lowerChartVisibility));
+  }, [lowerChartVisibility]);
 
   const sessions = useMemo(() => availableSessionDates(review?.records ?? []), [review]);
   const selectedTicker = stringValue(selectedRow, "ticker");
@@ -1131,6 +1137,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                 onMainVisibleColumnsChange={setMainVisibleColumns}
                 onCompactVisibleColumnsChange={setCompactVisibleColumns}
                 onStage={stageOrder}
+                onToggleDayChart={() => setLowerChartVisibility((current) => ({ ...current, day: !current.day }))}
+                onToggleFiveMinuteChart={() => setLowerChartVisibility((current) => ({ ...current, fiveMinute: !current.fiveMinute }))}
               />
             </WorkspaceWindow>
           );
@@ -1631,6 +1639,8 @@ function LiveChartWindow({
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
   onStage,
+  onToggleDayChart,
+  onToggleFiveMinuteChart,
   orders,
   positions,
   scope,
@@ -1657,6 +1667,8 @@ function LiveChartWindow({
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
   onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
+  onToggleDayChart: () => void;
+  onToggleFiveMinuteChart: () => void;
 }) {
   const [mainPayload, setMainPayload] = useState<ChartPayload | null>(null);
   const [dayPayload, setDayPayload] = useState<ChartPayload | null>(null);
@@ -1756,6 +1768,8 @@ function LiveChartWindow({
       onMainTimeframeChange={onMainTimeframeChange}
       onMainVisibleColumnsChange={onMainVisibleColumnsChange}
       onStage={onStage}
+      onToggleDayChart={onToggleDayChart}
+      onToggleFiveMinuteChart={onToggleFiveMinuteChart}
     />
   );
 }
@@ -1779,6 +1793,8 @@ function ChartsContainer({
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
   onStage,
+  onToggleDayChart,
+  onToggleFiveMinuteChart,
   orders,
   position,
   quote,
@@ -1814,6 +1830,8 @@ function ChartsContainer({
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
   onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
+  onToggleDayChart: () => void;
+  onToggleFiveMinuteChart: () => void;
 }) {
   const mainOptions = mainPayload?.options;
   const compactOptions = fiveMinutePayload?.options ?? dayPayload?.options;
@@ -1821,35 +1839,50 @@ function ChartsContainer({
   return (
     <div className="live-chart-trade-layout">
       <div className={lowerChartCount ? "live-chart-stack" : "live-chart-stack no-lower"}>
-        <ChartPanel
-          catalogColumns={catalog?.columns ?? []}
-          displayItemOptions={mainOptions?.display_items ?? catalog?.displayItems ?? []}
-          emptyMessage="Select a scanner row to load charts."
-          errorMessage={chartError}
-          enableFullscreen={false}
-          featureOptions={mainOptions?.feature_columns ?? []}
-          indicatorOptions={mainOptions?.standard_indicators ?? MAIN_DISPLAY_ITEMS}
-          loading={chartLoading}
-          liveEntryLine={liveEntryLine}
-          onPeriodChange={() => undefined}
-          onTickerChange={() => undefined}
-          onTimeframeChange={onMainTimeframeChange}
-          onVisibleColumnsChange={onMainVisibleColumnsChange}
-          payload={mainPayload}
-          periodEnd={session.sessionDate}
-          periodStart={session.sessionDate}
-          ticker={selectedTicker}
-          tickerInputWidth={130}
-          timeframe={mainTimeframe}
-          timeframes={["1m", "5m", "1d"]}
-          visibleColumns={mainVisibleColumns}
-          onLiveEntryClose={onLiveEntryClose}
-        />
+        <div className="live-main-chart-frame">
+          <div className="live-chart-view-toggle" aria-label="Lower chart visibility">
+            <button className={showDayChart ? "active" : ""} onClick={onToggleDayChart} type="button">
+              Daily
+            </button>
+            <button className={showFiveMinuteChart ? "active" : ""} onClick={onToggleFiveMinuteChart} type="button">
+              5m
+            </button>
+          </div>
+          <ChartPanel
+            catalogColumns={catalog?.columns ?? []}
+            displayItemOptions={mainOptions?.display_items ?? catalog?.displayItems ?? []}
+            emptyMessage="Select a scanner row to load charts."
+            errorMessage={chartError}
+            enableFullscreen={false}
+            featureOptions={mainOptions?.feature_columns ?? []}
+            indicatorOptions={mainOptions?.standard_indicators ?? MAIN_DISPLAY_ITEMS}
+            loading={chartLoading}
+            liveEntryLine={liveEntryLine}
+            onPeriodChange={() => undefined}
+            onTickerChange={() => undefined}
+            onTimeframeChange={onMainTimeframeChange}
+            onVisibleColumnsChange={onMainVisibleColumnsChange}
+            payload={mainPayload}
+            periodEnd={session.sessionDate}
+            periodStart={session.sessionDate}
+            ticker={selectedTicker}
+            tickerInputWidth={130}
+            timeframe={mainTimeframe}
+            timeframes={["1m", "5m", "1d"]}
+            visibleColumns={mainVisibleColumns}
+            onLiveEntryClose={onLiveEntryClose}
+          />
+        </div>
         {lowerChartCount ? (
           <div className={lowerChartCount === 1 ? "live-lower-chart-grid single" : "live-lower-chart-grid"}>
             {showDayChart ? (
               <div className="live-compact-chart">
-                <span>Daily / 60 days</span>
+                <div className="live-compact-chart-header">
+                  <span>Daily / 60 days</span>
+                  <button className="toolbar-button compact" onClick={onToggleDayChart} title="Hide daily chart" type="button">
+                    <X size={12} />
+                  </button>
+                </div>
                 <ChartPanel
                   catalogColumns={catalog?.columns ?? []}
                   displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
@@ -1873,7 +1906,12 @@ function ChartsContainer({
             ) : null}
             {showFiveMinuteChart ? (
               <div className="live-compact-chart">
-                <span>5m / last 2 days</span>
+                <div className="live-compact-chart-header">
+                  <span>5m / last 2 days</span>
+                  <button className="toolbar-button compact" onClick={onToggleFiveMinuteChart} title="Hide 5m chart" type="button">
+                    <X size={12} />
+                  </button>
+                </div>
                 <ChartPanel
                   catalogColumns={catalog?.columns ?? []}
                   displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
@@ -2020,12 +2058,12 @@ function ChartTradePanel({
             key={action.id}
             className={`live-strategy-action ${action.tone}`}
             disabled={action.disabled || !selectedTicker || action.quantity <= 0}
+            title={action.description}
             type="button"
             onClick={() => stageStrategyAction(action)}
           >
             <span>{action.label}</span>
             <strong>{integer(action.quantity)} @ {money(action.limit)}</strong>
-            <small>{action.description}</small>
           </button>
         ))}
       </div>
@@ -2078,7 +2116,7 @@ function buildStrategyTradeActions({
 }): LiveStrategyTradeAction[] {
   const closeQuantity = Math.max(0, Math.floor(position?.quantity ?? 0));
   const commonClose = {
-    description: position ? `Sell open position at estimated bid ${money(quote.bid)}` : "Requires an open position",
+    description: position ? `Sell ${integer(closeQuantity)} shares at ${money(quote.bid)}` : "Requires an open position",
     disabled: !position || closeQuantity <= 0,
     id: `${strategy}-close`,
     label: "Close",
@@ -2093,7 +2131,7 @@ function buildStrategyTradeActions({
   if (strategy === "Momentum Assist") {
     return [
       {
-        description: "Strategy long entry at current ask with configured stop",
+        description: `Buy ${integer(entryQuantity)} shares at ${money(quote.ask)}`,
         disabled: !selectedTicker || entryQuantity <= 0,
         id: "momentum-enter",
         label: "Enter Long",
@@ -2105,7 +2143,7 @@ function buildStrategyTradeActions({
         type: orderType,
       },
       {
-        description: position ? "Take profit or reduce exposure at estimated bid" : "Requires an open position",
+        description: position ? `Sell ${integer(closeQuantity)} shares at ${money(quote.bid)}` : "Requires an open position",
         disabled: !position || closeQuantity <= 0,
         id: "momentum-pocket",
         label: "Pocket",
@@ -2122,7 +2160,7 @@ function buildStrategyTradeActions({
 
   return [
     {
-      description: "Buy at current ask using strategy settings",
+      description: `Buy ${integer(entryQuantity)} shares at ${money(quote.ask)}`,
       disabled: !selectedTicker || entryQuantity <= 0,
       id: "manual-buy",
       label: "Buy Ask",
@@ -2702,6 +2740,18 @@ function readStoredScannerQueryName() {
     return window.localStorage.getItem(`${LIVE_SCANNER_QUERY_STORAGE_KEY}.name`) || "";
   } catch {
     return "";
+  }
+}
+
+function readStoredLiveChartVisibility() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LIVE_CHART_VISIBILITY_STORAGE_KEY) || "null") as Partial<{ day: boolean; fiveMinute: boolean }> | null;
+    return {
+      day: typeof parsed?.day === "boolean" ? parsed.day : true,
+      fiveMinute: typeof parsed?.fiveMinute === "boolean" ? parsed.fiveMinute : true,
+    };
+  } catch {
+    return { day: true, fiveMinute: true };
   }
 }
 
