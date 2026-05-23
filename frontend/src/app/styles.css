@@ -9783,21 +9783,12 @@ button {
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  min-height: 38px;
-}
-
-.live-chart-trade-header span {
-  color: var(--muted-foreground);
-  display: block;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0;
-  text-transform: uppercase;
+  min-height: 30px;
 }
 
 .live-chart-trade-header strong {
   display: block;
-  font-size: 24px;
+  font-size: 26px;
   line-height: 1;
 }
 
@@ -9819,12 +9810,17 @@ button {
   color: var(--success);
 }
 
-.live-quote-strip {
+.live-market-panel {
   border: 1px solid color-mix(in oklab, var(--border) 82%, var(--surface-alt));
   border-radius: 8px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
   overflow: hidden;
+}
+
+.live-price-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .live-quote-price {
@@ -9860,51 +9856,101 @@ button {
   color: var(--info);
 }
 
-.live-quote-micro {
+.live-market-health {
   background: color-mix(in oklab, var(--surface-alt) 52%, var(--surface));
   border-top: 1px solid color-mix(in oklab, var(--border) 76%, var(--surface-alt));
   display: grid;
-  gap: 0;
-  grid-column: 1 / -1;
+  gap: 6px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 0;
+  padding: 6px;
 }
 
-.live-quote-micro div {
-  border-right: 1px solid color-mix(in oklab, var(--border) 72%, var(--surface-alt));
+.live-market-stat {
+  border: 1px solid color-mix(in oklab, var(--border) 74%, var(--surface-alt));
+  border-radius: 7px;
   display: grid;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
-  padding: 7px 8px;
+  padding: 7px;
 }
 
-.live-quote-micro div:last-child {
-  border-right: 0;
-}
-
-.live-quote-micro dt,
-.live-quote-micro dd {
-  margin: 0;
-  min-width: 0;
-}
-
-.live-quote-micro dt {
+.live-market-stat span {
+  align-items: center;
   color: var(--muted-foreground);
+  display: flex;
   font-size: 9px;
   font-weight: 900;
+  gap: 4px;
   line-height: 1;
   text-transform: uppercase;
 }
 
-.live-quote-micro dd {
+.live-market-stat strong {
   color: var(--foreground);
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 1.15;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.live-market-stat small {
+  color: var(--muted-foreground);
+  font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.live-market-stat.success {
+  background: color-mix(in oklab, var(--success) 9%, var(--surface));
+  border-color: color-mix(in oklab, var(--success) 28%, var(--border));
+}
+
+.live-market-stat.success strong,
+.live-market-stat.success small,
+.live-market-stat.success span {
+  color: color-mix(in oklab, var(--success) 82%, var(--foreground));
+}
+
+.live-market-stat.info {
+  background: color-mix(in oklab, var(--info) 8%, var(--surface));
+  border-color: color-mix(in oklab, var(--info) 24%, var(--border));
+}
+
+.live-market-stat.info strong,
+.live-market-stat.info small,
+.live-market-stat.info span {
+  color: color-mix(in oklab, var(--info) 82%, var(--foreground));
+}
+
+.live-market-stat.warning {
+  background: color-mix(in oklab, var(--warning) 13%, var(--surface));
+  border-color: color-mix(in oklab, var(--warning) 42%, var(--border));
+}
+
+.live-market-stat.warning strong,
+.live-market-stat.warning small,
+.live-market-stat.warning span {
+  color: color-mix(in oklab, var(--warning) 86%, var(--foreground));
+}
+
+.live-market-stat.danger {
+  background: color-mix(in oklab, var(--danger) 13%, var(--surface));
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
+}
+
+.live-market-stat.danger strong,
+.live-market-stat.danger small,
+.live-market-stat.danger span {
+  color: color-mix(in oklab, var(--danger) 86%, var(--foreground));
+}
+
+.live-market-stat.muted {
+  background: color-mix(in oklab, var(--muted-foreground) 6%, var(--surface));
+  border-color: color-mix(in oklab, var(--border) 82%, var(--surface-alt));
 }
 
 .live-quote-stats,

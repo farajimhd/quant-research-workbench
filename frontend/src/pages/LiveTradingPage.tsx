@@ -2018,6 +2018,33 @@ function ChartTradePanel({
     value: strategySettings.sizeValue,
   });
   const openOrders = orders.filter((order) => order.symbol === selectedTicker && order.status === "STAGED").length;
+  const spreadRatio = quote.ask > 0 ? quote.spread / quote.ask : 0;
+  const spreadTone = spreadRatio >= 0.02 || quote.spread >= 0.05 ? "danger" : spreadRatio >= 0.01 || quote.spread >= 0.02 ? "warning" : "success";
+  const transactionsTone = quote.transactions <= 0 ? "muted" : quote.transactions < 100 ? "warning" : quote.transactions >= 300 ? "success" : "info";
+  const volumeTone = quote.volume <= 0 ? "muted" : quote.volume < 8000 ? "warning" : quote.volume >= 50000 ? "success" : "info";
+  const marketStats = [
+    {
+      detail: spreadRatio > 0 ? percent(spreadRatio) : "n/a",
+      label: "Spread",
+      tone: spreadTone,
+      value: money(quote.spread),
+      warning: spreadTone === "warning" || spreadTone === "danger",
+    },
+    {
+      detail: quote.transactions >= 300 ? "strong" : quote.transactions >= 100 ? "ok" : quote.transactions > 0 ? "thin" : "none",
+      label: "Txns",
+      tone: transactionsTone,
+      value: integer(quote.transactions),
+      warning: transactionsTone === "warning",
+    },
+    {
+      detail: quote.volume >= 50000 ? "strong" : quote.volume >= 8000 ? "ok" : quote.volume > 0 ? "light" : "none",
+      label: "Volume",
+      tone: volumeTone,
+      value: integer(quote.volume),
+      warning: volumeTone === "warning",
+    },
+  ];
   const actions = buildStrategyTradeActions({
     entryQuantity,
     longStop,
@@ -2048,28 +2075,34 @@ function ChartTradePanel({
   return (
     <aside className="live-chart-trade-panel">
       <div className="live-chart-trade-header">
-        <div>
-          <span>Trade Ticket</span>
-          <strong>{selectedTicker}</strong>
-        </div>
+        <strong>{selectedTicker}</strong>
         <div className={position ? "live-trade-status active" : "live-trade-status"}>
           {position ? "In Position" : "Flat"}
         </div>
       </div>
-      <div className="live-quote-strip">
-        <div className="live-quote-price ask">
-          <span>Ask</span>
-          <strong>{money(quote.ask)}</strong>
+      <div className="live-market-panel">
+        <div className="live-price-row">
+          <div className="live-quote-price ask">
+            <span>Ask</span>
+            <strong>{money(quote.ask)}</strong>
+          </div>
+          <div className="live-quote-price bid">
+            <span>Bid</span>
+            <strong>{money(quote.bid)}</strong>
+          </div>
         </div>
-        <div className="live-quote-price bid">
-          <span>Bid</span>
-          <strong>{money(quote.bid)}</strong>
+        <div className="live-market-health" aria-label="Market quality">
+          {marketStats.map((stat) => (
+            <div key={stat.label} className={`live-market-stat ${stat.tone}`}>
+              <span>
+                {stat.label}
+                {stat.warning ? <ShieldAlert size={12} aria-hidden="true" /> : null}
+              </span>
+              <strong>{stat.value}</strong>
+              <small>{stat.detail}</small>
+            </div>
+          ))}
         </div>
-        <dl className="live-quote-micro">
-          <div><dt>Spread</dt><dd>{money(quote.spread)}</dd></div>
-          <div><dt>Txns</dt><dd>{integer(quote.transactions)}</dd></div>
-          <div><dt>Vol</dt><dd>{integer(quote.volume)}</dd></div>
-        </dl>
       </div>
       <div className="live-strategy-row">
         <LiveSelect label="Strategy" value={strategy} values={["Manual", "Momentum Assist"]} onChange={setStrategy} />
