@@ -9604,6 +9604,19 @@ button {
   overflow: hidden;
 }
 
+.live-window[data-window-kind="scanner"] .live-window-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.live-window[data-window-kind="scanner"] .data-table-shell {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  width: 100%;
+}
+
 .live-window[data-window-kind="chart"] .chart-price {
   flex: 1;
   height: auto;

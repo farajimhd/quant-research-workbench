@@ -1165,7 +1165,7 @@ function WorkspaceWindow({
   }
 
   return (
-    <section className="live-window" data-window-kind={id.startsWith("chart-") ? "chart" : "core"} style={style} onPointerDown={() => onFocus(id)}>
+    <section className="live-window" data-window-kind={id.startsWith("chart-") ? "chart" : id} style={style} onPointerDown={() => onFocus(id)}>
       <div className="live-window-header" onPointerDown={startDrag}>
         <div className="live-window-title">
           <Move size={13} />
