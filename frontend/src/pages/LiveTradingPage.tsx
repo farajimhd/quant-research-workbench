@@ -1606,16 +1606,16 @@ function LiveChartWindow({
   const liveEntryLine = buildLiveEntryLine(position, quote.bid);
   const mainOpenOnlyPayload = useMemo(() => {
     if (mainTimeframe === "1d") return dayOpenOnlyChartPayload(mainPayload, session.sessionDate, selectedOpen, selectedTime);
-    if (mainTimeframe === "5m") return castOpenChartPayload(mainPayload, selectedTime, selectedOpen, `${session.barTime} open`);
-    return openOnlyChartPayload(mainPayload, selectedTime, selectedOpen, session.barTime);
-  }, [mainPayload, mainTimeframe, selectedOpen, selectedTime, session.barTime, session.sessionDate]);
+    if (mainTimeframe === "5m") return castOpenChartPayload(mainPayload, selectedTime, selectedOpen);
+    return openOnlyChartPayload(mainPayload, selectedTime, selectedOpen);
+  }, [mainPayload, mainTimeframe, selectedOpen, selectedTime, session.sessionDate]);
   const dayOpenOnlyPayload = useMemo(
     () => dayOpenOnlyChartPayload(dayPayload, session.sessionDate, selectedOpen, selectedTime),
     [dayPayload, selectedOpen, selectedTime, session.sessionDate]
   );
   const fiveMinuteOpenOnlyPayload = useMemo(
-    () => castOpenChartPayload(fiveMinutePayload, selectedTime, selectedOpen, `${session.barTime} open`),
-    [fiveMinutePayload, selectedOpen, selectedTime, session.barTime]
+    () => castOpenChartPayload(fiveMinutePayload, selectedTime, selectedOpen),
+    [fiveMinutePayload, selectedOpen, selectedTime]
   );
 
   useEffect(() => {
@@ -2178,11 +2178,11 @@ function loadChart(processedRoot: string, startDate: string, endDate: string, ti
   );
 }
 
-function openOnlyChartPayload(payload: ChartPayload | null, cutoffTime: number | null, currentOpen: number, barTime: string): ChartPayload | null {
-  return castOpenChartPayload(payload, cutoffTime, currentOpen, `${barTime} open`);
+function openOnlyChartPayload(payload: ChartPayload | null, cutoffTime: number | null, currentOpen: number): ChartPayload | null {
+  return castOpenChartPayload(payload, cutoffTime, currentOpen);
 }
 
-function castOpenChartPayload(payload: ChartPayload | null, cutoffTime: number | null, currentOpen: number, label: string): ChartPayload | null {
+function castOpenChartPayload(payload: ChartPayload | null, cutoffTime: number | null, currentOpen: number): ChartPayload | null {
   if (!payload || !cutoffTime) return payload;
   const priorCandles = payload.candles.filter((candle) => candle.time < cutoffTime);
   const open = currentOpen || priorCandles.at(-1)?.close || 0;
@@ -2191,10 +2191,7 @@ function castOpenChartPayload(payload: ChartPayload | null, cutoffTime: number |
   return {
     ...trimmed,
     candles: [...priorCandles, ...currentCandle],
-    markers: [
-      ...payload.markers.filter((marker) => Number(marker.time) < cutoffTime),
-      { color: "#2563EB", position: "inBar", shape: "circle", size: 1.2, text: label, time: cutoffTime as Time },
-    ],
+    markers: payload.markers.filter((marker) => Number(marker.time) < cutoffTime),
     volume: [...payload.volume.filter((point) => Number(point.time) < cutoffTime), { color: "rgba(37, 99, 235, 0.25)", time: cutoffTime, value: 0 }],
   };
 }
@@ -2238,7 +2235,7 @@ function dayOpenOnlyChartPayload(payload: ChartPayload | null, sessionDate: stri
   return {
     ...payload,
     candles: [...priorCandles, { time: cutoffTime, open: currentOpen, high: currentOpen, low: currentOpen, close: currentOpen }],
-    markers: [{ color: "#2563EB", position: "inBar", shape: "circle", size: 1.2, text: "1m open", time: cutoffTime as Time }],
+    markers: [],
     oscillator_series: priorOscillators,
     overlay_series: priorOverlays,
     price_zones: [],
