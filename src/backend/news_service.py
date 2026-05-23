@@ -99,6 +99,7 @@ def news_status(processed_root: Path, session_date: date, *, status: str | None 
 
 def news_at_payload(processed_root: Path, session_date: date, bar_time: str, tickers: list[str] | None = None) -> dict[str, Any]:
     cutoff = parse_market_bar_time(session_date, bar_time)
+    cutoff_epoch = int(cutoff.timestamp())
     frame = load_news_window(processed_root, session_date)
     if frame.is_empty():
         return {"articles": [], "by_ticker": {}, "session_date": session_date.isoformat(), "bar_time": bar_time}
@@ -107,12 +108,13 @@ def news_at_payload(processed_root: Path, session_date: date, bar_time: str, tic
         frame = frame.filter(pl.col("ticker").is_in(sorted(wanted)))
     if frame.is_empty():
         return {"articles": [], "by_ticker": {}, "session_date": session_date.isoformat(), "bar_time": bar_time}
-    cutoff_text = cutoff.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     frame = (
-        frame.filter(pl.col("published_utc") <= cutoff_text)
-        .with_columns((pl.lit(int(cutoff.timestamp())) - pl.col("published_utc").str.to_datetime(time_zone="UTC").dt.epoch(time_unit="s")).truediv(60).alias("news_age_minutes"))
+        frame.with_columns(pl.col("published_utc").str.to_datetime(time_zone="UTC").dt.epoch(time_unit="s").alias("_published_epoch"))
+        .filter(pl.col("_published_epoch") <= cutoff_epoch)
+        .with_columns((pl.lit(cutoff_epoch) - pl.col("_published_epoch")).truediv(60).alias("news_age_minutes"))
         .with_columns(news_heat_expr("news_age_minutes").alias("news_recency"))
         .sort(["ticker", "published_utc"], descending=[False, True])
+        .drop("_published_epoch")
     )
     rows = frame.to_dicts()
     by_ticker: dict[str, dict[str, Any]] = {}

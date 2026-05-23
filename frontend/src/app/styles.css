@@ -10341,7 +10341,15 @@ button {
   border-color: color-mix(in oklab, var(--info) 34%, var(--border));
 }
 
-.live-news-list span {
+.live-news-meta {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.live-news-meta time {
   color: var(--muted-foreground);
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
   font-size: calc(9px * var(--trade-readable-scale));
@@ -10349,11 +10357,62 @@ button {
   line-height: 1;
 }
 
+.live-news-recency-chip {
+  background: color-mix(in oklab, var(--muted-foreground) 10%, var(--surface));
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  font-size: calc(8px * var(--trade-readable-scale));
+  font-weight: 900;
+  line-height: 1;
+  padding: 4px 6px;
+  text-transform: uppercase;
+}
+
+.live-news-recency-chip.hot {
+  background: color-mix(in oklab, var(--danger) 14%, var(--surface));
+  color: var(--danger);
+}
+
+.live-news-recency-chip.warm {
+  background: color-mix(in oklab, #f97316 15%, var(--surface));
+  color: #f97316;
+}
+
+.live-news-recency-chip.recent,
+.live-news-recency-chip.cold {
+  background: color-mix(in oklab, var(--info) 13%, var(--surface));
+  color: var(--info);
+}
+
 .live-news-list strong {
   color: var(--foreground);
   font-size: calc(12px * var(--trade-readable-scale));
   font-weight: 850;
   line-height: 1.25;
+}
+
+.live-news-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.live-news-labels span {
+  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: calc(8px * var(--trade-readable-scale));
+  font-weight: 900;
+  line-height: 1;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 4px 6px;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .live-news-card p {

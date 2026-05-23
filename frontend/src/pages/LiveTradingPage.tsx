@@ -2250,6 +2250,7 @@ function ChartsContainer({
         quote={quote}
         row={row}
         selectedTicker={selectedTicker}
+        session={session}
         onDraftChange={onDraftChange}
         onStage={onStage}
       />
@@ -2267,6 +2268,7 @@ function ChartTradePanel({
   quote,
   row,
   selectedTicker,
+  session,
 }: {
   availableCash: number;
   draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string };
@@ -2277,6 +2279,7 @@ function ChartTradePanel({
   quote: ReturnType<typeof quoteFromRow>;
   row: Record<string, unknown>;
   selectedTicker: string;
+  session: TradingSession;
 }) {
   const [strategy, setStrategy] = useState("Manual");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2318,7 +2321,7 @@ function ChartTradePanel({
     },
   ];
   const spreadWarning = spreadTone === "warning" || spreadTone === "danger";
-  const newsItems = liveNewsItems(row);
+  const newsItems = liveNewsItems(row, session);
   const newsRecency = stringValue(row, "live_news_recency") || "none";
   const actions = buildStrategyTradeActions({
     entryQuantity,
@@ -2401,8 +2404,16 @@ function ChartTradePanel({
           <div className="live-news-list">
             {newsItems.map((item, index) => (
               <a href={item.url || undefined} key={`${item.published_et}-${index}`} target="_blank" rel="noreferrer" title={item.title}>
-                <span>{formatNewsTime(item.published_et)}</span>
+                <div className="live-news-meta">
+                  <time dateTime={item.published_et}>{formatNewsDateTime(item.published_et)}</time>
+                  <span className={`live-news-recency-chip ${item.recency || "cold"}`}>{item.recency || "cold"}</span>
+                </div>
                 <strong>{item.title}</strong>
+                <div className="live-news-labels" aria-label="News labels">
+                  {newsLabels(item).map((label) => (
+                    <span key={label}>{label}</span>
+                  ))}
+                </div>
               </a>
             ))}
           </div>
@@ -2928,18 +2939,39 @@ function quoteFromRow(row: Record<string, unknown>, fallbackOpen: number) {
   };
 }
 
-function liveNewsItems(row: Record<string, unknown>): LiveNewsArticle[] {
+function liveNewsItems(row: Record<string, unknown>, session: TradingSession): LiveNewsArticle[] {
   const value = row.live_news_items;
   if (!Array.isArray(value)) return [];
+  const cutoffSeconds = clockTimestampSeconds(session.sessionDate, session.barTime);
   return value
     .filter((item): item is LiveNewsArticle => Boolean(item && typeof item === "object" && "title" in item))
+    .filter((item) => {
+      if (!cutoffSeconds) return true;
+      const publishedSeconds = Math.floor(Date.parse(item.published_et) / 1000);
+      return Number.isFinite(publishedSeconds) && publishedSeconds <= cutoffSeconds;
+    })
     .slice(0, 8);
 }
 
-function formatNewsTime(value: string) {
+function formatNewsDateTime(value: string) {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return "";
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" }).format(new Date(timestamp));
+  return new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+    timeZone: "America/New_York",
+    timeZoneName: "short",
+    year: "numeric",
+  }).format(new Date(timestamp));
+}
+
+function newsLabels(item: LiveNewsArticle) {
+  const labels = [item.ticker, ...(item.channels ?? []), ...(item.tags ?? [])]
+    .map((label) => String(label || "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(labels)).slice(0, 5);
 }
 
 function marketStrengthStyle(value: number): CSSProperties {
