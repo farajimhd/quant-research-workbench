@@ -202,7 +202,7 @@ type StageOrderContext = {
 
 const LIVE_SESSION_STORAGE_KEY = "quant-research-workbench.live-trading.session";
 const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.live-trading.layout";
-const LIVE_LAYOUT_VERSION = 3;
+const LIVE_LAYOUT_VERSION = 4;
 const LIVE_LAYOUTS_STORAGE_KEY = "quant-research-workbench.live-trading.named-layouts";
 const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.live-trading.shared-state";
 const LIVE_SAVED_SIMULATIONS_STORAGE_KEY = "quant-research-workbench.live-trading.saved-simulations";
@@ -211,8 +211,9 @@ const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.live-trading.sc
 const LIVE_CHART_VISIBILITY_STORAGE_KEY = "quant-research-workbench.live-trading.chart-visibility.v1";
 const LIVE_SIGNAL_SEARCH_BATCH_MINUTES = 10;
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
-const LIVE_PORTFOLIO_COLLAPSED_HEIGHT = 118;
-const LIVE_PORTFOLIO_EXPANDED_HEIGHT = 320;
+const LIVE_METRICS_DOCK_HEIGHT = 86;
+const LIVE_PORTFOLIO_DEFAULT_HEIGHT = 210;
+const LIVE_PORTFOLIO_EXPANDED_HEIGHT = 360;
 const MAIN_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
 const LOWER_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend"];
 const LIVE_SCANNER_COLUMNS = [
@@ -237,7 +238,7 @@ const LIVE_SCANNER_COLUMNS = [
   "spread_bps_abs",
 ];
 
-const CORE_WINDOW_IDS: WindowId[] = ["portfolio", "scanner", "trade"];
+const CORE_WINDOW_IDS: WindowId[] = ["portfolio", "scanner"];
 
 const DEFAULT_SCANNER_QUERY_GROUPS: ScannerQueryGroup[] = [
   {
@@ -258,18 +259,17 @@ function buildDefaultCanvasLayout(childCanvas: boolean): { chartWindows: ChartWi
   const height = Math.max(780, window.innerHeight - 86);
   const gap = 10;
   const margin = 12;
-  const portfolioH = LIVE_PORTFOLIO_COLLAPSED_HEIGHT;
-  const mainY = margin + portfolioH + gap;
+  const metricsH = LIVE_METRICS_DOCK_HEIGHT;
+  const mainY = margin + metricsH + gap;
   const availableH = Math.max(420, height - mainY - margin);
   const leftW = Math.max(250, Math.round(width * 0.2));
-  const scannerH = Math.round(availableH * 0.65) - Math.round(gap / 2);
-  const tradeH = availableH - scannerH - gap;
+  const portfolioH = Math.min(LIVE_PORTFOLIO_DEFAULT_HEIGHT, Math.max(170, Math.round(availableH * 0.34)));
+  const scannerH = Math.max(240, availableH - portfolioH - gap);
   const chartX = margin + leftW + gap;
   const chartW = Math.round(width * 0.58);
   const layouts: Record<WindowId, WindowLayout> = {
-    portfolio: { fullscreen: false, h: portfolioH, minimized: false, w: width - margin * 2, x: margin, y: margin, z: 3 },
-    scanner: { fullscreen: false, h: scannerH, minimized: false, w: leftW, x: margin, y: mainY, z: 1 },
-    trade: { fullscreen: false, h: tradeH, minimized: false, w: leftW, x: margin, y: mainY + scannerH + gap, z: 2 },
+    portfolio: { fullscreen: false, h: portfolioH, minimized: false, w: leftW, x: margin, y: mainY, z: 3 },
+    scanner: { fullscreen: false, h: scannerH, minimized: false, w: leftW, x: margin, y: mainY + portfolioH + gap, z: 1 },
     chart: { fullscreen: false, h: availableH, minimized: false, w: chartW, x: chartX, y: mainY, z: 4 },
   };
   return { chartWindows: [], layouts, windows: childCanvas ? [] : [...CORE_WINDOW_IDS] };
@@ -979,7 +979,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         return {
           ...current,
           portfolio: nextOpen
-            ? { ...current.portfolio, fullscreen: false, h: LIVE_PORTFOLIO_EXPANDED_HEIGHT, minimized: false, w: Math.max(1180, window.innerWidth - 112) - 24, x: 12, y: 12, z: topZ + 1 }
+            ? { ...current.portfolio, fullscreen: false, h: LIVE_PORTFOLIO_EXPANDED_HEIGHT, minimized: false, z: topZ + 1 }
             : { ...defaults.portfolio, z: topZ + 1 },
         };
       });
@@ -1084,6 +1084,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         </div>
       </section>
       <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace" style={{ minHeight: workspaceMinHeight }}>
+        <MetricsDock metrics={portfolioMetrics} />
         {!openWindows.length ? <div className="live-empty-canvas">This canvas is empty. Open scanner rows here or pop containers into this canvas from another tab.</div> : null}
         {openWindows.map((windowId) => {
           const layout = layouts[windowId] ?? layouts.chart ?? buildDefaultCanvasLayout(false).layouts.chart;
@@ -1092,7 +1093,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
               <WorkspaceWindow key={windowId} canvasTargets={canvasTargets} id={windowId} layout={layout} title="Scanner" icon={<TrendingUp size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onMoveToCanvas={moveWindowToCanvas} onPopOut={createChildCanvas}>
                 <ScannerContainer
                   loading={loading}
-                  positions={positions}
                   query={scannerQuery}
                   queryGroups={scannerQueryGroups}
                   queryName={scannerQueryName}
@@ -1113,27 +1113,11 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
               <WorkspaceWindow key={windowId} canvasTargets={canvasTargets} id={windowId} layout={layout} title="Portfolio" icon={<WalletCards size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onMoveToCanvas={moveWindowToCanvas} onPopOut={createChildCanvas}>
                 <PortfolioContainer
                   detailsOpen={portfolioDetailsOpen}
-                  metrics={portfolioMetrics}
                   orders={orders}
+                  positions={positions}
                   selectedTab={portfolioTab}
                   onTabChange={setPortfolioTab}
                   onToggleDetails={togglePortfolioDetails}
-                />
-              </WorkspaceWindow>
-            );
-          }
-          if (windowId === "trade") {
-            return (
-              <WorkspaceWindow key={windowId} canvasTargets={canvasTargets} id={windowId} layout={layout} title="Trade" icon={<Target size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onMoveToCanvas={moveWindowToCanvas} onPopOut={createChildCanvas}>
-                <TradeContainer
-                  decisions={decisions}
-                  draft={tradeDraft}
-                  selectedOpen={selectedOpen}
-                  selectedProfile={selectedProfile}
-                  selectedTicker={selectedTicker}
-                  onDecision={markDecision}
-                  onDraftChange={setTradeDraft}
-                  onStage={stageOrder}
                 />
               </WorkspaceWindow>
             );
@@ -1466,7 +1450,6 @@ function ScannerContainer({
   onQueryNameChange,
   onRowSelect,
   onSaveQueryGroup,
-  positions,
   query,
   queryGroups,
   queryName,
@@ -1475,7 +1458,6 @@ function ScannerContainer({
   snapshot,
 }: {
   loading: boolean;
-  positions: PositionRow[];
   query: BackendTableQuery;
   queryGroups: ScannerQueryGroup[];
   queryName: string;
@@ -1491,7 +1473,6 @@ function ScannerContainer({
   const queryPresets: BackendQueryPreset[] = queryGroups.map((group) => ({ id: group.id, label: group.name, query: group.query }));
   return (
     <div className="live-scanner-stack">
-      {positions.length ? <ScannerPositionsBox positions={positions} /> : null}
       <DataTable
         backendQuery={{
           columns: snapshot?.columns?.length ? snapshot.columns : LIVE_SCANNER_COLUMNS,
@@ -1517,141 +1498,95 @@ function ScannerContainer({
   );
 }
 
-function ScannerPositionsBox({ positions }: { positions: PositionRow[] }) {
+function MetricsDock({ metrics }: { metrics: ReturnType<typeof buildPortfolioMetrics> }) {
   return (
-    <section className="live-scanner-positions" aria-label="Open positions">
-      <div className="live-scanner-positions-header">
+    <section className="live-metrics-dock" aria-label="Portfolio metrics">
+      <div className="live-debug-metric-strip" style={{ gridTemplateColumns: `repeat(${Math.max(metrics.items.length, 1)}, minmax(106px, 1fr))` }}>
+        {metrics.items.map((item) => (
+          <article className="live-debug-metric-card" data-tone={item.tone} key={item.label}>
+            <span className="live-debug-metric-icon">{item.icon}</span>
+            <span className="live-debug-metric-label">{item.label}</span>
+            <strong>{item.value}</strong>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PortfolioPositions({ positions }: { positions: PositionRow[] }) {
+  return (
+    <section className="live-portfolio-positions" aria-label="Open positions">
+      <div className="live-portfolio-positions-header">
         <span>Open Positions</span>
         <strong>{positions.length}</strong>
       </div>
-      <div className="live-scanner-position-list">
-        {positions.map((position) => {
-          const pnlTone = position.unrealized_pnl >= 0 ? "positive" : "negative";
-          return (
-            <article className={`live-scanner-position-card ${pnlTone}`} key={position.symbol}>
-              <div className="live-scanner-position-main">
-                <strong>{position.symbol}</strong>
-                <span>{integer(position.quantity)} sh</span>
-              </div>
-              <div>
-                <span>Mark</span>
-                <strong>{money(position.mark)}</strong>
-              </div>
-              <div>
-                <span>P/L</span>
-                <strong>{money(position.unrealized_pnl)}</strong>
-                <small>{percent(position.unrealized_pnl_pct)}</small>
-              </div>
-            </article>
-          );
-        })}
-      </div>
+      {positions.length ? (
+        <div className="live-portfolio-position-list">
+          {positions.map((position) => {
+            const pnlTone = position.unrealized_pnl >= 0 ? "positive" : "negative";
+            return (
+              <article className={`live-portfolio-position-card ${pnlTone}`} key={position.symbol}>
+                <div className="live-portfolio-position-main">
+                  <strong>{position.symbol}</strong>
+                  <span>{integer(position.quantity)} sh</span>
+                </div>
+                <div>
+                  <span>Avg</span>
+                  <strong>{money(position.avg_price)}</strong>
+                </div>
+                <div>
+                  <span>Mark</span>
+                  <strong>{money(position.mark)}</strong>
+                </div>
+                <div>
+                  <span>P/L</span>
+                  <strong>{money(position.unrealized_pnl)}</strong>
+                  <small>{percent(position.unrealized_pnl_pct)}</small>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="live-empty-positions">No open positions.</div>
+      )}
     </section>
   );
 }
 
 function PortfolioContainer({
   detailsOpen,
-  metrics,
   onToggleDetails,
   onTabChange,
   orders,
+  positions,
   selectedTab,
 }: {
   detailsOpen: boolean;
-  metrics: ReturnType<typeof buildPortfolioMetrics>;
   onToggleDetails: () => void;
   onTabChange: (tab: string) => void;
   orders: OrderRow[];
+  positions: PositionRow[];
   selectedTab: string;
 }) {
-  const tabs = ["Trades", "Orders"];
+  const tabs = ["Open Positions", "P/L", "Trades", "Orders"];
   const activeTab = tabs.includes(selectedTab) ? selectedTab : tabs[0];
   return (
     <div className={detailsOpen ? "live-container-stack portfolio-expanded" : "live-container-stack"}>
-      <div className="live-portfolio-header">
-        <div className="live-debug-metric-strip" style={{ gridTemplateColumns: `repeat(${Math.max(metrics.items.length, 1)}, minmax(106px, 1fr))` }}>
-          {metrics.items.map((item) => (
-            <article className="live-debug-metric-card" data-tone={item.tone} key={item.label}>
-              <span className="live-debug-metric-icon">{item.icon}</span>
-              <span className="live-debug-metric-label">{item.label}</span>
-              <strong>{item.value}</strong>
-            </article>
-          ))}
-        </div>
-      </div>
+      <PortfolioPositions positions={positions} />
       <button className="live-portfolio-expand-button" onClick={onToggleDetails} title={detailsOpen ? "Hide tabs" : "Show tabs"} type="button">
         {detailsOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
       </button>
       {detailsOpen ? (
         <>
           <Tabs tabs={tabs} active={activeTab} onChange={onTabChange} />
+          {activeTab === "Open Positions" ? <DataTable rows={positions} empty="No open positions." /> : null}
+          {activeTab === "P/L" ? <DataTable rows={positions.map((row) => ({ symbol: row.symbol, unrealized_pnl: row.unrealized_pnl, unrealized_pnl_pct: row.unrealized_pnl_pct, mark: row.mark, avg_price: row.avg_price }))} empty="No P/L rows." /> : null}
           {activeTab === "Trades" ? <DataTable rows={[]} empty="No completed trades yet." /> : null}
           {activeTab === "Orders" ? <DataTable rows={orders} empty="No staged orders." /> : null}
         </>
       ) : null}
-    </div>
-  );
-}
-
-function TradeContainer({
-  decisions,
-  draft,
-  onDecision,
-  onDraftChange,
-  onStage,
-  selectedOpen,
-  selectedProfile,
-  selectedTicker,
-}: {
-  decisions: Record<string, DecisionState>;
-  draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string };
-  onDecision: (state: DecisionState) => void;
-  onDraftChange: (draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string }) => void;
-  onStage: (side?: "BUY" | "SELL", status?: string) => void;
-  selectedOpen: number;
-  selectedProfile: Record<string, unknown> | null;
-  selectedTicker: string;
-}) {
-  const currentDecision = selectedTicker ? decisions[selectedTicker] : undefined;
-  return (
-    <div className="live-container-stack">
-      <div className="live-trade-symbol">
-        <span>Symbol</span>
-        <strong>{selectedTicker || "-"}</strong>
-        <small>{currentDecision ? `Marked ${currentDecision}` : "No decision"}</small>
-      </div>
-      <div className="live-ticket-grid">
-        <TicketMetric label="Open" value={selectedOpen ? money(selectedOpen) : "-"} />
-        <TicketMetric label="Entry" value={money(numberValue(selectedProfile, "suggested_entry"))} />
-        <TicketMetric label="Stop" value={money(numberValue(selectedProfile, "suggested_stop"))} tone="risk" />
-        <TicketMetric label="Setup" value={stringValue(selectedProfile, "live_setup_group") || "-"} />
-      </div>
-      <div className="live-trade-form">
-        <LiveSelect label="Side" value={draft.side} values={["BUY", "SELL"]} onChange={(value) => onDraftChange({ ...draft, side: value as "BUY" | "SELL" })} />
-        <LiveSelect label="Type" value={draft.type} values={["LIMIT", "MARKET", "STOP"]} onChange={(value) => onDraftChange({ ...draft, type: value })} />
-        <LiveField label="Quantity" type="number" value={draft.quantity} onChange={(value) => onDraftChange({ ...draft, quantity: value })} />
-        <LiveField label="Limit" type="number" value={draft.limit} onChange={(value) => onDraftChange({ ...draft, limit: value })} />
-        <LiveField label="Stop" type="number" value={draft.stop} onChange={(value) => onDraftChange({ ...draft, stop: value })} />
-      </div>
-      <div className="live-decision-actions">
-        <button className="button primary" disabled={!selectedTicker} onClick={() => onDecision("approved")} type="button">
-          <Target size={15} /> Approve
-        </button>
-        <button className="button secondary" disabled={!selectedTicker} onClick={() => onDecision("watching")} type="button">
-          <Eye size={15} /> Watch
-        </button>
-        <button className="button secondary" disabled={!selectedTicker} onClick={() => onDecision("skipped")} type="button">
-          <PauseCircle size={15} /> Skip
-        </button>
-        <button className="button secondary" disabled={!selectedTicker} onClick={() => onStage()} type="button">
-          <Save size={15} /> Stage
-        </button>
-      </div>
-      <div className="live-reason-columns">
-        <ReasonList icon={<TrendingUp size={15} />} items={splitList(selectedProfile?.live_reasons)} title="Reasons" />
-        <ReasonList icon={<ShieldAlert size={15} />} items={splitList(selectedProfile?.live_risks)} title="Risks" />
-      </div>
     </div>
   );
 }
@@ -2289,24 +2224,6 @@ function LiveSelect({ label, onChange, value, values }: { label: string; onChang
   );
 }
 
-function TicketMetric({ label, tone, value }: { label: string; tone?: "risk"; value: string }) {
-  return (
-    <div className={tone ? `live-ticket-metric ${tone}` : "live-ticket-metric"}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function ReasonList({ icon, items, title }: { icon: ReactNode; items: string[]; title: string }) {
-  return (
-    <div className="live-reason-list">
-      <div className="live-reason-title">{icon}<span>{title}</span></div>
-      {items.length ? items.map((item) => <span key={item}>{item}</span>) : <small>-</small>}
-    </div>
-  );
-}
-
 function availableSessionDates(records: RecordRow[]) {
   return Array.from(new Set(records.filter((record) => record.exists && record.group === "bars" && record.timeframe === "1m").map((record) => record.session_date))).sort();
 }
@@ -2668,7 +2585,6 @@ function liveWorkspaceMinHeight(openWindows: WindowId[], layouts: Record<WindowI
 function coreWindowTitle(id: WindowId) {
   if (id === "portfolio") return "Portfolio";
   if (id === "scanner") return "Scanner";
-  if (id === "trade") return "Trade";
   return id;
 }
 

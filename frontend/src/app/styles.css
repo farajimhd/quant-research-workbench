@@ -9410,6 +9410,19 @@ button {
   min-height: 960px;
 }
 
+.live-metrics-dock {
+  background: color-mix(in oklab, var(--surface) 94%, var(--surface-alt));
+  border: 1px solid color-mix(in oklab, var(--border) 84%, var(--surface-alt));
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  left: 12px;
+  overflow: hidden;
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  z-index: 20;
+}
+
 .live-global-status-strip {
   align-items: center;
   background: color-mix(in oklab, var(--surface) 86%, transparent);
@@ -10308,7 +10321,7 @@ button {
   padding: 24px;
   position: absolute;
   right: 12px;
-  top: 12px;
+  top: 108px;
 }
 
 .live-portfolio-header {
@@ -10493,7 +10506,7 @@ button {
   color: var(--info);
 }
 
-.live-scanner-positions {
+.live-portfolio-positions {
   background: color-mix(in oklab, var(--surface) 94%, var(--surface-alt));
   border: 1px solid color-mix(in oklab, var(--border) 84%, var(--surface-alt));
   border-radius: 8px;
@@ -10504,14 +10517,14 @@ button {
   width: 100%;
 }
 
-.live-scanner-positions-header {
+.live-portfolio-positions-header {
   align-items: center;
   display: flex;
   justify-content: space-between;
   min-height: 16px;
 }
 
-.live-scanner-positions-header span {
+.live-portfolio-positions-header span {
   color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 900;
@@ -10519,7 +10532,7 @@ button {
   text-transform: uppercase;
 }
 
-.live-scanner-positions-header strong {
+.live-portfolio-positions-header strong {
   align-items: center;
   background: color-mix(in oklab, var(--info) 12%, var(--surface));
   border: 1px solid color-mix(in oklab, var(--info) 28%, var(--border));
@@ -10534,7 +10547,7 @@ button {
   padding: 0 6px;
 }
 
-.live-scanner-position-list {
+.live-portfolio-position-list {
   display: grid;
   gap: 6px;
   max-height: 138px;
@@ -10542,7 +10555,7 @@ button {
   padding-right: 2px;
 }
 
-.live-scanner-position-card {
+.live-portfolio-position-card {
   align-items: center;
   background: color-mix(in oklab, var(--surface-alt) 34%, var(--surface));
   border: 1px solid var(--border);
@@ -10550,27 +10563,27 @@ button {
   border-radius: 7px;
   display: grid;
   gap: 6px;
-  grid-template-columns: minmax(58px, 0.95fr) minmax(48px, 0.7fr) minmax(70px, 1fr);
+  grid-template-columns: minmax(58px, 0.9fr) repeat(3, minmax(48px, 1fr));
   min-height: 42px;
   padding: 7px;
 }
 
-.live-scanner-position-card.positive {
+.live-portfolio-position-card.positive {
   border-left-color: var(--success);
 }
 
-.live-scanner-position-card.negative {
+.live-portfolio-position-card.negative {
   border-left-color: var(--danger);
 }
 
-.live-scanner-position-card div {
+.live-portfolio-position-card div {
   display: grid;
   gap: 2px;
   min-width: 0;
 }
 
-.live-scanner-position-card span,
-.live-scanner-position-card small,
+.live-portfolio-position-card span,
+.live-portfolio-position-card small,
 .live-empty-positions {
   color: var(--muted-foreground);
   font-size: 10px;
@@ -10582,7 +10595,7 @@ button {
   white-space: nowrap;
 }
 
-.live-scanner-position-card strong {
+.live-portfolio-position-card strong {
   color: var(--foreground);
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
@@ -10592,16 +10605,16 @@ button {
   white-space: nowrap;
 }
 
-.live-scanner-position-main strong {
+.live-portfolio-position-main strong {
   font-family: var(--font-display);
   font-size: 14px;
 }
 
-.live-scanner-position-card.positive div:last-child strong {
+.live-portfolio-position-card.positive div:last-child strong {
   color: var(--success);
 }
 
-.live-scanner-position-card.negative div:last-child strong {
+.live-portfolio-position-card.negative div:last-child strong {
   color: var(--danger);
 }
 
