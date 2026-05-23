@@ -2106,55 +2106,58 @@ function ChartTradePanel({
           ))}
         </div>
       </div>
-      <div className="live-strategy-row">
-        <LiveSelect label="Strategy" value={strategy} values={["Manual", "Momentum Assist"]} onChange={setStrategy} />
-        <button className={settingsOpen ? "icon-button active" : "icon-button"} title="Strategy settings" type="button" onClick={() => setSettingsOpen((current) => !current)}>
-          <Settings size={16} />
-        </button>
-      </div>
-      {settingsOpen ? (
-        <div className="live-strategy-settings">
-          <LiveSelect label="Sizing" value={strategySettings.sizeMode} values={["risk_pct", "dollar", "cash_pct", "shares"]} onChange={(value) => setStrategySettings((current) => ({ ...current, sizeMode: value }))} />
-          <LiveField label={sizeModeLabel(strategySettings.sizeMode)} type="number" value={strategySettings.sizeValue} onChange={(value) => setStrategySettings((current) => ({ ...current, sizeValue: value }))} />
-          <LiveSelect label="Order Type" value={strategySettings.orderType} values={["LIMIT", "MARKET", "STOP"]} onChange={(value) => setStrategySettings((current) => ({ ...current, orderType: value }))} />
-          <LiveField label="Stop Buffer %" type="number" value={strategySettings.stopBufferPct} onChange={(value) => setStrategySettings((current) => ({ ...current, stopBufferPct: value }))} />
-        </div>
-      ) : null}
-      <div className="live-action-panel">
-        {actions.map((action) => (
-          <button
-            key={action.id}
-            className={`live-strategy-action ${action.tone}`}
-            disabled={action.disabled || !selectedTicker || action.quantity <= 0}
-            title={action.description}
-            type="button"
-            onClick={() => stageStrategyAction(action)}
-          >
-            <span>{action.label}</span>
-            <strong>{action.side === "BUY" ? "Buy" : "Sell"} {integer(action.quantity)}</strong>
-            <small>{money(action.limit)}</small>
+      <div className="live-execution-panel">
+        <div className="live-strategy-row">
+          <LiveSelect label="Strategy" value={strategy} values={["Manual", "Momentum Assist"]} onChange={setStrategy} />
+          <button className={settingsOpen ? "icon-button active" : "icon-button"} title="Strategy settings" type="button" onClick={() => setSettingsOpen((current) => !current)}>
+            <Settings size={15} />
           </button>
-        ))}
-      </div>
-      <div className="live-ticket-grid compact">
-        <TicketMetric label="Entry Size" value={`${integer(entryQuantity)} sh`} />
-        <TicketMetric label="Entry Risk" value={money(Math.max(0, quote.ask - longStop) * entryQuantity)} />
-        <TicketMetric label="Cash" value={money(availableCash)} />
-        <TicketMetric label="Staged" value={integer(openOrders)} />
-      </div>
-      {position ? (
-        <div className={(quote.bid - position.avg_price) * position.quantity >= 0 ? "live-chart-position-card positive" : "live-chart-position-card negative"}>
-          <div>
-            <span>Open Position</span>
-            <strong>{integer(position.quantity)} @ {money(position.avg_price)}</strong>
-          </div>
-          <div>
-            <span>Live P/L</span>
-            <strong>{money((quote.bid - position.avg_price) * position.quantity)}</strong>
-            <small>{percent(position.avg_price > 0 ? quote.bid / position.avg_price - 1 : 0)}</small>
-          </div>
         </div>
-      ) : null}
+        {settingsOpen ? (
+          <div className="live-strategy-settings">
+            <LiveSelect label="Sizing" value={strategySettings.sizeMode} values={["risk_pct", "dollar", "cash_pct", "shares"]} onChange={(value) => setStrategySettings((current) => ({ ...current, sizeMode: value }))} />
+            <LiveField label={sizeModeLabel(strategySettings.sizeMode)} type="number" value={strategySettings.sizeValue} onChange={(value) => setStrategySettings((current) => ({ ...current, sizeValue: value }))} />
+            <LiveSelect label="Order Type" value={strategySettings.orderType} values={["LIMIT", "MARKET", "STOP"]} onChange={(value) => setStrategySettings((current) => ({ ...current, orderType: value }))} />
+            <LiveField label="Stop Buffer %" type="number" value={strategySettings.stopBufferPct} onChange={(value) => setStrategySettings((current) => ({ ...current, stopBufferPct: value }))} />
+          </div>
+        ) : null}
+        <div className={`live-action-panel count-${actions.length}`}>
+          {actions.map((action) => (
+            <button
+              key={action.id}
+              className={`live-strategy-action ${action.tone}`}
+              disabled={action.disabled || !selectedTicker || action.quantity <= 0}
+              title={action.description}
+              type="button"
+              onClick={() => stageStrategyAction(action)}
+            >
+              <span>{action.label}</span>
+              <strong>{action.side === "BUY" ? "Buy" : action.label}</strong>
+              <small>{integer(action.quantity)} sh</small>
+              <em>{money(action.limit)}</em>
+            </button>
+          ))}
+        </div>
+        <dl className="live-execution-summary">
+          <div><dt>Size</dt><dd>{integer(entryQuantity)} sh</dd></div>
+          <div><dt>Risk</dt><dd>{money(Math.max(0, quote.ask - longStop) * entryQuantity)}</dd></div>
+          <div><dt>Cash</dt><dd>{money(availableCash)}</dd></div>
+          <div><dt>Staged</dt><dd>{integer(openOrders)}</dd></div>
+        </dl>
+        {position ? (
+          <div className={(quote.bid - position.avg_price) * position.quantity >= 0 ? "live-chart-position-strip positive" : "live-chart-position-strip negative"}>
+            <div>
+              <span>{integer(position.quantity)} sh</span>
+              <strong>{money(position.avg_price)}</strong>
+            </div>
+            <div>
+              <span>P/L</span>
+              <strong>{money((quote.bid - position.avg_price) * position.quantity)}</strong>
+              <small>{percent(position.avg_price > 0 ? quote.bid / position.avg_price - 1 : 0)}</small>
+            </div>
+          </div>
+        ) : null}
+      </div>
     </aside>
   );
 }
