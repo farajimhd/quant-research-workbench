@@ -232,6 +232,7 @@ type ChartPanelProps = {
   errorMessage?: string;
   featureOptions: string[];
   indicatorOptions: string[];
+  initialFitMode?: "default" | "live_first_10";
   labelOptions?: ChartLabelOption[];
   loading?: boolean;
   normalizeTicker?: boolean;
@@ -298,6 +299,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   errorMessage,
   featureOptions,
   indicatorOptions,
+  initialFitMode = "default",
   labelOptions = [],
   loading = false,
   normalizeTicker = true,
@@ -441,7 +443,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       fitFirstDay(priceChartRef.current, fitCandles(payload));
     },
     fitRecent() {
-      fitReferenceOrRecent(priceChartRef.current, fitCandles(payload), reference, timeframe);
+      fitReferenceOrRecent(priceChartRef.current, fitCandles(payload), reference, timeframe, initialFitMode);
     },
     toggleFullscreen() {
       setFullscreen((value) => !value);
@@ -531,7 +533,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     priceChartRef.current = priceChart;
     const candleSeries = priceChart.addCandlestickSeries({
       ...candleSeriesOptions(chartSettingsRef.current),
-      autoscaleInfoProvider: padFlatAutoscale,
+      autoscaleInfoProvider: padCandleAutoscale,
       priceLineVisible: true
     });
     candleRef.current = candleSeries;
@@ -572,7 +574,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
         if (reference) {
           fitAroundReference(priceChartRef.current, currentPayload.candles, reference, timeframe);
         } else {
-          fitInitialRange(priceChartRef.current, currentPayload.candles);
+          fitInitialRange(priceChartRef.current, currentPayload.candles, timeframe, initialFitMode);
         }
         drawCurrentRegions();
         initialFitTimerRef.current = null;
@@ -582,7 +584,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       drawCurrentRegions();
     }
     refreshInteractionSync();
-  }, [payload, reference, referenceKey, ticker, timeframe]);
+  }, [initialFitMode, payload, reference, referenceKey, ticker, timeframe]);
 
   useEffect(() => {
     if (!priceChartRef.current || !payload?.candles.length || !reference) return;
@@ -2315,13 +2317,13 @@ function includeZeroInAutoscale(baseImplementation: () => AutoscaleInfo | null):
   };
 }
 
-function padFlatAutoscale(baseImplementation: () => AutoscaleInfo | null): AutoscaleInfo | null {
+function padCandleAutoscale(baseImplementation: () => AutoscaleInfo | null): AutoscaleInfo | null {
   const autoscale = baseImplementation();
   if (!autoscale) return autoscale;
   const minValue = autoscale.priceRange.minValue;
   const maxValue = autoscale.priceRange.maxValue;
-  if (maxValue !== minValue) return autoscale;
-  const padding = Math.max(0.01, Math.abs(maxValue) * 0.01);
+  const range = Math.abs(maxValue - minValue);
+  const padding = Math.max(0.01, range * 0.18, Math.abs(maxValue) * 0.003);
   return {
     ...autoscale,
     priceRange: {
@@ -2454,13 +2456,31 @@ function fitCandles(payload: ChartPayload | null | undefined) {
   );
 }
 
-function fitInitialRange(chart: IChartApi | null, candles: Candle[]) {
+function fitInitialRange(chart: IChartApi | null, candles: Candle[], timeframe = "", mode: ChartPanelProps["initialFitMode"] = "default") {
   if (!chart || !candles.length) return;
+  if (mode === "live_first_10") {
+    fitLiveFirstTenMinutes(chart, candles, timeframe);
+    return;
+  }
   if (hasMultipleMarketDates(candles)) {
     chart.timeScale().setVisibleLogicalRange({ from: -1, to: Math.max(8, candles.length) });
     return;
   }
   fitFirstDay(chart, candles);
+}
+
+function fitLiveFirstTenMinutes(chart: IChartApi | null, candles: Candle[], timeframe: string) {
+  if (!chart || !candles.length) return;
+  const timeline = candleDataForTimeframe(candles, timeframe);
+  const lastCandle = candles[candles.length - 1];
+  const lastIndex = nearestTimelineIndex(timeline, lastCandle.time);
+  const stepSeconds = chartTimeframeSeconds(timeframe) ?? 60;
+  const targetBars = Math.max(4, Math.ceil((10 * 60) / stepSeconds));
+  const halfSpan = Math.max(2, Math.ceil(targetBars / 2));
+  chart.timeScale().setVisibleLogicalRange({
+    from: Math.max(-1, lastIndex - halfSpan),
+    to: Math.min(timeline.length + halfSpan, lastIndex + halfSpan),
+  });
 }
 
 function fitRecent(chart: IChartApi | null, candles: Candle[]) {
@@ -2471,9 +2491,13 @@ function fitRecent(chart: IChartApi | null, candles: Candle[]) {
   chart.timeScale().setVisibleLogicalRange({ from: Math.max(-1, last - halfSpan), to: last + halfSpan });
 }
 
-function fitReferenceOrRecent(chart: IChartApi | null, candles: Candle[], reference: ChartReference | null | undefined, timeframe: string) {
+function fitReferenceOrRecent(chart: IChartApi | null, candles: Candle[], reference: ChartReference | null | undefined, timeframe: string, mode: ChartPanelProps["initialFitMode"] = "default") {
   if (reference) {
     fitAroundReference(chart, candles, reference, timeframe);
+    return;
+  }
+  if (mode === "live_first_10") {
+    fitLiveFirstTenMinutes(chart, candles, timeframe);
     return;
   }
   fitRecent(chart, candles);
@@ -2483,7 +2507,7 @@ function fitAroundReference(chart: IChartApi | null, candles: Candle[], referenc
   if (!chart || !candles.length) return;
   const referenceTime = resolveFitReferenceTime(reference, candles);
   if (referenceTime === null) {
-    fitInitialRange(chart, candles);
+    fitInitialRange(chart, candles, timeframe);
     return;
   }
   const timeline = candleDataForTimeframe(candles, timeframe);

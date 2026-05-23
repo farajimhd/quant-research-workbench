@@ -234,7 +234,7 @@ const LIVE_METRICS_DOCK_HEIGHT = 86;
 const LIVE_PORTFOLIO_DEFAULT_HEIGHT = 210;
 const LIVE_PORTFOLIO_EXPANDED_HEIGHT = 360;
 const MAIN_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
-const LOWER_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend"];
+const LOWER_DISPLAY_ITEMS = ["indicator.vwap"];
 const LIVE_SCANNER_COLUMNS = [
   "ticker",
   "bar_time_market",
@@ -1864,7 +1864,7 @@ function LiveChartWindow({
     const fiveMinuteStart = previousSessionDate(sessions, session.sessionDate, 2);
     Promise.allSettled([
       loadChart(scope.processed_root, session.sessionDate, session.sessionDate, mainTimeframe, chart.ticker, mainVisibleColumns),
-      loadChart(scope.processed_root, dayStart, session.sessionDate, "1d", chart.ticker, compactVisibleColumns),
+      loadChart(scope.processed_root, dayStart, session.sessionDate, "1d", chart.ticker, []),
       loadChart(scope.processed_root, fiveMinuteStart, session.sessionDate, "5m", chart.ticker, compactVisibleColumns),
     ])
       .then(([mainResult, dayResult, fiveResult]) => {
@@ -1999,6 +1999,7 @@ function ChartsContainer({
             enableFullscreen={false}
             featureOptions={mainOptions?.feature_columns ?? []}
             indicatorOptions={mainOptions?.standard_indicators ?? MAIN_DISPLAY_ITEMS}
+            initialFitMode="live_first_10"
             loading={chartLoading}
             liveEntryLine={liveEntryLine}
             onPeriodChange={() => undefined}
@@ -2028,22 +2029,23 @@ function ChartsContainer({
                 </div>
                 <ChartPanel
                   catalogColumns={catalog?.columns ?? []}
-                  displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
+                  displayItemOptions={[]}
                   emptyMessage="No daily chart data."
                   errorMessage={chartError}
                   enableFullscreen={false}
-                  featureOptions={compactOptions?.feature_columns ?? []}
-                  indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
+                  featureOptions={[]}
+                  indicatorOptions={[]}
                   loading={chartLoading}
                   daySeparatorsVisible={false}
                   onTickerChange={() => undefined}
                   onTimeframeChange={() => undefined}
-                  onVisibleColumnsChange={onCompactVisibleColumnsChange}
+                  onVisibleColumnsChange={() => undefined}
                   payload={dayPayload}
+                  showIndicatorControls={false}
                   ticker={selectedTicker}
                   timeframe="1d"
                   timeframes={["1d"]}
-                  visibleColumns={compactVisibleColumns}
+                  visibleColumns={[]}
                 />
               </div>
             ) : null}
@@ -2062,7 +2064,7 @@ function ChartsContainer({
                   errorMessage={chartError}
                   enableFullscreen={false}
                   featureOptions={compactOptions?.feature_columns ?? []}
-                  indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
+                  indicatorOptions={LOWER_DISPLAY_ITEMS}
                   loading={chartLoading}
                   onTickerChange={() => undefined}
                   onTimeframeChange={() => undefined}
