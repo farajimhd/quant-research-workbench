@@ -312,6 +312,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [selectedLayoutName, setSelectedLayoutName] = useState("");
   const [canvasTargetsVersion, setCanvasTargetsVersion] = useState(0);
   const canvasRemovedRef = useRef(false);
+  const ordersRef = useRef(orders);
+  const positionsRef = useRef(positions);
   const seekCancelRef = useRef(0);
   const warmedChartCacheKeysRef = useRef(new Set<string>());
   const scannerQueryKey = useMemo(() => JSON.stringify(scannerQuery), [scannerQuery]);
@@ -420,6 +422,14 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }, [decisions, orders, positions]);
 
   useEffect(() => {
+    ordersRef.current = orders;
+  }, [orders]);
+
+  useEffect(() => {
+    positionsRef.current = positions;
+  }, [positions]);
+
+  useEffect(() => {
     if (canvasRemovedRef.current) return;
     const payload = { chartWindows, layoutVersion: LIVE_LAYOUT_VERSION, layouts, windows: openWindows };
     window.localStorage.setItem(canvasStorageKey(canvasId), JSON.stringify(payload));
@@ -431,9 +441,16 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
       if (event.key === LIVE_SHARED_STATE_STORAGE_KEY && event.newValue) {
         try {
           const parsed = JSON.parse(event.newValue) as { decisions?: Record<string, DecisionState>; orders?: OrderRow[]; positions?: PositionRow[] };
-          setDecisions(parsed.decisions ?? {});
-          setOrders(parsed.orders ?? []);
-          setPositions(parsed.positions ?? []);
+          const incomingOrders = parsed.orders ?? [];
+          const incomingPositions = (parsed.positions ?? []).filter((row) => row.quantity > 0);
+          const isNewerOrderState = incomingOrders.length > ordersRef.current.length;
+          const isSameOrderStateWithPosition = incomingOrders.length === ordersRef.current.length && incomingPositions.length > 0;
+          const isInitialPositionSync = ordersRef.current.length === 0 && !positionsRef.current.length;
+          if (isNewerOrderState || isSameOrderStateWithPosition || isInitialPositionSync) {
+            setDecisions(parsed.decisions ?? {});
+            setOrders(incomingOrders);
+            setPositions(incomingPositions);
+          }
         } catch {
           // Ignore malformed cross-tab state.
         }
@@ -724,6 +741,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setOrders((current) => [order, ...current]);
     if (side === "BUY" && status !== "CANCELED") {
       setPositions((current) => upsertPosition(current, symbol, quantity, limit, stop, mark, session.sessionDate, session.barTime));
+    } else if (side === "SELL" && status !== "CANCELED") {
+      setPositions((current) => reducePosition(current, symbol, quantity, mark));
     }
   }
 
@@ -2345,6 +2364,21 @@ function upsertPosition(rows: PositionRow[], symbol: string, quantity: number, p
     unrealized_pnl_pct: avgPrice > 0 ? (mark / avgPrice) - 1 : 0,
   };
   return [row, ...rows.filter((item) => item.symbol !== symbol)];
+}
+
+function reducePosition(rows: PositionRow[], symbol: string, quantity: number, mark: number): PositionRow[] {
+  return rows.flatMap((row) => {
+    if (row.symbol !== symbol) return [row];
+    const nextQuantity = Math.max(0, row.quantity - quantity);
+    if (nextQuantity <= 0) return [];
+    return [{
+      ...row,
+      mark,
+      quantity: nextQuantity,
+      unrealized_pnl: (mark - row.avg_price) * nextQuantity,
+      unrealized_pnl_pct: row.avg_price > 0 ? (mark / row.avg_price) - 1 : 0,
+    }];
+  });
 }
 
 function buildPortfolioMetrics({ orders, positions }: { orders: OrderRow[]; positions: PositionRow[] }) {
