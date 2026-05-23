@@ -1999,7 +1999,7 @@ function ChartsContainer({
             enableFullscreen={false}
             featureOptions={mainOptions?.feature_columns ?? []}
             indicatorOptions={mainOptions?.standard_indicators ?? MAIN_DISPLAY_ITEMS}
-            initialFitMode="live_first_10"
+            initialFitMode="recent"
             loading={chartLoading}
             liveEntryLine={liveEntryLine}
             onPeriodChange={() => undefined}
@@ -2052,7 +2052,7 @@ function ChartsContainer({
             {showFiveMinuteChart ? (
               <div className="live-compact-chart">
                 <div className="live-compact-chart-header">
-                  <span>5m / last 2 days</span>
+                  <span>5m / last day</span>
                   <button className="toolbar-button compact" onClick={onToggleFiveMinuteChart} title="Hide 5m chart" type="button">
                     <X size={12} />
                   </button>
@@ -2066,6 +2066,7 @@ function ChartsContainer({
                   featureOptions={compactOptions?.feature_columns ?? []}
                   indicatorOptions={LOWER_DISPLAY_ITEMS}
                   loading={chartLoading}
+                  initialFitMode="last_market_day"
                   onTickerChange={() => undefined}
                   onTimeframeChange={() => undefined}
                   onVisibleColumnsChange={onCompactVisibleColumnsChange}

@@ -232,7 +232,7 @@ type ChartPanelProps = {
   errorMessage?: string;
   featureOptions: string[];
   indicatorOptions: string[];
-  initialFitMode?: "default" | "live_first_10";
+  initialFitMode?: "default" | "last_market_day" | "live_first_10" | "recent";
   labelOptions?: ChartLabelOption[];
   loading?: boolean;
   normalizeTicker?: boolean;
@@ -2462,6 +2462,14 @@ function fitInitialRange(chart: IChartApi | null, candles: Candle[], timeframe =
     fitLiveFirstTenMinutes(chart, candles, timeframe);
     return;
   }
+  if (mode === "recent") {
+    fitRecent(chart, candles);
+    return;
+  }
+  if (mode === "last_market_day") {
+    fitLastMarketDay(chart, candles, timeframe);
+    return;
+  }
   if (hasMultipleMarketDates(candles)) {
     chart.timeScale().setVisibleLogicalRange({ from: -1, to: Math.max(8, candles.length) });
     return;
@@ -2483,6 +2491,23 @@ function fitLiveFirstTenMinutes(chart: IChartApi | null, candles: Candle[], time
   });
 }
 
+function fitLastMarketDay(chart: IChartApi | null, candles: Candle[], timeframe: string) {
+  if (!chart || !candles.length) return;
+  const timeline = candleDataForTimeframe(candles, timeframe);
+  const lastCandle = candles[candles.length - 1];
+  const lastDay = marketDate(lastCandle.time);
+  const firstIndex = timeline.findIndex((item) => marketDate(item.time) === lastDay);
+  const lastIndex = nearestTimelineIndex(timeline, lastCandle.time);
+  if (firstIndex < 0) {
+    fitRecent(chart, candles);
+    return;
+  }
+  chart.timeScale().setVisibleLogicalRange({
+    from: Math.max(-1, firstIndex - 1),
+    to: Math.max(firstIndex + 8, lastIndex + 1),
+  });
+}
+
 function fitRecent(chart: IChartApi | null, candles: Candle[]) {
   if (!chart || !candles.length) return;
   const last = candles.length - 1;
@@ -2498,6 +2523,10 @@ function fitReferenceOrRecent(chart: IChartApi | null, candles: Candle[], refere
   }
   if (mode === "live_first_10") {
     fitLiveFirstTenMinutes(chart, candles, timeframe);
+    return;
+  }
+  if (mode === "last_market_day") {
+    fitLastMarketDay(chart, candles, timeframe);
     return;
   }
   fitRecent(chart, candles);
