@@ -440,7 +440,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
 
   useImperativeHandle(ref, () => ({
     fitFirstDay() {
-      fitFirstDay(priceChartRef.current, fitCandles(payload));
+      fitFirstDay(priceChartRef.current, fitCandles(payload), timeframe);
     },
     fitRecent() {
       fitReferenceOrRecent(priceChartRef.current, fitCandles(payload), reference, timeframe, initialFitMode);
@@ -1029,7 +1029,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
           <Settings size={15} />
         </button>
         <span className="toolbar-divider" />
-        <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, fitCandles(payload))}><CalendarRange size={15} /></button>
+        <button className="toolbar-button" type="button" title="Fit first day" onClick={() => fitFirstDay(priceChartRef.current, fitCandles(payload), timeframe)}><CalendarRange size={15} /></button>
         <button className="toolbar-button" type="button" title={reference ? "Fit selected trade" : "Fit recent"} onClick={() => fitReferenceOrRecent(priceChartRef.current, fitCandles(payload), reference, timeframe)}><LocateFixed size={15} /></button>
         {enableFullscreen ? (
           <>
@@ -2433,12 +2433,13 @@ const marketDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric"
 });
 
-function fitFirstDay(chart: IChartApi | null, candles: Candle[]) {
+function fitFirstDay(chart: IChartApi | null, candles: Candle[], timeframe = "") {
   if (!chart || !candles.length) return;
+  const timeline = candleDataForTimeframe(candles, timeframe);
   const firstDay = marketDate(candles[0].time);
   let lastIndex = 0;
-  candles.forEach((candle, index) => {
-    if (marketDate(candle.time) === firstDay) {
+  timeline.forEach((item, index) => {
+    if (marketDate(item.time) === firstDay) {
       lastIndex = index;
     }
   });
@@ -2463,7 +2464,7 @@ function fitInitialRange(chart: IChartApi | null, candles: Candle[], timeframe =
     return;
   }
   if (mode === "recent") {
-    fitRecent(chart, candles);
+    fitRecent(chart, candles, timeframe);
     return;
   }
   if (mode === "last_market_day") {
@@ -2471,10 +2472,11 @@ function fitInitialRange(chart: IChartApi | null, candles: Candle[], timeframe =
     return;
   }
   if (hasMultipleMarketDates(candles)) {
-    chart.timeScale().setVisibleLogicalRange({ from: -1, to: Math.max(8, candles.length) });
+    const timeline = candleDataForTimeframe(candles, timeframe);
+    chart.timeScale().setVisibleLogicalRange({ from: -1, to: Math.max(8, timeline.length) });
     return;
   }
-  fitFirstDay(chart, candles);
+  fitFirstDay(chart, candles, timeframe);
 }
 
 function fitLiveFirstTenMinutes(chart: IChartApi | null, candles: Candle[], timeframe: string) {
@@ -2499,7 +2501,7 @@ function fitLastMarketDay(chart: IChartApi | null, candles: Candle[], timeframe:
   const firstIndex = timeline.findIndex((item) => marketDate(item.time) === lastDay);
   const lastIndex = nearestTimelineIndex(timeline, lastCandle.time);
   if (firstIndex < 0) {
-    fitRecent(chart, candles);
+    fitRecent(chart, candles, timeframe);
     return;
   }
   chart.timeScale().setVisibleLogicalRange({
@@ -2508,12 +2510,14 @@ function fitLastMarketDay(chart: IChartApi | null, candles: Candle[], timeframe:
   });
 }
 
-function fitRecent(chart: IChartApi | null, candles: Candle[]) {
+function fitRecent(chart: IChartApi | null, candles: Candle[], timeframe = "") {
   if (!chart || !candles.length) return;
-  const last = candles.length - 1;
-  const span = Math.min(180, Math.max(60, Math.ceil(candles.length * 0.18)));
+  const timeline = candleDataForTimeframe(candles, timeframe);
+  const lastCandle = candles[candles.length - 1];
+  const last = nearestTimelineIndex(timeline, lastCandle.time);
+  const span = Math.min(180, Math.max(60, Math.ceil(timeline.length * 0.18)));
   const halfSpan = Math.ceil(span / 2);
-  chart.timeScale().setVisibleLogicalRange({ from: Math.max(-1, last - halfSpan), to: last + halfSpan });
+  chart.timeScale().setVisibleLogicalRange({ from: last - halfSpan, to: last + halfSpan });
 }
 
 function fitReferenceOrRecent(chart: IChartApi | null, candles: Candle[], reference: ChartReference | null | undefined, timeframe: string, mode: ChartPanelProps["initialFitMode"] = "default") {
@@ -2529,7 +2533,7 @@ function fitReferenceOrRecent(chart: IChartApi | null, candles: Candle[], refere
     fitLastMarketDay(chart, candles, timeframe);
     return;
   }
-  fitRecent(chart, candles);
+  fitRecent(chart, candles, timeframe);
 }
 
 function fitAroundReference(chart: IChartApi | null, candles: Candle[], reference: ChartReference, timeframe: string) {
