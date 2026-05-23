@@ -602,7 +602,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
           await warmChartCacheForRows(initialScanner?.snapshot.rows ?? []);
           if (canceled) return;
           setLiveClockMode("ready");
-          setLiveClockMessage("Data is ready. Initial scanner is loaded from the first bar. Press Start Trading to seek the first signal.");
+          setLiveClockMessage("Data is ready. Initial scanner is loaded from the first bar. Press Start Trading to begin paced simulation.");
         } else {
           setLiveClockMode("paused");
           setLiveClockMessage("Some provider artifacts are missing. Review the preload status before starting.");
@@ -664,25 +664,14 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   function startTradingSimulation() {
     if (liveClockMode !== "ready" || loading) return;
     setTradingStarted(true);
-    void beginTradingClock();
+    beginTradingClock();
   }
 
-  async function beginTradingClock() {
+  function beginTradingClock() {
     if (liveClockMode === "loading_data" || liveClockMode === "seeking") return;
-    const runId = seekCancelRef.current + 1;
-    seekCancelRef.current = runId;
-    setLiveClockMode("seeking");
-    setLiveClockMessage("Backend is scanning to the first signal.");
-    try {
-      const found = await runUntilNextAction(session.barTime, () => seekCancelRef.current !== runId);
-      if (seekCancelRef.current !== runId) return;
-      setLiveClockMode(found ? "running" : "complete");
-      setLiveClockMessage(found ? "Scanner signal found. Simulation pace starts now." : "No scanner signal found before the session cutoff.");
-    } catch (requestError) {
-      if (seekCancelRef.current !== runId) return;
-      setLiveClockMode("paused");
-      setLiveClockMessage(requestError instanceof Error ? requestError.message : "Scanner start failed.");
-    }
+    seekCancelRef.current += 1;
+    setLiveClockMode("running");
+    setLiveClockMessage("Simulation is pacing from the current bar. Use Next Signal to fast-forward.");
   }
 
   function refreshCurrentBar() {
@@ -726,7 +715,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
       return;
     }
     if (liveClockMode === "ready" || liveClockMode === "idle" || liveClockMode === "complete") {
-      void beginTradingClock();
+      beginTradingClock();
       return;
     }
     setLiveClockMode((mode) => {
