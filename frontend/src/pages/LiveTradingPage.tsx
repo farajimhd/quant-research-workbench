@@ -1281,8 +1281,10 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                 draft={tradeDraft}
                 mainTimeframe={mainTimeframe}
                 mainVisibleColumns={mainVisibleColumns}
+                marketRows={marketRows}
                 orders={orders}
                 positions={positions}
+                scannerRows={scannerRows}
                 scope={scope}
                 session={session}
                 sessions={sessions}
@@ -1772,6 +1774,7 @@ function LiveChartWindow({
   draft,
   mainTimeframe,
   mainVisibleColumns,
+  marketRows,
   onCompactVisibleColumnsChange,
   onDraftChange,
   onMainTimeframeChange,
@@ -1782,6 +1785,7 @@ function LiveChartWindow({
   onToggleFiveMinuteChart,
   orders,
   positions,
+  scannerRows,
   scope,
   session,
   sessions,
@@ -1795,8 +1799,10 @@ function LiveChartWindow({
   draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string };
   mainTimeframe: string;
   mainVisibleColumns: string[];
+  marketRows: Record<string, unknown>[];
   orders: OrderRow[];
   positions: PositionRow[];
+  scannerRows: Record<string, unknown>[];
   scope: Scope;
   session: TradingSession;
   sessions: string[];
@@ -1817,12 +1823,13 @@ function LiveChartWindow({
   const [fiveMinutePayload, setFiveMinutePayload] = useState<ChartPayload | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState("");
+  const liveRow = latestLiveChartRow(chart, marketRows, scannerRows);
   const selectedTime = clockTimestampSeconds(session.sessionDate, session.barTime) ?? rowTimestampSeconds(chart.row, session.sessionDate, session.barTime);
   const selectedOpen =
     chartOpenAtTime(mainPayload, selectedTime) ||
-    numberValue(chart.row, "current_open") ||
-    numberValue(chart.row, "open");
-  const quote = quoteFromRow(chart.row, selectedOpen);
+    numberValue(liveRow, "current_open") ||
+    numberValue(liveRow, "open");
+  const quote = quoteFromRow(liveRow, selectedOpen);
   const position = positions.find((row) => row.symbol === chart.ticker);
   const availableCash = availableCashFromState(positions, trades);
   const liveEntryLine = buildLiveEntryLine(position, quote.bid);
@@ -1835,7 +1842,7 @@ function LiveChartWindow({
       limit: quote.bid,
       mark: quote.bid,
       quantity: position.quantity,
-      row: chart.row,
+      row: liveRow,
       side: "SELL",
       status: "STAGED",
       stop: position.stop,
@@ -1900,7 +1907,7 @@ function LiveChartWindow({
       availableCash={availableCash}
       draft={draft}
       orders={orders}
-      row={chart.row}
+      row={liveRow}
       selectedTicker={chart.ticker}
       session={session}
       showDayChart={showDayChart}
@@ -2655,6 +2662,18 @@ function marketStateTableColumns(snapshotColumns: string[]) {
     ...importantColumns,
     ...snapshotColumns.filter((column) => !importantColumns.includes(column)),
   ];
+}
+
+function latestLiveChartRow(chart: ChartWindow, marketRows: Record<string, unknown>[], scannerRows: Record<string, unknown>[]) {
+  const ticker = chart.ticker.trim().toUpperCase();
+  const matchesTicker = (row: Record<string, unknown>) => stringValue(row, "ticker").trim().toUpperCase() === ticker;
+  const marketRow = marketRows.find(matchesTicker);
+  const scannerRow = scannerRows.find(matchesTicker);
+  return {
+    ...chart.row,
+    ...(scannerRow ?? {}),
+    ...(marketRow ?? {}),
+  };
 }
 
 function quoteFromRow(row: Record<string, unknown>, fallbackOpen: number) {
