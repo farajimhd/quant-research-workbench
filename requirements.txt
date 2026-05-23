@@ -5,3 +5,4 @@ pandas
 pandas-market-calendars
 pyarrow
 pypdf
+python-dotenv

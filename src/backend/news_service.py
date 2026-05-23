@@ -16,6 +16,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import polars as pl
+from dotenv import load_dotenv
 
 from src.data_provider.manifest import ArtifactRecord, upsert_artifact
 from src.data_provider.store import partition_path, write_frame
@@ -27,6 +28,7 @@ NEWS_TIMEFRAME = "event"
 NEWS_LOOKBACK_DAYS = 3
 NEWS_API_URL = "https://api.massive.com/benzinga/v2/news"
 NEW_YORK = ZoneInfo("America/New_York")
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 NEWS_COLUMNS: dict[str, pl.DataType] = {
     "provider": pl.Utf8,
@@ -150,11 +152,20 @@ def news_partition_path(processed_root: Path, session_date: date) -> Path:
 
 
 def massive_api_key() -> str:
+    load_news_env()
     for name in ("MASSIVE_API_KEY", "MASSIVE_STOCK_API_KEY", "POLYGON_API_KEY"):
         value = os.environ.get(name, "").strip()
         if value:
             return value
     return ""
+
+
+@lru_cache(maxsize=1)
+def load_news_env() -> None:
+    for env_path in (Path.cwd() / ".env", REPO_ROOT / ".env"):
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
+    load_dotenv(override=False)
 
 
 def fetch_benzinga_news(start_date: date, end_date_exclusive: date, api_key: str) -> list[dict[str, Any]]:
