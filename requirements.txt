@@ -4,3 +4,4 @@ uvicorn[standard]
 pandas
 pandas-market-calendars
 pyarrow
+pypdf

@@ -2007,6 +2007,9 @@ const COMPACT_COLUMN_LABELS: Record<string, string> = {
   live_bias: "Bias",
   live_reasons: "Reasons",
   live_risks: "Risks",
+  live_news_count: "News #",
+  live_news_latest_title: "Headline",
+  live_news_recency: "News",
   live_signal_query: "Query",
   live_signal_time: "Signal",
   open_vs_vwap_pct: "Open/VWAP",
@@ -2667,6 +2670,10 @@ function formatDateValue(value: Date) {
 
 function cellClassName(value: unknown, column: string) {
   const normalized = column.toLowerCase();
+  if (normalized === "live_news_recency") {
+    const recency = String(value ?? "none").toLowerCase();
+    return `data-table-cell live-news-recency ${["hot", "warm", "recent", "cold"].includes(recency) ? recency : "none"}`;
+  }
   const numeric = coerceNumber(value);
   if (!Number.isFinite(numeric)) return "data-table-cell";
   if (normalized.includes("pnl") || normalized.includes("return") || normalized.includes("change") || normalized.includes("pct")) {

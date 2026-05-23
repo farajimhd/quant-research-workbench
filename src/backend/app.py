@@ -57,6 +57,7 @@ from src.backend.market_data_service import (
     scope_defaults,
     source_scan,
 )
+from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.progress_model import build_progress_model
 from src.data_provider.calendar import market_sessions, scan_market_source
 from src.data_provider.catalog import provider_catalog, save_presentation_override
@@ -173,6 +174,13 @@ class LiveTradingNextSignalRequest(BaseModel):
     table_query: dict[str, Any] | None = None
     row_limit: int = Field(default=1000, ge=1, le=5000)
     max_steps: int | None = Field(default=None, ge=1, le=120)
+
+
+class LiveTradingNewsAtRequest(BaseModel):
+    processed_root: str = Field(default=str(DEFAULT_PROCESSED_ROOT))
+    session_date: date
+    bar_time: str = "04:00"
+    tickers: list[str] = Field(default_factory=list)
 
 
 def parse_date_param(value: date | None, fallback: str) -> date:
@@ -1438,6 +1446,7 @@ def live_trading_preload_payload(processed_root: Path, session_date: date) -> di
                 "missing_sessions": [session for session, record in zip(sessions, matched) if not record or not record.get("exists")][:10],
             }
         )
+    checks.append(ensure_benzinga_news_cache(processed_root, session_date))
     ready_count = sum(1 for check in checks if check["status"] == "ready")
     if ready_count == len(checks):
         try:
@@ -1450,6 +1459,21 @@ def live_trading_preload_payload(processed_root: Path, session_date: date) -> di
         "progress": round(ready_count / max(1, len(checks)), 4),
         "checks": checks,
     }
+
+
+@app.post("/api/live-trading/news-at")
+def live_trading_news_at(payload: LiveTradingNewsAtRequest) -> dict[str, Any]:
+    return news_at_payload(Path(payload.processed_root), payload.session_date, payload.bar_time, payload.tickers)
+
+
+@app.get("/api/live-trading/news-at")
+def live_trading_news_at_get(
+    processed_root: str = str(DEFAULT_PROCESSED_ROOT),
+    session_date: date = Query(...),
+    bar_time: str = "04:00",
+    tickers: str | None = None,
+) -> dict[str, Any]:
+    return news_at_payload(Path(processed_root), session_date, bar_time, parse_csv_list(tickers))
 
 
 @app.post("/api/live-trading/next-signal")

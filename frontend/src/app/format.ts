@@ -114,6 +114,7 @@ export function formatCell(key: string, value: unknown): string {
   const lower = key.toLowerCase();
   if (lower.includes("bytes")) return formatBytes(value);
   if ((lower === "gap_pct" || lower === "last_gap_pct") && isNumericLike(value)) return formatSignedPct(value);
+  if (lower === "live_news_recency") return String(value).toUpperCase();
   if (lower.includes("pct") || lower.includes("rate") || lower.includes("return")) return formatPct(value);
   if (isMoneyColumn(lower) && isNumericLike(value)) return formatMoney(value);
   if (typeof value === "number" && Math.abs(value) >= 10000) return formatNumber(value);

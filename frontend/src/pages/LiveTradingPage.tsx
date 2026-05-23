@@ -86,6 +86,7 @@ type LivePreloadCheck = {
   expected_sessions: number;
   group: string;
   label: string;
+  message?: string;
   missing_sessions: string[];
   ready_sessions: number;
   rows: number;
@@ -107,6 +108,33 @@ type LiveNextSignalPayload = {
   next_start_time?: string | null;
   snapshot: ScannerSnapshot;
   steps: number;
+};
+
+type LiveNewsArticle = {
+  age_minutes: number;
+  channels: string[];
+  published_et: string;
+  recency: string;
+  tags: string[];
+  ticker: string;
+  title: string;
+  url: string;
+};
+
+type LiveNewsSummary = {
+  live_news_count: number;
+  live_news_items: LiveNewsArticle[];
+  live_news_latest_time: string;
+  live_news_latest_title: string;
+  live_news_recency: string;
+  live_news_recent: boolean;
+};
+
+type LiveNewsPayload = {
+  articles: LiveNewsArticle[];
+  bar_time: string;
+  by_ticker: Record<string, LiveNewsSummary>;
+  session_date: string;
 };
 
 type TradingSession = {
@@ -266,6 +294,9 @@ const LIVE_SIGNAL_COLUMNS = [
   "ticker",
   "bar_time_market",
   "live_signal_time",
+  "live_news_recency",
+  "live_news_count",
+  "live_news_latest_title",
   "current_open",
   "last_volume",
   "last_return_5",
@@ -290,6 +321,9 @@ const LIVE_MARKET_STATE_COLUMNS = [
   "last_recent_volume_5",
   "last_return_5",
   "last_gap_pct",
+  "live_news_recency",
+  "live_news_count",
+  "live_news_latest_title",
   "last_day_max_change_pct",
   "last_day_current_change_pct",
   "last_close",
@@ -363,6 +397,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [simulationSaveMessage, setSimulationSaveMessage] = useState("");
   const [secondsPerMinute, setSecondsPerMinute] = useState("10");
   const [lastActionTime, setLastActionTime] = useState("");
+  const [startPreloading, setStartPreloading] = useState(false);
   const [selectedRow, setSelectedRow] = useState<Record<string, unknown> | null>(null);
   const [mainTimeframe, setMainTimeframe] = useState("1m");
   const [mainVisibleColumns, setMainVisibleColumns] = useState<string[]>(MAIN_DISPLAY_ITEMS);
@@ -588,6 +623,14 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     if (!started || !scope || !session.sessionDate || isChildCanvas) return;
     let canceled = false;
     const processedRoot = scope.processed_root;
+    async function loadInitialScanner() {
+      setSession((current) => ({ ...current, barTime: "04:00" }));
+      const initialScanner = await loadScannerAt("04:00", { warmCharts: false });
+      await warmChartCacheForRows(initialScanner?.snapshot.rows ?? []);
+      if (canceled) return;
+      setLiveClockMode("ready");
+      setLiveClockMessage("Data is ready. Initial scanner is loaded from the first bar. Press Start Trading to begin paced simulation.");
+    }
     async function preloadSessionData() {
       setLoading(true);
       setPreloadStatus(null);
@@ -600,16 +643,14 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
       setLiveClockMode("loading_data");
       setLiveClockMessage("Loading provider data for the selected trading day.");
       try {
-        const payload = await api<LivePreloadPayload>(`/api/live-trading/preload${query({ processed_root: processedRoot, session_date: session.sessionDate })}`);
+        const payload =
+          preloadStatus?.session_date === session.sessionDate && preloadStatus.status === "ready"
+            ? preloadStatus
+            : await api<LivePreloadPayload>(`/api/live-trading/preload${query({ processed_root: processedRoot, session_date: session.sessionDate })}`);
         if (canceled) return;
         setPreloadStatus(payload);
         if (payload.status === "ready") {
-          setSession((current) => ({ ...current, barTime: "04:00" }));
-          const initialScanner = await loadScannerAt("04:00", { warmCharts: false });
-          await warmChartCacheForRows(initialScanner?.snapshot.rows ?? []);
-          if (canceled) return;
-          setLiveClockMode("ready");
-          setLiveClockMessage("Data is ready. Initial scanner is loaded from the first bar. Press Start Trading to begin paced simulation.");
+          await loadInitialScanner();
         } else {
           setLiveClockMode("paused");
           setLiveClockMessage("Some provider artifacts are missing. Review the preload status before starting.");
@@ -653,10 +694,32 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     void loadScannerAt(session.barTime || "04:00");
   }, [scannerQueryKey]);
 
-  function startTrading() {
+  async function startTrading() {
+    if (!scope || startPreloading || loading) return;
     const nextSession = { ...session, barTime: "04:00", sessionDate: session.sessionDate || sessions.at(-1) || "" };
     if (!nextSession.sessionDate) return;
     canvasRemovedRef.current = false;
+    setStartPreloading(true);
+    setLoading(true);
+    setPreloadStatus(null);
+    setLiveClockMode("loading_data");
+    setLiveClockMessage("Loading bars and Benzinga news before opening the workspace.");
+    try {
+      const payload = await api<LivePreloadPayload>(`/api/live-trading/preload${query({ processed_root: scope.processed_root, session_date: nextSession.sessionDate })}`);
+      setPreloadStatus(payload);
+      if (payload.status !== "ready") {
+        setLiveClockMode("paused");
+        setLiveClockMessage("Some provider artifacts are missing. Review the preload status before starting.");
+        return;
+      }
+    } catch (requestError) {
+      setLiveClockMode("paused");
+      setLiveClockMessage(requestError instanceof Error ? requestError.message : "Data preload failed.");
+      return;
+    } finally {
+      setLoading(false);
+      setStartPreloading(false);
+    }
     window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(nextSession));
     window.localStorage.removeItem(LIVE_SHARED_STATE_STORAGE_KEY);
     setSession(nextSession);
@@ -765,16 +828,33 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         })}`
       );
       const marketPayload = await loadMarketStateAt(barTime);
+      const newsPayload = await loadNewsAt(barTime, [
+        ...signalPayload.snapshot.rows.map((row) => stringValue(row, "ticker")),
+        ...(marketPayload?.snapshot.rows ?? []).map((row) => stringValue(row, "ticker")),
+      ]);
       const enrichedRows = signalPayload.snapshot.rows
+        .map((row) => mergeLiveNews(row, newsPayload))
         .map((row) => enrichLiveCandidate(row, scannerQueryName))
         .filter((row) => rowMatchesBackendQuery(row, scannerQuery));
+      const enrichedSnapshot = {
+        ...signalPayload.snapshot,
+        columns: appendNewsColumns(signalPayload.snapshot.columns),
+        rows: enrichedRows,
+      };
+      if (marketPayload?.snapshot) {
+        setMarketSnapshot({
+          ...marketPayload.snapshot,
+          columns: appendNewsColumns(marketPayload.snapshot.columns),
+          rows: marketPayload.snapshot.rows.map((row) => mergeLiveNews(row, newsPayload)),
+        });
+      }
       const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? null;
-      setSnapshot(signalPayload.snapshot);
+      setSnapshot(enrichedSnapshot);
       setSelectedRow(firstRow);
       if (enrichedRows.length) appendSignalRows(enrichedRows, barTime);
       if (options.warmCharts !== false) void warmChartCacheForRows(enrichedRows);
       if (firstRow) setLastActionTime(barTime);
-      return { firstRow, marketSnapshot: marketPayload?.snapshot ?? null, snapshot: signalPayload.snapshot };
+      return { firstRow, marketSnapshot: marketPayload?.snapshot ?? null, snapshot: enrichedSnapshot };
     } catch (requestError) {
       setSnapshot(null);
       setMarketSnapshot(null);
@@ -809,16 +889,29 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         if (shouldStop()) return false;
         checkedMinutes += payload.steps || 0;
         const checkedTime = payload.last_checked_time || payload.snapshot.bar_time || searchStart;
-        setSnapshot(payload.snapshot);
         setSession((current) => ({ ...current, barTime: checkedTime }));
+        let marketPayload: ScannerSnapshotPayload | null = null;
         try {
-          await loadMarketStateAt(checkedTime);
+          marketPayload = await loadMarketStateAt(checkedTime);
         } catch {
           // The signal search is still usable if the market-state snapshot fails.
         }
+        const newsPayload = await loadNewsAt(checkedTime, [
+          ...payload.snapshot.rows.map((row) => stringValue(row, "ticker")),
+          ...(marketPayload?.snapshot.rows ?? []).map((row) => stringValue(row, "ticker")),
+        ]);
         const enrichedRows = payload.snapshot.rows
+          .map((row) => mergeLiveNews(row, newsPayload))
           .map((row) => enrichLiveCandidate(row, scannerQueryName))
           .filter((row) => rowMatchesBackendQuery(row, scannerQuery));
+        setSnapshot({ ...payload.snapshot, columns: appendNewsColumns(payload.snapshot.columns), rows: enrichedRows });
+        if (marketPayload?.snapshot) {
+          setMarketSnapshot({
+            ...marketPayload.snapshot,
+            columns: appendNewsColumns(marketPayload.snapshot.columns),
+            rows: marketPayload.snapshot.rows.map((row) => mergeLiveNews(row, newsPayload)),
+          });
+        }
         const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? enrichedRows[0] ?? null;
         setSelectedRow(firstRow);
         setLiveClockMessage(`Searching scanner signals at ${checkedTime} ET (${checkedMinutes} minutes checked).`);
@@ -920,6 +1013,24 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     );
     setMarketSnapshot(payload.snapshot);
     return payload;
+  }
+
+  async function loadNewsAt(barTime: string, tickers: string[]) {
+    if (!scope || !session.sessionDate) return null;
+    const uniqueTickers = Array.from(new Set(tickers.map((ticker) => ticker.trim().toUpperCase()).filter(Boolean))).slice(0, 5000);
+    try {
+      return await api<LiveNewsPayload>("/api/live-trading/news-at", {
+        body: JSON.stringify({
+          bar_time: barTime,
+          processed_root: scope.processed_root,
+          session_date: session.sessionDate,
+          tickers: uniqueTickers,
+        }),
+        method: "POST",
+      });
+    } catch {
+      return null;
+    }
   }
 
   const markPositionToMarket = useCallback((symbol: string, mark: number) => {
@@ -1143,6 +1254,9 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   if (!started) {
     return (
       <LiveTradingStart
+        loading={loading || startPreloading}
+        message={liveClockMessage}
+        preloadStatus={preloadStatus}
         scope={scope}
         session={session}
         sessions={sessions}
@@ -1323,18 +1437,25 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
 }
 
 function LiveTradingStart({
+  loading,
+  message,
   onSessionChange,
   onStart,
+  preloadStatus,
   scope,
   session,
   sessions,
 }: {
+  loading: boolean;
+  message: string;
   onSessionChange: (session: TradingSession) => void;
   onStart: () => void;
+  preloadStatus: LivePreloadPayload | null;
   scope: Scope | null;
   session: TradingSession;
   sessions: string[];
 }) {
+  const preloadProgress = startPreloadProgress(preloadStatus);
   return (
     <>
       <PageIntro
@@ -1354,12 +1475,30 @@ function LiveTradingStart({
             <span>Processed data</span>
             <strong>{scope?.processed_root ?? "Loading..."}</strong>
           </div>
-          <button className="button primary" disabled={!session.sessionDate} onClick={onStart} type="button">
-            <Play size={15} /> Load Session
+          <div className="live-start-progress-grid" aria-label="Session preload progress">
+            <LiveStartProgress label="Bars" progress={preloadProgress.bars} status={preloadProgress.barsStatus} />
+            <LiveStartProgress label="News" progress={preloadProgress.news} status={preloadProgress.newsStatus} />
+          </div>
+          {message ? <div className="live-start-message">{message}</div> : null}
+          <button className="button primary" disabled={!session.sessionDate || loading} onClick={onStart} type="button">
+            {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={15} />} {loading ? "Loading..." : "Load Session"}
           </button>
         </div>
       </section>
     </>
+  );
+}
+
+function LiveStartProgress({ label, progress, status }: { label: string; progress: number; status: string }) {
+  const tone = status === "ready" ? "success" : status === "error" || status === "missing_auth" ? "danger" : status === "missing" ? "warning" : "info";
+  return (
+    <div className="live-start-progress" data-tone={tone}>
+      <div>
+        <span>{label}</span>
+        <strong>{status || "waiting"}</strong>
+      </div>
+      <b><span style={{ width: `${Math.max(4, Math.round(progress * 100))}%` }} /></b>
+    </div>
   );
 }
 
@@ -2179,6 +2318,8 @@ function ChartTradePanel({
     },
   ];
   const spreadWarning = spreadTone === "warning" || spreadTone === "danger";
+  const newsItems = liveNewsItems(row);
+  const newsRecency = stringValue(row, "live_news_recency") || "none";
   const actions = buildStrategyTradeActions({
     entryQuantity,
     longStop,
@@ -2250,6 +2391,24 @@ function ChartTradePanel({
             </div>
           ))}
         </div>
+      </div>
+      <div className={`live-news-card ${newsRecency}`} aria-label="Ticker news">
+        <div className="live-news-card-header">
+          <span>News</span>
+          <strong>{newsRecency === "none" ? "No recent news" : newsRecency}</strong>
+        </div>
+        {newsItems.length ? (
+          <div className="live-news-list">
+            {newsItems.map((item, index) => (
+              <a href={item.url || undefined} key={`${item.published_et}-${index}`} target="_blank" rel="noreferrer" title={item.title}>
+                <span>{formatNewsTime(item.published_et)}</span>
+                <strong>{item.title}</strong>
+              </a>
+            ))}
+          </div>
+        ) : (
+          <p>No cached headline has arrived for {selectedTicker} by this replay bar.</p>
+        )}
       </div>
       <div className="live-execution-panel">
         <div className="live-strategy-row">
@@ -2434,6 +2593,20 @@ function availableSessionDates(records: RecordRow[]) {
   return Array.from(new Set(records.filter((record) => record.exists && record.group === "bars" && record.timeframe === "1m").map((record) => record.session_date))).sort();
 }
 
+function startPreloadProgress(preloadStatus: LivePreloadPayload | null) {
+  if (!preloadStatus) return { bars: 0, barsStatus: "waiting", news: 0, newsStatus: "waiting" };
+  const newsCheck = preloadStatus.checks.find((check) => check.group === "news");
+  const barChecks = preloadStatus.checks.filter((check) => check.group !== "news");
+  const barsReady = barChecks.reduce((total, check) => total + check.ready_sessions, 0);
+  const barsExpected = barChecks.reduce((total, check) => total + check.expected_sessions, 0);
+  return {
+    bars: barsExpected ? barsReady / barsExpected : 0,
+    barsStatus: barChecks.length && barChecks.every((check) => check.status === "ready") ? "ready" : "loading",
+    news: newsCheck?.expected_sessions ? newsCheck.ready_sessions / newsCheck.expected_sessions : 0,
+    newsStatus: newsCheck?.status ?? "waiting",
+  };
+}
+
 function scannerQueryFromConditions(conditions: BackendTableQuery["conditions"]): BackendTableQuery {
   return {
     conditions,
@@ -2533,6 +2706,36 @@ function buildMarketStateRow(row: Record<string, unknown>): Record<string, unkno
     last_bar_dollar_volume: currentReference > 0 ? numberValue(row, "last_volume") * currentReference : null,
     last_day_current_change_pct: dayOpen > 0 && currentReference > 0 ? (currentReference / dayOpen) - 1 : null,
     last_day_max_change_pct: dayOpen > 0 && dayHigh > 0 ? (dayHigh / dayOpen) - 1 : null,
+  };
+}
+
+function appendNewsColumns(columns: string[]) {
+  const newsColumns = ["live_news_recency", "live_news_count", "live_news_latest_title"];
+  return [...columns, ...newsColumns.filter((column) => !columns.includes(column))];
+}
+
+function mergeLiveNews(row: Record<string, unknown>, payload: LiveNewsPayload | null): Record<string, unknown> {
+  const ticker = stringValue(row, "ticker").trim().toUpperCase();
+  const summary = ticker ? payload?.by_ticker?.[ticker] : null;
+  if (!summary) {
+    return {
+      ...row,
+      live_news_count: 0,
+      live_news_items: [],
+      live_news_latest_time: "",
+      live_news_latest_title: "",
+      live_news_recency: "none",
+      live_news_recent: false,
+    };
+  }
+  return {
+    ...row,
+    live_news_count: summary.live_news_count ?? 0,
+    live_news_items: summary.live_news_items ?? [],
+    live_news_latest_time: summary.live_news_latest_time ?? "",
+    live_news_latest_title: summary.live_news_latest_title ?? "",
+    live_news_recency: summary.live_news_recency ?? "none",
+    live_news_recent: Boolean(summary.live_news_recent),
   };
 }
 
@@ -2676,6 +2879,9 @@ function marketStateTableColumns(snapshotColumns: string[]) {
     "last_recent_volume_5",
     "last_return_5",
     "last_gap_pct",
+    "live_news_recency",
+    "live_news_count",
+    "live_news_latest_title",
     "last_day_max_change_pct",
     "last_day_current_change_pct",
     "last_close",
@@ -2720,6 +2926,20 @@ function quoteFromRow(row: Record<string, unknown>, fallbackOpen: number) {
     volume: numberValue(row, "last_volume"),
     volumeMarketStrength: numberValue(row, "last_dollar_volume_market_strength"),
   };
+}
+
+function liveNewsItems(row: Record<string, unknown>): LiveNewsArticle[] {
+  const value = row.live_news_items;
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is LiveNewsArticle => Boolean(item && typeof item === "object" && "title" in item))
+    .slice(0, 8);
+}
+
+function formatNewsTime(value: string) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "";
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" }).format(new Date(timestamp));
 }
 
 function marketStrengthStyle(value: number): CSSProperties {
