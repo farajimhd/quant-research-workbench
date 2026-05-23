@@ -10289,17 +10289,21 @@ button {
 }
 
 .live-strategy-action.buy {
-  background: linear-gradient(180deg, color-mix(in oklab, var(--info) 92%, #3b82f6), var(--info));
-  border-color: color-mix(in oklab, var(--info) 82%, #000);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 20%, transparent);
-  color: white;
+  background:
+    linear-gradient(90deg, color-mix(in oklab, var(--info) 72%, #3b82f6) 0 5px, transparent 5px),
+    linear-gradient(180deg, color-mix(in oklab, var(--info) 7%, var(--surface)), var(--surface));
+  border-color: color-mix(in oklab, var(--info) 30%, var(--border));
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 70%, transparent);
+  color: color-mix(in oklab, var(--info) 86%, var(--foreground));
 }
 
 .live-strategy-action.sell {
-  background: linear-gradient(180deg, color-mix(in oklab, var(--danger) 88%, #ef476f), var(--danger));
-  border-color: color-mix(in oklab, var(--danger) 78%, #000);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, white 20%, transparent);
-  color: white;
+  background:
+    linear-gradient(90deg, color-mix(in oklab, var(--danger) 70%, #ef476f) 0 5px, transparent 5px),
+    linear-gradient(180deg, color-mix(in oklab, var(--danger) 7%, var(--surface)), var(--surface));
+  border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
+  box-shadow: inset 0 1px 0 color-mix(in oklab, white 70%, transparent);
+  color: color-mix(in oklab, var(--danger) 84%, var(--foreground));
 }
 
 .live-strategy-action.neutral {
@@ -10309,13 +10313,13 @@ button {
 }
 
 .live-strategy-action.buy em {
-  background: color-mix(in oklab, white 18%, transparent);
-  color: white;
+  background: color-mix(in oklab, var(--info) 12%, var(--surface));
+  color: color-mix(in oklab, var(--info) 88%, var(--foreground));
 }
 
 .live-strategy-action.sell em {
-  background: color-mix(in oklab, white 18%, transparent);
-  color: white;
+  background: color-mix(in oklab, var(--danger) 12%, var(--surface));
+  color: color-mix(in oklab, var(--danger) 88%, var(--foreground));
 }
 
 .live-strategy-action.neutral em {
