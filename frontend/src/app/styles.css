@@ -4372,6 +4372,11 @@ button {
   gap: 2px;
 }
 
+.data-table.compact .data-table-header-cell {
+  min-width: 0;
+  gap: 4px;
+}
+
 .data-table-header-sort {
   display: inline-flex;
   min-width: 0;
@@ -4388,6 +4393,7 @@ button {
 .data-table-header-sort span {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .data-table-header-actions {

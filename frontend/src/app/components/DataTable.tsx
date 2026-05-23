@@ -299,10 +299,8 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
 
   const sortedRows = useMemo(() => {
     if (!effectiveSort) return filteredRows;
-    const directionMultiplier = effectiveSort.direction === "asc" ? 1 : -1;
     return [...filteredRows].sort((left, right) => {
-      const result = compareCells(left[effectiveSort.column], right[effectiveSort.column]);
-      return result * directionMultiplier;
+      return compareCellsForSort(left[effectiveSort.column], right[effectiveSort.column], effectiveSort.direction);
     });
   }, [effectiveSort, filteredRows]);
   const transposeView = useMemo(
@@ -318,8 +316,8 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
   const backendQueryChips = useMemo(() => backendQuery ? backendQueryConditionChips(backendQuery.value.conditions ?? []) : [], [backendQuery]);
   const totalActiveFilterCount = activeFilterCount + backendQueryActiveCount;
   const columnWidthsByName = useMemo(
-    () => buildColumnWidthsByName({ layoutMode, rows: sortedRows, visibleColumns: usableColumns }),
-    [layoutMode, sortedRows, usableColumns],
+    () => buildColumnWidthsByName({ densityMode, layoutMode, rows: sortedRows, visibleColumns: usableColumns }),
+    [densityMode, layoutMode, sortedRows, usableColumns],
   );
   const fitHeaderWidth = usableColumns.reduce((total, column) => total + (columnWidthsByName[column] ?? 120), 0);
 
@@ -1172,7 +1170,7 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
                   <th key={column}>
                     <div className="data-table-header-cell">
                       <button className="data-table-header-sort" onClick={() => toggleSort(column)} type="button">
-                        <span>{displayName(column)}</span>
+                        <span title={displayName(column)}>{columnHeaderLabel(column, densityMode)}</span>
                         {sortIcon}
                       </button>
                       <div className="data-table-header-actions">
@@ -1931,34 +1929,89 @@ function StatLine({ label, value }: { label: string; value: string }) {
 }
 
 function buildColumnWidthsByName({
+  densityMode,
   layoutMode,
   rows,
   visibleColumns,
 }: {
+  densityMode: TableDensityMode;
   layoutMode: TableLayoutMode;
   rows: DataRow[];
   visibleColumns: string[];
 }) {
   return Object.fromEntries(
     visibleColumns.map((column) => {
-      const headerWidth = estimateHeaderColumnWidth(column);
+      const headerWidth = estimateHeaderColumnWidth(column, densityMode);
       if (layoutMode === "fit_header") return [column, headerWidth];
-      return [column, Math.max(headerWidth, estimateDataColumnWidth(column, rows))];
+      const dataWidth = estimateDataColumnWidth(column, rows, densityMode);
+      return [column, Math.max(headerWidth, dataWidth)];
     }),
   );
 }
 
-function estimateHeaderColumnWidth(column: string) {
-  return clamp(estimateTextWidth(displayName(column)) + 74, 108, 260);
+function estimateHeaderColumnWidth(column: string, densityMode: TableDensityMode) {
+  const label = columnHeaderLabel(column, densityMode);
+  const chromeWidth = densityMode === "compact" ? 42 : 74;
+  const minWidth = densityMode === "compact" ? 72 : 108;
+  const maxWidth = densityMode === "compact" ? 180 : 260;
+  return clamp(estimateTextWidth(label) + chromeWidth, minWidth, maxWidth);
 }
 
-function estimateDataColumnWidth(column: string, rows: DataRow[]) {
+function estimateDataColumnWidth(column: string, rows: DataRow[], densityMode: TableDensityMode) {
   const sampledRows = rows.slice(0, 80);
   const maxTextWidth = sampledRows.reduce((currentMax, row) => {
     return Math.max(currentMax, estimateTextWidth(formatCell(column, row[column])));
   }, 0);
-  return clamp(maxTextWidth + 28, 108, 460);
+  const padding = densityMode === "compact" ? 18 : 28;
+  const minWidth = densityMode === "compact" ? 64 : 108;
+  const maxWidth = densityMode === "compact" ? 360 : 460;
+  return clamp(maxTextWidth + padding, minWidth, maxWidth);
 }
+
+function columnHeaderLabel(column: string, densityMode: TableDensityMode) {
+  const fullName = displayName(column);
+  if (densityMode !== "compact") return fullName;
+  const direct = COMPACT_COLUMN_LABELS[column];
+  if (direct) return direct;
+  return fullName
+    .replace(/\bCurrent\b/g, "Cur")
+    .replace(/\bTransactions\b/g, "Tx")
+    .replace(/\bTransaction\b/g, "Tx")
+    .replace(/\bVolume\b/g, "Vol")
+    .replace(/\bDivergence\b/g, "Div")
+    .replace(/\bBearish\b/g, "Bear")
+    .replace(/\bDouble Timeframe\b/g, "2x")
+    .replace(/\bDay\b/g, "Day")
+    .replace(/\bSo Far\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const COMPACT_COLUMN_LABELS: Record<string, string> = {
+  current_open: "Open",
+  last_bearish_volume_divergence_score: "BVD",
+  last_close: "Close",
+  last_day_current_change_pct: "Cur Chg",
+  last_day_dollar_volume_so_far: "$Vol",
+  last_day_high_so_far: "Day High",
+  last_day_low_so_far: "Day Low",
+  last_day_max_change_pct: "Max Chg",
+  last_day_open: "Day Open",
+  last_day_volume_so_far: "Day Vol",
+  last_double_timeframe_bearish_volume_divergence_score: "2x BVD",
+  last_return_5: "5m Ret",
+  last_transactions: "Tx",
+  last_transactions_vs_prior_3: "Tx/3",
+  last_volume: "Vol",
+  last_vwap: "VWAP",
+  live_bias: "Bias",
+  live_reasons: "Reasons",
+  live_risks: "Risks",
+  live_signal_query: "Query",
+  live_signal_time: "Signal",
+  open_vs_vwap_pct: "Open/VWAP",
+  spread_bps_abs: "Spread",
+};
 
 function estimateTextWidth(value: string) {
   return value.split("").reduce((width, character) => {
@@ -2132,14 +2185,17 @@ function formatManualFilterValue(value: string, profile?: ColumnProfile) {
   return value;
 }
 
-function compareCells(left: unknown, right: unknown) {
+function compareCellsForSort(left: unknown, right: unknown, direction: SortDirection) {
   const leftComparable = comparableValue(left);
   const rightComparable = comparableValue(right);
   if (leftComparable === rightComparable) return 0;
   if (leftComparable === null) return 1;
   if (rightComparable === null) return -1;
-  if (typeof leftComparable === "number" && typeof rightComparable === "number") return leftComparable - rightComparable;
-  return String(leftComparable).localeCompare(String(rightComparable), undefined, { numeric: true, sensitivity: "base" });
+  const result =
+    typeof leftComparable === "number" && typeof rightComparable === "number"
+      ? leftComparable - rightComparable
+      : String(leftComparable).localeCompare(String(rightComparable), undefined, { numeric: true, sensitivity: "base" });
+  return direction === "asc" ? result : -result;
 }
 
 function comparableValue(value: unknown): number | string | null {
