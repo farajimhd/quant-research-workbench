@@ -102,7 +102,6 @@ export type LiveEntryLine = {
   labelParts?: TradeLabelPart[];
   onClose?: () => void;
   pnl: number;
-  pnlPct?: number;
   price: number;
   quantity: number;
 };
@@ -2668,21 +2667,19 @@ function drawLiveEntryLine(
   line.style.left = `${left}px`;
   line.style.top = `${y}px`;
   line.style.width = `${width}px`;
-  line.style.borderColor = liveEntryLine.color;
+  line.style.borderColor = "#2563eb";
 
   const control = document.createElement("div");
   control.className = "live-entry-position-control";
-  control.style.borderColor = rgbaFromHex(liveEntryLine.color, 0.25);
 
   const sizeBadge = document.createElement("span");
   sizeBadge.className = "live-entry-size-badge";
-  sizeBadge.textContent = `${liveEntryLine.quantity.toLocaleString()} @ ${liveEntryLine.price.toFixed(2)}`;
+  sizeBadge.textContent = liveEntryLine.quantity.toLocaleString();
   control.appendChild(sizeBadge);
 
   const pnlBadge = document.createElement("span");
   pnlBadge.className = liveEntryLine.pnl >= 0 ? "live-entry-pnl-badge positive" : "live-entry-pnl-badge negative";
-  const pnlPct = Number.isFinite(liveEntryLine.pnlPct) ? ` ${formatPercentValue(liveEntryLine.pnlPct ?? 0)}` : "";
-  pnlBadge.textContent = `${formatMoneyValue(liveEntryLine.pnl)}${pnlPct}`;
+  pnlBadge.textContent = formatMoneyValue(liveEntryLine.pnl);
   control.appendChild(pnlBadge);
 
   if (liveEntryLine.onClose) {
@@ -2707,10 +2704,6 @@ function drawLiveEntryLine(
 function formatMoneyValue(value: number) {
   const sign = value < 0 ? "-" : "";
   return `${sign}$${Math.abs(value).toFixed(2)}`;
-}
-
-function formatPercentValue(value: number) {
-  return `${(value * 100).toFixed(2)}%`;
 }
 
 function drawPriceZones(

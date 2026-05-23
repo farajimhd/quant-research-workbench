@@ -2350,12 +2350,9 @@ function sizeModeLabel(mode: string) {
 function buildLiveEntryLine(position: PositionRow | undefined, currentBid: number): LiveEntryLine | null {
   if (!position || !position.quantity || !position.avg_price) return null;
   const pnl = (currentBid - position.avg_price) * position.quantity;
-  const pnlPct = position.avg_price > 0 ? currentBid / position.avg_price - 1 : 0;
-  const color = pnl >= 0 ? "#16a34a" : "#dc2626";
   return {
-    color,
+    color: "#2563eb",
     pnl,
-    pnlPct,
     price: position.avg_price,
     quantity: position.quantity,
   };
