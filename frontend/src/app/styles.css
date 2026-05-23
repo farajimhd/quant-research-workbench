@@ -10202,6 +10202,10 @@ button {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.live-action-panel.many {
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+}
+
 .live-strategy-action {
   align-items: center;
   background: color-mix(in oklab, var(--surface) 90%, var(--surface-alt));
@@ -10313,6 +10317,60 @@ button {
 .live-strategy-action.neutral em {
   background: color-mix(in oklab, var(--warning) 18%, var(--surface));
   color: color-mix(in oklab, var(--warning) 88%, var(--foreground));
+}
+
+.live-action-panel.many .live-strategy-action {
+  align-content: start;
+  gap: 7px;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 116px;
+  padding: 12px;
+  text-align: left;
+}
+
+.live-action-panel.many .live-strategy-action span,
+.live-action-panel.many .live-strategy-action strong,
+.live-action-panel.many .live-strategy-action small,
+.live-action-panel.many .live-strategy-action em {
+  grid-column: 1;
+  grid-row: auto;
+}
+
+.live-action-panel.many .live-strategy-action span {
+  font-size: calc(10px * var(--trade-readable-scale));
+  letter-spacing: 0;
+  min-height: 12px;
+  opacity: 0.9;
+}
+
+.live-action-panel.many .live-strategy-action strong {
+  font-size: calc(21px * var(--trade-readable-scale));
+  white-space: normal;
+}
+
+.live-action-panel.many .live-strategy-action small {
+  font-size: calc(12px * var(--trade-readable-scale));
+  white-space: nowrap;
+}
+
+.live-action-panel.many .live-strategy-action em {
+  justify-self: start;
+  min-width: 0;
+  padding: 7px 10px;
+}
+
+.live-action-panel.many .live-strategy-action:disabled {
+  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
+  border-color: color-mix(in oklab, var(--border) 88%, var(--surface-alt));
+  box-shadow: none;
+  color: var(--muted-foreground);
+  filter: none;
+  opacity: 1;
+}
+
+.live-action-panel.many .live-strategy-action:disabled em {
+  background: color-mix(in oklab, var(--muted-foreground) 10%, var(--surface));
+  color: var(--muted-foreground);
 }
 
 .live-trade-form.compact {

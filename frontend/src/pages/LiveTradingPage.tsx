@@ -2234,7 +2234,7 @@ function ChartTradePanel({
             <LiveField label="Stop Buffer %" type="number" value={strategySettings.stopBufferPct} onChange={(value) => setStrategySettings((current) => ({ ...current, stopBufferPct: value }))} />
           </div>
         ) : null}
-        <div className={`live-action-panel count-${actions.length}`}>
+        <div className={`live-action-panel count-${actions.length}${actions.length > 2 ? " many" : ""}`}>
           {actions.map((action) => (
             <button
               key={action.id}
@@ -2325,7 +2325,7 @@ function buildStrategyTradeActions({
         description: `Buy ${integer(entryQuantity)} shares at ${money(quote.ask)}`,
         disabled: !selectedTicker || entryQuantity <= 0,
         id: "momentum-enter",
-        label: "Enter Long",
+        label: "Enter",
         limit: quote.ask,
         quantity: entryQuantity,
         side: "BUY",
