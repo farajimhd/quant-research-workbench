@@ -9745,6 +9745,15 @@ button {
   overflow: hidden;
 }
 
+.live-scanner-stack {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  width: 100%;
+}
+
 .live-window[data-window-kind="scanner"] .data-table-shell {
   flex: 1 1 auto;
   height: auto;
@@ -10317,6 +10326,18 @@ button {
   scrollbar-width: thin;
 }
 
+.live-portfolio-header .live-debug-metric-strip {
+  padding: 5px 30px 7px 8px;
+}
+
+.live-portfolio-header .live-debug-metric-card {
+  min-height: 46px;
+}
+
+.live-portfolio-header .live-debug-metric-card strong {
+  font-size: 19px;
+}
+
 .live-debug-metric-card,
 .live-global-status-card {
   --metric-tone: var(--muted-foreground);
@@ -10472,54 +10493,115 @@ button {
   color: var(--info);
 }
 
-.live-position-cards {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-}
-
-.live-position-card {
-  background: color-mix(in oklab, var(--surface-alt) 40%, var(--surface));
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--muted-foreground);
+.live-scanner-positions {
+  background: color-mix(in oklab, var(--surface) 94%, var(--surface-alt));
+  border: 1px solid color-mix(in oklab, var(--border) 84%, var(--surface-alt));
   border-radius: 8px;
   display: grid;
-  gap: 8px;
-  grid-template-columns: 1.1fr repeat(4, minmax(70px, 1fr));
-  padding: 9px 10px;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 7px;
+  width: 100%;
 }
 
-.live-position-card.positive {
+.live-scanner-positions-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  min-height: 16px;
+}
+
+.live-scanner-positions-header span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.live-scanner-positions-header strong {
+  align-items: center;
+  background: color-mix(in oklab, var(--info) 12%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--info) 28%, var(--border));
+  border-radius: 999px;
+  color: var(--info);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 900;
+  height: 18px;
+  justify-content: center;
+  min-width: 18px;
+  padding: 0 6px;
+}
+
+.live-scanner-position-list {
+  display: grid;
+  gap: 6px;
+  max-height: 138px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.live-scanner-position-card {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 34%, var(--surface));
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted-foreground);
+  border-radius: 7px;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(58px, 0.95fr) minmax(48px, 0.7fr) minmax(70px, 1fr);
+  min-height: 42px;
+  padding: 7px;
+}
+
+.live-scanner-position-card.positive {
   border-left-color: var(--success);
 }
 
-.live-position-card.negative {
+.live-scanner-position-card.negative {
   border-left-color: var(--danger);
 }
 
-.live-position-card div {
+.live-scanner-position-card div {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
-.live-position-card span,
+.live-scanner-position-card span,
+.live-scanner-position-card small,
 .live-empty-positions {
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.live-position-card strong {
+.live-scanner-position-card strong {
   color: var(--foreground);
+  font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
-  line-height: 1.15;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.live-position-card.positive div:last-child strong {
+.live-scanner-position-main strong {
+  font-family: var(--font-display);
+  font-size: 14px;
+}
+
+.live-scanner-position-card.positive div:last-child strong {
   color: var(--success);
 }
 
-.live-position-card.negative div:last-child strong {
+.live-scanner-position-card.negative div:last-child strong {
   color: var(--danger);
 }
 

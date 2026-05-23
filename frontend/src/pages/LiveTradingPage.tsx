@@ -202,7 +202,7 @@ type StageOrderContext = {
 
 const LIVE_SESSION_STORAGE_KEY = "quant-research-workbench.live-trading.session";
 const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.live-trading.layout";
-const LIVE_LAYOUT_VERSION = 2;
+const LIVE_LAYOUT_VERSION = 3;
 const LIVE_LAYOUTS_STORAGE_KEY = "quant-research-workbench.live-trading.named-layouts";
 const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.live-trading.shared-state";
 const LIVE_SAVED_SIMULATIONS_STORAGE_KEY = "quant-research-workbench.live-trading.saved-simulations";
@@ -211,8 +211,8 @@ const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.live-trading.sc
 const LIVE_CHART_VISIBILITY_STORAGE_KEY = "quant-research-workbench.live-trading.chart-visibility.v1";
 const LIVE_SIGNAL_SEARCH_BATCH_MINUTES = 10;
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
-const LIVE_PORTFOLIO_COLLAPSED_HEIGHT = 224;
-const LIVE_PORTFOLIO_EXPANDED_HEIGHT = LIVE_PORTFOLIO_COLLAPSED_HEIGHT * 3;
+const LIVE_PORTFOLIO_COLLAPSED_HEIGHT = 118;
+const LIVE_PORTFOLIO_EXPANDED_HEIGHT = 320;
 const MAIN_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend", "indicator.macd"];
 const LOWER_DISPLAY_ITEMS = ["indicator.vwap", "indicator.tema_trend"];
 const LIVE_SCANNER_COLUMNS = [
@@ -308,7 +308,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [decisions, setDecisions] = useState<Record<string, DecisionState>>({});
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [positions, setPositions] = useState<PositionRow[]>([]);
-  const [portfolioTab, setPortfolioTab] = useState("Open Positions");
+  const [portfolioTab, setPortfolioTab] = useState("Trades");
   const [portfolioDetailsOpen, setPortfolioDetailsOpen] = useState(false);
   const [tradeDraft, setTradeDraft] = useState({ limit: "", quantity: "3000", side: "BUY" as "BUY" | "SELL", stop: "", type: "LIMIT" });
   const [layouts, setLayouts] = useState<Record<WindowId, WindowLayout>>(initialCanvas.layouts);
@@ -1092,6 +1092,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
               <WorkspaceWindow key={windowId} canvasTargets={canvasTargets} id={windowId} layout={layout} title="Scanner" icon={<TrendingUp size={15} />} onClose={closeWindow} onFocus={bringWindowForward} onLayoutChange={updateLayout} onMoveToCanvas={moveWindowToCanvas} onPopOut={createChildCanvas}>
                 <ScannerContainer
                   loading={loading}
+                  positions={positions}
                   query={scannerQuery}
                   queryGroups={scannerQueryGroups}
                   queryName={scannerQueryName}
@@ -1114,7 +1115,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                   detailsOpen={portfolioDetailsOpen}
                   metrics={portfolioMetrics}
                   orders={orders}
-                  positions={positions}
                   selectedTab={portfolioTab}
                   onTabChange={setPortfolioTab}
                   onToggleDetails={togglePortfolioDetails}
@@ -1466,6 +1466,7 @@ function ScannerContainer({
   onQueryNameChange,
   onRowSelect,
   onSaveQueryGroup,
+  positions,
   query,
   queryGroups,
   queryName,
@@ -1474,6 +1475,7 @@ function ScannerContainer({
   snapshot,
 }: {
   loading: boolean;
+  positions: PositionRow[];
   query: BackendTableQuery;
   queryGroups: ScannerQueryGroup[];
   queryName: string;
@@ -1488,27 +1490,63 @@ function ScannerContainer({
 }) {
   const queryPresets: BackendQueryPreset[] = queryGroups.map((group) => ({ id: group.id, label: group.name, query: group.query }));
   return (
-    <DataTable
-      backendQuery={{
-        columns: snapshot?.columns?.length ? snapshot.columns : LIVE_SCANNER_COLUMNS,
-        loading,
-        onChange: onQueryChange,
-        onDeletePreset: onDeleteQueryGroup,
-        onNameChange: onQueryNameChange,
-        onSavePreset: onSaveQueryGroup,
-        presets: queryPresets,
-        queryName,
-        value: query,
-      }}
-      columns={liveTableColumns(snapshot?.columns ?? [])}
-      empty={loading ? "Loading scanner..." : "Scanner signals will appear here after the saved query matches."}
-      isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
-      onRowClick={onRowSelect}
-      preserveFiltersOnDataChange
-      rows={rows}
-      title="Scanner"
-      transposeHelper
-    />
+    <div className="live-scanner-stack">
+      {positions.length ? <ScannerPositionsBox positions={positions} /> : null}
+      <DataTable
+        backendQuery={{
+          columns: snapshot?.columns?.length ? snapshot.columns : LIVE_SCANNER_COLUMNS,
+          loading,
+          onChange: onQueryChange,
+          onDeletePreset: onDeleteQueryGroup,
+          onNameChange: onQueryNameChange,
+          onSavePreset: onSaveQueryGroup,
+          presets: queryPresets,
+          queryName,
+          value: query,
+        }}
+        columns={liveTableColumns(snapshot?.columns ?? [])}
+        empty={loading ? "Loading scanner..." : "Scanner signals will appear here after the saved query matches."}
+        isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
+        onRowClick={onRowSelect}
+        preserveFiltersOnDataChange
+        rows={rows}
+        title="Scanner"
+        transposeHelper
+      />
+    </div>
+  );
+}
+
+function ScannerPositionsBox({ positions }: { positions: PositionRow[] }) {
+  return (
+    <section className="live-scanner-positions" aria-label="Open positions">
+      <div className="live-scanner-positions-header">
+        <span>Open Positions</span>
+        <strong>{positions.length}</strong>
+      </div>
+      <div className="live-scanner-position-list">
+        {positions.map((position) => {
+          const pnlTone = position.unrealized_pnl >= 0 ? "positive" : "negative";
+          return (
+            <article className={`live-scanner-position-card ${pnlTone}`} key={position.symbol}>
+              <div className="live-scanner-position-main">
+                <strong>{position.symbol}</strong>
+                <span>{integer(position.quantity)} sh</span>
+              </div>
+              <div>
+                <span>Mark</span>
+                <strong>{money(position.mark)}</strong>
+              </div>
+              <div>
+                <span>P/L</span>
+                <strong>{money(position.unrealized_pnl)}</strong>
+                <small>{percent(position.unrealized_pnl_pct)}</small>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -1518,7 +1556,6 @@ function PortfolioContainer({
   onToggleDetails,
   onTabChange,
   orders,
-  positions,
   selectedTab,
 }: {
   detailsOpen: boolean;
@@ -1526,10 +1563,10 @@ function PortfolioContainer({
   onToggleDetails: () => void;
   onTabChange: (tab: string) => void;
   orders: OrderRow[];
-  positions: PositionRow[];
   selectedTab: string;
 }) {
-  const tabs = ["Open Positions", "P/L", "Trades", "Orders"];
+  const tabs = ["Trades", "Orders"];
+  const activeTab = tabs.includes(selectedTab) ? selectedTab : tabs[0];
   return (
     <div className={detailsOpen ? "live-container-stack portfolio-expanded" : "live-container-stack"}>
       <div className="live-portfolio-header">
@@ -1543,50 +1580,17 @@ function PortfolioContainer({
           ))}
         </div>
       </div>
-      <div className="live-position-cards">
-        {positions.length ? positions.map((position) => <PositionCard key={position.symbol} position={position} />) : <div className="live-empty-positions">No open positions.</div>}
-      </div>
       <button className="live-portfolio-expand-button" onClick={onToggleDetails} title={detailsOpen ? "Hide tabs" : "Show tabs"} type="button">
         {detailsOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
       </button>
       {detailsOpen ? (
         <>
-          <Tabs tabs={tabs} active={selectedTab} onChange={onTabChange} />
-          {selectedTab === "Open Positions" ? <DataTable rows={positions} empty="No open positions." /> : null}
-          {selectedTab === "P/L" ? <DataTable rows={positions.map((row) => ({ symbol: row.symbol, unrealized_pnl: row.unrealized_pnl, unrealized_pnl_pct: row.unrealized_pnl_pct, mark: row.mark, avg_price: row.avg_price }))} empty="No P/L rows." /> : null}
-          {selectedTab === "Trades" ? <DataTable rows={[]} empty="No completed trades yet." /> : null}
-          {selectedTab === "Orders" ? <DataTable rows={orders} empty="No staged orders." /> : null}
+          <Tabs tabs={tabs} active={activeTab} onChange={onTabChange} />
+          {activeTab === "Trades" ? <DataTable rows={[]} empty="No completed trades yet." /> : null}
+          {activeTab === "Orders" ? <DataTable rows={orders} empty="No staged orders." /> : null}
         </>
       ) : null}
     </div>
-  );
-}
-
-function PositionCard({ position }: { position: PositionRow }) {
-  const pnlTone = position.unrealized_pnl >= 0 ? "positive" : "negative";
-  return (
-    <article className={`live-position-card ${pnlTone}`}>
-      <div>
-        <strong>{position.symbol}</strong>
-        <span>{integer(position.quantity)} sh</span>
-      </div>
-      <div>
-        <span>Avg</span>
-        <strong>{money(position.avg_price)}</strong>
-      </div>
-      <div>
-        <span>Mark</span>
-        <strong>{money(position.mark)}</strong>
-      </div>
-      <div>
-        <span>Stop</span>
-        <strong>{money(position.stop)}</strong>
-      </div>
-      <div>
-        <span>P/L</span>
-        <strong>{money(position.unrealized_pnl)} / {percent(position.unrealized_pnl_pct)}</strong>
-      </div>
-    </article>
   );
 }
 
