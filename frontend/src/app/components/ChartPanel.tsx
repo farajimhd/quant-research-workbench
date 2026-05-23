@@ -97,6 +97,13 @@ type PriceZone = {
   upper: number;
   zoneHeightMode?: string;
 };
+export type LiveEntryLine = {
+  color: string;
+  labelParts?: TradeLabelPart[];
+  pnl: number;
+  price: number;
+  quantity: number;
+};
 export type ChartCatalogKnowledge = {
   shortDescription?: string;
   detailedDescription?: string;
@@ -238,6 +245,7 @@ type ChartPanelProps = {
   periodMin?: string;
   periodStart?: string;
   reference?: ChartReference | null;
+  liveEntryLine?: LiveEntryLine | null;
   daySeparatorsVisible?: boolean;
   showReferenceLine?: boolean;
   showIndicatorControls?: boolean;
@@ -301,6 +309,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   periodStart,
   payload,
   reference = null,
+  liveEntryLine = null,
   daySeparatorsVisible,
   showReferenceLine = true,
   showIndicatorControls = true,
@@ -374,6 +383,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const priceLegendItems = buildSeriesLegendItems(displayedOverlaySeries, "price", legendSettings);
   const hasChartData = Boolean(payload?.candles.length);
   const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
+  const liveEntryLineKey = liveEntryLine ? `${liveEntryLine.price}:${liveEntryLine.quantity}:${liveEntryLine.pnl}:${liveEntryLine.color}` : "";
 
   const updateChartSettings = <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => {
     setChartSettings((current) => {
@@ -570,7 +580,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     updatePriceOverlaySeries(displayedOverlaySeries);
     updateCandleMarkers();
     drawCurrentRegions();
-  }, [payload, visibleColumnKey, visibleSupervisionKey]);
+  }, [payload, visibleColumnKey, visibleSupervisionKey, liveEntryLineKey]);
 
   useEffect(() => {
     if (!priceChartRef.current) return;
@@ -805,7 +815,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const currentPayload = payloadRef.current;
     if (!chart || !currentPayload) return;
     const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
-    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, chartSettingsRef.current);
+    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, chartSettingsRef.current, liveEntryLine);
     drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, showReferenceLine ? reference : null);
   }
 
@@ -2609,7 +2619,8 @@ function drawRegions(
   priceZones: PriceZone[],
   tradeAnnotations: TradeAnnotation[],
   candles: Candle[],
-  settings: ChartAppearanceSettings
+  settings: ChartAppearanceSettings,
+  liveEntryLine?: LiveEntryLine | null
 ) {
   if (!layer) return;
   layer.innerHTML = "";
@@ -2632,6 +2643,44 @@ function drawRegions(
   drawPriceZones(chart, priceSeries, layer, priceZones, candles, barWidth, candleDuration);
   drawDaySeparators(chart, layer, candles, settings, barWidth);
   drawTradeAnnotations(chart, priceSeries, layer, tradeAnnotations, candles, barWidth);
+  drawLiveEntryLine(chart, priceSeries, layer, candles, liveEntryLine);
+}
+
+function drawLiveEntryLine(
+  chart: IChartApi,
+  priceSeries: ISeriesApi<"Candlestick"> | null,
+  layer: HTMLDivElement,
+  candles: Candle[],
+  liveEntryLine?: LiveEntryLine | null
+) {
+  if (!priceSeries || !candles.length || !liveEntryLine || !Number.isFinite(liveEntryLine.price)) return;
+  const y = priceSeries.priceToCoordinate(liveEntryLine.price);
+  if (y === null) return;
+  const lastCoordinate = chart.timeScale().timeToCoordinate(candles.at(-1)?.time as Time);
+  const right = Math.max(0, Math.min(layer.clientWidth - 8, (lastCoordinate ?? layer.clientWidth) + 120));
+  const left = 8;
+  const width = Math.max(80, right - left);
+  const line = document.createElement("div");
+  line.className = "live-entry-price-line";
+  line.style.left = `${left}px`;
+  line.style.top = `${y}px`;
+  line.style.width = `${width}px`;
+  line.style.borderColor = liveEntryLine.color;
+  const label = document.createElement("span");
+  label.style.borderColor = rgbaFromHex(liveEntryLine.color, 0.36);
+  label.style.color = liveEntryLine.color;
+  if (liveEntryLine.labelParts?.length) {
+    liveEntryLine.labelParts.forEach((part) => {
+      const piece = document.createElement("b");
+      piece.className = `trade-label-part ${part.tone ?? "label"}`;
+      piece.textContent = part.text;
+      label.appendChild(piece);
+    });
+  } else {
+    label.textContent = `Entry ${liveEntryLine.quantity} @ ${liveEntryLine.price.toFixed(2)} P/L ${liveEntryLine.pnl.toFixed(2)}`;
+  }
+  line.appendChild(label);
+  layer.appendChild(line);
 }
 
 function drawPriceZones(

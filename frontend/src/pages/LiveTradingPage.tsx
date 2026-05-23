@@ -32,7 +32,7 @@ import {
 import type { Time } from "lightweight-charts";
 
 import { api, query } from "../api/client";
-import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload } from "../app/components/ChartPanel";
+import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload, type LiveEntryLine } from "../app/components/ChartPanel";
 import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../app/components/DataTable";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
@@ -174,12 +174,26 @@ type OrderRow = {
 
 type PositionRow = {
   avg_price: number;
+  entry_session_date?: string;
+  entry_time?: string;
   mark: number;
   quantity: number;
   stop: number;
   symbol: string;
   unrealized_pnl: number;
   unrealized_pnl_pct: number;
+};
+
+type StageOrderContext = {
+  limit: number;
+  mark: number;
+  quantity: number;
+  row: Record<string, unknown> | null;
+  side: "BUY" | "SELL";
+  status: string;
+  stop: number;
+  symbol: string;
+  type: string;
 };
 
 const LIVE_SESSION_STORAGE_KEY = "quant-research-workbench.live-trading.session";
@@ -244,7 +258,7 @@ function buildDefaultCanvasLayout(childCanvas: boolean): { chartWindows: ChartWi
   const scannerH = Math.round(availableH * 0.65) - Math.round(gap / 2);
   const tradeH = availableH - scannerH - gap;
   const chartX = margin + leftW + gap;
-  const chartW = Math.round(width * 0.4);
+  const chartW = Math.round(width * 0.58);
   const layouts: Record<WindowId, WindowLayout> = {
     portfolio: { fullscreen: false, h: portfolioH, minimized: false, w: width - margin * 2, x: margin, y: margin, z: 3 },
     scanner: { fullscreen: false, h: scannerH, minimized: false, w: leftW, x: margin, y: mainY, z: 1 },
@@ -684,25 +698,31 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     if (state === "approved") stageOrder("BUY", "STAGED");
   }
 
-  function stageOrder(side = tradeDraft.side, status = "STAGED") {
-    if (!selectedTicker) return;
-    const quantity = Math.max(0, Math.floor(Number(tradeDraft.quantity) || 0));
-    const limit = Number(tradeDraft.limit) || numberValue(selectedProfile, "suggested_entry") || selectedOpen;
-    const stop = Number(tradeDraft.stop) || numberValue(selectedProfile, "suggested_stop");
+  function stageOrder(side = tradeDraft.side, status = "STAGED", context?: Partial<StageOrderContext>) {
+    const symbol = context?.symbol || selectedTicker;
+    if (!symbol) return;
+    const contextRow = context?.row ?? selectedProfile;
+    const quantity = Math.max(0, Math.floor(context?.quantity ?? Number(tradeDraft.quantity) ?? 0));
+    const draftLimit = Number(tradeDraft.limit);
+    const draftStop = Number(tradeDraft.stop);
+    const limit = context?.limit ?? (Number.isFinite(draftLimit) && draftLimit > 0 ? draftLimit : numberValue(contextRow, "suggested_entry") || selectedOpen);
+    const stop = context?.stop ?? (Number.isFinite(draftStop) && draftStop > 0 ? draftStop : numberValue(contextRow, "suggested_stop"));
+    const type = context?.type ?? tradeDraft.type;
+    const mark = context?.mark ?? (selectedOpen || limit);
     const order: OrderRow = {
-      id: `${Date.now()}-${selectedTicker}-${side}`,
+      id: `${Date.now()}-${symbol}-${side}`,
       limit,
       quantity,
       side,
       status,
       stop,
-      symbol: selectedTicker,
+      symbol,
       timestamp: `${session.sessionDate} ${session.barTime}`,
-      type: tradeDraft.type,
+      type,
     };
     setOrders((current) => [order, ...current]);
     if (side === "BUY" && status !== "CANCELED") {
-      setPositions((current) => upsertPosition(current, selectedTicker, quantity, limit, stop, selectedOpen || limit));
+      setPositions((current) => upsertPosition(current, symbol, quantity, limit, stop, mark, session.sessionDate, session.barTime));
     }
   }
 
@@ -1029,16 +1049,21 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                 catalog={catalog}
                 chart={chart}
                 compactVisibleColumns={compactVisibleColumns}
+                draft={tradeDraft}
                 mainTimeframe={mainTimeframe}
                 mainVisibleColumns={mainVisibleColumns}
+                orders={orders}
+                positions={positions}
                 scope={scope}
                 session={session}
                 sessions={sessions}
                 showDayChart={showDayChart}
                 showFiveMinuteChart={showFiveMinuteChart}
+                onDraftChange={setTradeDraft}
                 onMainTimeframeChange={setMainTimeframe}
                 onMainVisibleColumnsChange={setMainVisibleColumns}
                 onCompactVisibleColumnsChange={setCompactVisibleColumns}
+                onStage={stageOrder}
               />
             </WorkspaceWindow>
           );
@@ -1531,11 +1556,16 @@ function LiveChartWindow({
   catalog,
   chart,
   compactVisibleColumns,
+  draft,
   mainTimeframe,
   mainVisibleColumns,
   onCompactVisibleColumnsChange,
+  onDraftChange,
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
+  onStage,
+  orders,
+  positions,
   scope,
   session,
   sessions,
@@ -1545,16 +1575,21 @@ function LiveChartWindow({
   catalog: CatalogPayload | null;
   chart: ChartWindow;
   compactVisibleColumns: string[];
+  draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string };
   mainTimeframe: string;
   mainVisibleColumns: string[];
+  orders: OrderRow[];
+  positions: PositionRow[];
   scope: Scope;
   session: TradingSession;
   sessions: string[];
   showDayChart: boolean;
   showFiveMinuteChart: boolean;
   onCompactVisibleColumnsChange: (columns: string[]) => void;
+  onDraftChange: (draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string }) => void;
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
+  onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
 }) {
   const [mainPayload, setMainPayload] = useState<ChartPayload | null>(null);
   const [dayPayload, setDayPayload] = useState<ChartPayload | null>(null);
@@ -1563,6 +1598,11 @@ function LiveChartWindow({
   const [chartError, setChartError] = useState("");
   const selectedOpen = numberValue(chart.row, "current_open") || numberValue(chart.row, "open");
   const selectedTime = rowTimestampSeconds(chart.row, session.sessionDate, session.barTime);
+  const quote = quoteFromRow(chart.row, selectedOpen);
+  const position = positions.find((row) => row.symbol === chart.ticker);
+  const exposure = positions.reduce((total, row) => total + row.mark * row.quantity, 0);
+  const availableCash = Math.max(0, 10_000 - exposure);
+  const liveEntryLine = buildLiveEntryLine(position, quote.bid);
   const mainOpenOnlyPayload = useMemo(() => {
     if (mainTimeframe === "1d") return dayOpenOnlyChartPayload(mainPayload, session.sessionDate, selectedOpen, selectedTime);
     if (mainTimeframe === "5m") return castOpenChartPayload(mainPayload, selectedTime, selectedOpen, `${session.barTime} open`);
@@ -1615,128 +1655,259 @@ function LiveChartWindow({
       mainPayload={mainOpenOnlyPayload}
       mainTimeframe={mainTimeframe}
       mainVisibleColumns={mainVisibleColumns}
+      position={position}
+      quote={quote}
+      availableCash={availableCash}
+      draft={draft}
+      orders={orders}
+      row={chart.row}
       selectedTicker={chart.ticker}
       session={session}
       showDayChart={showDayChart}
       showFiveMinuteChart={showFiveMinuteChart}
+      liveEntryLine={liveEntryLine}
       onCompactVisibleColumnsChange={onCompactVisibleColumnsChange}
+      onDraftChange={onDraftChange}
       onMainTimeframeChange={onMainTimeframeChange}
       onMainVisibleColumnsChange={onMainVisibleColumnsChange}
+      onStage={onStage}
     />
   );
 }
 
 function ChartsContainer({
+  availableCash,
   catalog,
   chartError,
   chartLoading,
   compactVisibleColumns,
   dayPayload,
+  draft,
   fiveMinutePayload,
+  liveEntryLine,
   mainPayload,
   mainTimeframe,
   mainVisibleColumns,
   onCompactVisibleColumnsChange,
+  onDraftChange,
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
+  onStage,
+  orders,
+  position,
+  quote,
+  row,
   selectedTicker,
   session,
   showDayChart,
   showFiveMinuteChart,
 }: {
+  availableCash: number;
   catalog: CatalogPayload | null;
   chartError: string;
   chartLoading: boolean;
   compactVisibleColumns: string[];
   dayPayload: ChartPayload | null;
+  draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string };
   fiveMinutePayload: ChartPayload | null;
+  liveEntryLine: LiveEntryLine | null;
   mainPayload: ChartPayload | null;
   mainTimeframe: string;
   mainVisibleColumns: string[];
+  orders: OrderRow[];
+  position?: PositionRow;
+  quote: ReturnType<typeof quoteFromRow>;
+  row: Record<string, unknown>;
   selectedTicker: string;
   session: TradingSession;
   showDayChart: boolean;
   showFiveMinuteChart: boolean;
   onCompactVisibleColumnsChange: (columns: string[]) => void;
+  onDraftChange: (draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string }) => void;
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
+  onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
 }) {
   const mainOptions = mainPayload?.options;
   const compactOptions = fiveMinutePayload?.options ?? dayPayload?.options;
   const lowerChartCount = Number(showDayChart) + Number(showFiveMinuteChart);
   return (
-    <div className={lowerChartCount ? "live-chart-stack" : "live-chart-stack no-lower"}>
-      <ChartPanel
-        catalogColumns={catalog?.columns ?? []}
-        displayItemOptions={mainOptions?.display_items ?? catalog?.displayItems ?? []}
-        emptyMessage="Select a scanner row to load charts."
-        errorMessage={chartError}
-        featureOptions={mainOptions?.feature_columns ?? []}
-        indicatorOptions={mainOptions?.standard_indicators ?? MAIN_DISPLAY_ITEMS}
-        loading={chartLoading}
-        onPeriodChange={() => undefined}
-        onTickerChange={() => undefined}
-        onTimeframeChange={onMainTimeframeChange}
-        onVisibleColumnsChange={onMainVisibleColumnsChange}
-        payload={mainPayload}
-        periodEnd={session.sessionDate}
-        periodStart={session.sessionDate}
-        ticker={selectedTicker}
-        tickerInputWidth={130}
-        timeframe={mainTimeframe}
-        timeframes={["1m", "5m", "1d"]}
-        visibleColumns={mainVisibleColumns}
+    <div className="live-chart-trade-layout">
+      <div className={lowerChartCount ? "live-chart-stack" : "live-chart-stack no-lower"}>
+        <ChartPanel
+          catalogColumns={catalog?.columns ?? []}
+          displayItemOptions={mainOptions?.display_items ?? catalog?.displayItems ?? []}
+          emptyMessage="Select a scanner row to load charts."
+          errorMessage={chartError}
+          featureOptions={mainOptions?.feature_columns ?? []}
+          indicatorOptions={mainOptions?.standard_indicators ?? MAIN_DISPLAY_ITEMS}
+          loading={chartLoading}
+          liveEntryLine={liveEntryLine}
+          onPeriodChange={() => undefined}
+          onTickerChange={() => undefined}
+          onTimeframeChange={onMainTimeframeChange}
+          onVisibleColumnsChange={onMainVisibleColumnsChange}
+          payload={mainPayload}
+          periodEnd={session.sessionDate}
+          periodStart={session.sessionDate}
+          ticker={selectedTicker}
+          tickerInputWidth={130}
+          timeframe={mainTimeframe}
+          timeframes={["1m", "5m", "1d"]}
+          visibleColumns={mainVisibleColumns}
+        />
+        {lowerChartCount ? (
+          <div className={lowerChartCount === 1 ? "live-lower-chart-grid single" : "live-lower-chart-grid"}>
+            {showDayChart ? (
+              <div className="live-compact-chart">
+                <span>Daily / 60 days</span>
+                <ChartPanel
+                  catalogColumns={catalog?.columns ?? []}
+                  displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
+                  emptyMessage="No daily chart data."
+                  errorMessage={chartError}
+                  featureOptions={compactOptions?.feature_columns ?? []}
+                  indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
+                  loading={chartLoading}
+                  daySeparatorsVisible={false}
+                  onTickerChange={() => undefined}
+                  onTimeframeChange={() => undefined}
+                  onVisibleColumnsChange={onCompactVisibleColumnsChange}
+                  payload={dayPayload}
+                  ticker={selectedTicker}
+                  timeframe="1d"
+                  timeframes={["1d"]}
+                  visibleColumns={compactVisibleColumns}
+                />
+              </div>
+            ) : null}
+            {showFiveMinuteChart ? (
+              <div className="live-compact-chart">
+                <span>5m / last 2 days</span>
+                <ChartPanel
+                  catalogColumns={catalog?.columns ?? []}
+                  displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
+                  emptyMessage="No 5m chart data."
+                  errorMessage={chartError}
+                  featureOptions={compactOptions?.feature_columns ?? []}
+                  indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
+                  loading={chartLoading}
+                  onTickerChange={() => undefined}
+                  onTimeframeChange={() => undefined}
+                  onVisibleColumnsChange={onCompactVisibleColumnsChange}
+                  payload={fiveMinutePayload}
+                  ticker={selectedTicker}
+                  timeframe="5m"
+                  timeframes={["5m"]}
+                  visibleColumns={compactVisibleColumns}
+                />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      <ChartTradePanel
+        availableCash={availableCash}
+        draft={draft}
+        orders={orders}
+        position={position}
+        quote={quote}
+        row={row}
+        selectedTicker={selectedTicker}
+        onDraftChange={onDraftChange}
+        onStage={onStage}
       />
-      {lowerChartCount ? (
-        <div className={lowerChartCount === 1 ? "live-lower-chart-grid single" : "live-lower-chart-grid"}>
-          {showDayChart ? (
-            <div className="live-compact-chart">
-              <span>Daily / 60 days</span>
-              <ChartPanel
-                catalogColumns={catalog?.columns ?? []}
-                displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
-                emptyMessage="No daily chart data."
-                errorMessage={chartError}
-                featureOptions={compactOptions?.feature_columns ?? []}
-                indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
-                loading={chartLoading}
-                daySeparatorsVisible={false}
-                onTickerChange={() => undefined}
-                onTimeframeChange={() => undefined}
-                onVisibleColumnsChange={onCompactVisibleColumnsChange}
-                payload={dayPayload}
-                ticker={selectedTicker}
-                timeframe="1d"
-                timeframes={["1d"]}
-                visibleColumns={compactVisibleColumns}
-              />
-            </div>
-          ) : null}
-          {showFiveMinuteChart ? (
-            <div className="live-compact-chart">
-              <span>5m / last 2 days</span>
-              <ChartPanel
-                catalogColumns={catalog?.columns ?? []}
-                displayItemOptions={compactOptions?.display_items ?? catalog?.displayItems ?? []}
-                emptyMessage="No 5m chart data."
-                errorMessage={chartError}
-                featureOptions={compactOptions?.feature_columns ?? []}
-                indicatorOptions={compactOptions?.standard_indicators ?? LOWER_DISPLAY_ITEMS}
-                loading={chartLoading}
-                onTickerChange={() => undefined}
-                onTimeframeChange={() => undefined}
-                onVisibleColumnsChange={onCompactVisibleColumnsChange}
-                payload={fiveMinutePayload}
-                ticker={selectedTicker}
-                timeframe="5m"
-                timeframes={["5m"]}
-                visibleColumns={compactVisibleColumns}
-              />
-            </div>
-          ) : null}
+    </div>
+  );
+}
+
+function ChartTradePanel({
+  availableCash,
+  draft,
+  onDraftChange,
+  onStage,
+  orders,
+  position,
+  quote,
+  row,
+  selectedTicker,
+}: {
+  availableCash: number;
+  draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string };
+  onDraftChange: (draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string }) => void;
+  onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
+  orders: OrderRow[];
+  position?: PositionRow;
+  quote: ReturnType<typeof quoteFromRow>;
+  row: Record<string, unknown>;
+  selectedTicker: string;
+}) {
+  const [strategy, setStrategy] = useState("Manual");
+  const [sizeMode, setSizeMode] = useState("risk_pct");
+  const [sizeValue, setSizeValue] = useState("10");
+  const stop = Number(draft.stop) || numberValue(row, "suggested_stop") || Math.max(0, quote.bid * 0.97);
+  const limit = Number(draft.limit) || (draft.side === "SELL" ? quote.bid : quote.ask);
+  const quantity = calculateLiveOrderQuantity({ availableCash, entry: limit, mode: sizeMode, side: draft.side, stop, value: sizeValue });
+  const spreadPct = quote.ask > 0 ? quote.spread / quote.ask : 0;
+  const openOrders = orders.filter((order) => order.symbol === selectedTicker && order.status === "STAGED").length;
+
+  function stageComputedOrder() {
+    const context = { limit, mark: quote.bid, quantity, row, side: draft.side, status: "STAGED", stop, symbol: selectedTicker, type: draft.type };
+    onStage(draft.side, "STAGED", context);
+    onDraftChange({ ...draft, limit: limit.toFixed(4), quantity: String(quantity), stop: stop.toFixed(4) });
+  }
+
+  return (
+    <aside className="live-chart-trade-panel">
+      <div className="live-chart-trade-header">
+        <span>Trade</span>
+        <strong>{selectedTicker}</strong>
+      </div>
+      <div className="live-quote-card">
+        <div className="live-quote-badges">
+          <div className="live-quote-badge ask">
+            <span>Ask</span>
+            <strong>{money(quote.ask)}</strong>
+          </div>
+          <div className="live-quote-badge bid">
+            <span>Bid</span>
+            <strong>{money(quote.bid)}</strong>
+          </div>
+        </div>
+        <div className="live-quote-stats">
+          <TicketMetric label="Spread" value={`${money(quote.spread)} / ${percent(spreadPct)}`} />
+          <TicketMetric label="Transactions" value={integer(quote.transactions)} />
+          <TicketMetric label="Volume" value={integer(quote.volume)} />
+        </div>
+      </div>
+      <div className="live-chart-trade-section">
+        <LiveSelect label="Strategy" value={strategy} values={["Manual", "Momentum Assist"]} onChange={setStrategy} />
+        <LiveSelect label="Sizing" value={sizeMode} values={["risk_pct", "dollar", "cash_pct", "shares"]} onChange={setSizeMode} />
+        <LiveField label={sizeModeLabel(sizeMode)} type="number" value={sizeValue} onChange={setSizeValue} />
+      </div>
+      <div className="live-trade-form compact">
+        <LiveSelect label="Side" value={draft.side} values={["BUY", "SELL"]} onChange={(value) => onDraftChange({ ...draft, side: value as "BUY" | "SELL" })} />
+        <LiveSelect label="Type" value={draft.type} values={["LIMIT", "MARKET", "STOP"]} onChange={(value) => onDraftChange({ ...draft, type: value })} />
+        <LiveField label="Limit" type="number" value={draft.limit || limit.toFixed(4)} onChange={(value) => onDraftChange({ ...draft, limit: value })} />
+        <LiveField label="Stop" type="number" value={draft.stop || stop.toFixed(4)} onChange={(value) => onDraftChange({ ...draft, stop: value })} />
+      </div>
+      <div className="live-ticket-grid compact">
+        <TicketMetric label="Size" value={`${integer(quantity)} sh`} />
+        <TicketMetric label="Notional" value={money(quantity * limit)} />
+        <TicketMetric label="Cash" value={money(availableCash)} />
+        <TicketMetric label="Staged" value={integer(openOrders)} />
+      </div>
+      {position ? (
+        <div className={position.unrealized_pnl >= 0 ? "live-chart-position-card positive" : "live-chart-position-card negative"}>
+          <span>Open Position</span>
+          <strong>{integer(position.quantity)} @ {money(position.avg_price)}</strong>
+          <small>P/L {money((quote.bid - position.avg_price) * position.quantity)} / {percent(position.avg_price > 0 ? quote.bid / position.avg_price - 1 : 0)}</small>
         </div>
       ) : null}
-    </div>
+      <button className="button primary" disabled={!selectedTicker || quantity <= 0} onClick={stageComputedOrder} type="button">
+        <Save size={15} /> Stage Order
+      </button>
+    </aside>
   );
 }
 
@@ -1962,12 +2133,77 @@ function liveTableColumns(snapshotColumns: string[]) {
   ];
 }
 
-function upsertPosition(rows: PositionRow[], symbol: string, quantity: number, price: number, stop: number, mark: number): PositionRow[] {
+function quoteFromRow(row: Record<string, unknown>, fallbackOpen: number) {
+  const ask = numberValue(row, "current_open") || numberValue(row, "open") || fallbackOpen || numberValue(row, "last_close");
+  const bid = Math.max(0, ask - 0.01);
+  return {
+    ask,
+    bid,
+    spread: Math.max(0, ask - bid),
+    transactions: numberValue(row, "last_transactions"),
+    volume: numberValue(row, "last_volume"),
+  };
+}
+
+function calculateLiveOrderQuantity({
+  availableCash,
+  entry,
+  mode,
+  side,
+  stop,
+  value,
+}: {
+  availableCash: number;
+  entry: number;
+  mode: string;
+  side: "BUY" | "SELL";
+  stop: number;
+  value: string;
+}) {
+  const numeric = Math.max(0, Number(value) || 0);
+  if (!entry || entry <= 0) return 0;
+  if (mode === "shares") return Math.floor(numeric);
+  const cashCapShares = Math.floor(availableCash / entry);
+  if (mode === "dollar") return Math.max(0, Math.min(cashCapShares, Math.floor(numeric / entry)));
+  if (mode === "cash_pct") return Math.max(0, Math.min(cashCapShares, Math.floor((availableCash * numeric / 100) / entry)));
+  const riskPerShare = Math.max(0.0001, side === "SELL" ? stop - entry : entry - stop);
+  return Math.max(0, Math.min(cashCapShares, Math.floor((availableCash * numeric / 100) / riskPerShare)));
+}
+
+function sizeModeLabel(mode: string) {
+  if (mode === "dollar") return "Dollars";
+  if (mode === "cash_pct") return "% Cash";
+  if (mode === "shares") return "Shares";
+  return "% Risk";
+}
+
+function buildLiveEntryLine(position: PositionRow | undefined, currentBid: number): LiveEntryLine | null {
+  if (!position || !position.quantity || !position.avg_price) return null;
+  const pnl = (currentBid - position.avg_price) * position.quantity;
+  const pnlPct = position.avg_price > 0 ? currentBid / position.avg_price - 1 : 0;
+  const color = pnl >= 0 ? "#16a34a" : "#dc2626";
+  return {
+    color,
+    labelParts: [
+      { text: "Entry", tone: "label" },
+      { text: `${integer(position.quantity)} @ ${money(position.avg_price)}`, tone: "size" },
+      { text: money(pnl), tone: pnl >= 0 ? "pnlWin" : "pnlLoss" },
+      { text: percent(pnlPct), tone: pnl >= 0 ? "pnlWin" : "pnlLoss" },
+    ],
+    pnl,
+    price: position.avg_price,
+    quantity: position.quantity,
+  };
+}
+
+function upsertPosition(rows: PositionRow[], symbol: string, quantity: number, price: number, stop: number, mark: number, entrySessionDate?: string, entryTime?: string): PositionRow[] {
   const existing = rows.find((row) => row.symbol === symbol);
   const nextQuantity = (existing?.quantity ?? 0) + quantity;
   const avgPrice = existing ? ((existing.avg_price * existing.quantity) + (price * quantity)) / Math.max(1, nextQuantity) : price;
   const row = {
     avg_price: avgPrice,
+    entry_session_date: existing?.entry_session_date ?? entrySessionDate,
+    entry_time: existing?.entry_time ?? entryTime,
     mark,
     quantity: nextQuantity,
     stop,

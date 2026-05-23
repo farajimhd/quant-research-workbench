@@ -6576,6 +6576,7 @@ button {
 }
 
 .trade-price-line,
+.live-entry-price-line,
 .trade-guide-line {
   position: absolute;
   z-index: 6;
@@ -6592,6 +6593,7 @@ button {
 }
 
 .trade-price-line span,
+.live-entry-price-line span,
 .trade-guide-line span {
   position: absolute;
   right: 0;
@@ -6608,6 +6610,15 @@ button {
   text-overflow: ellipsis;
   transform: translateY(-50%);
   white-space: nowrap;
+}
+
+.live-entry-price-line {
+  pointer-events: none;
+}
+
+.live-entry-price-line span {
+  right: 6px;
+  max-width: 250px;
 }
 
 .trade-label-part {
@@ -9548,6 +9559,15 @@ button {
   overflow: hidden;
 }
 
+.live-chart-trade-layout {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 310px);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .live-chart-stack.no-lower {
   grid-template-rows: minmax(0, 1fr);
 }
@@ -9629,6 +9649,126 @@ button {
 
 .live-compact-chart .chart-price {
   min-height: 150px;
+}
+
+.live-chart-trade-panel {
+  background: color-mix(in oklab, var(--surface) 94%, var(--surface-alt));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.live-chart-trade-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.live-chart-trade-header span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.live-chart-trade-header strong {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.live-quote-card {
+  background: color-mix(in oklab, var(--surface-alt) 45%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 9px;
+  padding: 9px;
+}
+
+.live-quote-badges {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.live-quote-badge {
+  border: 1px solid;
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+}
+
+.live-quote-badge span {
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.live-quote-badge strong {
+  font-size: 19px;
+  line-height: 1;
+}
+
+.live-quote-badge.ask {
+  background: color-mix(in oklab, var(--danger) 9%, var(--surface));
+  border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
+  color: var(--danger);
+}
+
+.live-quote-badge.bid {
+  background: color-mix(in oklab, var(--info) 9%, var(--surface));
+  border-color: color-mix(in oklab, var(--info) 30%, var(--border));
+  color: var(--info);
+}
+
+.live-quote-stats,
+.live-chart-trade-section {
+  display: grid;
+  gap: 8px;
+}
+
+.live-trade-form.compact {
+  grid-template-columns: 1fr;
+}
+
+.live-ticket-grid.compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.live-chart-position-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 9px;
+}
+
+.live-chart-position-card span,
+.live-chart-position-card small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.live-chart-position-card strong {
+  font-size: 14px;
+}
+
+.live-chart-position-card.positive {
+  background: color-mix(in oklab, var(--success) 8%, var(--surface));
+  border-color: color-mix(in oklab, var(--success) 25%, var(--border));
+}
+
+.live-chart-position-card.negative {
+  background: color-mix(in oklab, var(--danger) 8%, var(--surface));
+  border-color: color-mix(in oklab, var(--danger) 25%, var(--border));
 }
 
 .live-window .metric-strip {
@@ -9922,8 +10062,13 @@ button {
   }
 
   .live-start-panel,
+  .live-chart-trade-layout,
   .live-lower-chart-grid {
     grid-template-columns: 1fr;
+  }
+
+  .live-chart-trade-layout {
+    overflow: auto;
   }
 
   .live-session-toolbar {
