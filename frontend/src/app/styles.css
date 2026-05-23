@@ -6626,12 +6626,12 @@ button {
   font-family: "Roboto Mono", "SFMono-Regular", "Cascadia Mono", "Consolas", monospace;
   font-variant-numeric: tabular-nums;
   gap: 4px;
-  max-width: min(260px, calc(100% - 10px));
+  max-width: min(260px, calc(100% - 110px));
   overflow: hidden;
   padding: 2px;
   pointer-events: auto;
   position: absolute;
-  right: 42px;
+  right: 96px;
   transform: translateY(-50%);
   white-space: nowrap;
 }
