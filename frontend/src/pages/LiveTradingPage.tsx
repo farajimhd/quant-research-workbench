@@ -2048,25 +2048,28 @@ function ChartTradePanel({
   return (
     <aside className="live-chart-trade-panel">
       <div className="live-chart-trade-header">
-        <span>Trade</span>
-        <strong>{selectedTicker}</strong>
+        <div>
+          <span>Trade Ticket</span>
+          <strong>{selectedTicker}</strong>
+        </div>
+        <div className={position ? "live-trade-status active" : "live-trade-status"}>
+          {position ? "In Position" : "Flat"}
+        </div>
       </div>
-      <div className="live-quote-card">
-        <div className="live-quote-badges">
-          <div className="live-quote-badge ask">
-            <span>Ask</span>
-            <strong>{money(quote.ask)}</strong>
-          </div>
-          <div className="live-quote-badge bid">
-            <span>Bid</span>
-            <strong>{money(quote.bid)}</strong>
-          </div>
+      <div className="live-quote-strip">
+        <div className="live-quote-price ask">
+          <span>Ask</span>
+          <strong>{money(quote.ask)}</strong>
         </div>
-        <div className="live-quote-stats-row">
-          <TicketMetric label="Spread" value={money(quote.spread)} />
-          <TicketMetric label="Txns" value={integer(quote.transactions)} />
-          <TicketMetric label="Volume" value={integer(quote.volume)} />
+        <div className="live-quote-price bid">
+          <span>Bid</span>
+          <strong>{money(quote.bid)}</strong>
         </div>
+        <dl className="live-quote-micro">
+          <div><dt>Spread</dt><dd>{money(quote.spread)}</dd></div>
+          <div><dt>Txns</dt><dd>{integer(quote.transactions)}</dd></div>
+          <div><dt>Vol</dt><dd>{integer(quote.volume)}</dd></div>
+        </dl>
       </div>
       <div className="live-strategy-row">
         <LiveSelect label="Strategy" value={strategy} values={["Manual", "Momentum Assist"]} onChange={setStrategy} />
@@ -2093,7 +2096,8 @@ function ChartTradePanel({
             onClick={() => stageStrategyAction(action)}
           >
             <span>{action.label}</span>
-            <strong>{integer(action.quantity)} @ {money(action.limit)}</strong>
+            <strong>{action.side === "BUY" ? "Buy" : "Sell"} {integer(action.quantity)}</strong>
+            <small>{money(action.limit)}</small>
           </button>
         ))}
       </div>
@@ -2105,9 +2109,15 @@ function ChartTradePanel({
       </div>
       {position ? (
         <div className={(quote.bid - position.avg_price) * position.quantity >= 0 ? "live-chart-position-card positive" : "live-chart-position-card negative"}>
-          <span>Open Position</span>
-          <strong>{integer(position.quantity)} @ {money(position.avg_price)}</strong>
-          <small>P/L {money((quote.bid - position.avg_price) * position.quantity)} / {percent(position.avg_price > 0 ? quote.bid / position.avg_price - 1 : 0)}</small>
+          <div>
+            <span>Open Position</span>
+            <strong>{integer(position.quantity)} @ {money(position.avg_price)}</strong>
+          </div>
+          <div>
+            <span>Live P/L</span>
+            <strong>{money((quote.bid - position.avg_price) * position.quantity)}</strong>
+            <small>{percent(position.avg_price > 0 ? quote.bid / position.avg_price - 1 : 0)}</small>
+          </div>
         </div>
       ) : null}
     </aside>
