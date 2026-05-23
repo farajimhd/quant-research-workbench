@@ -1859,7 +1859,6 @@ function ChartTradePanel({
     stop: longStop,
     value: strategySettings.sizeValue,
   });
-  const spreadPct = quote.ask > 0 ? quote.spread / quote.ask : 0;
   const openOrders = orders.filter((order) => order.symbol === selectedTicker && order.status === "STAGED").length;
   const actions = buildStrategyTradeActions({
     entryQuantity,
@@ -1906,8 +1905,8 @@ function ChartTradePanel({
           </div>
         </div>
         <div className="live-quote-stats-row">
-          <TicketMetric label="Spread" value={`${money(quote.spread)} / ${percent(spreadPct)}`} />
-          <TicketMetric label="Transactions" value={integer(quote.transactions)} />
+          <TicketMetric label="Spread" value={money(quote.spread)} />
+          <TicketMetric label="Txns" value={integer(quote.transactions)} />
           <TicketMetric label="Volume" value={integer(quote.volume)} />
         </div>
       </div>

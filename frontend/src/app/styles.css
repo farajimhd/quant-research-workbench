@@ -9742,11 +9742,17 @@ button {
 
 .live-quote-stats-row .live-ticket-metric {
   min-height: 48px;
-  padding: 7px;
+  padding: 6px;
+}
+
+.live-quote-stats-row .live-ticket-metric span {
+  font-size: 9px;
+  line-height: 1;
 }
 
 .live-quote-stats-row .live-ticket-metric strong {
   font-size: 12px;
+  line-height: 1.15;
 }
 
 .live-strategy-row {
@@ -9776,6 +9782,17 @@ button {
   gap: 8px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   padding: 8px;
+}
+
+.live-strategy-settings .live-field {
+  min-width: 0;
+}
+
+.live-strategy-settings .live-field input,
+.live-strategy-settings .live-field select {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
 }
 
 .live-action-panel {
