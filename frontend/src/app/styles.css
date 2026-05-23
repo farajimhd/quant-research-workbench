@@ -10029,7 +10029,25 @@ button {
   gap: 7px;
   grid-template-columns: minmax(0, 1fr) auto auto;
   min-height: 34px;
+  overflow: hidden;
   padding: 7px 9px;
+  position: relative;
+}
+
+.live-market-row.has-strength::before {
+  background: color-mix(in oklab, var(--muted-foreground) 8%, transparent);
+  content: "";
+  inset: 0 auto 0 0;
+  pointer-events: none;
+  position: absolute;
+  width: var(--strength, 0%);
+}
+
+.live-market-row > span,
+.live-market-row > strong,
+.live-market-row > em {
+  position: relative;
+  z-index: 1;
 }
 
 .live-market-row span {
@@ -10069,6 +10087,10 @@ button {
   border-color: color-mix(in oklab, var(--success) 26%, var(--border));
 }
 
+.live-market-row.success.has-strength::before {
+  background: color-mix(in oklab, var(--success) 13%, transparent);
+}
+
 .live-market-row.success em {
   background: color-mix(in oklab, var(--success) 13%, var(--surface));
   color: color-mix(in oklab, var(--success) 82%, var(--foreground));
@@ -10076,6 +10098,10 @@ button {
 
 .live-market-row.info {
   border-color: color-mix(in oklab, var(--info) 22%, var(--border));
+}
+
+.live-market-row.info.has-strength::before {
+  background: color-mix(in oklab, var(--info) 12%, transparent);
 }
 
 .live-market-row.info em {
@@ -10086,6 +10112,10 @@ button {
 .live-market-row.warning {
   background: color-mix(in oklab, var(--warning) 7%, var(--surface));
   border-color: color-mix(in oklab, var(--warning) 38%, var(--border));
+}
+
+.live-market-row.warning.has-strength::before {
+  background: color-mix(in oklab, var(--warning) 14%, transparent);
 }
 
 .live-market-row.warning span,

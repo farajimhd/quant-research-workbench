@@ -2139,6 +2139,7 @@ function ChartTradePanel({
     {
       detail: quote.transactions >= 300 ? "strong" : quote.transactions >= 100 ? "ok" : quote.transactions > 0 ? "thin" : "none",
       label: "Transactions",
+      strength: quote.transactionsMarketStrength,
       tone: transactionsTone,
       value: integer(quote.transactions),
       warning: transactionsTone === "warning",
@@ -2146,6 +2147,7 @@ function ChartTradePanel({
     {
       detail: quote.volume >= 50000 ? "strong" : quote.volume >= 8000 ? "ok" : quote.volume > 0 ? "light" : "none",
       label: "Volume",
+      strength: quote.volumeMarketStrength,
       tone: volumeTone,
       value: integer(quote.volume),
       warning: volumeTone === "warning",
@@ -2208,7 +2210,12 @@ function ChartTradePanel({
         </div>
         <div className="live-market-health-list" aria-label="Market quality">
           {liquidityStats.map((stat) => (
-            <div key={stat.label} className={`live-market-row ${stat.tone}`}>
+            <div
+              key={stat.label}
+              className={`live-market-row ${stat.tone} has-strength`}
+              style={marketStrengthStyle(stat.strength)}
+              title={`${stat.label} market percentile: ${percent(stat.strength)}`}
+            >
               <span>
                 {stat.label}
                 {stat.warning ? <ShieldAlert size={12} aria-hidden="true" /> : null}
@@ -2478,7 +2485,16 @@ function isBlankLiveValue(value: unknown) {
 }
 
 function buildMarketStateRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
-  return rows.map(buildMarketStateRow).sort((a, b) => numberValue(b, "last_day_volume_so_far") - numberValue(a, "last_day_volume_so_far"));
+  const marketRows = rows.map(buildMarketStateRow);
+  const transactionValues = sortedPositiveValues(marketRows.map((row) => numberValue(row, "last_transactions")));
+  const dollarVolumeValues = sortedPositiveValues(marketRows.map((row) => numberValue(row, "last_bar_dollar_volume")));
+  return marketRows
+    .map((row) => ({
+      ...row,
+      last_dollar_volume_market_strength: percentileRank(numberValue(row, "last_bar_dollar_volume"), dollarVolumeValues),
+      last_transactions_market_strength: percentileRank(numberValue(row, "last_transactions"), transactionValues),
+    }))
+    .sort((a, b) => numberValue(b, "last_day_volume_so_far") - numberValue(a, "last_day_volume_so_far"));
 }
 
 function buildMarketStateRow(row: Record<string, unknown>): Record<string, unknown> {
@@ -2489,6 +2505,7 @@ function buildMarketStateRow(row: Record<string, unknown>): Record<string, unkno
   const currentReference = currentOpen || lastClose;
   return {
     ...row,
+    last_bar_dollar_volume: currentReference > 0 ? numberValue(row, "last_volume") * currentReference : null,
     last_day_current_change_pct: dayOpen > 0 && currentReference > 0 ? (currentReference / dayOpen) - 1 : null,
     last_day_max_change_pct: dayOpen > 0 && dayHigh > 0 ? (dayHigh / dayOpen) - 1 : null,
   };
@@ -2673,8 +2690,31 @@ function quoteFromRow(row: Record<string, unknown>, fallbackOpen: number) {
     bid,
     spread: Math.max(0, ask - bid),
     transactions: numberValue(row, "last_transactions"),
+    transactionsMarketStrength: numberValue(row, "last_transactions_market_strength"),
     volume: numberValue(row, "last_volume"),
+    volumeMarketStrength: numberValue(row, "last_dollar_volume_market_strength"),
   };
+}
+
+function marketStrengthStyle(value: number): CSSProperties {
+  const strength = Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
+  return { "--strength": `${Math.round(strength * 100)}%` } as CSSProperties;
+}
+
+function sortedPositiveValues(values: number[]) {
+  return values.filter((value) => Number.isFinite(value) && value > 0).sort((left, right) => left - right);
+}
+
+function percentileRank(value: number, sortedValues: number[]) {
+  if (!Number.isFinite(value) || value <= 0 || !sortedValues.length) return 0;
+  let low = 0;
+  let high = sortedValues.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (sortedValues[mid] <= value) low = mid + 1;
+    else high = mid;
+  }
+  return low / sortedValues.length;
 }
 
 function calculateLiveOrderQuantity({
