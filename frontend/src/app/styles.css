@@ -10307,9 +10307,11 @@ button {
 }
 
 .live-strategy-action.neutral {
-  background: linear-gradient(180deg, color-mix(in oklab, var(--warning) 17%, var(--surface)), color-mix(in oklab, var(--warning) 7%, var(--surface)));
-  border-color: color-mix(in oklab, var(--warning) 34%, var(--border));
-  color: color-mix(in oklab, var(--warning) 84%, var(--foreground));
+  background:
+    linear-gradient(90deg, color-mix(in oklab, var(--success) 64%, #22c55e) 0 5px, transparent 5px),
+    linear-gradient(180deg, color-mix(in oklab, var(--success) 8%, var(--surface)), var(--surface));
+  border-color: color-mix(in oklab, var(--success) 30%, var(--border));
+  color: color-mix(in oklab, var(--success) 86%, var(--foreground));
 }
 
 .live-strategy-action.buy em {
@@ -10323,8 +10325,8 @@ button {
 }
 
 .live-strategy-action.neutral em {
-  background: color-mix(in oklab, var(--warning) 18%, var(--surface));
-  color: color-mix(in oklab, var(--warning) 88%, var(--foreground));
+  background: color-mix(in oklab, var(--success) 13%, var(--surface));
+  color: color-mix(in oklab, var(--success) 88%, var(--foreground));
 }
 
 .live-strategy-action:disabled em {
