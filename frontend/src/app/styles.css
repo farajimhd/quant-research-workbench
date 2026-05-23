@@ -10215,8 +10215,8 @@ button {
   cursor: pointer;
   display: grid;
   gap: 7px 10px;
-  grid-template-columns: minmax(0, 1fr) minmax(86px, auto);
-  min-height: 76px;
+  grid-template-columns: minmax(96px, 1fr) minmax(78px, auto);
+  min-height: 72px;
   padding: 11px 12px;
   text-align: left;
   transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
@@ -10228,9 +10228,13 @@ button {
 }
 
 .live-strategy-action:disabled {
+  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
+  border-color: color-mix(in oklab, var(--border) 88%, var(--surface-alt));
+  box-shadow: none;
+  color: var(--muted-foreground);
   cursor: not-allowed;
-  filter: saturate(0.72);
-  opacity: 0.5;
+  filter: none;
+  opacity: 1;
 }
 
 .live-strategy-action span {
@@ -10249,7 +10253,7 @@ button {
 
 .live-strategy-action strong {
   align-self: start;
-  font-size: calc(24px * var(--trade-readable-scale));
+  font-size: calc(22px * var(--trade-readable-scale));
   font-weight: 950;
   line-height: 1;
   min-width: 0;
@@ -10273,13 +10277,13 @@ button {
   align-self: center;
   border-radius: 999px;
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: calc(15px * var(--trade-readable-scale));
+  font-size: calc(14px * var(--trade-readable-scale));
   font-style: normal;
   font-weight: 900;
   grid-column: 2;
   grid-row: 1 / 4;
   line-height: 1;
-  min-width: 86px;
+  min-width: 78px;
   padding: 8px 10px;
   text-align: center;
 }
@@ -10317,6 +10321,11 @@ button {
 .live-strategy-action.neutral em {
   background: color-mix(in oklab, var(--warning) 18%, var(--surface));
   color: color-mix(in oklab, var(--warning) 88%, var(--foreground));
+}
+
+.live-strategy-action:disabled em {
+  background: color-mix(in oklab, var(--muted-foreground) 10%, var(--surface));
+  color: var(--muted-foreground);
 }
 
 .live-action-panel.many .live-strategy-action {
@@ -10357,20 +10366,6 @@ button {
   justify-self: start;
   min-width: 0;
   padding: 7px 10px;
-}
-
-.live-action-panel.many .live-strategy-action:disabled {
-  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
-  border-color: color-mix(in oklab, var(--border) 88%, var(--surface-alt));
-  box-shadow: none;
-  color: var(--muted-foreground);
-  filter: none;
-  opacity: 1;
-}
-
-.live-action-panel.many .live-strategy-action:disabled em {
-  background: color-mix(in oklab, var(--muted-foreground) 10%, var(--surface));
-  color: var(--muted-foreground);
 }
 
 .live-trade-form.compact {
