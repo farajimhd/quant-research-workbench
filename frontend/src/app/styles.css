@@ -10463,6 +10463,33 @@ button {
   line-height: 1.25;
 }
 
+.live-news-title-row {
+  align-items: start;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.live-news-type-icon {
+  margin-top: 1px;
+  stroke-width: 2.7;
+}
+
+.live-news-type-icon.hot-company,
+.live-news-category-label.hot-company {
+  color: var(--danger);
+}
+
+.live-news-type-icon.company,
+.live-news-category-label.company {
+  color: #f97316;
+}
+
+.live-news-type-icon.multi,
+.live-news-category-label.multi {
+  color: var(--info);
+}
+
 .live-news-labels {
   display: flex;
   flex-wrap: wrap;
@@ -10484,6 +10511,11 @@ button {
   text-overflow: ellipsis;
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+.live-news-labels .live-news-category-label {
+  background: color-mix(in oklab, currentColor 10%, var(--surface));
+  border-color: color-mix(in oklab, currentColor 28%, transparent);
 }
 
 .live-news-card p {

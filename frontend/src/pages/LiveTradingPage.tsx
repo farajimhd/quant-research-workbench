@@ -11,11 +11,14 @@ import {
   Clock3,
   Eye,
   ExternalLink,
+  Flame,
   FolderOpen,
   LayoutGrid,
   Maximize2,
+  Megaphone,
   Minimize2,
   Move,
+  Newspaper,
   PauseCircle,
   Play,
   RefreshCw,
@@ -2473,24 +2476,36 @@ function LiveNewsSection({ empty, items, title }: { empty: string; items: LiveNe
       {items.length ? (
         <div className="live-news-list">
           {items.map((item, index) => (
-            <a href={item.url || undefined} key={`${item.published_et}-${index}`} target="_blank" rel="noreferrer" title={item.title}>
-              <div className="live-news-meta">
-                <time dateTime={item.published_et}>{formatNewsDateTime(item.published_et)}</time>
-                <span className={`live-news-recency-chip ${item.recency || "cold"}`}>{item.recency || "cold"}</span>
-              </div>
-              <strong>{item.title}</strong>
-              <div className="live-news-labels" aria-label="News labels">
-                {newsLabels(item).map((label) => (
-                  <span key={label}>{label}</span>
-                ))}
-              </div>
-            </a>
+            <LiveNewsItem item={item} key={`${item.published_et}-${index}`} />
           ))}
         </div>
       ) : (
         <p>{empty}</p>
       )}
     </section>
+  );
+}
+
+function LiveNewsItem({ item }: { item: LiveNewsArticle }) {
+  const indicator = liveNewsIndicator(item);
+  const NewsIcon = indicator.icon;
+  return (
+    <a href={item.url || undefined} target="_blank" rel="noreferrer" title={item.title}>
+      <div className="live-news-meta">
+        <time dateTime={item.published_et}>{formatNewsDateTime(item.published_et)}</time>
+        <span className={`live-news-recency-chip ${item.recency || "cold"}`}>{item.recency || "cold"}</span>
+      </div>
+      <div className="live-news-title-row">
+        <NewsIcon className={`live-news-type-icon ${indicator.className}`} size={15} aria-label={indicator.label} />
+        <strong>{item.title}</strong>
+      </div>
+      <div className="live-news-labels" aria-label="News labels">
+        <span className={`live-news-category-label ${indicator.className}`}>{indicator.label}</span>
+        {newsLabels(item).map((label) => (
+          <span key={label}>{label}</span>
+        ))}
+      </div>
+    </a>
   );
 }
 
@@ -2987,6 +3002,12 @@ function newsLabels(item: LiveNewsArticle) {
     .map((label) => String(label || "").trim())
     .filter(Boolean);
   return Array.from(new Set(labels)).slice(0, 5);
+}
+
+function liveNewsIndicator(item: LiveNewsArticle): { className: string; icon: typeof Newspaper; label: string } {
+  if (newsTickerCount(item) > 1) return { className: "multi", icon: Newspaper, label: "Multi-ticker" };
+  if ((item.recency || "").toLowerCase() === "hot") return { className: "hot-company", icon: Megaphone, label: "Hot company news" };
+  return { className: "company", icon: Flame, label: "Company news" };
 }
 
 function newsTickerCount(item: LiveNewsArticle) {
