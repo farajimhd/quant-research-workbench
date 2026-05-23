@@ -268,6 +268,16 @@ const LIVE_SIGNAL_COLUMNS = [
   "last_return_5",
   "last_transactions",
   "last_transactions_vs_prior_3",
+  "live_signal_time",
+  "live_signal_query",
+  "last_close",
+  "last_day_volume_so_far",
+  "last_day_max_change_pct",
+  "last_day_current_change_pct",
+  "last_vwap",
+  "live_bias",
+  "live_reasons",
+  "live_risks",
 ];
 
 const LIVE_MARKET_STATE_COLUMNS = [
