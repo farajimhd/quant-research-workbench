@@ -100,7 +100,9 @@ type PriceZone = {
 export type LiveEntryLine = {
   color: string;
   labelParts?: TradeLabelPart[];
+  onClose?: () => void;
   pnl: number;
+  pnlPct?: number;
   price: number;
   quantity: number;
 };
@@ -239,6 +241,7 @@ type ChartPanelProps = {
   onTimeframeChange: (value: string) => void;
   onVisibleColumnsChange: (value: string[]) => void;
   onVisibleSupervisionGroupsChange?: (value: string[]) => void;
+  onLiveEntryClose?: () => void;
   payload: ChartPayload | null;
   periodEnd?: string;
   periodMax?: string;
@@ -303,6 +306,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   onTimeframeChange,
   onVisibleColumnsChange,
   onVisibleSupervisionGroupsChange,
+  onLiveEntryClose,
   periodEnd,
   periodMax,
   periodMin,
@@ -384,6 +388,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const hasChartData = Boolean(payload?.candles.length);
   const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
   const liveEntryLineKey = liveEntryLine ? `${liveEntryLine.price}:${liveEntryLine.quantity}:${liveEntryLine.pnl}:${liveEntryLine.color}` : "";
+  const liveEntryLineForDraw = liveEntryLine ? { ...liveEntryLine, onClose: onLiveEntryClose } : null;
 
   const updateChartSettings = <K extends keyof ChartAppearanceSettings>(key: K, value: ChartAppearanceSettings[K]) => {
     setChartSettings((current) => {
@@ -815,7 +820,7 @@ export const ChartPanel = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     const currentPayload = payloadRef.current;
     if (!chart || !currentPayload) return;
     const selectedZones = (currentPayload.price_zones ?? []).filter((zone) => !zone.displayItemId || visibleSelectionRef.current.has(zone.displayItemId.toLowerCase()));
-    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, chartSettingsRef.current, liveEntryLine);
+    drawRegions(chart, candleRef.current, priceLayerRef.current, currentPayload.regions, selectedZones, currentPayload.trade_annotations ?? [], currentPayload.candles, chartSettingsRef.current, liveEntryLineForDraw);
     drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, showReferenceLine ? reference : null);
   }
 
@@ -2656,31 +2661,56 @@ function drawLiveEntryLine(
   if (!priceSeries || !candles.length || !liveEntryLine || !Number.isFinite(liveEntryLine.price)) return;
   const y = priceSeries.priceToCoordinate(liveEntryLine.price);
   if (y === null) return;
-  const lastCoordinate = chart.timeScale().timeToCoordinate(candles.at(-1)?.time as Time);
-  const right = Math.max(0, Math.min(layer.clientWidth - 8, (lastCoordinate ?? layer.clientWidth) + 120));
-  const left = 8;
-  const width = Math.max(80, right - left);
+  const left = 0;
+  const width = Math.max(80, layer.clientWidth);
   const line = document.createElement("div");
   line.className = "live-entry-price-line";
   line.style.left = `${left}px`;
   line.style.top = `${y}px`;
   line.style.width = `${width}px`;
   line.style.borderColor = liveEntryLine.color;
-  const label = document.createElement("span");
-  label.style.borderColor = rgbaFromHex(liveEntryLine.color, 0.36);
-  label.style.color = liveEntryLine.color;
-  if (liveEntryLine.labelParts?.length) {
-    liveEntryLine.labelParts.forEach((part) => {
-      const piece = document.createElement("b");
-      piece.className = `trade-label-part ${part.tone ?? "label"}`;
-      piece.textContent = part.text;
-      label.appendChild(piece);
+
+  const control = document.createElement("div");
+  control.className = "live-entry-position-control";
+  control.style.borderColor = rgbaFromHex(liveEntryLine.color, 0.25);
+
+  const sizeBadge = document.createElement("span");
+  sizeBadge.className = "live-entry-size-badge";
+  sizeBadge.textContent = `${liveEntryLine.quantity.toLocaleString()} @ ${liveEntryLine.price.toFixed(2)}`;
+  control.appendChild(sizeBadge);
+
+  const pnlBadge = document.createElement("span");
+  pnlBadge.className = liveEntryLine.pnl >= 0 ? "live-entry-pnl-badge positive" : "live-entry-pnl-badge negative";
+  const pnlPct = Number.isFinite(liveEntryLine.pnlPct) ? ` ${formatPercentValue(liveEntryLine.pnlPct ?? 0)}` : "";
+  pnlBadge.textContent = `${formatMoneyValue(liveEntryLine.pnl)}${pnlPct}`;
+  control.appendChild(pnlBadge);
+
+  if (liveEntryLine.onClose) {
+    const closeButton = document.createElement("button");
+    closeButton.className = "live-entry-close-button";
+    closeButton.type = "button";
+    closeButton.title = "Close position";
+    closeButton.setAttribute("aria-label", "Close position");
+    closeButton.textContent = "x";
+    closeButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+    closeButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      liveEntryLine.onClose?.();
     });
-  } else {
-    label.textContent = `Entry ${liveEntryLine.quantity} @ ${liveEntryLine.price.toFixed(2)} P/L ${liveEntryLine.pnl.toFixed(2)}`;
+    control.appendChild(closeButton);
   }
-  line.appendChild(label);
+  line.appendChild(control);
   layer.appendChild(line);
+}
+
+function formatMoneyValue(value: number) {
+  const sign = value < 0 ? "-" : "";
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatPercentValue(value: number) {
+  return `${(value * 100).toFixed(2)}%`;
 }
 
 function drawPriceZones(

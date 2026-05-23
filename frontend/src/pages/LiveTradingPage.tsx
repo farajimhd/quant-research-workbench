@@ -1623,6 +1623,20 @@ function LiveChartWindow({
   const exposure = positions.reduce((total, row) => total + row.mark * row.quantity, 0);
   const availableCash = Math.max(0, 10_000 - exposure);
   const liveEntryLine = buildLiveEntryLine(position, quote.bid);
+  function closeLivePosition() {
+    if (!position || position.quantity <= 0) return;
+    onStage("SELL", "STAGED", {
+      limit: quote.bid,
+      mark: quote.bid,
+      quantity: position.quantity,
+      row: chart.row,
+      side: "SELL",
+      status: "STAGED",
+      stop: position.stop,
+      symbol: chart.ticker,
+      type: "LIMIT",
+    });
+  }
   const mainOpenOnlyPayload = useMemo(() => {
     if (mainTimeframe === "1d") return dayOpenOnlyChartPayload(mainPayload, session.sessionDate, selectedOpen, selectedTime);
     if (mainTimeframe === "5m") return castOpenChartPayload(mainPayload, selectedTime, selectedOpen);
@@ -1688,6 +1702,7 @@ function LiveChartWindow({
       liveEntryLine={liveEntryLine}
       onCompactVisibleColumnsChange={onCompactVisibleColumnsChange}
       onDraftChange={onDraftChange}
+      onLiveEntryClose={closeLivePosition}
       onMainTimeframeChange={onMainTimeframeChange}
       onMainVisibleColumnsChange={onMainVisibleColumnsChange}
       onStage={onStage}
@@ -1710,6 +1725,7 @@ function ChartsContainer({
   mainVisibleColumns,
   onCompactVisibleColumnsChange,
   onDraftChange,
+  onLiveEntryClose,
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
   onStage,
@@ -1744,6 +1760,7 @@ function ChartsContainer({
   showFiveMinuteChart: boolean;
   onCompactVisibleColumnsChange: (columns: string[]) => void;
   onDraftChange: (draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string }) => void;
+  onLiveEntryClose: () => void;
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
   onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
@@ -1775,6 +1792,7 @@ function ChartsContainer({
           timeframe={mainTimeframe}
           timeframes={["1m", "5m", "1d"]}
           visibleColumns={mainVisibleColumns}
+          onLiveEntryClose={onLiveEntryClose}
         />
         {lowerChartCount ? (
           <div className={lowerChartCount === 1 ? "live-lower-chart-grid single" : "live-lower-chart-grid"}>
@@ -2336,13 +2354,8 @@ function buildLiveEntryLine(position: PositionRow | undefined, currentBid: numbe
   const color = pnl >= 0 ? "#16a34a" : "#dc2626";
   return {
     color,
-    labelParts: [
-      { text: "Entry", tone: "label" },
-      { text: `${integer(position.quantity)} @ ${money(position.avg_price)}`, tone: "size" },
-      { text: money(pnl), tone: pnl >= 0 ? "pnlWin" : "pnlLoss" },
-      { text: percent(pnlPct), tone: pnl >= 0 ? "pnlWin" : "pnlLoss" },
-    ],
     pnl,
+    pnlPct,
     price: position.avg_price,
     quantity: position.quantity,
   };
