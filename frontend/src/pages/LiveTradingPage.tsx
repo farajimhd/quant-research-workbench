@@ -1010,7 +1010,6 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         }),
       })}`
     );
-    setMarketSnapshot(payload.snapshot);
     return payload;
   }
 
@@ -2398,17 +2397,19 @@ function ChartTradePanel({
       </div>
       <div className={`live-news-card ${newsRecency}`} aria-label="Ticker news">
         <div className="live-news-card-header">
-          <span>News</span>
-          <strong>{newsRecency === "none" ? "No recent news" : newsRecency}</strong>
-        </div>
-        {newsItems.length ? (
-          <div className="live-news-sections">
-            <LiveNewsSection empty="No single-company headlines yet." items={companyNewsItems} title="Company News" />
-            <LiveNewsSection empty="No multi-ticker or analyst headlines yet." items={otherNewsItems} title="Other / Analyst News" />
+          <div>
+            <span>News</span>
+            <strong>{newsItems.length ? `${newsItems.length} headlines` : "No headlines yet"}</strong>
           </div>
-        ) : (
-          <p>No cached headline has arrived for {selectedTicker} by this replay bar.</p>
-        )}
+          <div className="live-news-summary-pills" aria-label="News summary">
+            <em>Company {companyNewsItems.length}</em>
+            <em>Other {otherNewsItems.length}</em>
+          </div>
+        </div>
+        <div className="live-news-sections">
+          <LiveNewsSection empty="No single-company headlines by this bar." items={companyNewsItems} title="Company News" />
+          <LiveNewsSection empty="No multi-ticker or analyst headlines by this bar." items={otherNewsItems} title="Other / Analyst News" />
+        </div>
       </div>
       <div className="live-execution-panel">
         <div className="live-strategy-row">
