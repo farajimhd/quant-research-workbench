@@ -4989,10 +4989,6 @@ button {
   min-width: 0;
 }
 
-.data-table-ticker-with-news > span {
-  font-weight: 900;
-}
-
 .data-table-news-icon {
   flex: 0 0 auto;
   stroke-width: 2.6;

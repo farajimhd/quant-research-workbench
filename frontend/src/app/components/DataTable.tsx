@@ -2680,8 +2680,8 @@ function renderCell(row: DataRow, column: string) {
   const title = [latestTitle, latestTime].filter(Boolean).join(" | ") || "News available";
   return (
     <span className="data-table-ticker-with-news" title={title}>
-      <span>{value}</span>
       <Newspaper className={`data-table-news-icon ${recency}`} size={14} aria-label={`${recency} news`} />
+      <span>{value}</span>
     </span>
   );
 }
