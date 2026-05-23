@@ -188,6 +188,22 @@ type PositionRow = {
   unrealized_pnl_pct: number;
 };
 
+type TradeRow = {
+  entry_price: number;
+  entry_session_date?: string;
+  entry_time?: string;
+  exit_order_id?: string;
+  exit_price: number;
+  exit_session_date: string;
+  exit_time: string;
+  gross_pnl: number;
+  gross_pnl_pct: number;
+  id: string;
+  quantity: number;
+  side: "LONG";
+  symbol: string;
+};
+
 type StageOrderContext = {
   limit: number;
   mark: number;
@@ -210,6 +226,7 @@ const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-qu
 const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-query.v2";
 const LIVE_CHART_VISIBILITY_STORAGE_KEY = "quant-research-workbench.live-trading.chart-visibility.v1";
 const LIVE_SIGNAL_SEARCH_BATCH_MINUTES = 10;
+const LIVE_STARTING_CASH = 10_000;
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const LIVE_METRICS_DOCK_HEIGHT = 86;
 const LIVE_PORTFOLIO_DEFAULT_HEIGHT = 210;
@@ -279,6 +296,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const canvasId = useMemo(() => new URLSearchParams(window.location.search).get("liveCanvas") || "main", []);
   const isChildCanvas = canvasId !== "main";
   const initialCanvas = useMemo(() => readStoredCanvas(canvasId, isChildCanvas), [canvasId, isChildCanvas]);
+  const initialSharedState = useMemo(() => readSharedTradingState(), []);
   const [scope, setScope] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
@@ -305,9 +323,10 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const [lowerChartVisibility, setLowerChartVisibility] = useState(readStoredLiveChartVisibility);
   const showDayChart = lowerChartVisibility.day;
   const showFiveMinuteChart = lowerChartVisibility.fiveMinute;
-  const [decisions, setDecisions] = useState<Record<string, DecisionState>>({});
-  const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [positions, setPositions] = useState<PositionRow[]>([]);
+  const [decisions, setDecisions] = useState<Record<string, DecisionState>>(initialSharedState.decisions);
+  const [orders, setOrders] = useState<OrderRow[]>(initialSharedState.orders);
+  const [positions, setPositions] = useState<PositionRow[]>(initialSharedState.positions);
+  const [trades, setTrades] = useState<TradeRow[]>(initialSharedState.trades);
   const [portfolioTab, setPortfolioTab] = useState("Trades");
   const [portfolioDetailsOpen, setPortfolioDetailsOpen] = useState(false);
   const [tradeDraft, setTradeDraft] = useState({ limit: "", quantity: "3000", side: "BUY" as "BUY" | "SELL", stop: "", type: "LIMIT" });
@@ -321,6 +340,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const canvasRemovedRef = useRef(false);
   const ordersRef = useRef(orders);
   const positionsRef = useRef(positions);
+  const tradesRef = useRef(trades);
   const seekCancelRef = useRef(0);
   const warmedChartCacheKeysRef = useRef(new Set<string>());
   const scannerQueryKey = useMemo(() => JSON.stringify(scannerQuery), [scannerQuery]);
@@ -382,8 +402,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     [scannerQueryName, snapshot]
   );
   const portfolioMetrics = useMemo(
-    () => buildPortfolioMetrics({ orders, positions }),
-    [orders, positions]
+    () => buildPortfolioMetrics({ orders, positions, trades }),
+    [orders, positions, trades]
   );
   const globalMetrics = useMemo(
     () => buildGlobalLiveMetrics({ decisions, lastActionTime, liveClockMode, preloadStatus, scannerRows, secondsPerMinute, session, snapshot }),
@@ -440,6 +460,16 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }, [positions]);
 
   useEffect(() => {
+    tradesRef.current = trades;
+  }, [trades]);
+
+  useEffect(() => {
+    if (!started) return;
+    const payload = { decisions, orders, positions, trades };
+    window.localStorage.setItem(LIVE_SHARED_STATE_STORAGE_KEY, JSON.stringify(payload));
+  }, [decisions, orders, positions, started, trades]);
+
+  useEffect(() => {
     if (canvasRemovedRef.current) return;
     const payload = { chartWindows, layoutVersion: LIVE_LAYOUT_VERSION, layouts, windows: openWindows };
     window.localStorage.setItem(canvasStorageKey(canvasId), JSON.stringify(payload));
@@ -450,16 +480,19 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     const onStorage = (event: StorageEvent) => {
       if (event.key === LIVE_SHARED_STATE_STORAGE_KEY && event.newValue) {
         try {
-          const parsed = JSON.parse(event.newValue) as { decisions?: Record<string, DecisionState>; orders?: OrderRow[]; positions?: PositionRow[] };
+          const parsed = JSON.parse(event.newValue) as { decisions?: Record<string, DecisionState>; orders?: OrderRow[]; positions?: PositionRow[]; trades?: TradeRow[] };
           const incomingOrders = parsed.orders ?? [];
           const incomingPositions = (parsed.positions ?? []).filter((row) => row.quantity > 0);
-          const isNewerOrderState = incomingOrders.length > ordersRef.current.length;
-          const isSameOrderStateWithPosition = incomingOrders.length === ordersRef.current.length && incomingPositions.length > 0;
-          const isInitialPositionSync = ordersRef.current.length === 0 && !positionsRef.current.length;
-          if (isNewerOrderState || isSameOrderStateWithPosition || isInitialPositionSync) {
+          const incomingTrades = parsed.trades ?? [];
+          const hasNewOrders = incomingOrders.length > ordersRef.current.length;
+          const hasNewTrades = incomingTrades.length > tradesRef.current.length;
+          const hasPositionState = JSON.stringify(incomingPositions) !== JSON.stringify(positionsRef.current);
+          const isInitialSync = ordersRef.current.length === 0 && tradesRef.current.length === 0 && !positionsRef.current.length;
+          if (hasNewOrders || hasNewTrades || hasPositionState || isInitialSync) {
             setDecisions(parsed.decisions ?? {});
             setOrders(incomingOrders);
             setPositions(incomingPositions);
+            setTrades(incomingTrades);
           }
         } catch {
           // Ignore malformed cross-tab state.
@@ -567,6 +600,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setDecisions({});
     setOrders([]);
     setPositions([]);
+    setTrades([]);
     setSimulationSaveMessage("");
     setLastActionTime("");
     setTradingStarted(false);
@@ -747,7 +781,10 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     const symbol = context?.symbol || selectedTicker;
     if (!symbol) return;
     const contextRow = context?.row ?? selectedProfile;
-    const quantity = Math.max(0, Math.floor(context?.quantity ?? Number(tradeDraft.quantity) ?? 0));
+    const requestedQuantity = Math.max(0, Math.floor(context?.quantity ?? Number(tradeDraft.quantity) ?? 0));
+    const heldPosition = side === "SELL" ? positionsRef.current.find((row) => row.symbol === symbol) : undefined;
+    const quantity = side === "SELL" ? Math.min(requestedQuantity, Math.floor(heldPosition?.quantity ?? 0)) : requestedQuantity;
+    if (quantity <= 0) return;
     const draftLimit = Number(tradeDraft.limit);
     const draftStop = Number(tradeDraft.stop);
     const limit = context?.limit ?? (Number.isFinite(draftLimit) && draftLimit > 0 ? draftLimit : numberValue(contextRow, "suggested_entry") || selectedOpen);
@@ -768,7 +805,8 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     setOrders((current) => [order, ...current]);
     if (side === "BUY" && status !== "CANCELED") {
       setPositions((current) => upsertPosition(current, symbol, quantity, limit, stop, mark, session.sessionDate, session.barTime));
-    } else if (side === "SELL" && status !== "CANCELED") {
+    } else if (side === "SELL" && status !== "CANCELED" && heldPosition) {
+      setTrades((current) => [buildClosedTrade(heldPosition, quantity, mark, session.sessionDate, session.barTime, order.id), ...current]);
       setPositions((current) => reducePosition(current, symbol, quantity, mark));
     }
   }
@@ -1116,6 +1154,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                   orders={orders}
                   positions={positions}
                   selectedTab={portfolioTab}
+                  trades={trades}
                   onTabChange={setPortfolioTab}
                   onToggleDetails={togglePortfolioDetails}
                 />
@@ -1140,6 +1179,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                 sessions={sessions}
                 showDayChart={showDayChart}
                 showFiveMinuteChart={showFiveMinuteChart}
+                trades={trades}
                 onDraftChange={setTradeDraft}
                 onMainTimeframeChange={setMainTimeframe}
                 onMainVisibleColumnsChange={setMainVisibleColumns}
@@ -1562,6 +1602,7 @@ function PortfolioContainer({
   orders,
   positions,
   selectedTab,
+  trades,
 }: {
   detailsOpen: boolean;
   onToggleDetails: () => void;
@@ -1569,6 +1610,7 @@ function PortfolioContainer({
   orders: OrderRow[];
   positions: PositionRow[];
   selectedTab: string;
+  trades: TradeRow[];
 }) {
   const tabs = ["Open Positions", "P/L", "Trades", "Orders"];
   const activeTab = tabs.includes(selectedTab) ? selectedTab : tabs[0];
@@ -1582,8 +1624,8 @@ function PortfolioContainer({
         <>
           <Tabs tabs={tabs} active={activeTab} onChange={onTabChange} />
           {activeTab === "Open Positions" ? <DataTable rows={positions} empty="No open positions." /> : null}
-          {activeTab === "P/L" ? <DataTable rows={positions.map((row) => ({ symbol: row.symbol, unrealized_pnl: row.unrealized_pnl, unrealized_pnl_pct: row.unrealized_pnl_pct, mark: row.mark, avg_price: row.avg_price }))} empty="No P/L rows." /> : null}
-          {activeTab === "Trades" ? <DataTable rows={[]} empty="No completed trades yet." /> : null}
+          {activeTab === "P/L" ? <DataTable rows={buildProfitLossRows(positions, trades)} empty="No P/L rows." /> : null}
+          {activeTab === "Trades" ? <DataTable rows={trades} empty="No completed trades yet." /> : null}
           {activeTab === "Orders" ? <DataTable rows={orders} empty="No staged orders." /> : null}
         </>
       ) : null}
@@ -1613,6 +1655,7 @@ function LiveChartWindow({
   sessions,
   showDayChart,
   showFiveMinuteChart,
+  trades,
 }: {
   catalog: CatalogPayload | null;
   chart: ChartWindow;
@@ -1627,6 +1670,7 @@ function LiveChartWindow({
   sessions: string[];
   showDayChart: boolean;
   showFiveMinuteChart: boolean;
+  trades: TradeRow[];
   onCompactVisibleColumnsChange: (columns: string[]) => void;
   onDraftChange: (draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string }) => void;
   onMainTimeframeChange: (timeframe: string) => void;
@@ -1648,8 +1692,7 @@ function LiveChartWindow({
     numberValue(chart.row, "open");
   const quote = quoteFromRow(chart.row, selectedOpen);
   const position = positions.find((row) => row.symbol === chart.ticker);
-  const exposure = positions.reduce((total, row) => total + row.mark * row.quantity, 0);
-  const availableCash = Math.max(0, 10_000 - exposure);
+  const availableCash = availableCashFromState(positions, trades);
   const liveEntryLine = buildLiveEntryLine(position, quote.bid);
   useEffect(() => {
     if (position && quote.bid > 0) onMarkPosition(chart.ticker, quote.bid);
@@ -2481,24 +2524,88 @@ function reducePosition(rows: PositionRow[], symbol: string, quantity: number, m
   });
 }
 
-function buildPortfolioMetrics({ orders, positions }: { orders: OrderRow[]; positions: PositionRow[] }) {
-  const realized = 0;
+function buildClosedTrade(position: PositionRow, quantity: number, exitPrice: number, exitSessionDate: string, exitTime: string, exitOrderId: string): TradeRow {
+  const closedQuantity = Math.max(0, Math.min(quantity, position.quantity));
+  const grossPnl = (exitPrice - position.avg_price) * closedQuantity;
+  return {
+    entry_price: position.avg_price,
+    entry_session_date: position.entry_session_date,
+    entry_time: position.entry_time,
+    exit_order_id: exitOrderId,
+    exit_price: exitPrice,
+    exit_session_date: exitSessionDate,
+    exit_time: exitTime,
+    gross_pnl: grossPnl,
+    gross_pnl_pct: position.avg_price > 0 ? (exitPrice / position.avg_price) - 1 : 0,
+    id: `${exitOrderId}-trade`,
+    quantity: closedQuantity,
+    side: "LONG",
+    symbol: position.symbol,
+  };
+}
+
+function realizedPnlFromTrades(trades: TradeRow[]) {
+  return trades.reduce((total, row) => total + row.gross_pnl, 0);
+}
+
+function positionExposure(positions: PositionRow[]) {
+  return positions.reduce((total, row) => total + row.mark * row.quantity, 0);
+}
+
+function openPositionCost(positions: PositionRow[]) {
+  return positions.reduce((total, row) => total + row.avg_price * row.quantity, 0);
+}
+
+function availableCashFromState(positions: PositionRow[], trades: TradeRow[]) {
+  return Math.max(0, LIVE_STARTING_CASH + realizedPnlFromTrades(trades) - openPositionCost(positions));
+}
+
+function buildProfitLossRows(positions: PositionRow[], trades: TradeRow[]) {
+  return [
+    ...positions.map((row) => ({
+      avg_price: row.avg_price,
+      mark: row.mark,
+      pnl: row.unrealized_pnl,
+      pnl_pct: row.unrealized_pnl_pct,
+      quantity: row.quantity,
+      status: "OPEN",
+      symbol: row.symbol,
+    })),
+    ...trades.map((row) => ({
+      entry_price: row.entry_price,
+      exit_price: row.exit_price,
+      pnl: row.gross_pnl,
+      pnl_pct: row.gross_pnl_pct,
+      quantity: row.quantity,
+      status: "CLOSED",
+      symbol: row.symbol,
+    })),
+  ];
+}
+
+function buildPortfolioMetrics({ orders, positions, trades }: { orders: OrderRow[]; positions: PositionRow[]; trades: TradeRow[] }) {
+  const realized = realizedPnlFromTrades(trades);
   const unrealized = positions.reduce((total, row) => total + row.unrealized_pnl, 0);
-  const exposure = positions.reduce((total, row) => total + row.mark * row.quantity, 0);
+  const exposure = positionExposure(positions);
+  const cash = availableCashFromState(positions, trades);
   const stagedOrders = orders.filter((order) => order.status === "STAGED").length;
   const fills = orders.filter((order) => order.status === "FILLED").length;
+  const wins = trades.filter((trade) => trade.gross_pnl > 0).length;
+  const winRate = trades.length ? wins / trades.length : 0;
   return {
     items: [
       { icon: <Banknote size={14} />, label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
       { icon: <CircleDollarSign size={14} />, label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
       { icon: <Activity size={14} />, label: "Unrealized P/L", tone: signedMetricTone(unrealized), value: money(unrealized) },
-      { icon: <Banknote size={14} />, label: "Equity", tone: signedMetricTone(realized + unrealized), value: money(10_000 + realized + unrealized) },
+      { icon: <Banknote size={14} />, label: "Cash", tone: cash > LIVE_STARTING_CASH ? "success" : cash < LIVE_STARTING_CASH ? "warning" : "muted", value: money(cash) },
+      { icon: <Banknote size={14} />, label: "Equity", tone: signedMetricTone(realized + unrealized), value: money(LIVE_STARTING_CASH + realized + unrealized) },
       { icon: <BarChart3 size={14} />, label: "Exposure", tone: exposure ? "info" : "muted", value: money(exposure) },
       { icon: <WalletCards size={14} />, label: "Open Positions", tone: positions.length ? "info" : "muted", value: integer(positions.length) },
       { icon: <ClipboardList size={14} />, label: "Orders", tone: orders.length ? "info" : "muted", value: integer(orders.length) },
+      { icon: <CheckCircle2 size={14} />, label: "Trades", tone: trades.length ? "success" : "muted", value: integer(trades.length) },
       { icon: <Save size={14} />, label: "Staged", tone: stagedOrders ? "warning" : "muted", value: integer(stagedOrders) },
       { icon: <CheckCircle2 size={14} />, label: "Fills", tone: fills ? "success" : "muted", value: integer(fills) },
-      { icon: <ShieldAlert size={14} />, label: "Win Rate", tone: "muted", value: "0%" },
+      { icon: <ShieldAlert size={14} />, label: "Win Rate", tone: trades.length ? signedMetricTone(winRate - 0.5) : "muted", value: percent(winRate) },
     ],
   };
 }
@@ -2700,16 +2807,17 @@ function readSavedCanvasLayouts(): SavedCanvasLayout[] {
   }
 }
 
-function readSharedTradingState(): { decisions: Record<string, DecisionState>; orders: OrderRow[]; positions: PositionRow[] } {
+function readSharedTradingState(): { decisions: Record<string, DecisionState>; orders: OrderRow[]; positions: PositionRow[]; trades: TradeRow[] } {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(LIVE_SHARED_STATE_STORAGE_KEY) || "null");
     return {
       decisions: parsed?.decisions ?? {},
       orders: Array.isArray(parsed?.orders) ? parsed.orders : [],
       positions: Array.isArray(parsed?.positions) ? parsed.positions : [],
+      trades: Array.isArray(parsed?.trades) ? parsed.trades : [],
     };
   } catch {
-    return { decisions: {}, orders: [], positions: [] };
+    return { decisions: {}, orders: [], positions: [], trades: [] };
   }
 }
 
