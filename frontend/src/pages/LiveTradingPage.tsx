@@ -2022,17 +2022,10 @@ function ChartTradePanel({
   const spreadTone = spreadRatio >= 0.02 || quote.spread >= 0.05 ? "danger" : spreadRatio >= 0.01 || quote.spread >= 0.02 ? "warning" : "success";
   const transactionsTone = quote.transactions <= 0 ? "muted" : quote.transactions < 100 ? "warning" : quote.transactions >= 300 ? "success" : "info";
   const volumeTone = quote.volume <= 0 ? "muted" : quote.volume < 8000 ? "warning" : quote.volume >= 50000 ? "success" : "info";
-  const marketStats = [
-    {
-      detail: spreadRatio > 0 ? percent(spreadRatio) : "n/a",
-      label: "Spread",
-      tone: spreadTone,
-      value: money(quote.spread),
-      warning: spreadTone === "warning" || spreadTone === "danger",
-    },
+  const liquidityStats = [
     {
       detail: quote.transactions >= 300 ? "strong" : quote.transactions >= 100 ? "ok" : quote.transactions > 0 ? "thin" : "none",
-      label: "Txns",
+      label: "Transactions",
       tone: transactionsTone,
       value: integer(quote.transactions),
       warning: transactionsTone === "warning",
@@ -2045,6 +2038,7 @@ function ChartTradePanel({
       warning: volumeTone === "warning",
     },
   ];
+  const spreadWarning = spreadTone === "warning" || spreadTone === "danger";
   const actions = buildStrategyTradeActions({
     entryQuantity,
     longStop,
@@ -2081,25 +2075,33 @@ function ChartTradePanel({
         </div>
       </div>
       <div className="live-market-panel">
-        <div className="live-price-row">
-          <div className="live-quote-price ask">
-            <span>Ask</span>
-            <strong>{money(quote.ask)}</strong>
-          </div>
+        <div className="live-inside-market">
           <div className="live-quote-price bid">
             <span>Bid</span>
             <strong>{money(quote.bid)}</strong>
           </div>
+          <div className={`live-spread-badge ${spreadTone}`}>
+            <span>
+              {spreadWarning ? <ShieldAlert size={12} aria-hidden="true" /> : null}
+              Spread
+            </span>
+            <strong>{money(quote.spread)}</strong>
+            <small>{spreadRatio > 0 ? percent(spreadRatio) : "n/a"}</small>
+          </div>
+          <div className="live-quote-price ask">
+            <span>Ask</span>
+            <strong>{money(quote.ask)}</strong>
+          </div>
         </div>
-        <div className="live-market-health" aria-label="Market quality">
-          {marketStats.map((stat) => (
-            <div key={stat.label} className={`live-market-stat ${stat.tone}`}>
+        <div className="live-market-health-list" aria-label="Market quality">
+          {liquidityStats.map((stat) => (
+            <div key={stat.label} className={`live-market-row ${stat.tone}`}>
               <span>
                 {stat.label}
                 {stat.warning ? <ShieldAlert size={12} aria-hidden="true" /> : null}
               </span>
               <strong>{stat.value}</strong>
-              <small>{stat.detail}</small>
+              <em>{stat.detail}</em>
             </div>
           ))}
         </div>

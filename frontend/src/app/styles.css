@@ -9767,15 +9767,17 @@ button {
 }
 
 .live-chart-trade-panel {
-  background: color-mix(in oklab, var(--surface) 97%, var(--surface-alt));
-  border: 1px solid color-mix(in oklab, var(--border) 86%, var(--surface-alt));
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--surface-alt) 34%, transparent), transparent 140px),
+    var(--surface);
+  border: 1px solid color-mix(in oklab, var(--border) 88%, var(--surface-alt));
   border-radius: 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 9px;
   min-height: 0;
   overflow: auto;
-  padding: 10px;
+  padding: 9px;
 }
 
 .live-chart-trade-header {
@@ -9788,7 +9790,8 @@ button {
 
 .live-chart-trade-header strong {
   display: block;
-  font-size: 26px;
+  font-size: 25px;
+  font-weight: 950;
   line-height: 1;
 }
 
@@ -9811,23 +9814,29 @@ button {
 }
 
 .live-market-panel {
-  border: 1px solid color-mix(in oklab, var(--border) 82%, var(--surface-alt));
-  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-alt) 44%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 84%, var(--surface-alt));
+  border-radius: 7px;
   display: grid;
-  gap: 0;
+  gap: 6px;
   overflow: hidden;
+  padding: 6px;
 }
 
-.live-price-row {
+.live-inside-market {
+  align-items: stretch;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) minmax(74px, 0.72fr) minmax(0, 1fr);
 }
 
 .live-quote-price {
+  border: 1px solid transparent;
+  border-radius: 7px;
   display: grid;
   gap: 2px;
   min-width: 0;
-  padding: 10px;
+  padding: 9px;
 }
 
 .live-quote-price span {
@@ -9841,116 +9850,162 @@ button {
 
 .live-quote-price strong {
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 21px;
+  font-size: 20px;
   line-height: 1;
 }
 
 .live-quote-price.ask {
-  background: color-mix(in oklab, var(--danger) 10%, var(--surface));
-  border-right: 1px solid color-mix(in oklab, var(--danger) 22%, var(--border));
+  background: color-mix(in oklab, var(--danger) 11%, var(--surface));
+  border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
   color: var(--danger);
+  text-align: right;
 }
 
 .live-quote-price.bid {
-  background: color-mix(in oklab, var(--info) 10%, var(--surface));
+  background: color-mix(in oklab, var(--info) 11%, var(--surface));
+  border-color: color-mix(in oklab, var(--info) 30%, var(--border));
   color: var(--info);
 }
 
-.live-market-health {
-  background: color-mix(in oklab, var(--surface-alt) 52%, var(--surface));
-  border-top: 1px solid color-mix(in oklab, var(--border) 76%, var(--surface-alt));
-  display: grid;
-  gap: 6px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  padding: 6px;
-}
-
-.live-market-stat {
-  border: 1px solid color-mix(in oklab, var(--border) 74%, var(--surface-alt));
+.live-spread-badge {
+  align-items: center;
+  border: 1px solid color-mix(in oklab, var(--border) 78%, var(--surface-alt));
   border-radius: 7px;
   display: grid;
   gap: 3px;
+  justify-items: center;
   min-width: 0;
-  padding: 7px;
+  padding: 7px 5px;
+  text-align: center;
 }
 
-.live-market-stat span {
+.live-spread-badge span {
   align-items: center;
-  color: var(--muted-foreground);
   display: flex;
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 900;
-  gap: 4px;
+  gap: 3px;
   line-height: 1;
   text-transform: uppercase;
 }
 
-.live-market-stat strong {
-  color: var(--foreground);
+.live-spread-badge strong {
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 900;
   line-height: 1.1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.live-market-stat small {
-  color: var(--muted-foreground);
+.live-spread-badge small {
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   line-height: 1;
 }
 
-.live-market-stat.success {
-  background: color-mix(in oklab, var(--success) 9%, var(--surface));
-  border-color: color-mix(in oklab, var(--success) 28%, var(--border));
-}
-
-.live-market-stat.success strong,
-.live-market-stat.success small,
-.live-market-stat.success span {
+.live-spread-badge.success {
+  background: color-mix(in oklab, var(--success) 8%, var(--surface));
+  border-color: color-mix(in oklab, var(--success) 24%, var(--border));
   color: color-mix(in oklab, var(--success) 82%, var(--foreground));
 }
 
-.live-market-stat.info {
-  background: color-mix(in oklab, var(--info) 8%, var(--surface));
-  border-color: color-mix(in oklab, var(--info) 24%, var(--border));
-}
-
-.live-market-stat.info strong,
-.live-market-stat.info small,
-.live-market-stat.info span {
-  color: color-mix(in oklab, var(--info) 82%, var(--foreground));
-}
-
-.live-market-stat.warning {
+.live-spread-badge.warning {
   background: color-mix(in oklab, var(--warning) 13%, var(--surface));
   border-color: color-mix(in oklab, var(--warning) 42%, var(--border));
-}
-
-.live-market-stat.warning strong,
-.live-market-stat.warning small,
-.live-market-stat.warning span {
   color: color-mix(in oklab, var(--warning) 86%, var(--foreground));
 }
 
-.live-market-stat.danger {
+.live-spread-badge.danger {
   background: color-mix(in oklab, var(--danger) 13%, var(--surface));
   border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
-}
-
-.live-market-stat.danger strong,
-.live-market-stat.danger small,
-.live-market-stat.danger span {
   color: color-mix(in oklab, var(--danger) 86%, var(--foreground));
 }
 
-.live-market-stat.muted {
-  background: color-mix(in oklab, var(--muted-foreground) 6%, var(--surface));
-  border-color: color-mix(in oklab, var(--border) 82%, var(--surface-alt));
+.live-market-health-list {
+  display: grid;
+  gap: 5px;
+}
+
+.live-market-row {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface) 84%, var(--surface-alt));
+  border: 1px solid color-mix(in oklab, var(--border) 78%, var(--surface-alt));
+  border-radius: 7px;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 31px;
+  padding: 6px 8px;
+}
+
+.live-market-row span {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 10px;
+  font-weight: 900;
+  gap: 5px;
+  line-height: 1;
+  min-width: 0;
+  text-transform: uppercase;
+}
+
+.live-market-row strong {
+  color: var(--foreground);
+  font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.live-market-row em {
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1;
+  min-width: 43px;
+  padding: 5px 6px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.live-market-row.success {
+  border-color: color-mix(in oklab, var(--success) 26%, var(--border));
+}
+
+.live-market-row.success em {
+  background: color-mix(in oklab, var(--success) 13%, var(--surface));
+  color: color-mix(in oklab, var(--success) 82%, var(--foreground));
+}
+
+.live-market-row.info {
+  border-color: color-mix(in oklab, var(--info) 22%, var(--border));
+}
+
+.live-market-row.info em {
+  background: color-mix(in oklab, var(--info) 12%, var(--surface));
+  color: color-mix(in oklab, var(--info) 82%, var(--foreground));
+}
+
+.live-market-row.warning {
+  background: color-mix(in oklab, var(--warning) 7%, var(--surface));
+  border-color: color-mix(in oklab, var(--warning) 38%, var(--border));
+}
+
+.live-market-row.warning span,
+.live-market-row.warning strong {
+  color: color-mix(in oklab, var(--warning) 88%, var(--foreground));
+}
+
+.live-market-row.warning em {
+  background: color-mix(in oklab, var(--warning) 18%, var(--surface));
+  color: color-mix(in oklab, var(--warning) 88%, var(--foreground));
+}
+
+.live-market-row.muted {
+  opacity: 0.72;
 }
 
 .live-quote-stats,
@@ -9982,9 +10037,13 @@ button {
 
 .live-strategy-row {
   align-items: end;
+  background: color-mix(in oklab, var(--surface-alt) 36%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 82%, var(--surface-alt));
+  border-radius: 7px;
   display: grid;
-  gap: 8px;
+  gap: 7px;
   grid-template-columns: minmax(0, 1fr) 36px;
+  padding: 7px;
 }
 
 .live-strategy-row .icon-button {
@@ -10022,21 +10081,21 @@ button {
 
 .live-action-panel {
   display: grid;
-  gap: 8px;
+  gap: 7px;
 }
 
 .live-strategy-action {
   align-items: center;
   background: var(--surface);
-  border: 1px solid color-mix(in oklab, var(--border) 84%, var(--surface-alt));
+  border: 1px solid color-mix(in oklab, var(--border) 82%, var(--surface-alt));
   border-radius: 8px;
   color: var(--foreground);
   cursor: pointer;
   display: grid;
   gap: 3px;
   grid-template-columns: minmax(0, 1fr) auto;
-  min-height: 58px;
-  padding: 10px;
+  min-height: 56px;
+  padding: 9px 10px;
   text-align: left;
 }
 
@@ -10051,7 +10110,7 @@ button {
 }
 
 .live-strategy-action span {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 900;
   grid-column: 1 / 2;
   line-height: 1;
@@ -10060,7 +10119,7 @@ button {
 }
 
 .live-strategy-action strong {
-  font-size: 17px;
+  font-size: 16px;
   grid-column: 1 / 2;
   line-height: 1.1;
 }
@@ -10075,7 +10134,7 @@ button {
   grid-row: 1 / 3;
   justify-self: end;
   line-height: 1;
-  padding: 8px 9px;
+  padding: 7px 9px;
 }
 
 .live-strategy-action.buy {
