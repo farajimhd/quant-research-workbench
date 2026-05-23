@@ -47,6 +47,13 @@ export function formatPct(value: unknown): string {
   return `${(numeric * 100).toFixed(2)}%`;
 }
 
+export function formatSignedPct(value: unknown): string {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) return "-";
+  const prefix = numeric > 0 ? "+" : "";
+  return `${prefix}${(numeric * 100).toFixed(2)}%`;
+}
+
 export function formatMoney(value: unknown): string {
   const numeric = Number(value ?? 0);
   if (!Number.isFinite(numeric)) return "-";
@@ -106,6 +113,7 @@ export function formatCell(key: string, value: unknown): string {
   if (value === null || value === undefined || value === "") return "-";
   const lower = key.toLowerCase();
   if (lower.includes("bytes")) return formatBytes(value);
+  if ((lower === "gap_pct" || lower === "last_gap_pct") && isNumericLike(value)) return formatSignedPct(value);
   if (lower.includes("pct") || lower.includes("rate") || lower.includes("return")) return formatPct(value);
   if (isMoneyColumn(lower) && isNumericLike(value)) return formatMoney(value);
   if (typeof value === "number" && Math.abs(value) >= 10000) return formatNumber(value);

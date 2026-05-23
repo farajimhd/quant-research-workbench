@@ -250,6 +250,7 @@ const LIVE_SCANNER_COLUMNS = [
   "last_day_volume_so_far",
   "last_day_dollar_volume_so_far",
   "last_day_open",
+  "last_gap_pct",
   "last_return_5",
   "last_volume",
   "last_recent_volume_5",
@@ -288,6 +289,7 @@ const LIVE_MARKET_STATE_COLUMNS = [
   "last_day_volume_so_far",
   "last_recent_volume_5",
   "last_return_5",
+  "last_gap_pct",
   "last_day_max_change_pct",
   "last_day_current_change_pct",
   "last_close",
@@ -310,7 +312,6 @@ const DEFAULT_SCANNER_QUERY_GROUPS: ScannerQueryGroup[] = [
       { column: "current_open", id: "price", operator: "between", value: "1", valueSecondary: "50" },
       { column: "last_volume", id: "volume", operator: "gt", value: "8000" },
       { column: "last_return_5", id: "return", operator: "gt", value: "0.05" },
-      { column: "last_transactions_vs_prior_3", id: "transactions-ratio", operator: "gt", value: "10" },
       { column: "last_transactions", id: "transactions", operator: "gt", value: "100" },
     ]),
   },
@@ -2674,6 +2675,7 @@ function marketStateTableColumns(snapshotColumns: string[]) {
     "last_day_volume_so_far",
     "last_recent_volume_5",
     "last_return_5",
+    "last_gap_pct",
     "last_day_max_change_pct",
     "last_day_current_change_pct",
     "last_close",
@@ -3116,11 +3118,12 @@ function readSharedTradingState(): { decisions: Record<string, DecisionState>; o
 
 function readStoredScannerQueryGroups(): ScannerQueryGroup[] {
   try {
+    const defaultGroupById = new Map(DEFAULT_SCANNER_QUERY_GROUPS.map((group) => [group.id, group]));
     const parsed = JSON.parse(window.localStorage.getItem(LIVE_SETUP_STORAGE_KEY) || "[]");
     return Array.isArray(parsed) && parsed.length
       ? parsed
           .filter((item): item is ScannerQueryGroup => Boolean(item?.id && item?.name && item?.query?.conditions))
-          .map((item) => ({ ...item, query: normalizeLiveScannerQuery(item.query) ?? item.query }))
+          .map((item) => defaultGroupById.get(item.id) ?? { ...item, query: normalizeLiveScannerQuery(item.query) ?? item.query })
       : DEFAULT_SCANNER_QUERY_GROUPS;
   } catch {
     return DEFAULT_SCANNER_QUERY_GROUPS;
@@ -3129,6 +3132,9 @@ function readStoredScannerQueryGroups(): ScannerQueryGroup[] {
 
 function readStoredScannerQuery(): BackendTableQuery | null {
   try {
+    const storedName = readStoredScannerQueryName();
+    const defaultGroup = DEFAULT_SCANNER_QUERY_GROUPS.find((group) => group.name === storedName);
+    if (defaultGroup) return defaultGroup.query;
     const parsed = JSON.parse(window.localStorage.getItem(LIVE_SCANNER_QUERY_STORAGE_KEY) || "null");
     return parsed?.conditions ? parsed : null;
   } catch {

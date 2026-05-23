@@ -1998,6 +1998,7 @@ const COMPACT_COLUMN_LABELS: Record<string, string> = {
   last_day_open: "Day Open",
   last_day_volume_so_far: "Day Vol",
   last_double_timeframe_bearish_volume_divergence_score: "2x BVD",
+  last_gap_pct: "Gap",
   last_return_5: "5m Ret",
   last_transactions: "Tx",
   last_transactions_vs_prior_3: "Tx/3",
