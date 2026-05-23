@@ -263,12 +263,13 @@ const LIVE_SCANNER_COLUMNS = [
 
 const LIVE_SIGNAL_COLUMNS = [
   "ticker",
+  "bar_time_market",
+  "live_signal_time",
   "current_open",
   "last_volume",
   "last_return_5",
   "last_transactions",
   "last_transactions_vs_prior_3",
-  "live_signal_time",
   "live_signal_query",
   "last_close",
   "last_day_volume_so_far",
