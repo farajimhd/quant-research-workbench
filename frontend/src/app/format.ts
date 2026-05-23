@@ -107,8 +107,23 @@ export function formatCell(key: string, value: unknown): string {
   const lower = key.toLowerCase();
   if (lower.includes("bytes")) return formatBytes(value);
   if (lower.includes("pct") || lower.includes("rate") || lower.includes("return")) return formatPct(value);
-  if (lower.includes("pnl") || lower.includes("cash") || lower.includes("equity") || lower.includes("price")) return formatMoney(value);
+  if (isMoneyColumn(lower) && isNumericLike(value)) return formatMoney(value);
   if (typeof value === "number" && Math.abs(value) >= 10000) return formatNumber(value);
   if (typeof value === "number" && !Number.isInteger(value)) return formatNumber(value, 3);
   return String(value);
 }
+
+function isMoneyColumn(lowerKey: string) {
+  if (lowerKey.includes("pnl") || lowerKey.includes("cash") || lowerKey.includes("equity") || lowerKey.includes("price")) return true;
+  if (lowerKey.includes("pct") || lowerKey.includes("volume") || lowerKey.includes("transaction") || lowerKey.includes("location")) return false;
+  const parts = lowerKey.split(/[_-]+/).filter(Boolean);
+  return parts.some((part) => MONEY_FIELD_PARTS.has(part));
+}
+
+function isNumericLike(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "string") return false;
+  return value.trim() !== "" && Number.isFinite(Number(value));
+}
+
+const MONEY_FIELD_PARTS = new Set(["ask", "bid", "close", "entry", "exit", "high", "low", "mark", "midpoint", "open", "stop", "vwap"]);
