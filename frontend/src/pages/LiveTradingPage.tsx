@@ -187,8 +187,8 @@ const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.live-trading.layout";
 const LIVE_LAYOUT_VERSION = 2;
 const LIVE_LAYOUTS_STORAGE_KEY = "quant-research-workbench.live-trading.named-layouts";
 const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.live-trading.shared-state";
-const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-queries";
-const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-query";
+const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-queries.v2";
+const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-query.v2";
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const LIVE_PORTFOLIO_COLLAPSED_HEIGHT = 224;
 const LIVE_PORTFOLIO_EXPANDED_HEIGHT = LIVE_PORTFOLIO_COLLAPSED_HEIGHT * 3;
@@ -220,37 +220,14 @@ const CORE_WINDOW_IDS: WindowId[] = ["portfolio", "scanner", "trade"];
 
 const DEFAULT_SCANNER_QUERY_GROUPS: ScannerQueryGroup[] = [
   {
-    id: "pop-liquidity",
-    name: "Pop Liquidity",
+    id: "squeeze-up-5m",
+    name: "5% Squeeze Up in 5m",
     query: scannerQueryFromConditions([
-      { column: "current_open", id: "price", operator: "between", value: "1", valueSecondary: "10" },
-      { column: "last_5m_return", id: "return", operator: "gte", value: "0.05" },
-      { column: "last_volume", id: "volume", operator: "gte", value: "8000" },
-      { column: "last_transactions", id: "transactions", operator: "gte", value: "150" },
-      { column: "last_transactions_vs_prior_3", id: "transactions-ratio", operator: "gte", value: "3" },
-    ]),
-  },
-  {
-    id: "vwap-reclaim",
-    name: "VWAP Reclaim",
-    query: scannerQueryFromConditions([
-      { column: "current_open", id: "price", operator: "between", value: "1", valueSecondary: "10" },
-      { column: "last_5m_return", id: "return", operator: "gte", value: "0.02" },
-      { column: "last_volume", id: "volume", operator: "gte", value: "5000" },
-      { column: "last_transactions", id: "transactions", operator: "gte", value: "100" },
-      { column: "last_transactions_vs_prior_3", id: "transactions-ratio", operator: "gte", value: "1.5" },
-      { column: "current_open_above_last_2_body_high", id: "body-break", operator: "eq", value: "true" },
-    ]),
-  },
-  {
-    id: "day-high-pressure",
-    name: "Day High Pressure",
-    query: scannerQueryFromConditions([
-      { column: "current_open", id: "price", operator: "between", value: "1", valueSecondary: "10" },
-      { column: "last_5m_return", id: "return", operator: "gte", value: "0.03" },
-      { column: "last_volume", id: "volume", operator: "gte", value: "8000" },
-      { column: "last_transactions", id: "transactions", operator: "gte", value: "120" },
-      { column: "last_transactions_vs_prior_3", id: "transactions-ratio", operator: "gte", value: "2" },
+      { column: "current_open", id: "price", operator: "between", value: "1", valueSecondary: "50" },
+      { column: "last_volume", id: "volume", operator: "gt", value: "8000" },
+      { column: "last_5m_return", id: "return", operator: "gt", value: "0.05" },
+      { column: "last_transactions_vs_prior_3", id: "transactions-ratio", operator: "gt", value: "10" },
+      { column: "last_transactions", id: "transactions", operator: "gt", value: "100" },
     ]),
   },
 ];
