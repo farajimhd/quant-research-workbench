@@ -208,7 +208,7 @@ const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.live-trading.sha
 const LIVE_SAVED_SIMULATIONS_STORAGE_KEY = "quant-research-workbench.live-trading.saved-simulations";
 const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-queries.v2";
 const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.live-trading.scanner-query.v2";
-const LIVE_SIGNAL_SEARCH_BATCH_MINUTES = 10;
+const LIVE_SIGNAL_SEARCH_BATCH_MINUTES = 1;
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const LIVE_PORTFOLIO_COLLAPSED_HEIGHT = 224;
 const LIVE_PORTFOLIO_EXPANDED_HEIGHT = LIVE_PORTFOLIO_COLLAPSED_HEIGHT * 3;
@@ -710,7 +710,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
         const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? enrichedRows[0] ?? null;
         setSelectedRow(firstRow);
         setLiveClockMessage(`Searching scanner signals at ${checkedTime} ET (${checkedMinutes} minutes checked).`);
-        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
         if (payload.found && firstRow) {
           await warmChartCacheForRows(enrichedRows);
           setLastActionTime(payload.snapshot.bar_time);
@@ -1663,8 +1663,11 @@ function LiveChartWindow({
   const [fiveMinutePayload, setFiveMinutePayload] = useState<ChartPayload | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState("");
-  const selectedOpen = numberValue(chart.row, "current_open") || numberValue(chart.row, "open");
-  const selectedTime = rowTimestampSeconds(chart.row, session.sessionDate, session.barTime);
+  const selectedTime = clockTimestampSeconds(session.sessionDate, session.barTime) ?? rowTimestampSeconds(chart.row, session.sessionDate, session.barTime);
+  const selectedOpen =
+    chartOpenAtTime(mainPayload, selectedTime) ||
+    numberValue(chart.row, "current_open") ||
+    numberValue(chart.row, "open");
   const quote = quoteFromRow(chart.row, selectedOpen);
   const position = positions.find((row) => row.symbol === chart.ticker);
   const exposure = positions.reduce((total, row) => total + row.mark * row.quantity, 0);
@@ -2743,6 +2746,18 @@ function rowTimestampSeconds(row: Record<string, unknown>, sessionDate: string, 
   const raw = stringValue(row, "bar_time_market") || `${sessionDate}T${fallbackClock}:00-04:00`;
   const parsed = Date.parse(raw);
   return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+}
+
+function clockTimestampSeconds(sessionDate: string, clock: string) {
+  if (!sessionDate || !clock) return null;
+  const parsed = Date.parse(`${sessionDate}T${clock}:00-04:00`);
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+}
+
+function chartOpenAtTime(payload: ChartPayload | null, timestamp: number | null) {
+  if (!payload || !timestamp) return 0;
+  const candle = payload.candles.find((item) => item.time === timestamp);
+  return candle?.open ?? 0;
 }
 
 function stringValue(row: Record<string, unknown> | null | undefined, key: string) {
