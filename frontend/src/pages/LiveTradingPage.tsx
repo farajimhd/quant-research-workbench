@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from "react";
 import {
   Activity,
   BarChart3,
@@ -773,6 +773,30 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
     }
   }
 
+  const markPositionToMarket = useCallback((symbol: string, mark: number) => {
+    if (!symbol || !Number.isFinite(mark) || mark <= 0) return;
+    setPositions((current) =>
+      current.map((position) => {
+        if (position.symbol !== symbol) return position;
+        const unrealizedPnl = (mark - position.avg_price) * position.quantity;
+        const unrealizedPnlPct = position.avg_price > 0 ? (mark / position.avg_price) - 1 : 0;
+        if (
+          Math.abs(position.mark - mark) < 0.000001 &&
+          Math.abs(position.unrealized_pnl - unrealizedPnl) < 0.000001 &&
+          Math.abs(position.unrealized_pnl_pct - unrealizedPnlPct) < 0.000001
+        ) {
+          return position;
+        }
+        return {
+          ...position,
+          mark,
+          unrealized_pnl: unrealizedPnl,
+          unrealized_pnl_pct: unrealizedPnlPct,
+        };
+      })
+    );
+  }, []);
+
   function saveScannerQueryGroup(name: string, savedQuery: BackendTableQuery) {
     const trimmedName = name.trim() || "Scanner Query";
     const id = stableScannerQueryId(trimmedName);
@@ -1136,6 +1160,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
                 onMainTimeframeChange={setMainTimeframe}
                 onMainVisibleColumnsChange={setMainVisibleColumns}
                 onCompactVisibleColumnsChange={setCompactVisibleColumns}
+                onMarkPosition={markPositionToMarket}
                 onStage={stageOrder}
                 onToggleDayChart={() => setLowerChartVisibility((current) => ({ ...current, day: !current.day }))}
                 onToggleFiveMinuteChart={() => setLowerChartVisibility((current) => ({ ...current, fiveMinute: !current.fiveMinute }))}
@@ -1638,6 +1663,7 @@ function LiveChartWindow({
   onDraftChange,
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
+  onMarkPosition,
   onStage,
   onToggleDayChart,
   onToggleFiveMinuteChart,
@@ -1666,6 +1692,7 @@ function LiveChartWindow({
   onDraftChange: (draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string }) => void;
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
+  onMarkPosition: (symbol: string, mark: number) => void;
   onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
   onToggleDayChart: () => void;
   onToggleFiveMinuteChart: () => void;
@@ -1685,6 +1712,9 @@ function LiveChartWindow({
   const exposure = positions.reduce((total, row) => total + row.mark * row.quantity, 0);
   const availableCash = Math.max(0, 10_000 - exposure);
   const liveEntryLine = buildLiveEntryLine(position, quote.bid);
+  useEffect(() => {
+    if (position && quote.bid > 0) onMarkPosition(chart.ticker, quote.bid);
+  }, [chart.ticker, onMarkPosition, position, quote.bid]);
   function closeLivePosition() {
     if (!position || position.quantity <= 0) return;
     onStage("SELL", "STAGED", {
@@ -2074,7 +2104,7 @@ function ChartTradePanel({
         <TicketMetric label="Staged" value={integer(openOrders)} />
       </div>
       {position ? (
-        <div className={position.unrealized_pnl >= 0 ? "live-chart-position-card positive" : "live-chart-position-card negative"}>
+        <div className={(quote.bid - position.avg_price) * position.quantity >= 0 ? "live-chart-position-card positive" : "live-chart-position-card negative"}>
           <span>Open Position</span>
           <strong>{integer(position.quantity)} @ {money(position.avg_price)}</strong>
           <small>P/L {money((quote.bid - position.avg_price) * position.quantity)} / {percent(position.avg_price > 0 ? quote.bid / position.avg_price - 1 : 0)}</small>
@@ -2395,7 +2425,7 @@ function liveTableColumns(snapshotColumns: string[]) {
 }
 
 function quoteFromRow(row: Record<string, unknown>, fallbackOpen: number) {
-  const ask = numberValue(row, "current_open") || numberValue(row, "open") || fallbackOpen || numberValue(row, "last_close");
+  const ask = fallbackOpen || numberValue(row, "current_open") || numberValue(row, "open") || numberValue(row, "last_close");
   const bid = Math.max(0, ask - 0.01);
   return {
     ask,
