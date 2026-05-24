@@ -277,6 +277,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context-length", type=int, default=128, help="Historical bars per forecast origin.")
     parser.add_argument("--min-context", type=int, default=128, help="Minimum historical bars required before forecasting.")
     parser.add_argument("--prediction-length", type=int, default=1, help="Future bars to forecast. Default is next bar only.")
+    parser.add_argument(
+        "--target-mode",
+        choices=["close", "log_close"],
+        default="close",
+        help="Chronos target values. Default close feeds raw prices and lets Chronos perform its own scaling.",
+    )
     parser.add_argument("--rolling-stride", type=int, default=1, help="Evaluate every Nth eligible timestamp.")
     parser.add_argument(
         "--max-total-windows",
@@ -429,7 +435,7 @@ def parse_tickers(raw: str) -> list[str]:
     return [part.strip().upper() for part in raw.split(",") if part.strip()]
 
 
-def add_model_columns(frame: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
+def add_model_columns(frame: pl.DataFrame, target_mode: str) -> tuple[pl.DataFrame, list[str]]:
     close = positive_expr("close")
     open_ = positive_expr("open")
     high = positive_expr("high")
@@ -438,6 +444,7 @@ def add_model_columns(frame: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
     transactions = nonnegative_expr("transactions", frame.columns)
 
     exprs: list[pl.Expr] = [
+        close.alias("target_close"),
         close.log().alias("target_log_close"),
         (open_ / close).log().alias("cov_open_to_close_log"),
         (high / close).log().alias("cov_high_to_close_log"),
@@ -504,16 +511,25 @@ def add_model_columns(frame: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
     ]
     engineered_covariates = [column for column in result.columns if column.startswith("cov_")]
     covariates = engineered_covariates + [column for column in provider_covariates if column in result.columns]
+    target_column = target_column_for_mode(target_mode)
     cast_exprs = [
         pl.col(column).cast(pl.Float64, strict=False).replace([float("inf"), float("-inf")], None).alias(column)
-        for column in ["target_log_close", *covariates]
+        for column in ["target_close", "target_log_close", *covariates]
     ]
     return (
         result.with_columns(cast_exprs)
-        .filter(pl.col("target_log_close").is_not_null())
+        .filter(pl.col(target_column).is_not_null())
         .sort(["ticker", "bar_time_market"]),
         covariates,
     )
+
+
+def target_column_for_mode(target_mode: str) -> str:
+    if target_mode == "close":
+        return "target_close"
+    if target_mode == "log_close":
+        return "target_log_close"
+    raise ValueError(f"Unsupported target mode: {target_mode}")
 
 
 def positive_expr(column: str) -> pl.Expr:
@@ -528,7 +544,8 @@ def nonnegative_expr(column: str, columns: list[str]) -> pl.Expr:
     return pl.when(value >= 0.0).then(value).otherwise(0.0)
 
 
-def ticker_arrays(frame: pl.DataFrame, covariates: list[str]) -> dict[str, dict]:
+def ticker_arrays(frame: pl.DataFrame, covariates: list[str], target_mode: str) -> dict[str, dict]:
+    target_column = target_column_for_mode(target_mode)
     arrays: dict[str, dict] = {}
     for ticker_frame in frame.partition_by("ticker", maintain_order=True):
         if ticker_frame.is_empty():
@@ -536,7 +553,7 @@ def ticker_arrays(frame: pl.DataFrame, covariates: list[str]) -> dict[str, dict]
         ticker = str(ticker_frame.get_column("ticker")[0])
         ticker_data: dict[str, np.ndarray | list] = {
             "close": ticker_frame.get_column("close").cast(pl.Float64, strict=False).to_numpy(),
-            "target_log_close": ticker_frame.get_column("target_log_close").cast(pl.Float64, strict=False).to_numpy(),
+            "target_value": ticker_frame.get_column(target_column).cast(pl.Float64, strict=False).to_numpy(),
             "bar_time_market": ticker_frame.get_column("bar_time_market").to_list(),
             "session_date": ticker_frame.get_column("session_date").cast(pl.Utf8).to_list(),
         }
@@ -576,11 +593,11 @@ def build_input_chunk(
     origins: list[ForecastOrigin] = []
     for ticker, origin_index in origin_refs:
         arrays = arrays_by_ticker[ticker]
-        target_log_close = arrays["target_log_close"]
+        target_value = arrays["target_value"]
         close = arrays["close"]
         session_dates = arrays["session_date"]
         times = arrays["bar_time_market"]
-        assert isinstance(target_log_close, np.ndarray)
+        assert isinstance(target_value, np.ndarray)
         assert isinstance(close, np.ndarray)
         assert isinstance(session_dates, list)
         assert isinstance(times, list)
@@ -592,7 +609,7 @@ def build_input_chunk(
         }
         inputs.append(
             {
-                "target": target_log_close[start_index : origin_index + 1].astype(np.float32, copy=False),
+                "target": target_value[start_index : origin_index + 1].astype(np.float32, copy=False),
                 "past_covariates": past_covariates,
             }
         )
@@ -618,6 +635,7 @@ def predict_rows_with_retry(
     quantile_levels: list[float],
     batch_size: int,
     direction_threshold_bps: float,
+    target_mode: str,
     device_map: str,
 ) -> list[dict]:
     try:
@@ -630,6 +648,7 @@ def predict_rows_with_retry(
             quantile_levels=quantile_levels,
             batch_size=batch_size,
             direction_threshold_bps=direction_threshold_bps,
+            target_mode=target_mode,
         )
     except RuntimeError as exc:
         if "out of memory" not in str(exc).lower() or len(inputs) <= 1:
@@ -645,6 +664,7 @@ def predict_rows_with_retry(
             quantile_levels=quantile_levels,
             batch_size=max(64, batch_size // 2),
             direction_threshold_bps=direction_threshold_bps,
+            target_mode=target_mode,
             device_map=device_map,
         ) + predict_rows_with_retry(
             pipeline=pipeline,
@@ -655,6 +675,7 @@ def predict_rows_with_retry(
             quantile_levels=quantile_levels,
             batch_size=max(64, batch_size // 2),
             direction_threshold_bps=direction_threshold_bps,
+            target_mode=target_mode,
             device_map=device_map,
         )
 
@@ -669,6 +690,7 @@ def predict_rows(
     quantile_levels: list[float],
     batch_size: int,
     direction_threshold_bps: float,
+    target_mode: str,
 ) -> list[dict]:
     quantiles, means = pipeline.predict_quantiles(
         inputs,
@@ -682,23 +704,18 @@ def predict_rows(
     for local_idx, origin in enumerate(origins):
         arrays = arrays_by_ticker[origin.ticker]
         close = arrays["close"]
-        target_log_close = arrays["target_log_close"]
         times = arrays["bar_time_market"]
         assert isinstance(close, np.ndarray)
-        assert isinstance(target_log_close, np.ndarray)
         assert isinstance(times, list)
 
         q_values = quantiles[local_idx][0].detach().cpu().numpy()
         mean_values = means[local_idx][0].detach().cpu().numpy()
-        origin_log_close = math.log(origin.last_close)
         for step in range(1, prediction_length + 1):
             target_index = origin.origin_index + step
             actual_close = float(close[target_index])
-            actual_log_close = float(target_log_close[target_index])
-            predicted_log_close = float(mean_values[step - 1])
-            predicted_close = float(np.exp(predicted_log_close))
-            actual_return = actual_log_close - origin_log_close
-            predicted_return = predicted_log_close - origin_log_close
+            predicted_close = target_value_to_close(float(mean_values[step - 1]), target_mode)
+            actual_return = log_return(actual_close, origin.last_close)
+            predicted_return = log_return(predicted_close, origin.last_close)
             pred_direction = direction_label(predicted_return, threshold)
             actual_direction = direction_label(actual_return, threshold)
             row = {
@@ -731,11 +748,11 @@ def predict_rows(
                 "p10_p90_width_bps": "",
             }
             if 0.1 in q_index:
-                row["p10_close"] = float(np.exp(q_values[step - 1, q_index[0.1]]))
+                row["p10_close"] = target_value_to_close(float(q_values[step - 1, q_index[0.1]]), target_mode)
             if 0.5 in q_index:
-                row["p50_close"] = float(np.exp(q_values[step - 1, q_index[0.5]]))
+                row["p50_close"] = target_value_to_close(float(q_values[step - 1, q_index[0.5]]), target_mode)
             if 0.9 in q_index:
-                row["p90_close"] = float(np.exp(q_values[step - 1, q_index[0.9]]))
+                row["p90_close"] = target_value_to_close(float(q_values[step - 1, q_index[0.9]]), target_mode)
             if row["p10_close"] != "" and row["p90_close"] != "":
                 p10 = float(row["p10_close"])
                 p90 = float(row["p90_close"])
@@ -812,6 +829,20 @@ def direction_label(value: float, threshold: float) -> int:
     return 0
 
 
+def target_value_to_close(value: float, target_mode: str) -> float:
+    if target_mode == "close":
+        return value
+    if target_mode == "log_close":
+        return float(np.exp(value))
+    raise ValueError(f"Unsupported target mode: {target_mode}")
+
+
+def log_return(price: float, base_price: float) -> float:
+    if not math.isfinite(price) or not math.isfinite(base_price) or base_price <= 0.0:
+        return float("nan")
+    return math.log(max(price, 1.0e-12) / base_price)
+
+
 def chunks(values: list, size: int) -> Iterator[list]:
     for index in range(0, len(values), size):
         yield values[index : index + size]
@@ -874,7 +905,7 @@ def write_live_report(
         f"- Selected tickers: `{selected_ticker_count}`",
         f"- Processed timestamps: `{processed_timestamps}`",
         f"- Forecast origins processed: `{processed_windows}`",
-        f"- Target: `log(close)`; default forecast is the next bar.",
+        f"- Target mode: `{args.target_mode}`; default forecast is the next bar.",
         f"- Prediction length: `{args.prediction_length}`",
         f"- Context length/min context: `{args.context_length}` / `{args.min_context}`",
         f"- Chronos batch size/window chunk: `{args.batch_size}` / `{args.window_batch_size}`",
@@ -892,7 +923,11 @@ def write_live_report(
         "",
         "## Input Channels",
         "",
-        "Chronos receives `target` as historical `log(close)` and these `past_covariates`. No future covariates are supplied.",
+        (
+            "Chronos receives `target` as historical raw `close` values when `--target-mode close` is used, "
+            "or historical `log(close)` values when `--target-mode log_close` is used. "
+            "These `past_covariates` are supplied, and no future covariates are supplied."
+        ),
         "",
         "\n".join(f"- `{column}`" for column in covariates),
     ]
@@ -930,8 +965,8 @@ def main() -> None:
 
     provider = provider_for_args(args)
     session_frame = load_session_frame(provider, args)
-    model_frame, covariates = add_model_columns(session_frame)
-    arrays_by_ticker = ticker_arrays(model_frame, covariates)
+    model_frame, covariates = add_model_columns(session_frame, args.target_mode)
+    arrays_by_ticker = ticker_arrays(model_frame, covariates, args.target_mode)
     origins_by_time = origin_map(model_frame, args)
     selected_ticker_count = len(arrays_by_ticker)
     if not origins_by_time:
@@ -992,6 +1027,7 @@ def main() -> None:
                     quantile_levels=DEFAULT_QUANTILES,
                     batch_size=args.batch_size,
                     direction_threshold_bps=args.direction_threshold_bps,
+                    target_mode=args.target_mode,
                     device_map=args.device_map,
                 )
                 for row in rows:
