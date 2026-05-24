@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import numpy as np
-import pandas as pd
+import polars as pl
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -24,6 +25,35 @@ from src.data_provider.provider import MarketDataProvider  # noqa: E402
 DEFAULT_CHRONOS_SRC = Path("D:/TradingCodes/public-codes/chronos-forecasting-main/src")
 DEFAULT_FEATURE_GROUPS = ["core", "session", "volatility", "volume_liquidity", "shock"]
 DEFAULT_QUANTILES = [0.1, 0.5, 0.9]
+PREDICTION_FIELDS = [
+    "ticker",
+    "session_date",
+    "forecast_origin_time",
+    "target_time",
+    "horizon_bars",
+    "last_close",
+    "actual_close",
+    "predicted_close",
+    "naive_close",
+    "actual_return",
+    "predicted_return",
+    "naive_return",
+    "abs_close_error",
+    "naive_abs_close_error",
+    "abs_return_error",
+    "naive_abs_return_error",
+    "squared_return_error",
+    "naive_squared_return_error",
+    "actual_direction",
+    "predicted_direction",
+    "direction_correct",
+    "direction_correct_nonflat",
+    "p10_close",
+    "p50_close",
+    "p90_close",
+    "p10_p90_covered",
+    "p10_p90_width_bps",
+]
 
 
 @dataclass(frozen=True)
@@ -31,16 +61,145 @@ class ForecastOrigin:
     ticker: str
     session_date: str
     origin_index: int
-    origin_time: pd.Timestamp
+    origin_time: object
     last_close: float
+
+
+@dataclass
+class MetricState:
+    n: int = 0
+    sum_abs_close_error: float = 0.0
+    sum_naive_abs_close_error: float = 0.0
+    sum_abs_return_error: float = 0.0
+    sum_naive_abs_return_error: float = 0.0
+    sum_squared_return_error: float = 0.0
+    sum_naive_squared_return_error: float = 0.0
+    sum_bias_return: float = 0.0
+    sum_actual_return: float = 0.0
+    sum_predicted_return: float = 0.0
+    direction_correct: int = 0
+    nonflat_count: int = 0
+    nonflat_direction_correct: int = 0
+    pred_up_count: int = 0
+    pred_up_actual_up_count: int = 0
+    pred_down_count: int = 0
+    pred_down_actual_down_count: int = 0
+    corr_count: int = 0
+    corr_sum_actual: float = 0.0
+    corr_sum_predicted: float = 0.0
+    corr_sum_actual_sq: float = 0.0
+    corr_sum_predicted_sq: float = 0.0
+    corr_sum_cross: float = 0.0
+    coverage_count: int = 0
+    coverage_hit_count: int = 0
+    width_count: int = 0
+    sum_width_bps: float = 0.0
+
+    def update(self, row: dict) -> None:
+        actual = float(row["actual_return"])
+        predicted = float(row["predicted_return"])
+        self.n += 1
+        self.sum_abs_close_error += float(row["abs_close_error"])
+        self.sum_naive_abs_close_error += float(row["naive_abs_close_error"])
+        self.sum_abs_return_error += float(row["abs_return_error"])
+        self.sum_naive_abs_return_error += float(row["naive_abs_return_error"])
+        self.sum_squared_return_error += float(row["squared_return_error"])
+        self.sum_naive_squared_return_error += float(row["naive_squared_return_error"])
+        self.sum_bias_return += predicted - actual
+        self.sum_actual_return += actual
+        self.sum_predicted_return += predicted
+
+        actual_direction = int(row["actual_direction"])
+        predicted_direction = int(row["predicted_direction"])
+        if bool(row["direction_correct"]):
+            self.direction_correct += 1
+        if actual_direction != 0:
+            self.nonflat_count += 1
+            if bool(row["direction_correct"]):
+                self.nonflat_direction_correct += 1
+        if predicted_direction > 0:
+            self.pred_up_count += 1
+            if actual_direction > 0:
+                self.pred_up_actual_up_count += 1
+        if predicted_direction < 0:
+            self.pred_down_count += 1
+            if actual_direction < 0:
+                self.pred_down_actual_down_count += 1
+
+        if math.isfinite(actual) and math.isfinite(predicted):
+            self.corr_count += 1
+            self.corr_sum_actual += actual
+            self.corr_sum_predicted += predicted
+            self.corr_sum_actual_sq += actual * actual
+            self.corr_sum_predicted_sq += predicted * predicted
+            self.corr_sum_cross += actual * predicted
+
+        if row.get("p10_p90_covered") != "":
+            self.coverage_count += 1
+            if bool(row["p10_p90_covered"]):
+                self.coverage_hit_count += 1
+        width = row.get("p10_p90_width_bps")
+        if width != "" and width is not None and math.isfinite(float(width)):
+            self.width_count += 1
+            self.sum_width_bps += float(width)
+
+    def to_row(self, bucket: str) -> dict:
+        return {
+            "bucket": bucket,
+            "n": self.n,
+            "mae_close": divide(self.sum_abs_close_error, self.n),
+            "naive_mae_close": divide(self.sum_naive_abs_close_error, self.n),
+            "mae_return_bps": divide(self.sum_abs_return_error, self.n) * 10_000.0,
+            "naive_mae_return_bps": divide(self.sum_naive_abs_return_error, self.n) * 10_000.0,
+            "mae_return_vs_naive": divide(
+                divide(self.sum_abs_return_error, self.n),
+                divide(self.sum_naive_abs_return_error, self.n),
+            ),
+            "rmse_return_bps": math.sqrt(divide(self.sum_squared_return_error, self.n)) * 10_000.0,
+            "naive_rmse_return_bps": math.sqrt(divide(self.sum_naive_squared_return_error, self.n)) * 10_000.0,
+            "bias_return_bps": divide(self.sum_bias_return, self.n) * 10_000.0,
+            "mean_actual_return_bps": divide(self.sum_actual_return, self.n) * 10_000.0,
+            "mean_predicted_return_bps": divide(self.sum_predicted_return, self.n) * 10_000.0,
+            "direction_accuracy_pct": divide(self.direction_correct, self.n) * 100.0,
+            "direction_accuracy_nonflat_pct": divide(self.nonflat_direction_correct, self.nonflat_count) * 100.0,
+            "up_precision_pct": divide(self.pred_up_actual_up_count, self.pred_up_count) * 100.0,
+            "down_precision_pct": divide(self.pred_down_actual_down_count, self.pred_down_count) * 100.0,
+            "return_corr": self.return_corr(),
+            "p10_p90_coverage_pct": divide(self.coverage_hit_count, self.coverage_count) * 100.0,
+            "p10_p90_width_bps": divide(self.sum_width_bps, self.width_count),
+        }
+
+    def return_corr(self) -> float:
+        n = self.corr_count
+        if n < 2:
+            return float("nan")
+        numerator = n * self.corr_sum_cross - self.corr_sum_actual * self.corr_sum_predicted
+        actual_var = n * self.corr_sum_actual_sq - self.corr_sum_actual * self.corr_sum_actual
+        predicted_var = n * self.corr_sum_predicted_sq - self.corr_sum_predicted * self.corr_sum_predicted
+        denominator = math.sqrt(max(actual_var, 0.0) * max(predicted_var, 0.0))
+        return numerator / denominator if denominator else float("nan")
+
+
+@dataclass
+class MetricAccumulator:
+    overall: MetricState = field(default_factory=MetricState)
+    by_horizon: dict[int, MetricState] = field(default_factory=dict)
+
+    def update(self, row: dict) -> None:
+        horizon = int(row["horizon_bars"])
+        self.overall.update(row)
+        self.by_horizon.setdefault(horizon, MetricState()).update(row)
+
+    def horizon_rows(self) -> list[dict]:
+        return [self.by_horizon[horizon].to_row(f"h{horizon}") for horizon in sorted(self.by_horizon)]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run a walk-forward Chronos 2 experiment on provider-built 1m bars. "
-            "Each forecast uses history through the origin bar and compares predicted future closes "
-            "with realized future closes."
+            "Provider data is loaded in ticker batches with Polars, forecast rows are streamed to CSV, "
+            "and metrics are aggregated incrementally."
         )
     )
     parser.add_argument("--session-date", required=True, help="Provider session date, for example 2024-05-01.")
@@ -55,6 +214,7 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Top session-dollar-volume tickers to evaluate when --tickers is omitted. Default 0 means all tickers.",
     )
+    parser.add_argument("--ticker-batch-size", type=int, default=100, help="Provider ticker batch size.")
     parser.add_argument("--context-length", type=int, default=512, help="Maximum historical bars per forecast origin.")
     parser.add_argument("--min-context", type=int, default=128, help="Minimum historical bars required before forecasting.")
     parser.add_argument("--prediction-length", type=int, default=15, help="Number of future bars to forecast.")
@@ -64,6 +224,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Limit forecast origins per ticker for quick tests. Use 0 for every eligible bar.",
+    )
+    parser.add_argument(
+        "--max-total-windows",
+        type=int,
+        default=0,
+        help="Optional global forecast-origin cap across all tickers. Use 0 for no cap.",
     )
     parser.add_argument("--batch-size", type=int, default=64, help="Chronos batch size in variates, not forecast windows.")
     parser.add_argument("--window-batch-size", type=int, default=32, help="Forecast origin windows per predict call.")
@@ -84,6 +250,7 @@ def parse_args() -> argparse.Namespace:
         default=str(REPO_ROOT / "research" / "chronos2" / "reports"),
         help="Directory where predictions CSV and markdown report are written.",
     )
+    parser.add_argument("--progress-every-tickers", type=int, default=100, help="Print progress every N processed tickers.")
     return parser.parse_args()
 
 
@@ -100,14 +267,22 @@ def load_chronos_pipeline(chronos_src: Path, model_id: str, device_map: str):
     return BaseChronosPipeline.from_pretrained(model_id, device_map=device_map)
 
 
-def load_session_bars(args: argparse.Namespace) -> pd.DataFrame:
+def provider_for_args(args: argparse.Namespace) -> MarketDataProvider:
+    return MarketDataProvider(DataProviderConfig(processed_root=Path(args.processed_root)))
+
+
+def select_session_tickers(provider: MarketDataProvider, args: argparse.Namespace) -> list[str]:
+    requested = parse_tickers(args.tickers)
+    if requested:
+        return requested
+
     session = date.fromisoformat(args.session_date)
-    provider = MarketDataProvider(DataProviderConfig(processed_root=Path(args.processed_root)))
     frame = provider.load_bars(
         start_date=session,
         end_date=session,
         timeframe="1m",
-        feature_groups=DEFAULT_FEATURE_GROUPS,
+        feature_groups=[],
+        columns=["ticker", "close", "volume"],
     )
     if frame.is_empty():
         raise SystemExit(
@@ -115,83 +290,82 @@ def load_session_bars(args: argparse.Namespace) -> pd.DataFrame:
             "Build the Data Provider artifacts first."
         )
 
-    df = frame.to_pandas()
-    if "bar_time_market" not in df.columns:
-        raise SystemExit("Provider frame is missing bar_time_market; cannot build chronological windows.")
+    frame = frame.with_columns(
+        (pl.col("close").cast(pl.Float64, strict=False).fill_null(0.0) * pl.col("volume").cast(pl.Float64, strict=False).fill_null(0.0))
+        .alias("_session_dollar_volume")
+    )
+    ranked = (
+        frame.group_by("ticker")
+        .agg(pl.sum("_session_dollar_volume").alias("_session_dollar_volume"))
+        .sort("_session_dollar_volume", descending=True)
+    )
+    if args.max_tickers > 0:
+        ranked = ranked.head(args.max_tickers)
+    return ranked.get_column("ticker").cast(pl.Utf8).to_list()
 
-    df["bar_time_market"] = pd.to_datetime(df["bar_time_market"])
-    df["session_date"] = df["session_date"].astype(str)
-    df = df.sort_values(["ticker", "bar_time_market"]).reset_index(drop=True)
 
+def load_ticker_batch(provider: MarketDataProvider, args: argparse.Namespace, tickers: list[str]) -> pl.DataFrame:
+    session = date.fromisoformat(args.session_date)
+    frame = provider.load_bars(
+        start_date=session,
+        end_date=session,
+        timeframe="1m",
+        tickers=tickers,
+        feature_groups=DEFAULT_FEATURE_GROUPS,
+    )
+    if frame.is_empty():
+        return frame
     if args.session_scope == "regular":
-        if "minute_of_day" not in df.columns:
+        if "minute_of_day" not in frame.columns:
             raise SystemExit("--session-scope regular requires provider column minute_of_day.")
-        df = df[(df["minute_of_day"] >= 9 * 60 + 30) & (df["minute_of_day"] < 16 * 60)].copy()
-
-    tickers = parse_tickers(args.tickers)
-    if tickers:
-        df = df[df["ticker"].isin(tickers)].copy()
-    else:
-        tickers = select_top_tickers(df, args.max_tickers)
-        df = df[df["ticker"].isin(tickers)].copy()
-
-    if df.empty:
-        raise SystemExit("No bars remain after ticker/session filtering.")
-    return df.sort_values(["ticker", "bar_time_market"]).reset_index(drop=True)
+        frame = frame.filter((pl.col("minute_of_day") >= 9 * 60 + 30) & (pl.col("minute_of_day") < 16 * 60))
+    return frame.sort(["ticker", "bar_time_market"])
 
 
 def parse_tickers(raw: str) -> list[str]:
     return [part.strip().upper() for part in raw.split(",") if part.strip()]
 
 
-def select_top_tickers(df: pd.DataFrame, max_tickers: int) -> list[str]:
-    if max_tickers == 0:
-        return sorted(df["ticker"].dropna().unique().tolist())
-    dollar_volume = df["close"].astype(float).fillna(0.0) * df["volume"].astype(float).fillna(0.0)
-    ranked = (
-        df.assign(_session_dollar_volume=dollar_volume)
-        .groupby("ticker", sort=False)["_session_dollar_volume"]
-        .sum()
-        .sort_values(ascending=False)
-    )
-    return ranked.head(max_tickers).index.tolist()
+def add_model_columns(frame: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
+    close = positive_expr("close")
+    open_ = positive_expr("open")
+    high = positive_expr("high")
+    low = positive_expr("low")
+    volume = nonnegative_expr("volume", frame.columns)
+    transactions = nonnegative_expr("transactions", frame.columns)
 
+    exprs: list[pl.Expr] = [
+        close.log().alias("target_log_close"),
+        (open_ / close).log().alias("cov_open_to_close_log"),
+        (high / close).log().alias("cov_high_to_close_log"),
+        (low / close).log().alias("cov_low_to_close_log"),
+        (close / open_).log().alias("cov_bar_body_log"),
+        (high / low).log().alias("cov_range_log"),
+        (volume + 1.0).log().alias("cov_log_volume"),
+        (transactions + 1.0).log().alias("cov_log_transactions"),
+        ((volume * close) + 1.0).log().alias("cov_log_dollar_volume"),
+    ]
 
-def add_model_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    result = df.copy()
-    close = positive(result["close"])
-    open_ = positive(result["open"])
-    high = positive(result["high"])
-    low = positive(result["low"])
-    volume = nonnegative(result.get("volume"))
-    transactions = nonnegative(result.get("transactions"))
+    if "spread" in frame.columns:
+        exprs.append((nonnegative_expr("spread", frame.columns) / close).alias("cov_spread_pct"))
+    if "spread_bps" in frame.columns:
+        exprs.append(pl.col("spread_bps").cast(pl.Float64, strict=False).alias("cov_spread_bps"))
+    if {"quote_ask_price", "quote_bid_price"}.issubset(frame.columns):
+        midpoint = (positive_expr("quote_ask_price") + positive_expr("quote_bid_price")) / 2.0
+        exprs.append((midpoint / close).log().alias("cov_quote_mid_to_close_log"))
+    if "minute_of_day" in frame.columns:
+        minute = pl.col("minute_of_day").cast(pl.Float64, strict=False)
+        exprs.extend(
+            [
+                (2.0 * math.pi * minute / 1440.0).sin().alias("cov_minute_sin"),
+                (2.0 * math.pi * minute / 1440.0).cos().alias("cov_minute_cos"),
+                (minute < 9 * 60 + 30).cast(pl.Float64).alias("cov_is_premarket"),
+                ((minute >= 9 * 60 + 30) & (minute < 16 * 60)).cast(pl.Float64).alias("cov_is_regular"),
+                (minute >= 16 * 60).cast(pl.Float64).alias("cov_is_afterhours"),
+            ]
+        )
 
-    result["target_log_close"] = np.log(close)
-    result["cov_open_to_close_log"] = np.log(open_ / close)
-    result["cov_high_to_close_log"] = np.log(high / close)
-    result["cov_low_to_close_log"] = np.log(low / close)
-    result["cov_bar_body_log"] = np.log(close / open_)
-    result["cov_range_log"] = np.log(high / low)
-    result["cov_log_volume"] = np.log1p(volume)
-    result["cov_log_transactions"] = np.log1p(transactions)
-    result["cov_log_dollar_volume"] = np.log1p(volume * close)
-
-    if "spread" in result.columns:
-        result["cov_spread_pct"] = nonnegative(result["spread"]) / close
-    if "spread_bps" in result.columns:
-        result["cov_spread_bps"] = pd.to_numeric(result["spread_bps"], errors="coerce")
-    if {"quote_ask_price", "quote_bid_price"}.issubset(result.columns):
-        midpoint = (positive(result["quote_ask_price"]) + positive(result["quote_bid_price"])) / 2.0
-        result["cov_quote_mid_to_close_log"] = np.log(midpoint / close)
-
-    if "minute_of_day" in result.columns:
-        minute = pd.to_numeric(result["minute_of_day"], errors="coerce")
-        result["cov_minute_sin"] = np.sin(2.0 * math.pi * minute / 1440.0)
-        result["cov_minute_cos"] = np.cos(2.0 * math.pi * minute / 1440.0)
-        result["cov_is_premarket"] = (minute < 9 * 60 + 30).astype(float)
-        result["cov_is_regular"] = ((minute >= 9 * 60 + 30) & (minute < 16 * 60)).astype(float)
-        result["cov_is_afterhours"] = (minute >= 16 * 60).astype(float)
-
+    result = frame.with_columns(exprs)
     provider_covariates = [
         "return_1",
         "return_5",
@@ -228,160 +402,226 @@ def add_model_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     ]
     engineered_covariates = [column for column in result.columns if column.startswith("cov_")]
     covariates = engineered_covariates + [column for column in provider_covariates if column in result.columns]
-
-    for column in ["target_log_close", *covariates]:
-        result[column] = pd.to_numeric(result[column], errors="coerce").replace([np.inf, -np.inf], np.nan)
-    result = result[np.isfinite(result["target_log_close"])].copy()
+    cast_exprs = [
+        pl.col(column).cast(pl.Float64, strict=False).replace([float("inf"), float("-inf")], None).alias(column)
+        for column in ["target_log_close", *covariates]
+    ]
+    result = result.with_columns(cast_exprs).filter(pl.col("target_log_close").is_not_null()).sort(["ticker", "bar_time_market"])
     return result, covariates
 
 
-def positive(series: pd.Series | None) -> pd.Series:
-    values = pd.to_numeric(series, errors="coerce") if series is not None else pd.Series(dtype=float)
-    return values.where(values > 0.0, np.nan)
+def positive_expr(column: str) -> pl.Expr:
+    value = pl.col(column).cast(pl.Float64, strict=False)
+    return pl.when(value > 0.0).then(value).otherwise(None)
 
 
-def nonnegative(series: pd.Series | None) -> pd.Series:
-    values = pd.to_numeric(series, errors="coerce") if series is not None else pd.Series(dtype=float)
-    return values.where(values >= 0.0, 0.0)
+def nonnegative_expr(column: str, columns: list[str]) -> pl.Expr:
+    if column not in columns:
+        return pl.lit(0.0)
+    value = pl.col(column).cast(pl.Float64, strict=False)
+    return pl.when(value >= 0.0).then(value).otherwise(0.0)
 
 
-def build_forecast_tasks(
-    df: pd.DataFrame,
-    covariates: list[str],
+def ticker_groups(frame: pl.DataFrame) -> Iterator[tuple[str, pl.DataFrame]]:
+    for partition in frame.partition_by("ticker", maintain_order=True):
+        if partition.is_empty():
+            continue
+        ticker = str(partition.get_column("ticker")[0])
+        yield ticker, partition
+
+
+def process_ticker(
     *,
-    context_length: int,
-    min_context: int,
-    prediction_length: int,
-    rolling_stride: int,
-    max_windows_per_ticker: int,
-) -> tuple[list[dict], list[ForecastOrigin], dict[str, pd.DataFrame]]:
+    pipeline,
+    ticker: str,
+    ticker_frame: pl.DataFrame,
+    covariates: list[str],
+    args: argparse.Namespace,
+    writer: csv.DictWriter,
+    metrics: MetricAccumulator,
+    windows_remaining: int | None,
+) -> tuple[int, int | None, bool]:
+    length = ticker_frame.height
+    required_bars = args.min_context + args.prediction_length
+    if length < required_bars:
+        return 0, windows_remaining, False
+
+    last_origin = length - args.prediction_length - 1
+    origin_indices = list(range(args.min_context - 1, last_origin + 1, max(1, args.rolling_stride)))
+    if args.max_windows_per_ticker > 0:
+        origin_indices = origin_indices[: args.max_windows_per_ticker]
+    if windows_remaining is not None:
+        if windows_remaining <= 0:
+            return 0, windows_remaining, True
+        origin_indices = origin_indices[:windows_remaining]
+        windows_remaining -= len(origin_indices)
+    if not origin_indices:
+        return 0, windows_remaining, windows_remaining == 0
+
+    arrays = ticker_arrays(ticker_frame, covariates)
+    processed = 0
+    for chunk in chunks(origin_indices, max(1, args.window_batch_size)):
+        inputs, origins = build_input_chunk(ticker=ticker, ticker_frame=ticker_frame, arrays=arrays, covariates=covariates, origin_indices=chunk, args=args)
+        rows = predict_rows(
+            pipeline=pipeline,
+            inputs=inputs,
+            origins=origins,
+            arrays=arrays,
+            prediction_length=args.prediction_length,
+            quantile_levels=DEFAULT_QUANTILES,
+            batch_size=args.batch_size,
+            direction_threshold_bps=args.direction_threshold_bps,
+        )
+        for row in rows:
+            writer.writerow(row)
+            metrics.update(row)
+        processed += len(chunk)
+        clear_cuda_cache(args.device_map)
+    return processed, windows_remaining, windows_remaining == 0 if windows_remaining is not None else False
+
+
+def ticker_arrays(ticker_frame: pl.DataFrame, covariates: list[str]) -> dict[str, np.ndarray | list]:
+    arrays: dict[str, np.ndarray | list] = {
+        "close": ticker_frame.get_column("close").cast(pl.Float64, strict=False).to_numpy(),
+        "target_log_close": ticker_frame.get_column("target_log_close").cast(pl.Float64, strict=False).to_numpy(),
+        "bar_time_market": ticker_frame.get_column("bar_time_market").to_list(),
+        "session_date": ticker_frame.get_column("session_date").cast(pl.Utf8).to_list(),
+    }
+    for column in covariates:
+        values = ticker_frame.get_column(column).cast(pl.Float32, strict=False).to_numpy()
+        if np.isfinite(values).any():
+            arrays[column] = values
+    return arrays
+
+
+def build_input_chunk(
+    *,
+    ticker: str,
+    ticker_frame: pl.DataFrame,
+    arrays: dict[str, np.ndarray | list],
+    covariates: list[str],
+    origin_indices: list[int],
+    args: argparse.Namespace,
+) -> tuple[list[dict], list[ForecastOrigin]]:
+    target_log_close = arrays["target_log_close"]
+    close = arrays["close"]
+    session_dates = arrays["session_date"]
+    times = arrays["bar_time_market"]
+    assert isinstance(target_log_close, np.ndarray)
+    assert isinstance(close, np.ndarray)
+    assert isinstance(session_dates, list)
+    assert isinstance(times, list)
+
     inputs: list[dict] = []
     origins: list[ForecastOrigin] = []
-    ticker_frames: dict[str, pd.DataFrame] = {}
-    skipped: list[tuple[str, int, int]] = []
-    required_bars = min_context + prediction_length
-
-    for ticker, ticker_df in df.groupby("ticker", sort=False):
-        ticker_df = ticker_df.sort_values("bar_time_market").reset_index(drop=True)
-        ticker_frames[str(ticker)] = ticker_df
-        last_origin = len(ticker_df) - prediction_length - 1
-        if last_origin < min_context - 1:
-            skipped.append((str(ticker), len(ticker_df), required_bars))
-            continue
-        origin_indices = list(range(min_context - 1, last_origin + 1, max(1, rolling_stride)))
-        if max_windows_per_ticker > 0:
-            origin_indices = origin_indices[:max_windows_per_ticker]
-
-        for origin_index in origin_indices:
-            start_index = max(0, origin_index + 1 - context_length)
-            history = ticker_df.iloc[start_index : origin_index + 1]
-            target = history["target_log_close"].to_numpy(dtype=np.float32)
-            past_covariates = {}
-            for column in covariates:
-                values = history[column].to_numpy(dtype=np.float32)
-                if np.isfinite(values).any():
-                    past_covariates[column] = values
-            inputs.append({"target": target, "past_covariates": past_covariates})
-            origins.append(
-                ForecastOrigin(
-                    ticker=str(ticker),
-                    session_date=str(ticker_df.loc[origin_index, "session_date"]),
-                    origin_index=int(origin_index),
-                    origin_time=pd.Timestamp(ticker_df.loc[origin_index, "bar_time_market"]),
-                    last_close=float(ticker_df.loc[origin_index, "close"]),
-                )
+    for origin_index in origin_indices:
+        start_index = max(0, origin_index + 1 - args.context_length)
+        past_covariates = {
+            column: arrays[column][start_index : origin_index + 1]
+            for column in covariates
+            if column in arrays
+        }
+        inputs.append(
+            {
+                "target": target_log_close[start_index : origin_index + 1].astype(np.float32, copy=False),
+                "past_covariates": past_covariates,
+            }
+        )
+        origins.append(
+            ForecastOrigin(
+                ticker=ticker,
+                session_date=str(session_dates[origin_index]),
+                origin_index=int(origin_index),
+                origin_time=times[origin_index],
+                last_close=float(close[origin_index]),
             )
-
-    if not inputs:
-        details = "; ".join(
-            f"{ticker}: usable_bars={usable_bars}, required_bars>={required}"
-            for ticker, usable_bars, required in skipped[:20]
         )
-        suffix = " ..." if len(skipped) > 20 else ""
-        if details:
-            details = f" Ticker diagnostics: {details}{suffix}."
-        raise SystemExit(
-            "No forecast windows were created. "
-            f"Need at least min_context + prediction_length bars per ticker ({required_bars} with current args)."
-            f"{details} Lower --min-context/--prediction-length, choose a more active ticker/session, or omit --tickers "
-            "to use all session tickers. Use --max-tickers N to cap the universe for faster tests."
-        )
-    return inputs, origins, ticker_frames
+    return inputs, origins
 
 
-def run_predictions(
+def predict_rows(
+    *,
     pipeline,
     inputs: list[dict],
     origins: list[ForecastOrigin],
-    ticker_frames: dict[str, pd.DataFrame],
-    *,
+    arrays: dict[str, np.ndarray | list],
     prediction_length: int,
     quantile_levels: list[float],
     batch_size: int,
-    window_batch_size: int,
     direction_threshold_bps: float,
-) -> pd.DataFrame:
-    rows: list[dict] = []
+) -> list[dict]:
+    close = arrays["close"]
+    target_log_close = arrays["target_log_close"]
+    times = arrays["bar_time_market"]
+    assert isinstance(close, np.ndarray)
+    assert isinstance(target_log_close, np.ndarray)
+    assert isinstance(times, list)
+
+    quantiles, means = pipeline.predict_quantiles(
+        inputs,
+        prediction_length=prediction_length,
+        quantile_levels=quantile_levels,
+        batch_size=batch_size,
+    )
     threshold = direction_threshold_bps / 10_000.0
     q_index = {level: idx for idx, level in enumerate(quantile_levels)}
-
-    for start in range(0, len(inputs), max(1, window_batch_size)):
-        end = min(start + max(1, window_batch_size), len(inputs))
-        quantiles, means = pipeline.predict_quantiles(
-            inputs[start:end],
-            prediction_length=prediction_length,
-            quantile_levels=quantile_levels,
-            batch_size=batch_size,
-        )
-        for local_idx, origin in enumerate(origins[start:end]):
-            ticker_df = ticker_frames[origin.ticker]
-            q_values = quantiles[local_idx][0].detach().cpu().numpy()
-            mean_values = means[local_idx][0].detach().cpu().numpy()
-            for step in range(1, prediction_length + 1):
-                target_index = origin.origin_index + step
-                actual_close = float(ticker_df.loc[target_index, "close"])
-                actual_log_close = float(ticker_df.loc[target_index, "target_log_close"])
-                predicted_log_close = float(mean_values[step - 1])
-                predicted_close = float(np.exp(predicted_log_close))
-                actual_return = actual_log_close - math.log(origin.last_close)
-                predicted_return = predicted_log_close - math.log(origin.last_close)
-                pred_direction = direction_label(predicted_return, threshold)
-                actual_direction = direction_label(actual_return, threshold)
-                row = {
-                    "ticker": origin.ticker,
-                    "session_date": origin.session_date,
-                    "forecast_origin_time": origin.origin_time.isoformat(),
-                    "target_time": pd.Timestamp(ticker_df.loc[target_index, "bar_time_market"]).isoformat(),
-                    "horizon_bars": step,
-                    "last_close": origin.last_close,
-                    "actual_close": actual_close,
-                    "predicted_close": predicted_close,
-                    "naive_close": origin.last_close,
-                    "actual_return": actual_return,
-                    "predicted_return": predicted_return,
-                    "naive_return": 0.0,
-                    "abs_close_error": abs(predicted_close - actual_close),
-                    "naive_abs_close_error": abs(origin.last_close - actual_close),
-                    "abs_return_error": abs(predicted_return - actual_return),
-                    "naive_abs_return_error": abs(actual_return),
-                    "squared_return_error": (predicted_return - actual_return) ** 2,
-                    "naive_squared_return_error": actual_return**2,
-                    "actual_direction": actual_direction,
-                    "predicted_direction": pred_direction,
-                    "direction_correct": pred_direction == actual_direction,
-                    "direction_correct_nonflat": pred_direction == actual_direction and actual_direction != 0,
-                }
-                if 0.1 in q_index:
-                    row["p10_close"] = float(np.exp(q_values[step - 1, q_index[0.1]]))
-                if 0.5 in q_index:
-                    row["p50_close"] = float(np.exp(q_values[step - 1, q_index[0.5]]))
-                if 0.9 in q_index:
-                    row["p90_close"] = float(np.exp(q_values[step - 1, q_index[0.9]]))
-                if {"p10_close", "p90_close"}.issubset(row):
-                    row["p10_p90_covered"] = row["p10_close"] <= actual_close <= row["p90_close"]
-                    row["p10_p90_width_bps"] = ((row["p90_close"] / row["p10_close"]) - 1.0) * 10_000.0
-                rows.append(row)
-    return pd.DataFrame(rows)
+    rows: list[dict] = []
+    for local_idx, origin in enumerate(origins):
+        q_values = quantiles[local_idx][0].detach().cpu().numpy()
+        mean_values = means[local_idx][0].detach().cpu().numpy()
+        origin_log_close = math.log(origin.last_close)
+        for step in range(1, prediction_length + 1):
+            target_index = origin.origin_index + step
+            actual_close = float(close[target_index])
+            actual_log_close = float(target_log_close[target_index])
+            predicted_log_close = float(mean_values[step - 1])
+            predicted_close = float(np.exp(predicted_log_close))
+            actual_return = actual_log_close - origin_log_close
+            predicted_return = predicted_log_close - origin_log_close
+            pred_direction = direction_label(predicted_return, threshold)
+            actual_direction = direction_label(actual_return, threshold)
+            row = {
+                "ticker": origin.ticker,
+                "session_date": origin.session_date,
+                "forecast_origin_time": isoformat(origin.origin_time),
+                "target_time": isoformat(times[target_index]),
+                "horizon_bars": step,
+                "last_close": origin.last_close,
+                "actual_close": actual_close,
+                "predicted_close": predicted_close,
+                "naive_close": origin.last_close,
+                "actual_return": actual_return,
+                "predicted_return": predicted_return,
+                "naive_return": 0.0,
+                "abs_close_error": abs(predicted_close - actual_close),
+                "naive_abs_close_error": abs(origin.last_close - actual_close),
+                "abs_return_error": abs(predicted_return - actual_return),
+                "naive_abs_return_error": abs(actual_return),
+                "squared_return_error": (predicted_return - actual_return) ** 2,
+                "naive_squared_return_error": actual_return**2,
+                "actual_direction": actual_direction,
+                "predicted_direction": pred_direction,
+                "direction_correct": pred_direction == actual_direction,
+                "direction_correct_nonflat": pred_direction == actual_direction and actual_direction != 0,
+                "p10_close": "",
+                "p50_close": "",
+                "p90_close": "",
+                "p10_p90_covered": "",
+                "p10_p90_width_bps": "",
+            }
+            if 0.1 in q_index:
+                row["p10_close"] = float(np.exp(q_values[step - 1, q_index[0.1]]))
+            if 0.5 in q_index:
+                row["p50_close"] = float(np.exp(q_values[step - 1, q_index[0.5]]))
+            if 0.9 in q_index:
+                row["p90_close"] = float(np.exp(q_values[step - 1, q_index[0.9]]))
+            if row["p10_close"] != "" and row["p90_close"] != "":
+                p10 = float(row["p10_close"])
+                p90 = float(row["p90_close"])
+                row["p10_p90_covered"] = p10 <= actual_close <= p90
+                row["p10_p90_width_bps"] = ((p90 / p10) - 1.0) * 10_000.0 if p10 > 0.0 else ""
+            rows.append(row)
+    return rows
 
 
 def direction_label(value: float, threshold: float) -> int:
@@ -392,70 +632,40 @@ def direction_label(value: float, threshold: float) -> int:
     return 0
 
 
-def summarize_predictions(predictions: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    horizon_rows = []
-    for horizon, group in predictions.groupby("horizon_bars", sort=True):
-        horizon_rows.append(metric_row(f"h{horizon}", group))
-    horizon_metrics = pd.DataFrame(horizon_rows)
-    overall = metric_row("overall", predictions)
-    return horizon_metrics, overall
+def chunks(values: list, size: int) -> Iterator[list]:
+    for index in range(0, len(values), size):
+        yield values[index : index + size]
 
 
-def metric_row(label: str, df: pd.DataFrame) -> dict:
-    actual = df["actual_return"].to_numpy(dtype=float)
-    predicted = df["predicted_return"].to_numpy(dtype=float)
-    nonflat = df["actual_direction"] != 0
-    pred_up = df["predicted_direction"] > 0
-    pred_down = df["predicted_direction"] < 0
-    actual_up = df["actual_direction"] > 0
-    actual_down = df["actual_direction"] < 0
-    return {
-        "bucket": label,
-        "n": int(len(df)),
-        "mae_close": safe_mean(df["abs_close_error"]),
-        "naive_mae_close": safe_mean(df["naive_abs_close_error"]),
-        "mae_return_bps": safe_mean(df["abs_return_error"]) * 10_000.0,
-        "naive_mae_return_bps": safe_mean(df["naive_abs_return_error"]) * 10_000.0,
-        "mae_return_vs_naive": safe_divide(
-            safe_mean(df["abs_return_error"]),
-            safe_mean(df["naive_abs_return_error"]),
-        ),
-        "rmse_return_bps": math.sqrt(safe_mean(df["squared_return_error"])) * 10_000.0,
-        "naive_rmse_return_bps": math.sqrt(safe_mean(df["naive_squared_return_error"])) * 10_000.0,
-        "bias_return_bps": safe_mean(df["predicted_return"] - df["actual_return"]) * 10_000.0,
-        "mean_actual_return_bps": safe_mean(df["actual_return"]) * 10_000.0,
-        "mean_predicted_return_bps": safe_mean(df["predicted_return"]) * 10_000.0,
-        "direction_accuracy_pct": safe_mean(df["direction_correct"]) * 100.0,
-        "direction_accuracy_nonflat_pct": safe_mean(df.loc[nonflat, "direction_correct"]) * 100.0,
-        "up_precision_pct": safe_divide(float((pred_up & actual_up).sum()), float(pred_up.sum())) * 100.0,
-        "down_precision_pct": safe_divide(float((pred_down & actual_down).sum()), float(pred_down.sum())) * 100.0,
-        "return_corr": safe_corr(actual, predicted),
-        "p10_p90_coverage_pct": safe_mean(df.get("p10_p90_covered", pd.Series(dtype=float))) * 100.0,
-        "p10_p90_width_bps": safe_mean(df.get("p10_p90_width_bps", pd.Series(dtype=float))),
-    }
-
-
-def safe_mean(values: Iterable) -> float:
-    series = pd.Series(values)
-    if series.empty:
-        return float("nan")
-    numeric = pd.to_numeric(series, errors="coerce")
-    if numeric.dropna().empty:
-        return float("nan")
-    return float(numeric.mean())
-
-
-def safe_divide(numerator: float, denominator: float) -> float:
+def divide(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator else float("nan")
 
 
-def safe_corr(left: np.ndarray, right: np.ndarray) -> float:
-    mask = np.isfinite(left) & np.isfinite(right)
-    if mask.sum() < 2:
-        return float("nan")
-    if np.nanstd(left[mask]) == 0.0 or np.nanstd(right[mask]) == 0.0:
-        return float("nan")
-    return float(np.corrcoef(left[mask], right[mask])[0, 1])
+def isoformat(value: object) -> str:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def clear_cuda_cache(device_map: str) -> None:
+    if "cuda" not in str(device_map).lower():
+        return
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        return
+
+
+def write_metrics_csv(path: Path, rows: list[dict]) -> None:
+    if not rows:
+        return
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def write_report(
@@ -464,11 +674,12 @@ def write_report(
     predictions_path: Path,
     metrics_path: Path,
     report_path: Path,
-    predictions: pd.DataFrame,
-    horizon_metrics: pd.DataFrame,
     overall: dict,
+    horizon_metrics: list[dict],
     covariates: list[str],
-    tickers: list[str],
+    tickers_seen: list[str],
+    selected_ticker_count: int,
+    processed_windows: int,
 ) -> None:
     report = [
         "# Chronos 2 1m Bar Forecast Test",
@@ -477,18 +688,20 @@ def write_report(
         f"- Session date: `{args.session_date}`",
         f"- Model: `{args.model_id}`",
         f"- Device map: `{args.device_map}`",
-        f"- Tickers: `{', '.join(tickers)}`",
+        f"- Selected tickers: `{selected_ticker_count}`",
+        f"- Tickers with forecast windows: `{len(tickers_seen)}`",
+        f"- Forecast origins processed: `{processed_windows}`",
         f"- Target: `log(close)`; reported returns are log-return deltas from the forecast origin close.",
         f"- Prediction length: `{args.prediction_length}` bars",
         f"- Context length: `{args.context_length}` bars, minimum context `{args.min_context}` bars",
+        f"- Ticker batch size: `{args.ticker_batch_size}`, window batch size: `{args.window_batch_size}`",
         f"- Direction threshold: `{args.direction_threshold_bps}` bps",
-        f"- Forecast rows: `{len(predictions)}`",
         f"- Predictions CSV: `{predictions_path}`",
         f"- Metrics CSV: `{metrics_path}`",
         "",
         "## Overall Metrics",
         "",
-        markdown_table(pd.DataFrame([overall])),
+        markdown_table([overall]),
         "",
         "## Metrics By Horizon",
         "",
@@ -503,28 +716,32 @@ def write_report(
         "",
         "## Notes",
         "",
+        "- Provider data is loaded in ticker batches with Polars rather than materialized as one pandas frame.",
+        "- Prediction rows are streamed to CSV; metrics are aggregated incrementally.",
         "- This is an after-bar-close walk-forward test: the origin bar close is included in the context.",
-        "- Direction is measured by comparing predicted and actual future log returns from the origin close.",
         "- Supervision labels are not loaded as model inputs; only provider bars and deterministic feature groups are used.",
-        "- Evaluate these metrics against a naive baseline before treating the model output as a tradable edge.",
+        "- Evaluate these metrics against the naive baseline columns before treating the model output as a tradable edge.",
     ]
     report_path.write_text("\n".join(report), encoding="utf-8")
 
 
-def markdown_table(df: pd.DataFrame) -> str:
-    if df.empty:
+def markdown_table(rows: list[dict]) -> str:
+    if not rows:
         return "_No rows._"
-    formatted = df.copy()
-    for column in formatted.columns:
-        if pd.api.types.is_float_dtype(formatted[column]):
-            formatted[column] = formatted[column].map(lambda value: "" if pd.isna(value) else f"{value:.4f}")
-    columns = list(formatted.columns)
+    columns = list(rows[0].keys())
     lines = [
         "| " + " | ".join(columns) + " |",
         "| " + " | ".join("---" for _ in columns) + " |",
     ]
-    for _, row in formatted.iterrows():
-        lines.append("| " + " | ".join(str(row[column]) for column in columns) + " |")
+    for row in rows:
+        values = []
+        for column in columns:
+            value = row.get(column)
+            if isinstance(value, float):
+                values.append("" if math.isnan(value) else f"{value:.4f}")
+            else:
+                values.append(str(value))
+        lines.append("| " + " | ".join(values) + " |")
     return "\n".join(lines)
 
 
@@ -534,32 +751,13 @@ def main() -> None:
         raise SystemExit("--min-context must be at least 3.")
     if args.prediction_length < 1:
         raise SystemExit("--prediction-length must be at least 1.")
+    if args.ticker_batch_size < 1:
+        raise SystemExit("--ticker-batch-size must be at least 1.")
 
-    raw_df = load_session_bars(args)
-    model_df, covariates = add_model_columns(raw_df)
-    inputs, origins, ticker_frames = build_forecast_tasks(
-        model_df,
-        covariates,
-        context_length=args.context_length,
-        min_context=args.min_context,
-        prediction_length=args.prediction_length,
-        rolling_stride=args.rolling_stride,
-        max_windows_per_ticker=args.max_windows_per_ticker,
-    )
-
-    pipeline = load_chronos_pipeline(Path(args.chronos_src), args.model_id, args.device_map)
-    predictions = run_predictions(
-        pipeline,
-        inputs,
-        origins,
-        ticker_frames,
-        prediction_length=args.prediction_length,
-        quantile_levels=DEFAULT_QUANTILES,
-        batch_size=args.batch_size,
-        window_batch_size=args.window_batch_size,
-        direction_threshold_bps=args.direction_threshold_bps,
-    )
-    horizon_metrics, overall = summarize_predictions(predictions)
+    provider = provider_for_args(args)
+    selected_tickers = select_session_tickers(provider, args)
+    if not selected_tickers:
+        raise SystemExit("No tickers selected for the requested session.")
 
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -568,20 +766,79 @@ def main() -> None:
     metrics_path = report_dir / f"{run_id}_metrics.csv"
     report_path = report_dir / f"{run_id}_report.md"
     config_path = report_dir / f"{run_id}_config.json"
-
-    predictions.to_csv(predictions_path, index=False)
-    horizon_metrics.to_csv(metrics_path, index=False)
     config_path.write_text(json.dumps(vars(args), indent=2, sort_keys=True), encoding="utf-8")
+
+    pipeline = load_chronos_pipeline(Path(args.chronos_src), args.model_id, args.device_map)
+    metrics = MetricAccumulator()
+    covariates_seen: list[str] = []
+    tickers_seen: list[str] = []
+    processed_tickers = 0
+    processed_windows = 0
+    windows_remaining = args.max_total_windows if args.max_total_windows > 0 else None
+
+    with predictions_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=PREDICTION_FIELDS)
+        writer.writeheader()
+
+        for ticker_batch in chunks(selected_tickers, args.ticker_batch_size):
+            batch_frame = load_ticker_batch(provider, args, ticker_batch)
+            if batch_frame.is_empty():
+                processed_tickers += len(ticker_batch)
+                continue
+            model_frame, covariates = add_model_columns(batch_frame)
+            if not covariates_seen:
+                covariates_seen = covariates
+            for ticker, ticker_frame in ticker_groups(model_frame):
+                count, windows_remaining, stop = process_ticker(
+                    pipeline=pipeline,
+                    ticker=ticker,
+                    ticker_frame=ticker_frame,
+                    covariates=covariates,
+                    args=args,
+                    writer=writer,
+                    metrics=metrics,
+                    windows_remaining=windows_remaining,
+                )
+                processed_tickers += 1
+                if count > 0:
+                    tickers_seen.append(ticker)
+                    processed_windows += count
+                if args.progress_every_tickers > 0 and processed_tickers % args.progress_every_tickers == 0:
+                    print(
+                        f"Processed {processed_tickers}/{len(selected_tickers)} tickers, "
+                        f"forecast_origins={processed_windows}, rows={metrics.overall.n}",
+                        flush=True,
+                    )
+                if stop:
+                    break
+            del batch_frame
+            del model_frame
+            if windows_remaining is not None and windows_remaining <= 0:
+                break
+
+    if metrics.overall.n == 0:
+        required_bars = args.min_context + args.prediction_length
+        raise SystemExit(
+            "No forecast windows were created. "
+            f"Need at least min_context + prediction_length bars per ticker ({required_bars} with current args). "
+            "Lower --min-context/--prediction-length, choose a more active session, or use --max-tickers N to inspect "
+            "a smaller active universe first."
+        )
+
+    horizon_metrics = metrics.horizon_rows()
+    overall = metrics.overall.to_row("overall")
+    write_metrics_csv(metrics_path, horizon_metrics)
     write_report(
         args=args,
         predictions_path=predictions_path,
         metrics_path=metrics_path,
         report_path=report_path,
-        predictions=predictions,
-        horizon_metrics=horizon_metrics,
         overall=overall,
-        covariates=covariates,
-        tickers=sorted(ticker_frames.keys()),
+        horizon_metrics=horizon_metrics,
+        covariates=covariates_seen,
+        tickers_seen=tickers_seen,
+        selected_ticker_count=len(selected_tickers),
+        processed_windows=processed_windows,
     )
 
     print(f"Wrote predictions: {predictions_path}")
