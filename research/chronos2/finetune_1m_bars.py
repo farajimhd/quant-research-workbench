@@ -426,15 +426,31 @@ class SessionStreamingChronosDataset:
             sessions = list(self.sessions)
             if self.mode == "train":
                 rng.shuffle(sessions)
-            for session in sessions:
+            for session_index, session in enumerate(sessions, start=1):
+                if self.mode == "train":
+                    print(
+                        f"Training session {session} feeding ({session_index}/{len(sessions)})",
+                        flush=True,
+                    )
                 frame = load_session_frame(self.processed_root, session, self.tickers, self.session_scope)
                 if frame.is_empty():
+                    if self.mode == "train":
+                        print(f"Training session {session} skipped: rows=0 windows=0 batches=0", flush=True)
                     continue
                 arrays = session_arrays(frame)
                 origins_by_time = session_origins(frame, self.min_past, self.prediction_length)
                 times = list(origins_by_time)
                 if self.mode == "train":
                     rng.shuffle(times)
+                session_windows = 0
+                session_batches = 0
+                for refs in origins_by_time.values():
+                    valid_windows = sum(1 for ticker, _origin_index in refs if ticker in arrays)
+                    if valid_windows:
+                        session_windows += valid_windows
+                        session_batches += math.ceil(valid_windows / max_windows_per_batch)
+                emitted_session_windows = 0
+                emitted_session_batches = 0
                 for timestamp in times:
                     refs = [ref for ref in origins_by_time[timestamp] if ref[0] in arrays]
                     if not refs:
@@ -448,6 +464,14 @@ class SessionStreamingChronosDataset:
                             remaining = self.max_windows - emitted_windows
                             chunk_refs = chunk_refs[:remaining]
                         emitted_windows += len(chunk_refs)
+                        emitted_session_windows += len(chunk_refs)
+                        emitted_session_batches += 1
+                        if self.mode == "train" and emitted_session_batches == session_batches:
+                            print(
+                                f"Training session {session} trained: "
+                                f"windows={emitted_session_windows:,} batches={emitted_session_batches:,}",
+                                flush=True,
+                            )
                         yield build_batch(
                             arrays_by_ticker=arrays,
                             origin_refs=chunk_refs,
@@ -455,6 +479,8 @@ class SessionStreamingChronosDataset:
                             prediction_length=self.prediction_length,
                             output_patch_size=self.output_patch_size,
                         )
+                if self.mode == "train" and session_batches == 0:
+                    print(f"Training session {session} skipped: rows={frame.height:,} windows=0 batches=0", flush=True)
             if self.mode != "train":
                 return
 
