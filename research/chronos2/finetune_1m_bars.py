@@ -70,7 +70,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", required=True, help="Last provider session date to use, for example 2026-04-07.")
     parser.add_argument("--processed-root", default=str(DEFAULT_PROCESSED_ROOT), help="Processed provider market_data root.")
     parser.add_argument("--chronos-src", default=str(DEFAULT_CHRONOS_SRC), help="Path to chronos-forecasting src folder.")
-    parser.add_argument("--model-id", default=DEFAULT_MODEL_ID, help="Base Chronos 2 model id or local model path.")
+    parser.add_argument(
+        "--model-id",
+        default="",
+        help=(
+            "Explicit base or fine-tuned Chronos model id/path. If omitted, the script resumes the latest managed "
+            "finetuned checkpoint when available, otherwise uses the small base model."
+        ),
+    )
+    parser.set_defaults(resume_latest=True)
+    parser.add_argument(
+        "--resume-latest",
+        dest="resume_latest",
+        action="store_true",
+        help="Resume from the latest compatible managed finetuned checkpoint when --model-id is omitted.",
+    )
+    parser.add_argument(
+        "--no-resume-latest",
+        dest="resume_latest",
+        action="store_false",
+        help="Ignore managed finetuned checkpoints and start from the small base model when --model-id is omitted.",
+    )
     parser.add_argument("--device-map", default="cuda", help='Transformers device_map, e.g. "cuda", "cpu", or "auto".')
     parser.add_argument("--context-length", type=int, default=64, help="Historical bars per training window.")
     parser.add_argument("--min-past", type=int, default=64, help="Minimum historical bars before each training target.")
@@ -659,7 +679,18 @@ def require_lora_dependency() -> None:
         raise SystemExit("LoRA fine-tuning requires `peft`. Install it in this environment before running training.") from exc
 
 
-def apply_lora(model):
+def apply_or_continue_lora(model):
+    if hasattr(model, "peft_config"):
+        if hasattr(model, "get_nb_trainable_parameters"):
+            trainable, total = model.get_nb_trainable_parameters()
+            print(
+                f"Continuing existing LoRA: trainable_parameters={trainable:,} total_parameters={total:,}",
+                flush=True,
+            )
+        else:
+            print("Continuing existing LoRA checkpoint.", flush=True)
+        return model
+
     from peft import LoraConfig, get_peft_model
 
     lora_config = LoraConfig(
@@ -677,6 +708,59 @@ def apply_lora(model):
     trainable, total = model.get_nb_trainable_parameters()
     print(f"Using LoRA: trainable_parameters={trainable:,} total_parameters={total:,}", flush=True)
     return model
+
+
+def compatible_metadata(run_dir: Path) -> bool:
+    metadata_path = run_dir / "metadata.json"
+    if not metadata_path.exists():
+        return True
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    data = metadata.get("data", {})
+    targets = data.get("targets")
+    covariates = data.get("past_covariates")
+    if targets is None and covariates is None:
+        return True
+    return targets == list(TARGET_COLUMNS) and covariates == list(COVARIATE_COLUMNS)
+
+
+def latest_managed_checkpoint(processed_root: Path, output_dir: Path) -> Path | None:
+    models_root = processed_root / "models" / "chronos2"
+    if not models_root.exists():
+        return None
+    candidates: list[tuple[float, Path]] = []
+    output_dir_resolved = output_dir.resolve()
+    for run_dir in models_root.iterdir():
+        if not run_dir.is_dir():
+            continue
+        try:
+            if run_dir.resolve() == output_dir_resolved:
+                continue
+        except OSError:
+            continue
+        checkpoint = run_dir / "finetuned-ckpt"
+        if not checkpoint.is_dir() or not compatible_metadata(run_dir):
+            continue
+        try:
+            modified = checkpoint.stat().st_mtime
+        except OSError:
+            continue
+        candidates.append((modified, checkpoint))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def resolve_model_id(processed_root: Path, output_dir: Path, args: argparse.Namespace) -> tuple[str, str]:
+    if args.model_id:
+        return args.model_id, "explicit"
+    if args.resume_latest:
+        latest = latest_managed_checkpoint(processed_root, output_dir)
+        if latest is not None:
+            return str(latest), "latest_managed_finetuned"
+    return DEFAULT_MODEL_ID, "default_small_base"
 
 
 def make_training_args(args: argparse.Namespace, output_dir: Path, use_cpu: bool, has_sm80: bool, has_validation: bool):
@@ -799,12 +883,14 @@ def main() -> None:
     validation_session_list = sessions[-args.validation_sessions :] if args.validation_sessions > 0 else []
     train_session_list = sessions[: len(sessions) - len(validation_session_list)]
     output_dir = output_dir_for_args(processed_root, args)
+    resolved_model_id, model_source = resolve_model_id(processed_root, output_dir, args)
 
     print(
         f"Preparing streaming training from {len(sessions)} sessions: "
         f"train={len(train_session_list)} validation={len(validation_session_list)}",
         flush=True,
     )
+    print(f"Model source: {model_source} ({resolved_model_id})", flush=True)
     tickers = selected_tickers(processed_root, train_session_list, args)
     if tickers:
         print(f"Selected {len(tickers)} tickers.", flush=True)
@@ -847,6 +933,8 @@ def main() -> None:
         "status": "prepared",
         "output_dir": str(output_dir),
         "finetuned_checkpoint": str(output_dir / "finetuned-ckpt"),
+        "model_source": model_source,
+        "loaded_model_id": resolved_model_id,
         "args": vars(args),
         "data": {
             "sessions": len(sessions),
@@ -886,7 +974,7 @@ def main() -> None:
 
     require_lora_dependency()
     print("Loading Chronos model after streaming data plan is ready...", flush=True)
-    pipeline = load_chronos_pipeline(args.model_id, args.device_map)
+    pipeline = load_chronos_pipeline(resolved_model_id, args.device_map)
 
     import torch
     from chronos.chronos2.pipeline import Chronos2Pipeline
@@ -894,7 +982,7 @@ def main() -> None:
     from torch.utils.data import IterableDataset
     from transformers.trainer_callback import PrinterCallback
 
-    model = apply_lora(pipeline.model)
+    model = apply_or_continue_lora(pipeline.model)
     use_cpu = str(model.device) == "cpu"
     has_sm80 = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
     output_patch_size = pipeline.model_output_patch_size
