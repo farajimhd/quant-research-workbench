@@ -3994,6 +3994,8 @@ button {
   border-bottom: 1px solid var(--surface-border);
   background: color-mix(in oklab, var(--surface-alt) 38%, var(--surface));
   padding: 8px 10px;
+  position: relative;
+  z-index: 30;
 }
 
 .data-table-toolbar-left,
@@ -4369,7 +4371,7 @@ button {
 
 .data-table-row-menu {
   position: fixed;
-  z-index: 120;
+  z-index: 10050;
   zoom: var(--app-zoom);
   min-width: 184px;
   border: 1px solid var(--surface-border);
@@ -4530,7 +4532,7 @@ button {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 20;
+  z-index: 10050;
   width: 260px;
   border: 1px solid var(--surface-border);
   border-radius: 8px;
@@ -5022,7 +5024,7 @@ button {
 
 .data-table-floating-popover {
   position: fixed;
-  z-index: 120;
+  z-index: 10050;
   zoom: var(--app-zoom);
   width: max-content;
   max-height: calc(100vh - 24px);
