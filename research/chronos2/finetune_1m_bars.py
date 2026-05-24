@@ -61,7 +61,7 @@ class CoveragePlan:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Stream fine-tune Chronos 2 with LoRA on provider-built 1m bars. Targets are raw close, high, and low; "
+            "Stream fine-tune Chronos 2 on provider-built 1m bars. Targets are raw close, high, and low; "
             "past-only covariates are raw open, volume, and transactions. The script loads one provider session at a "
             "time and yields Chronos-ready batches instead of holding the full corpus in RAM."
         )
@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
         default="",
         help=(
             "Explicit base or fine-tuned Chronos model id/path. If omitted, the script resumes the latest managed "
-            "finetuned checkpoint when available, otherwise uses the small base model."
+            "compatible checkpoint when available, otherwise uses the small base model."
         ),
     )
     parser.set_defaults(resume_latest=True)
@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
         "--resume-latest",
         dest="resume_latest",
         action="store_true",
-        help="Resume from the latest compatible managed finetuned checkpoint when --model-id is omitted.",
+        help="Resume from the latest compatible managed checkpoint when --model-id is omitted.",
     )
     parser.add_argument(
         "--no-resume-latest",
@@ -96,10 +96,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-past", type=int, default=64, help="Minimum historical bars before each training target.")
     parser.add_argument("--prediction-length", type=int, default=1, help="Forecast horizon in bars.")
     parser.add_argument(
+        "--finetune-mode",
+        choices=["lora", "full"],
+        default="lora",
+        help="Use LoRA adapter fine-tuning or full-parameter fine-tuning.",
+    )
+    parser.add_argument(
         "--num-steps",
         type=int,
         default=0,
-        help="LoRA fine-tuning optimizer steps. Use 0 to auto-train for --epochs full streamed passes.",
+        help="Fine-tuning optimizer steps. Use 0 to auto-train for --epochs full streamed passes.",
     )
     parser.add_argument("--epochs", type=int, default=1, help="Full streamed passes used when --num-steps is 0.")
     parser.add_argument(
@@ -108,7 +114,12 @@ def parse_args() -> argparse.Namespace:
         default=2048,
         help="Chronos training batch size measured in variates. Each ticker window uses six variates.",
     )
-    parser.add_argument("--learning-rate", type=float, default=1e-4, help="LoRA learning rate.")
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=None,
+        help="Learning rate. Defaults to 1e-4 for LoRA and 1e-5 for full fine-tuning.",
+    )
     parser.add_argument("--logging-steps", type=int, default=50, help="Trainer logging interval.")
     parser.add_argument("--eval-steps", type=int, default=500, help="Validation/probe evaluation interval in training steps.")
     parser.add_argument(
@@ -719,7 +730,30 @@ def require_lora_dependency() -> None:
         raise SystemExit("LoRA fine-tuning requires `peft`. Install it in this environment before running training.") from exc
 
 
-def apply_or_continue_lora(model):
+def trainable_parameter_counts(model) -> tuple[int, int]:
+    trainable = 0
+    total = 0
+    for parameter in model.parameters():
+        count = parameter.numel()
+        total += count
+        if parameter.requires_grad:
+            trainable += count
+    return trainable, total
+
+
+def setup_model_for_finetuning(model, finetune_mode: str):
+    if finetune_mode == "full":
+        if hasattr(model, "peft_config"):
+            raise SystemExit(
+                "Full fine-tuning cannot continue from a LoRA/PEFT adapter checkpoint. "
+                "Use --no-resume-latest or pass a full/base model with --model-id."
+            )
+        for parameter in model.parameters():
+            parameter.requires_grad_(True)
+        trainable, total = trainable_parameter_counts(model)
+        print(f"Using full fine-tuning: trainable_parameters={trainable:,} total_parameters={total:,}", flush=True)
+        return model
+
     if hasattr(model, "peft_config"):
         if hasattr(model, "get_nb_trainable_parameters"):
             trainable, total = model.get_nb_trainable_parameters()
@@ -766,7 +800,11 @@ def compatible_metadata(run_dir: Path) -> bool:
     return targets == list(TARGET_COLUMNS) and covariates == list(COVARIATE_COLUMNS)
 
 
-def latest_managed_checkpoint(processed_root: Path, output_dir: Path) -> Path | None:
+def checkpoint_is_lora(checkpoint: Path) -> bool:
+    return (checkpoint / "adapter_config.json").exists()
+
+
+def latest_managed_checkpoint(processed_root: Path, output_dir: Path, finetune_mode: str) -> Path | None:
     models_root = processed_root / "models" / "chronos2"
     if not models_root.exists():
         return None
@@ -783,6 +821,8 @@ def latest_managed_checkpoint(processed_root: Path, output_dir: Path) -> Path | 
         checkpoint = run_dir / "finetuned-ckpt"
         if not checkpoint.is_dir() or not compatible_metadata(run_dir):
             continue
+        if finetune_mode == "full" and checkpoint_is_lora(checkpoint):
+            continue
         try:
             modified = checkpoint.stat().st_mtime
         except OSError:
@@ -797,7 +837,7 @@ def resolve_model_id(processed_root: Path, output_dir: Path, args: argparse.Name
     if args.model_id:
         return args.model_id, "explicit"
     if args.resume_latest:
-        latest = latest_managed_checkpoint(processed_root, output_dir)
+        latest = latest_managed_checkpoint(processed_root, output_dir, args.finetune_mode)
         if latest is not None:
             return str(latest), "latest_managed_finetuned"
     return DEFAULT_MODEL_ID, "default_small_base"
@@ -806,11 +846,12 @@ def resolve_model_id(processed_root: Path, output_dir: Path, args: argparse.Name
 def make_training_args(args: argparse.Namespace, output_dir: Path, use_cpu: bool, has_sm80: bool, has_validation: bool):
     from transformers.training_args import TrainingArguments
 
+    learning_rate = args.learning_rate if args.learning_rate is not None else (1e-4 if args.finetune_mode == "lora" else 1e-5)
     training_kwargs: dict = dict(
         output_dir=str(output_dir),
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
+        learning_rate=learning_rate,
         lr_scheduler_type="linear",
         warmup_ratio=0.0,
         optim="adamw_torch_fused",
@@ -852,7 +893,7 @@ def output_dir_for_args(processed_root: Path, args: argparse.Namespace) -> Path:
         name = args.output_name
     else:
         name = (
-            f"chronos2_small_lora_1m_stream_targets_chl_ctx{args.context_length}_h{args.prediction_length}_"
+            f"chronos2_small_{args.finetune_mode}_1m_stream_targets_chl_ctx{args.context_length}_h{args.prediction_length}_"
             f"{args.start_date}_{args.end_date}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
     return processed_root / "models" / "chronos2" / name
@@ -1148,6 +1189,7 @@ def main() -> None:
         "finetuned_checkpoint": str(output_dir / "finetuned-ckpt"),
         "model_source": model_source,
         "loaded_model_id": resolved_model_id,
+        "finetune_mode": args.finetune_mode,
         "args": vars(args),
         "dataset_split": dataset_split,
         "data": {
@@ -1186,7 +1228,8 @@ def main() -> None:
         print(f"Dry run complete. Metadata written to {output_dir / 'metadata.json'}", flush=True)
         return
 
-    require_lora_dependency()
+    if args.finetune_mode == "lora":
+        require_lora_dependency()
     print("Loading Chronos model after streaming data plan is ready...", flush=True)
     pipeline = load_chronos_pipeline(resolved_model_id, args.device_map)
 
@@ -1196,7 +1239,7 @@ def main() -> None:
     from torch.utils.data import IterableDataset
     from transformers.trainer_callback import PrinterCallback
 
-    model = apply_or_continue_lora(pipeline.model)
+    model = setup_model_for_finetuning(pipeline.model, args.finetune_mode)
     use_cpu = str(model.device) == "cpu"
     has_sm80 = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
     output_patch_size = pipeline.model_output_patch_size
