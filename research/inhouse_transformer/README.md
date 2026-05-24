@@ -29,6 +29,8 @@ The model applies attention across features inside each bar, then attention acro
 
 By default the loader carries the last context bars across sessions, but does not let targets cross a session boundary.
 
+The default objective is Smooth L1 loss on the multi-horizon OHLC return targets only. The direction head is still reported through prediction-sign metrics, and an auxiliary BCE direction loss can be re-enabled with `--direction-loss-weight`.
+
 Run a small dry run:
 
 ```powershell

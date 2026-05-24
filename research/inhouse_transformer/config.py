@@ -69,7 +69,7 @@ class ModelConfig:
     num_heads: int = 4
     ff_dim: int = 512
     dropout: float = 0.1
-    direction_loss_weight: float = 0.25
+    direction_loss_weight: float = 0.0
     direction_threshold_bps: float = 0.0
 
 

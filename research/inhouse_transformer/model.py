@@ -116,8 +116,12 @@ def forecast_loss(
     direction_loss_weight: float,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     regression = nn.functional.smooth_l1_loss(prediction, target)
-    direction = nn.functional.binary_cross_entropy_with_logits(direction_logits, direction_target)
-    total = regression + direction_loss_weight * direction
+    if direction_loss_weight > 0.0:
+        direction = nn.functional.binary_cross_entropy_with_logits(direction_logits, direction_target)
+        total = regression + direction_loss_weight * direction
+    else:
+        direction = regression.new_zeros(())
+        total = regression
     return total, {
         "loss": float(total.detach().cpu()),
         "regression_loss": float(regression.detach().cpu()),
