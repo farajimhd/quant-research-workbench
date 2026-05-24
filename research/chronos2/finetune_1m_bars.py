@@ -48,6 +48,16 @@ class ProbeWindow:
     actual_close: float
 
 
+@dataclass(slots=True)
+class CoveragePlan:
+    steps: int
+    epochs: int
+    full_pass_batches: int
+    full_pass_windows: int
+    sessions_with_windows: int
+    max_windows_per_batch: int
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -65,7 +75,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context-length", type=int, default=64, help="Historical bars per training window.")
     parser.add_argument("--min-past", type=int, default=64, help="Minimum historical bars before each training target.")
     parser.add_argument("--prediction-length", type=int, default=1, help="Forecast horizon in bars.")
-    parser.add_argument("--num-steps", type=int, default=2000, help="LoRA fine-tuning optimizer steps.")
+    parser.add_argument(
+        "--num-steps",
+        type=int,
+        default=0,
+        help="LoRA fine-tuning optimizer steps. Use 0 to auto-train for --epochs full streamed passes.",
+    )
+    parser.add_argument("--epochs", type=int, default=1, help="Full streamed passes used when --num-steps is 0.")
     parser.add_argument(
         "--batch-size",
         type=int,
@@ -298,6 +314,58 @@ def build_batch(
 def batched_refs(refs: list[tuple[str, int]], max_windows: int) -> Iterable[list[tuple[str, int]]]:
     for index in range(0, len(refs), max_windows):
         yield refs[index : index + max_windows]
+
+
+def count_stream_coverage(
+    *,
+    processed_root: Path,
+    sessions: list[str],
+    tickers: list[str] | None,
+    session_scope: str,
+    min_past: int,
+    prediction_length: int,
+    batch_size: int,
+    epochs: int,
+) -> CoveragePlan:
+    max_windows_per_batch = max(1, batch_size // VARIATE_COUNT)
+    full_pass_batches = 0
+    full_pass_windows = 0
+    sessions_with_windows = 0
+    for session_index, session in enumerate(sessions, start=1):
+        frame = load_session_frame(processed_root, session, tickers, session_scope)
+        if frame.is_empty():
+            print(f"Coverage count {session_index}/{len(sessions)} {session}: rows=0 windows=0 batches=0", flush=True)
+            continue
+        arrays = session_arrays(frame)
+        origins_by_time = session_origins(frame, min_past, prediction_length)
+        session_windows = 0
+        session_batches = 0
+        for refs in origins_by_time.values():
+            valid_windows = sum(1 for ticker, _origin_index in refs if ticker in arrays)
+            if valid_windows:
+                session_windows += valid_windows
+                session_batches += math.ceil(valid_windows / max_windows_per_batch)
+        if session_windows:
+            sessions_with_windows += 1
+        full_pass_windows += session_windows
+        full_pass_batches += session_batches
+        print(
+            f"Coverage count {session_index}/{len(sessions)} {session}: "
+            f"rows={frame.height:,} windows={session_windows:,} batches={session_batches:,} "
+            f"total_batches={full_pass_batches:,}",
+            flush=True,
+        )
+
+    if full_pass_batches <= 0:
+        raise SystemExit("No train batches were found. Lower --min-past or choose a more active date range.")
+    return CoveragePlan(
+        steps=full_pass_batches * epochs,
+        epochs=epochs,
+        full_pass_batches=full_pass_batches,
+        full_pass_windows=full_pass_windows,
+        sessions_with_windows=sessions_with_windows,
+        max_windows_per_batch=max_windows_per_batch,
+    )
 
 
 class SessionStreamingChronosDataset:
@@ -678,6 +746,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--context-length and --min-past must be positive.")
     if args.prediction_length < 1:
         raise SystemExit("--prediction-length must be positive.")
+    if args.num_steps < 0 or args.epochs < 1:
+        raise SystemExit("--num-steps cannot be negative and --epochs must be positive.")
     if args.eval_steps < 1 or args.logging_steps < 1:
         raise SystemExit("--eval-steps and --logging-steps must be positive.")
     if args.batch_size < VARIATE_COUNT or args.probe_batch_size < VARIATE_COUNT:
@@ -741,6 +811,37 @@ def main() -> None:
     else:
         print("Using all tickers in range.", flush=True)
 
+    coverage_plan = (
+        count_stream_coverage(
+            processed_root=processed_root,
+            sessions=train_session_list,
+            tickers=tickers,
+            session_scope=args.session_scope,
+            min_past=args.min_past,
+            prediction_length=args.prediction_length,
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+        )
+        if args.num_steps == 0
+        else None
+    )
+    if coverage_plan is not None:
+        args.num_steps = coverage_plan.steps
+        print(
+            f"Auto training steps: full_pass_batches={coverage_plan.full_pass_batches:,} "
+            f"epochs={coverage_plan.epochs} max_steps={args.num_steps:,} "
+            f"full_pass_windows={coverage_plan.full_pass_windows:,}",
+            flush=True,
+        )
+    else:
+        max_windows_per_batch = max(1, args.batch_size // VARIATE_COUNT)
+        planned_windows = args.num_steps * max_windows_per_batch
+        print(
+            f"Manual training steps: max_steps={args.num_steps:,} "
+            f"approx_max_windows={planned_windows:,} max_windows_per_batch={max_windows_per_batch:,}",
+            flush=True,
+        )
+
     metadata = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "status": "prepared",
@@ -759,6 +860,19 @@ def main() -> None:
             "targets": list(TARGET_COLUMNS),
             "past_covariates": list(COVARIATE_COLUMNS),
             "variates_per_window": VARIATE_COUNT,
+            "coverage_plan": {
+                "mode": "auto_full_pass" if coverage_plan is not None else "manual_steps",
+                "steps": args.num_steps,
+                "epochs": args.epochs,
+                "full_pass_batches": coverage_plan.full_pass_batches if coverage_plan is not None else None,
+                "full_pass_windows": coverage_plan.full_pass_windows if coverage_plan is not None else None,
+                "sessions_with_windows": coverage_plan.sessions_with_windows if coverage_plan is not None else None,
+                "max_windows_per_batch": (
+                    coverage_plan.max_windows_per_batch
+                    if coverage_plan is not None
+                    else max(1, args.batch_size // VARIATE_COUNT)
+                ),
+            },
         },
     }
 
