@@ -48,12 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chronos-src", default=str(DEFAULT_CHRONOS_SRC), help="Path to chronos-forecasting src folder.")
     parser.add_argument("--model-id", default="amazon/chronos-2", help="Chronos 2 model id or local model path.")
     parser.add_argument("--device-map", default="cpu", help='Transformers device_map, e.g. "cpu", "cuda", or "auto".')
-    parser.add_argument("--tickers", default="", help="Comma-separated ticker list. If omitted, top volume tickers are used.")
+    parser.add_argument("--tickers", default="", help="Comma-separated ticker list. If omitted, all session tickers are used.")
     parser.add_argument(
         "--max-tickers",
         type=int,
-        default=5,
-        help="Top session-dollar-volume tickers to evaluate when --tickers is omitted. Use 0 for all tickers.",
+        default=0,
+        help="Top session-dollar-volume tickers to evaluate when --tickers is omitted. Default 0 means all tickers.",
     )
     parser.add_argument("--context-length", type=int, default=512, help="Maximum historical bars per forecast origin.")
     parser.add_argument("--min-context", type=int, default=128, help="Minimum historical bars required before forecasting.")
@@ -304,7 +304,7 @@ def build_forecast_tasks(
             "No forecast windows were created. "
             f"Need at least min_context + prediction_length bars per ticker ({required_bars} with current args)."
             f"{details} Lower --min-context/--prediction-length, choose a more active ticker/session, or omit --tickers "
-            "to use top session-volume tickers."
+            "to use all session tickers. Use --max-tickers N to cap the universe for faster tests."
         )
     return inputs, origins, ticker_frames
 
