@@ -849,6 +849,57 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def split_summary(
+    *,
+    requested_start: str,
+    requested_end: str,
+    sessions: list[str],
+    train_sessions: list[str],
+    validation_sessions: list[str],
+) -> dict:
+    return {
+        "requested_start": requested_start,
+        "requested_end": requested_end,
+        "available_start": sessions[0],
+        "available_end": sessions[-1],
+        "available_sessions": len(sessions),
+        "train_start": train_sessions[0],
+        "train_end": train_sessions[-1],
+        "train_sessions": len(train_sessions),
+        "validation_start": validation_sessions[0] if validation_sessions else None,
+        "validation_end": validation_sessions[-1] if validation_sessions else None,
+        "validation_sessions": len(validation_sessions),
+        "test_start": None,
+        "test_end": None,
+        "test_sessions": 0,
+        "test_note": "Not used by the fine-tune script. Hold out later sessions and run test_1m_bars.py separately.",
+    }
+
+
+def print_split_summary(summary: dict) -> None:
+    print("Dataset split:", flush=True)
+    print(
+        f"  requested:  {summary['requested_start']}..{summary['requested_end']} "
+        f"available={summary['available_start']}..{summary['available_end']} "
+        f"sessions={summary['available_sessions']}",
+        flush=True,
+    )
+    print(
+        f"  train:      {summary['train_start']}..{summary['train_end']} "
+        f"sessions={summary['train_sessions']}",
+        flush=True,
+    )
+    if summary["validation_sessions"]:
+        print(
+            f"  validation: {summary['validation_start']}..{summary['validation_end']} "
+            f"sessions={summary['validation_sessions']}",
+            flush=True,
+        )
+    else:
+        print("  validation: disabled sessions=0", flush=True)
+    print("  test:       not used by this script; run test_1m_bars.py on held-out dates", flush=True)
+
+
 def validate_args(args: argparse.Namespace) -> None:
     if date.fromisoformat(args.end_date) < date.fromisoformat(args.start_date):
         raise SystemExit("--end-date must be >= --start-date.")
@@ -910,12 +961,20 @@ def main() -> None:
     train_session_list = sessions[: len(sessions) - len(validation_session_list)]
     output_dir = output_dir_for_args(processed_root, args)
     resolved_model_id, model_source = resolve_model_id(processed_root, output_dir, args)
+    dataset_split = split_summary(
+        requested_start=args.start_date,
+        requested_end=args.end_date,
+        sessions=sessions,
+        train_sessions=train_session_list,
+        validation_sessions=validation_session_list,
+    )
 
     print(
         f"Preparing streaming training from {len(sessions)} sessions: "
         f"train={len(train_session_list)} validation={len(validation_session_list)}",
         flush=True,
     )
+    print_split_summary(dataset_split)
     print(f"Model source: {model_source} ({resolved_model_id})", flush=True)
     tickers = selected_tickers(processed_root, train_session_list, args)
     if tickers:
@@ -962,6 +1021,7 @@ def main() -> None:
         "model_source": model_source,
         "loaded_model_id": resolved_model_id,
         "args": vars(args),
+        "dataset_split": dataset_split,
         "data": {
             "sessions": len(sessions),
             "train_sessions": len(train_session_list),
