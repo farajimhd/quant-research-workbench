@@ -258,12 +258,15 @@ def build_forecast_tasks(
     inputs: list[dict] = []
     origins: list[ForecastOrigin] = []
     ticker_frames: dict[str, pd.DataFrame] = {}
+    skipped: list[tuple[str, int, int]] = []
+    required_bars = min_context + prediction_length
 
     for ticker, ticker_df in df.groupby("ticker", sort=False):
         ticker_df = ticker_df.sort_values("bar_time_market").reset_index(drop=True)
         ticker_frames[str(ticker)] = ticker_df
         last_origin = len(ticker_df) - prediction_length - 1
         if last_origin < min_context - 1:
+            skipped.append((str(ticker), len(ticker_df), required_bars))
             continue
         origin_indices = list(range(min_context - 1, last_origin + 1, max(1, rolling_stride)))
         if max_windows_per_ticker > 0:
@@ -290,8 +293,18 @@ def build_forecast_tasks(
             )
 
     if not inputs:
+        details = "; ".join(
+            f"{ticker}: usable_bars={usable_bars}, required_bars>={required}"
+            for ticker, usable_bars, required in skipped[:20]
+        )
+        suffix = " ..." if len(skipped) > 20 else ""
+        if details:
+            details = f" Ticker diagnostics: {details}{suffix}."
         raise SystemExit(
-            "No forecast windows were created. Lower --min-context/--prediction-length or choose tickers with more bars."
+            "No forecast windows were created. "
+            f"Need at least min_context + prediction_length bars per ticker ({required_bars} with current args)."
+            f"{details} Lower --min-context/--prediction-length, choose a more active ticker/session, or omit --tickers "
+            "to use top session-volume tickers."
         )
     return inputs, origins, ticker_frames
 
