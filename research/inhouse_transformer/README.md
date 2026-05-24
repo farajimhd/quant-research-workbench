@@ -27,6 +27,16 @@ log(future_close / current_close) * 10000
 
 The model applies attention across features inside each bar, then attention across bars in the context window. Relative context position and market time-of-day features are included in the token embedding.
 
+Default model size:
+
+```text
+d_model=256
+num_heads=8
+ff_dim=1024
+temporal_layers=6
+feature_attention_layers=1
+```
+
 By default the loader carries the last context bars across sessions, but does not let targets cross a session boundary.
 
 The default objective is Smooth L1 loss on the multi-horizon OHLC return targets only. The direction head is still reported through prediction-sign metrics, and an auxiliary BCE direction loss can be re-enabled with `--direction-loss-weight`.

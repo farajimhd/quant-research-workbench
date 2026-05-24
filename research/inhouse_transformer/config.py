@@ -62,12 +62,12 @@ class DataConfig:
 
 @dataclass(slots=True)
 class ModelConfig:
-    d_model: int = 128
+    d_model: int = 256
     feature_attention_layers: int = 1
     feature_attention_chunk_size: int = 32768
-    temporal_layers: int = 4
-    num_heads: int = 4
-    ff_dim: int = 512
+    temporal_layers: int = 6
+    num_heads: int = 8
+    ff_dim: int = 1024
     dropout: float = 0.1
     direction_loss_weight: float = 0.0
     direction_threshold_bps: float = 0.0
