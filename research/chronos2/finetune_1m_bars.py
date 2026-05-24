@@ -115,8 +115,22 @@ def parse_args() -> argparse.Namespace:
         "--validation-sessions",
         type=int,
         default=20,
-        help="Number of latest sessions reserved for validation. Use 0 to disable validation.",
+        help="Number of latest sessions reserved for validation when --validation-start-date is not set. Use 0 to disable validation.",
     )
+    parser.add_argument("--train-start-date", default="", help="Optional explicit first train session date.")
+    parser.add_argument("--train-end-date", default="", help="Optional explicit last train session date.")
+    parser.add_argument(
+        "--validation-start-date",
+        default="",
+        help="Optional explicit first validation session date. Train defaults to sessions before this date.",
+    )
+    parser.add_argument("--validation-end-date", default="", help="Optional explicit last validation session date.")
+    parser.add_argument(
+        "--test-start-date",
+        default="",
+        help="Optional explicit first held-out test session date. Test sessions are recorded but not used for fine-tuning.",
+    )
+    parser.add_argument("--test-end-date", default="", help="Optional explicit last held-out test session date.")
     parser.add_argument(
         "--eval-window-count",
         type=int,
@@ -849,6 +863,82 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def sessions_between(sessions: list[str], start_date: str | None, end_date: str | None) -> list[str]:
+    return [
+        session
+        for session in sessions
+        if (start_date is None or session >= start_date) and (end_date is None or session <= end_date)
+    ]
+
+
+def explicit_split_requested(args: argparse.Namespace) -> bool:
+    return any(
+        [
+            args.train_start_date,
+            args.train_end_date,
+            args.validation_start_date,
+            args.validation_end_date,
+            args.test_start_date,
+            args.test_end_date,
+        ]
+    )
+
+
+def build_session_split(args: argparse.Namespace, sessions: list[str]) -> tuple[list[str], list[str], list[str], str]:
+    if args.validation_end_date and not args.validation_start_date:
+        raise SystemExit("--validation-end-date requires --validation-start-date.")
+    if args.test_end_date and not args.test_start_date:
+        raise SystemExit("--test-end-date requires --test-start-date.")
+
+    if not explicit_split_requested(args):
+        if args.validation_sessions > 0 and len(sessions) <= args.validation_sessions:
+            raise SystemExit("Date range must contain more sessions than --validation-sessions.")
+        validation_sessions = sessions[-args.validation_sessions :] if args.validation_sessions > 0 else []
+        train_sessions = sessions[: len(sessions) - len(validation_sessions)]
+        return train_sessions, validation_sessions, [], "last_validation_sessions"
+
+    test_end = (args.test_end_date or args.end_date) if args.test_start_date else None
+    test_sessions = sessions_between(sessions, args.test_start_date or None, test_end)
+    if args.validation_start_date:
+        validation_end = args.validation_end_date or None
+        if not validation_end and args.test_start_date:
+            validation_sessions = [
+                session
+                for session in sessions
+                if args.validation_start_date <= session < args.test_start_date
+            ]
+        else:
+            validation_sessions = sessions_between(sessions, args.validation_start_date, validation_end or args.end_date)
+    else:
+        validation_pool = [session for session in sessions if session not in set(test_sessions)]
+        validation_sessions = validation_pool[-args.validation_sessions :] if args.validation_sessions > 0 else []
+
+    if args.train_start_date or args.train_end_date:
+        train_sessions = sessions_between(
+            sessions,
+            args.train_start_date or args.start_date,
+            args.train_end_date or args.end_date,
+        )
+        excluded = set(validation_sessions) | set(test_sessions)
+        train_sessions = [session for session in train_sessions if session not in excluded]
+    elif args.validation_start_date:
+        train_sessions = [session for session in sessions if session < args.validation_start_date]
+    elif args.test_start_date:
+        excluded = set(validation_sessions) | set(test_sessions)
+        train_sessions = [session for session in sessions if session < args.test_start_date and session not in excluded]
+    else:
+        excluded = set(validation_sessions) | set(test_sessions)
+        train_sessions = [session for session in sessions if session not in excluded]
+
+    if not train_sessions:
+        raise SystemExit("Dataset split produced no training sessions.")
+    if args.validation_start_date and not validation_sessions:
+        raise SystemExit("Dataset split produced no validation sessions.")
+    if args.test_start_date and not test_sessions:
+        raise SystemExit("Dataset split produced no test sessions.")
+    return train_sessions, validation_sessions, test_sessions, "explicit_dates"
+
+
 def split_summary(
     *,
     requested_start: str,
@@ -856,8 +946,11 @@ def split_summary(
     sessions: list[str],
     train_sessions: list[str],
     validation_sessions: list[str],
+    test_sessions: list[str],
+    split_mode: str,
 ) -> dict:
     return {
+        "mode": split_mode,
         "requested_start": requested_start,
         "requested_end": requested_end,
         "available_start": sessions[0],
@@ -869,15 +962,19 @@ def split_summary(
         "validation_start": validation_sessions[0] if validation_sessions else None,
         "validation_end": validation_sessions[-1] if validation_sessions else None,
         "validation_sessions": len(validation_sessions),
-        "test_start": None,
-        "test_end": None,
-        "test_sessions": 0,
+        "test_start": test_sessions[0] if test_sessions else None,
+        "test_end": test_sessions[-1] if test_sessions else None,
+        "test_sessions": len(test_sessions),
         "test_note": "Not used by the fine-tune script. Hold out later sessions and run test_1m_bars.py separately.",
     }
 
 
 def print_split_summary(summary: dict) -> None:
     print("Dataset split:", flush=True)
+    print(
+        f"  mode:       {summary['mode']}",
+        flush=True,
+    )
     print(
         f"  requested:  {summary['requested_start']}..{summary['requested_end']} "
         f"available={summary['available_start']}..{summary['available_end']} "
@@ -897,12 +994,44 @@ def print_split_summary(summary: dict) -> None:
         )
     else:
         print("  validation: disabled sessions=0", flush=True)
-    print("  test:       not used by this script; run test_1m_bars.py on held-out dates", flush=True)
+    if summary["test_sessions"]:
+        print(
+            f"  test:       {summary['test_start']}..{summary['test_end']} "
+            f"sessions={summary['test_sessions']} not used by this script",
+            flush=True,
+        )
+    else:
+        print("  test:       not used by this script; no test dates defined", flush=True)
 
 
 def validate_args(args: argparse.Namespace) -> None:
     if date.fromisoformat(args.end_date) < date.fromisoformat(args.start_date):
         raise SystemExit("--end-date must be >= --start-date.")
+    for name in (
+        "train_start_date",
+        "train_end_date",
+        "validation_start_date",
+        "validation_end_date",
+        "test_start_date",
+        "test_end_date",
+    ):
+        value = getattr(args, name)
+        if value:
+            date.fromisoformat(value)
+            if value < args.start_date or value > args.end_date:
+                raise SystemExit(f"--{name.replace('_', '-')} must be inside --start-date..--end-date.")
+    if args.train_start_date and args.train_end_date and args.train_end_date < args.train_start_date:
+        raise SystemExit("--train-end-date must be >= --train-start-date.")
+    if (
+        args.validation_start_date
+        and args.validation_end_date
+        and args.validation_end_date < args.validation_start_date
+    ):
+        raise SystemExit("--validation-end-date must be >= --validation-start-date.")
+    if args.test_start_date and args.test_end_date and args.test_end_date < args.test_start_date:
+        raise SystemExit("--test-end-date must be >= --test-start-date.")
+    if args.validation_start_date and args.test_start_date and args.test_start_date <= args.validation_start_date:
+        raise SystemExit("--test-start-date must be after --validation-start-date.")
     if args.context_length < 1 or args.min_past < 1:
         raise SystemExit("--context-length and --min-past must be positive.")
     if args.prediction_length < 1:
@@ -954,11 +1083,8 @@ def main() -> None:
     start = date.fromisoformat(args.start_date)
     end = date.fromisoformat(args.end_date)
     sessions = available_sessions(processed_root, start, end)
-    if args.validation_sessions > 0 and len(sessions) <= args.validation_sessions:
-        raise SystemExit("Date range must contain more sessions than --validation-sessions.")
 
-    validation_session_list = sessions[-args.validation_sessions :] if args.validation_sessions > 0 else []
-    train_session_list = sessions[: len(sessions) - len(validation_session_list)]
+    train_session_list, validation_session_list, test_session_list, split_mode = build_session_split(args, sessions)
     output_dir = output_dir_for_args(processed_root, args)
     resolved_model_id, model_source = resolve_model_id(processed_root, output_dir, args)
     dataset_split = split_summary(
@@ -967,6 +1093,8 @@ def main() -> None:
         sessions=sessions,
         train_sessions=train_session_list,
         validation_sessions=validation_session_list,
+        test_sessions=test_session_list,
+        split_mode=split_mode,
     )
 
     print(
