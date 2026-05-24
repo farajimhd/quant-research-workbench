@@ -82,6 +82,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=defaults.train.learning_rate)
     parser.add_argument("--weight-decay", type=float, default=defaults.train.weight_decay)
     parser.add_argument("--warmup-steps", type=int, default=defaults.train.warmup_steps)
+    parser.add_argument(
+        "--lr-scheduler",
+        choices=["plateau", "cosine", "constant"],
+        default=defaults.train.lr_scheduler,
+        help="Learning-rate schedule. plateau reduces LR on validation-loss stagnation.",
+    )
+    parser.add_argument("--lr-plateau-factor", type=float, default=defaults.train.lr_plateau_factor)
+    parser.add_argument("--lr-plateau-patience", type=int, default=defaults.train.lr_plateau_patience)
+    parser.add_argument("--lr-plateau-threshold", type=float, default=defaults.train.lr_plateau_threshold)
+    parser.add_argument("--min-learning-rate", type=float, default=defaults.train.min_learning_rate)
     parser.add_argument("--grad-clip-norm", type=float, default=defaults.train.grad_clip_norm)
     parser.add_argument("--logging-steps", type=int, default=defaults.train.logging_steps)
     parser.add_argument("--eval-steps", type=int, default=defaults.train.eval_steps)
@@ -147,6 +157,11 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         warmup_steps=args.warmup_steps,
+        lr_scheduler=args.lr_scheduler,
+        lr_plateau_factor=args.lr_plateau_factor,
+        lr_plateau_patience=args.lr_plateau_patience,
+        lr_plateau_threshold=args.lr_plateau_threshold,
+        min_learning_rate=args.min_learning_rate,
         grad_clip_norm=args.grad_clip_norm,
         logging_steps=args.logging_steps,
         eval_steps=args.eval_steps,
@@ -229,10 +244,8 @@ def main() -> None:
         lr=config.train.learning_rate,
         weight_decay=config.train.weight_decay,
     )
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer,
-        lr_lambda=lambda step: lr_multiplier(step, config.train.warmup_steps, planned_steps),
-    )
+    set_optimizer_base_lrs(optimizer)
+    scheduler = make_scheduler(optimizer, config.train, planned_steps)
     scaler = (
         torch.amp.GradScaler("cuda", enabled=config.train.amp and device.type == "cuda")
         if hasattr(torch, "amp")
@@ -269,6 +282,7 @@ def main() -> None:
         if planned_steps > 0 and step >= planned_steps:
             break
         step += 1
+        apply_pre_step_lr(optimizer, config.train, step)
         model.train()
         batch = move_batch(batch, device)
         optimizer.zero_grad(set_to_none=True)
@@ -286,7 +300,7 @@ def main() -> None:
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
         scaler.step(optimizer)
         scaler.update()
-        scheduler.step()
+        step_batch_scheduler(scheduler, config.train, step)
 
         running_loss += loss_parts["loss"]
         running_regression += loss_parts["regression_loss"]
@@ -334,6 +348,7 @@ def main() -> None:
                 label="validation",
             )
             validation_metrics.update({"type": "validation", "step": step, "time": datetime.now().isoformat(timespec="seconds")})
+            apply_validation_scheduler(scheduler, optimizer, config.train, validation_metrics, step)
             append_jsonl(metrics_path, validation_metrics)
             print_metric_line(validation_metrics)
             score = validation_metrics.get("validation_h1_close_mae_bps", math.inf)
@@ -355,6 +370,7 @@ def main() -> None:
             label="validation",
         )
         validation_metrics.update({"type": "validation", "step": step, "time": datetime.now().isoformat(timespec="seconds")})
+        apply_validation_scheduler(scheduler, optimizer, config.train, validation_metrics, step)
         append_jsonl(metrics_path, validation_metrics)
         print_metric_line(validation_metrics)
         score = validation_metrics.get("validation_h1_close_mae_bps", math.inf)
@@ -455,6 +471,8 @@ def print_metric_line(metrics: dict[str, Any]) -> None:
         f"loss={metrics.get(f'{label}_loss', 0.0):.6f}",
         f"windows={metrics.get(f'{label}_windows', 0):,}",
     ]
+    if "lr" in metrics:
+        parts.append(f"lr={float(metrics['lr']):.3e}")
     for horizon in range(1, 4):
         mae_key = f"{label}_h{horizon}_close_mae_bps"
         dir_key = f"{label}_h{horizon}_close_dir_acc_pct"
@@ -495,6 +513,67 @@ def lr_multiplier(step: int, warmup_steps: int, total_steps: int) -> float:
     return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
+def set_optimizer_base_lrs(optimizer: torch.optim.Optimizer) -> None:
+    for group in optimizer.param_groups:
+        group["base_lr"] = float(group["lr"])
+
+
+def make_scheduler(
+    optimizer: torch.optim.Optimizer,
+    config: TrainConfig,
+    planned_steps: int,
+) -> Any:
+    if config.lr_scheduler == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=config.lr_plateau_factor,
+            patience=config.lr_plateau_patience,
+            threshold=config.lr_plateau_threshold,
+            threshold_mode="rel",
+            min_lr=config.min_learning_rate,
+        )
+    if config.lr_scheduler == "cosine":
+        return torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lr_lambda=lambda step: lr_multiplier(step, config.warmup_steps, planned_steps),
+        )
+    return None
+
+
+def apply_pre_step_lr(optimizer: torch.optim.Optimizer, config: TrainConfig, step: int) -> None:
+    if config.lr_scheduler == "cosine" or config.warmup_steps <= 0 or step > config.warmup_steps:
+        return
+    multiplier = max(1e-4, float(step) / float(config.warmup_steps))
+    for group in optimizer.param_groups:
+        group["lr"] = max(config.min_learning_rate, float(group["base_lr"]) * multiplier)
+
+
+def step_batch_scheduler(scheduler: Any, config: TrainConfig, step: int) -> None:
+    if config.lr_scheduler == "cosine" and scheduler is not None:
+        scheduler.step()
+
+
+def apply_validation_scheduler(
+    scheduler: Any,
+    optimizer: torch.optim.Optimizer,
+    config: TrainConfig,
+    validation_metrics: dict[str, Any],
+    step: int,
+) -> None:
+    validation_loss = validation_metrics.get("validation_loss")
+    old_lr = float(optimizer.param_groups[0]["lr"])
+    if config.lr_scheduler == "plateau" and scheduler is not None and validation_loss is not None:
+        if step > config.warmup_steps:
+            scheduler.step(float(validation_loss))
+    new_lr = float(optimizer.param_groups[0]["lr"])
+    validation_metrics["lr"] = new_lr
+    if new_lr < old_lr:
+        validation_metrics["lr_reduced"] = True
+        validation_metrics["lr_before"] = old_lr
+        print(f"LR reduced on plateau at step={step:,}: {old_lr:.3e} -> {new_lr:.3e}", flush=True)
+
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -520,7 +599,7 @@ def save_checkpoint(
     path: Path,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    scheduler: Any,
     step: int,
     best_score: float,
     config: ExperimentConfig,
@@ -531,7 +610,7 @@ def save_checkpoint(
         {
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
+            "scheduler": scheduler.state_dict() if scheduler is not None else None,
             "step": step,
             "best_score": best_score,
             "config": config_to_dict(config),
@@ -543,7 +622,7 @@ def save_checkpoint(
 def maybe_resume(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    scheduler: Any,
     output_dir: Path,
     resume_latest: bool,
     device: torch.device,
@@ -558,7 +637,12 @@ def maybe_resume(
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
-    scheduler.load_state_dict(checkpoint["scheduler"])
+    set_optimizer_base_lrs(optimizer)
+    if scheduler is not None and checkpoint.get("scheduler") is not None:
+        try:
+            scheduler.load_state_dict(checkpoint["scheduler"])
+        except Exception as exc:
+            print(f"Checkpoint scheduler state was not loaded because it is incompatible: {exc}", flush=True)
     step = int(checkpoint.get("step") or 0)
     best_score = float(checkpoint.get("best_score") or math.inf)
     print(f"Resumed checkpoint {checkpoint_path} at step={step:,} best_score={best_score:.4f}", flush=True)
@@ -660,6 +744,11 @@ def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
             "learning_rate": config.train.learning_rate,
             "weight_decay": config.train.weight_decay,
             "warmup_steps": config.train.warmup_steps,
+            "lr_scheduler": config.train.lr_scheduler,
+            "lr_plateau_factor": config.train.lr_plateau_factor,
+            "lr_plateau_patience": config.train.lr_plateau_patience,
+            "lr_plateau_threshold": config.train.lr_plateau_threshold,
+            "min_learning_rate": config.train.min_learning_rate,
             "grad_clip_norm": config.train.grad_clip_norm,
             "logging_steps": config.train.logging_steps,
             "eval_steps": config.train.eval_steps,

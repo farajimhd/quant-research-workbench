@@ -81,6 +81,11 @@ class TrainConfig:
     learning_rate: float = 3e-4
     weight_decay: float = 1e-4
     warmup_steps: int = 1000
+    lr_scheduler: str = "plateau"
+    lr_plateau_factor: float = 0.5
+    lr_plateau_patience: int = 3
+    lr_plateau_threshold: float = 1e-4
+    min_learning_rate: float = 1e-6
     grad_clip_norm: float = 1.0
     logging_steps: int = 50
     eval_steps: int = 500

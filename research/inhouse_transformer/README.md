@@ -31,6 +31,8 @@ By default the loader carries the last context bars across sessions, but does no
 
 The default objective is Smooth L1 loss on the multi-horizon OHLC return targets only. The direction head is still reported through prediction-sign metrics, and an auxiliary BCE direction loss can be re-enabled with `--direction-loss-weight`.
 
+The default learning-rate scheduler is `ReduceLROnPlateau` on validation loss. After warmup, it reduces the LR by `--lr-plateau-factor` when validation loss has not improved for `--lr-plateau-patience` eval points. Use `--lr-scheduler cosine` or `--lr-scheduler constant` for the older behaviors.
+
 Run a small dry run:
 
 ```powershell
