@@ -430,6 +430,7 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   const paceRunRef = useRef(0);
   const liveClockModeRef = useRef<LiveClockMode>("idle");
   const warmedChartCacheKeysRef = useRef(new Set<string>());
+  const lastChartOpenRef = useRef<{ id: string; openedAt: number } | null>(null);
   const scannerQueryKey = useMemo(() => JSON.stringify(scannerQuery), [scannerQuery]);
 
   useEffect(() => {
@@ -1108,15 +1109,19 @@ export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange
   }
 
   function openChartForRow(row: Record<string, unknown>) {
-    setSelectedRow(row);
-    const ticker = stringValue(row, "ticker");
+    const ticker = stringValue(row, "ticker").trim().toUpperCase();
     if (!ticker) return;
     const id = `chart-${ticker}`;
-    setChartWindows((current) => [{ id, row, ticker }, ...current.filter((chart) => chart.id !== id)]);
+    const now = window.performance.now();
+    if (lastChartOpenRef.current?.id === id && now - lastChartOpenRef.current.openedAt < 250) return;
+    lastChartOpenRef.current = { id, openedAt: now };
+    const chartRow = row.ticker === ticker ? row : { ...row, ticker };
+    setSelectedRow(chartRow);
+    setChartWindows((current) => [{ id, row: chartRow, ticker }, ...current.filter((chart) => chart.id !== id)]);
     setOpenWindows((current) => [id, ...current.filter((windowId) => windowId !== id)]);
     setLayouts((current) => {
       const chartDefaults = current.chart ?? buildDefaultCanvasLayout(false).layouts.chart;
-      const existingChartIds = chartWindows.filter((chart) => chart.id !== id).map((chart) => chart.id);
+      const existingChartIds = Object.keys(current).filter((layoutId) => layoutId.startsWith("chart-") && layoutId !== id);
       const shifted = Object.fromEntries(
         Object.entries(current).map(([layoutId, layout]) => {
           const shiftedIndex = existingChartIds.indexOf(layoutId);
