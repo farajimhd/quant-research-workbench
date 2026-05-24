@@ -300,6 +300,7 @@ const LIVE_SCANNER_COLUMNS = [
 
 const LIVE_SIGNAL_COLUMNS = [
   "ticker",
+  "live_news_recency",
   "bar_time_market",
   "live_signal_time",
   "current_open",
@@ -320,6 +321,7 @@ const LIVE_SIGNAL_COLUMNS = [
 
 const LIVE_MARKET_STATE_COLUMNS = [
   "ticker",
+  "live_news_recency",
   "current_open",
   "last_volume",
   "last_day_volume_so_far",
@@ -3017,9 +3019,10 @@ function dayOpenOnlyChartPayload(payload: ChartPayload | null, sessionDate: stri
 }
 
 function marketStateTableColumns(snapshotColumns: string[]) {
-  const hiddenColumns = new Set(["live_news_recency", "live_news_count", "live_news_latest_title", "live_news_latest_time"]);
+  const hiddenColumns = new Set(["live_news_count", "live_news_latest_title", "live_news_latest_time"]);
   const importantColumns = [
     "ticker",
+    "live_news_recency",
     "current_open",
     "last_volume",
     "last_day_volume_so_far",
