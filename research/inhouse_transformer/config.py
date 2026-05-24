@@ -86,6 +86,7 @@ class TrainConfig:
     validation_window_count: int = 30000
     test_window_count: int = 50000
     max_batches_per_session: int = 0
+    count_coverage: bool = False
     num_workers: int = 0
     seed: int = 17
     amp: bool = True

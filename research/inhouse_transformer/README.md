@@ -32,7 +32,7 @@ By default the loader carries the last context bars across sessions, but does no
 Run a small dry run:
 
 ```powershell
-python research\inhouse_transformer\train.py --dry-run --tickers USO --batch-size 128 --max-batches-per-session 2
+python research\inhouse_transformer\train.py --dry-run --count-coverage --tickers USO --batch-size 128 --max-batches-per-session 2
 ```
 
 Run the default experiment:
@@ -40,6 +40,8 @@ Run the default experiment:
 ```powershell
 python research\inhouse_transformer\train.py --device cuda --batch-size 1024 --epochs 1
 ```
+
+Full coverage counting is disabled by default to avoid a complete pre-training pass over the train set. Add `--count-coverage` only when you want an exact window/batch count before training starts. Without `--max-steps`, training stops when the streamed dataset exhausts the configured epochs.
 
 Artifacts are written under:
 

@@ -87,6 +87,11 @@ def parse_args() -> argparse.Namespace:
         default=defaults.train.max_batches_per_session,
         help="Optional cap for quick experiments. 0 means use all eligible windows.",
     )
+    parser.add_argument(
+        "--count-coverage",
+        action="store_true",
+        help="Pre-scan all train sessions to count windows and batches. Disabled by default to reduce RAM pressure.",
+    )
     parser.add_argument("--num-workers", type=int, default=defaults.train.num_workers)
     parser.add_argument("--seed", type=int, default=defaults.train.seed)
     parser.set_defaults(amp=defaults.train.amp)
@@ -141,6 +146,7 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         validation_window_count=args.validation_window_count,
         test_window_count=args.test_window_count,
         max_batches_per_session=args.max_batches_per_session,
+        count_coverage=args.count_coverage,
         num_workers=args.num_workers,
         seed=args.seed,
         amp=args.amp,
@@ -182,21 +188,19 @@ def main() -> None:
     )
     print(f"Output directory: {output_dir}", flush=True)
 
-    coverage = count_coverage(
-        config=config.data,
-        sessions=train_sessions,
-        tickers=tickers,
-        batch_size=config.train.batch_size,
-        max_batches_per_session=config.train.max_batches_per_session,
-    )
-    planned_steps = config.train.max_steps or max(1, coverage.batches * config.train.epochs)
-    print(
-        f"Training plan: windows={coverage.windows:,} batches_per_epoch={coverage.batches:,} "
-        f"epochs={config.train.epochs} max_steps={planned_steps:,}",
-        flush=True,
-    )
+    coverage = None
+    if config.train.count_coverage:
+        coverage = count_coverage(
+            config=config.data,
+            sessions=train_sessions,
+            tickers=tickers,
+            batch_size=config.train.batch_size,
+            max_batches_per_session=config.train.max_batches_per_session,
+        )
+    planned_steps = config.train.max_steps
+    print_training_plan(config, coverage, planned_steps)
     if args.dry_run:
-        print("Dry run complete after data split, ticker selection, and coverage count.", flush=True)
+        print("Dry run complete after data split, ticker selection, and optional coverage count.", flush=True)
         return
 
     load_torch_stack()
@@ -252,9 +256,10 @@ def main() -> None:
     running_direction = 0.0
     running_batches = 0
     step = start_step
+    last_eval_step = 0
     last_log_time = time.perf_counter()
     for batch in train_loader:
-        if step >= planned_steps:
+        if planned_steps > 0 and step >= planned_steps:
             break
         step += 1
         model.train()
@@ -289,7 +294,7 @@ def main() -> None:
             samples_per_sec = config.train.batch_size * running_batches / elapsed
             lr = optimizer.param_groups[0]["lr"]
             print(
-                f"train step={step:,}/{planned_steps:,} loss={avg_loss:.6f} "
+                f"train step={step_text(step, planned_steps)} loss={avg_loss:.6f} "
                 f"reg={avg_regression:.6f} dir={avg_direction:.6f} "
                 f"lr={lr:.3e} samples_s={samples_per_sec:,.0f}",
                 flush=True,
@@ -311,7 +316,7 @@ def main() -> None:
             running_batches = 0
             last_log_time = time.perf_counter()
 
-        if step % config.train.eval_steps == 0 or step == planned_steps:
+        if step % config.train.eval_steps == 0 or (planned_steps > 0 and step == planned_steps):
             validation_metrics = evaluate(
                 model=model,
                 config=config,
@@ -330,6 +335,27 @@ def main() -> None:
                 save_checkpoint(output_dir / "best.pt", model, optimizer, scheduler, step, best_score, config)
                 print(f"Saved best checkpoint at step={step:,} h1_close_mae_bps={best_score:.4f}", flush=True)
             save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
+            last_eval_step = step
+
+    if step > 0 and last_eval_step != step:
+        validation_metrics = evaluate(
+            model=model,
+            config=config,
+            sessions=validation_sessions,
+            tickers=tickers,
+            device=device,
+            max_windows=config.train.validation_window_count,
+            label="validation",
+        )
+        validation_metrics.update({"type": "validation", "step": step, "time": datetime.now().isoformat(timespec="seconds")})
+        append_jsonl(metrics_path, validation_metrics)
+        print_metric_line(validation_metrics)
+        score = validation_metrics.get("validation_h1_close_mae_bps", math.inf)
+        if score < best_score:
+            best_score = float(score)
+            save_checkpoint(output_dir / "best.pt", model, optimizer, scheduler, step, best_score, config)
+            print(f"Saved best checkpoint at step={step:,} h1_close_mae_bps={best_score:.4f}", flush=True)
+        save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
 
     test_metrics = evaluate(
         model=model,
@@ -345,6 +371,23 @@ def main() -> None:
     print_metric_line(test_metrics)
     save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
     print(f"Training complete. Checkpoints and metrics are in {output_dir}", flush=True)
+
+
+def print_training_plan(config: ExperimentConfig, coverage: Any, planned_steps: int) -> None:
+    if coverage is not None:
+        max_steps = f"{planned_steps:,}" if planned_steps > 0 else f"{coverage.batches * config.train.epochs:,}"
+        print(
+            f"Training plan: windows={coverage.windows:,} batches_per_epoch={coverage.batches:,} "
+            f"epochs={config.train.epochs} max_steps={max_steps}",
+            flush=True,
+        )
+        return
+    max_steps_text = f"{planned_steps:,}" if planned_steps > 0 else "dataset_exhaustion"
+    print(
+        f"Training plan: coverage_count=disabled epochs={config.train.epochs} "
+        f"max_steps={max_steps_text}",
+        flush=True,
+    )
 
 
 def evaluate(
@@ -418,6 +461,10 @@ def print_metric_line(metrics: dict[str, Any]) -> None:
     print(" | ".join(parts), flush=True)
 
 
+def step_text(step: int, planned_steps: int) -> str:
+    return f"{step:,}/{planned_steps:,}" if planned_steps > 0 else f"{step:,}"
+
+
 def resolve_device(requested: str) -> torch.device:
     assert torch is not None
     if requested == "cuda" and not torch.cuda.is_available():
@@ -433,6 +480,8 @@ def move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str
 def lr_multiplier(step: int, warmup_steps: int, total_steps: int) -> float:
     if warmup_steps > 0 and step < warmup_steps:
         return max(1e-4, float(step + 1) / float(warmup_steps))
+    if total_steps <= 0:
+        return 1.0
     if total_steps <= warmup_steps:
         return 1.0
     progress = min(1.0, (step - warmup_steps) / float(total_steps - warmup_steps))
@@ -609,6 +658,7 @@ def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
             "validation_window_count": config.train.validation_window_count,
             "test_window_count": config.train.test_window_count,
             "max_batches_per_session": config.train.max_batches_per_session,
+            "count_coverage": config.train.count_coverage,
             "num_workers": config.train.num_workers,
             "seed": config.train.seed,
             "amp": config.train.amp,

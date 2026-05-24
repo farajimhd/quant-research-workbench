@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import gc
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -92,7 +93,7 @@ def select_top_tickers(processed_root: Path, sessions: list[str], max_tickers: i
         .agg(pl.sum("_dollar_volume").alias("_dollar_volume"))
         .sort("_dollar_volume", descending=True)
         .head(max_tickers)
-        .collect()
+        .pipe(collect_lazy)
     )
     return tuple(str(value) for value in ranking.get_column("ticker").to_list())
 
@@ -146,8 +147,18 @@ def load_session_frame(config: DataConfig, session: str, tickers: tuple[str, ...
             & pl.col("minute_of_day").is_not_null()
         )
         .sort(["ticker", "bar_time_market"])
-        .collect()
+        .pipe(collect_lazy)
     )
+
+
+def collect_lazy(frame: pl.LazyFrame) -> pl.DataFrame:
+    try:
+        return frame.collect(engine="streaming")
+    except TypeError:
+        try:
+            return frame.collect(streaming=True)
+        except TypeError:
+            return frame.collect()
 
 
 def count_coverage(
@@ -216,7 +227,7 @@ class RollingBarWindowDataset(IterableDataset):
         emitted_windows = 0
         for epoch in range(self.epochs):
             sessions = list(self.sessions)
-            if self.shuffle:
+            if self.shuffle and not self.config.carry_context_across_session:
                 rng.shuffle(sessions)
             carryover: dict[str, pl.DataFrame] = {}
             batch = BatchBuilder(
@@ -236,10 +247,8 @@ class RollingBarWindowDataset(IterableDataset):
                 session_batches = 0
                 session_windows = 0
                 frame = load_session_frame(self.config, session, self.tickers)
-                ticker_items = list(iter_ticker_frames(frame)) if not frame.is_empty() else []
-                if self.shuffle:
-                    rng.shuffle(ticker_items)
-                for ticker, ticker_frame in ticker_items:
+                ticker_frames = iter_ticker_frames(frame, rng=rng, shuffle=self.shuffle) if not frame.is_empty() else iter(())
+                for ticker, ticker_frame in ticker_frames:
                     combined = combine_carryover(carryover.get(ticker), ticker_frame, self.config)
                     arrays = ticker_arrays(combined, self.config)
                     current_session = str(ticker_frame["session_date"][0])
@@ -272,6 +281,8 @@ class RollingBarWindowDataset(IterableDataset):
                     f"windows={session_windows:,} batches={session_batches:,}",
                     flush=True,
                 )
+                del frame
+                gc.collect()
             if len(batch) > 0:
                 yield batch.as_torch()
 
@@ -343,10 +354,36 @@ class BatchBuilder:
         }
 
 
-def iter_ticker_frames(frame: pl.DataFrame) -> Iterator[tuple[str, pl.DataFrame]]:
-    for key, ticker_frame in frame.partition_by("ticker", as_dict=True, maintain_order=True).items():
-        ticker = key[0] if isinstance(key, tuple) else key
-        yield str(ticker), ticker_frame
+def iter_ticker_frames(
+    frame: pl.DataFrame,
+    *,
+    rng: np.random.Generator | None = None,
+    shuffle: bool = False,
+) -> Iterator[tuple[str, pl.DataFrame]]:
+    ranges = ticker_ranges(frame)
+    if shuffle and rng is not None and len(ranges) > 1:
+        order = np.arange(len(ranges))
+        rng.shuffle(order)
+        ranges = [ranges[int(index)] for index in order]
+    for ticker, start, length in ranges:
+        yield ticker, frame.slice(start, length)
+
+
+def ticker_ranges(frame: pl.DataFrame) -> list[tuple[str, int, int]]:
+    if frame.is_empty():
+        return []
+    ticker_values = frame.get_column("ticker").to_numpy()
+    ranges: list[tuple[str, int, int]] = []
+    start = 0
+    current = str(ticker_values[0])
+    for index in range(1, len(ticker_values)):
+        value = str(ticker_values[index])
+        if value != current:
+            ranges.append((current, start, index - start))
+            start = index
+            current = value
+    ranges.append((current, start, len(ticker_values) - start))
+    return ranges
 
 
 def combine_carryover(previous: pl.DataFrame | None, current: pl.DataFrame, config: DataConfig) -> pl.DataFrame:
