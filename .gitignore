@@ -222,3 +222,6 @@ __marimo__/
 
 # Local QuantConnect backtest exports
 backtest_results/
+
+# Local research experiment outputs
+research/chronos2/reports/
