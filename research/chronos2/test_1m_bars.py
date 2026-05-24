@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterator
 
 import numpy as np
 import polars as pl
@@ -53,6 +53,24 @@ PREDICTION_FIELDS = [
     "p90_close",
     "p10_p90_covered",
     "p10_p90_width_bps",
+]
+TIMESTAMP_METRIC_FIELDS = [
+    "forecast_origin_time",
+    "n",
+    "direction_accuracy_pct",
+    "mae_return_bps",
+    "naive_mae_return_bps",
+    "mae_return_vs_naive",
+    "mean_actual_return_bps",
+    "mean_predicted_return_bps",
+    "spearman_pred_actual",
+    "top1_actual_return_bps",
+    "top5_mean_actual_return_bps",
+    "top10_mean_actual_return_bps",
+    "top_decile_mean_actual_return_bps",
+    "universe_mean_actual_return_bps",
+    "top_decile_excess_actual_return_bps",
+    "top_decile_direction_accuracy_pct",
 ]
 
 
@@ -190,16 +208,58 @@ class MetricAccumulator:
         self.overall.update(row)
         self.by_horizon.setdefault(horizon, MetricState()).update(row)
 
-    def horizon_rows(self) -> list[dict]:
-        return [self.by_horizon[horizon].to_row(f"h{horizon}") for horizon in sorted(self.by_horizon)]
+    def rows(self) -> list[dict]:
+        return [self.overall.to_row("overall")] + [
+            self.by_horizon[horizon].to_row(f"h{horizon}") for horizon in sorted(self.by_horizon)
+        ]
+
+
+@dataclass
+class TimestampAccumulator:
+    n: int = 0
+    sum_direction_accuracy_pct: float = 0.0
+    sum_top1_actual_return_bps: float = 0.0
+    sum_top5_mean_actual_return_bps: float = 0.0
+    sum_top10_mean_actual_return_bps: float = 0.0
+    sum_top_decile_mean_actual_return_bps: float = 0.0
+    sum_universe_mean_actual_return_bps: float = 0.0
+    sum_top_decile_excess_actual_return_bps: float = 0.0
+    spearman_count: int = 0
+    sum_spearman: float = 0.0
+
+    def update(self, row: dict) -> None:
+        self.n += 1
+        self.sum_direction_accuracy_pct += float(row["direction_accuracy_pct"])
+        self.sum_top1_actual_return_bps += float(row["top1_actual_return_bps"])
+        self.sum_top5_mean_actual_return_bps += float(row["top5_mean_actual_return_bps"])
+        self.sum_top10_mean_actual_return_bps += float(row["top10_mean_actual_return_bps"])
+        self.sum_top_decile_mean_actual_return_bps += float(row["top_decile_mean_actual_return_bps"])
+        self.sum_universe_mean_actual_return_bps += float(row["universe_mean_actual_return_bps"])
+        self.sum_top_decile_excess_actual_return_bps += float(row["top_decile_excess_actual_return_bps"])
+        spearman = row.get("spearman_pred_actual")
+        if spearman != "" and spearman is not None and math.isfinite(float(spearman)):
+            self.spearman_count += 1
+            self.sum_spearman += float(spearman)
+
+    def to_row(self) -> dict:
+        return {
+            "timestamps": self.n,
+            "avg_direction_accuracy_pct": divide(self.sum_direction_accuracy_pct, self.n),
+            "avg_spearman_pred_actual": divide(self.sum_spearman, self.spearman_count),
+            "avg_top1_actual_return_bps": divide(self.sum_top1_actual_return_bps, self.n),
+            "avg_top5_actual_return_bps": divide(self.sum_top5_mean_actual_return_bps, self.n),
+            "avg_top10_actual_return_bps": divide(self.sum_top10_mean_actual_return_bps, self.n),
+            "avg_top_decile_actual_return_bps": divide(self.sum_top_decile_mean_actual_return_bps, self.n),
+            "avg_universe_actual_return_bps": divide(self.sum_universe_mean_actual_return_bps, self.n),
+            "avg_top_decile_excess_actual_return_bps": divide(self.sum_top_decile_excess_actual_return_bps, self.n),
+        }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run a walk-forward Chronos 2 experiment on provider-built 1m bars. "
-            "Provider data is loaded in ticker batches with Polars, forecast rows are streamed to CSV, "
-            "and metrics are aggregated incrementally."
+            "Timestamp-first Chronos 2 next-bar evaluator. The script loads one provider-built 1m session into "
+            "Polars, then for each timestamp batches all eligible tickers through Chronos and streams live metrics."
         )
     )
     parser.add_argument("--session-date", required=True, help="Provider session date, for example 2024-05-01.")
@@ -214,25 +274,28 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Top session-dollar-volume tickers to evaluate when --tickers is omitted. Default 0 means all tickers.",
     )
-    parser.add_argument("--ticker-batch-size", type=int, default=100, help="Provider ticker batch size.")
-    parser.add_argument("--context-length", type=int, default=512, help="Maximum historical bars per forecast origin.")
+    parser.add_argument("--context-length", type=int, default=128, help="Historical bars per forecast origin.")
     parser.add_argument("--min-context", type=int, default=128, help="Minimum historical bars required before forecasting.")
-    parser.add_argument("--prediction-length", type=int, default=15, help="Number of future bars to forecast.")
-    parser.add_argument("--rolling-stride", type=int, default=1, help="Evaluate every Nth eligible origin bar.")
-    parser.add_argument(
-        "--max-windows-per-ticker",
-        type=int,
-        default=0,
-        help="Limit forecast origins per ticker for quick tests. Use 0 for every eligible bar.",
-    )
+    parser.add_argument("--prediction-length", type=int, default=1, help="Future bars to forecast. Default is next bar only.")
+    parser.add_argument("--rolling-stride", type=int, default=1, help="Evaluate every Nth eligible timestamp.")
     parser.add_argument(
         "--max-total-windows",
         type=int,
         default=0,
-        help="Optional global forecast-origin cap across all tickers. Use 0 for no cap.",
+        help="Optional global forecast-origin cap across all timestamps. Use 0 for no cap.",
     )
-    parser.add_argument("--batch-size", type=int, default=64, help="Chronos batch size in variates, not forecast windows.")
-    parser.add_argument("--window-batch-size", type=int, default=32, help="Forecast origin windows per predict call.")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=2048,
+        help="Chronos internal batch size measured in variates. Default targets a 24GB GPU; lower if CUDA OOM occurs.",
+    )
+    parser.add_argument(
+        "--window-batch-size",
+        type=int,
+        default=512,
+        help="Maximum forecast windows sent to one predict call before recursive OOM splitting.",
+    )
     parser.add_argument(
         "--session-scope",
         choices=["all", "regular"],
@@ -248,9 +311,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--report-dir",
         default=str(REPO_ROOT / "research" / "chronos2" / "reports"),
-        help="Directory where predictions CSV and markdown report are written.",
+        help="Directory where predictions CSV, live metrics, and markdown report are written.",
     )
-    parser.add_argument("--progress-every-tickers", type=int, default=100, help="Print progress every N processed tickers.")
+    parser.add_argument("--metrics-every-timestamps", type=int, default=1, help="Rewrite live metrics after every N timestamps.")
+    parser.add_argument("--progress-every-timestamps", type=int, default=25, help="Print progress every N timestamps.")
     return parser.parse_args()
 
 
@@ -271,54 +335,93 @@ def provider_for_args(args: argparse.Namespace) -> MarketDataProvider:
     return MarketDataProvider(DataProviderConfig(processed_root=Path(args.processed_root)))
 
 
-def select_session_tickers(provider: MarketDataProvider, args: argparse.Namespace) -> list[str]:
-    requested = parse_tickers(args.tickers)
-    if requested:
-        return requested
-
+def load_session_frame(provider: MarketDataProvider, args: argparse.Namespace) -> pl.DataFrame:
     session = date.fromisoformat(args.session_date)
+    requested_columns = [
+        "ticker",
+        "session_date",
+        "bar_time_market",
+        "minute_of_day",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "transactions",
+        "spread",
+        "spread_bps",
+        "quote_ask_price",
+        "quote_bid_price",
+        "return_1",
+        "return_5",
+        "log_return_1",
+        "bar_range",
+        "body",
+        "body_abs",
+        "upper_wick",
+        "lower_wick",
+        "close_location",
+        "distance_to_day_open_pct",
+        "distance_to_day_high_pct",
+        "distance_to_day_low_pct",
+        "gap_pct",
+        "true_range",
+        "true_range_ema5_pct",
+        "true_range_ema20_pct",
+        "atr14",
+        "return_z20",
+        "range_z20",
+        "relative_volume20",
+        "relative_dollar_volume20",
+        "volume_z20",
+        "transactions_z20",
+        "transactions_vs_prior_3",
+        "quote_valid_ratio",
+        "locked_or_crossed_count",
+        "price_shock_score",
+        "volume_shock_score",
+        "price_volume_shock_score",
+        "bars_since_price_shock",
+        "bars_since_volume_shock",
+        "shock_confirmation_delay_minutes",
+    ]
     frame = provider.load_bars(
         start_date=session,
         end_date=session,
         timeframe="1m",
-        feature_groups=[],
-        columns=["ticker", "close", "volume"],
+        feature_groups=DEFAULT_FEATURE_GROUPS,
+        columns=requested_columns,
     )
     if frame.is_empty():
         raise SystemExit(
             f"No provider 1m bars found for {args.session_date} under {args.processed_root}. "
             "Build the Data Provider artifacts first."
         )
-
-    frame = frame.with_columns(
-        (pl.col("close").cast(pl.Float64, strict=False).fill_null(0.0) * pl.col("volume").cast(pl.Float64, strict=False).fill_null(0.0))
-        .alias("_session_dollar_volume")
-    )
-    ranked = (
-        frame.group_by("ticker")
-        .agg(pl.sum("_session_dollar_volume").alias("_session_dollar_volume"))
-        .sort("_session_dollar_volume", descending=True)
-    )
-    if args.max_tickers > 0:
-        ranked = ranked.head(args.max_tickers)
-    return ranked.get_column("ticker").cast(pl.Utf8).to_list()
-
-
-def load_ticker_batch(provider: MarketDataProvider, args: argparse.Namespace, tickers: list[str]) -> pl.DataFrame:
-    session = date.fromisoformat(args.session_date)
-    frame = provider.load_bars(
-        start_date=session,
-        end_date=session,
-        timeframe="1m",
-        tickers=tickers,
-        feature_groups=DEFAULT_FEATURE_GROUPS,
-    )
-    if frame.is_empty():
-        return frame
     if args.session_scope == "regular":
         if "minute_of_day" not in frame.columns:
             raise SystemExit("--session-scope regular requires provider column minute_of_day.")
         frame = frame.filter((pl.col("minute_of_day") >= 9 * 60 + 30) & (pl.col("minute_of_day") < 16 * 60))
+    requested_tickers = parse_tickers(args.tickers)
+    if requested_tickers:
+        frame = frame.filter(pl.col("ticker").is_in(requested_tickers))
+    elif args.max_tickers > 0:
+        top_tickers = (
+            frame.with_columns(
+                (
+                    pl.col("close").cast(pl.Float64, strict=False).fill_null(0.0)
+                    * pl.col("volume").cast(pl.Float64, strict=False).fill_null(0.0)
+                ).alias("_session_dollar_volume")
+            )
+            .group_by("ticker")
+            .agg(pl.sum("_session_dollar_volume").alias("_session_dollar_volume"))
+            .sort("_session_dollar_volume", descending=True)
+            .head(args.max_tickers)
+            .get_column("ticker")
+            .to_list()
+        )
+        frame = frame.filter(pl.col("ticker").is_in(top_tickers))
+    if frame.is_empty():
+        raise SystemExit("No bars remain after ticker/session filtering.")
     return frame.sort(["ticker", "bar_time_market"])
 
 
@@ -345,7 +448,6 @@ def add_model_columns(frame: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
         (transactions + 1.0).log().alias("cov_log_transactions"),
         ((volume * close) + 1.0).log().alias("cov_log_dollar_volume"),
     ]
-
     if "spread" in frame.columns:
         exprs.append((nonnegative_expr("spread", frame.columns) / close).alias("cov_spread_pct"))
     if "spread_bps" in frame.columns:
@@ -406,8 +508,12 @@ def add_model_columns(frame: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
         pl.col(column).cast(pl.Float64, strict=False).replace([float("inf"), float("-inf")], None).alias(column)
         for column in ["target_log_close", *covariates]
     ]
-    result = result.with_columns(cast_exprs).filter(pl.col("target_log_close").is_not_null()).sort(["ticker", "bar_time_market"])
-    return result, covariates
+    return (
+        result.with_columns(cast_exprs)
+        .filter(pl.col("target_log_close").is_not_null())
+        .sort(["ticker", "bar_time_market"]),
+        covariates,
+    )
 
 
 def positive_expr(column: str) -> pl.Expr:
@@ -422,99 +528,62 @@ def nonnegative_expr(column: str, columns: list[str]) -> pl.Expr:
     return pl.when(value >= 0.0).then(value).otherwise(0.0)
 
 
-def ticker_groups(frame: pl.DataFrame) -> Iterator[tuple[str, pl.DataFrame]]:
-    for partition in frame.partition_by("ticker", maintain_order=True):
-        if partition.is_empty():
+def ticker_arrays(frame: pl.DataFrame, covariates: list[str]) -> dict[str, dict]:
+    arrays: dict[str, dict] = {}
+    for ticker_frame in frame.partition_by("ticker", maintain_order=True):
+        if ticker_frame.is_empty():
             continue
-        ticker = str(partition.get_column("ticker")[0])
-        yield ticker, partition
-
-
-def process_ticker(
-    *,
-    pipeline,
-    ticker: str,
-    ticker_frame: pl.DataFrame,
-    covariates: list[str],
-    args: argparse.Namespace,
-    writer: csv.DictWriter,
-    metrics: MetricAccumulator,
-    windows_remaining: int | None,
-) -> tuple[int, int | None, bool]:
-    length = ticker_frame.height
-    required_bars = args.min_context + args.prediction_length
-    if length < required_bars:
-        return 0, windows_remaining, False
-
-    last_origin = length - args.prediction_length - 1
-    origin_indices = list(range(args.min_context - 1, last_origin + 1, max(1, args.rolling_stride)))
-    if args.max_windows_per_ticker > 0:
-        origin_indices = origin_indices[: args.max_windows_per_ticker]
-    if windows_remaining is not None:
-        if windows_remaining <= 0:
-            return 0, windows_remaining, True
-        origin_indices = origin_indices[:windows_remaining]
-        windows_remaining -= len(origin_indices)
-    if not origin_indices:
-        return 0, windows_remaining, windows_remaining == 0
-
-    arrays = ticker_arrays(ticker_frame, covariates)
-    processed = 0
-    for chunk in chunks(origin_indices, max(1, args.window_batch_size)):
-        inputs, origins = build_input_chunk(ticker=ticker, ticker_frame=ticker_frame, arrays=arrays, covariates=covariates, origin_indices=chunk, args=args)
-        rows = predict_rows(
-            pipeline=pipeline,
-            inputs=inputs,
-            origins=origins,
-            arrays=arrays,
-            prediction_length=args.prediction_length,
-            quantile_levels=DEFAULT_QUANTILES,
-            batch_size=args.batch_size,
-            direction_threshold_bps=args.direction_threshold_bps,
-        )
-        for row in rows:
-            writer.writerow(row)
-            metrics.update(row)
-        processed += len(chunk)
-        clear_cuda_cache(args.device_map)
-    return processed, windows_remaining, windows_remaining == 0 if windows_remaining is not None else False
-
-
-def ticker_arrays(ticker_frame: pl.DataFrame, covariates: list[str]) -> dict[str, np.ndarray | list]:
-    arrays: dict[str, np.ndarray | list] = {
-        "close": ticker_frame.get_column("close").cast(pl.Float64, strict=False).to_numpy(),
-        "target_log_close": ticker_frame.get_column("target_log_close").cast(pl.Float64, strict=False).to_numpy(),
-        "bar_time_market": ticker_frame.get_column("bar_time_market").to_list(),
-        "session_date": ticker_frame.get_column("session_date").cast(pl.Utf8).to_list(),
-    }
-    for column in covariates:
-        values = ticker_frame.get_column(column).cast(pl.Float32, strict=False).to_numpy()
-        if np.isfinite(values).any():
-            arrays[column] = values
+        ticker = str(ticker_frame.get_column("ticker")[0])
+        ticker_data: dict[str, np.ndarray | list] = {
+            "close": ticker_frame.get_column("close").cast(pl.Float64, strict=False).to_numpy(),
+            "target_log_close": ticker_frame.get_column("target_log_close").cast(pl.Float64, strict=False).to_numpy(),
+            "bar_time_market": ticker_frame.get_column("bar_time_market").to_list(),
+            "session_date": ticker_frame.get_column("session_date").cast(pl.Utf8).to_list(),
+        }
+        for column in covariates:
+            values = ticker_frame.get_column(column).cast(pl.Float32, strict=False).to_numpy()
+            if np.isfinite(values).any():
+                ticker_data[column] = values
+        arrays[ticker] = ticker_data
     return arrays
+
+
+def origin_map(frame: pl.DataFrame, args: argparse.Namespace) -> dict[object, list[tuple[str, int]]]:
+    indexed = frame.with_columns(
+        pl.int_range(0, pl.len()).over("ticker").alias("__ticker_index"),
+        pl.len().over("ticker").alias("__ticker_len"),
+    )
+    eligible = indexed.filter(
+        (pl.col("__ticker_index") >= args.min_context - 1)
+        & (pl.col("__ticker_index") <= pl.col("__ticker_len") - args.prediction_length - 1)
+    )
+    if args.rolling_stride > 1:
+        eligible = eligible.filter(((pl.col("__ticker_index") - (args.min_context - 1)) % args.rolling_stride) == 0)
+    origins: dict[object, list[tuple[str, int]]] = {}
+    for row in eligible.select(["bar_time_market", "ticker", "__ticker_index"]).iter_rows(named=True):
+        origins.setdefault(row["bar_time_market"], []).append((str(row["ticker"]), int(row["__ticker_index"])))
+    return origins
 
 
 def build_input_chunk(
     *,
-    ticker: str,
-    ticker_frame: pl.DataFrame,
-    arrays: dict[str, np.ndarray | list],
+    arrays_by_ticker: dict[str, dict],
     covariates: list[str],
-    origin_indices: list[int],
+    origin_refs: list[tuple[str, int]],
     args: argparse.Namespace,
 ) -> tuple[list[dict], list[ForecastOrigin]]:
-    target_log_close = arrays["target_log_close"]
-    close = arrays["close"]
-    session_dates = arrays["session_date"]
-    times = arrays["bar_time_market"]
-    assert isinstance(target_log_close, np.ndarray)
-    assert isinstance(close, np.ndarray)
-    assert isinstance(session_dates, list)
-    assert isinstance(times, list)
-
     inputs: list[dict] = []
     origins: list[ForecastOrigin] = []
-    for origin_index in origin_indices:
+    for ticker, origin_index in origin_refs:
+        arrays = arrays_by_ticker[ticker]
+        target_log_close = arrays["target_log_close"]
+        close = arrays["close"]
+        session_dates = arrays["session_date"]
+        times = arrays["bar_time_market"]
+        assert isinstance(target_log_close, np.ndarray)
+        assert isinstance(close, np.ndarray)
+        assert isinstance(session_dates, list)
+        assert isinstance(times, list)
         start_index = max(0, origin_index + 1 - args.context_length)
         past_covariates = {
             column: arrays[column][start_index : origin_index + 1]
@@ -539,24 +608,68 @@ def build_input_chunk(
     return inputs, origins
 
 
+def predict_rows_with_retry(
+    *,
+    pipeline,
+    inputs: list[dict],
+    origins: list[ForecastOrigin],
+    arrays_by_ticker: dict[str, dict],
+    prediction_length: int,
+    quantile_levels: list[float],
+    batch_size: int,
+    direction_threshold_bps: float,
+    device_map: str,
+) -> list[dict]:
+    try:
+        return predict_rows(
+            pipeline=pipeline,
+            inputs=inputs,
+            origins=origins,
+            arrays_by_ticker=arrays_by_ticker,
+            prediction_length=prediction_length,
+            quantile_levels=quantile_levels,
+            batch_size=batch_size,
+            direction_threshold_bps=direction_threshold_bps,
+        )
+    except RuntimeError as exc:
+        if "out of memory" not in str(exc).lower() or len(inputs) <= 1:
+            raise
+        clear_cuda_cache(device_map)
+        midpoint = len(inputs) // 2
+        return predict_rows_with_retry(
+            pipeline=pipeline,
+            inputs=inputs[:midpoint],
+            origins=origins[:midpoint],
+            arrays_by_ticker=arrays_by_ticker,
+            prediction_length=prediction_length,
+            quantile_levels=quantile_levels,
+            batch_size=max(64, batch_size // 2),
+            direction_threshold_bps=direction_threshold_bps,
+            device_map=device_map,
+        ) + predict_rows_with_retry(
+            pipeline=pipeline,
+            inputs=inputs[midpoint:],
+            origins=origins[midpoint:],
+            arrays_by_ticker=arrays_by_ticker,
+            prediction_length=prediction_length,
+            quantile_levels=quantile_levels,
+            batch_size=max(64, batch_size // 2),
+            direction_threshold_bps=direction_threshold_bps,
+            device_map=device_map,
+        )
+
+
 def predict_rows(
     *,
     pipeline,
     inputs: list[dict],
     origins: list[ForecastOrigin],
-    arrays: dict[str, np.ndarray | list],
+    arrays_by_ticker: dict[str, dict],
     prediction_length: int,
     quantile_levels: list[float],
     batch_size: int,
     direction_threshold_bps: float,
 ) -> list[dict]:
-    close = arrays["close"]
-    target_log_close = arrays["target_log_close"]
-    times = arrays["bar_time_market"]
-    assert isinstance(close, np.ndarray)
-    assert isinstance(target_log_close, np.ndarray)
-    assert isinstance(times, list)
-
     quantiles, means = pipeline.predict_quantiles(
         inputs,
         prediction_length=prediction_length,
@@ -567,6 +680,14 @@ def predict_rows(
     q_index = {level: idx for idx, level in enumerate(quantile_levels)}
     rows: list[dict] = []
     for local_idx, origin in enumerate(origins):
+        arrays = arrays_by_ticker[origin.ticker]
+        close = arrays["close"]
+        target_log_close = arrays["target_log_close"]
+        times = arrays["bar_time_market"]
+        assert isinstance(close, np.ndarray)
+        assert isinstance(target_log_close, np.ndarray)
+        assert isinstance(times, list)
+
         q_values = quantiles[local_idx][0].detach().cpu().numpy()
         mean_values = means[local_idx][0].detach().cpu().numpy()
         origin_log_close = math.log(origin.last_close)
@@ -624,6 +745,65 @@ def predict_rows(
     return rows
 
 
+def timestamp_metric(rows: list[dict], forecast_origin_time: object) -> dict | None:
+    horizon_1 = [row for row in rows if int(row["horizon_bars"]) == 1]
+    if not horizon_1:
+        return None
+    predicted = np.array([float(row["predicted_return"]) for row in horizon_1], dtype=np.float64)
+    actual = np.array([float(row["actual_return"]) for row in horizon_1], dtype=np.float64)
+    direction_ok = np.array([bool(row["direction_correct"]) for row in horizon_1], dtype=bool)
+    order = np.argsort(-predicted)
+    top_decile_n = max(1, math.ceil(len(horizon_1) * 0.10))
+    top5 = order[: min(5, len(order))]
+    top10 = order[: min(10, len(order))]
+    top_decile = order[:top_decile_n]
+    universe_mean = float(np.mean(actual) * 10_000.0)
+    top_decile_mean = float(np.mean(actual[top_decile]) * 10_000.0)
+    return {
+        "forecast_origin_time": isoformat(forecast_origin_time),
+        "n": len(horizon_1),
+        "direction_accuracy_pct": float(np.mean(direction_ok) * 100.0),
+        "mae_return_bps": float(np.mean(np.abs(predicted - actual)) * 10_000.0),
+        "naive_mae_return_bps": float(np.mean(np.abs(actual)) * 10_000.0),
+        "mae_return_vs_naive": divide(float(np.mean(np.abs(predicted - actual))), float(np.mean(np.abs(actual)))),
+        "mean_actual_return_bps": universe_mean,
+        "mean_predicted_return_bps": float(np.mean(predicted) * 10_000.0),
+        "spearman_pred_actual": spearman_corr(predicted, actual),
+        "top1_actual_return_bps": float(actual[order[0]] * 10_000.0),
+        "top5_mean_actual_return_bps": float(np.mean(actual[top5]) * 10_000.0),
+        "top10_mean_actual_return_bps": float(np.mean(actual[top10]) * 10_000.0),
+        "top_decile_mean_actual_return_bps": top_decile_mean,
+        "universe_mean_actual_return_bps": universe_mean,
+        "top_decile_excess_actual_return_bps": top_decile_mean - universe_mean,
+        "top_decile_direction_accuracy_pct": float(np.mean(direction_ok[top_decile]) * 100.0),
+    }
+
+
+def spearman_corr(left: np.ndarray, right: np.ndarray) -> float:
+    if len(left) < 2:
+        return float("nan")
+    left_rank = rankdata(left)
+    right_rank = rankdata(right)
+    if np.std(left_rank) == 0.0 or np.std(right_rank) == 0.0:
+        return float("nan")
+    return float(np.corrcoef(left_rank, right_rank)[0, 1])
+
+
+def rankdata(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(values, kind="mergesort")
+    ranks = np.empty(len(values), dtype=np.float64)
+    sorted_values = values[order]
+    start = 0
+    while start < len(values):
+        end = start + 1
+        while end < len(values) and sorted_values[end] == sorted_values[start]:
+            end += 1
+        avg_rank = (start + end - 1) / 2.0 + 1.0
+        ranks[order[start:end]] = avg_rank
+        start = end
+    return ranks
+
+
 def direction_label(value: float, threshold: float) -> int:
     if value > threshold:
         return 1
@@ -668,66 +848,60 @@ def write_metrics_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def write_report(
+def write_live_report(
     *,
     args: argparse.Namespace,
     predictions_path: Path,
     metrics_path: Path,
+    timestamp_metrics_path: Path,
     report_path: Path,
-    overall: dict,
-    horizon_metrics: list[dict],
+    overall_rows: list[dict],
+    timestamp_summary: dict,
     covariates: list[str],
-    tickers_seen: list[str],
-    selected_ticker_count: int,
+    processed_timestamps: int,
     processed_windows: int,
+    selected_ticker_count: int,
+    is_final: bool,
 ) -> None:
+    status = "Final" if is_final else "Live"
     report = [
-        "# Chronos 2 1m Bar Forecast Test",
+        f"# Chronos 2 1m Bar Forecast Test ({status})",
         "",
-        f"- Generated: {datetime.now().isoformat(timespec='seconds')}",
+        f"- Updated: {datetime.now().isoformat(timespec='seconds')}",
         f"- Session date: `{args.session_date}`",
         f"- Model: `{args.model_id}`",
         f"- Device map: `{args.device_map}`",
         f"- Selected tickers: `{selected_ticker_count}`",
-        f"- Tickers with forecast windows: `{len(tickers_seen)}`",
+        f"- Processed timestamps: `{processed_timestamps}`",
         f"- Forecast origins processed: `{processed_windows}`",
-        f"- Target: `log(close)`; reported returns are log-return deltas from the forecast origin close.",
-        f"- Prediction length: `{args.prediction_length}` bars",
-        f"- Context length: `{args.context_length}` bars, minimum context `{args.min_context}` bars",
-        f"- Ticker batch size: `{args.ticker_batch_size}`, window batch size: `{args.window_batch_size}`",
-        f"- Direction threshold: `{args.direction_threshold_bps}` bps",
+        f"- Target: `log(close)`; default forecast is the next bar.",
+        f"- Prediction length: `{args.prediction_length}`",
+        f"- Context length/min context: `{args.context_length}` / `{args.min_context}`",
+        f"- Chronos batch size/window chunk: `{args.batch_size}` / `{args.window_batch_size}`",
         f"- Predictions CSV: `{predictions_path}`",
-        f"- Metrics CSV: `{metrics_path}`",
+        f"- Live metrics CSV: `{metrics_path}`",
+        f"- Timestamp metrics CSV: `{timestamp_metrics_path}`",
         "",
         "## Overall Metrics",
         "",
-        markdown_table([overall]),
+        markdown_table(overall_rows),
         "",
-        "## Metrics By Horizon",
+        "## Timestamp Ranking Summary",
         "",
-        markdown_table(horizon_metrics),
+        markdown_table([timestamp_summary] if timestamp_summary else []),
         "",
         "## Input Channels",
         "",
-        "Chronos receives `target` as the historical `log(close)` sequence and receives these columns as "
-        "`past_covariates`. No `future_covariates` are supplied.",
+        "Chronos receives `target` as historical `log(close)` and these `past_covariates`. No future covariates are supplied.",
         "",
         "\n".join(f"- `{column}`" for column in covariates),
-        "",
-        "## Notes",
-        "",
-        "- Provider data is loaded in ticker batches with Polars rather than materialized as one pandas frame.",
-        "- Prediction rows are streamed to CSV; metrics are aggregated incrementally.",
-        "- This is an after-bar-close walk-forward test: the origin bar close is included in the context.",
-        "- Supervision labels are not loaded as model inputs; only provider bars and deterministic feature groups are used.",
-        "- Evaluate these metrics against the naive baseline columns before treating the model output as a tradable edge.",
     ]
     report_path.write_text("\n".join(report), encoding="utf-8")
 
 
 def markdown_table(rows: list[dict]) -> str:
     if not rows:
-        return "_No rows._"
+        return "_No rows yet._"
     columns = list(rows[0].keys())
     lines = [
         "| " + " | ".join(columns) + " |",
@@ -749,100 +923,141 @@ def main() -> None:
     args = parse_args()
     if args.min_context < 3:
         raise SystemExit("--min-context must be at least 3.")
+    if args.context_length < args.min_context:
+        raise SystemExit("--context-length must be >= --min-context.")
     if args.prediction_length < 1:
         raise SystemExit("--prediction-length must be at least 1.")
-    if args.ticker_batch_size < 1:
-        raise SystemExit("--ticker-batch-size must be at least 1.")
 
     provider = provider_for_args(args)
-    selected_tickers = select_session_tickers(provider, args)
-    if not selected_tickers:
-        raise SystemExit("No tickers selected for the requested session.")
+    session_frame = load_session_frame(provider, args)
+    model_frame, covariates = add_model_columns(session_frame)
+    arrays_by_ticker = ticker_arrays(model_frame, covariates)
+    origins_by_time = origin_map(model_frame, args)
+    selected_ticker_count = len(arrays_by_ticker)
+    if not origins_by_time:
+        raise SystemExit(
+            "No eligible forecast origins. "
+            f"Need at least min_context + prediction_length bars per ticker ({args.min_context + args.prediction_length})."
+        )
 
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
     run_id = f"chronos2_1m_{args.session_date}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     predictions_path = report_dir / f"{run_id}_predictions.csv"
-    metrics_path = report_dir / f"{run_id}_metrics.csv"
+    metrics_path = report_dir / f"{run_id}_live_metrics.csv"
+    timestamp_metrics_path = report_dir / f"{run_id}_timestamp_metrics.csv"
     report_path = report_dir / f"{run_id}_report.md"
     config_path = report_dir / f"{run_id}_config.json"
     config_path.write_text(json.dumps(vars(args), indent=2, sort_keys=True), encoding="utf-8")
 
     pipeline = load_chronos_pipeline(Path(args.chronos_src), args.model_id, args.device_map)
     metrics = MetricAccumulator()
-    covariates_seen: list[str] = []
-    tickers_seen: list[str] = []
-    processed_tickers = 0
+    timestamp_accumulator = TimestampAccumulator()
+    processed_timestamps = 0
     processed_windows = 0
     windows_remaining = args.max_total_windows if args.max_total_windows > 0 else None
 
-    with predictions_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=PREDICTION_FIELDS)
-        writer.writeheader()
+    with predictions_path.open("w", newline="", encoding="utf-8") as pred_handle, timestamp_metrics_path.open(
+        "w", newline="", encoding="utf-8"
+    ) as ts_handle:
+        prediction_writer = csv.DictWriter(pred_handle, fieldnames=PREDICTION_FIELDS)
+        timestamp_writer = csv.DictWriter(ts_handle, fieldnames=TIMESTAMP_METRIC_FIELDS)
+        prediction_writer.writeheader()
+        timestamp_writer.writeheader()
 
-        for ticker_batch in chunks(selected_tickers, args.ticker_batch_size):
-            batch_frame = load_ticker_batch(provider, args, ticker_batch)
-            if batch_frame.is_empty():
-                processed_tickers += len(ticker_batch)
-                continue
-            model_frame, covariates = add_model_columns(batch_frame)
-            if not covariates_seen:
-                covariates_seen = covariates
-            for ticker, ticker_frame in ticker_groups(model_frame):
-                count, windows_remaining, stop = process_ticker(
-                    pipeline=pipeline,
-                    ticker=ticker,
-                    ticker_frame=ticker_frame,
-                    covariates=covariates,
-                    args=args,
-                    writer=writer,
-                    metrics=metrics,
-                    windows_remaining=windows_remaining,
-                )
-                processed_tickers += 1
-                if count > 0:
-                    tickers_seen.append(ticker)
-                    processed_windows += count
-                if args.progress_every_tickers > 0 and processed_tickers % args.progress_every_tickers == 0:
-                    print(
-                        f"Processed {processed_tickers}/{len(selected_tickers)} tickers, "
-                        f"forecast_origins={processed_windows}, rows={metrics.overall.n}",
-                        flush=True,
-                    )
-                if stop:
+        for forecast_time in sorted(origins_by_time):
+            origin_refs = origins_by_time[forecast_time]
+            if windows_remaining is not None:
+                if windows_remaining <= 0:
                     break
-            del batch_frame
-            del model_frame
+                origin_refs = origin_refs[:windows_remaining]
+                windows_remaining -= len(origin_refs)
+            if not origin_refs:
+                continue
+
+            timestamp_rows: list[dict] = []
+            for origin_chunk in chunks(origin_refs, max(1, args.window_batch_size)):
+                inputs, origins = build_input_chunk(
+                    arrays_by_ticker=arrays_by_ticker,
+                    covariates=covariates,
+                    origin_refs=origin_chunk,
+                    args=args,
+                )
+                rows = predict_rows_with_retry(
+                    pipeline=pipeline,
+                    inputs=inputs,
+                    origins=origins,
+                    arrays_by_ticker=arrays_by_ticker,
+                    prediction_length=args.prediction_length,
+                    quantile_levels=DEFAULT_QUANTILES,
+                    batch_size=args.batch_size,
+                    direction_threshold_bps=args.direction_threshold_bps,
+                    device_map=args.device_map,
+                )
+                for row in rows:
+                    prediction_writer.writerow(row)
+                    metrics.update(row)
+                timestamp_rows.extend(rows)
+                processed_windows += len(origin_chunk)
+                pred_handle.flush()
+                clear_cuda_cache(args.device_map)
+
+            timestamp_row = timestamp_metric(timestamp_rows, forecast_time)
+            if timestamp_row:
+                timestamp_writer.writerow(timestamp_row)
+                timestamp_accumulator.update(timestamp_row)
+                ts_handle.flush()
+
+            processed_timestamps += 1
+            if processed_timestamps % max(1, args.metrics_every_timestamps) == 0:
+                metric_rows = metrics.rows()
+                write_metrics_csv(metrics_path, metric_rows)
+                write_live_report(
+                    args=args,
+                    predictions_path=predictions_path,
+                    metrics_path=metrics_path,
+                    timestamp_metrics_path=timestamp_metrics_path,
+                    report_path=report_path,
+                    overall_rows=metric_rows,
+                    timestamp_summary=timestamp_accumulator.to_row(),
+                    covariates=covariates,
+                    processed_timestamps=processed_timestamps,
+                    processed_windows=processed_windows,
+                    selected_ticker_count=selected_ticker_count,
+                    is_final=False,
+                )
+            if args.progress_every_timestamps > 0 and processed_timestamps % args.progress_every_timestamps == 0:
+                print(
+                    f"Processed timestamps={processed_timestamps}/{len(origins_by_time)} "
+                    f"forecast_origins={processed_windows} rows={metrics.overall.n}",
+                    flush=True,
+                )
             if windows_remaining is not None and windows_remaining <= 0:
                 break
 
     if metrics.overall.n == 0:
-        required_bars = args.min_context + args.prediction_length
-        raise SystemExit(
-            "No forecast windows were created. "
-            f"Need at least min_context + prediction_length bars per ticker ({required_bars} with current args). "
-            "Lower --min-context/--prediction-length, choose a more active session, or use --max-tickers N to inspect "
-            "a smaller active universe first."
-        )
+        raise SystemExit("No prediction rows were written.")
 
-    horizon_metrics = metrics.horizon_rows()
-    overall = metrics.overall.to_row("overall")
-    write_metrics_csv(metrics_path, horizon_metrics)
-    write_report(
+    metric_rows = metrics.rows()
+    write_metrics_csv(metrics_path, metric_rows)
+    write_live_report(
         args=args,
         predictions_path=predictions_path,
         metrics_path=metrics_path,
+        timestamp_metrics_path=timestamp_metrics_path,
         report_path=report_path,
-        overall=overall,
-        horizon_metrics=horizon_metrics,
-        covariates=covariates_seen,
-        tickers_seen=tickers_seen,
-        selected_ticker_count=len(selected_tickers),
+        overall_rows=metric_rows,
+        timestamp_summary=timestamp_accumulator.to_row(),
+        covariates=covariates,
+        processed_timestamps=processed_timestamps,
         processed_windows=processed_windows,
+        selected_ticker_count=selected_ticker_count,
+        is_final=True,
     )
 
     print(f"Wrote predictions: {predictions_path}")
-    print(f"Wrote metrics: {metrics_path}")
+    print(f"Wrote live metrics: {metrics_path}")
+    print(f"Wrote timestamp metrics: {timestamp_metrics_path}")
     print(f"Wrote report: {report_path}")
 
 
