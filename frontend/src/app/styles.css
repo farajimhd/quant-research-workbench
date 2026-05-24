@@ -10592,7 +10592,9 @@ button {
   color: var(--foreground);
   display: grid;
   gap: 10px;
-  max-height: min(760px, calc(100vh - 64px));
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: min(820px, calc(100vh - 64px));
+  max-height: min(820px, calc(100vh - 64px));
   max-width: min(720px, calc(100vw - 48px));
   min-width: min(620px, calc(100vw - 48px));
   overflow: hidden;
@@ -10606,6 +10608,49 @@ button {
   gap: 12px;
   grid-template-columns: minmax(0, 1fr) auto;
   padding-bottom: 10px;
+}
+
+.live-news-detail-actions {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.live-news-zoom-control {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 76%, transparent);
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+}
+
+.live-news-zoom-control button {
+  background: var(--surface);
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  border-radius: 999px;
+  color: var(--foreground);
+  cursor: pointer;
+  font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 6px 8px;
+}
+
+.live-news-zoom-control button:hover {
+  border-color: color-mix(in oklab, var(--primary) 45%, var(--border));
+  color: var(--primary);
+}
+
+.live-news-zoom-control span {
+  color: var(--muted-foreground);
+  font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 900;
+  min-width: 38px;
+  text-align: center;
 }
 
 .live-news-detail-header h3 {
@@ -10669,8 +10714,10 @@ button {
 .live-news-detail-scroll {
   display: grid;
   gap: 12px;
+  min-height: 0;
   overflow: auto;
   padding-right: 4px;
+  overscroll-behavior: contain;
 }
 
 .live-news-detail-scroll section {
@@ -10697,6 +10744,11 @@ button {
   line-height: 1.5;
   margin: 0;
   white-space: pre-wrap;
+}
+
+.live-news-detail-scroll .live-news-detail-text {
+  font-size: calc(13px * var(--live-news-text-zoom, 1));
+  line-height: 1.55;
 }
 
 .live-news-detail-scroll p.muted {

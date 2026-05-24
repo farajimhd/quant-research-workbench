@@ -2542,9 +2542,19 @@ function LiveNewsDetailPopover({ item, onClose }: { item: LiveNewsArticle; onClo
   const NewsIcon = indicator.icon;
   const bodyText = [item.teaser, item.body_text].map((value) => String(value || "").trim()).filter(Boolean).join("\n\n");
   const pdfText = String(item.pdf_text || "").trim();
+  const [textZoom, setTextZoom] = useState(1);
+  const textZoomLabel = `${Math.round(textZoom * 100)}%`;
+  const textZoomStyle = { "--live-news-text-zoom": textZoom } as CSSProperties;
   return (
     <div className="live-news-detail-backdrop" role="presentation" onMouseDown={onClose}>
-      <aside className="live-news-detail-popover" role="dialog" aria-modal="true" aria-label="News details" onMouseDown={(event) => event.stopPropagation()}>
+      <aside
+        className="live-news-detail-popover"
+        role="dialog"
+        aria-modal="true"
+        aria-label="News details"
+        style={textZoomStyle}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <header className="live-news-detail-header">
           <div>
             <span className={`live-news-detail-category ${indicator.className}`}>
@@ -2554,9 +2564,20 @@ function LiveNewsDetailPopover({ item, onClose }: { item: LiveNewsArticle; onClo
             <h3>{item.title}</h3>
             <time dateTime={item.published_et}>{formatNewsDateTime(item.published_et)}</time>
           </div>
-          <button className="icon-button" type="button" title="Close news" onClick={onClose}>
-            <X size={15} />
-          </button>
+          <div className="live-news-detail-actions">
+            <div className="live-news-zoom-control" aria-label="Article text zoom">
+              <button type="button" title="Decrease text size" onClick={() => setTextZoom((value) => Math.max(0.9, Number((value - 0.1).toFixed(2))))}>
+                A-
+              </button>
+              <span>{textZoomLabel}</span>
+              <button type="button" title="Increase text size" onClick={() => setTextZoom((value) => Math.min(1.6, Number((value + 0.1).toFixed(2))))}>
+                A+
+              </button>
+            </div>
+            <button className="icon-button" type="button" title="Close news" onClick={onClose}>
+              <X size={15} />
+            </button>
+          </div>
         </header>
         <div className="live-news-detail-labels">
           {newsLabels(item, 8).map((label) => (
@@ -2566,12 +2587,12 @@ function LiveNewsDetailPopover({ item, onClose }: { item: LiveNewsArticle; onClo
         <div className="live-news-detail-scroll">
           <section>
             <h4>Article</h4>
-            {bodyText ? <p>{bodyText}</p> : <p className="muted">No article text was cached for this headline.</p>}
+            {bodyText ? <p className="live-news-detail-text">{bodyText}</p> : <p className="muted">No article text was cached for this headline.</p>}
           </section>
           {pdfText ? (
             <section>
               <h4>PDF Text</h4>
-              <p>{pdfText}</p>
+              <p className="live-news-detail-text">{pdfText}</p>
             </section>
           ) : null}
           {item.url ? (
