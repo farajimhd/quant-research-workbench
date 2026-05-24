@@ -22,8 +22,20 @@ from src.data_provider.store import existing_dates, partition_path  # noqa: E402
 
 
 DEFAULT_CHRONOS_SRC = Path("D:/TradingCodes/public-codes/chronos-forecasting-main/src")
-COVARIATE_COLUMNS = ("raw_open", "raw_volume", "raw_transactions")
-SOURCE_COLUMNS = ("ticker", "session_date", "bar_time_market", "minute_of_day", "open", "close", "volume", "transactions")
+DEFAULT_MODEL_ID = "autogluon/chronos-2-small"
+COVARIATE_COLUMNS = ("raw_open", "raw_high", "raw_low", "raw_volume", "raw_transactions")
+SOURCE_COLUMNS = (
+    "ticker",
+    "session_date",
+    "bar_time_market",
+    "minute_of_day",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "transactions",
+)
 
 
 @dataclass(slots=True)
@@ -37,14 +49,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Fine-tune Chronos 2 with LoRA on provider-built 1m bars. Inputs are raw close target plus raw open, "
-            "volume, and transactions past covariates. Data is loaded and preprocessed before the GPU model is loaded."
+            "high, low, volume, and transactions past covariates. Data is loaded and preprocessed before the GPU "
+            "model is loaded."
         )
     )
     parser.add_argument("--start-date", required=True, help="First provider session date to use, for example 2024-01-02.")
     parser.add_argument("--end-date", required=True, help="Last provider session date to use, for example 2026-04-07.")
     parser.add_argument("--processed-root", default=str(DEFAULT_PROCESSED_ROOT), help="Processed provider market_data root.")
     parser.add_argument("--chronos-src", default=str(DEFAULT_CHRONOS_SRC), help="Path to chronos-forecasting src folder.")
-    parser.add_argument("--model-id", default="amazon/chronos-2", help="Base Chronos 2 model id or local model path.")
+    parser.add_argument("--model-id", default=DEFAULT_MODEL_ID, help="Base Chronos 2 model id or local model path.")
     parser.add_argument("--device-map", default="cuda", help='Transformers device_map, e.g. "cuda", "cpu", or "auto".')
     parser.add_argument("--context-length", type=int, default=64, help="Chronos context length for fine-tuning.")
     parser.add_argument("--min-past", type=int, default=64, help="Minimum historical bars before each training target.")
@@ -156,7 +169,7 @@ def load_raw_chunk(processed_root: Path, sessions: list[str], tickers: list[str]
     names = set(scan.collect_schema().names())
     if session_scope == "regular" and "minute_of_day" not in names:
         raise SystemExit("--session-scope regular requires provider column minute_of_day.")
-    required = {"ticker", "session_date", "bar_time_market", "open", "close", "volume", "transactions"}
+    required = {"ticker", "session_date", "bar_time_market", "open", "high", "low", "close", "volume", "transactions"}
     missing = sorted(required - names)
     if missing:
         raise SystemExit(f"Provider bars are missing required columns: {missing}")
@@ -169,6 +182,8 @@ def load_raw_chunk(processed_root: Path, sessions: list[str], tickers: list[str]
         scan.with_columns(
             pl.col("close").cast(pl.Float32, strict=False).alias("target_close"),
             pl.col("open").cast(pl.Float32, strict=False).alias("raw_open"),
+            pl.col("high").cast(pl.Float32, strict=False).alias("raw_high"),
+            pl.col("low").cast(pl.Float32, strict=False).alias("raw_low"),
             pl.when(pl.col("volume").cast(pl.Float32, strict=False) >= 0.0)
             .then(pl.col("volume").cast(pl.Float32, strict=False))
             .otherwise(0.0)
@@ -289,7 +304,7 @@ def output_dir_for_args(processed_root: Path, args: argparse.Namespace) -> Path:
         name = args.output_name
     else:
         name = (
-            f"chronos2_lora_1m_raw_ctx{args.context_length}_h{args.prediction_length}_"
+            f"chronos2_small_lora_1m_raw_ohlcv_ctx{args.context_length}_h{args.prediction_length}_"
             f"{args.start_date}_{args.end_date}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
     return processed_root / "models" / "chronos2" / name
@@ -364,6 +379,12 @@ def main() -> None:
     }
     write_json(output_dir / "metadata.json", metadata)
 
+    if args.dry_run:
+        metadata["status"] = "dry_run_complete"
+        write_json(output_dir / "metadata.json", metadata)
+        print(f"Dry run complete. Metadata written to {output_dir / 'metadata.json'}", flush=True)
+        return
+
     print("Preprocessing Chronos tensors before loading the GPU model...", flush=True)
     train_inputs = prepare_chronos_inputs(raw_series.train_inputs, args.prediction_length, args.min_past, "train")
     validation_inputs = (
@@ -376,12 +397,6 @@ def main() -> None:
     write_json(output_dir / "metadata.json", metadata)
 
     del raw_series
-
-    if args.dry_run:
-        metadata["status"] = "dry_run_complete"
-        write_json(output_dir / "metadata.json", metadata)
-        print(f"Dry run complete. Metadata written to {output_dir / 'metadata.json'}", flush=True)
-        return
 
     require_lora_dependency()
     print("Loading Chronos model after data preparation is complete...", flush=True)

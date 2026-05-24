@@ -287,7 +287,7 @@ def parse_args() -> argparse.Namespace:
         "--batch-size",
         type=int,
         default=8192,
-        help="Chronos internal batch size measured in variates. Default targets the raw four-variate input on a 24GB GPU.",
+        help="Chronos internal batch size measured in variates. Default targets the raw six-variate input on a 24GB GPU.",
     )
     parser.add_argument(
         "--window-batch-size",
@@ -342,6 +342,8 @@ def load_session_frame(provider: MarketDataProvider, args: argparse.Namespace) -
         "bar_time_market",
         "minute_of_day",
         "open",
+        "high",
+        "low",
         "close",
         "volume",
         "transactions",
@@ -393,17 +395,21 @@ def parse_tickers(raw: str) -> list[str]:
 def add_model_columns(frame: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
     close = positive_expr("close")
     open_ = positive_expr("open")
+    high = positive_expr("high")
+    low = positive_expr("low")
     volume = nonnegative_expr("volume", frame.columns)
     transactions = nonnegative_expr("transactions", frame.columns)
 
     exprs: list[pl.Expr] = [
         close.alias("target_close"),
         open_.alias("raw_open"),
+        high.alias("raw_high"),
+        low.alias("raw_low"),
         volume.alias("raw_volume"),
         transactions.alias("raw_transactions"),
     ]
     result = frame.with_columns(exprs)
-    covariates = ["raw_open", "raw_volume", "raw_transactions"]
+    covariates = ["raw_open", "raw_high", "raw_low", "raw_volume", "raw_transactions"]
     cast_exprs = [
         pl.col(column).cast(pl.Float64, strict=False).replace([float("inf"), float("-inf")], None).alias(column)
         for column in ["target_close", *covariates]
@@ -794,7 +800,7 @@ def write_live_report(
         "## Input Channels",
         "",
         (
-            "Chronos receives raw `close` values as the target and raw `open`, `volume`, and `transactions` "
+            "Chronos receives raw `close` values as the target and raw `open`, `high`, `low`, `volume`, and `transactions` "
             "as `past_covariates`. The script does not log-transform, normalize, z-score, or scale these inputs "
             "before passing them to Chronos. No future covariates are supplied."
         ),
