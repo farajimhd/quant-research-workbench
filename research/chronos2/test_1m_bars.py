@@ -24,6 +24,8 @@ from src.data_provider.provider import MarketDataProvider  # noqa: E402
 
 DEFAULT_CHRONOS_SRC = Path("D:/TradingCodes/public-codes/chronos-forecasting-main/src")
 DEFAULT_QUANTILES = [0.1, 0.5, 0.9]
+TARGET_COLUMNS = ["target_close", "target_high", "target_low"]
+COVARIATE_COLUMNS = ["raw_open", "raw_volume", "raw_transactions"]
 PREDICTION_FIELDS = [
     "ticker",
     "session_date",
@@ -402,23 +404,26 @@ def add_model_columns(frame: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
 
     exprs: list[pl.Expr] = [
         close.alias("target_close"),
+        high.alias("target_high"),
+        low.alias("target_low"),
         open_.alias("raw_open"),
-        high.alias("raw_high"),
-        low.alias("raw_low"),
         volume.alias("raw_volume"),
         transactions.alias("raw_transactions"),
     ]
     result = frame.with_columns(exprs)
-    covariates = ["raw_open", "raw_high", "raw_low", "raw_volume", "raw_transactions"]
     cast_exprs = [
         pl.col(column).cast(pl.Float64, strict=False).replace([float("inf"), float("-inf")], None).alias(column)
-        for column in ["target_close", *covariates]
+        for column in [*TARGET_COLUMNS, *COVARIATE_COLUMNS]
     ]
     return (
         result.with_columns(cast_exprs)
-        .filter(pl.col("target_close").is_not_null())
+        .filter(
+            pl.col("target_close").is_not_null()
+            & pl.col("target_high").is_not_null()
+            & pl.col("target_low").is_not_null()
+        )
         .sort(["ticker", "bar_time_market"]),
-        covariates,
+        list(COVARIATE_COLUMNS),
     )
 
 
@@ -440,9 +445,12 @@ def ticker_arrays(frame: pl.DataFrame, covariates: list[str]) -> dict[str, dict]
         if ticker_frame.is_empty():
             continue
         ticker = str(ticker_frame.get_column("ticker")[0])
+        target_values = np.stack(
+            [ticker_frame.get_column(column).cast(pl.Float64, strict=False).to_numpy() for column in TARGET_COLUMNS]
+        )
         ticker_data: dict[str, np.ndarray | list] = {
             "close": ticker_frame.get_column("close").cast(pl.Float64, strict=False).to_numpy(),
-            "target_value": ticker_frame.get_column("target_close").cast(pl.Float64, strict=False).to_numpy(),
+            "target_value": target_values,
             "bar_time_market": ticker_frame.get_column("bar_time_market").to_list(),
             "session_date": ticker_frame.get_column("session_date").cast(pl.Utf8).to_list(),
         }
@@ -498,7 +506,7 @@ def build_input_chunk(
         }
         inputs.append(
             {
-                "target": target_value[start_index : origin_index + 1].astype(np.float32, copy=False),
+                "target": target_value[:, start_index : origin_index + 1].astype(np.float32, copy=False),
                 "past_covariates": past_covariates,
             }
         )
@@ -800,8 +808,8 @@ def write_live_report(
         "## Input Channels",
         "",
         (
-            "Chronos receives raw `close` values as the target and raw `open`, `high`, `low`, `volume`, and `transactions` "
-            "as `past_covariates`. The script does not log-transform, normalize, z-score, or scale these inputs "
+            "Chronos receives raw `close`, `high`, and `low` values as targets and raw `open`, `volume`, and "
+            "`transactions` as `past_covariates`. The script does not log-transform, normalize, z-score, or scale these inputs "
             "before passing them to Chronos. No future covariates are supplied."
         ),
         "",

@@ -5,11 +5,10 @@ import json
 import math
 import sys
 import time
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import numpy as np
 import polars as pl
@@ -25,7 +24,9 @@ from src.data_provider.store import existing_dates, partition_path  # noqa: E402
 
 DEFAULT_CHRONOS_SRC = Path("D:/TradingCodes/public-codes/chronos-forecasting-main/src")
 DEFAULT_MODEL_ID = "autogluon/chronos-2-small"
-COVARIATE_COLUMNS = ("raw_open", "raw_high", "raw_low", "raw_volume", "raw_transactions")
+TARGET_COLUMNS = ("target_close", "target_high", "target_low")
+COVARIATE_COLUMNS = ("raw_open", "raw_volume", "raw_transactions")
+VARIATE_COUNT = len(TARGET_COLUMNS) + len(COVARIATE_COLUMNS)
 SOURCE_COLUMNS = (
     "ticker",
     "session_date",
@@ -41,13 +42,6 @@ SOURCE_COLUMNS = (
 
 
 @dataclass(slots=True)
-class PreparedSeries:
-    train_inputs: list[dict]
-    validation_inputs: list[dict] | None
-    metadata: dict
-
-
-@dataclass(slots=True)
 class ProbeWindow:
     input: dict
     last_close: float
@@ -57,9 +51,9 @@ class ProbeWindow:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Fine-tune Chronos 2 with LoRA on provider-built 1m bars. Inputs are raw close target plus raw open, "
-            "high, low, volume, and transactions past covariates. Data is loaded and preprocessed before the GPU "
-            "model is loaded."
+            "Stream fine-tune Chronos 2 with LoRA on provider-built 1m bars. Targets are raw close, high, and low; "
+            "past-only covariates are raw open, volume, and transactions. The script loads one provider session at a "
+            "time and yields Chronos-ready batches instead of holding the full corpus in RAM."
         )
     )
     parser.add_argument("--start-date", required=True, help="First provider session date to use, for example 2024-01-02.")
@@ -68,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chronos-src", default=str(DEFAULT_CHRONOS_SRC), help="Path to chronos-forecasting src folder.")
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID, help="Base Chronos 2 model id or local model path.")
     parser.add_argument("--device-map", default="cuda", help='Transformers device_map, e.g. "cuda", "cpu", or "auto".')
-    parser.add_argument("--context-length", type=int, default=64, help="Chronos context length for fine-tuning.")
+    parser.add_argument("--context-length", type=int, default=64, help="Historical bars per training window.")
     parser.add_argument("--min-past", type=int, default=64, help="Minimum historical bars before each training target.")
     parser.add_argument("--prediction-length", type=int, default=1, help="Forecast horizon in bars.")
     parser.add_argument("--num-steps", type=int, default=2000, help="LoRA fine-tuning optimizer steps.")
@@ -76,7 +70,7 @@ def parse_args() -> argparse.Namespace:
         "--batch-size",
         type=int,
         default=2048,
-        help="Chronos training batch size measured in variates, not ticker series.",
+        help="Chronos training batch size measured in variates. Each ticker window uses six variates.",
     )
     parser.add_argument("--learning-rate", type=float, default=1e-4, help="LoRA learning rate.")
     parser.add_argument("--logging-steps", type=int, default=50, help="Trainer logging interval.")
@@ -88,6 +82,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of latest sessions reserved for validation. Use 0 to disable validation.",
     )
     parser.add_argument(
+        "--eval-window-count",
+        type=int,
+        default=3000,
+        help="Maximum validation windows used for Chronos eval_loss at each eval point. Use 0 for all validation windows.",
+    )
+    parser.add_argument(
         "--max-tickers",
         type=int,
         default=2000,
@@ -95,22 +95,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--tickers", default="", help="Comma-separated ticker override. If set, --max-tickers is ignored.")
     parser.add_argument(
-        "--min-bars-per-ticker",
-        type=int,
-        default=512,
-        help="Drop ticker splits shorter than this many bars before preparing Chronos inputs.",
-    )
-    parser.add_argument(
         "--session-scope",
         choices=["all", "regular"],
         default="all",
         help="Use all provider bars or regular-session bars only.",
-    )
-    parser.add_argument(
-        "--load-chunk-sessions",
-        type=int,
-        default=20,
-        help="Number of provider sessions loaded per Polars chunk while preparing ticker arrays.",
     )
     parser.add_argument(
         "--probe-window-count",
@@ -130,13 +118,13 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Return threshold for probe up/down/flat direction labels, in basis points.",
     )
-    parser.add_argument("--probe-seed", type=int, default=17, help="Random seed for fixed validation probe windows.")
+    parser.add_argument("--seed", type=int, default=17, help="Random seed for session order, validation sampling, and probes.")
     parser.add_argument(
         "--output-name",
         default="",
         help="Optional run folder name under processed_root/models/chronos2. Defaults to a timestamped name.",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Prepare data and metadata without loading or training Chronos.")
+    parser.add_argument("--dry-run", action="store_true", help="Load one sample session and build one batch without loading Chronos.")
     return parser.parse_args()
 
 
@@ -186,15 +174,21 @@ def selected_tickers(processed_root: Path, sessions: list[str], args: argparse.N
     return [str(value) for value in ranking.get_column("ticker").to_list()]
 
 
-def session_chunks(sessions: list[str], chunk_size: int) -> Iterable[list[str]]:
-    size = max(1, chunk_size)
-    for index in range(0, len(sessions), size):
-        yield sessions[index : index + size]
+def positive_expr(column: str) -> pl.Expr:
+    value = pl.col(column).cast(pl.Float32, strict=False)
+    return pl.when(value > 0.0).then(value).otherwise(None)
 
 
-def load_raw_chunk(processed_root: Path, sessions: list[str], tickers: list[str] | None, session_scope: str) -> pl.DataFrame:
-    paths = [partition_path(processed_root, "bars", "1m", session) for session in sessions]
-    scan = pl.scan_parquet([str(path) for path in paths], missing_columns="insert", extra_columns="ignore")
+def nonnegative_expr(column: str, columns: set[str]) -> pl.Expr:
+    if column not in columns:
+        return pl.lit(0.0, dtype=pl.Float32)
+    value = pl.col(column).cast(pl.Float32, strict=False)
+    return pl.when(value >= 0.0).then(value).otherwise(0.0)
+
+
+def load_session_frame(processed_root: Path, session: str, tickers: list[str] | None, session_scope: str) -> pl.DataFrame:
+    path = partition_path(processed_root, "bars", "1m", session)
+    scan = pl.scan_parquet(str(path), missing_columns="insert", extra_columns="ignore")
     names = set(scan.collect_schema().names())
     if session_scope == "regular" and "minute_of_day" not in names:
         raise SystemExit("--session-scope regular requires provider column minute_of_day.")
@@ -202,168 +196,255 @@ def load_raw_chunk(processed_root: Path, sessions: list[str], tickers: list[str]
     missing = sorted(required - names)
     if missing:
         raise SystemExit(f"Provider bars are missing required columns: {missing}")
+
     scan = scan.select([column for column in SOURCE_COLUMNS if column in names])
     if tickers:
         scan = scan.filter(pl.col("ticker").is_in(tickers))
     if session_scope == "regular":
         scan = scan.filter((pl.col("minute_of_day") >= 9 * 60 + 30) & (pl.col("minute_of_day") < 16 * 60))
+
     return (
         scan.with_columns(
-            pl.col("close").cast(pl.Float32, strict=False).alias("target_close"),
-            pl.col("open").cast(pl.Float32, strict=False).alias("raw_open"),
-            pl.col("high").cast(pl.Float32, strict=False).alias("raw_high"),
-            pl.col("low").cast(pl.Float32, strict=False).alias("raw_low"),
-            pl.when(pl.col("volume").cast(pl.Float32, strict=False) >= 0.0)
-            .then(pl.col("volume").cast(pl.Float32, strict=False))
-            .otherwise(0.0)
-            .alias("raw_volume"),
-            pl.when(pl.col("transactions").cast(pl.Float32, strict=False) >= 0.0)
-            .then(pl.col("transactions").cast(pl.Float32, strict=False))
-            .otherwise(0.0)
-            .alias("raw_transactions"),
+            positive_expr("close").alias("target_close"),
+            positive_expr("high").alias("target_high"),
+            positive_expr("low").alias("target_low"),
+            positive_expr("open").alias("raw_open"),
+            nonnegative_expr("volume", names).alias("raw_volume"),
+            nonnegative_expr("transactions", names).alias("raw_transactions"),
         )
-        .filter(pl.col("target_close") > 0.0)
-        .select("ticker", "session_date", "bar_time_market", "target_close", *COVARIATE_COLUMNS)
+        .filter(
+            pl.col("target_close").is_not_null()
+            & pl.col("target_high").is_not_null()
+            & pl.col("target_low").is_not_null()
+        )
+        .select("ticker", "session_date", "bar_time_market", *TARGET_COLUMNS, *COVARIATE_COLUMNS)
         .sort(["ticker", "bar_time_market"])
         .collect()
     )
 
 
-def append_parts(parts_by_ticker: dict[str, dict[str, list]], frame: pl.DataFrame) -> None:
+def session_arrays(frame: pl.DataFrame) -> dict[str, np.ndarray]:
+    arrays: dict[str, np.ndarray] = {}
     for ticker_frame in frame.partition_by("ticker", maintain_order=True):
         if ticker_frame.is_empty():
             continue
         ticker = str(ticker_frame.get_column("ticker")[0])
-        parts = parts_by_ticker[ticker]
-        parts["session_date"].append(ticker_frame.get_column("session_date").cast(pl.Utf8).to_numpy())
-        parts["target_close"].append(ticker_frame.get_column("target_close").cast(pl.Float32).to_numpy())
-        for column in COVARIATE_COLUMNS:
-            parts[column].append(ticker_frame.get_column(column).cast(pl.Float32).to_numpy())
+        rows = [
+            ticker_frame.get_column(column).cast(pl.Float32, strict=False).to_numpy()
+            for column in (*TARGET_COLUMNS, *COVARIATE_COLUMNS)
+        ]
+        values = np.stack(rows).astype(np.float32, copy=False)
+        if values.shape[1] >= 2 and np.isfinite(values[: len(TARGET_COLUMNS)]).all(axis=0).any():
+            arrays[ticker] = values
+    return arrays
 
 
-def build_raw_inputs(parts_by_ticker: dict[str, dict[str, list]], train_sessions: set[str], validation_sessions: set[str], args: argparse.Namespace) -> PreparedSeries:
-    train_inputs: list[dict] = []
-    validation_inputs: list[dict] = []
-    train_bars = 0
-    validation_bars = 0
-    dropped_train = 0
-    dropped_validation = 0
-
-    for ticker in sorted(parts_by_ticker):
-        parts = parts_by_ticker[ticker]
-        session_dates = np.concatenate(parts["session_date"])
-        target = np.concatenate(parts["target_close"]).astype(np.float32, copy=False)
-        covariates = {column: np.concatenate(parts[column]).astype(np.float32, copy=False) for column in COVARIATE_COLUMNS}
-
-        train_mask = np.isin(session_dates, list(train_sessions))
-        validation_mask = np.isin(session_dates, list(validation_sessions))
-
-        train_item = masked_input(target, covariates, train_mask)
-        if train_item is not None and len(train_item["target"]) >= args.min_bars_per_ticker:
-            train_bars += int(len(train_item["target"]))
-            train_inputs.append(train_item)
-        else:
-            dropped_train += 1
-
-        if validation_sessions:
-            validation_item = masked_input(target, covariates, validation_mask)
-            if validation_item is not None and len(validation_item["target"]) >= args.min_bars_per_ticker:
-                validation_bars += int(len(validation_item["target"]))
-                validation_inputs.append(validation_item)
-            else:
-                dropped_validation += 1
-
-    if not train_inputs:
-        raise SystemExit("No train inputs remain after filtering. Lower --min-bars-per-ticker or widen the date range.")
-
-    metadata = {
-        "raw_train_series": len(train_inputs),
-        "raw_validation_series": len(validation_inputs),
-        "train_bars": train_bars,
-        "validation_bars": validation_bars,
-        "dropped_train_series": dropped_train,
-        "dropped_validation_series": dropped_validation,
-        "input_channels": {
-            "target": "target_close",
-            "past_covariates": list(COVARIATE_COLUMNS),
-        },
-    }
-    return PreparedSeries(
-        train_inputs=train_inputs,
-        validation_inputs=validation_inputs if validation_inputs else None,
-        metadata=metadata,
+def session_origins(frame: pl.DataFrame, min_past: int, prediction_length: int) -> dict[object, list[tuple[str, int]]]:
+    indexed = frame.with_columns(
+        pl.int_range(0, pl.len()).over("ticker").alias("__ticker_index"),
+        pl.len().over("ticker").alias("__ticker_len"),
     )
+    eligible = indexed.filter(
+        (pl.col("__ticker_index") >= min_past - 1)
+        & (pl.col("__ticker_index") <= pl.col("__ticker_len") - prediction_length - 1)
+    )
+    origins: dict[object, list[tuple[str, int]]] = {}
+    for row in eligible.select(["bar_time_market", "ticker", "__ticker_index"]).iter_rows(named=True):
+        origins.setdefault(row["bar_time_market"], []).append((str(row["ticker"]), int(row["__ticker_index"])))
+    return origins
 
 
-def masked_input(target: np.ndarray, covariates: dict[str, np.ndarray], mask: np.ndarray) -> dict | None:
-    if not mask.any():
-        return None
+def build_batch(
+    *,
+    arrays_by_ticker: dict[str, np.ndarray],
+    origin_refs: list[tuple[str, int]],
+    context_length: int,
+    prediction_length: int,
+    output_patch_size: int,
+):
+    import torch
+
+    contexts: list[np.ndarray] = []
+    future_targets: list[np.ndarray] = []
+    future_covariates: list[np.ndarray] = []
+    group_ids: list[np.ndarray] = []
+    for group_id, (ticker, origin_index) in enumerate(origin_refs):
+        values = arrays_by_ticker[ticker]
+        start_index = max(0, origin_index + 1 - context_length)
+        history = values[:, start_index : origin_index + 1]
+        context = np.full((VARIATE_COUNT, context_length), np.nan, dtype=np.float32)
+        context[:, -history.shape[1] :] = history
+
+        future = np.full((VARIATE_COUNT, prediction_length), np.nan, dtype=np.float32)
+        future[: len(TARGET_COLUMNS), :] = values[
+            : len(TARGET_COLUMNS), origin_index + 1 : origin_index + 1 + prediction_length
+        ]
+        future_cov = np.full((VARIATE_COUNT, prediction_length), np.nan, dtype=np.float32)
+
+        contexts.append(context)
+        future_targets.append(future)
+        future_covariates.append(future_cov)
+        group_ids.append(np.full(VARIATE_COUNT, group_id, dtype=np.int64))
+
     return {
-        "target": target[mask],
-        "past_covariates": {column: values[mask] for column, values in covariates.items()},
+        "context": torch.from_numpy(np.concatenate(contexts, axis=0)),
+        "future_target": torch.from_numpy(np.concatenate(future_targets, axis=0)),
+        "future_covariates": torch.from_numpy(np.concatenate(future_covariates, axis=0)),
+        "group_ids": torch.from_numpy(np.concatenate(group_ids, axis=0)),
+        "num_output_patches": math.ceil(prediction_length / output_patch_size),
     }
 
 
-def prepare_chronos_inputs(raw_inputs: list[dict], prediction_length: int, min_past: int, mode: str) -> list[dict]:
-    from chronos.chronos2.dataset import prepare_inputs
+def batched_refs(refs: list[tuple[str, int]], max_windows: int) -> Iterable[list[tuple[str, int]]]:
+    for index in range(0, len(refs), max_windows):
+        yield refs[index : index + max_windows]
 
-    return prepare_inputs(raw_inputs, prediction_length=prediction_length, min_past=min_past, mode=mode)
+
+class SessionStreamingChronosDataset:
+    def __init__(
+        self,
+        *,
+        processed_root: Path,
+        sessions: list[str],
+        tickers: list[str] | None,
+        session_scope: str,
+        context_length: int,
+        min_past: int,
+        prediction_length: int,
+        batch_size: int,
+        output_patch_size: int,
+        seed: int,
+        mode: str,
+        max_windows: int = 0,
+    ) -> None:
+        self.processed_root = processed_root
+        self.sessions = sessions
+        self.tickers = tickers
+        self.session_scope = session_scope
+        self.context_length = context_length
+        self.min_past = min_past
+        self.prediction_length = prediction_length
+        self.batch_size = batch_size
+        self.output_patch_size = output_patch_size
+        self.seed = seed
+        self.mode = mode
+        self.max_windows = max_windows
+
+    def __iter__(self) -> Iterator[dict]:
+        rng = np.random.default_rng(self.seed)
+        max_windows_per_batch = max(1, self.batch_size // VARIATE_COUNT)
+        emitted_windows = 0
+        while True:
+            sessions = list(self.sessions)
+            if self.mode == "train":
+                rng.shuffle(sessions)
+            for session in sessions:
+                frame = load_session_frame(self.processed_root, session, self.tickers, self.session_scope)
+                if frame.is_empty():
+                    continue
+                arrays = session_arrays(frame)
+                origins_by_time = session_origins(frame, self.min_past, self.prediction_length)
+                times = list(origins_by_time)
+                if self.mode == "train":
+                    rng.shuffle(times)
+                for timestamp in times:
+                    refs = [ref for ref in origins_by_time[timestamp] if ref[0] in arrays]
+                    if not refs:
+                        continue
+                    if self.mode == "train":
+                        rng.shuffle(refs)
+                    for chunk_refs in batched_refs(refs, max_windows_per_batch):
+                        if self.max_windows > 0 and emitted_windows >= self.max_windows:
+                            return
+                        if self.max_windows > 0:
+                            remaining = self.max_windows - emitted_windows
+                            chunk_refs = chunk_refs[:remaining]
+                        emitted_windows += len(chunk_refs)
+                        yield build_batch(
+                            arrays_by_ticker=arrays,
+                            origin_refs=chunk_refs,
+                            context_length=self.context_length,
+                            prediction_length=self.prediction_length,
+                            output_patch_size=self.output_patch_size,
+                        )
+            if self.mode != "train":
+                return
 
 
-def build_probe_windows(raw_inputs: list[dict] | None, args: argparse.Namespace) -> list[ProbeWindow]:
-    if not raw_inputs or args.probe_window_count <= 0:
-        return []
-
-    required_context = max(args.context_length, args.min_past)
+def iter_probe_candidates(
+    *,
+    processed_root: Path,
+    sessions: list[str],
+    tickers: list[str] | None,
+    session_scope: str,
+    context_length: int,
+    min_past: int,
+    prediction_length: int,
+) -> Iterator[ProbeWindow]:
     horizon = 1
-    eligible: list[tuple[int, int, int]] = []
-    for item_index, item in enumerate(raw_inputs):
-        target = np.asarray(item["target"], dtype=np.float32)
-        first_origin = required_context - 1
-        last_origin = len(target) - horizon - 1
-        if last_origin >= first_origin:
-            eligible.append((item_index, first_origin, last_origin))
-
-    if not eligible:
-        return []
-
-    rng = np.random.default_rng(args.probe_seed)
-    per_series = max(1, math.ceil(args.probe_window_count / len(eligible)))
-    selected_refs: list[tuple[int, int]] = []
-    for item_index, first_origin, last_origin in eligible:
-        available = last_origin - first_origin + 1
-        take = min(per_series, available)
-        origins = rng.choice(np.arange(first_origin, last_origin + 1), size=take, replace=False)
-        selected_refs.extend((item_index, int(origin)) for origin in origins)
-
-    if len(selected_refs) > args.probe_window_count:
-        keep = rng.choice(np.arange(len(selected_refs)), size=args.probe_window_count, replace=False)
-        selected_refs = [selected_refs[int(index)] for index in keep]
-
-    windows: list[ProbeWindow] = []
-    for item_index, origin in selected_refs:
-        item = raw_inputs[item_index]
-        target = np.asarray(item["target"], dtype=np.float32)
-        start = max(0, origin + 1 - args.context_length)
-        actual_index = origin + horizon
-        last_close = float(target[origin])
-        actual_close = float(target[actual_index])
-        if not np.isfinite(last_close) or not np.isfinite(actual_close) or last_close <= 0.0 or actual_close <= 0.0:
+    for session in sessions:
+        frame = load_session_frame(processed_root, session, tickers, session_scope)
+        if frame.is_empty():
             continue
-        windows.append(
-            ProbeWindow(
-                input={
-                    "target": target[start : origin + 1].astype(np.float32, copy=False),
-                    "past_covariates": {
-                        column: np.asarray(values, dtype=np.float32)[start : origin + 1]
-                        for column, values in item.get("past_covariates", {}).items()
+        arrays = session_arrays(frame)
+        origins_by_time = session_origins(frame, min_past, prediction_length)
+        for refs in origins_by_time.values():
+            for ticker, origin_index in refs:
+                values = arrays.get(ticker)
+                if values is None:
+                    continue
+                start_index = max(0, origin_index + 1 - context_length)
+                last_close = float(values[0, origin_index])
+                actual_close = float(values[0, origin_index + horizon])
+                if not np.isfinite(last_close) or not np.isfinite(actual_close) or last_close <= 0.0 or actual_close <= 0.0:
+                    continue
+                yield ProbeWindow(
+                    input={
+                        "target": values[: len(TARGET_COLUMNS), start_index : origin_index + 1],
+                        "past_covariates": {
+                            column: values[len(TARGET_COLUMNS) + idx, start_index : origin_index + 1]
+                            for idx, column in enumerate(COVARIATE_COLUMNS)
+                        },
                     },
-                },
-                last_close=last_close,
-                actual_close=actual_close,
-            )
-        )
-    return windows
+                    last_close=last_close,
+                    actual_close=actual_close,
+                )
+
+
+def build_probe_windows(
+    *,
+    processed_root: Path,
+    sessions: list[str],
+    tickers: list[str] | None,
+    session_scope: str,
+    context_length: int,
+    min_past: int,
+    prediction_length: int,
+    count: int,
+    seed: int,
+) -> list[ProbeWindow]:
+    if count <= 0 or not sessions:
+        return []
+    rng = np.random.default_rng(seed)
+    reservoir: list[ProbeWindow] = []
+    seen = 0
+    for window in iter_probe_candidates(
+        processed_root=processed_root,
+        sessions=sessions,
+        tickers=tickers,
+        session_scope=session_scope,
+        context_length=context_length,
+        min_past=min_past,
+        prediction_length=prediction_length,
+    ):
+        seen += 1
+        if len(reservoir) < count:
+            reservoir.append(window)
+        else:
+            replace_index = int(rng.integers(0, seen))
+            if replace_index < count:
+                reservoir[replace_index] = window
+    return reservoir
 
 
 def log_return(end_value: np.ndarray, start_value: np.ndarray) -> np.ndarray:
@@ -510,12 +591,76 @@ def require_lora_dependency() -> None:
         raise SystemExit("LoRA fine-tuning requires `peft`. Install it in this environment before running training.") from exc
 
 
+def apply_lora(model):
+    from peft import LoraConfig, get_peft_model
+
+    lora_config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=[
+            "self_attention.q",
+            "self_attention.v",
+            "self_attention.k",
+            "self_attention.o",
+            "output_patch_embedding.output_layer",
+        ],
+    )
+    model = get_peft_model(model, lora_config)
+    trainable, total = model.get_nb_trainable_parameters()
+    print(f"Using LoRA: trainable_parameters={trainable:,} total_parameters={total:,}", flush=True)
+    return model
+
+
+def make_training_args(args: argparse.Namespace, output_dir: Path, use_cpu: bool, has_sm80: bool, has_validation: bool):
+    from transformers.training_args import TrainingArguments
+
+    training_kwargs: dict = dict(
+        output_dir=str(output_dir),
+        per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        lr_scheduler_type="linear",
+        warmup_ratio=0.0,
+        optim="adamw_torch_fused",
+        logging_strategy="steps",
+        logging_steps=args.logging_steps,
+        disable_tqdm=False,
+        report_to="none",
+        max_steps=args.num_steps,
+        gradient_accumulation_steps=1,
+        dataloader_num_workers=0,
+        tf32=has_sm80 and not use_cpu,
+        bf16=has_sm80 and not use_cpu,
+        save_only_model=True,
+        prediction_loss_only=True,
+        save_total_limit=1,
+        save_strategy="no",
+        save_steps=None,
+        eval_strategy="no",
+        eval_steps=None,
+        load_best_model_at_end=False,
+        metric_for_best_model=None,
+        use_cpu=use_cpu,
+    )
+    if has_validation:
+        training_kwargs.update(
+            save_strategy="steps",
+            save_steps=args.eval_steps,
+            eval_strategy="steps",
+            eval_steps=args.eval_steps,
+            load_best_model_at_end=True,
+            metric_for_best_model="eval_loss",
+            label_names=["future_target"],
+        )
+    return TrainingArguments(**training_kwargs)
+
+
 def output_dir_for_args(processed_root: Path, args: argparse.Namespace) -> Path:
     if args.output_name:
         name = args.output_name
     else:
         name = (
-            f"chronos2_small_lora_1m_raw_ohlcv_ctx{args.context_length}_h{args.prediction_length}_"
+            f"chronos2_small_lora_1m_stream_targets_chl_ctx{args.context_length}_h{args.prediction_length}_"
             f"{args.start_date}_{args.end_date}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
     return processed_root / "models" / "chronos2" / name
@@ -526,11 +671,8 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def main() -> None:
-    args = parse_args()
-    start = date.fromisoformat(args.start_date)
-    end = date.fromisoformat(args.end_date)
-    if end < start:
+def validate_args(args: argparse.Namespace) -> None:
+    if date.fromisoformat(args.end_date) < date.fromisoformat(args.start_date):
         raise SystemExit("--end-date must be >= --start-date.")
     if args.context_length < 1 or args.min_past < 1:
         raise SystemExit("--context-length and --min-past must be positive.")
@@ -538,43 +680,67 @@ def main() -> None:
         raise SystemExit("--prediction-length must be positive.")
     if args.eval_steps < 1 or args.logging_steps < 1:
         raise SystemExit("--eval-steps and --logging-steps must be positive.")
-    if args.probe_window_count < 0 or args.probe_batch_size < 1:
-        raise SystemExit("--probe-window-count cannot be negative and --probe-batch-size must be positive.")
-    if args.min_bars_per_ticker < args.min_past + args.prediction_length:
-        raise SystemExit("--min-bars-per-ticker must be at least --min-past + --prediction-length.")
+    if args.batch_size < VARIATE_COUNT or args.probe_batch_size < VARIATE_COUNT:
+        raise SystemExit(f"--batch-size and --probe-batch-size must be at least {VARIATE_COUNT}.")
+    if args.eval_window_count < 0 or args.probe_window_count < 0:
+        raise SystemExit("--eval-window-count and --probe-window-count cannot be negative.")
+
+
+def dry_run(processed_root: Path, sessions: list[str], train_sessions: list[str], tickers: list[str] | None, args: argparse.Namespace) -> dict:
+    sample_session = train_sessions[0]
+    frame = load_session_frame(processed_root, sample_session, tickers, args.session_scope)
+    arrays = session_arrays(frame)
+    origins = session_origins(frame, args.min_past, args.prediction_length)
+    first_refs: list[tuple[str, int]] = []
+    for refs in origins.values():
+        first_refs = [ref for ref in refs if ref[0] in arrays][: max(1, args.batch_size // VARIATE_COUNT)]
+        if first_refs:
+            break
+    if not first_refs:
+        raise SystemExit("Dry run could not create a sample batch. Lower --min-past or choose a more active date range.")
+    batch_rows = len(first_refs) * VARIATE_COUNT
+    return {
+        "sample_session": sample_session,
+        "sessions": len(sessions),
+        "train_sessions": len(train_sessions),
+        "sample_rows": frame.height,
+        "sample_tickers": len(arrays),
+        "sample_windows": len(first_refs),
+        "context_shape": [batch_rows, args.context_length],
+        "future_target_shape": [batch_rows, args.prediction_length],
+        "future_covariates_shape": [batch_rows, args.prediction_length],
+        "targets": list(TARGET_COLUMNS),
+        "past_covariates": list(COVARIATE_COLUMNS),
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    validate_args(args)
 
     processed_root = Path(args.processed_root)
     add_chronos_src(Path(args.chronos_src))
+    start = date.fromisoformat(args.start_date)
+    end = date.fromisoformat(args.end_date)
     sessions = available_sessions(processed_root, start, end)
     if args.validation_sessions > 0 and len(sessions) <= args.validation_sessions:
         raise SystemExit("Date range must contain more sessions than --validation-sessions.")
 
     validation_session_list = sessions[-args.validation_sessions :] if args.validation_sessions > 0 else []
     train_session_list = sessions[: len(sessions) - len(validation_session_list)]
-    train_sessions = set(train_session_list)
-    validation_sessions = set(validation_session_list)
+    output_dir = output_dir_for_args(processed_root, args)
 
-    print(f"Preparing data from {len(sessions)} sessions: train={len(train_sessions)} validation={len(validation_sessions)}", flush=True)
+    print(
+        f"Preparing streaming training from {len(sessions)} sessions: "
+        f"train={len(train_session_list)} validation={len(validation_session_list)}",
+        flush=True,
+    )
     tickers = selected_tickers(processed_root, train_session_list, args)
     if tickers:
         print(f"Selected {len(tickers)} tickers.", flush=True)
     else:
         print("Using all tickers in range.", flush=True)
 
-    parts_by_ticker: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-    for chunk_index, chunk_sessions in enumerate(session_chunks(sessions, args.load_chunk_sessions), start=1):
-        frame = load_raw_chunk(processed_root, chunk_sessions, tickers, args.session_scope)
-        append_parts(parts_by_ticker, frame)
-        print(
-            f"Loaded chunk {chunk_index}: sessions={chunk_sessions[0]}..{chunk_sessions[-1]} "
-            f"rows={frame.height:,} tickers_seen={len(parts_by_ticker):,}",
-            flush=True,
-        )
-
-    raw_series = build_raw_inputs(parts_by_ticker, train_sessions, validation_sessions, args)
-    del parts_by_ticker
-
-    output_dir = output_dir_for_args(processed_root, args)
     metadata = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "status": "prepared",
@@ -583,59 +749,99 @@ def main() -> None:
         "args": vars(args),
         "data": {
             "sessions": len(sessions),
-            "train_sessions": len(train_sessions),
-            "validation_sessions": len(validation_sessions),
+            "train_sessions": len(train_session_list),
+            "validation_sessions": len(validation_session_list),
             "train_start": train_session_list[0],
             "train_end": train_session_list[-1],
             "validation_start": validation_session_list[0] if validation_session_list else None,
             "validation_end": validation_session_list[-1] if validation_session_list else None,
-            **raw_series.metadata,
+            "streaming": True,
+            "targets": list(TARGET_COLUMNS),
+            "past_covariates": list(COVARIATE_COLUMNS),
+            "variates_per_window": VARIATE_COUNT,
         },
     }
-    write_json(output_dir / "metadata.json", metadata)
 
     if args.dry_run:
         metadata["status"] = "dry_run_complete"
+        metadata["dry_run"] = dry_run(processed_root, sessions, train_session_list, tickers, args)
         write_json(output_dir / "metadata.json", metadata)
+        print(json.dumps(metadata["dry_run"], indent=2, sort_keys=True), flush=True)
         print(f"Dry run complete. Metadata written to {output_dir / 'metadata.json'}", flush=True)
         return
 
-    probe_windows = build_probe_windows(raw_series.validation_inputs, args)
+    require_lora_dependency()
+    print("Loading Chronos model after streaming data plan is ready...", flush=True)
+    pipeline = load_chronos_pipeline(args.model_id, args.device_map)
+
+    import torch
+    from chronos.chronos2.pipeline import Chronos2Pipeline
+    from chronos.chronos2.trainer import Chronos2Trainer, EvaluateAndSaveFinalStepCallback
+    from torch.utils.data import IterableDataset
+    from transformers.trainer_callback import PrinterCallback
+
+    model = apply_lora(pipeline.model)
+    use_cpu = str(model.device) == "cpu"
+    has_sm80 = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
+    output_patch_size = pipeline.model_output_patch_size
+    StreamingDataset = type("StreamingSessionChronosDataset", (SessionStreamingChronosDataset, IterableDataset), {})
+
+    train_dataset = StreamingDataset(
+        processed_root=processed_root,
+        sessions=train_session_list,
+        tickers=tickers,
+        session_scope=args.session_scope,
+        context_length=args.context_length,
+        min_past=args.min_past,
+        prediction_length=args.prediction_length,
+        batch_size=args.batch_size,
+        output_patch_size=output_patch_size,
+        seed=args.seed,
+        mode="train",
+    )
+    validation_dataset = (
+        StreamingDataset(
+            processed_root=processed_root,
+            sessions=validation_session_list,
+            tickers=tickers,
+            session_scope=args.session_scope,
+            context_length=args.context_length,
+            min_past=args.min_past,
+            prediction_length=args.prediction_length,
+            batch_size=args.batch_size,
+            output_patch_size=output_patch_size,
+            seed=args.seed + 1,
+            mode="validation",
+            max_windows=args.eval_window_count,
+        )
+        if validation_session_list
+        else None
+    )
+
+    probe_windows = build_probe_windows(
+        processed_root=processed_root,
+        sessions=validation_session_list,
+        tickers=tickers,
+        session_scope=args.session_scope,
+        context_length=args.context_length,
+        min_past=args.min_past,
+        prediction_length=args.prediction_length,
+        count=args.probe_window_count,
+        seed=args.seed + 2,
+    )
     metadata["data"]["probe_windows"] = len(probe_windows)
     metadata["probe_metrics_path"] = str(output_dir / "probe_metrics.jsonl") if probe_windows else None
+    metadata["status"] = "training"
+    metadata["training_started_at"] = datetime.now().isoformat(timespec="seconds")
     write_json(output_dir / "metadata.json", metadata)
-    if probe_windows:
+
+    callbacks = [EvaluateAndSaveFinalStepCallback()] if validation_dataset is not None else []
+    if probe_windows and validation_dataset is not None:
         print(
             f"Probe evaluation enabled: windows={len(probe_windows):,} eval_steps={args.eval_steps} "
             f"batch_size={args.probe_batch_size} metrics={output_dir / 'probe_metrics.jsonl'}",
             flush=True,
         )
-    elif args.probe_window_count > 0:
-        print("Probe evaluation disabled: no eligible validation windows.", flush=True)
-
-    print("Preprocessing Chronos tensors before loading the GPU model...", flush=True)
-    train_inputs = prepare_chronos_inputs(raw_series.train_inputs, args.prediction_length, args.min_past, "train")
-    validation_inputs = (
-        prepare_chronos_inputs(raw_series.validation_inputs, args.prediction_length, args.min_past, "validation")
-        if raw_series.validation_inputs
-        else None
-    )
-    metadata["data"]["prepared_train_series"] = len(train_inputs)
-    metadata["data"]["prepared_validation_series"] = len(validation_inputs or [])
-    write_json(output_dir / "metadata.json", metadata)
-
-    del raw_series
-
-    require_lora_dependency()
-    print("Loading Chronos model after data preparation is complete...", flush=True)
-    pipeline = load_chronos_pipeline(args.model_id, args.device_map)
-
-    metadata["status"] = "training"
-    metadata["training_started_at"] = datetime.now().isoformat(timespec="seconds")
-    write_json(output_dir / "metadata.json", metadata)
-
-    callbacks = []
-    if probe_windows and validation_inputs:
         callbacks.append(
             make_probe_callback(
                 probe_windows=probe_windows,
@@ -646,34 +852,43 @@ def main() -> None:
                 output_path=output_dir / "probe_metrics.jsonl",
             )
         )
+    elif args.probe_window_count > 0:
+        print("Probe evaluation disabled: no eligible validation windows.", flush=True)
 
-    finetuned_pipeline = pipeline.fit(
-        inputs=train_inputs,
-        validation_inputs=validation_inputs,
-        finetune_mode="lora",
-        prediction_length=args.prediction_length,
-        context_length=args.context_length,
-        min_past=args.min_past,
-        learning_rate=args.learning_rate,
-        num_steps=args.num_steps,
-        batch_size=args.batch_size,
+    training_args = make_training_args(
+        args=args,
         output_dir=output_dir,
-        finetuned_ckpt_name="finetuned-ckpt",
-        convert_inputs=False,
-        logging_steps=args.logging_steps,
-        eval_steps=args.eval_steps,
-        save_steps=args.eval_steps,
-        callbacks=callbacks,
-        remove_printer_callback=True,
+        use_cpu=use_cpu,
+        has_sm80=has_sm80,
+        has_validation=validation_dataset is not None,
     )
+    if not use_cpu:
+        training_args._n_gpu = 1
+
+    trainer = Chronos2Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=validation_dataset,
+        callbacks=callbacks,
+    )
+    trainer.pop_callback(PrinterCallback)
+    trainer.train()
+
+    model.chronos_config.context_length = max(model.chronos_config.context_length, args.context_length)
+    model.chronos_config.max_output_patches = max(
+        model.chronos_config.max_output_patches, math.ceil(args.prediction_length / output_patch_size)
+    )
+    model.config.chronos_config = model.chronos_config.__dict__
+    finetuned_pipeline = Chronos2Pipeline(model=model)
+    finetuned_path = output_dir / "finetuned-ckpt"
+    finetuned_pipeline.save_pretrained(finetuned_path)
 
     metadata["status"] = "complete"
     metadata["completed_at"] = datetime.now().isoformat(timespec="seconds")
-    metadata["finetuned_checkpoint"] = str(output_dir / "finetuned-ckpt")
+    metadata["finetuned_checkpoint"] = str(finetuned_path)
     write_json(output_dir / "metadata.json", metadata)
-    print(f"Fine-tuned model saved to {output_dir / 'finetuned-ckpt'}", flush=True)
-
-    del finetuned_pipeline
+    print(f"Fine-tuned model saved to {finetuned_path}", flush=True)
 
 
 if __name__ == "__main__":
