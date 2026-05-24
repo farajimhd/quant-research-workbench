@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -45,6 +47,13 @@ class PreparedSeries:
     metadata: dict
 
 
+@dataclass(slots=True)
+class ProbeWindow:
+    input: dict
+    last_close: float
+    actual_close: float
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -71,6 +80,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--learning-rate", type=float, default=1e-4, help="LoRA learning rate.")
     parser.add_argument("--logging-steps", type=int, default=50, help="Trainer logging interval.")
+    parser.add_argument("--eval-steps", type=int, default=500, help="Validation/probe evaluation interval in training steps.")
     parser.add_argument(
         "--validation-sessions",
         type=int,
@@ -102,6 +112,25 @@ def parse_args() -> argparse.Namespace:
         default=20,
         help="Number of provider sessions loaded per Polars chunk while preparing ticker arrays.",
     )
+    parser.add_argument(
+        "--probe-window-count",
+        type=int,
+        default=3000,
+        help="Fixed validation forecast windows used for trading-metric probes. Use 0 to disable probes.",
+    )
+    parser.add_argument(
+        "--probe-batch-size",
+        type=int,
+        default=1024,
+        help="Chronos prediction batch size for probe evaluation, measured in variates.",
+    )
+    parser.add_argument(
+        "--probe-direction-threshold-bps",
+        type=float,
+        default=0.0,
+        help="Return threshold for probe up/down/flat direction labels, in basis points.",
+    )
+    parser.add_argument("--probe-seed", type=int, default=17, help="Random seed for fixed validation probe windows.")
     parser.add_argument(
         "--output-name",
         default="",
@@ -281,6 +310,188 @@ def prepare_chronos_inputs(raw_inputs: list[dict], prediction_length: int, min_p
     return prepare_inputs(raw_inputs, prediction_length=prediction_length, min_past=min_past, mode=mode)
 
 
+def build_probe_windows(raw_inputs: list[dict] | None, args: argparse.Namespace) -> list[ProbeWindow]:
+    if not raw_inputs or args.probe_window_count <= 0:
+        return []
+
+    required_context = max(args.context_length, args.min_past)
+    horizon = 1
+    eligible: list[tuple[int, int, int]] = []
+    for item_index, item in enumerate(raw_inputs):
+        target = np.asarray(item["target"], dtype=np.float32)
+        first_origin = required_context - 1
+        last_origin = len(target) - horizon - 1
+        if last_origin >= first_origin:
+            eligible.append((item_index, first_origin, last_origin))
+
+    if not eligible:
+        return []
+
+    rng = np.random.default_rng(args.probe_seed)
+    per_series = max(1, math.ceil(args.probe_window_count / len(eligible)))
+    selected_refs: list[tuple[int, int]] = []
+    for item_index, first_origin, last_origin in eligible:
+        available = last_origin - first_origin + 1
+        take = min(per_series, available)
+        origins = rng.choice(np.arange(first_origin, last_origin + 1), size=take, replace=False)
+        selected_refs.extend((item_index, int(origin)) for origin in origins)
+
+    if len(selected_refs) > args.probe_window_count:
+        keep = rng.choice(np.arange(len(selected_refs)), size=args.probe_window_count, replace=False)
+        selected_refs = [selected_refs[int(index)] for index in keep]
+
+    windows: list[ProbeWindow] = []
+    for item_index, origin in selected_refs:
+        item = raw_inputs[item_index]
+        target = np.asarray(item["target"], dtype=np.float32)
+        start = max(0, origin + 1 - args.context_length)
+        actual_index = origin + horizon
+        last_close = float(target[origin])
+        actual_close = float(target[actual_index])
+        if not np.isfinite(last_close) or not np.isfinite(actual_close) or last_close <= 0.0 or actual_close <= 0.0:
+            continue
+        windows.append(
+            ProbeWindow(
+                input={
+                    "target": target[start : origin + 1].astype(np.float32, copy=False),
+                    "past_covariates": {
+                        column: np.asarray(values, dtype=np.float32)[start : origin + 1]
+                        for column, values in item.get("past_covariates", {}).items()
+                    },
+                },
+                last_close=last_close,
+                actual_close=actual_close,
+            )
+        )
+    return windows
+
+
+def log_return(end_value: np.ndarray, start_value: np.ndarray) -> np.ndarray:
+    return np.log(end_value / start_value)
+
+
+def direction_labels(returns: np.ndarray, threshold: float) -> np.ndarray:
+    labels = np.zeros(len(returns), dtype=np.int8)
+    labels[returns > threshold] = 1
+    labels[returns < -threshold] = -1
+    return labels
+
+
+def correlation(left: np.ndarray, right: np.ndarray) -> float:
+    if len(left) < 2 or np.std(left) == 0.0 or np.std(right) == 0.0:
+        return float("nan")
+    return float(np.corrcoef(left, right)[0, 1])
+
+
+def make_probe_callback(
+    *,
+    probe_windows: list[ProbeWindow],
+    prediction_length: int,
+    context_length: int,
+    batch_size: int,
+    direction_threshold_bps: float,
+    output_path: Path,
+):
+    from chronos.chronos2.pipeline import Chronos2Pipeline
+    from transformers.trainer_callback import TrainerCallback
+
+    class ProbeEvaluationCallback(TrainerCallback):
+        def __init__(self) -> None:
+            self.probe_inputs = [window.input for window in probe_windows]
+            self.last_close = np.array([window.last_close for window in probe_windows], dtype=np.float64)
+            self.actual_close = np.array([window.actual_close for window in probe_windows], dtype=np.float64)
+            self.batch_size = batch_size
+            self.threshold = direction_threshold_bps / 10_000.0
+            self.output_path = output_path
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def on_evaluate(self, args, state, control, metrics=None, model=None, **kwargs):  # noqa: ANN001
+            if model is None or not self.probe_inputs:
+                return control
+
+            started = time.perf_counter()
+            was_training = bool(getattr(model, "training", False))
+            current_batch_size = self.batch_size
+            try:
+                model.eval()
+                while True:
+                    try:
+                        pipeline = Chronos2Pipeline(model=model)
+                        _, means = pipeline.predict_quantiles(
+                            self.probe_inputs,
+                            prediction_length=prediction_length,
+                            quantile_levels=[0.5],
+                            batch_size=current_batch_size,
+                            context_length=context_length,
+                            limit_prediction_length=False,
+                        )
+                        break
+                    except RuntimeError as exc:
+                        if "out of memory" not in str(exc).lower() or current_batch_size <= 64:
+                            raise
+                        current_batch_size = max(64, current_batch_size // 2)
+                        try:
+                            import torch
+
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+
+                predicted_close = np.array([float(mean[0, 0].detach().cpu().item()) for mean in means], dtype=np.float64)
+                finite = np.isfinite(predicted_close) & np.isfinite(self.actual_close) & np.isfinite(self.last_close)
+                finite &= (predicted_close > 0.0) & (self.actual_close > 0.0) & (self.last_close > 0.0)
+                if not finite.any():
+                    print(f"[probe] step={state.global_step} skipped: no finite predictions", flush=True)
+                    return control
+
+                predicted_return = log_return(predicted_close[finite], self.last_close[finite])
+                actual_return = log_return(self.actual_close[finite], self.last_close[finite])
+                error = predicted_return - actual_return
+                pred_direction = direction_labels(predicted_return, self.threshold)
+                actual_direction = direction_labels(actual_return, self.threshold)
+                abs_error_bps = np.abs(error) * 10_000.0
+                naive_abs_error_bps = np.abs(actual_return) * 10_000.0
+                row = {
+                    "step": int(state.global_step),
+                    "n": int(len(actual_return)),
+                    "eval_loss": float(metrics["eval_loss"]) if metrics and "eval_loss" in metrics else None,
+                    "dir_acc_pct": float(np.mean(pred_direction == actual_direction) * 100.0),
+                    "mae_bps": float(np.mean(abs_error_bps)),
+                    "rmse_bps": float(np.sqrt(np.mean(np.square(error))) * 10_000.0),
+                    "naive_mae_bps": float(np.mean(naive_abs_error_bps)),
+                    "edge_vs_naive_bps": float(np.mean(naive_abs_error_bps) - np.mean(abs_error_bps)),
+                    "bias_bps": float(np.mean(error) * 10_000.0),
+                    "corr": correlation(predicted_return, actual_return),
+                    "batch_size": int(current_batch_size),
+                    "elapsed_s": float(time.perf_counter() - started),
+                }
+                with self.output_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(row, sort_keys=True) + "\n")
+                eval_loss_text = f"{row['eval_loss']:.6f}" if row["eval_loss"] is not None else "na"
+                print(
+                    "[probe] "
+                    f"step={row['step']} n={row['n']:,} "
+                    f"dir={row['dir_acc_pct']:.2f}% "
+                    f"mae={row['mae_bps']:.2f}bps "
+                    f"naive={row['naive_mae_bps']:.2f}bps "
+                    f"edge={row['edge_vs_naive_bps']:+.2f}bps "
+                    f"bias={row['bias_bps']:+.2f}bps "
+                    f"corr={row['corr']:.4f} "
+                    f"eval_loss={eval_loss_text} "
+                    f"elapsed={row['elapsed_s']:.1f}s",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(f"[probe] step={state.global_step} skipped: {type(exc).__name__}: {exc}", flush=True)
+            finally:
+                if was_training:
+                    model.train()
+            return control
+
+    return ProbeEvaluationCallback()
+
+
 def load_chronos_pipeline(model_id: str, device_map: str):
     try:
         from chronos import BaseChronosPipeline
@@ -325,6 +536,10 @@ def main() -> None:
         raise SystemExit("--context-length and --min-past must be positive.")
     if args.prediction_length < 1:
         raise SystemExit("--prediction-length must be positive.")
+    if args.eval_steps < 1 or args.logging_steps < 1:
+        raise SystemExit("--eval-steps and --logging-steps must be positive.")
+    if args.probe_window_count < 0 or args.probe_batch_size < 1:
+        raise SystemExit("--probe-window-count cannot be negative and --probe-batch-size must be positive.")
     if args.min_bars_per_ticker < args.min_past + args.prediction_length:
         raise SystemExit("--min-bars-per-ticker must be at least --min-past + --prediction-length.")
 
@@ -385,6 +600,19 @@ def main() -> None:
         print(f"Dry run complete. Metadata written to {output_dir / 'metadata.json'}", flush=True)
         return
 
+    probe_windows = build_probe_windows(raw_series.validation_inputs, args)
+    metadata["data"]["probe_windows"] = len(probe_windows)
+    metadata["probe_metrics_path"] = str(output_dir / "probe_metrics.jsonl") if probe_windows else None
+    write_json(output_dir / "metadata.json", metadata)
+    if probe_windows:
+        print(
+            f"Probe evaluation enabled: windows={len(probe_windows):,} eval_steps={args.eval_steps} "
+            f"batch_size={args.probe_batch_size} metrics={output_dir / 'probe_metrics.jsonl'}",
+            flush=True,
+        )
+    elif args.probe_window_count > 0:
+        print("Probe evaluation disabled: no eligible validation windows.", flush=True)
+
     print("Preprocessing Chronos tensors before loading the GPU model...", flush=True)
     train_inputs = prepare_chronos_inputs(raw_series.train_inputs, args.prediction_length, args.min_past, "train")
     validation_inputs = (
@@ -406,6 +634,19 @@ def main() -> None:
     metadata["training_started_at"] = datetime.now().isoformat(timespec="seconds")
     write_json(output_dir / "metadata.json", metadata)
 
+    callbacks = []
+    if probe_windows and validation_inputs:
+        callbacks.append(
+            make_probe_callback(
+                probe_windows=probe_windows,
+                prediction_length=args.prediction_length,
+                context_length=args.context_length,
+                batch_size=args.probe_batch_size,
+                direction_threshold_bps=args.probe_direction_threshold_bps,
+                output_path=output_dir / "probe_metrics.jsonl",
+            )
+        )
+
     finetuned_pipeline = pipeline.fit(
         inputs=train_inputs,
         validation_inputs=validation_inputs,
@@ -420,6 +661,9 @@ def main() -> None:
         finetuned_ckpt_name="finetuned-ckpt",
         convert_inputs=False,
         logging_steps=args.logging_steps,
+        eval_steps=args.eval_steps,
+        save_steps=args.eval_steps,
+        callbacks=callbacks,
         remove_printer_callback=True,
     )
 
