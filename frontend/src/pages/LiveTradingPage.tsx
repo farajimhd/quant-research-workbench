@@ -3082,9 +3082,9 @@ function newsLabels(item: LiveNewsArticle, maxLabels = 3) {
 }
 
 function liveNewsIndicator(item: LiveNewsArticle): { className: string; icon: typeof Newspaper; label: string } {
-  if (newsTickerCount(item) > 1) return { className: "multi", icon: Newspaper, label: "Multi-ticker" };
-  if ((item.recency || "").toLowerCase() === "hot") return { className: "hot-company", icon: Megaphone, label: "Hot company news" };
-  return { className: "company", icon: Flame, label: "Company news" };
+  if (newsTickerCount(item) > 1) return { className: "multi", icon: Newspaper, label: "Market News" };
+  if ((item.recency || "").toLowerCase() === "hot") return { className: "hot-company", icon: Megaphone, label: "Company News" };
+  return { className: "company", icon: Flame, label: "Company News" };
 }
 
 function newsTickerCount(item: LiveNewsArticle) {
