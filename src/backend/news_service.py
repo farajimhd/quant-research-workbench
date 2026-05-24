@@ -353,10 +353,13 @@ def news_article_payload(row: dict[str, Any]) -> dict[str, Any]:
     article_tickers = row.get("article_tickers") or raw_article_tickers(row.get("raw_json"))
     return {
         "age_minutes": float(row.get("news_age_minutes") or 0),
+        "body_text": row.get("body_text") or "",
         "channels": row.get("channels") or [],
+        "pdf_text": row.get("pdf_text") or "",
         "published_et": row.get("published_et") or "",
         "recency": row.get("news_recency") or "cold",
         "tags": row.get("tags") or [],
+        "teaser": row.get("teaser") or "",
         "ticker": row.get("ticker") or "",
         "ticker_count": int(row.get("article_ticker_count") or len(article_tickers) or 1),
         "tickers": article_tickers or [str(row.get("ticker") or "")],

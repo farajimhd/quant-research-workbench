@@ -115,10 +115,13 @@ type LiveNextSignalPayload = {
 
 type LiveNewsArticle = {
   age_minutes: number;
+  body_text?: string;
   channels: string[];
+  pdf_text?: string;
   published_et: string;
   recency: string;
   tags: string[];
+  teaser?: string;
   ticker: string;
   ticker_count?: number;
   tickers?: string[];
@@ -2319,6 +2322,7 @@ function ChartTradePanel({
     },
   ];
   const spreadWarning = spreadTone === "warning" || spreadTone === "danger";
+  const [selectedNewsItem, setSelectedNewsItem] = useState<LiveNewsArticle | null>(null);
   const newsItems = liveNewsItems(row, session);
   const companyNewsItems = newsItems.filter((item) => newsTickerCount(item) <= 1);
   const otherNewsItems = newsItems.filter((item) => newsTickerCount(item) > 1);
@@ -2407,10 +2411,18 @@ function ChartTradePanel({
           </div>
         </div>
         <div className="live-news-sections">
-          <LiveNewsSection empty="No single-company headlines by this bar." items={companyNewsItems} title="Company News" />
-          <LiveNewsSection empty="No multi-ticker or analyst headlines by this bar." items={otherNewsItems} title="Other / Analyst News" />
+          <LiveNewsSection empty="No single-company headlines by this bar." items={companyNewsItems} title="Company News" onOpen={setSelectedNewsItem} />
+          <LiveNewsSection
+            collapsible
+            defaultOpen={false}
+            empty="No multi-ticker or analyst headlines by this bar."
+            items={otherNewsItems}
+            title="Other / Analyst News"
+            onOpen={setSelectedNewsItem}
+          />
         </div>
       </div>
+      {selectedNewsItem ? <LiveNewsDetailPopover item={selectedNewsItem} onClose={() => setSelectedNewsItem(null)} /> : null}
       <div className="live-execution-panel">
         <div className="live-strategy-row">
           <LiveSelect label="Strategy" value={strategy} values={["Manual", "Momentum Assist"]} onChange={setStrategy} />
@@ -2467,34 +2479,49 @@ function ChartTradePanel({
   );
 }
 
-function LiveNewsSection({ empty, items, title }: { empty: string; items: LiveNewsArticle[]; title: string }) {
+function LiveNewsSection({
+  collapsible = false,
+  defaultOpen = true,
+  empty,
+  items,
+  onOpen,
+  title,
+}: {
+  collapsible?: boolean;
+  defaultOpen?: boolean;
+  empty: string;
+  items: LiveNewsArticle[];
+  onOpen: (item: LiveNewsArticle) => void;
+  title: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const showBody = !collapsible || open;
   return (
-    <section className="live-news-section">
-      <div className="live-news-section-title">
+    <section className={showBody ? "live-news-section" : "live-news-section collapsed"}>
+      <button className={collapsible ? "live-news-section-title collapsible" : "live-news-section-title"} type="button" onClick={() => collapsible && setOpen((current) => !current)}>
         <span>{title}</span>
-        <strong>{items.length}</strong>
-      </div>
-      {items.length ? (
+        <strong>{collapsible ? `${items.length} ${open ? "Hide" : "Show"}` : items.length}</strong>
+      </button>
+      {showBody && items.length ? (
         <div className="live-news-list">
           {items.map((item, index) => (
-            <LiveNewsItem item={item} key={`${item.published_et}-${index}`} />
+            <LiveNewsItem item={item} key={`${item.published_et}-${index}`} onOpen={onOpen} />
           ))}
         </div>
-      ) : (
+      ) : showBody ? (
         <p>{empty}</p>
-      )}
+      ) : null}
     </section>
   );
 }
 
-function LiveNewsItem({ item }: { item: LiveNewsArticle }) {
+function LiveNewsItem({ item, onOpen }: { item: LiveNewsArticle; onOpen: (item: LiveNewsArticle) => void }) {
   const indicator = liveNewsIndicator(item);
   const NewsIcon = indicator.icon;
   return (
-    <a href={item.url || undefined} target="_blank" rel="noreferrer" title={item.title}>
+    <button className="live-news-item-button" type="button" onClick={() => onOpen(item)} title={item.title}>
       <div className="live-news-meta">
         <time dateTime={item.published_et}>{formatNewsDateTime(item.published_et)}</time>
-        <span className={`live-news-recency-chip ${item.recency || "cold"}`}>{item.recency || "cold"}</span>
       </div>
       <div className="live-news-title-row">
         <NewsIcon className={`live-news-type-icon ${indicator.className}`} size={15} aria-label={indicator.label} />
@@ -2506,7 +2533,56 @@ function LiveNewsItem({ item }: { item: LiveNewsArticle }) {
           <span key={label}>{label}</span>
         ))}
       </div>
-    </a>
+    </button>
+  );
+}
+
+function LiveNewsDetailPopover({ item, onClose }: { item: LiveNewsArticle; onClose: () => void }) {
+  const indicator = liveNewsIndicator(item);
+  const NewsIcon = indicator.icon;
+  const bodyText = [item.teaser, item.body_text].map((value) => String(value || "").trim()).filter(Boolean).join("\n\n");
+  const pdfText = String(item.pdf_text || "").trim();
+  return (
+    <div className="live-news-detail-backdrop" role="presentation" onMouseDown={onClose}>
+      <aside className="live-news-detail-popover" role="dialog" aria-modal="true" aria-label="News details" onMouseDown={(event) => event.stopPropagation()}>
+        <header className="live-news-detail-header">
+          <div>
+            <span className={`live-news-detail-category ${indicator.className}`}>
+              <NewsIcon size={15} />
+              {indicator.label}
+            </span>
+            <h3>{item.title}</h3>
+            <time dateTime={item.published_et}>{formatNewsDateTime(item.published_et)}</time>
+          </div>
+          <button className="icon-button" type="button" title="Close news" onClick={onClose}>
+            <X size={15} />
+          </button>
+        </header>
+        <div className="live-news-detail-labels">
+          {newsLabels(item, 8).map((label) => (
+            <span key={label}>{label}</span>
+          ))}
+        </div>
+        <div className="live-news-detail-scroll">
+          <section>
+            <h4>Article</h4>
+            {bodyText ? <p>{bodyText}</p> : <p className="muted">No article text was cached for this headline.</p>}
+          </section>
+          {pdfText ? (
+            <section>
+              <h4>PDF Text</h4>
+              <p>{pdfText}</p>
+            </section>
+          ) : null}
+          {item.url ? (
+            <section>
+              <h4>Source</h4>
+              <p className="live-news-detail-source">{item.url}</p>
+            </section>
+          ) : null}
+        </div>
+      </aside>
+    </div>
   );
 }
 
@@ -2998,11 +3074,11 @@ function formatNewsDateTime(value: string) {
   }).format(new Date(timestamp));
 }
 
-function newsLabels(item: LiveNewsArticle) {
+function newsLabels(item: LiveNewsArticle, maxLabels = 3) {
   const labels = [...(item.tickers?.length ? item.tickers : [item.ticker]), ...(item.channels ?? []), ...(item.tags ?? [])]
     .map((label) => String(label || "").trim())
     .filter(Boolean);
-  return Array.from(new Set(labels)).slice(0, 5);
+  return Array.from(new Set(labels)).slice(0, maxLabels);
 }
 
 function liveNewsIndicator(item: LiveNewsArticle): { className: string; icon: typeof Newspaper; label: string } {
