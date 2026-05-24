@@ -25,6 +25,7 @@ class FeatureTemporalTransformer(nn.Module):
         self.horizon = horizon
         self.target_count = target_count
         self.config = config
+        self.feature_attention_chunk_size = max(1, int(config.feature_attention_chunk_size))
 
         self.value_projection = nn.Linear(1, config.d_model)
         self.feature_embedding = nn.Embedding(feature_count, config.d_model)
@@ -86,7 +87,8 @@ class FeatureTemporalTransformer(nn.Module):
         time_embed = self.time_projection(time_features).unsqueeze(2)
 
         tokens = token_values + feature_embed + position_embed + time_embed
-        encoded_features = self.feature_encoder(tokens.reshape(batch_size * seq_len, feature_count, -1))
+        flat_tokens = tokens.reshape(batch_size * seq_len, feature_count, -1)
+        encoded_features = self.encode_features(flat_tokens)
         feature_weights = torch.softmax(self.feature_pool(encoded_features), dim=1)
         bar_tokens = (encoded_features * feature_weights).sum(dim=1).reshape(batch_size, seq_len, -1)
 
@@ -95,6 +97,15 @@ class FeatureTemporalTransformer(nn.Module):
         prediction = self.regression_head(last_token).reshape(batch_size, self.horizon, self.target_count)
         direction_logits = self.direction_head(last_token)
         return prediction, direction_logits
+
+    def encode_features(self, flat_tokens: torch.Tensor) -> torch.Tensor:
+        if flat_tokens.shape[0] <= self.feature_attention_chunk_size:
+            return self.feature_encoder(flat_tokens)
+        encoded_chunks = [
+            self.feature_encoder(chunk)
+            for chunk in flat_tokens.split(self.feature_attention_chunk_size, dim=0)
+        ]
+        return torch.cat(encoded_chunks, dim=0)
 
 
 def forecast_loss(

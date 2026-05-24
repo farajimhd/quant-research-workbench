@@ -64,6 +64,7 @@ class DataConfig:
 class ModelConfig:
     d_model: int = 128
     feature_attention_layers: int = 1
+    feature_attention_chunk_size: int = 32768
     temporal_layers: int = 4
     num_heads: int = 4
     ff_dim: int = 512

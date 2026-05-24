@@ -63,6 +63,12 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--d-model", type=int, default=defaults.model.d_model)
     parser.add_argument("--feature-attention-layers", type=int, default=defaults.model.feature_attention_layers)
+    parser.add_argument(
+        "--feature-attention-chunk-size",
+        type=int,
+        default=defaults.model.feature_attention_chunk_size,
+        help="Maximum flattened batch*context rows per feature-attention call. Keeps CUDA efficient attention under kernel limits.",
+    )
     parser.add_argument("--temporal-layers", type=int, default=defaults.model.temporal_layers)
     parser.add_argument("--num-heads", type=int, default=defaults.model.num_heads)
     parser.add_argument("--ff-dim", type=int, default=defaults.model.ff_dim)
@@ -126,6 +132,7 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
     model = ModelConfig(
         d_model=args.d_model,
         feature_attention_layers=args.feature_attention_layers,
+        feature_attention_chunk_size=args.feature_attention_chunk_size,
         temporal_layers=args.temporal_layers,
         num_heads=args.num_heads,
         ff_dim=args.ff_dim,
@@ -638,6 +645,7 @@ def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
         "model": {
             "d_model": config.model.d_model,
             "feature_attention_layers": config.model.feature_attention_layers,
+            "feature_attention_chunk_size": config.model.feature_attention_chunk_size,
             "temporal_layers": config.model.temporal_layers,
             "num_heads": config.model.num_heads,
             "ff_dim": config.model.ff_dim,
