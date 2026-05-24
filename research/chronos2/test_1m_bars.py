@@ -23,7 +23,6 @@ from src.data_provider.provider import MarketDataProvider  # noqa: E402
 
 
 DEFAULT_CHRONOS_SRC = Path("D:/TradingCodes/public-codes/chronos-forecasting-main/src")
-DEFAULT_FEATURE_GROUPS = ["core", "session", "volatility", "volume_liquidity", "shock"]
 DEFAULT_QUANTILES = [0.1, 0.5, 0.9]
 PREDICTION_FIELDS = [
     "ticker",
@@ -277,12 +276,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context-length", type=int, default=128, help="Historical bars per forecast origin.")
     parser.add_argument("--min-context", type=int, default=128, help="Minimum historical bars required before forecasting.")
     parser.add_argument("--prediction-length", type=int, default=1, help="Future bars to forecast. Default is next bar only.")
-    parser.add_argument(
-        "--target-mode",
-        choices=["close", "log_close"],
-        default="close",
-        help="Chronos target values. Default close feeds raw prices and lets Chronos perform its own scaling.",
-    )
     parser.add_argument("--rolling-stride", type=int, default=1, help="Evaluate every Nth eligible timestamp.")
     parser.add_argument(
         "--max-total-windows",
@@ -293,13 +286,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=2048,
-        help="Chronos internal batch size measured in variates. Default targets a 24GB GPU; lower if CUDA OOM occurs.",
+        default=8192,
+        help="Chronos internal batch size measured in variates. Default targets the raw four-variate input on a 24GB GPU.",
     )
     parser.add_argument(
         "--window-batch-size",
         type=int,
-        default=512,
+        default=2048,
         help="Maximum forecast windows sent to one predict call before recursive OOM splitting.",
     )
     parser.add_argument(
@@ -349,53 +342,15 @@ def load_session_frame(provider: MarketDataProvider, args: argparse.Namespace) -
         "bar_time_market",
         "minute_of_day",
         "open",
-        "high",
-        "low",
         "close",
         "volume",
         "transactions",
-        "spread",
-        "spread_bps",
-        "quote_ask_price",
-        "quote_bid_price",
-        "return_1",
-        "return_5",
-        "log_return_1",
-        "bar_range",
-        "body",
-        "body_abs",
-        "upper_wick",
-        "lower_wick",
-        "close_location",
-        "distance_to_day_open_pct",
-        "distance_to_day_high_pct",
-        "distance_to_day_low_pct",
-        "gap_pct",
-        "true_range",
-        "true_range_ema5_pct",
-        "true_range_ema20_pct",
-        "atr14",
-        "return_z20",
-        "range_z20",
-        "relative_volume20",
-        "relative_dollar_volume20",
-        "volume_z20",
-        "transactions_z20",
-        "transactions_vs_prior_3",
-        "quote_valid_ratio",
-        "locked_or_crossed_count",
-        "price_shock_score",
-        "volume_shock_score",
-        "price_volume_shock_score",
-        "bars_since_price_shock",
-        "bars_since_volume_shock",
-        "shock_confirmation_delay_minutes",
     ]
     frame = provider.load_bars(
         start_date=session,
         end_date=session,
         timeframe="1m",
-        feature_groups=DEFAULT_FEATURE_GROUPS,
+        feature_groups=[],
         columns=requested_columns,
     )
     if frame.is_empty():
@@ -435,101 +390,30 @@ def parse_tickers(raw: str) -> list[str]:
     return [part.strip().upper() for part in raw.split(",") if part.strip()]
 
 
-def add_model_columns(frame: pl.DataFrame, target_mode: str) -> tuple[pl.DataFrame, list[str]]:
+def add_model_columns(frame: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
     close = positive_expr("close")
     open_ = positive_expr("open")
-    high = positive_expr("high")
-    low = positive_expr("low")
     volume = nonnegative_expr("volume", frame.columns)
     transactions = nonnegative_expr("transactions", frame.columns)
 
     exprs: list[pl.Expr] = [
         close.alias("target_close"),
-        close.log().alias("target_log_close"),
-        (open_ / close).log().alias("cov_open_to_close_log"),
-        (high / close).log().alias("cov_high_to_close_log"),
-        (low / close).log().alias("cov_low_to_close_log"),
-        (close / open_).log().alias("cov_bar_body_log"),
-        (high / low).log().alias("cov_range_log"),
-        (volume + 1.0).log().alias("cov_log_volume"),
-        (transactions + 1.0).log().alias("cov_log_transactions"),
-        ((volume * close) + 1.0).log().alias("cov_log_dollar_volume"),
+        open_.alias("raw_open"),
+        volume.alias("raw_volume"),
+        transactions.alias("raw_transactions"),
     ]
-    if "spread" in frame.columns:
-        exprs.append((nonnegative_expr("spread", frame.columns) / close).alias("cov_spread_pct"))
-    if "spread_bps" in frame.columns:
-        exprs.append(pl.col("spread_bps").cast(pl.Float64, strict=False).alias("cov_spread_bps"))
-    if {"quote_ask_price", "quote_bid_price"}.issubset(frame.columns):
-        midpoint = (positive_expr("quote_ask_price") + positive_expr("quote_bid_price")) / 2.0
-        exprs.append((midpoint / close).log().alias("cov_quote_mid_to_close_log"))
-    if "minute_of_day" in frame.columns:
-        minute = pl.col("minute_of_day").cast(pl.Float64, strict=False)
-        exprs.extend(
-            [
-                (2.0 * math.pi * minute / 1440.0).sin().alias("cov_minute_sin"),
-                (2.0 * math.pi * minute / 1440.0).cos().alias("cov_minute_cos"),
-                (minute < 9 * 60 + 30).cast(pl.Float64).alias("cov_is_premarket"),
-                ((minute >= 9 * 60 + 30) & (minute < 16 * 60)).cast(pl.Float64).alias("cov_is_regular"),
-                (minute >= 16 * 60).cast(pl.Float64).alias("cov_is_afterhours"),
-            ]
-        )
-
     result = frame.with_columns(exprs)
-    provider_covariates = [
-        "return_1",
-        "return_5",
-        "log_return_1",
-        "bar_range",
-        "body",
-        "body_abs",
-        "upper_wick",
-        "lower_wick",
-        "close_location",
-        "distance_to_day_open_pct",
-        "distance_to_day_high_pct",
-        "distance_to_day_low_pct",
-        "gap_pct",
-        "true_range",
-        "true_range_ema5_pct",
-        "true_range_ema20_pct",
-        "atr14",
-        "return_z20",
-        "range_z20",
-        "relative_volume20",
-        "relative_dollar_volume20",
-        "volume_z20",
-        "transactions_z20",
-        "transactions_vs_prior_3",
-        "quote_valid_ratio",
-        "locked_or_crossed_count",
-        "price_shock_score",
-        "volume_shock_score",
-        "price_volume_shock_score",
-        "bars_since_price_shock",
-        "bars_since_volume_shock",
-        "shock_confirmation_delay_minutes",
-    ]
-    engineered_covariates = [column for column in result.columns if column.startswith("cov_")]
-    covariates = engineered_covariates + [column for column in provider_covariates if column in result.columns]
-    target_column = target_column_for_mode(target_mode)
+    covariates = ["raw_open", "raw_volume", "raw_transactions"]
     cast_exprs = [
         pl.col(column).cast(pl.Float64, strict=False).replace([float("inf"), float("-inf")], None).alias(column)
-        for column in ["target_close", "target_log_close", *covariates]
+        for column in ["target_close", *covariates]
     ]
     return (
         result.with_columns(cast_exprs)
-        .filter(pl.col(target_column).is_not_null())
+        .filter(pl.col("target_close").is_not_null())
         .sort(["ticker", "bar_time_market"]),
         covariates,
     )
-
-
-def target_column_for_mode(target_mode: str) -> str:
-    if target_mode == "close":
-        return "target_close"
-    if target_mode == "log_close":
-        return "target_log_close"
-    raise ValueError(f"Unsupported target mode: {target_mode}")
 
 
 def positive_expr(column: str) -> pl.Expr:
@@ -544,8 +428,7 @@ def nonnegative_expr(column: str, columns: list[str]) -> pl.Expr:
     return pl.when(value >= 0.0).then(value).otherwise(0.0)
 
 
-def ticker_arrays(frame: pl.DataFrame, covariates: list[str], target_mode: str) -> dict[str, dict]:
-    target_column = target_column_for_mode(target_mode)
+def ticker_arrays(frame: pl.DataFrame, covariates: list[str]) -> dict[str, dict]:
     arrays: dict[str, dict] = {}
     for ticker_frame in frame.partition_by("ticker", maintain_order=True):
         if ticker_frame.is_empty():
@@ -553,7 +436,7 @@ def ticker_arrays(frame: pl.DataFrame, covariates: list[str], target_mode: str) 
         ticker = str(ticker_frame.get_column("ticker")[0])
         ticker_data: dict[str, np.ndarray | list] = {
             "close": ticker_frame.get_column("close").cast(pl.Float64, strict=False).to_numpy(),
-            "target_value": ticker_frame.get_column(target_column).cast(pl.Float64, strict=False).to_numpy(),
+            "target_value": ticker_frame.get_column("target_close").cast(pl.Float64, strict=False).to_numpy(),
             "bar_time_market": ticker_frame.get_column("bar_time_market").to_list(),
             "session_date": ticker_frame.get_column("session_date").cast(pl.Utf8).to_list(),
         }
@@ -635,7 +518,6 @@ def predict_rows_with_retry(
     quantile_levels: list[float],
     batch_size: int,
     direction_threshold_bps: float,
-    target_mode: str,
     device_map: str,
 ) -> list[dict]:
     try:
@@ -648,7 +530,6 @@ def predict_rows_with_retry(
             quantile_levels=quantile_levels,
             batch_size=batch_size,
             direction_threshold_bps=direction_threshold_bps,
-            target_mode=target_mode,
         )
     except RuntimeError as exc:
         if "out of memory" not in str(exc).lower() or len(inputs) <= 1:
@@ -664,7 +545,6 @@ def predict_rows_with_retry(
             quantile_levels=quantile_levels,
             batch_size=max(64, batch_size // 2),
             direction_threshold_bps=direction_threshold_bps,
-            target_mode=target_mode,
             device_map=device_map,
         ) + predict_rows_with_retry(
             pipeline=pipeline,
@@ -675,7 +555,6 @@ def predict_rows_with_retry(
             quantile_levels=quantile_levels,
             batch_size=max(64, batch_size // 2),
             direction_threshold_bps=direction_threshold_bps,
-            target_mode=target_mode,
             device_map=device_map,
         )
 
@@ -690,7 +569,6 @@ def predict_rows(
     quantile_levels: list[float],
     batch_size: int,
     direction_threshold_bps: float,
-    target_mode: str,
 ) -> list[dict]:
     quantiles, means = pipeline.predict_quantiles(
         inputs,
@@ -713,7 +591,7 @@ def predict_rows(
         for step in range(1, prediction_length + 1):
             target_index = origin.origin_index + step
             actual_close = float(close[target_index])
-            predicted_close = target_value_to_close(float(mean_values[step - 1]), target_mode)
+            predicted_close = float(mean_values[step - 1])
             actual_return = log_return(actual_close, origin.last_close)
             predicted_return = log_return(predicted_close, origin.last_close)
             pred_direction = direction_label(predicted_return, threshold)
@@ -748,11 +626,11 @@ def predict_rows(
                 "p10_p90_width_bps": "",
             }
             if 0.1 in q_index:
-                row["p10_close"] = target_value_to_close(float(q_values[step - 1, q_index[0.1]]), target_mode)
+                row["p10_close"] = float(q_values[step - 1, q_index[0.1]])
             if 0.5 in q_index:
-                row["p50_close"] = target_value_to_close(float(q_values[step - 1, q_index[0.5]]), target_mode)
+                row["p50_close"] = float(q_values[step - 1, q_index[0.5]])
             if 0.9 in q_index:
-                row["p90_close"] = target_value_to_close(float(q_values[step - 1, q_index[0.9]]), target_mode)
+                row["p90_close"] = float(q_values[step - 1, q_index[0.9]])
             if row["p10_close"] != "" and row["p90_close"] != "":
                 p10 = float(row["p10_close"])
                 p90 = float(row["p90_close"])
@@ -829,14 +707,6 @@ def direction_label(value: float, threshold: float) -> int:
     return 0
 
 
-def target_value_to_close(value: float, target_mode: str) -> float:
-    if target_mode == "close":
-        return value
-    if target_mode == "log_close":
-        return float(np.exp(value))
-    raise ValueError(f"Unsupported target mode: {target_mode}")
-
-
 def log_return(price: float, base_price: float) -> float:
     if not math.isfinite(price) or not math.isfinite(base_price) or base_price <= 0.0:
         return float("nan")
@@ -905,7 +775,7 @@ def write_live_report(
         f"- Selected tickers: `{selected_ticker_count}`",
         f"- Processed timestamps: `{processed_timestamps}`",
         f"- Forecast origins processed: `{processed_windows}`",
-        f"- Target mode: `{args.target_mode}`; default forecast is the next bar.",
+        "- Target: raw `close`; default forecast is the next bar.",
         f"- Prediction length: `{args.prediction_length}`",
         f"- Context length/min context: `{args.context_length}` / `{args.min_context}`",
         f"- Chronos batch size/window chunk: `{args.batch_size}` / `{args.window_batch_size}`",
@@ -924,9 +794,9 @@ def write_live_report(
         "## Input Channels",
         "",
         (
-            "Chronos receives `target` as historical raw `close` values when `--target-mode close` is used, "
-            "or historical `log(close)` values when `--target-mode log_close` is used. "
-            "These `past_covariates` are supplied, and no future covariates are supplied."
+            "Chronos receives raw `close` values as the target and raw `open`, `volume`, and `transactions` "
+            "as `past_covariates`. The script does not log-transform, normalize, z-score, or scale these inputs "
+            "before passing them to Chronos. No future covariates are supplied."
         ),
         "",
         "\n".join(f"- `{column}`" for column in covariates),
@@ -965,8 +835,8 @@ def main() -> None:
 
     provider = provider_for_args(args)
     session_frame = load_session_frame(provider, args)
-    model_frame, covariates = add_model_columns(session_frame, args.target_mode)
-    arrays_by_ticker = ticker_arrays(model_frame, covariates, args.target_mode)
+    model_frame, covariates = add_model_columns(session_frame)
+    arrays_by_ticker = ticker_arrays(model_frame, covariates)
     origins_by_time = origin_map(model_frame, args)
     selected_ticker_count = len(arrays_by_ticker)
     if not origins_by_time:
@@ -1027,7 +897,6 @@ def main() -> None:
                     quantile_levels=DEFAULT_QUANTILES,
                     batch_size=args.batch_size,
                     direction_threshold_bps=args.direction_threshold_bps,
-                    target_mode=args.target_mode,
                     device_map=args.device_map,
                 )
                 for row in rows:
