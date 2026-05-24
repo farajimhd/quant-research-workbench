@@ -36,6 +36,7 @@ torch = None
 DataLoader = None
 FeatureTemporalTransformer = None
 forecast_loss = None
+LOG_RULE = "*" * 96
 
 
 def parse_args() -> argparse.Namespace:
@@ -338,6 +339,7 @@ def main() -> None:
             last_log_time = time.perf_counter()
 
         if step % config.train.eval_steps == 0 or (planned_steps > 0 and step == planned_steps):
+            print_section(f"VALIDATION START step={step:,}")
             validation_metrics = evaluate(
                 model=model,
                 config=config,
@@ -355,11 +357,13 @@ def main() -> None:
             if score < best_score:
                 best_score = float(score)
                 save_checkpoint(output_dir / "best.pt", model, optimizer, scheduler, step, best_score, config)
-                print(f"Saved best checkpoint at step={step:,} h1_close_mae_bps={best_score:.4f}", flush=True)
+                print(f"*** BEST CHECKPOINT SAVED | step={step:,} | h1_close_mae_bps={best_score:.4f}", flush=True)
             save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
+            print_section(f"VALIDATION END step={step:,}")
             last_eval_step = step
 
     if step > 0 and last_eval_step != step:
+        print_section(f"FINAL VALIDATION START step={step:,}")
         validation_metrics = evaluate(
             model=model,
             config=config,
@@ -377,9 +381,11 @@ def main() -> None:
         if score < best_score:
             best_score = float(score)
             save_checkpoint(output_dir / "best.pt", model, optimizer, scheduler, step, best_score, config)
-            print(f"Saved best checkpoint at step={step:,} h1_close_mae_bps={best_score:.4f}", flush=True)
+            print(f"*** BEST CHECKPOINT SAVED | step={step:,} | h1_close_mae_bps={best_score:.4f}", flush=True)
         save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
+        print_section(f"FINAL VALIDATION END step={step:,}")
 
+    print_section(f"TEST START step={step:,}")
     test_metrics = evaluate(
         model=model,
         config=config,
@@ -393,7 +399,9 @@ def main() -> None:
     append_jsonl(metrics_path, test_metrics)
     print_metric_line(test_metrics)
     save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
-    print(f"Training complete. Checkpoints and metrics are in {output_dir}", flush=True)
+    print_section(f"TEST END step={step:,}")
+    print_section("TRAINING COMPLETE")
+    print(f"*** Artifacts: {output_dir}", flush=True)
 
 
 def print_training_plan(config: ExperimentConfig, coverage: Any, planned_steps: int) -> None:
@@ -411,6 +419,12 @@ def print_training_plan(config: ExperimentConfig, coverage: Any, planned_steps: 
         f"max_steps={max_steps_text}",
         flush=True,
     )
+
+
+def print_section(title: str) -> None:
+    print(LOG_RULE, flush=True)
+    print(f"*** {title}", flush=True)
+    print(LOG_RULE, flush=True)
 
 
 def evaluate(
@@ -571,7 +585,7 @@ def apply_validation_scheduler(
     if new_lr < old_lr:
         validation_metrics["lr_reduced"] = True
         validation_metrics["lr_before"] = old_lr
-        print(f"LR reduced on plateau at step={step:,}: {old_lr:.3e} -> {new_lr:.3e}", flush=True)
+        print(f"*** LR REDUCED ON PLATEAU | step={step:,} | {old_lr:.3e} -> {new_lr:.3e}", flush=True)
 
 
 def set_seed(seed: int) -> None:
@@ -632,7 +646,7 @@ def maybe_resume(
         return 0, math.inf
     checkpoint_path = output_dir / "last.pt"
     if not checkpoint_path.exists():
-        print(f"--resume-latest requested but no checkpoint found at {checkpoint_path}; starting fresh.", flush=True)
+        print(f"*** RESUME REQUESTED but no checkpoint found at {checkpoint_path}; starting fresh.", flush=True)
         return 0, math.inf
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model"])
@@ -645,7 +659,7 @@ def maybe_resume(
             print(f"Checkpoint scheduler state was not loaded because it is incompatible: {exc}", flush=True)
     step = int(checkpoint.get("step") or 0)
     best_score = float(checkpoint.get("best_score") or math.inf)
-    print(f"Resumed checkpoint {checkpoint_path} at step={step:,} best_score={best_score:.4f}", flush=True)
+    print(f"*** RESUMED CHECKPOINT | path={checkpoint_path} | step={step:,} | best_score={best_score:.4f}", flush=True)
     return step, best_score
 
 

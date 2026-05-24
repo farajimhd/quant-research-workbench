@@ -41,6 +41,8 @@ SOURCE_COLUMNS = (
     "quoted_share_depth",
 )
 
+LOG_RULE = "*" * 96
+
 
 @dataclass(slots=True)
 class SessionCoverage:
@@ -239,9 +241,10 @@ class RollingBarWindowDataset(IterableDataset):
                 target_count=len(self.config.target_columns),
             )
             for session_index, session in enumerate(sessions, start=1):
+                print(LOG_RULE, flush=True)
                 print(
-                    f"{self.mode} session {session} feeding "
-                    f"(epoch {epoch + 1}/{self.epochs}, {session_index}/{len(sessions)})",
+                    f"*** {self.mode.upper()} SESSION START {session} "
+                    f"| epoch {epoch + 1}/{self.epochs} | session {session_index}/{len(sessions)}",
                     flush=True,
                 )
                 session_batches = 0
@@ -268,6 +271,13 @@ class RollingBarWindowDataset(IterableDataset):
                         if 0 < self.max_windows <= emitted_windows:
                             if len(batch) > 0:
                                 yield batch.as_torch()
+                                session_batches += 1
+                            print(
+                                f"*** {self.mode.upper()} SESSION END   {session} "
+                                f"| windows={session_windows:,} | batches={session_batches:,} | max_windows_reached",
+                                flush=True,
+                            )
+                            print(LOG_RULE, flush=True)
                             return
                     carryover[ticker] = tail_carryover(combined, self.config)
                     if 0 < self.max_batches_per_session <= session_batches:
@@ -277,10 +287,11 @@ class RollingBarWindowDataset(IterableDataset):
                     session_batches += 1
                     batch = batch.empty_like()
                 print(
-                    f"{self.mode} session {session} completed: "
-                    f"windows={session_windows:,} batches={session_batches:,}",
+                    f"*** {self.mode.upper()} SESSION END   {session} "
+                    f"| windows={session_windows:,} | batches={session_batches:,}",
                     flush=True,
                 )
+                print(LOG_RULE, flush=True)
                 del frame
                 gc.collect()
             if len(batch) > 0:
