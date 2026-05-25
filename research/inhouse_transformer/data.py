@@ -454,28 +454,23 @@ def ticker_arrays(frame: pl.DataFrame, config: DataConfig) -> dict[str, np.ndarr
     sessions = frame.get_column("session_date").to_numpy().astype(str)
     timestamps_ns = frame.get_column("bar_time_market").dt.timestamp("ns").to_numpy().astype(np.int64)
 
-    prev_close = shifted_previous(close, close)
-    prev_volume = shifted_previous(volume, volume)
-    prev_transactions = shifted_previous(transactions, transactions)
     features = np.column_stack(
         [
-            log_return_bps(close, prev_close),
-            log_return_bps(open_, prev_close),
-            log_return_bps(high, close),
-            log_return_bps(low, close),
-            log_return_bps(close, open_),
-            np.log1p(volume),
-            np.log1p(volume) - np.log1p(prev_volume),
-            np.log1p(transactions),
-            np.log1p(transactions) - np.log1p(prev_transactions),
-            np.clip(spread_bps, -1000.0, 1000.0),
-            np.log1p(quoted_share_depth),
-            np.clip(quote_imbalance, -1.0, 1.0),
+            open_,
+            high,
+            low,
+            close,
+            volume,
+            transactions,
+            spread_bps,
+            quote_bid_size,
+            quote_ask_size,
+            quoted_share_depth,
+            quote_imbalance,
             quote_valid_ratio,
         ]
     ).astype(np.float32)
-    features = np.nan_to_num(features, nan=0.0, posinf=5000.0, neginf=-5000.0)
-    features[:, :5] = np.clip(features[:, :5], -5000.0, 5000.0)
+    features = np.nan_to_num(features, nan=0.0, posinf=1e9, neginf=-1e9)
 
     gap_seconds = np.zeros_like(close, dtype=np.float32)
     if len(timestamps_ns) > 1:
@@ -533,15 +528,6 @@ def column_array(frame: pl.DataFrame, column: str) -> np.ndarray:
 def nonnegative_array(frame: pl.DataFrame, column: str) -> np.ndarray:
     values = column_array(frame, column)
     return np.nan_to_num(np.maximum(values, 0.0), nan=0.0, posinf=0.0, neginf=0.0)
-
-
-def shifted_previous(values: np.ndarray, fallback: np.ndarray) -> np.ndarray:
-    previous = np.empty_like(values)
-    if len(values) == 0:
-        return previous
-    previous[0] = fallback[0]
-    previous[1:] = values[:-1]
-    return previous
 
 
 def window_price_center_scale(

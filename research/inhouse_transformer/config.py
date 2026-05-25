@@ -30,17 +30,16 @@ class DataConfig:
     target_mode: str = "return_bps"
     target_columns: tuple[str, ...] = ("open", "high", "low", "close")
     input_feature_columns: tuple[str, ...] = (
-        "close_return_bps",
-        "open_to_prev_close_bps",
-        "high_to_close_bps",
-        "low_to_close_bps",
-        "close_to_open_bps",
-        "volume_log",
-        "volume_log_change",
-        "transactions_log",
-        "transactions_log_change",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "transactions",
         "spread_bps",
-        "quoted_depth_log",
+        "quote_bid_size",
+        "quote_ask_size",
+        "quoted_share_depth",
         "quote_imbalance",
         "quote_valid_ratio",
     )

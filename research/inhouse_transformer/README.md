@@ -16,6 +16,14 @@ time_features: [batch, context_length, time_feature_count]
 targets:       [batch, horizon, 4]
 ```
 
+The transformer input `values` are raw actual bar/quote columns, cleaned for nulls but not return-encoded, log-transformed, or z-scored:
+
+```text
+open, high, low, close, volume, transactions, spread_bps,
+quote_bid_size, quote_ask_size, quoted_share_depth,
+quote_imbalance, quote_valid_ratio
+```
+
 The main transformer defaults to `--target-mode actual_price_zscore`. Targets are the next `horizon` OHLC candles, encoded as actual future prices z-scored by each context window's actual OHLC mean and standard deviation:
 
 ```text
@@ -25,7 +33,7 @@ The main transformer defaults to `--target-mode actual_price_zscore`. Targets ar
 (future_close - context_price_mean) / context_price_std
 ```
 
-Reported metrics are converted back to bps versus the current close. Use `--target-mode return_bps` for the older return-target behavior.
+Reported metrics are converted back to bps versus the current close. Direction accuracy is a reporting-only metric: for `horizon=1`, it checks whether `predicted_next_close - current_close` has the same sign as `actual_next_close - current_close`. Use `--target-mode return_bps` for the older return-target behavior.
 
 The model applies attention across features inside each bar, then attention across bars in the context window. Relative context position and market time-of-day features are included in the token embedding.
 
@@ -41,7 +49,7 @@ feature_attention_layers=1
 
 By default the loader carries the last context bars across sessions, but does not let targets cross a session boundary.
 
-The default objective is Smooth L1 loss on the multi-horizon OHLC return targets only. The direction head is still reported through prediction-sign metrics, and an auxiliary BCE direction loss can be re-enabled with `--direction-loss-weight`.
+The default objective is Smooth L1 loss on the multi-horizon OHLC targets only. Direction is not part of the default training objective. The direction head exists for experiments and an auxiliary BCE direction loss can be enabled with `--direction-loss-weight`.
 
 The default learning-rate scheduler is `ReduceLROnPlateau` on validation loss. After warmup, it reduces the LR by `--lr-plateau-factor` when validation loss has not improved for `--lr-plateau-patience` eval points. Use `--lr-scheduler cosine` or `--lr-scheduler constant` for the older behaviors.
 
