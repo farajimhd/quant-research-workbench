@@ -48,6 +48,8 @@ FeatureTemporalTransformer = None
 forecast_loss = None
 LOG_RULE = "*" * 96
 EXPERIMENT_VERSION = "v6"
+DEFAULT_OVERFIT_REFERENCE_BATCH_SIZE = 1024
+DEFAULT_OVERFIT_WINDOW_COUNT = 8192
 METRIC_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "train_step": {
         "description": "Optimizer step used as the shared x-axis for all W&B metrics.",
@@ -326,7 +328,19 @@ def parse_args() -> argparse.Namespace:
         "--overfit-batches",
         type=int,
         default=0,
-        help="Cache this many train batches and cycle them. Requires --overfit-session for the intended one-session test.",
+        help=(
+            "Deprecated compatibility option. It is converted to a fixed window count using reference batch size "
+            f"{DEFAULT_OVERFIT_REFERENCE_BATCH_SIZE}, so changing --batch-size does not change cache size."
+        ),
+    )
+    parser.add_argument(
+        "--overfit-window-count",
+        type=int,
+        default=0,
+        help=(
+            "Fixed number of train windows to cache for overfit tests. "
+            f"Defaults to {DEFAULT_OVERFIT_WINDOW_COUNT} when --overfit-session is set."
+        ),
     )
     parser.add_argument("--wandb-entity", default="mehdifaraji")
     parser.add_argument("--wandb-project", default="May2026-1m-timeseries-forecasting")
@@ -405,9 +419,23 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
 def resolve_lr_scheduler(args: argparse.Namespace) -> str:
     if args.lr_scheduler != "auto":
         return args.lr_scheduler
-    if args.overfit_session or args.overfit_batches > 0:
+    if args.overfit_session or args.overfit_batches > 0 or args.overfit_window_count > 0:
         return "cosine_warm_restarts"
     return "plateau"
+
+
+def resolve_overfit_window_count(args: argparse.Namespace) -> int:
+    if args.overfit_window_count < 0:
+        raise SystemExit("--overfit-window-count must be >= 0.")
+    if args.overfit_batches < 0:
+        raise SystemExit("--overfit-batches must be >= 0.")
+    if args.overfit_window_count > 0:
+        return int(args.overfit_window_count)
+    if args.overfit_batches > 0:
+        return int(args.overfit_batches) * DEFAULT_OVERFIT_REFERENCE_BATCH_SIZE
+    if args.overfit_session:
+        return DEFAULT_OVERFIT_WINDOW_COUNT
+    return 0
 
 
 def parse_column_list(raw: str) -> tuple[str, ...]:
@@ -549,7 +577,7 @@ def main() -> None:
     test_sessions = available_sessions(
         config.data.processed_root, config.data.test_start_date, config.data.test_end_date
     )
-    overfit_batches = args.overfit_batches
+    overfit_window_count = resolve_overfit_window_count(args)
     if args.overfit_session:
         requested_session = args.overfit_session
         all_train_sessions = set(train_sessions)
@@ -561,8 +589,6 @@ def main() -> None:
         train_sessions = [requested_session]
         validation_sessions = [requested_session]
         test_sessions = [requested_session]
-        if overfit_batches <= 0:
-            overfit_batches = 8
     tickers = config.data.tickers or select_top_tickers(
         config.data.processed_root, train_sessions, config.data.max_tickers
     )
@@ -573,7 +599,9 @@ def main() -> None:
     metadata = metadata_payload(config, train_sessions, validation_sessions, test_sessions, tickers, output_dir)
     metadata["runtime"] = {
         "overfit_session": args.overfit_session,
-        "overfit_batches": overfit_batches,
+        "overfit_window_count": overfit_window_count,
+        "overfit_batches_requested": args.overfit_batches,
+        "overfit_reference_batch_size": DEFAULT_OVERFIT_REFERENCE_BATCH_SIZE,
         "wandb_project": args.wandb_project,
         "wandb_entity": args.wandb_entity,
         "wandb_run_name": make_wandb_run_name(args, config),
@@ -610,8 +638,8 @@ def main() -> None:
             max_batches_per_session=config.train.max_batches_per_session,
         )
     planned_steps = config.train.max_steps
-    if overfit_batches > 0 and planned_steps <= 0:
-        planned_steps = config.train.epochs * overfit_batches
+    if overfit_window_count > 0 and planned_steps <= 0:
+        planned_steps = config.train.epochs * math.ceil(overfit_window_count / config.train.batch_size)
     print_training_plan(config, coverage, planned_steps)
     if args.dry_run:
         print("Dry run complete after data split, ticker selection, and optional coverage count.", flush=True)
@@ -662,11 +690,18 @@ def main() -> None:
         num_workers=config.train.num_workers,
         pin_memory=device.type == "cuda",
     )
-    cached_batches = collect_overfit_batches(train_loader, overfit_batches) if overfit_batches > 0 else []
+    cached_batches = collect_overfit_batches(train_loader, overfit_window_count) if overfit_window_count > 0 else []
     if cached_batches:
         planned_steps = config.train.max_steps or config.train.epochs * len(cached_batches)
         train_iter: Iterable[dict[str, Any]] = cycle(cached_batches)
-        print_section(f"OVERFIT CACHE READY batches={len(cached_batches)} planned_steps={planned_steps:,}")
+        cached_windows = sum(batch_window_count(batch) for batch in cached_batches)
+        metadata["runtime"]["overfit_cached_windows"] = cached_windows
+        metadata["runtime"]["overfit_cached_batches"] = len(cached_batches)
+        write_json(output_dir / "metadata.json", metadata)
+        print_section(
+            f"OVERFIT CACHE READY windows={cached_windows:,} batches={len(cached_batches):,} "
+            f"planned_steps={planned_steps:,}"
+        )
     else:
         train_iter = train_loader
 
@@ -983,17 +1018,53 @@ def print_section(title: str) -> None:
     print(LOG_RULE, flush=True)
 
 
-def collect_overfit_batches(loader: DataLoader, count: int) -> list[dict[str, Any]]:
-    print_section(f"BUILDING OVERFIT CACHE target_batches={count}")
+def collect_overfit_batches(loader: DataLoader, target_windows: int) -> list[dict[str, Any]]:
+    print_section(f"BUILDING OVERFIT CACHE target_windows={target_windows:,}")
     batches = []
+    collected_windows = 0
     for batch in loader:
-        batches.append(cache_batch(batch))
-        if len(batches) >= count:
+        remaining = target_windows - collected_windows
+        if remaining <= 0:
+            break
+        cached = cache_batch(slice_batch(batch, remaining))
+        batches.append(cached)
+        collected_windows += batch_window_count(cached)
+        if collected_windows >= target_windows:
             break
     if not batches:
         raise SystemExit("No overfit batches were created. Pick a session/ticker set with enough bars.")
-    print_section(f"OVERFIT CACHE BUILT batches={len(batches)}")
+    print_section(f"OVERFIT CACHE BUILT windows={collected_windows:,} batches={len(batches):,}")
     return batches
+
+
+def slice_batch(batch: dict[str, Any], max_rows: int) -> dict[str, Any]:
+    row_count = batch_window_count(batch)
+    if row_count <= max_rows:
+        return batch
+    rows = slice(0, max_rows)
+    sliced: dict[str, Any] = {}
+    for key, value in batch.items():
+        if torch is not None and torch.is_tensor(value):
+            sliced[key] = value[rows]
+        elif isinstance(value, np.ndarray):
+            sliced[key] = value[rows].copy()
+        elif isinstance(value, list):
+            sliced[key] = list(value[:max_rows])
+        else:
+            sliced[key] = value
+    return sliced
+
+
+def batch_window_count(batch: dict[str, Any]) -> int:
+    values = batch.get("values")
+    if torch is not None and torch.is_tensor(values):
+        return int(values.shape[0])
+    if isinstance(values, np.ndarray):
+        return int(values.shape[0])
+    tickers = batch.get("ticker")
+    if isinstance(tickers, list):
+        return len(tickers)
+    raise ValueError("Batch does not contain values or ticker rows, so window count cannot be determined.")
 
 
 def cache_batch(batch: dict[str, Any]) -> dict[str, Any]:

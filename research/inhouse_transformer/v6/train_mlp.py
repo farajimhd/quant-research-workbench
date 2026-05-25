@@ -32,6 +32,7 @@ from research.inhouse_transformer.v6.model_mlp import FlatMLPForecaster  # noqa:
 
 
 LOG_RULE = "*" * 96
+DEFAULT_OVERFIT_REFERENCE_BATCH_SIZE = 1024
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Train a simple flattened-window MLP baseline on the same 1m bar windows used by the transformer. "
-            "Use --overfit-batches to repeat a fixed small train sample and verify the model can minimize train loss."
+            "Use --overfit-window-count to repeat a fixed train sample and verify the model can minimize train loss."
         )
     )
     parser.add_argument("--processed-root", default=str(data_defaults.processed_root))
@@ -77,7 +78,18 @@ def parse_args() -> argparse.Namespace:
         "--overfit-batches",
         type=int,
         default=0,
-        help="Cache this many train batches and cycle them repeatedly. Use this for the learning sanity test.",
+        help=(
+            "Deprecated compatibility option. Converted to a fixed window count using reference batch size "
+            f"{DEFAULT_OVERFIT_REFERENCE_BATCH_SIZE}."
+        ),
+    )
+    parser.add_argument(
+        "--overfit-window-count",
+        type=int,
+        default=0,
+        help=(
+            "Fixed number of train windows to cache for overfit tests. 0 disables overfit cache."
+        ),
     )
     parser.add_argument("--seed", type=int, default=train_defaults.seed)
     parser.set_defaults(amp=train_defaults.amp)
@@ -104,6 +116,7 @@ def main() -> None:
     output_dir = make_output_dir(data_config, args)
     output_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = output_dir / "metrics.jsonl"
+    overfit_window_count = resolve_overfit_window_count(args)
     metadata = metadata_payload(args, data_config, train_sessions, validation_sessions, test_sessions, tickers, output_dir)
     write_json(output_dir / "metadata.json", metadata)
     print_split_summary(metadata)
@@ -114,7 +127,7 @@ def main() -> None:
     )
     print(
         f"MLP model: hidden_dim={args.hidden_dim} layers={args.layers} dropout={args.dropout} "
-        f"overfit_batches={args.overfit_batches}",
+        f"overfit_window_count={overfit_window_count}",
         flush=True,
     )
     print(f"Output directory: {output_dir}", flush=True)
@@ -148,11 +161,19 @@ def main() -> None:
         shuffle=True,
     )
     train_loader = DataLoader(train_dataset, batch_size=None, num_workers=0, pin_memory=device.type == "cuda")
-    cached_batches = collect_overfit_batches(train_loader, args.overfit_batches) if args.overfit_batches > 0 else []
+    cached_batches = collect_overfit_batches(train_loader, overfit_window_count) if overfit_window_count > 0 else []
     if cached_batches:
         planned_steps = args.max_steps or args.epochs * len(cached_batches)
         train_iter: Iterable[dict[str, torch.Tensor]] = cycle(cached_batches)
-        print_section(f"OVERFIT CACHE READY batches={len(cached_batches)} planned_steps={planned_steps:,}")
+        cached_windows = sum(batch_window_count(batch) for batch in cached_batches)
+        metadata["train"]["overfit_cached_windows"] = cached_windows
+        metadata["train"]["overfit_cached_batches"] = len(cached_batches)
+        metadata["train"]["overfit_effective_window_count"] = overfit_window_count
+        write_json(output_dir / "metadata.json", metadata)
+        print_section(
+            f"OVERFIT CACHE READY windows={cached_windows:,} batches={len(cached_batches):,} "
+            f"planned_steps={planned_steps:,}"
+        )
     else:
         planned_steps = args.max_steps
         train_iter = train_loader
@@ -214,7 +235,10 @@ def main() -> None:
             running_batches = 0
             last_log_time = time.perf_counter()
 
-        if step % args.eval_steps == 0 or (planned_steps > 0 and step == planned_steps):
+        should_eval = (args.eval_steps > 0 and step % args.eval_steps == 0) or (
+            planned_steps > 0 and step == planned_steps
+        )
+        if should_eval:
             if cached_batches:
                 print_section(f"TRAIN-CACHE EVAL START step={step:,}")
                 cache_metrics = evaluate_batches(model, cached_batches, data_config, device, label="train_cache")
@@ -300,17 +324,79 @@ def build_data_config(args: argparse.Namespace) -> DataConfig:
     )
 
 
-def collect_overfit_batches(loader: DataLoader, count: int) -> list[dict[str, torch.Tensor]]:
-    print_section(f"BUILDING OVERFIT CACHE target_batches={count}")
+def resolve_overfit_window_count(args: argparse.Namespace) -> int:
+    if args.overfit_window_count < 0:
+        raise SystemExit("--overfit-window-count must be >= 0.")
+    if args.overfit_batches < 0:
+        raise SystemExit("--overfit-batches must be >= 0.")
+    if args.overfit_window_count > 0:
+        return int(args.overfit_window_count)
+    if args.overfit_batches > 0:
+        return int(args.overfit_batches) * DEFAULT_OVERFIT_REFERENCE_BATCH_SIZE
+    return 0
+
+
+def collect_overfit_batches(loader: DataLoader, target_windows: int) -> list[dict[str, torch.Tensor]]:
+    print_section(f"BUILDING OVERFIT CACHE target_windows={target_windows:,}")
     batches = []
+    collected_windows = 0
     for batch in loader:
-        batches.append({key: value.cpu() for key, value in batch.items()})
-        if len(batches) >= count:
+        remaining = target_windows - collected_windows
+        if remaining <= 0:
+            break
+        cached = cache_batch(slice_batch(batch, remaining))
+        batches.append(cached)
+        collected_windows += batch_window_count(cached)
+        if collected_windows >= target_windows:
             break
     if not batches:
         raise SystemExit("No overfit batches were created. Pick a date/ticker with enough bars.")
-    print_section(f"OVERFIT CACHE BUILT batches={len(batches)}")
+    print_section(f"OVERFIT CACHE BUILT windows={collected_windows:,} batches={len(batches):,}")
     return batches
+
+
+def slice_batch(batch: dict[str, Any], max_rows: int) -> dict[str, Any]:
+    row_count = batch_window_count(batch)
+    if row_count <= max_rows:
+        return batch
+    rows = slice(0, max_rows)
+    sliced: dict[str, Any] = {}
+    for key, value in batch.items():
+        if torch.is_tensor(value):
+            sliced[key] = value[rows]
+        elif isinstance(value, np.ndarray):
+            sliced[key] = value[rows].copy()
+        elif isinstance(value, list):
+            sliced[key] = list(value[:max_rows])
+        else:
+            sliced[key] = value
+    return sliced
+
+
+def cache_batch(batch: dict[str, Any]) -> dict[str, Any]:
+    cached: dict[str, Any] = {}
+    for key, value in batch.items():
+        if torch.is_tensor(value):
+            cached[key] = value.cpu()
+        elif isinstance(value, np.ndarray):
+            cached[key] = value.copy()
+        elif isinstance(value, list):
+            cached[key] = list(value)
+        else:
+            cached[key] = value
+    return cached
+
+
+def batch_window_count(batch: dict[str, Any]) -> int:
+    values = batch.get("values")
+    if torch.is_tensor(values):
+        return int(values.shape[0])
+    if isinstance(values, np.ndarray):
+        return int(values.shape[0])
+    tickers = batch.get("ticker")
+    if isinstance(tickers, list):
+        return len(tickers)
+    raise ValueError("Batch does not contain values or ticker rows, so window count cannot be determined.")
 
 
 @torch.no_grad()

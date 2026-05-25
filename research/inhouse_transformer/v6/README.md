@@ -102,7 +102,18 @@ The default `--lr-scheduler auto` uses `CosineAnnealingWarmRestarts` for overfit
 
 Validation and test evaluation use the same AMP setting as training and stream partial progress every `--eval-progress-batches` batches, default `5`, to both console and W&B. Set `--eval-progress-batches 0` to disable partial eval logs. W&B keeps the full metric names from `metrics.jsonl` and also logs short aliases such as `validation/h1_dir`, `validation/h1_mae_bps`, and `validation/h1_edge_bps`; the W&B x-axis metric is `train_step`.
 
-When `--overfit-batches` is used, the script logs `overfit_timeline_predictions/*` W&B data after the final test pass. It selects three tickers from the cached training batches, reloads their chronological session data, logs the underlying rows as W&B tables, and creates W&B line-series plots for predicted h1 close versus target h1 close.
+Overfit cache size is fixed by window count, not by batch size. By default,
+`--overfit-session` caches `8192` train windows. The deprecated
+`--overfit-batches 8` is interpreted as `8 * 1024 = 8192` windows regardless of
+the current `--batch-size`. Use `--overfit-window-count` to set the cache size
+explicitly. This keeps overfit comparisons fair when batch size changes for VRAM
+or performance reasons.
+
+When an overfit cache is used, the script logs `overfit_timeline_predictions/*`
+W&B data after the final test pass. It selects three tickers from the cached
+training windows, reloads their chronological session data, logs the underlying
+rows as W&B tables, and creates W&B line-series plots for predicted h1 close
+versus target h1 close.
 
 Run a small dry run:
 
@@ -120,6 +131,12 @@ Run the main transformer one-session overfit test with wandb logging:
 
 ```powershell
 python research\inhouse_transformer\v6\train.py --device cuda --overfit-session 2024-01-22 --target-columns close --horizon 1 --batch-size 1024 --epochs 200 --eval-steps 25 --logging-steps 25 --validation-window-count 8192 --test-window-count 8192 --warmup-steps 0 --wandb-entity mehdifaraji --wandb-project May2026-1m-timeseries-forecasting
+```
+
+For v6 on a 24GB GPU, use a smaller batch while keeping the same cache size:
+
+```powershell
+python research\inhouse_transformer\v6\train.py --device cuda --overfit-session 2024-01-22 --target-columns close --horizon 1 --batch-size 512 --overfit-window-count 8192 --epochs 200 --eval-steps 25 --logging-steps 25 --validation-window-count 8192 --test-window-count 8192 --warmup-steps 0 --wandb-entity mehdifaraji --wandb-project May2026-1m-timeseries-forecasting
 ```
 
 The default W&B run name starts with `v6-` and includes `calendar-values-anchored-log1p-window-zscore` and `return_bps` so it can be compared directly against v5.
