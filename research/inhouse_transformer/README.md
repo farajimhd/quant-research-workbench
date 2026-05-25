@@ -16,14 +16,16 @@ time_features: [batch, context_length, time_feature_count]
 targets:       [batch, horizon, 4]
 ```
 
-Targets are the next `horizon` OHLC candles, encoded as log-return basis points from the current close:
+The main transformer defaults to `--target-mode actual_price_zscore`. Targets are the next `horizon` OHLC candles, encoded as actual future prices z-scored by each context window's actual OHLC mean and standard deviation:
 
 ```text
-log(future_open / current_close) * 10000
-log(future_high / current_close) * 10000
-log(future_low / current_close) * 10000
-log(future_close / current_close) * 10000
+(future_open - context_price_mean) / context_price_std
+(future_high - context_price_mean) / context_price_std
+(future_low - context_price_mean) / context_price_std
+(future_close - context_price_mean) / context_price_std
 ```
+
+Reported metrics are converted back to bps versus the current close. Use `--target-mode return_bps` for the older return-target behavior.
 
 The model applies attention across features inside each bar, then attention across bars in the context window. Relative context position and market time-of-day features are included in the token embedding.
 
@@ -43,6 +45,8 @@ The default objective is Smooth L1 loss on the multi-horizon OHLC return targets
 
 The default learning-rate scheduler is `ReduceLROnPlateau` on validation loss. After warmup, it reduces the LR by `--lr-plateau-factor` when validation loss has not improved for `--lr-plateau-patience` eval points. Use `--lr-scheduler cosine` or `--lr-scheduler constant` for the older behaviors.
 
+Validation and test evaluation use the same AMP setting as training and stream partial progress every `--eval-progress-batches` batches, default `5`, to both console and W&B. Set `--eval-progress-batches 0` to disable partial eval logs.
+
 Run a small dry run:
 
 ```powershell
@@ -60,8 +64,6 @@ Run the main transformer one-session overfit test with wandb logging:
 ```powershell
 python research\inhouse_transformer\train.py --device cuda --overfit-session 2024-01-22 --target-columns close --horizon 1 --batch-size 1024 --epochs 200 --eval-steps 25 --logging-steps 25 --validation-window-count 8192 --test-window-count 8192 --warmup-steps 0 --wandb-entity mehdifaraji --wandb-project May2026-1m-timeseries-forecasting
 ```
-
-The main transformer defaults to `--target-mode actual_price_zscore`: future actual prices are z-scored by each context window's actual OHLC price mean and standard deviation for training, while metrics are converted back to bps versus current close. Use `--target-mode return_bps` for the older return-target behavior.
 
 Run the flat MLP overfit sanity test:
 

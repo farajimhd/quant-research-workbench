@@ -110,6 +110,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-clip-norm", type=float, default=defaults.train.grad_clip_norm)
     parser.add_argument("--logging-steps", type=int, default=defaults.train.logging_steps)
     parser.add_argument("--eval-steps", type=int, default=defaults.train.eval_steps)
+    parser.add_argument(
+        "--eval-progress-batches",
+        type=int,
+        default=defaults.train.eval_progress_batches,
+        help="During validation/test, print and wandb-log partial metrics every N eval batches. 0 disables progress logs.",
+    )
     parser.add_argument("--validation-window-count", type=int, default=defaults.train.validation_window_count)
     parser.add_argument("--test-window-count", type=int, default=defaults.train.test_window_count)
     parser.add_argument(
@@ -197,6 +203,7 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         grad_clip_norm=args.grad_clip_norm,
         logging_steps=args.logging_steps,
         eval_steps=args.eval_steps,
+        eval_progress_batches=args.eval_progress_batches,
         validation_window_count=args.validation_window_count,
         test_window_count=args.test_window_count,
         max_batches_per_session=args.max_batches_per_session,
@@ -310,12 +317,15 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, metadata: dic
         )
         return None
     try:
-        return wandb.init(
+        run = wandb.init(
             entity=args.wandb_entity,
             project=args.wandb_project,
             name=run_name,
             config=metadata,
         )
+        print(f"*** WANDB RUN READY | url={getattr(run, 'url', '')}", flush=True)
+        run.log({"run/started": 1}, step=0)
+        return run
     except Exception as exc:
         print(f"*** WANDB init failed; metrics will only be written to metrics.jsonl. Error: {exc}", flush=True)
         return None
@@ -453,8 +463,13 @@ def main() -> None:
     step = start_step
     last_eval_step = 0
     last_log_time = time.perf_counter()
-    for batch in train_iter:
+    train_iterator = iter(train_iter)
+    while True:
         if planned_steps > 0 and step >= planned_steps:
+            break
+        try:
+            batch = next(train_iterator)
+        except StopIteration:
             break
         step += 1
         apply_pre_step_lr(optimizer, config.train, step)
@@ -549,6 +564,10 @@ def main() -> None:
                 device=device,
                 max_windows=config.train.validation_window_count,
                 label="validation",
+                metrics_path=metrics_path,
+                wandb_run=wandb_run,
+                step=step,
+                epoch=epoch_value,
             )
             validation_metrics.update(
                 {
@@ -572,6 +591,7 @@ def main() -> None:
 
     if step > 0 and last_eval_step != step:
         print_section(f"FINAL VALIDATION START step={step:,}")
+        epoch_value = estimate_epoch(step, cached_batches if "cached_batches" in locals() else [], config.train)
         validation_metrics = evaluate(
             model=model,
             config=config,
@@ -580,8 +600,11 @@ def main() -> None:
             device=device,
             max_windows=config.train.validation_window_count,
             label="validation",
+            metrics_path=metrics_path,
+            wandb_run=wandb_run,
+            step=step,
+            epoch=epoch_value,
         )
-        epoch_value = estimate_epoch(step, cached_batches if "cached_batches" in locals() else [], config.train)
         validation_metrics.update(
             {
                 "type": "validation",
@@ -602,6 +625,7 @@ def main() -> None:
         print_section(f"FINAL VALIDATION END step={step:,}")
 
     print_section(f"TEST START step={step:,}")
+    epoch_value = estimate_epoch(step, cached_batches if "cached_batches" in locals() else [], config.train)
     test_metrics = evaluate(
         model=model,
         config=config,
@@ -610,8 +634,11 @@ def main() -> None:
         device=device,
         max_windows=config.train.test_window_count,
         label="test",
+        metrics_path=metrics_path,
+        wandb_run=wandb_run,
+        step=step,
+        epoch=epoch_value,
     )
-    epoch_value = estimate_epoch(step, cached_batches if "cached_batches" in locals() else [], config.train)
     test_metrics.update(
         {
             "type": "test",
@@ -692,6 +719,42 @@ def log_metrics(path: Path, wandb_run: Any, row: dict[str, Any]) -> None:
         wandb_run.log(payload, step=step)
 
 
+def should_log_eval_progress(batch_count: int, progress_batches: int) -> bool:
+    if progress_batches <= 0:
+        return False
+    return batch_count == 1 or batch_count % progress_batches == 0
+
+
+def build_eval_progress_metrics(
+    *,
+    accumulator: MetricAccumulator,
+    label: str,
+    loss_sum: float,
+    batches: int,
+    started: float,
+    step: int,
+    epoch: int | None,
+) -> dict[str, Any]:
+    progress_label = f"{label}_progress"
+    elapsed = max(1e-6, time.perf_counter() - started)
+    metrics = accumulator.compute(prefix=f"{progress_label}_")
+    windows = int(metrics.get(f"{progress_label}_windows", 0) or 0)
+    metrics.update(
+        {
+            "type": progress_label,
+            "step": step,
+            "eval_batches": batches,
+            f"{progress_label}_loss": loss_sum / max(1, batches),
+            f"{progress_label}_batches": batches,
+            f"{progress_label}_elapsed_sec": elapsed,
+            f"{progress_label}_windows_per_sec": windows / elapsed,
+            **({"epoch": epoch} if epoch is not None else {}),
+            "time": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    return metrics
+
+
 def evaluate(
     *,
     model: torch.nn.Module,
@@ -701,6 +764,10 @@ def evaluate(
     device: torch.device,
     max_windows: int,
     label: str,
+    metrics_path: Path | None = None,
+    wandb_run: Any = None,
+    step: int = 0,
+    epoch: int | None = None,
 ) -> dict[str, Any]:
     assert torch is not None
     model.eval()
@@ -714,7 +781,7 @@ def evaluate(
         max_windows=max_windows,
         shuffle=False,
     )
-    loader = DataLoader(dataset, batch_size=None, num_workers=0, pin_memory=device.type == "cuda")
+    loader = DataLoader(dataset, batch_size=None, num_workers=0, pin_memory=False)
     accumulator = MetricAccumulator(
         horizon=config.data.horizon,
         target_columns=config.data.target_columns,
@@ -722,24 +789,47 @@ def evaluate(
     )
     loss_sum = 0.0
     batches = 0
-    with torch.no_grad():
+    started = time.perf_counter()
+    with torch.inference_mode():
         for batch in loader:
             batch = move_batch(batch, device)
-            prediction, direction_logits = model(batch["values"], batch["time_features"])
-            loss, _ = forecast_loss(
-                prediction,
-                batch["targets"],
-                direction_logits,
-                batch["direction"],
-                config.model.direction_loss_weight,
-            )
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.float16,
+                enabled=config.train.amp and device.type == "cuda",
+            ):
+                prediction, direction_logits = model(batch["values"], batch["time_features"])
+                loss, _ = forecast_loss(
+                    prediction,
+                    batch["targets"],
+                    direction_logits,
+                    batch["direction"],
+                    config.model.direction_loss_weight,
+                )
             loss_sum += float(loss.detach().cpu())
             batches += 1
             prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
             accumulator.update(prediction_bps, target_bps)
+            if should_log_eval_progress(batches, config.train.eval_progress_batches):
+                progress_metrics = build_eval_progress_metrics(
+                    accumulator=accumulator,
+                    label=label,
+                    loss_sum=loss_sum,
+                    batches=batches,
+                    started=started,
+                    step=step,
+                    epoch=epoch,
+                )
+                if metrics_path is not None:
+                    log_metrics(metrics_path, wandb_run, progress_metrics)
+                print_metric_line(progress_metrics)
+            del batch, prediction, direction_logits, loss
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
     metrics = accumulator.compute(prefix=f"{label}_")
     metrics[f"{label}_loss"] = loss_sum / max(1, batches)
     metrics[f"{label}_batches"] = batches
+    metrics[f"{label}_elapsed_sec"] = time.perf_counter() - started
     return metrics
 
 
@@ -759,20 +849,29 @@ def evaluate_cached_batches(
     )
     loss_sum = 0.0
     batch_count = 0
-    for batch in batches:
-        batch = move_batch(batch, device)
-        prediction, direction_logits = model(batch["values"], batch["time_features"])
-        loss, _ = forecast_loss(
-            prediction,
-            batch["targets"],
-            direction_logits,
-            batch["direction"],
-            config.model.direction_loss_weight,
-        )
-        loss_sum += float(loss.detach().cpu())
-        batch_count += 1
-        prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
-        accumulator.update(prediction_bps, target_bps)
+    with torch.inference_mode():
+        for batch in batches:
+            batch = move_batch(batch, device)
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.float16,
+                enabled=config.train.amp and device.type == "cuda",
+            ):
+                prediction, direction_logits = model(batch["values"], batch["time_features"])
+                loss, _ = forecast_loss(
+                    prediction,
+                    batch["targets"],
+                    direction_logits,
+                    batch["direction"],
+                    config.model.direction_loss_weight,
+                )
+            loss_sum += float(loss.detach().cpu())
+            batch_count += 1
+            prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
+            accumulator.update(prediction_bps, target_bps)
+            del batch, prediction, direction_logits, loss
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
     metrics = accumulator.compute(prefix=f"{label}_")
     metrics[f"{label}_loss"] = loss_sum / max(1, batch_count)
     metrics[f"{label}_batches"] = batch_count
@@ -1118,6 +1217,7 @@ def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
             "grad_clip_norm": config.train.grad_clip_norm,
             "logging_steps": config.train.logging_steps,
             "eval_steps": config.train.eval_steps,
+            "eval_progress_batches": config.train.eval_progress_batches,
             "validation_window_count": config.train.validation_window_count,
             "test_window_count": config.train.test_window_count,
             "max_batches_per_session": config.train.max_batches_per_session,

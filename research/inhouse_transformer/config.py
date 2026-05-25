@@ -90,6 +90,7 @@ class TrainConfig:
     grad_clip_norm: float = 1.0
     logging_steps: int = 50
     eval_steps: int = 500
+    eval_progress_batches: int = 5
     validation_window_count: int = 30000
     test_window_count: int = 50000
     max_batches_per_session: int = 0
