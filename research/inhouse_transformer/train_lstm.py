@@ -55,7 +55,6 @@ ACTUAL_FEATURE_COLUMNS = (
     "quote_valid_ratio",
 )
 TIME_FEATURE_COUNT = 9
-WINDOW_PRICE_SCALE = 10000.0
 
 
 @dataclass(slots=True)
@@ -117,10 +116,17 @@ class PriceMetricAccumulator:
         self.actual_sq_sum = np.zeros(horizon, dtype=np.float64)
         self.cross_sum = np.zeros(horizon, dtype=np.float64)
 
-    def update(self, prediction_norm: np.ndarray, target_norm: np.ndarray, current_close: np.ndarray) -> None:
+    def update(
+        self,
+        prediction_norm: np.ndarray,
+        target_norm: np.ndarray,
+        current_close: np.ndarray,
+        target_center: np.ndarray,
+        target_scale: np.ndarray,
+    ) -> None:
         current = np.maximum(np.asarray(current_close, dtype=np.float64).reshape(-1, 1), 1e-6)
-        prediction = denormalize_target(prediction_norm, self.stats, current)[:, :, 0]
-        target = denormalize_target(target_norm, self.stats, current)[:, :, 0]
+        prediction = denormalize_target(prediction_norm, self.stats, target_center, target_scale)[:, :, 0]
+        target = denormalize_target(target_norm, self.stats, target_center, target_scale)[:, :, 0]
         error_bps = (prediction - target) / current * 10000.0
         pred_change_bps = (prediction - current) / current * 10000.0
         actual_change_bps = (target - current) / current * 10000.0
@@ -277,6 +283,8 @@ class ActualBatchBuilder:
         self.inputs = np.empty((batch_size, context_length, input_size), dtype=np.float32)
         self.targets = np.empty((batch_size, horizon, 1), dtype=np.float32)
         self.current_close = np.empty((batch_size,), dtype=np.float32)
+        self.target_center = np.empty((batch_size,), dtype=np.float32)
+        self.target_scale = np.empty((batch_size,), dtype=np.float32)
         self.stats = stats
         self.target_column = target_column
         self.count = 0
@@ -304,11 +312,14 @@ class ActualBatchBuilder:
         target_start = origin + 1
         target_end = origin + 1 + config.horizon
         current_close = arrays["close"][origin]
-        values = normalize_inputs(arrays["actual_features"][start:end], self.stats, current_close)
+        price_center, price_scale = window_price_center_scale(arrays["actual_features"][start:end], current_close)
+        values = normalize_inputs(arrays["actual_features"][start:end], self.stats, price_center, price_scale)
         self.inputs[self.count] = np.concatenate([values, arrays["time_features"][start:end]], axis=1)
         target_prices = arrays[self.target_column][target_start:target_end].reshape(config.horizon, 1)
-        self.targets[self.count] = normalize_target(target_prices, self.stats, current_close)
+        self.targets[self.count] = normalize_target(target_prices, self.stats, price_center, price_scale)
         self.current_close[self.count] = current_close
+        self.target_center[self.count] = price_center
+        self.target_scale[self.count] = price_scale
         self.count += 1
 
     def as_torch(self) -> dict[str, torch.Tensor]:
@@ -317,6 +328,8 @@ class ActualBatchBuilder:
             "inputs": torch.from_numpy(self.inputs[rows].copy()),
             "targets": torch.from_numpy(self.targets[rows].copy()),
             "current_close": torch.from_numpy(self.current_close[rows].copy()),
+            "target_center": torch.from_numpy(self.target_center[rows].copy()),
+            "target_scale": torch.from_numpy(self.target_scale[rows].copy()),
         }
 
 
@@ -651,9 +664,9 @@ def compute_normalization_stats(
 def make_window_normalization_stats() -> NormalizationStats:
     print_section("WINDOW NORMALIZATION ENABLED")
     print(
-        "Per-window normalization uses only the current context: price columns are centered against current close, "
-        "price targets are expressed in bps from current close, size columns are log-z-scored inside the context window, "
-        "spread is clipped/scaled, and no train-wide stats pass is run.",
+        "Per-window normalization uses only the current context: actual price columns and actual price targets "
+        "are z-scored by the context window price mean/std, size columns are log-z-scored inside the context "
+        "window, spread is clipped/scaled, and no train-wide stats pass is run.",
         flush=True,
     )
     return NormalizationStats(
@@ -797,6 +810,8 @@ def evaluate_batches(
             prediction.detach().cpu().numpy(),
             batch["targets"].detach().cpu().numpy(),
             batch["current_close"].detach().cpu().numpy(),
+            batch["target_center"].detach().cpu().numpy(),
+            batch["target_scale"].detach().cpu().numpy(),
         )
     metrics = accumulator.compute(prefix=f"{label}_")
     metrics[f"{label}_loss"] = loss_sum / max(1, batch_count)
@@ -816,6 +831,8 @@ def batch_price_metrics(
         prediction.detach().cpu().numpy(),
         batch["targets"].detach().cpu().numpy(),
         batch["current_close"].detach().cpu().numpy(),
+        batch["target_center"].detach().cpu().numpy(),
+        batch["target_scale"].detach().cpu().numpy(),
     )
     computed = accumulator.compute()
     return {
@@ -848,14 +865,25 @@ def print_metric_line(metrics: dict[str, Any], target_column: str) -> None:
     print(" | ".join(parts), flush=True)
 
 
-def normalize_inputs(values: np.ndarray, stats: NormalizationStats, current_close: float) -> np.ndarray:
+def window_price_center_scale(values: np.ndarray, current_close: float) -> tuple[float, float]:
+    prices = np.asarray(values[:, 0:4], dtype=np.float32).reshape(-1)
+    center = float(np.nanmean(prices))
+    if not math.isfinite(center) or center <= 0.0:
+        center = max(float(current_close), 1e-6)
+    scale = float(np.nanstd(prices))
+    scale_floor = max(abs(float(current_close)) * 1e-4, 1e-4)
+    if not math.isfinite(scale) or scale < scale_floor:
+        scale = scale_floor
+    return center, scale
+
+
+def normalize_inputs(values: np.ndarray, stats: NormalizationStats, price_center: float, price_scale: float) -> np.ndarray:
     values = np.asarray(values, dtype=np.float32)
     if stats.mode == "train_split":
         return ((values - stats.input_mean) / stats.input_std).astype(np.float32)
 
     normalized = np.empty_like(values, dtype=np.float32)
-    close_anchor = max(float(current_close), 1e-6)
-    normalized[:, 0:4] = (values[:, 0:4] / close_anchor - 1.0) * WINDOW_PRICE_SCALE
+    normalized[:, 0:4] = (values[:, 0:4] - float(price_center)) / max(float(price_scale), 1e-6)
 
     size_columns = (4, 5, 7, 8, 9)
     for column in size_columns:
@@ -870,18 +898,25 @@ def normalize_inputs(values: np.ndarray, stats: NormalizationStats, current_clos
     return np.nan_to_num(normalized, nan=0.0, posinf=10.0, neginf=-10.0).astype(np.float32)
 
 
-def normalize_target(values: np.ndarray, stats: NormalizationStats, current_close: float) -> np.ndarray:
+def normalize_target(values: np.ndarray, stats: NormalizationStats, price_center: float, price_scale: float) -> np.ndarray:
     values = np.asarray(values, dtype=np.float32)
     if stats.mode == "train_split":
         return ((values - stats.target_mean) / stats.target_std).astype(np.float32)
-    return ((values / max(float(current_close), 1e-6) - 1.0) * WINDOW_PRICE_SCALE).astype(np.float32)
+    return ((values - float(price_center)) / max(float(price_scale), 1e-6)).astype(np.float32)
 
 
-def denormalize_target(values: np.ndarray, stats: NormalizationStats, current_close: np.ndarray) -> np.ndarray:
+def denormalize_target(
+    values: np.ndarray,
+    stats: NormalizationStats,
+    target_center: np.ndarray,
+    target_scale: np.ndarray,
+) -> np.ndarray:
     values = np.asarray(values, dtype=np.float64)
     if stats.mode == "train_split":
         return values * stats.target_std.astype(np.float64) + stats.target_mean.astype(np.float64)
-    return (values / WINDOW_PRICE_SCALE + 1.0) * np.asarray(current_close, dtype=np.float64).reshape(-1, 1, 1)
+    center = np.asarray(target_center, dtype=np.float64).reshape(-1, 1, 1)
+    scale = np.asarray(target_scale, dtype=np.float64).reshape(-1, 1, 1)
+    return values * scale + center
 
 
 def loss_fn(prediction: torch.Tensor, target: torch.Tensor, loss_name: str) -> torch.Tensor:
