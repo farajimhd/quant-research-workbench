@@ -57,6 +57,8 @@ The default learning-rate scheduler is `ReduceLROnPlateau` on validation loss. A
 
 Validation and test evaluation use the same AMP setting as training and stream partial progress every `--eval-progress-batches` batches, default `5`, to both console and W&B. Set `--eval-progress-batches 0` to disable partial eval logs. W&B keeps the full metric names from `metrics.jsonl` and also logs short aliases such as `validation/h1_dir`, `validation/h1_mae_bps`, and `validation/h1_edge_bps`; the W&B x-axis metric is `train_step`.
 
+When `--overfit-batches` is used, the script logs `overfit_cache_predictions/*` W&B charts after the final test pass. It selects three tickers from the cached training batches and overlays predicted h1 close against target h1 close for each ticker, plus a table with the underlying values.
+
 Run a small dry run:
 
 ```powershell

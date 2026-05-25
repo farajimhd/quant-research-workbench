@@ -5,7 +5,7 @@ import gc
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 import numpy as np
 import polars as pl
@@ -224,7 +224,7 @@ class RollingBarWindowDataset(IterableDataset):
         self.max_batches_per_session = max_batches_per_session
         self.shuffle = shuffle
 
-    def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
+    def __iter__(self) -> Iterator[dict[str, Any]]:
         rng = np.random.default_rng(self.seed)
         emitted_windows = 0
         for epoch in range(self.epochs):
@@ -259,7 +259,7 @@ class RollingBarWindowDataset(IterableDataset):
                     if self.shuffle and origins.size:
                         rng.shuffle(origins)
                     for origin in origins:
-                        batch.add(arrays, int(origin), self.config)
+                        batch.add(arrays, int(origin), self.config, ticker=str(ticker))
                         session_windows += 1
                         emitted_windows += 1
                         if batch.full:
@@ -316,6 +316,8 @@ class BatchBuilder:
         self.current_close = np.empty((batch_size,), dtype=np.float32)
         self.target_center = np.empty((batch_size,), dtype=np.float32)
         self.target_scale = np.empty((batch_size,), dtype=np.float32)
+        self.target_timestamp_ns = np.empty((batch_size,), dtype=np.int64)
+        self.tickers: list[str] = [""] * batch_size
         self.count = 0
 
     @property
@@ -335,7 +337,7 @@ class BatchBuilder:
             target_count=self.targets.shape[2],
         )
 
-    def add(self, arrays: dict[str, np.ndarray], origin: int, config: DataConfig) -> None:
+    def add(self, arrays: dict[str, np.ndarray], origin: int, config: DataConfig, *, ticker: str) -> None:
         start = origin - config.context_length + 1
         end = origin + 1
         target_start = origin + 1
@@ -366,9 +368,11 @@ class BatchBuilder:
         self.current_close[self.count] = current_close
         self.target_center[self.count] = center
         self.target_scale[self.count] = scale
+        self.target_timestamp_ns[self.count] = int(arrays["timestamps_ns"][target_start])
+        self.tickers[self.count] = ticker
         self.count += 1
 
-    def as_torch(self) -> dict[str, torch.Tensor]:
+    def as_torch(self) -> dict[str, Any]:
         if torch is None:
             raise RuntimeError("PyTorch is required to materialize training batches.")
         rows = slice(0, self.count)
@@ -380,6 +384,8 @@ class BatchBuilder:
             "current_close": torch.from_numpy(self.current_close[rows].copy()),
             "target_center": torch.from_numpy(self.target_center[rows].copy()),
             "target_scale": torch.from_numpy(self.target_scale[rows].copy()),
+            "target_timestamp_ns": torch.from_numpy(self.target_timestamp_ns[rows].copy()),
+            "ticker": list(self.tickers[: self.count]),
         }
 
 
@@ -501,6 +507,7 @@ def ticker_arrays(frame: pl.DataFrame, config: DataConfig) -> dict[str, np.ndarr
         "low": low,
         "close": close,
         "sessions": sessions,
+        "timestamps_ns": timestamps_ns,
         "features": features,
         "time_features": time_features,
     }

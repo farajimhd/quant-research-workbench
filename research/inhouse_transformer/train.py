@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 import time
 from datetime import datetime
@@ -479,7 +480,7 @@ def main() -> None:
     cached_batches = collect_overfit_batches(train_loader, overfit_batches) if overfit_batches > 0 else []
     if cached_batches:
         planned_steps = config.train.max_steps or config.train.epochs * len(cached_batches)
-        train_iter: Iterable[dict[str, torch.Tensor]] = cycle(cached_batches)
+        train_iter: Iterable[dict[str, Any]] = cycle(cached_batches)
         print_section(f"OVERFIT CACHE READY batches={len(cached_batches)} planned_steps={planned_steps:,}")
     else:
         train_iter = train_loader
@@ -754,6 +755,15 @@ def main() -> None:
     log_metrics(metrics_path, wandb_run, test_metrics)
     print_metric_line(test_metrics)
     save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
+    if cached_batches:
+        log_overfit_cache_prediction_charts(
+            model=model,
+            config=config,
+            batches=cached_batches,
+            device=device,
+            wandb_run=wandb_run,
+            step=step,
+        )
     print_section(f"TEST END step={step:,}")
     print_section("TRAINING COMPLETE")
     print(f"*** Artifacts: {output_dir}", flush=True)
@@ -783,11 +793,11 @@ def print_section(title: str) -> None:
     print(LOG_RULE, flush=True)
 
 
-def collect_overfit_batches(loader: DataLoader, count: int) -> list[dict[str, torch.Tensor]]:
+def collect_overfit_batches(loader: DataLoader, count: int) -> list[dict[str, Any]]:
     print_section(f"BUILDING OVERFIT CACHE target_batches={count}")
     batches = []
     for batch in loader:
-        batches.append({key: value.cpu() for key, value in batch.items()})
+        batches.append(cache_batch(batch))
         if len(batches) >= count:
             break
     if not batches:
@@ -796,7 +806,21 @@ def collect_overfit_batches(loader: DataLoader, count: int) -> list[dict[str, to
     return batches
 
 
-def estimate_epoch(step: int, cached_batches: list[dict[str, torch.Tensor]], config: TrainConfig) -> int | None:
+def cache_batch(batch: dict[str, Any]) -> dict[str, Any]:
+    cached: dict[str, Any] = {}
+    for key, value in batch.items():
+        if torch is not None and torch.is_tensor(value):
+            cached[key] = value.cpu()
+        elif isinstance(value, np.ndarray):
+            cached[key] = value.copy()
+        elif isinstance(value, list):
+            cached[key] = list(value)
+        else:
+            cached[key] = value
+    return cached
+
+
+def estimate_epoch(step: int, cached_batches: list[dict[str, Any]], config: TrainConfig) -> int | None:
     if cached_batches:
         return max(1, math.ceil(step / max(1, len(cached_batches))))
     if config.max_steps > 0 and config.epochs > 0:
@@ -1041,7 +1065,7 @@ def evaluate_cached_batches(
     *,
     model: torch.nn.Module,
     config: ExperimentConfig,
-    batches: Iterable[dict[str, torch.Tensor]],
+    batches: Iterable[dict[str, Any]],
     device: torch.device,
     label: str,
 ) -> dict[str, Any]:
@@ -1083,9 +1107,130 @@ def evaluate_cached_batches(
     return metrics
 
 
+def log_overfit_cache_prediction_charts(
+    *,
+    model: torch.nn.Module,
+    config: ExperimentConfig,
+    batches: Iterable[dict[str, Any]],
+    device: torch.device,
+    wandb_run: Any,
+    step: int,
+    max_tickers: int = 3,
+    max_points_per_ticker: int = 512,
+) -> None:
+    if wandb_run is None:
+        return
+    if "close" not in config.data.target_columns:
+        print("*** Overfit cache prediction chart skipped because close is not in target columns.", flush=True)
+        return
+    try:
+        import wandb
+    except ModuleNotFoundError:
+        print("*** Overfit cache prediction chart skipped because wandb is unavailable.", flush=True)
+        return
+
+    model.eval()
+    rows_by_ticker: dict[str, list[dict[str, float | int | str]]] = {}
+    close_index = config.data.target_columns.index("close")
+    with torch.inference_mode():
+        for raw_batch in batches:
+            tickers = raw_batch.get("ticker")
+            if not tickers:
+                continue
+            batch = move_batch(raw_batch, device)
+            with torch.autocast(
+                device_type=device.type,
+                dtype=torch.float16,
+                enabled=config.train.amp and device.type == "cuda",
+            ):
+                prediction, _ = model(batch["values"], batch["time_features"])
+            prediction_prices, target_prices = prediction_and_target_prices(prediction, batch, config)
+            prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
+            timestamps_ns = batch["target_timestamp_ns"].detach().cpu().numpy()
+            current_close = batch["current_close"].detach().cpu().numpy()
+            for row_index, ticker in enumerate(tickers):
+                ticker = str(ticker)
+                if ticker not in rows_by_ticker:
+                    if len(rows_by_ticker) >= max_tickers:
+                        continue
+                    rows_by_ticker[ticker] = []
+                ticker_rows = rows_by_ticker[ticker]
+                if len(ticker_rows) >= max_points_per_ticker:
+                    continue
+                target_close = float(target_prices[row_index, 0, close_index])
+                prediction_close = float(prediction_prices[row_index, 0, close_index])
+                ticker_rows.append(
+                    {
+                        "ticker": ticker,
+                        "target_timestamp_ns": int(timestamps_ns[row_index]),
+                        "current_close": float(current_close[row_index]),
+                        "target_close": target_close,
+                        "prediction_close": prediction_close,
+                        "target_bps": float(target_bps[row_index, 0, close_index]),
+                        "prediction_bps": float(prediction_bps[row_index, 0, close_index]),
+                        "abs_error_bps": abs(float(prediction_bps[row_index, 0, close_index] - target_bps[row_index, 0, close_index])),
+                    }
+                )
+
+    if not rows_by_ticker:
+        print("*** Overfit cache prediction chart skipped because cached batches had no ticker metadata.", flush=True)
+        return
+
+    payload: dict[str, Any] = {"train_step": step}
+    table_rows = []
+    for ticker, ticker_rows in rows_by_ticker.items():
+        ticker_rows.sort(key=lambda item: int(item["target_timestamp_ns"]))
+        xs = list(range(len(ticker_rows)))
+        target_close = [float(row["target_close"]) for row in ticker_rows]
+        prediction_close = [float(row["prediction_close"]) for row in ticker_rows]
+        safe_ticker = re.sub(r"[^A-Za-z0-9_.-]+", "_", ticker)
+        payload[f"overfit_cache_predictions/{safe_ticker}_h1_close"] = wandb.plot.line_series(
+            xs=xs,
+            ys=[target_close, prediction_close],
+            keys=["target_close", "prediction_close"],
+            title=f"{ticker} overfit cache h1 close",
+            xname="cache_time_order",
+        )
+        for sample_index, row in enumerate(ticker_rows):
+            table_rows.append(
+                [
+                    ticker,
+                    sample_index,
+                    int(row["target_timestamp_ns"]),
+                    float(row["current_close"]),
+                    float(row["target_close"]),
+                    float(row["prediction_close"]),
+                    float(row["target_bps"]),
+                    float(row["prediction_bps"]),
+                    float(row["abs_error_bps"]),
+                ]
+            )
+
+    payload["overfit_cache_predictions/table"] = wandb.Table(
+        columns=[
+            "ticker",
+            "cache_time_order",
+            "target_timestamp_ns",
+            "current_close",
+            "target_close",
+            "prediction_close",
+            "target_bps",
+            "prediction_bps",
+            "abs_error_bps",
+        ],
+        data=table_rows,
+    )
+    wandb_run.log(payload)
+    print(
+        "*** W&B overfit cache prediction charts logged for "
+        f"{', '.join(rows_by_ticker.keys())}",
+        flush=True,
+    )
+
+
 def batch_metrics_from_prediction(
     prediction: torch.Tensor,
-    batch: dict[str, torch.Tensor],
+    batch: dict[str, Any],
     config: ExperimentConfig,
 ) -> dict[str, float]:
     prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
@@ -1105,7 +1250,7 @@ def batch_metrics_from_prediction(
 
 def prediction_and_target_bps(
     prediction: torch.Tensor,
-    batch: dict[str, torch.Tensor],
+    batch: dict[str, Any],
     config: ExperimentConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
     prediction_np = prediction.detach().cpu().numpy()
@@ -1130,6 +1275,24 @@ def prediction_and_target_bps(
         config.data.target_mode,
     )
     return prediction_bps, target_bps
+
+
+def prediction_and_target_prices(
+    prediction: torch.Tensor,
+    batch: dict[str, Any],
+    config: ExperimentConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    prediction_np = prediction.detach().cpu().numpy()
+    target_np = batch["targets"].detach().cpu().numpy()
+    current_close = batch["current_close"].detach().cpu().numpy()
+    if config.data.target_mode == "actual_price_zscore":
+        target_center = batch["target_center"].detach().cpu().numpy().reshape(-1, 1, 1)
+        target_scale = batch["target_scale"].detach().cpu().numpy().reshape(-1, 1, 1)
+        return prediction_np * target_scale + target_center, target_np * target_scale + target_center
+    if config.data.target_mode == "return_bps":
+        current = np.maximum(current_close.reshape(-1, 1, 1), 1e-6)
+        return current * np.exp(prediction_np / 10000.0), current * np.exp(target_np / 10000.0)
+    raise ValueError(f"Unsupported target_mode: {config.data.target_mode}")
 
 
 def print_metric_line(metrics: dict[str, Any]) -> None:
@@ -1167,8 +1330,14 @@ def resolve_device(requested: str) -> torch.device:
     return torch.device(requested)
 
 
-def move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
-    return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
+def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
+    moved: dict[str, Any] = {}
+    for key, value in batch.items():
+        if torch.is_tensor(value):
+            moved[key] = value.to(device, non_blocking=True)
+        else:
+            moved[key] = value
+    return moved
 
 
 def raise_on_nonfinite_loss(loss: torch.Tensor, *, label: str, step: int, batch: dict[str, torch.Tensor]) -> None:
