@@ -63,6 +63,14 @@ python research\inhouse_transformer\train_mlp.py --device cuda --tickers USO --t
 
 The MLP script flattens `[context, features + time_features]` directly to the multi-horizon OHLC target. It is intended as a basic learning-control path: on a cached small sample, train loss should fall quickly.
 
+Run the actual-value LSTM sanity test:
+
+```powershell
+python research\inhouse_transformer\train_lstm.py --device cuda --tickers USO --train-start-date 2024-01-22 --train-end-date 2024-01-22 --validation-start-date 2026-01-02 --validation-end-date 2026-01-02 --test-start-date 2026-03-02 --test-end-date 2026-03-02 --batch-size 256 --target-column close --horizon 1 --hidden-size 32 --layers 1 --overfit-batches 8 --epochs 200 --eval-steps 25 --allow-target-across-session
+```
+
+The LSTM script follows the Keras weather example shape more closely: actual OHLC/volume/quote values are normalized from train-split statistics, concatenated with time features, and fed as `[batch, context, features]`. The default target is the next actual close price, with metrics reported back in bps versus current close and a naive current-close forecast.
+
 Full coverage counting is disabled by default to avoid a complete pre-training pass over the train set. Add `--count-coverage` only when you want an exact window/batch count before training starts. Without `--max-steps`, training stops when the streamed dataset exhausts the configured epochs.
 
 Artifacts are written under:
