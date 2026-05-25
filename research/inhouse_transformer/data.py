@@ -341,6 +341,7 @@ class BatchBuilder:
         target_start = origin + 1
         target_end = origin + 1 + config.horizon
         current_close = arrays["close"][origin]
+        price_center, price_scale = window_price_center_scale(arrays, start, end, current_close)
         target_prices = np.column_stack(
             [
                 arrays[column][target_start:target_end]
@@ -349,7 +350,7 @@ class BatchBuilder:
         )
         close_index = config.target_columns.index("close")
         if config.target_mode == "actual_price_zscore":
-            center, scale = window_price_center_scale(arrays, start, end, current_close)
+            center, scale = price_center, price_scale
             targets = ((target_prices - center) / scale).astype(np.float32)
         elif config.target_mode == "return_bps":
             center = 0.0
@@ -358,7 +359,7 @@ class BatchBuilder:
         else:
             raise ValueError(f"Unsupported target_mode: {config.target_mode}")
 
-        self.values[self.count] = arrays["features"][start:end]
+        self.values[self.count] = normalize_actual_feature_window(arrays["features"][start:end], price_center, price_scale)
         self.time_features[self.count] = arrays["time_features"][start:end]
         self.targets[self.count] = targets
         self.direction[self.count] = (target_prices[:, close_index] > current_close).astype(np.float32)
@@ -552,6 +553,31 @@ def window_price_center_scale(
     if not math.isfinite(scale) or scale < scale_floor:
         scale = scale_floor
     return center, scale
+
+
+def normalize_actual_feature_window(
+    values: np.ndarray,
+    price_center: float,
+    price_scale: float,
+) -> np.ndarray:
+    normalized = np.asarray(values, dtype=np.float32).copy()
+    safe_price_scale = max(float(price_scale), 1e-6)
+    normalized[:, 0:4] = (normalized[:, 0:4] - float(price_center)) / safe_price_scale
+
+    for column_index in (4, 5, 7, 8, 9):
+        column = np.log1p(np.maximum(normalized[:, column_index], 0.0))
+        mean = float(np.nanmean(column))
+        std = float(np.nanstd(column))
+        if not math.isfinite(mean):
+            mean = 0.0
+        if not math.isfinite(std) or std < 1e-3:
+            std = 1.0
+        normalized[:, column_index] = (column - mean) / std
+
+    normalized[:, 6] = np.clip(normalized[:, 6], -1000.0, 1000.0) / 1000.0
+    normalized[:, 10] = np.clip(normalized[:, 10], -1.0, 1.0)
+    normalized[:, 11] = np.clip(normalized[:, 11], 0.0, 1.0)
+    return np.nan_to_num(normalized, nan=0.0, posinf=50.0, neginf=-50.0).clip(-50.0, 50.0).astype(np.float32)
 
 
 def denormalize_actual_zscore(

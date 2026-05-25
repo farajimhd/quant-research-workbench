@@ -490,6 +490,7 @@ def main() -> None:
                 batch["direction"],
                 config.model.direction_loss_weight,
             )
+        raise_on_nonfinite_loss(loss, label="train", step=step, batch=batch)
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
@@ -714,6 +715,7 @@ def log_metrics(path: Path, wandb_run: Any, row: dict[str, Any]) -> None:
     label = str(row.get("type") or "metrics")
     payload: dict[str, float | int] = {}
     payload["train_step"] = step
+    nonfinite_count = 0
     for key, value in row.items():
         if key in {"type", "time"}:
             continue
@@ -721,7 +723,11 @@ def log_metrics(path: Path, wandb_run: Any, row: dict[str, Any]) -> None:
             payload[f"{label}/{key}"] = int(value)
         elif isinstance(value, (int, float)) and math.isfinite(float(value)):
             payload[f"{label}/{key}"] = value
+        elif isinstance(value, (int, float)):
+            nonfinite_count += 1
     payload.update(wandb_metric_aliases(label, row))
+    if nonfinite_count:
+        payload[f"{label}/nonfinite_metric_count"] = nonfinite_count
     if payload:
         wandb_run.log(payload)
 
@@ -857,6 +863,7 @@ def evaluate(
                     batch["direction"],
                     config.model.direction_loss_weight,
                 )
+            raise_on_nonfinite_loss(loss, label=label, step=step, batch=batch)
             loss_sum += float(loss.detach().cpu())
             batches += 1
             prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
@@ -916,6 +923,7 @@ def evaluate_cached_batches(
                     batch["direction"],
                     config.model.direction_loss_weight,
                 )
+            raise_on_nonfinite_loss(loss, label=label, step=0, batch=batch)
             loss_sum += float(loss.detach().cpu())
             batch_count += 1
             prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
@@ -1015,6 +1023,31 @@ def resolve_device(requested: str) -> torch.device:
 
 def move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
     return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
+
+
+def raise_on_nonfinite_loss(loss: torch.Tensor, *, label: str, step: int, batch: dict[str, torch.Tensor]) -> None:
+    if bool(torch.isfinite(loss).detach().cpu()):
+        return
+    details = []
+    for key in ("values", "time_features", "targets"):
+        tensor = batch.get(key)
+        if tensor is None:
+            continue
+        finite_mask = torch.isfinite(tensor)
+        finite_count = int(finite_mask.sum().detach().cpu())
+        total_count = tensor.numel()
+        if finite_count:
+            finite_values = tensor[finite_mask]
+            min_value = float(finite_values.min().detach().cpu())
+            max_value = float(finite_values.max().detach().cpu())
+        else:
+            min_value = math.nan
+            max_value = math.nan
+        details.append(
+            f"{key}: finite={finite_count}/{total_count} min={min_value:.6g} max={max_value:.6g}"
+        )
+    joined = "; ".join(details)
+    raise FloatingPointError(f"Non-finite {label} loss at step {step:,}. {joined}")
 
 
 def lr_multiplier(step: int, warmup_steps: int, total_steps: int) -> float:

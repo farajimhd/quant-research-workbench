@@ -16,13 +16,15 @@ time_features: [batch, context_length, time_feature_count]
 targets:       [batch, horizon, 4]
 ```
 
-The transformer input `values` are raw actual bar/quote columns, cleaned for nulls but not return-encoded, log-transformed, or z-scored:
+The transformer input `values` are built from raw actual bar/quote columns, not return-encoded engineered features:
 
 ```text
 open, high, low, close, volume, transactions, spread_bps,
 quote_bid_size, quote_ask_size, quoted_share_depth,
 quote_imbalance, quote_valid_ratio
 ```
+
+Before the tensor is fed to the model, each window is normalized causally from its own context to keep training numerically stable: OHLC columns are z-scored from the context OHLC mean/std, size columns use log1p plus context z-score, spread is clipped/scaled, and quote imbalance/valid ratio stay bounded.
 
 The main transformer defaults to `--target-mode actual_price_zscore`. Targets are the next `horizon` OHLC candles, encoded as actual future prices z-scored by each context window's actual OHLC mean and standard deviation:
 
