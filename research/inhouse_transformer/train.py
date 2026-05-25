@@ -324,7 +324,12 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, metadata: dic
             config=metadata,
         )
         print(f"*** WANDB RUN READY | url={getattr(run, 'url', '')}", flush=True)
-        run.log({"run/started": 1}, step=0)
+        try:
+            run.define_metric("train_step")
+            run.define_metric("*", step_metric="train_step")
+        except Exception as exc:
+            print(f"*** WANDB metric axis setup skipped: {exc}", flush=True)
+        run.log({"run/started": 1, "train_step": 0})
         return run
     except Exception as exc:
         print(f"*** WANDB init failed; metrics will only be written to metrics.jsonl. Error: {exc}", flush=True)
@@ -708,6 +713,7 @@ def log_metrics(path: Path, wandb_run: Any, row: dict[str, Any]) -> None:
     step = int(row.get("step") or 0)
     label = str(row.get("type") or "metrics")
     payload: dict[str, float | int] = {}
+    payload["train_step"] = step
     for key, value in row.items():
         if key in {"type", "time"}:
             continue
@@ -715,8 +721,53 @@ def log_metrics(path: Path, wandb_run: Any, row: dict[str, Any]) -> None:
             payload[f"{label}/{key}"] = int(value)
         elif isinstance(value, (int, float)) and math.isfinite(float(value)):
             payload[f"{label}/{key}"] = value
+    payload.update(wandb_metric_aliases(label, row))
     if payload:
-        wandb_run.log(payload, step=step)
+        wandb_run.log(payload)
+
+
+def wandb_metric_aliases(label: str, row: dict[str, Any]) -> dict[str, float | int]:
+    aliases: dict[str, float | int] = {}
+    direct_names = {
+        "loss": "loss",
+        "regression_loss": "regression_loss",
+        "direction_loss": "direction_loss",
+        "lr": "lr",
+        "samples_per_sec": "samples_per_sec",
+        "epoch": "epoch",
+        "eval_batches": "eval_batches",
+    }
+    prefixed_names = {
+        "loss": "loss",
+        "batches": "batches",
+        "windows": "windows",
+        "elapsed_sec": "elapsed_sec",
+        "windows_per_sec": "windows_per_sec",
+    }
+    h1_names = {
+        "close_mae_bps": ("h1_mae_bps",),
+        "close_rmse_bps": ("h1_rmse_bps",),
+        "close_dir_acc_pct": ("h1_dir", "h1_dir_acc_pct"),
+        "close_edge_vs_naive_bps": ("h1_edge_bps",),
+        "close_naive_mae_bps": ("h1_naive_mae_bps",),
+        "close_corr": ("h1_corr",),
+    }
+    for source, alias in direct_names.items():
+        add_wandb_alias(aliases, label, alias, row.get(source))
+    for source, alias in prefixed_names.items():
+        add_wandb_alias(aliases, label, alias, row.get(f"{label}_{source}"))
+    for suffix, alias_names in h1_names.items():
+        for alias in alias_names:
+            add_wandb_alias(aliases, label, alias, row.get(f"h1_{suffix}"))
+            add_wandb_alias(aliases, label, alias, row.get(f"{label}_h1_{suffix}"))
+    return aliases
+
+
+def add_wandb_alias(aliases: dict[str, float | int], label: str, name: str, value: Any) -> None:
+    if isinstance(value, bool):
+        aliases[f"{label}/{name}"] = int(value)
+    elif isinstance(value, (int, float)) and math.isfinite(float(value)):
+        aliases[f"{label}/{name}"] = value
 
 
 def should_log_eval_progress(batch_count: int, progress_batches: int) -> bool:

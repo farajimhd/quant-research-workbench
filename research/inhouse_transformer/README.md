@@ -45,7 +45,7 @@ The default objective is Smooth L1 loss on the multi-horizon OHLC return targets
 
 The default learning-rate scheduler is `ReduceLROnPlateau` on validation loss. After warmup, it reduces the LR by `--lr-plateau-factor` when validation loss has not improved for `--lr-plateau-patience` eval points. Use `--lr-scheduler cosine` or `--lr-scheduler constant` for the older behaviors.
 
-Validation and test evaluation use the same AMP setting as training and stream partial progress every `--eval-progress-batches` batches, default `5`, to both console and W&B. Set `--eval-progress-batches 0` to disable partial eval logs.
+Validation and test evaluation use the same AMP setting as training and stream partial progress every `--eval-progress-batches` batches, default `5`, to both console and W&B. Set `--eval-progress-batches 0` to disable partial eval logs. W&B keeps the full metric names from `metrics.jsonl` and also logs short aliases such as `validation/h1_dir`, `validation/h1_mae_bps`, and `validation/h1_edge_bps`; the W&B x-axis metric is `train_step`.
 
 Run a small dry run:
 
