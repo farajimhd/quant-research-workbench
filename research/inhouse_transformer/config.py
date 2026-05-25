@@ -29,6 +29,7 @@ class DataConfig:
     horizon: int = 3
     target_mode: str = "return_bps"
     target_columns: tuple[str, ...] = ("open", "high", "low", "close")
+    input_normalization: str = "window_zscore_only"
     input_feature_columns: tuple[str, ...] = (
         "open",
         "high",

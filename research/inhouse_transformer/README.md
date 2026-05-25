@@ -24,7 +24,7 @@ quote_bid_size, quote_ask_size, quoted_share_depth,
 quote_imbalance, quote_valid_ratio
 ```
 
-Before the tensor is fed to the model, each window is normalized causally from its own context to keep training numerically stable: OHLC columns are z-scored from the context OHLC mean/std, size columns use log1p plus context z-score, spread is clipped/scaled, and quote imbalance/valid ratio stay bounded.
+Before the tensor is fed to the model, each raw input column is normalized causally with only per-window z-score: `(value - context_column_mean) / context_column_std`. No return encoding, log transform, clipping/scaling, or train-wide statistics are applied to input values.
 
 The main transformer defaults to `--target-mode actual_price_zscore`. Targets are the next `horizon` OHLC candles, encoded as actual future prices z-scored by each context window's actual OHLC mean and standard deviation:
 
@@ -74,6 +74,8 @@ Run the main transformer one-session overfit test with wandb logging:
 ```powershell
 python research\inhouse_transformer\train.py --device cuda --overfit-session 2024-01-22 --target-columns close --horizon 1 --batch-size 1024 --epochs 200 --eval-steps 25 --logging-steps 25 --validation-window-count 8192 --test-window-count 8192 --warmup-steps 0 --wandb-entity mehdifaraji --wandb-project May2026-1m-timeseries-forecasting
 ```
+
+The default W&B run name includes `raw-window-zscore-only` so it can be compared directly against earlier raw-input mixed-normalization runs.
 
 Run the flat MLP overfit sanity test:
 

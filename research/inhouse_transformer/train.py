@@ -79,6 +79,12 @@ def parse_args() -> argparse.Namespace:
         default=",".join(defaults.data.target_columns),
         help="Comma-separated target columns. Use close for a one-output overfit test.",
     )
+    parser.add_argument(
+        "--input-normalization",
+        choices=["window_zscore_only"],
+        default=defaults.data.input_normalization,
+        help="Input normalization for raw actual source columns. window_zscore_only applies only causal per-window z-score.",
+    )
     parser.add_argument("--tickers", default="", help="Comma-separated ticker override. If set, --max-tickers is ignored.")
     parser.add_argument("--max-tickers", type=int, default=defaults.data.max_tickers)
     parser.add_argument("--allow-target-across-session", action="store_true")
@@ -180,6 +186,7 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         horizon=args.horizon,
         target_mode=args.target_mode,
         target_columns=parse_column_list(args.target_columns),
+        input_normalization=args.input_normalization,
         tickers=parse_ticker_list(args.tickers),
         max_tickers=args.max_tickers,
         allow_target_across_session=bool(args.allow_target_across_session),
@@ -241,16 +248,23 @@ def make_wandb_run_name(args: argparse.Namespace, config: ExperimentConfig) -> s
     if args.wandb_run_name:
         return args.wandb_run_name
     target_columns = "-".join(config.data.target_columns)
+    input_name = input_experiment_name(config)
     if args.overfit_session:
         return (
-            f"main-transformer-overfit-{args.overfit_session}-"
+            f"main-transformer-overfit-{args.overfit_session}-{input_name}-"
             f"{config.data.target_mode}-ctx{config.data.context_length}-h{config.data.horizon}-{target_columns}"
         )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return (
-        f"main-transformer-{config.data.target_mode}-ctx{config.data.context_length}-"
+        f"main-transformer-{input_name}-{config.data.target_mode}-ctx{config.data.context_length}-"
         f"h{config.data.horizon}-{target_columns}-{timestamp}"
     )
+
+
+def input_experiment_name(config: ExperimentConfig) -> str:
+    if config.data.input_normalization == "window_zscore_only":
+        return "raw-window-zscore-only"
+    return config.data.input_normalization.replace("_", "-")
 
 
 def read_env_key(env_path: Path, name: str) -> str:
@@ -396,6 +410,7 @@ def main() -> None:
         flush=True,
     )
     print(f"Target mode: {config.data.target_mode}", flush=True)
+    print(f"Input normalization: {config.data.input_normalization}", flush=True)
     print(f"Output directory: {output_dir}", flush=True)
 
     coverage = None
@@ -1399,6 +1414,7 @@ def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
             "horizon": config.data.horizon,
             "target_mode": config.data.target_mode,
             "target_columns": list(config.data.target_columns),
+            "input_normalization": config.data.input_normalization,
             "input_feature_columns": list(config.data.input_feature_columns),
             "time_feature_columns": list(config.data.time_feature_columns),
             "tickers": list(config.data.tickers),
