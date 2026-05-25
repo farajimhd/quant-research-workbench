@@ -69,6 +69,13 @@ class DataConfig:
         "minute_of_day_scaled",
         "day_of_year_scaled",
         "day_of_week_scaled",
+        "age_minutes_from_t_scaled",
+        "age_sessions_from_t_scaled",
+        "bucket_duration_minutes_scaled",
+        "is_same_session",
+        "is_previous_session",
+        "is_same_weekday",
+        "is_anchor_summary",
     )
     tickers: tuple[str, ...] = ()
     max_tickers: int = 2000

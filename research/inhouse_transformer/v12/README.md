@@ -21,13 +21,13 @@ The input shape is:
 
 ```text
 values:                   [batch, 64, 12]
-time_features:            [batch, 64, 19]
+time_features:            [batch, 64, 26]
 five_min_values:          [batch, 60, 15]
-five_min_time_features:   [batch, 60, 19]
+five_min_time_features:   [batch, 60, 26]
 thirty_min_values:        [batch, 48, 15]
-thirty_min_time_features: [batch, 48, 19]
+thirty_min_time_features: [batch, 48, 26]
 anchor_values:            [batch, 19, 11]
-anchor_time_features:     [batch, 19, 19]
+anchor_time_features:     [batch, 19, 26]
 targets:                  [batch, horizon, target_count]
 ```
 
@@ -78,6 +78,23 @@ These fields are computed from `bar_time_market`, not UTC, and are not
 anchored to the origin bar or per-window z-scored. They enter the model only
 through the time projection that is broadcast across feature tokens for each
 bar.
+
+v12 also appends relative historical time features at sample-build time. These
+depend on the forecast origin `t`, so they are computed separately for every
+1m bar, 5m bucket, 30m bucket, and anchor token:
+
+```text
+age_minutes_from_t_scaled
+age_sessions_from_t_scaled
+bucket_duration_minutes_scaled
+is_same_session
+is_previous_session
+is_same_weekday
+is_anchor_summary
+```
+
+The `is_anchor_summary` flag is `0` for exact same-minute anchors and `1` for
+previous regular close, previous-day summary, and previous-week summary tokens.
 
 The 5m and 30m aggregate tokens contain the original 12 value features plus:
 

@@ -95,6 +95,16 @@ ANCHOR_NAMES = (
     "previous_week_range",
 )
 
+RELATIVE_TIME_FEATURE_COLUMNS = (
+    "age_minutes_from_t_scaled",
+    "age_sessions_from_t_scaled",
+    "bucket_duration_minutes_scaled",
+    "is_same_session",
+    "is_previous_session",
+    "is_same_weekday",
+    "is_anchor_summary",
+)
+
 LOG_RULE = "*" * 96
 
 
@@ -459,7 +469,13 @@ class BatchBuilder:
             config,
             current_close=current_close,
         )
-        self.time_features[self.count] = arrays["time_features"][start:end]
+        self.time_features[self.count] = build_relative_time_features(
+            arrays,
+            np.arange(start, end, dtype=np.int64),
+            origin,
+            config,
+            bucket_minutes=1.0,
+        )
         self.five_min_values[self.count], self.five_min_time_features[self.count] = build_multiscale_context(
             arrays,
             origin,
@@ -624,6 +640,7 @@ def ticker_arrays(frame: pl.DataFrame, config: DataConfig) -> dict[str, np.ndarr
     minute = frame.get_column("minute_of_day").to_numpy().astype(np.float32)
     sessions = frame.get_column("session_date").to_numpy().astype(str)
     timestamps_ns = frame.get_column("bar_time_market").dt.timestamp("ns").to_numpy().astype(np.int64)
+    session_ordinals, session_weekdays = session_calendar_arrays(sessions)
     calendar = scaled_calendar_arrays(frame)
 
     features = np.column_stack(
@@ -691,10 +708,21 @@ def ticker_arrays(frame: pl.DataFrame, config: DataConfig) -> dict[str, np.ndarr
         "quote_valid_ratio": quote_valid_ratio,
         "minute_of_day": minute.astype(np.int32),
         "sessions": sessions,
+        "session_ordinals": session_ordinals,
+        "session_weekdays": session_weekdays,
         "timestamps_ns": timestamps_ns,
         "features": features,
         "time_features": time_features,
     }
+
+
+def session_calendar_arrays(sessions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    unique_sessions = sorted({str(session) for session in sessions})
+    ordinal_by_session = {session: index for index, session in enumerate(unique_sessions)}
+    weekday_by_session = {session: date.fromisoformat(session).weekday() for session in unique_sessions}
+    ordinals = np.array([ordinal_by_session[str(session)] for session in sessions], dtype=np.int32)
+    weekdays = np.array([weekday_by_session[str(session)] for session in sessions], dtype=np.int8)
+    return ordinals, weekdays
 
 
 def scaled_calendar_arrays(frame: pl.DataFrame) -> dict[str, np.ndarray]:
@@ -792,6 +820,62 @@ def multiscale_token_count(lookback_minutes: int, bucket_minutes: int) -> int:
     return max(1, int(math.ceil(lookback_minutes / bucket_minutes)))
 
 
+def build_relative_time_features(
+    arrays: dict[str, np.ndarray],
+    row_indices: np.ndarray,
+    origin: int,
+    config: DataConfig,
+    *,
+    bucket_minutes: float,
+    is_anchor_summary: float = 0.0,
+) -> np.ndarray:
+    rows = np.asarray(row_indices, dtype=np.int64)
+    base = arrays["time_features"][rows].astype(np.float32, copy=True)
+    feature_count = len(config.time_feature_columns)
+    if base.shape[1] < feature_count:
+        padded = np.zeros((base.shape[0], feature_count), dtype=np.float32)
+        padded[:, : base.shape[1]] = base
+        base = padded
+
+    columns = {name: index for index, name in enumerate(config.time_feature_columns)}
+    origin_ts = int(arrays["timestamps_ns"][origin])
+    row_ts = arrays["timestamps_ns"][rows].astype(np.int64)
+    age_minutes = np.maximum(0.0, (origin_ts - row_ts).astype(np.float64) / 60_000_000_000.0)
+    age_minute_denominator = max(
+        float(config.thirty_min_lookback_minutes),
+        float(config.anchor_history_sessions * 1440),
+        1.0,
+    )
+
+    origin_session_ordinal = int(arrays["session_ordinals"][origin])
+    row_session_ordinals = arrays["session_ordinals"][rows].astype(np.int32)
+    age_sessions = np.maximum(0, origin_session_ordinal - row_session_ordinals)
+    age_session_denominator = max(float(config.anchor_history_sessions), 1.0)
+
+    origin_weekday = int(arrays["session_weekdays"][origin])
+    row_weekdays = arrays["session_weekdays"][rows].astype(np.int8)
+
+    set_time_column(base, columns, "age_minutes_from_t_scaled", np.clip(age_minutes / age_minute_denominator, 0.0, 1.0))
+    set_time_column(base, columns, "age_sessions_from_t_scaled", np.clip(age_sessions / age_session_denominator, 0.0, 1.0))
+    set_time_column(base, columns, "bucket_duration_minutes_scaled", np.full(base.shape[0], min(float(bucket_minutes) / 1440.0, 1.0)))
+    set_time_column(base, columns, "is_same_session", (age_sessions == 0).astype(np.float32))
+    set_time_column(base, columns, "is_previous_session", (age_sessions == 1).astype(np.float32))
+    set_time_column(base, columns, "is_same_weekday", (row_weekdays == origin_weekday).astype(np.float32))
+    set_time_column(base, columns, "is_anchor_summary", np.full(base.shape[0], float(is_anchor_summary), dtype=np.float32))
+    return np.nan_to_num(base, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+
+def set_time_column(
+    values: np.ndarray,
+    columns: dict[str, int],
+    name: str,
+    column_values: np.ndarray,
+) -> None:
+    index = columns.get(name)
+    if index is not None:
+        values[:, index] = np.asarray(column_values, dtype=np.float32)
+
+
 def build_multiscale_context(
     arrays: dict[str, np.ndarray],
     origin: int,
@@ -819,7 +903,13 @@ def build_multiscale_context(
         if start >= end:
             continue
         values[token_index] = aggregate_bar_slice(arrays, start, end, feature_names)
-        time_features[token_index] = arrays["time_features"][end - 1]
+        time_features[token_index] = build_relative_time_features(
+            arrays,
+            np.array([end - 1], dtype=np.int64),
+            origin,
+            config,
+            bucket_minutes=float(bucket_minutes),
+        )[0]
 
     normalized = normalize_multiscale_values(
         values,
@@ -915,16 +1005,16 @@ def build_anchor_context(
         anchor_index = offset - 1
         row_index = find_session_minute_row(arrays, session, current_minute, before_origin=origin)
         if row_index is not None:
-            fill_anchor_from_row(values, time_features, arrays, anchor_index, row_index, origin, anchor_index)
+            fill_anchor_from_row(values, time_features, arrays, anchor_index, row_index, origin, anchor_index, config)
 
     same_week_index = find_same_weekday_minute_row(arrays, current_session, current_minute, origin)
     if same_week_index is not None:
-        fill_anchor_from_row(values, time_features, arrays, 6, same_week_index, origin, 6)
+        fill_anchor_from_row(values, time_features, arrays, 6, same_week_index, origin, 6, config)
 
     previous_session = prior_sessions[-1] if prior_sessions else ""
     if previous_session:
-        fill_previous_day_anchors(values, time_features, arrays, previous_session, origin)
-        fill_previous_week_anchors(values, time_features, arrays, prior_sessions[-5:], origin)
+        fill_previous_day_anchors(values, time_features, arrays, previous_session, origin, config)
+        fill_previous_week_anchors(values, time_features, arrays, prior_sessions[-5:], origin, config)
 
     normalized = normalize_anchor_values(
         values,
@@ -974,6 +1064,9 @@ def fill_anchor_from_row(
     row_index: int,
     origin: int,
     anchor_type: int,
+    config: DataConfig,
+    *,
+    is_anchor_summary: bool = False,
 ) -> None:
     values[anchor_index] = anchor_row(
         open_=float(arrays["open"][row_index]),
@@ -986,7 +1079,14 @@ def fill_anchor_from_row(
         anchor_ts=int(arrays["timestamps_ns"][row_index]),
         anchor_type=anchor_type,
     )
-    time_features[anchor_index] = arrays["time_features"][row_index]
+    time_features[anchor_index] = build_relative_time_features(
+        arrays,
+        np.array([row_index], dtype=np.int64),
+        origin,
+        config,
+        bucket_minutes=1.0,
+        is_anchor_summary=1.0 if is_anchor_summary else 0.0,
+    )[0]
 
 
 def fill_previous_day_anchors(
@@ -995,6 +1095,7 @@ def fill_previous_day_anchors(
     arrays: dict[str, np.ndarray],
     session: str,
     origin: int,
+    config: DataConfig,
 ) -> None:
     rows = np.flatnonzero(arrays["sessions"][:origin] == session)
     if rows.size == 0:
@@ -1003,7 +1104,7 @@ def fill_previous_day_anchors(
         (arrays["minute_of_day"][rows] >= 9 * 60 + 30) & (arrays["minute_of_day"][rows] < 16 * 60)
     ]
     close_row = int(regular_rows[-1] if regular_rows.size else rows[-1])
-    fill_anchor_from_row(values, time_features, arrays, 7, close_row, origin, 7)
+    fill_anchor_from_row(values, time_features, arrays, 7, close_row, origin, 7, config, is_anchor_summary=True)
     summary_rows = rows
     open_row = int(summary_rows[0])
     high_row = int(summary_rows[np.nanargmax(arrays["high"][summary_rows])])
@@ -1033,7 +1134,14 @@ def fill_previous_day_anchors(
             anchor_ts=int(arrays["timestamps_ns"][int(summary_rows[-1])]),
             anchor_type=anchor_type,
         )
-        time_features[anchor_index] = arrays["time_features"][int(summary_rows[-1])]
+        time_features[anchor_index] = build_relative_time_features(
+            arrays,
+            np.array([int(summary_rows[-1])], dtype=np.int64),
+            origin,
+            config,
+            bucket_minutes=1440.0,
+            is_anchor_summary=1.0,
+        )[0]
 
 
 def fill_previous_week_anchors(
@@ -1042,6 +1150,7 @@ def fill_previous_week_anchors(
     arrays: dict[str, np.ndarray],
     sessions: list[str],
     origin: int,
+    config: DataConfig,
 ) -> None:
     if not sessions:
         return
@@ -1068,7 +1177,14 @@ def fill_previous_week_anchors(
             anchor_ts=last_ts,
             anchor_type=anchor_type,
         )
-        time_features[anchor_index] = arrays["time_features"][int(rows[-1])]
+        time_features[anchor_index] = build_relative_time_features(
+            arrays,
+            np.array([int(rows[-1])], dtype=np.int64),
+            origin,
+            config,
+            bucket_minutes=5.0 * 1440.0,
+            is_anchor_summary=1.0,
+        )[0]
 
 
 def anchor_row(
