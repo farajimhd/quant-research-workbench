@@ -55,6 +55,14 @@ Run the default experiment:
 python research\inhouse_transformer\train.py --device cuda --batch-size 1024 --epochs 1
 ```
 
+Run the flat MLP overfit sanity test:
+
+```powershell
+python research\inhouse_transformer\train_mlp.py --device cuda --tickers USO --train-start-date 2024-01-22 --train-end-date 2024-01-22 --validation-start-date 2026-01-02 --validation-end-date 2026-01-02 --batch-size 256 --overfit-batches 4 --epochs 50 --eval-steps 25
+```
+
+The MLP script flattens `[context, features + time_features]` directly to the multi-horizon OHLC target. It is intended as a basic learning-control path: on a cached small sample, train loss should fall quickly.
+
 Full coverage counting is disabled by default to avoid a complete pre-training pass over the train set. Add `--count-coverage` only when you want an exact window/batch count before training starts. Without `--max-steps`, training stops when the streamed dataset exhausts the configured epochs.
 
 Artifacts are written under:
