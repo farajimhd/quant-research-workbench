@@ -55,6 +55,7 @@ ACTUAL_FEATURE_COLUMNS = (
     "quote_valid_ratio",
 )
 TIME_FEATURE_COUNT = 9
+WINDOW_PRICE_SCALE = 10000.0
 
 
 @dataclass(slots=True)
@@ -651,7 +652,8 @@ def make_window_normalization_stats() -> NormalizationStats:
     print_section("WINDOW NORMALIZATION ENABLED")
     print(
         "Per-window normalization uses only the current context: price columns are centered against current close, "
-        "size columns are log-z-scored inside the context window, spread is clipped/scaled, and no train-wide stats pass is run.",
+        "price targets are expressed in bps from current close, size columns are log-z-scored inside the context window, "
+        "spread is clipped/scaled, and no train-wide stats pass is run.",
         flush=True,
     )
     return NormalizationStats(
@@ -853,7 +855,7 @@ def normalize_inputs(values: np.ndarray, stats: NormalizationStats, current_clos
 
     normalized = np.empty_like(values, dtype=np.float32)
     close_anchor = max(float(current_close), 1e-6)
-    normalized[:, 0:4] = values[:, 0:4] / close_anchor - 1.0
+    normalized[:, 0:4] = (values[:, 0:4] / close_anchor - 1.0) * WINDOW_PRICE_SCALE
 
     size_columns = (4, 5, 7, 8, 9)
     for column in size_columns:
@@ -872,14 +874,14 @@ def normalize_target(values: np.ndarray, stats: NormalizationStats, current_clos
     values = np.asarray(values, dtype=np.float32)
     if stats.mode == "train_split":
         return ((values - stats.target_mean) / stats.target_std).astype(np.float32)
-    return (values / max(float(current_close), 1e-6) - 1.0).astype(np.float32)
+    return ((values / max(float(current_close), 1e-6) - 1.0) * WINDOW_PRICE_SCALE).astype(np.float32)
 
 
 def denormalize_target(values: np.ndarray, stats: NormalizationStats, current_close: np.ndarray) -> np.ndarray:
     values = np.asarray(values, dtype=np.float64)
     if stats.mode == "train_split":
         return values * stats.target_std.astype(np.float64) + stats.target_mean.astype(np.float64)
-    return (values + 1.0) * np.asarray(current_close, dtype=np.float64).reshape(-1, 1, 1)
+    return (values / WINDOW_PRICE_SCALE + 1.0) * np.asarray(current_close, dtype=np.float64).reshape(-1, 1, 1)
 
 
 def loss_fn(prediction: torch.Tensor, target: torch.Tensor, loss_name: str) -> torch.Tensor:
