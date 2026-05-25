@@ -55,6 +55,14 @@ Run the default experiment:
 python research\inhouse_transformer\train.py --device cuda --batch-size 1024 --epochs 1
 ```
 
+Run the main transformer one-session overfit test with wandb logging:
+
+```powershell
+python research\inhouse_transformer\train.py --device cuda --overfit-session 2024-01-22 --target-columns close --horizon 1 --batch-size 1024 --epochs 200 --eval-steps 25 --logging-steps 25 --validation-window-count 8192 --test-window-count 8192 --warmup-steps 0 --wandb-entity mehdifaraji --wandb-project May2026-1m-timeseries-forecasting
+```
+
+The main transformer defaults to `--target-mode actual_price_zscore`: future actual prices are z-scored by each context window's actual OHLC price mean and standard deviation for training, while metrics are converted back to bps versus current close. Use `--target-mode return_bps` for the older return-target behavior.
+
 Run the flat MLP overfit sanity test:
 
 ```powershell

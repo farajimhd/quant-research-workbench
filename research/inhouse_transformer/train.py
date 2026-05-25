@@ -7,8 +7,9 @@ import random
 import sys
 import time
 from datetime import datetime
+from itertools import cycle
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -29,6 +30,7 @@ from research.inhouse_transformer.data import (  # noqa: E402
     parse_ticker_list,
     resolve_end_date,
     select_top_tickers,
+    target_values_to_bps,
 )
 from research.inhouse_transformer.metrics import MetricAccumulator, append_jsonl  # noqa: E402
 
@@ -57,6 +59,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--session-scope", choices=["all", "regular"], default=defaults.data.session_scope)
     parser.add_argument("--context-length", type=int, default=defaults.data.context_length)
     parser.add_argument("--horizon", type=int, default=defaults.data.horizon)
+    parser.add_argument(
+        "--target-mode",
+        choices=["actual_price_zscore", "return_bps"],
+        default="actual_price_zscore",
+        help="Main transformer target format. actual_price_zscore trains on actual future prices z-scored by each context window.",
+    )
+    parser.add_argument(
+        "--target-columns",
+        default=",".join(defaults.data.target_columns),
+        help="Comma-separated target columns. Use close for a one-output overfit test.",
+    )
     parser.add_argument("--tickers", default="", help="Comma-separated ticker override. If set, --max-tickers is ignored.")
     parser.add_argument("--max-tickers", type=int, default=defaults.data.max_tickers)
     parser.add_argument("--allow-target-across-session", action="store_true")
@@ -117,6 +130,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compile-model", action="store_true")
     parser.add_argument("--output-name", default=defaults.train.output_name)
     parser.add_argument("--resume-latest", action="store_true")
+    parser.add_argument(
+        "--overfit-session",
+        default="",
+        help="Use exactly this session for train/validation/test and cache fixed train batches for an overfit sanity run.",
+    )
+    parser.add_argument(
+        "--overfit-batches",
+        type=int,
+        default=0,
+        help="Cache this many train batches and cycle them. Requires --overfit-session for the intended one-session test.",
+    )
+    parser.add_argument("--wandb-entity", default="mehdifaraji")
+    parser.add_argument("--wandb-project", default="May2026-1m-timeseries-forecasting")
+    parser.add_argument("--wandb-run-name", default="")
+    parser.add_argument("--disable-wandb", action="store_true")
     parser.add_argument("--device", default="cuda", help='Use "cuda" when available, otherwise "cpu".')
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -135,6 +163,8 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         session_scope=args.session_scope,
         context_length=args.context_length,
         horizon=args.horizon,
+        target_mode=args.target_mode,
+        target_columns=parse_column_list(args.target_columns),
         tickers=parse_ticker_list(args.tickers),
         max_tickers=args.max_tickers,
         allow_target_across_session=bool(args.allow_target_across_session),
@@ -180,6 +210,56 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
     return ExperimentConfig(data=data, model=model, train=train)
 
 
+def parse_column_list(raw: str) -> tuple[str, ...]:
+    columns = tuple(part.strip().lower() for part in raw.split(",") if part.strip())
+    allowed = {"open", "high", "low", "close"}
+    invalid = sorted(set(columns) - allowed)
+    if invalid:
+        raise SystemExit(f"Unsupported target columns: {invalid}. Allowed columns: {sorted(allowed)}")
+    if "close" not in columns:
+        raise SystemExit("Target columns must include close so direction and naive metrics can be computed.")
+    return columns
+
+
+def make_wandb_run_name(args: argparse.Namespace, config: ExperimentConfig) -> str:
+    if args.wandb_run_name:
+        return args.wandb_run_name
+    target_columns = "-".join(config.data.target_columns)
+    if args.overfit_session:
+        return (
+            f"main-transformer-overfit-{args.overfit_session}-"
+            f"{config.data.target_mode}-ctx{config.data.context_length}-h{config.data.horizon}-{target_columns}"
+        )
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return (
+        f"main-transformer-{config.data.target_mode}-ctx{config.data.context_length}-"
+        f"h{config.data.horizon}-{target_columns}-{timestamp}"
+    )
+
+
+def init_wandb(args: argparse.Namespace, config: ExperimentConfig, metadata: dict[str, Any]) -> Any:
+    if args.disable_wandb:
+        print("*** WANDB disabled by --disable-wandb", flush=True)
+        return None
+    try:
+        import wandb
+    except ModuleNotFoundError:
+        print("*** WANDB package is not installed; metrics will only be written to metrics.jsonl.", flush=True)
+        return None
+    run_name = make_wandb_run_name(args, config)
+    print(f"*** WANDB INIT | entity={args.wandb_entity} | project={args.wandb_project} | run={run_name}", flush=True)
+    try:
+        return wandb.init(
+            entity=args.wandb_entity,
+            project=args.wandb_project,
+            name=run_name,
+            config=metadata,
+        )
+    except Exception as exc:
+        print(f"*** WANDB init failed; metrics will only be written to metrics.jsonl. Error: {exc}", flush=True)
+        return None
+
+
 def main() -> None:
     args = parse_args()
     config = config_from_args(args)
@@ -193,6 +273,20 @@ def main() -> None:
     test_sessions = available_sessions(
         config.data.processed_root, config.data.test_start_date, config.data.test_end_date
     )
+    overfit_batches = args.overfit_batches
+    if args.overfit_session:
+        requested_session = args.overfit_session
+        all_train_sessions = set(train_sessions)
+        if requested_session not in all_train_sessions:
+            raise SystemExit(
+                f"--overfit-session {requested_session} is not inside the selected train split "
+                f"{config.data.train_start_date} -> {config.data.train_end_date}."
+            )
+        train_sessions = [requested_session]
+        validation_sessions = [requested_session]
+        test_sessions = [requested_session]
+        if overfit_batches <= 0:
+            overfit_batches = 8
     tickers = config.data.tickers or select_top_tickers(
         config.data.processed_root, train_sessions, config.data.max_tickers
     )
@@ -201,6 +295,14 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = output_dir / "metrics.jsonl"
     metadata = metadata_payload(config, train_sessions, validation_sessions, test_sessions, tickers, output_dir)
+    metadata["runtime"] = {
+        "overfit_session": args.overfit_session,
+        "overfit_batches": overfit_batches,
+        "wandb_project": args.wandb_project,
+        "wandb_entity": args.wandb_entity,
+        "wandb_run_name": make_wandb_run_name(args, config),
+        "wandb_disabled": bool(args.disable_wandb),
+    }
     write_json(output_dir / "metadata.json", metadata)
 
     print_split_summary(metadata)
@@ -209,6 +311,7 @@ def main() -> None:
         f"targets={list(config.data.target_columns)} horizon={config.data.horizon}",
         flush=True,
     )
+    print(f"Target mode: {config.data.target_mode}", flush=True)
     print(f"Output directory: {output_dir}", flush=True)
 
     coverage = None
@@ -221,12 +324,15 @@ def main() -> None:
             max_batches_per_session=config.train.max_batches_per_session,
         )
     planned_steps = config.train.max_steps
+    if overfit_batches > 0 and planned_steps <= 0:
+        planned_steps = config.train.epochs * overfit_batches
     print_training_plan(config, coverage, planned_steps)
     if args.dry_run:
         print("Dry run complete after data split, ticker selection, and optional coverage count.", flush=True)
         return
 
     load_torch_stack()
+    wandb_run = init_wandb(args, config, metadata)
     set_seed(config.train.seed)
     device = resolve_device(args.device)
     model = FeatureTemporalTransformer(
@@ -271,6 +377,13 @@ def main() -> None:
         num_workers=config.train.num_workers,
         pin_memory=device.type == "cuda",
     )
+    cached_batches = collect_overfit_batches(train_loader, overfit_batches) if overfit_batches > 0 else []
+    if cached_batches:
+        planned_steps = config.train.max_steps or config.train.epochs * len(cached_batches)
+        train_iter: Iterable[dict[str, torch.Tensor]] = cycle(cached_batches)
+        print_section(f"OVERFIT CACHE READY batches={len(cached_batches)} planned_steps={planned_steps:,}")
+    else:
+        train_iter = train_loader
 
     running_loss = 0.0
     running_regression = 0.0
@@ -279,7 +392,7 @@ def main() -> None:
     step = start_step
     last_eval_step = 0
     last_log_time = time.perf_counter()
-    for batch in train_loader:
+    for batch in train_iter:
         if planned_steps > 0 and step >= planned_steps:
             break
         step += 1
@@ -307,6 +420,7 @@ def main() -> None:
         running_regression += loss_parts["regression_loss"]
         running_direction += loss_parts["direction_loss"]
         running_batches += 1
+        epoch_value = estimate_epoch(step, cached_batches, config.train)
 
         if step == 1 or step % config.train.logging_steps == 0:
             elapsed = max(1e-6, time.perf_counter() - last_log_time)
@@ -315,14 +429,18 @@ def main() -> None:
             avg_direction = running_direction / max(1, running_batches)
             samples_per_sec = config.train.batch_size * running_batches / elapsed
             lr = optimizer.param_groups[0]["lr"]
+            train_metrics = batch_metrics_from_prediction(prediction.detach(), batch, config)
             print(
                 f"train step={step_text(step, planned_steps)} loss={avg_loss:.6f} "
                 f"reg={avg_regression:.6f} dir={avg_direction:.6f} "
+                f"h1_mae={train_metrics.get('h1_close_mae_bps', math.nan):.3f}bps "
+                f"h1_dir={train_metrics.get('h1_close_dir_acc_pct', math.nan):.2f}% "
                 f"lr={lr:.3e} samples_s={samples_per_sec:,.0f}",
                 flush=True,
             )
-            append_jsonl(
+            log_metrics(
                 metrics_path,
+                wandb_run,
                 {
                     "type": "train",
                     "step": step,
@@ -331,6 +449,8 @@ def main() -> None:
                     "direction_loss": avg_direction,
                     "lr": lr,
                     "samples_per_sec": samples_per_sec,
+                    **({"epoch": epoch_value} if epoch_value is not None else {}),
+                    **train_metrics,
                     "time": datetime.now().isoformat(timespec="seconds"),
                 },
             )
@@ -339,6 +459,26 @@ def main() -> None:
             last_log_time = time.perf_counter()
 
         if step % config.train.eval_steps == 0 or (planned_steps > 0 and step == planned_steps):
+            if cached_batches:
+                print_section(f"TRAIN-CACHE EVAL START step={step:,}")
+                cache_metrics = evaluate_cached_batches(
+                    model=model,
+                    config=config,
+                    batches=cached_batches,
+                    device=device,
+                    label="train_cache",
+                )
+                cache_metrics.update(
+                    {
+                        "type": "train_cache",
+                        "step": step,
+                        **({"epoch": epoch_value} if epoch_value is not None else {}),
+                        "time": datetime.now().isoformat(timespec="seconds"),
+                    }
+                )
+                log_metrics(metrics_path, wandb_run, cache_metrics)
+                print_metric_line(cache_metrics)
+                print_section(f"TRAIN-CACHE EVAL END step={step:,}")
             print_section(f"VALIDATION START step={step:,}")
             validation_metrics = evaluate(
                 model=model,
@@ -349,9 +489,16 @@ def main() -> None:
                 max_windows=config.train.validation_window_count,
                 label="validation",
             )
-            validation_metrics.update({"type": "validation", "step": step, "time": datetime.now().isoformat(timespec="seconds")})
+            validation_metrics.update(
+                {
+                    "type": "validation",
+                    "step": step,
+                    **({"epoch": epoch_value} if epoch_value is not None else {}),
+                    "time": datetime.now().isoformat(timespec="seconds"),
+                }
+            )
             apply_validation_scheduler(scheduler, optimizer, config.train, validation_metrics, step)
-            append_jsonl(metrics_path, validation_metrics)
+            log_metrics(metrics_path, wandb_run, validation_metrics)
             print_metric_line(validation_metrics)
             score = validation_metrics.get("validation_h1_close_mae_bps", math.inf)
             if score < best_score:
@@ -373,9 +520,17 @@ def main() -> None:
             max_windows=config.train.validation_window_count,
             label="validation",
         )
-        validation_metrics.update({"type": "validation", "step": step, "time": datetime.now().isoformat(timespec="seconds")})
+        epoch_value = estimate_epoch(step, cached_batches if "cached_batches" in locals() else [], config.train)
+        validation_metrics.update(
+            {
+                "type": "validation",
+                "step": step,
+                **({"epoch": epoch_value} if epoch_value is not None else {}),
+                "time": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
         apply_validation_scheduler(scheduler, optimizer, config.train, validation_metrics, step)
-        append_jsonl(metrics_path, validation_metrics)
+        log_metrics(metrics_path, wandb_run, validation_metrics)
         print_metric_line(validation_metrics)
         score = validation_metrics.get("validation_h1_close_mae_bps", math.inf)
         if score < best_score:
@@ -395,13 +550,23 @@ def main() -> None:
         max_windows=config.train.test_window_count,
         label="test",
     )
-    test_metrics.update({"type": "test", "step": step, "time": datetime.now().isoformat(timespec="seconds")})
-    append_jsonl(metrics_path, test_metrics)
+    epoch_value = estimate_epoch(step, cached_batches if "cached_batches" in locals() else [], config.train)
+    test_metrics.update(
+        {
+            "type": "test",
+            "step": step,
+            **({"epoch": epoch_value} if epoch_value is not None else {}),
+            "time": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    log_metrics(metrics_path, wandb_run, test_metrics)
     print_metric_line(test_metrics)
     save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
     print_section(f"TEST END step={step:,}")
     print_section("TRAINING COMPLETE")
     print(f"*** Artifacts: {output_dir}", flush=True)
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 def print_training_plan(config: ExperimentConfig, coverage: Any, planned_steps: int) -> None:
@@ -425,6 +590,45 @@ def print_section(title: str) -> None:
     print(LOG_RULE, flush=True)
     print(f"*** {title}", flush=True)
     print(LOG_RULE, flush=True)
+
+
+def collect_overfit_batches(loader: DataLoader, count: int) -> list[dict[str, torch.Tensor]]:
+    print_section(f"BUILDING OVERFIT CACHE target_batches={count}")
+    batches = []
+    for batch in loader:
+        batches.append({key: value.cpu() for key, value in batch.items()})
+        if len(batches) >= count:
+            break
+    if not batches:
+        raise SystemExit("No overfit batches were created. Pick a session/ticker set with enough bars.")
+    print_section(f"OVERFIT CACHE BUILT batches={len(batches)}")
+    return batches
+
+
+def estimate_epoch(step: int, cached_batches: list[dict[str, torch.Tensor]], config: TrainConfig) -> int | None:
+    if cached_batches:
+        return max(1, math.ceil(step / max(1, len(cached_batches))))
+    if config.max_steps > 0 and config.epochs > 0:
+        return min(config.epochs, max(1, math.ceil(step * config.epochs / config.max_steps)))
+    return None
+
+
+def log_metrics(path: Path, wandb_run: Any, row: dict[str, Any]) -> None:
+    append_jsonl(path, row)
+    if wandb_run is None:
+        return
+    step = int(row.get("step") or 0)
+    label = str(row.get("type") or "metrics")
+    payload: dict[str, float | int] = {}
+    for key, value in row.items():
+        if key in {"type", "time"}:
+            continue
+        if isinstance(value, bool):
+            payload[f"{label}/{key}"] = int(value)
+        elif isinstance(value, (int, float)) and math.isfinite(float(value)):
+            payload[f"{label}/{key}"] = value
+    if payload:
+        wandb_run.log(payload, step=step)
 
 
 def evaluate(
@@ -470,11 +674,97 @@ def evaluate(
             )
             loss_sum += float(loss.detach().cpu())
             batches += 1
-            accumulator.update(prediction.detach().cpu().numpy(), batch["targets"].detach().cpu().numpy())
+            prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
+            accumulator.update(prediction_bps, target_bps)
     metrics = accumulator.compute(prefix=f"{label}_")
     metrics[f"{label}_loss"] = loss_sum / max(1, batches)
     metrics[f"{label}_batches"] = batches
     return metrics
+
+
+def evaluate_cached_batches(
+    *,
+    model: torch.nn.Module,
+    config: ExperimentConfig,
+    batches: Iterable[dict[str, torch.Tensor]],
+    device: torch.device,
+    label: str,
+) -> dict[str, Any]:
+    model.eval()
+    accumulator = MetricAccumulator(
+        horizon=config.data.horizon,
+        target_columns=config.data.target_columns,
+        direction_threshold_bps=config.model.direction_threshold_bps,
+    )
+    loss_sum = 0.0
+    batch_count = 0
+    for batch in batches:
+        batch = move_batch(batch, device)
+        prediction, direction_logits = model(batch["values"], batch["time_features"])
+        loss, _ = forecast_loss(
+            prediction,
+            batch["targets"],
+            direction_logits,
+            batch["direction"],
+            config.model.direction_loss_weight,
+        )
+        loss_sum += float(loss.detach().cpu())
+        batch_count += 1
+        prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
+        accumulator.update(prediction_bps, target_bps)
+    metrics = accumulator.compute(prefix=f"{label}_")
+    metrics[f"{label}_loss"] = loss_sum / max(1, batch_count)
+    metrics[f"{label}_batches"] = batch_count
+    return metrics
+
+
+def batch_metrics_from_prediction(
+    prediction: torch.Tensor,
+    batch: dict[str, torch.Tensor],
+    config: ExperimentConfig,
+) -> dict[str, float]:
+    prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
+    accumulator = MetricAccumulator(
+        horizon=config.data.horizon,
+        target_columns=config.data.target_columns,
+        direction_threshold_bps=config.model.direction_threshold_bps,
+    )
+    accumulator.update(prediction_bps, target_bps)
+    computed = accumulator.compute()
+    return {
+        "h1_close_mae_bps": float(computed.get("h1_close_mae_bps", math.nan)),
+        "h1_close_dir_acc_pct": float(computed.get("h1_close_dir_acc_pct", math.nan)),
+        "h1_close_edge_vs_naive_bps": float(computed.get("h1_close_edge_vs_naive_bps", math.nan)),
+    }
+
+
+def prediction_and_target_bps(
+    prediction: torch.Tensor,
+    batch: dict[str, torch.Tensor],
+    config: ExperimentConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    prediction_np = prediction.detach().cpu().numpy()
+    target_np = batch["targets"].detach().cpu().numpy()
+    if config.data.target_mode == "return_bps":
+        return prediction_np, target_np
+    current_close = batch["current_close"].detach().cpu().numpy()
+    target_center = batch["target_center"].detach().cpu().numpy()
+    target_scale = batch["target_scale"].detach().cpu().numpy()
+    prediction_bps = target_values_to_bps(
+        prediction_np,
+        current_close,
+        target_center,
+        target_scale,
+        config.data.target_mode,
+    )
+    target_bps = target_values_to_bps(
+        target_np,
+        current_close,
+        target_center,
+        target_scale,
+        config.data.target_mode,
+    )
+    return prediction_bps, target_bps
 
 
 def print_metric_line(metrics: dict[str, Any]) -> None:
@@ -732,6 +1022,7 @@ def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
             "session_scope": config.data.session_scope,
             "context_length": config.data.context_length,
             "horizon": config.data.horizon,
+            "target_mode": config.data.target_mode,
             "target_columns": list(config.data.target_columns),
             "input_feature_columns": list(config.data.input_feature_columns),
             "time_feature_columns": list(config.data.time_feature_columns),

@@ -313,6 +313,9 @@ class BatchBuilder:
         self.time_features = np.empty((batch_size, context_length, time_feature_count), dtype=np.float32)
         self.targets = np.empty((batch_size, horizon, target_count), dtype=np.float32)
         self.direction = np.empty((batch_size, horizon), dtype=np.float32)
+        self.current_close = np.empty((batch_size,), dtype=np.float32)
+        self.target_center = np.empty((batch_size,), dtype=np.float32)
+        self.target_scale = np.empty((batch_size,), dtype=np.float32)
         self.count = 0
 
     @property
@@ -344,13 +347,24 @@ class BatchBuilder:
                 for column in config.target_columns
             ]
         )
-        target_returns = log_return_bps(target_prices, current_close)
         close_index = config.target_columns.index("close")
+        if config.target_mode == "actual_price_zscore":
+            center, scale = window_price_center_scale(arrays, start, end, current_close)
+            targets = ((target_prices - center) / scale).astype(np.float32)
+        elif config.target_mode == "return_bps":
+            center = 0.0
+            scale = 1.0
+            targets = log_return_bps(target_prices, current_close)
+        else:
+            raise ValueError(f"Unsupported target_mode: {config.target_mode}")
 
         self.values[self.count] = arrays["features"][start:end]
         self.time_features[self.count] = arrays["time_features"][start:end]
-        self.targets[self.count] = target_returns
-        self.direction[self.count] = (target_returns[:, close_index] > 0.0).astype(np.float32)
+        self.targets[self.count] = targets
+        self.direction[self.count] = (target_prices[:, close_index] > current_close).astype(np.float32)
+        self.current_close[self.count] = current_close
+        self.target_center[self.count] = center
+        self.target_scale[self.count] = scale
         self.count += 1
 
     def as_torch(self) -> dict[str, torch.Tensor]:
@@ -362,6 +376,9 @@ class BatchBuilder:
             "time_features": torch.from_numpy(self.time_features[rows].copy()),
             "targets": torch.from_numpy(self.targets[rows].copy()),
             "direction": torch.from_numpy(self.direction[rows].copy()),
+            "current_close": torch.from_numpy(self.current_close[rows].copy()),
+            "target_center": torch.from_numpy(self.target_center[rows].copy()),
+            "target_scale": torch.from_numpy(self.target_scale[rows].copy()),
         }
 
 
@@ -527,9 +544,66 @@ def shifted_previous(values: np.ndarray, fallback: np.ndarray) -> np.ndarray:
     return previous
 
 
+def window_price_center_scale(
+    arrays: dict[str, np.ndarray],
+    start: int,
+    end: int,
+    current_close: float,
+) -> tuple[float, float]:
+    prices = np.column_stack(
+        [
+            arrays["open"][start:end],
+            arrays["high"][start:end],
+            arrays["low"][start:end],
+            arrays["close"][start:end],
+        ]
+    ).reshape(-1)
+    center = float(np.nanmean(prices))
+    if not math.isfinite(center) or center <= 0.0:
+        center = max(float(current_close), 1e-6)
+    scale = float(np.nanstd(prices))
+    scale_floor = max(abs(float(current_close)) * 1e-4, 1e-4)
+    if not math.isfinite(scale) or scale < scale_floor:
+        scale = scale_floor
+    return center, scale
+
+
+def denormalize_actual_zscore(
+    values: np.ndarray,
+    center: np.ndarray,
+    scale: np.ndarray,
+) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    center_array = np.asarray(center, dtype=np.float64).reshape(-1, 1, 1)
+    scale_array = np.asarray(scale, dtype=np.float64).reshape(-1, 1, 1)
+    return values * scale_array + center_array
+
+
+def target_values_to_bps(
+    values: np.ndarray,
+    current_close: np.ndarray,
+    center: np.ndarray,
+    scale: np.ndarray,
+    target_mode: str,
+) -> np.ndarray:
+    if target_mode == "actual_price_zscore":
+        prices = denormalize_actual_zscore(values, center, scale)
+        return simple_return_bps(prices, np.asarray(current_close, dtype=np.float64).reshape(-1, 1, 1))
+    if target_mode == "return_bps":
+        return np.asarray(values, dtype=np.float64)
+    raise ValueError(f"Unsupported target_mode: {target_mode}")
+
+
 def log_return_bps(numerator: np.ndarray, denominator: np.ndarray | float) -> np.ndarray:
     numerator = np.asarray(numerator, dtype=np.float32)
     denominator_array = np.asarray(denominator, dtype=np.float32)
     safe_num = np.maximum(numerator, 1e-6)
     safe_den = np.maximum(denominator_array, 1e-6)
     return np.log(safe_num / safe_den) * 10000.0
+
+
+def simple_return_bps(numerator: np.ndarray, denominator: np.ndarray | float) -> np.ndarray:
+    numerator = np.asarray(numerator, dtype=np.float64)
+    denominator_array = np.asarray(denominator, dtype=np.float64)
+    safe_den = np.maximum(denominator_array, 1e-6)
+    return (numerator / safe_den - 1.0) * 10000.0
