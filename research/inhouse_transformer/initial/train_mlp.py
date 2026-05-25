@@ -15,20 +15,20 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.inhouse_transformer.config import DataConfig, TrainConfig  # noqa: E402
-from research.inhouse_transformer.data import (  # noqa: E402
+from research.inhouse_transformer.initial.config import DataConfig, TrainConfig  # noqa: E402
+from research.inhouse_transformer.initial.data import (  # noqa: E402
     RollingBarWindowDataset,
     available_sessions,
     parse_ticker_list,
     resolve_end_date,
     select_top_tickers,
 )
-from research.inhouse_transformer.metrics import MetricAccumulator, append_jsonl  # noqa: E402
-from research.inhouse_transformer.model_mlp import FlatMLPForecaster  # noqa: E402
+from research.inhouse_transformer.initial.metrics import MetricAccumulator, append_jsonl  # noqa: E402
+from research.inhouse_transformer.initial.model_mlp import FlatMLPForecaster  # noqa: E402
 
 
 LOG_RULE = "*" * 96

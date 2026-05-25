@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from research.inhouse_transformer.config import ModelConfig
+from research.inhouse_transformer.initial.config import ModelConfig
 
 
 class FeatureTemporalTransformer(nn.Module):

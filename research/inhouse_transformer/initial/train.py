@@ -17,17 +17,17 @@ from typing import Any, Iterable
 
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.inhouse_transformer.config import (  # noqa: E402
+from research.inhouse_transformer.initial.config import (  # noqa: E402
     DataConfig,
     ExperimentConfig,
     ModelConfig,
     TrainConfig,
 )
-from research.inhouse_transformer.data import (  # noqa: E402
+from research.inhouse_transformer.initial.data import (  # noqa: E402
     BatchBuilder,
     RollingBarWindowDataset,
     available_sessions,
@@ -41,13 +41,154 @@ from research.inhouse_transformer.data import (  # noqa: E402
     target_values_to_bps,
     valid_origins,
 )
-from research.inhouse_transformer.metrics import MetricAccumulator, append_jsonl  # noqa: E402
+from research.inhouse_transformer.initial.metrics import MetricAccumulator, append_jsonl  # noqa: E402
 
 torch = None
 DataLoader = None
 FeatureTemporalTransformer = None
 forecast_loss = None
 LOG_RULE = "*" * 96
+EXPERIMENT_VERSION = "initial"
+METRIC_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "train_step": {
+        "description": "Optimizer step used as the shared x-axis for all W&B metrics.",
+        "unit": "step",
+        "interpretation": "Monotonic increase means training is progressing.",
+    },
+    "loss": {
+        "description": "Total objective used for the current split or progress row.",
+        "unit": "target units",
+        "interpretation": "Down is better. For default runs this is Smooth L1 regression loss unless direction loss is enabled.",
+    },
+    "regression_loss": {
+        "description": "Smooth L1 loss between model forecast and target tensor.",
+        "unit": "target units",
+        "interpretation": "Down is better.",
+    },
+    "direction_loss": {
+        "description": "Optional auxiliary binary direction loss.",
+        "unit": "loss",
+        "interpretation": "Down is better when direction_loss_weight is greater than zero; otherwise it should stay zero.",
+    },
+    "lr": {
+        "description": "Current learning rate from the optimizer.",
+        "unit": "learning rate",
+        "interpretation": "Use with loss curves to understand scheduler effects.",
+    },
+    "epoch": {
+        "description": "Estimated epoch. For overfit cache runs this is cycles through the cached batches.",
+        "unit": "epoch",
+        "interpretation": "Up means more passes over the configured training source.",
+    },
+    "samples_per_sec": {
+        "description": "Training throughput measured over the latest logging interval.",
+        "unit": "windows/sec",
+        "interpretation": "Up means faster training; sudden drops can indicate eval, IO, or GPU stalls.",
+    },
+    "windows": {
+        "description": "Number of prediction windows included in the metric row.",
+        "unit": "windows",
+        "interpretation": "Higher means the metric is based on more samples.",
+    },
+    "batches": {
+        "description": "Number of batches included in the metric row.",
+        "unit": "batches",
+        "interpretation": "Higher means the metric is based on more batches.",
+    },
+    "windows_per_sec": {
+        "description": "Evaluation throughput for validation/test progress rows.",
+        "unit": "windows/sec",
+        "interpretation": "Up means faster evaluation.",
+    },
+    "h1_mae_bps": {
+        "description": "Horizon-1 close mean absolute forecast error, converted to basis points versus current close.",
+        "unit": "bps",
+        "interpretation": "Down is better.",
+    },
+    "h1_rmse_bps": {
+        "description": "Horizon-1 close root mean squared forecast error in basis points.",
+        "unit": "bps",
+        "interpretation": "Down is better and penalizes large misses more than MAE.",
+    },
+    "h1_dir": {
+        "description": "Horizon-1 close direction accuracy. Direction is predicted move sign versus actual move sign from current close.",
+        "unit": "percent",
+        "interpretation": "Up is better. Compare against last-move and mean-reversion direction baselines before trusting it.",
+    },
+    "h1_dir_acc_pct": {
+        "description": "Same as h1_dir, kept as an explicit percent alias.",
+        "unit": "percent",
+        "interpretation": "Up is better.",
+    },
+    "h1_edge_bps": {
+        "description": "Persistence baseline MAE minus model MAE for horizon-1 close.",
+        "unit": "bps",
+        "interpretation": "Positive is better; negative means persistence beat the model.",
+    },
+    "h1_naive_mae_bps": {
+        "description": "Persistence baseline MAE where predicted return is zero and predicted close equals current close.",
+        "unit": "bps",
+        "interpretation": "Baseline reference. Lower means the evaluated samples were easier for persistence.",
+    },
+    "h1_last_move_naive_mae_bps": {
+        "description": "Last-move continuation baseline MAE for horizon-1 close.",
+        "unit": "bps",
+        "interpretation": "Baseline reference. Compare model MAE and edge_vs_last_move against this.",
+    },
+    "h1_edge_vs_last_move_naive_bps": {
+        "description": "Last-move continuation MAE minus model MAE for horizon-1 close.",
+        "unit": "bps",
+        "interpretation": "Positive is better; negative means copying the last move beat the model.",
+    },
+    "h1_last_move_dir_acc_pct": {
+        "description": "Direction accuracy of the last-move continuation baseline.",
+        "unit": "percent",
+        "interpretation": "Baseline reference for h1_dir. The model should beat this on validation/test.",
+    },
+    "h1_mean_reversion_naive_mae_bps": {
+        "description": "Mean-reversion baseline MAE using the opposite of the last close return.",
+        "unit": "bps",
+        "interpretation": "Baseline reference. Lower means mean reversion fits the evaluated samples better.",
+    },
+    "h1_edge_vs_mean_reversion_naive_bps": {
+        "description": "Mean-reversion baseline MAE minus model MAE for horizon-1 close.",
+        "unit": "bps",
+        "interpretation": "Positive is better; negative means mean reversion beat the model.",
+    },
+    "h1_mean_reversion_dir_acc_pct": {
+        "description": "Direction accuracy of the mean-reversion baseline.",
+        "unit": "percent",
+        "interpretation": "Baseline reference for h1_dir.",
+    },
+    "h1_corr": {
+        "description": "Correlation between predicted and actual horizon-1 close moves in bps.",
+        "unit": "correlation",
+        "interpretation": "Higher is better; near zero means little linear relationship.",
+    },
+}
+
+
+def attach_wandb_metric_metadata(wandb_run: Any, wandb_module: Any) -> None:
+    rows = [
+        [name, meta["description"], meta["unit"], meta["interpretation"]]
+        for name, meta in sorted(METRIC_DESCRIPTIONS.items())
+    ]
+    try:
+        wandb_run.config.update({"metric_descriptions": METRIC_DESCRIPTIONS}, allow_val_change=True)
+    except Exception as exc:
+        print(f"*** W&B metric description config skipped: {exc}", flush=True)
+    try:
+        wandb_run.summary["metric_descriptions"] = METRIC_DESCRIPTIONS
+    except Exception as exc:
+        print(f"*** W&B metric description summary skipped: {exc}", flush=True)
+    try:
+        table = wandb_module.Table(
+            columns=["metric", "description", "unit", "interpretation"],
+            data=rows,
+        )
+        wandb_run.log({"metric_descriptions/table": table, "train_step": 0})
+    except Exception as exc:
+        print(f"*** W&B metric description table skipped: {exc}", flush=True)
 
 
 class NonFiniteLossError(FloatingPointError):
@@ -285,12 +426,12 @@ def make_wandb_run_name(args: argparse.Namespace, config: ExperimentConfig) -> s
     input_name = input_experiment_name(config)
     if args.overfit_session:
         return (
-            f"main-transformer-overfit-{args.overfit_session}-{input_name}-"
+            f"{EXPERIMENT_VERSION}-main-transformer-overfit-{args.overfit_session}-{input_name}-"
             f"{config.data.target_mode}-ctx{config.data.context_length}-h{config.data.horizon}-{target_columns}"
         )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return (
-        f"main-transformer-{input_name}-{config.data.target_mode}-ctx{config.data.context_length}-"
+        f"{EXPERIMENT_VERSION}-main-transformer-{input_name}-{config.data.target_mode}-ctx{config.data.context_length}-"
         f"h{config.data.horizon}-{target_columns}-{timestamp}"
     )
 
@@ -385,6 +526,7 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, metadata: dic
             run.define_metric("*", step_metric="train_step")
         except Exception as exc:
             print(f"*** WANDB metric axis setup skipped: {exc}", flush=True)
+        attach_wandb_metric_metadata(run, wandb)
         run.log({"run/started": 1, "train_step": 0})
         return run
     except Exception as exc:
@@ -969,6 +1111,12 @@ def wandb_metric_aliases(label: str, row: dict[str, Any]) -> dict[str, float | i
         "close_dir_acc_pct": ("h1_dir", "h1_dir_acc_pct"),
         "close_edge_vs_naive_bps": ("h1_edge_bps",),
         "close_naive_mae_bps": ("h1_naive_mae_bps",),
+        "close_last_move_naive_mae_bps": ("h1_last_move_naive_mae_bps",),
+        "close_edge_vs_last_move_naive_bps": ("h1_edge_vs_last_move_naive_bps",),
+        "close_last_move_dir_acc_pct": ("h1_last_move_dir_acc_pct",),
+        "close_mean_reversion_naive_mae_bps": ("h1_mean_reversion_naive_mae_bps",),
+        "close_edge_vs_mean_reversion_naive_bps": ("h1_edge_vs_mean_reversion_naive_bps",),
+        "close_mean_reversion_dir_acc_pct": ("h1_mean_reversion_dir_acc_pct",),
         "close_corr": ("h1_corr",),
     }
     for source, alias in direct_names.items():
@@ -1446,11 +1594,11 @@ def render_prediction_timeline_svg(
     {''.join(y_ticks)}
     <line x1="{left}" x2="{width - right}" y1="{height - bottom}" y2="{height - bottom}" stroke="#9ca3af" />
     <line x1="{left}" x2="{left}" y1="{top}" y2="{height - bottom}" stroke="#9ca3af" />
-    <polyline points="{target_points}" fill="none" stroke="#111827" stroke-width="2.1" />
-    <polyline points="{prediction_points}" fill="none" stroke="#f97316" stroke-width="2.1" stroke-dasharray="8 6" />
+    <polyline points="{target_points}" fill="none" stroke="#111827" stroke-width="2.4" />
+    <polyline points="{prediction_points}" fill="none" stroke="#f97316" stroke-width="1.25" />
     <line x1="{left + 16}" x2="{left + 60}" y1="{height - 24}" y2="{height - 24}" stroke="#111827" stroke-width="2.1" />
     <text x="{left + 68}" y="{height - 20}" font-size="12" fill="#111827">target_close</text>
-    <line x1="{left + 180}" x2="{left + 224}" y1="{height - 24}" y2="{height - 24}" stroke="#f97316" stroke-width="2.1" stroke-dasharray="8 6" />
+    <line x1="{left + 180}" x2="{left + 224}" y1="{height - 24}" y2="{height - 24}" stroke="#f97316" stroke-width="1.25" />
     <text x="{left + 232}" y="{height - 20}" font-size="12" fill="#111827">prediction_close</text>
     <text x="{width / 2:.1f}" y="{height - 8}" text-anchor="middle" font-size="11" fill="#4b5563">chronological 1m target bar order</text>
   </svg>
@@ -1693,12 +1841,12 @@ def set_seed(seed: int) -> None:
 
 
 def make_output_dir(config: ExperimentConfig) -> Path:
-    root = config.data.processed_root / "models" / "inhouse_transformer"
+    root = config.data.processed_root / "models" / "inhouse_transformer" / EXPERIMENT_VERSION
     if config.train.output_name:
         return root / config.train.output_name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = (
-        f"feature_temporal_ctx{config.data.context_length}_h{config.data.horizon}_"
+        f"feature_temporal_{EXPERIMENT_VERSION}_{config.data.target_mode}_ctx{config.data.context_length}_h{config.data.horizon}_"
         f"{config.data.train_start_date}_{config.data.test_end_date}_{timestamp}"
     )
     return root / name
@@ -1768,6 +1916,7 @@ def metadata_payload(
 ) -> dict[str, Any]:
     return {
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "experiment_version": EXPERIMENT_VERSION,
         "output_dir": str(output_dir),
         "data": {
             **config_to_dict(config)["data"],
@@ -1815,6 +1964,7 @@ def print_split_summary(metadata: dict[str, Any]) -> None:
 
 def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
     return {
+        "experiment_version": EXPERIMENT_VERSION,
         "data": {
             "processed_root": str(config.data.processed_root),
             "train_start_date": config.data.train_start_date,
@@ -1898,7 +2048,7 @@ def load_torch_stack() -> None:
         import torch as torch_module
         from torch.utils.data import DataLoader as data_loader_class
 
-        from research.inhouse_transformer.model import (
+        from research.inhouse_transformer.initial.model import (
             FeatureTemporalTransformer as transformer_class,
             forecast_loss as loss_function,
         )

@@ -19,7 +19,7 @@ except ModuleNotFoundError:
     class IterableDataset:  # type: ignore[no-redef]
         pass
 
-from research.inhouse_transformer.config import DataConfig
+from research.inhouse_transformer.initial.config import DataConfig
 from src.data_provider.store import existing_dates, partition_path
 
 

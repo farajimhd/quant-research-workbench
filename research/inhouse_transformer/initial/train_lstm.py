@@ -16,12 +16,12 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, IterableDataset
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.inhouse_transformer.config import DataConfig, TrainConfig  # noqa: E402
-from research.inhouse_transformer.data import (  # noqa: E402
+from research.inhouse_transformer.initial.config import DataConfig, TrainConfig  # noqa: E402
+from research.inhouse_transformer.initial.data import (  # noqa: E402
     available_sessions,
     column_array,
     combine_carryover,
@@ -35,8 +35,8 @@ from research.inhouse_transformer.data import (  # noqa: E402
     ticker_arrays,
     valid_origins,
 )
-from research.inhouse_transformer.metrics import append_jsonl  # noqa: E402
-from research.inhouse_transformer.model_lstm import SimpleLSTMForecaster  # noqa: E402
+from research.inhouse_transformer.initial.metrics import append_jsonl  # noqa: E402
+from research.inhouse_transformer.initial.model_lstm import SimpleLSTMForecaster  # noqa: E402
 
 
 LOG_RULE = "*" * 96
