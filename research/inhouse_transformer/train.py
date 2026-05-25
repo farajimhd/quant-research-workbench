@@ -42,6 +42,14 @@ forecast_loss = None
 LOG_RULE = "*" * 96
 
 
+class NonFiniteLossError(FloatingPointError):
+    def __init__(self, *, label: str, step: int, details: str) -> None:
+        self.label = label
+        self.step = step
+        self.details = details
+        super().__init__(f"Non-finite {label} loss at step {step:,}. {details}")
+
+
 def parse_args() -> argparse.Namespace:
     defaults = ExperimentConfig()
     parser = argparse.ArgumentParser(
@@ -490,7 +498,22 @@ def main() -> None:
                 batch["direction"],
                 config.model.direction_loss_weight,
             )
-        raise_on_nonfinite_loss(loss, label="train", step=step, batch=batch)
+        try:
+            raise_on_nonfinite_loss(loss, label="train", step=step, batch=batch)
+        except NonFiniteLossError as exc:
+            stop_training_for_nonfinite_loss(
+                exc,
+                output_dir=output_dir,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                step=step,
+                best_score=best_score,
+                config=config,
+                metrics_path=metrics_path,
+                wandb_run=wandb_run,
+            )
+            return
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
@@ -543,13 +566,28 @@ def main() -> None:
         if step % config.train.eval_steps == 0 or (planned_steps > 0 and step == planned_steps):
             if cached_batches:
                 print_section(f"TRAIN-CACHE EVAL START step={step:,}")
-                cache_metrics = evaluate_cached_batches(
-                    model=model,
-                    config=config,
-                    batches=cached_batches,
-                    device=device,
-                    label="train_cache",
-                )
+                try:
+                    cache_metrics = evaluate_cached_batches(
+                        model=model,
+                        config=config,
+                        batches=cached_batches,
+                        device=device,
+                        label="train_cache",
+                    )
+                except NonFiniteLossError as exc:
+                    stop_training_for_nonfinite_loss(
+                        exc,
+                        output_dir=output_dir,
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        step=step,
+                        best_score=best_score,
+                        config=config,
+                        metrics_path=metrics_path,
+                        wandb_run=wandb_run,
+                    )
+                    return
                 cache_metrics.update(
                     {
                         "type": "train_cache",
@@ -562,19 +600,34 @@ def main() -> None:
                 print_metric_line(cache_metrics)
                 print_section(f"TRAIN-CACHE EVAL END step={step:,}")
             print_section(f"VALIDATION START step={step:,}")
-            validation_metrics = evaluate(
-                model=model,
-                config=config,
-                sessions=validation_sessions,
-                tickers=tickers,
-                device=device,
-                max_windows=config.train.validation_window_count,
-                label="validation",
-                metrics_path=metrics_path,
-                wandb_run=wandb_run,
-                step=step,
-                epoch=epoch_value,
-            )
+            try:
+                validation_metrics = evaluate(
+                    model=model,
+                    config=config,
+                    sessions=validation_sessions,
+                    tickers=tickers,
+                    device=device,
+                    max_windows=config.train.validation_window_count,
+                    label="validation",
+                    metrics_path=metrics_path,
+                    wandb_run=wandb_run,
+                    step=step,
+                    epoch=epoch_value,
+                )
+            except NonFiniteLossError as exc:
+                stop_training_for_nonfinite_loss(
+                    exc,
+                    output_dir=output_dir,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    step=step,
+                    best_score=best_score,
+                    config=config,
+                    metrics_path=metrics_path,
+                    wandb_run=wandb_run,
+                )
+                return
             validation_metrics.update(
                 {
                     "type": "validation",
@@ -598,19 +651,34 @@ def main() -> None:
     if step > 0 and last_eval_step != step:
         print_section(f"FINAL VALIDATION START step={step:,}")
         epoch_value = estimate_epoch(step, cached_batches if "cached_batches" in locals() else [], config.train)
-        validation_metrics = evaluate(
-            model=model,
-            config=config,
-            sessions=validation_sessions,
-            tickers=tickers,
-            device=device,
-            max_windows=config.train.validation_window_count,
-            label="validation",
-            metrics_path=metrics_path,
-            wandb_run=wandb_run,
-            step=step,
-            epoch=epoch_value,
-        )
+        try:
+            validation_metrics = evaluate(
+                model=model,
+                config=config,
+                sessions=validation_sessions,
+                tickers=tickers,
+                device=device,
+                max_windows=config.train.validation_window_count,
+                label="validation",
+                metrics_path=metrics_path,
+                wandb_run=wandb_run,
+                step=step,
+                epoch=epoch_value,
+            )
+        except NonFiniteLossError as exc:
+            stop_training_for_nonfinite_loss(
+                exc,
+                output_dir=output_dir,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                step=step,
+                best_score=best_score,
+                config=config,
+                metrics_path=metrics_path,
+                wandb_run=wandb_run,
+            )
+            return
         validation_metrics.update(
             {
                 "type": "validation",
@@ -632,19 +700,34 @@ def main() -> None:
 
     print_section(f"TEST START step={step:,}")
     epoch_value = estimate_epoch(step, cached_batches if "cached_batches" in locals() else [], config.train)
-    test_metrics = evaluate(
-        model=model,
-        config=config,
-        sessions=test_sessions,
-        tickers=tickers,
-        device=device,
-        max_windows=config.train.test_window_count,
-        label="test",
-        metrics_path=metrics_path,
-        wandb_run=wandb_run,
-        step=step,
-        epoch=epoch_value,
-    )
+    try:
+        test_metrics = evaluate(
+            model=model,
+            config=config,
+            sessions=test_sessions,
+            tickers=tickers,
+            device=device,
+            max_windows=config.train.test_window_count,
+            label="test",
+            metrics_path=metrics_path,
+            wandb_run=wandb_run,
+            step=step,
+            epoch=epoch_value,
+        )
+    except NonFiniteLossError as exc:
+        stop_training_for_nonfinite_loss(
+            exc,
+            output_dir=output_dir,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            step=step,
+            best_score=best_score,
+            config=config,
+            metrics_path=metrics_path,
+            wandb_run=wandb_run,
+        )
+        return
     test_metrics.update(
         {
             "type": "test",
@@ -659,8 +742,7 @@ def main() -> None:
     print_section(f"TEST END step={step:,}")
     print_section("TRAINING COMPLETE")
     print(f"*** Artifacts: {output_dir}", flush=True)
-    if wandb_run is not None:
-        wandb_run.finish()
+    finish_wandb_run(wandb_run)
 
 
 def print_training_plan(config: ExperimentConfig, coverage: Any, planned_steps: int) -> None:
@@ -730,6 +812,55 @@ def log_metrics(path: Path, wandb_run: Any, row: dict[str, Any]) -> None:
         payload[f"{label}/nonfinite_metric_count"] = nonfinite_count
     if payload:
         wandb_run.log(payload)
+
+
+def stop_training_for_nonfinite_loss(
+    error: NonFiniteLossError,
+    *,
+    output_dir: Path,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    step: int,
+    best_score: float,
+    config: ExperimentConfig,
+    metrics_path: Path,
+    wandb_run: Any,
+) -> None:
+    print_section("TRAINING STOPPED: NON-FINITE LOSS")
+    print(f"*** {error}", flush=True)
+    row = {
+        "type": "guardrail",
+        "step": step,
+        "guardrail_triggered": True,
+        "nonfinite_loss": True,
+        "nonfinite_label": error.label,
+        "nonfinite_step": error.step,
+        "time": datetime.now().isoformat(timespec="seconds"),
+    }
+    log_metrics(metrics_path, wandb_run, row)
+    write_json(
+        output_dir / "nonfinite_stop.json",
+        {
+            **row,
+            "details": error.details,
+            "message": str(error),
+        },
+    )
+    save_checkpoint(output_dir / "nonfinite.pt", model, optimizer, scheduler, step, best_score, config)
+    save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
+    print(f"*** Non-finite diagnostic written to {output_dir / 'nonfinite_stop.json'}", flush=True)
+    print(f"*** Non-finite checkpoint written to {output_dir / 'nonfinite.pt'}", flush=True)
+    finish_wandb_run(wandb_run, exit_code=1)
+
+
+def finish_wandb_run(wandb_run: Any, exit_code: int = 0) -> None:
+    if wandb_run is None:
+        return
+    try:
+        wandb_run.finish(exit_code=exit_code)
+    except TypeError:
+        wandb_run.finish()
 
 
 def wandb_metric_aliases(label: str, row: dict[str, Any]) -> dict[str, float | int]:
@@ -1047,7 +1178,7 @@ def raise_on_nonfinite_loss(loss: torch.Tensor, *, label: str, step: int, batch:
             f"{key}: finite={finite_count}/{total_count} min={min_value:.6g} max={max_value:.6g}"
         )
     joined = "; ".join(details)
-    raise FloatingPointError(f"Non-finite {label} loss at step {step:,}. {joined}")
+    raise NonFiniteLossError(label=label, step=step, details=joined)
 
 
 def lr_multiplier(step: int, warmup_steps: int, total_steps: int) -> float:
