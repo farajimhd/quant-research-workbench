@@ -238,6 +238,49 @@ def make_wandb_run_name(args: argparse.Namespace, config: ExperimentConfig) -> s
     )
 
 
+def read_env_key(env_path: Path, name: str) -> str:
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() != name:
+            continue
+        return value.strip().strip("\"'")
+    return ""
+
+
+def resolve_wandb_api_key() -> str:
+    api_key = os.environ.get("WANDB_API_KEY", "").strip()
+    if api_key:
+        return api_key
+
+    env_paths = []
+    for env_path in (REPO_ROOT / ".env", Path.cwd() / ".env"):
+        if env_path not in env_paths:
+            env_paths.append(env_path)
+
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError:
+        load_dotenv = None
+
+    for env_path in env_paths:
+        if not env_path.exists():
+            continue
+        if load_dotenv is not None:
+            load_dotenv(env_path, override=False)
+        else:
+            dotenv_api_key = read_env_key(env_path, "WANDB_API_KEY")
+            if dotenv_api_key:
+                os.environ.setdefault("WANDB_API_KEY", dotenv_api_key)
+        api_key = os.environ.get("WANDB_API_KEY", "").strip()
+        if api_key:
+            print(f"*** WANDB_API_KEY loaded from {env_path}", flush=True)
+            return api_key
+    return ""
+
+
 def init_wandb(args: argparse.Namespace, config: ExperimentConfig, metadata: dict[str, Any]) -> Any:
     if args.disable_wandb:
         print("*** WANDB disabled by --disable-wandb", flush=True)
@@ -249,10 +292,10 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, metadata: dic
         return None
     run_name = make_wandb_run_name(args, config)
     print(f"*** WANDB INIT | entity={args.wandb_entity} | project={args.wandb_project} | run={run_name}", flush=True)
-    api_key = os.environ.get("WANDB_API_KEY", "").strip()
+    api_key = resolve_wandb_api_key()
     if not api_key:
         print(
-            "*** WANDB_API_KEY is not set in this process environment; "
+            f"*** WANDB_API_KEY is not set in this process environment or {REPO_ROOT / '.env'}; "
             "metrics will only be written to metrics.jsonl.",
             flush=True,
         )
