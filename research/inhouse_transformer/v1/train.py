@@ -48,6 +48,7 @@ DataLoader = None
 FeatureTemporalTransformer = None
 forecast_loss = None
 LOG_RULE = "*" * 96
+EXPERIMENT_VERSION = "v1"
 
 
 class NonFiniteLossError(FloatingPointError):
@@ -79,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target-mode",
         choices=["actual_price_zscore", "return_bps"],
-        default="actual_price_zscore",
+        default=defaults.data.target_mode,
         help="Main transformer target format. actual_price_zscore trains on actual future prices z-scored by each context window.",
     )
     parser.add_argument(
@@ -285,12 +286,12 @@ def make_wandb_run_name(args: argparse.Namespace, config: ExperimentConfig) -> s
     input_name = input_experiment_name(config)
     if args.overfit_session:
         return (
-            f"main-transformer-overfit-{args.overfit_session}-{input_name}-"
+            f"{EXPERIMENT_VERSION}-main-transformer-overfit-{args.overfit_session}-{input_name}-"
             f"{config.data.target_mode}-ctx{config.data.context_length}-h{config.data.horizon}-{target_columns}"
         )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return (
-        f"main-transformer-{input_name}-{config.data.target_mode}-ctx{config.data.context_length}-"
+        f"{EXPERIMENT_VERSION}-main-transformer-{input_name}-{config.data.target_mode}-ctx{config.data.context_length}-"
         f"h{config.data.horizon}-{target_columns}-{timestamp}"
     )
 
@@ -1693,12 +1694,12 @@ def set_seed(seed: int) -> None:
 
 
 def make_output_dir(config: ExperimentConfig) -> Path:
-    root = config.data.processed_root / "models" / "inhouse_transformer"
+    root = config.data.processed_root / "models" / "inhouse_transformer" / EXPERIMENT_VERSION
     if config.train.output_name:
         return root / config.train.output_name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     name = (
-        f"feature_temporal_ctx{config.data.context_length}_h{config.data.horizon}_"
+        f"feature_temporal_{EXPERIMENT_VERSION}_{config.data.target_mode}_ctx{config.data.context_length}_h{config.data.horizon}_"
         f"{config.data.train_start_date}_{config.data.test_end_date}_{timestamp}"
     )
     return root / name
@@ -1768,6 +1769,7 @@ def metadata_payload(
 ) -> dict[str, Any]:
     return {
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "experiment_version": EXPERIMENT_VERSION,
         "output_dir": str(output_dir),
         "data": {
             **config_to_dict(config)["data"],
@@ -1815,6 +1817,7 @@ def print_split_summary(metadata: dict[str, Any]) -> None:
 
 def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
     return {
+        "experiment_version": EXPERIMENT_VERSION,
         "data": {
             "processed_root": str(config.data.processed_root),
             "train_start_date": config.data.train_start_date,

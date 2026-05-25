@@ -27,7 +27,7 @@ class DataConfig:
     session_scope: str = "all"
     context_length: int = 64
     horizon: int = 3
-    target_mode: str = "return_bps"
+    target_mode: str = "actual_price_zscore"
     target_columns: tuple[str, ...] = ("open", "high", "low", "close")
     input_normalization: str = "window_zscore_only"
     input_feature_columns: tuple[str, ...] = (
