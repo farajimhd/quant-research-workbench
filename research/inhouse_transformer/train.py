@@ -114,13 +114,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-steps", type=int, default=defaults.train.warmup_steps)
     parser.add_argument(
         "--lr-scheduler",
-        choices=["plateau", "cosine", "constant"],
+        choices=["auto", "plateau", "cosine", "cosine_warm_restarts", "constant"],
         default=defaults.train.lr_scheduler,
-        help="Learning-rate schedule. plateau reduces LR on validation-loss stagnation.",
+        help=(
+            "Learning-rate schedule. auto uses cosine_warm_restarts for overfit runs and plateau otherwise. "
+            "plateau reduces LR on validation-loss stagnation."
+        ),
     )
     parser.add_argument("--lr-plateau-factor", type=float, default=defaults.train.lr_plateau_factor)
     parser.add_argument("--lr-plateau-patience", type=int, default=defaults.train.lr_plateau_patience)
     parser.add_argument("--lr-plateau-threshold", type=float, default=defaults.train.lr_plateau_threshold)
+    parser.add_argument(
+        "--cosine-restart-t0-steps",
+        type=int,
+        default=defaults.train.cosine_restart_t0_steps,
+        help="T_0 for CosineAnnealingWarmRestarts in optimizer steps. 0 chooses a run-aware default.",
+    )
+    parser.add_argument(
+        "--cosine-restart-t-mult",
+        type=int,
+        default=defaults.train.cosine_restart_t_mult,
+        help="T_mult for CosineAnnealingWarmRestarts.",
+    )
     parser.add_argument("--min-learning-rate", type=float, default=defaults.train.min_learning_rate)
     parser.add_argument("--grad-clip-norm", type=float, default=defaults.train.grad_clip_norm)
     parser.add_argument("--logging-steps", type=int, default=defaults.train.logging_steps)
@@ -204,6 +219,7 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         direction_loss_weight=args.direction_loss_weight,
         direction_threshold_bps=args.direction_threshold_bps,
     )
+    lr_scheduler = resolve_lr_scheduler(args)
     train = TrainConfig(
         batch_size=args.batch_size,
         epochs=args.epochs,
@@ -211,10 +227,12 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         warmup_steps=args.warmup_steps,
-        lr_scheduler=args.lr_scheduler,
+        lr_scheduler=lr_scheduler,
         lr_plateau_factor=args.lr_plateau_factor,
         lr_plateau_patience=args.lr_plateau_patience,
         lr_plateau_threshold=args.lr_plateau_threshold,
+        cosine_restart_t0_steps=args.cosine_restart_t0_steps,
+        cosine_restart_t_mult=args.cosine_restart_t_mult,
         min_learning_rate=args.min_learning_rate,
         grad_clip_norm=args.grad_clip_norm,
         logging_steps=args.logging_steps,
@@ -232,6 +250,14 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         resume_latest=args.resume_latest,
     )
     return ExperimentConfig(data=data, model=model, train=train)
+
+
+def resolve_lr_scheduler(args: argparse.Namespace) -> str:
+    if args.lr_scheduler != "auto":
+        return args.lr_scheduler
+    if args.overfit_session or args.overfit_batches > 0:
+        return "cosine_warm_restarts"
+    return "plateau"
 
 
 def parse_column_list(raw: str) -> tuple[str, ...]:
@@ -412,6 +438,15 @@ def main() -> None:
     )
     print(f"Target mode: {config.data.target_mode}", flush=True)
     print(f"Input normalization: {config.data.input_normalization}", flush=True)
+    print(
+        f"LR scheduler: {config.train.lr_scheduler}"
+        + (
+            f" t0_steps={cosine_restart_t0_steps(config.train)} t_mult={config.train.cosine_restart_t_mult}"
+            if config.train.lr_scheduler == "cosine_warm_restarts"
+            else ""
+        ),
+        flush=True,
+    )
     print(f"Output directory: {output_dir}", flush=True)
 
     coverage = None
@@ -1401,11 +1436,19 @@ def make_scheduler(
             optimizer,
             lr_lambda=lambda step: lr_multiplier(step, config.warmup_steps, planned_steps),
         )
+    if config.lr_scheduler == "cosine_warm_restarts":
+        t0_steps = cosine_restart_t0_steps(config)
+        return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=t0_steps,
+            T_mult=max(1, int(config.cosine_restart_t_mult)),
+            eta_min=config.min_learning_rate,
+        )
     return None
 
 
 def apply_pre_step_lr(optimizer: torch.optim.Optimizer, config: TrainConfig, step: int) -> None:
-    if config.lr_scheduler == "cosine" or config.warmup_steps <= 0 or step > config.warmup_steps:
+    if config.lr_scheduler in {"cosine", "cosine_warm_restarts"} or config.warmup_steps <= 0 or step > config.warmup_steps:
         return
     multiplier = max(1e-4, float(step) / float(config.warmup_steps))
     for group in optimizer.param_groups:
@@ -1413,8 +1456,16 @@ def apply_pre_step_lr(optimizer: torch.optim.Optimizer, config: TrainConfig, ste
 
 
 def step_batch_scheduler(scheduler: Any, config: TrainConfig, step: int) -> None:
-    if config.lr_scheduler == "cosine" and scheduler is not None:
+    if config.lr_scheduler in {"cosine", "cosine_warm_restarts"} and scheduler is not None:
         scheduler.step()
+
+
+def cosine_restart_t0_steps(config: TrainConfig) -> int:
+    if config.cosine_restart_t0_steps > 0:
+        return config.cosine_restart_t0_steps
+    if config.eval_steps > 0:
+        return config.eval_steps
+    return 25
 
 
 def apply_validation_scheduler(
@@ -1613,6 +1664,13 @@ def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
             "lr_plateau_factor": config.train.lr_plateau_factor,
             "lr_plateau_patience": config.train.lr_plateau_patience,
             "lr_plateau_threshold": config.train.lr_plateau_threshold,
+            "cosine_restart_t0_steps": config.train.cosine_restart_t0_steps,
+            "cosine_restart_effective_t0_steps": (
+                cosine_restart_t0_steps(config.train)
+                if config.train.lr_scheduler == "cosine_warm_restarts"
+                else 0
+            ),
+            "cosine_restart_t_mult": config.train.cosine_restart_t_mult,
             "min_learning_rate": config.train.min_learning_rate,
             "grad_clip_norm": config.train.grad_clip_norm,
             "logging_steps": config.train.logging_steps,
