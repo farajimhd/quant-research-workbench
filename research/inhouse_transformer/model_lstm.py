@@ -28,6 +28,8 @@ class SimpleLSTMForecaster(nn.Module):
             batch_first=True,
         )
         self.head = nn.Linear(hidden_size, horizon * target_count)
+        nn.init.normal_(self.head.weight, mean=0.0, std=1e-3)
+        nn.init.zeros_(self.head.bias)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         _, (hidden, _) = self.lstm(inputs)

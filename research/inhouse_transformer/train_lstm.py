@@ -59,6 +59,7 @@ TIME_FEATURE_COUNT = 9
 
 @dataclass(slots=True)
 class NormalizationStats:
+    mode: str
     input_mean: np.ndarray
     input_std: np.ndarray
     target_mean: np.ndarray
@@ -116,9 +117,9 @@ class PriceMetricAccumulator:
         self.cross_sum = np.zeros(horizon, dtype=np.float64)
 
     def update(self, prediction_norm: np.ndarray, target_norm: np.ndarray, current_close: np.ndarray) -> None:
-        prediction = denormalize_target(prediction_norm, self.stats)[:, :, 0]
-        target = denormalize_target(target_norm, self.stats)[:, :, 0]
         current = np.maximum(np.asarray(current_close, dtype=np.float64).reshape(-1, 1), 1e-6)
+        prediction = denormalize_target(prediction_norm, self.stats, current)[:, :, 0]
+        target = denormalize_target(target_norm, self.stats, current)[:, :, 0]
         error_bps = (prediction - target) / current * 10000.0
         pred_change_bps = (prediction - current) / current * 10000.0
         actual_change_bps = (target - current) / current * 10000.0
@@ -301,11 +302,12 @@ class ActualBatchBuilder:
         end = origin + 1
         target_start = origin + 1
         target_end = origin + 1 + config.horizon
-        values = normalize_inputs(arrays["actual_features"][start:end], self.stats)
+        current_close = arrays["close"][origin]
+        values = normalize_inputs(arrays["actual_features"][start:end], self.stats, current_close)
         self.inputs[self.count] = np.concatenate([values, arrays["time_features"][start:end]], axis=1)
         target_prices = arrays[self.target_column][target_start:target_end].reshape(config.horizon, 1)
-        self.targets[self.count] = normalize_target(target_prices, self.stats)
-        self.current_close[self.count] = arrays["close"][origin]
+        self.targets[self.count] = normalize_target(target_prices, self.stats, current_close)
+        self.current_close[self.count] = current_close
         self.count += 1
 
     def as_torch(self) -> dict[str, torch.Tensor]:
@@ -341,6 +343,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-tickers", type=int, default=data_defaults.max_tickers)
     parser.add_argument("--allow-target-across-session", action="store_true")
     parser.add_argument("--no-carry-context-across-session", action="store_true")
+    parser.add_argument(
+        "--normalization-mode",
+        choices=["window", "train_split"],
+        default="window",
+        help=(
+            "window normalizes each sample from its own causal context and starts training immediately. "
+            "train_split computes Keras-style global train statistics before training."
+        ),
+    )
     parser.add_argument("--stats-max-sessions", type=int, default=0)
 
     parser.add_argument("--hidden-size", type=int, default=32)
@@ -388,6 +399,7 @@ def main() -> None:
     print_split_summary(train_sessions, validation_sessions, test_sessions, tickers, data_config)
     print(f"Actual-value input columns: {list(ACTUAL_FEATURE_COLUMNS)} + time_features", flush=True)
     print(f"Target: future actual {args.target_column} | horizon={data_config.horizon}", flush=True)
+    print(f"Normalization mode: {args.normalization_mode}", flush=True)
     print(
         f"LSTM model: input_size={len(ACTUAL_FEATURE_COLUMNS) + TIME_FEATURE_COUNT} "
         f"hidden_size={args.hidden_size} layers={args.layers} dropout={args.dropout}",
@@ -398,7 +410,11 @@ def main() -> None:
         print("*** Dry run complete before stats/training.", flush=True)
         return
 
-    stats = compute_normalization_stats(data_config, train_sessions, tickers, args.target_column, args.stats_max_sessions)
+    stats = (
+        make_window_normalization_stats()
+        if args.normalization_mode == "window"
+        else compute_normalization_stats(data_config, train_sessions, tickers, args.target_column, args.stats_max_sessions)
+    )
     write_json(output_dir / "normalization.json", normalization_to_dict(stats))
     metadata = metadata_payload(args, data_config, train_sessions, validation_sessions, test_sessions, tickers, output_dir, stats)
     write_json(output_dir / "metadata.json", metadata)
@@ -622,7 +638,29 @@ def compute_normalization_stats(
     print_section(
         f"NORMALIZATION STATS END input_rows={input_stats.count:,} target_rows={target_stats.count:,}"
     )
-    return NormalizationStats(input_mean=input_mean, input_std=input_std, target_mean=target_mean, target_std=target_std)
+    return NormalizationStats(
+        mode="train_split",
+        input_mean=input_mean,
+        input_std=input_std,
+        target_mean=target_mean,
+        target_std=target_std,
+    )
+
+
+def make_window_normalization_stats() -> NormalizationStats:
+    print_section("WINDOW NORMALIZATION ENABLED")
+    print(
+        "Per-window normalization uses only the current context: price columns are centered against current close, "
+        "size columns are log-z-scored inside the context window, spread is clipped/scaled, and no train-wide stats pass is run.",
+        flush=True,
+    )
+    return NormalizationStats(
+        mode="window",
+        input_mean=np.zeros(len(ACTUAL_FEATURE_COLUMNS), dtype=np.float32),
+        input_std=np.ones(len(ACTUAL_FEATURE_COLUMNS), dtype=np.float32),
+        target_mean=np.zeros(1, dtype=np.float32),
+        target_std=np.ones(1, dtype=np.float32),
+    )
 
 
 def actual_arrays(frame: Any, config: DataConfig) -> dict[str, np.ndarray]:
@@ -808,16 +846,40 @@ def print_metric_line(metrics: dict[str, Any], target_column: str) -> None:
     print(" | ".join(parts), flush=True)
 
 
-def normalize_inputs(values: np.ndarray, stats: NormalizationStats) -> np.ndarray:
-    return ((values - stats.input_mean) / stats.input_std).astype(np.float32)
+def normalize_inputs(values: np.ndarray, stats: NormalizationStats, current_close: float) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float32)
+    if stats.mode == "train_split":
+        return ((values - stats.input_mean) / stats.input_std).astype(np.float32)
+
+    normalized = np.empty_like(values, dtype=np.float32)
+    close_anchor = max(float(current_close), 1e-6)
+    normalized[:, 0:4] = values[:, 0:4] / close_anchor - 1.0
+
+    size_columns = (4, 5, 7, 8, 9)
+    for column in size_columns:
+        logged = np.log1p(np.maximum(values[:, column], 0.0))
+        mean = float(logged.mean())
+        std = float(logged.std())
+        normalized[:, column] = (logged - mean) / max(std, 1e-6)
+
+    normalized[:, 6] = np.clip(values[:, 6] / 1000.0, -1.0, 1.0)
+    normalized[:, 10] = np.clip(values[:, 10], -1.0, 1.0)
+    normalized[:, 11] = np.clip(values[:, 11], 0.0, 1.0)
+    return np.nan_to_num(normalized, nan=0.0, posinf=10.0, neginf=-10.0).astype(np.float32)
 
 
-def normalize_target(values: np.ndarray, stats: NormalizationStats) -> np.ndarray:
-    return ((values - stats.target_mean) / stats.target_std).astype(np.float32)
+def normalize_target(values: np.ndarray, stats: NormalizationStats, current_close: float) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float32)
+    if stats.mode == "train_split":
+        return ((values - stats.target_mean) / stats.target_std).astype(np.float32)
+    return (values / max(float(current_close), 1e-6) - 1.0).astype(np.float32)
 
 
-def denormalize_target(values: np.ndarray, stats: NormalizationStats) -> np.ndarray:
-    return np.asarray(values, dtype=np.float64) * stats.target_std.astype(np.float64) + stats.target_mean.astype(np.float64)
+def denormalize_target(values: np.ndarray, stats: NormalizationStats, current_close: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    if stats.mode == "train_split":
+        return values * stats.target_std.astype(np.float64) + stats.target_mean.astype(np.float64)
+    return (values + 1.0) * np.asarray(current_close, dtype=np.float64).reshape(-1, 1, 1)
 
 
 def loss_fn(prediction: torch.Tensor, target: torch.Tensor, loss_name: str) -> torch.Tensor:
@@ -966,6 +1028,7 @@ def data_config_to_dict(config: DataConfig) -> dict[str, Any]:
 
 def normalization_to_dict(stats: NormalizationStats) -> dict[str, Any]:
     return {
+        "mode": stats.mode,
         "input_columns": list(ACTUAL_FEATURE_COLUMNS),
         "input_mean": [float(value) for value in stats.input_mean],
         "input_std": [float(value) for value in stats.input_std],
