@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import sys
 import time
@@ -248,6 +249,23 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, metadata: dic
         return None
     run_name = make_wandb_run_name(args, config)
     print(f"*** WANDB INIT | entity={args.wandb_entity} | project={args.wandb_project} | run={run_name}", flush=True)
+    api_key = os.environ.get("WANDB_API_KEY", "").strip()
+    if not api_key:
+        print(
+            "*** WANDB_API_KEY is not set in this process environment; "
+            "metrics will only be written to metrics.jsonl.",
+            flush=True,
+        )
+        return None
+    try:
+        wandb.login(key=api_key, relogin=True)
+    except Exception as exc:
+        print(
+            "*** WANDB login failed using WANDB_API_KEY; "
+            f"metrics will only be written to metrics.jsonl. Error: {exc}",
+            flush=True,
+        )
+        return None
     try:
         return wandb.init(
             entity=args.wandb_entity,
