@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+import html
 import json
 import math
 import os
@@ -26,13 +28,18 @@ from research.inhouse_transformer.config import (  # noqa: E402
     TrainConfig,
 )
 from research.inhouse_transformer.data import (  # noqa: E402
+    BatchBuilder,
     RollingBarWindowDataset,
     available_sessions,
     count_coverage,
+    iter_ticker_frames,
+    load_session_frame,
     parse_ticker_list,
     resolve_end_date,
     select_top_tickers,
+    ticker_arrays,
     target_values_to_bps,
+    valid_origins,
 )
 from research.inhouse_transformer.metrics import MetricAccumulator, append_jsonl  # noqa: E402
 
@@ -791,10 +798,11 @@ def main() -> None:
     print_metric_line(test_metrics)
     save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
     if cached_batches:
-        log_overfit_cache_prediction_charts(
+        log_overfit_timeline_prediction_charts(
             model=model,
             config=config,
             batches=cached_batches,
+            sessions=train_sessions,
             device=device,
             wandb_run=wandb_run,
             step=step,
@@ -1142,95 +1150,72 @@ def evaluate_cached_batches(
     return metrics
 
 
-def log_overfit_cache_prediction_charts(
+def log_overfit_timeline_prediction_charts(
     *,
     model: torch.nn.Module,
     config: ExperimentConfig,
     batches: Iterable[dict[str, Any]],
+    sessions: list[str],
     device: torch.device,
     wandb_run: Any,
     step: int,
     max_tickers: int = 3,
-    max_points_per_ticker: int = 512,
+    max_points_per_ticker: int = 0,
 ) -> None:
     if wandb_run is None:
         return
     if "close" not in config.data.target_columns:
-        print("*** Overfit cache prediction chart skipped because close is not in target columns.", flush=True)
+        print("*** Overfit timeline prediction chart skipped because close is not in target columns.", flush=True)
+        return
+    if not sessions:
+        print("*** Overfit timeline prediction chart skipped because no training session was provided.", flush=True)
         return
     try:
         import wandb
     except ModuleNotFoundError:
-        print("*** Overfit cache prediction chart skipped because wandb is unavailable.", flush=True)
+        print("*** Overfit timeline prediction chart skipped because wandb is unavailable.", flush=True)
         return
 
+    selected_tickers = top_tickers_from_cached_batches(batches, max_tickers)
+    if not selected_tickers:
+        print("*** Overfit timeline prediction chart skipped because cached batches had no ticker metadata.", flush=True)
+        return
+
+    session = sessions[0]
     model.eval()
-    rows_by_ticker: dict[str, list[dict[str, float | int | str]]] = {}
-    close_index = config.data.target_columns.index("close")
-    with torch.inference_mode():
-        for raw_batch in batches:
-            tickers = raw_batch.get("ticker")
-            if not tickers:
-                continue
-            batch = move_batch(raw_batch, device)
-            with torch.autocast(
-                device_type=device.type,
-                dtype=torch.float16,
-                enabled=config.train.amp and device.type == "cuda",
-            ):
-                prediction, _ = model(batch["values"], batch["time_features"])
-            prediction_prices, target_prices = prediction_and_target_prices(prediction, batch, config)
-            prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
-            timestamps_ns = batch["target_timestamp_ns"].detach().cpu().numpy()
-            current_close = batch["current_close"].detach().cpu().numpy()
-            for row_index, ticker in enumerate(tickers):
-                ticker = str(ticker)
-                if ticker not in rows_by_ticker:
-                    if len(rows_by_ticker) >= max_tickers:
-                        continue
-                    rows_by_ticker[ticker] = []
-                ticker_rows = rows_by_ticker[ticker]
-                if len(ticker_rows) >= max_points_per_ticker:
-                    continue
-                target_close = float(target_prices[row_index, 0, close_index])
-                prediction_close = float(prediction_prices[row_index, 0, close_index])
-                ticker_rows.append(
-                    {
-                        "ticker": ticker,
-                        "target_timestamp_ns": int(timestamps_ns[row_index]),
-                        "current_close": float(current_close[row_index]),
-                        "target_close": target_close,
-                        "prediction_close": prediction_close,
-                        "target_bps": float(target_bps[row_index, 0, close_index]),
-                        "prediction_bps": float(prediction_bps[row_index, 0, close_index]),
-                        "abs_error_bps": abs(float(prediction_bps[row_index, 0, close_index] - target_bps[row_index, 0, close_index])),
-                    }
-                )
+    rows_by_ticker = infer_session_timeline_predictions(
+        model=model,
+        config=config,
+        session=session,
+        tickers=selected_tickers,
+        device=device,
+        max_points_per_ticker=max_points_per_ticker,
+    )
 
     if not rows_by_ticker:
-        print("*** Overfit cache prediction chart skipped because cached batches had no ticker metadata.", flush=True)
+        print("*** Overfit timeline prediction chart skipped because the selected tickers had no valid session windows.", flush=True)
         return
 
     payload: dict[str, Any] = {"train_step": step}
     table_rows = []
     for ticker, ticker_rows in rows_by_ticker.items():
-        ticker_rows.sort(key=lambda item: int(item["target_timestamp_ns"]))
-        xs = list(range(len(ticker_rows)))
-        target_close = [float(row["target_close"]) for row in ticker_rows]
-        prediction_close = [float(row["prediction_close"]) for row in ticker_rows]
+        ticker_rows.sort(key=lambda item: int(item["bar_index"]))
         safe_ticker = re.sub(r"[^A-Za-z0-9_.-]+", "_", ticker)
-        payload[f"overfit_cache_predictions/{safe_ticker}_h1_close"] = wandb.plot.line_series(
-            xs=xs,
-            ys=[target_close, prediction_close],
-            keys=["target_close", "prediction_close"],
-            title=f"{ticker} overfit cache h1 close",
-            xname="cache_time_order",
+        payload[f"overfit_timeline_predictions/{safe_ticker}_h1_close"] = wandb.Html(
+            render_prediction_timeline_svg(
+                ticker=ticker,
+                session=session,
+                rows=ticker_rows,
+            )
         )
         for sample_index, row in enumerate(ticker_rows):
             table_rows.append(
                 [
                     ticker,
+                    session,
                     sample_index,
+                    int(row["bar_index"]),
+                    str(row["target_time"]),
                     int(row["target_timestamp_ns"]),
                     float(row["current_close"]),
                     float(row["target_close"]),
@@ -1241,10 +1226,13 @@ def log_overfit_cache_prediction_charts(
                 ]
             )
 
-    payload["overfit_cache_predictions/table"] = wandb.Table(
+    payload["overfit_timeline_predictions/table"] = wandb.Table(
         columns=[
             "ticker",
-            "cache_time_order",
+            "session",
+            "timeline_order",
+            "bar_index",
+            "target_time",
             "target_timestamp_ns",
             "current_close",
             "target_close",
@@ -1257,10 +1245,217 @@ def log_overfit_cache_prediction_charts(
     )
     wandb_run.log(payload)
     print(
-        "*** W&B overfit cache prediction charts logged for "
-        f"{', '.join(rows_by_ticker.keys())}",
+        "*** W&B overfit timeline prediction charts logged for "
+        f"{', '.join(rows_by_ticker.keys())} from session {session}",
         flush=True,
     )
+
+
+def top_tickers_from_cached_batches(
+    batches: Iterable[dict[str, Any]],
+    max_tickers: int,
+) -> tuple[str, ...]:
+    counts: Counter[str] = Counter()
+    for batch in batches:
+        counts.update(str(ticker) for ticker in batch.get("ticker", []))
+    return tuple(ticker for ticker, _ in counts.most_common(max_tickers))
+
+
+def infer_session_timeline_predictions(
+    *,
+    model: torch.nn.Module,
+    config: ExperimentConfig,
+    session: str,
+    tickers: tuple[str, ...],
+    device: torch.device,
+    max_points_per_ticker: int,
+) -> dict[str, list[dict[str, float | int | str]]]:
+    frame = load_session_frame(config.data, session, tickers)
+    if frame.is_empty():
+        return {}
+
+    rows_by_ticker: dict[str, list[dict[str, float | int | str]]] = {}
+    for ticker, ticker_frame in iter_ticker_frames(frame):
+        if ticker not in tickers:
+            continue
+        rows = infer_ticker_timeline_predictions(
+            model=model,
+            config=config,
+            ticker=ticker,
+            ticker_frame=ticker_frame,
+            device=device,
+            max_points=max_points_per_ticker,
+        )
+        if rows:
+            rows_by_ticker[ticker] = rows
+    return rows_by_ticker
+
+
+def infer_ticker_timeline_predictions(
+    *,
+    model: torch.nn.Module,
+    config: ExperimentConfig,
+    ticker: str,
+    ticker_frame: Any,
+    device: torch.device,
+    max_points: int,
+) -> list[dict[str, float | int | str]]:
+    arrays = ticker_arrays(ticker_frame, config.data)
+    current_session = str(ticker_frame["session_date"][0])
+    origins = valid_origins(arrays, current_session, config.data)
+    if max_points > 0:
+        origins = origins[:max_points]
+    if origins.size == 0:
+        return []
+
+    rows: list[dict[str, float | int | str]] = []
+    batch_builder = BatchBuilder(
+        batch_size=config.train.batch_size,
+        context_length=config.data.context_length,
+        feature_count=len(config.data.input_feature_columns),
+        time_feature_count=len(config.data.time_feature_columns),
+        horizon=config.data.horizon,
+        target_count=len(config.data.target_columns),
+    )
+    pending_origins: list[int] = []
+    with torch.inference_mode():
+        for origin in origins:
+            batch_builder.add(arrays, int(origin), config.data, ticker=ticker)
+            pending_origins.append(int(origin))
+            if batch_builder.full:
+                rows.extend(
+                    infer_timeline_batch_rows(
+                        model=model,
+                        config=config,
+                        batch=batch_builder.as_torch(),
+                        origins=pending_origins,
+                        device=device,
+                    )
+                )
+                batch_builder = batch_builder.empty_like()
+                pending_origins = []
+        if len(batch_builder) > 0:
+            rows.extend(
+                infer_timeline_batch_rows(
+                    model=model,
+                    config=config,
+                    batch=batch_builder.as_torch(),
+                    origins=pending_origins,
+                    device=device,
+                )
+            )
+    return rows
+
+
+def infer_timeline_batch_rows(
+    *,
+    model: torch.nn.Module,
+    config: ExperimentConfig,
+    batch: dict[str, Any],
+    origins: list[int],
+    device: torch.device,
+) -> list[dict[str, float | int | str]]:
+    close_index = config.data.target_columns.index("close")
+    device_batch = move_batch(batch, device)
+    with torch.autocast(
+        device_type=device.type,
+        dtype=torch.float16,
+        enabled=config.train.amp and device.type == "cuda",
+    ):
+        prediction, _ = model(device_batch["values"], device_batch["time_features"])
+    prediction_prices, target_prices = prediction_and_target_prices(prediction, device_batch, config)
+    prediction_bps, target_bps = prediction_and_target_bps(prediction, device_batch, config)
+    timestamps_ns = batch["target_timestamp_ns"].detach().cpu().numpy()
+    current_close = batch["current_close"].detach().cpu().numpy()
+    tickers = batch.get("ticker", [""] * len(origins))
+    rows = []
+    for row_index, origin in enumerate(origins):
+        target_bps_value = float(target_bps[row_index, 0, close_index])
+        prediction_bps_value = float(prediction_bps[row_index, 0, close_index])
+        timestamp_ns = int(timestamps_ns[row_index])
+        rows.append(
+            {
+                "ticker": str(tickers[row_index]),
+                "bar_index": int(origin + 1),
+                "target_time": datetime.fromtimestamp(timestamp_ns / 1_000_000_000).isoformat(timespec="seconds"),
+                "target_timestamp_ns": timestamp_ns,
+                "current_close": float(current_close[row_index]),
+                "target_close": float(target_prices[row_index, 0, close_index]),
+                "prediction_close": float(prediction_prices[row_index, 0, close_index]),
+                "target_bps": target_bps_value,
+                "prediction_bps": prediction_bps_value,
+                "abs_error_bps": abs(prediction_bps_value - target_bps_value),
+            }
+        )
+    return rows
+
+
+def render_prediction_timeline_svg(
+    *,
+    ticker: str,
+    session: str,
+    rows: list[dict[str, float | int | str]],
+) -> str:
+    width = 1280
+    height = 420
+    left = 70
+    right = 28
+    top = 48
+    bottom = 52
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    target_values = [float(row["target_close"]) for row in rows]
+    prediction_values = [float(row["prediction_close"]) for row in rows]
+    all_values = target_values + prediction_values
+    min_value = min(all_values)
+    max_value = max(all_values)
+    if math.isclose(min_value, max_value):
+        padding = max(abs(min_value) * 0.001, 0.01)
+    else:
+        padding = (max_value - min_value) * 0.08
+    min_value -= padding
+    max_value += padding
+
+    def x_coord(index: int) -> float:
+        if len(rows) <= 1:
+            return left + plot_width / 2.0
+        return left + (index / (len(rows) - 1)) * plot_width
+
+    def y_coord(value: float) -> float:
+        scale = (value - min_value) / max(max_value - min_value, 1e-12)
+        return top + (1.0 - scale) * plot_height
+
+    target_points = " ".join(f"{x_coord(index):.2f},{y_coord(value):.2f}" for index, value in enumerate(target_values))
+    prediction_points = " ".join(
+        f"{x_coord(index):.2f},{y_coord(value):.2f}" for index, value in enumerate(prediction_values)
+    )
+    y_ticks = []
+    for tick_index in range(5):
+        value = min_value + (max_value - min_value) * tick_index / 4.0
+        y = y_coord(value)
+        y_ticks.append(
+            f'<line x1="{left}" x2="{width - right}" y1="{y:.2f}" y2="{y:.2f}" stroke="#e5e7eb" />'
+            f'<text x="{left - 10}" y="{y + 4:.2f}" text-anchor="end" font-size="11" fill="#4b5563">{value:.4f}</text>'
+        )
+    title = html.escape(f"{ticker} {session} chronological h1 close")
+    return f"""
+<div style="font-family: Inter, Segoe UI, Arial, sans-serif; max-width: {width}px;">
+  <svg viewBox="0 0 {width} {height}" width="100%" height="{height}" role="img" aria-label="{title}">
+    <rect x="0" y="0" width="{width}" height="{height}" fill="white" />
+    <text x="{width / 2:.1f}" y="24" text-anchor="middle" font-size="15" font-weight="700" fill="#111827">{title}</text>
+    {''.join(y_ticks)}
+    <line x1="{left}" x2="{width - right}" y1="{height - bottom}" y2="{height - bottom}" stroke="#9ca3af" />
+    <line x1="{left}" x2="{left}" y1="{top}" y2="{height - bottom}" stroke="#9ca3af" />
+    <polyline points="{target_points}" fill="none" stroke="#111827" stroke-width="2.1" />
+    <polyline points="{prediction_points}" fill="none" stroke="#f97316" stroke-width="2.1" stroke-dasharray="8 6" />
+    <line x1="{left + 16}" x2="{left + 60}" y1="{height - 24}" y2="{height - 24}" stroke="#111827" stroke-width="2.1" />
+    <text x="{left + 68}" y="{height - 20}" font-size="12" fill="#111827">target_close</text>
+    <line x1="{left + 180}" x2="{left + 224}" y1="{height - 24}" y2="{height - 24}" stroke="#f97316" stroke-width="2.1" stroke-dasharray="8 6" />
+    <text x="{left + 232}" y="{height - 20}" font-size="12" fill="#111827">prediction_close</text>
+    <text x="{width / 2:.1f}" y="{height - 8}" text-anchor="middle" font-size="11" fill="#4b5563">chronological 1m target bar order</text>
+  </svg>
+</div>
+"""
 
 
 def batch_metrics_from_prediction(
