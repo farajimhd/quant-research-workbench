@@ -230,12 +230,75 @@ METRIC_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "interpretation": "Higher is better; near zero means little linear relationship.",
     },
 }
+METRIC_PRIORITY_ORDER = (
+    "loss",
+    "bit_accuracy_pct",
+    "h1_expected_signed_mae_bps",
+    "h1_expected_signed_corr",
+    "h1_expected_dir_acc_pct",
+    "h1_mean_confidence",
+    "h1_mean_magnitude_std_bps",
+    "h1_coverage_at_conf_0_5_pct",
+    "h1_mae_at_conf_0_5_bps",
+    "h1_dir_acc_at_conf_0_5_pct",
+    "h1_coverage_at_conf_0_7_pct",
+    "h1_mae_at_conf_0_7_bps",
+    "h1_dir_acc_at_conf_0_7_pct",
+    "h1_hard_decoded_mae_bps",
+    "h1_dir_acc_pct",
+    "h1_corr",
+    "h1_edge_vs_last_move_naive_bps",
+    "h1_last_move_dir_acc_pct",
+    "h1_naive_mae_bps",
+    "h1_last_move_naive_mae_bps",
+    "h1_mean_p_up",
+    "h1_mean_sign_confidence",
+    "h1_rmse_bps",
+    "h1_edge_bps",
+    "h1_mean_reversion_naive_mae_bps",
+    "h1_edge_vs_mean_reversion_naive_bps",
+    "h1_mean_reversion_dir_acc_pct",
+    "windows",
+    "batches",
+    "lr",
+    "epoch",
+    "samples_per_sec",
+    "windows_per_sec",
+    "regression_loss",
+)
+METRIC_PRIORITY_INDEX = {name: index + 1 for index, name in enumerate(METRIC_PRIORITY_ORDER)}
+PRIORITY_WANDB_ALIASES = (
+    ("01_loss", "loss"),
+    ("02_bit_accuracy_pct", "bit_accuracy_pct"),
+    ("03_h1_expected_signed_mae_bps", "h1_close_expected_signed_mae_bps"),
+    ("04_h1_expected_signed_corr", "h1_close_expected_signed_corr"),
+    ("05_h1_expected_dir_acc_pct", "h1_close_expected_dir_acc_pct"),
+    ("06_h1_mean_confidence", "h1_close_mean_confidence"),
+    ("07_h1_mean_magnitude_std_bps", "h1_close_mean_magnitude_std_bps"),
+    ("08_h1_coverage_at_conf_0_5_pct", "h1_close_coverage_at_conf_0_5_pct"),
+    ("09_h1_mae_at_conf_0_5_bps", "h1_close_mae_at_conf_0_5_bps"),
+    ("10_h1_dir_acc_at_conf_0_5_pct", "h1_close_dir_acc_at_conf_0_5_pct"),
+    ("11_h1_coverage_at_conf_0_7_pct", "h1_close_coverage_at_conf_0_7_pct"),
+    ("12_h1_mae_at_conf_0_7_bps", "h1_close_mae_at_conf_0_7_bps"),
+    ("13_h1_dir_acc_at_conf_0_7_pct", "h1_close_dir_acc_at_conf_0_7_pct"),
+    ("14_h1_hard_decoded_mae_bps", "h1_close_hard_decoded_mae_bps"),
+    ("15_h1_hard_dir_acc_pct", "h1_close_dir_acc_pct"),
+    ("16_h1_hard_corr", "h1_close_corr"),
+    ("17_h1_edge_vs_last_move_naive_bps", "h1_close_edge_vs_last_move_naive_bps"),
+    ("18_h1_last_move_dir_acc_pct", "h1_close_last_move_dir_acc_pct"),
+)
 
 
 def attach_wandb_metric_metadata(wandb_run: Any, wandb_module: Any) -> None:
     rows = [
-        [name, meta["description"], meta["unit"], meta["interpretation"]]
-        for name, meta in sorted(METRIC_DESCRIPTIONS.items())
+        [
+            metric_priority(name),
+            name,
+            meta["description"],
+            meta["unit"],
+            meta["interpretation"],
+        ]
+        for name, meta in sorted(METRIC_DESCRIPTIONS.items(), key=lambda item: (metric_priority(item[0]), item[0]))
     ]
     try:
         wandb_run.config.update({"metric_descriptions": METRIC_DESCRIPTIONS}, allow_val_change=True)
@@ -247,12 +310,16 @@ def attach_wandb_metric_metadata(wandb_run: Any, wandb_module: Any) -> None:
         print(f"*** W&B metric description summary skipped: {exc}", flush=True)
     try:
         table = wandb_module.Table(
-            columns=["metric", "description", "unit", "interpretation"],
+            columns=["priority", "metric", "description", "unit", "interpretation"],
             data=rows,
         )
         wandb_run.log({"metric_descriptions/table": table, "train_step": 0})
     except Exception as exc:
         print(f"*** W&B metric description table skipped: {exc}", flush=True)
+
+
+def metric_priority(name: str) -> int:
+    return METRIC_PRIORITY_INDEX.get(name, 999)
 
 
 class NonFiniteLossError(FloatingPointError):
@@ -1295,7 +1362,31 @@ def wandb_metric_aliases(label: str, row: dict[str, Any]) -> dict[str, float | i
         for alias in alias_names:
             add_wandb_alias(aliases, label, alias, row.get(f"h1_{suffix}"))
             add_wandb_alias(aliases, label, alias, row.get(f"{label}_h1_{suffix}"))
+    add_priority_wandb_aliases(aliases, label, row)
     return aliases
+
+
+def add_priority_wandb_aliases(aliases: dict[str, float | int], label: str, row: dict[str, Any]) -> None:
+    if label.endswith("_progress"):
+        return
+    for alias, source in PRIORITY_WANDB_ALIASES:
+        add_wandb_alias(aliases, f"priority/{label}", alias, priority_metric_value(row, label, source))
+
+
+def priority_metric_value(row: dict[str, Any], label: str, source: str) -> Any:
+    if source in row:
+        return row[source]
+    prefixed = f"{label}_{source}"
+    if prefixed in row:
+        return row[prefixed]
+    if source.startswith("h1_"):
+        compact = source.removeprefix("h1_")
+        if compact in row:
+            return row[compact]
+        prefixed_compact = f"{label}_{compact}"
+        if prefixed_compact in row:
+            return row[prefixed_compact]
+    return None
 
 
 def add_wandb_alias(aliases: dict[str, float | int], label: str, name: str, value: Any) -> None:
