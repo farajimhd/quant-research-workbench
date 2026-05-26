@@ -134,6 +134,36 @@ METRIC_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "unit": "percent",
         "interpretation": "Up is better.",
     },
+    "h1_final_mae_bps": {
+        "description": "Alias for horizon-1 close MAE using the probability-weighted final prediction.",
+        "unit": "bps",
+        "interpretation": "Down is better. This is the main final-prediction error metric for binary target runs.",
+    },
+    "h1_final_dir_acc_pct": {
+        "description": "Alias for direction accuracy of the probability-weighted final prediction.",
+        "unit": "percent",
+        "interpretation": "Up is better. This is the main final-prediction direction metric for binary target runs.",
+    },
+    "h1_final_corr": {
+        "description": "Alias for correlation between final predicted move and actual move.",
+        "unit": "correlation",
+        "interpretation": "Higher is better; near zero means little linear relationship.",
+    },
+    "h1_final_edge_vs_last_move_naive_bps": {
+        "description": "Last-move continuation MAE minus final-prediction MAE for horizon-1 close.",
+        "unit": "bps",
+        "interpretation": "Positive is better; negative means copying the last move beat the final prediction.",
+    },
+    "h1_expected_edge_vs_last_move_naive_bps": {
+        "description": "Same as h1_final_edge_vs_last_move_naive_bps; kept with expected-signed naming for consistency.",
+        "unit": "bps",
+        "interpretation": "Positive is better; negative means copying the last move beat the expected signed prediction.",
+    },
+    "h1_model_behavior_score": {
+        "description": "Bounded 0..100 composite of final direction accuracy, final correlation, and final edge versus last-move continuation.",
+        "unit": "score",
+        "interpretation": "Higher is better. Use as a quick overview, then inspect the underlying final MAE, direction, correlation, and edge metrics.",
+    },
     "h1_mean_confidence": {
         "description": "Mean bounded value confidence abs(expected_signed_bps)/(abs(expected_signed_bps)+magnitude_std_bps).",
         "unit": "0..1",
@@ -233,9 +263,15 @@ METRIC_DESCRIPTIONS: dict[str, dict[str, str]] = {
 METRIC_PRIORITY_ORDER = (
     "loss",
     "bit_accuracy_pct",
+    "h1_model_behavior_score",
+    "h1_final_mae_bps",
+    "h1_final_dir_acc_pct",
+    "h1_final_corr",
+    "h1_final_edge_vs_last_move_naive_bps",
     "h1_expected_signed_mae_bps",
     "h1_expected_signed_corr",
     "h1_expected_dir_acc_pct",
+    "h1_expected_edge_vs_last_move_naive_bps",
     "h1_mean_confidence",
     "h1_mean_magnitude_std_bps",
     "h1_coverage_at_conf_0_5_pct",
@@ -268,24 +304,26 @@ METRIC_PRIORITY_ORDER = (
 )
 METRIC_PRIORITY_INDEX = {name: index + 1 for index, name in enumerate(METRIC_PRIORITY_ORDER)}
 PRIORITY_WANDB_ALIASES = (
-    ("01_loss", "loss"),
-    ("02_bit_accuracy_pct", "bit_accuracy_pct"),
-    ("03_h1_expected_signed_mae_bps", "h1_close_expected_signed_mae_bps"),
-    ("04_h1_expected_signed_corr", "h1_close_expected_signed_corr"),
-    ("05_h1_expected_dir_acc_pct", "h1_close_expected_dir_acc_pct"),
-    ("06_h1_mean_confidence", "h1_close_mean_confidence"),
-    ("07_h1_mean_magnitude_std_bps", "h1_close_mean_magnitude_std_bps"),
-    ("08_h1_coverage_at_conf_0_5_pct", "h1_close_coverage_at_conf_0_5_pct"),
-    ("09_h1_mae_at_conf_0_5_bps", "h1_close_mae_at_conf_0_5_bps"),
-    ("10_h1_dir_acc_at_conf_0_5_pct", "h1_close_dir_acc_at_conf_0_5_pct"),
-    ("11_h1_coverage_at_conf_0_7_pct", "h1_close_coverage_at_conf_0_7_pct"),
-    ("12_h1_mae_at_conf_0_7_bps", "h1_close_mae_at_conf_0_7_bps"),
-    ("13_h1_dir_acc_at_conf_0_7_pct", "h1_close_dir_acc_at_conf_0_7_pct"),
-    ("14_h1_hard_decoded_mae_bps", "h1_close_hard_decoded_mae_bps"),
-    ("15_h1_hard_dir_acc_pct", "h1_close_dir_acc_pct"),
-    ("16_h1_hard_corr", "h1_close_corr"),
-    ("17_h1_edge_vs_last_move_naive_bps", "h1_close_edge_vs_last_move_naive_bps"),
-    ("18_h1_last_move_dir_acc_pct", "h1_close_last_move_dir_acc_pct"),
+    ("loss", "loss"),
+    ("bit_accuracy_pct", "bit_accuracy_pct"),
+    ("h1_model_behavior_score", "h1_close_model_behavior_score"),
+    ("h1_final_mae_bps", "h1_close_expected_signed_mae_bps"),
+    ("h1_final_dir_acc_pct", "h1_close_expected_dir_acc_pct"),
+    ("h1_final_corr", "h1_close_expected_signed_corr"),
+    ("h1_final_edge_vs_last_move_naive_bps", "h1_close_expected_edge_vs_last_move_naive_bps"),
+    ("h1_mean_confidence", "h1_close_mean_confidence"),
+    ("h1_mean_magnitude_std_bps", "h1_close_mean_magnitude_std_bps"),
+    ("h1_coverage_at_conf_0_5_pct", "h1_close_coverage_at_conf_0_5_pct"),
+    ("h1_mae_at_conf_0_5_bps", "h1_close_mae_at_conf_0_5_bps"),
+    ("h1_dir_acc_at_conf_0_5_pct", "h1_close_dir_acc_at_conf_0_5_pct"),
+    ("h1_coverage_at_conf_0_7_pct", "h1_close_coverage_at_conf_0_7_pct"),
+    ("h1_mae_at_conf_0_7_bps", "h1_close_mae_at_conf_0_7_bps"),
+    ("h1_dir_acc_at_conf_0_7_pct", "h1_close_dir_acc_at_conf_0_7_pct"),
+    ("h1_hard_decoded_mae_bps", "h1_close_hard_decoded_mae_bps"),
+    ("h1_hard_dir_acc_pct", "h1_close_dir_acc_pct"),
+    ("h1_hard_corr", "h1_close_corr"),
+    ("h1_edge_vs_last_move_naive_bps", "h1_close_edge_vs_last_move_naive_bps"),
+    ("h1_last_move_dir_acc_pct", "h1_close_last_move_dir_acc_pct"),
 )
 CORE_WANDB_DIRECT_KEYS = {
     "loss",
@@ -1239,11 +1277,12 @@ def estimate_epoch(step: int, cached_batches: list[dict[str, Any]], config: Trai
 
 
 def log_metrics(path: Path, wandb_run: Any, row: dict[str, Any]) -> None:
+    label = str(row.get("type") or "metrics")
+    row = with_composite_metrics(row, label)
     append_jsonl(path, row)
     if wandb_run is None:
         return
     step = int(row.get("step") or 0)
-    label = str(row.get("type") or "metrics")
     if label.endswith("_progress"):
         return
     payload: dict[str, float | int] = {}
@@ -1268,6 +1307,83 @@ def log_metrics(path: Path, wandb_run: Any, row: dict[str, Any]) -> None:
         payload[f"{label}/nonfinite_metric_count"] = nonfinite_count
     if payload:
         wandb_run.log(payload)
+
+
+def with_composite_metrics(row: dict[str, Any], label: str) -> dict[str, Any]:
+    enriched = dict(row)
+    expected_mae = metric_value(enriched, label, "h1_close_expected_signed_mae_bps")
+    expected_dir = metric_value(enriched, label, "h1_close_expected_dir_acc_pct")
+    expected_corr = metric_value(enriched, label, "h1_close_expected_signed_corr")
+    hard_mae = metric_value(enriched, label, "h1_close_hard_decoded_mae_bps")
+    hard_edge_vs_last = metric_value(enriched, label, "h1_close_edge_vs_last_move_naive_bps")
+
+    expected_edge_vs_last = math.nan
+    last_move_mae = math.nan
+    if is_finite_number(hard_mae) and is_finite_number(hard_edge_vs_last) and is_finite_number(expected_mae):
+        last_move_mae = float(hard_mae) + float(hard_edge_vs_last)
+        expected_edge_vs_last = last_move_mae - float(expected_mae)
+        set_metric_value(
+            enriched,
+            label,
+            "h1_close_expected_edge_vs_last_move_naive_bps",
+            expected_edge_vs_last,
+        )
+
+    score = model_behavior_score(
+        final_dir_acc_pct=expected_dir,
+        final_corr=expected_corr,
+        final_edge_vs_last_move_bps=expected_edge_vs_last,
+        last_move_mae_bps=last_move_mae,
+    )
+    if is_finite_number(score):
+        set_metric_value(enriched, label, "h1_close_model_behavior_score", score)
+    return enriched
+
+
+def metric_value(row: dict[str, Any], label: str, source: str) -> Any:
+    if source in row:
+        return row[source]
+    prefixed = f"{label}_{source}"
+    if prefixed in row:
+        return row[prefixed]
+    return None
+
+
+def set_metric_value(row: dict[str, Any], label: str, source: str, value: float) -> None:
+    prefixed = f"{label}_{source}"
+    if prefixed in row or any(key.startswith(f"{label}_h1_") for key in row):
+        row[prefixed] = value
+    else:
+        row[source] = value
+
+
+def model_behavior_score(
+    *,
+    final_dir_acc_pct: Any,
+    final_corr: Any,
+    final_edge_vs_last_move_bps: Any,
+    last_move_mae_bps: Any,
+) -> float:
+    components: list[float] = []
+    if is_finite_number(final_dir_acc_pct):
+        components.append(clamp(float(final_dir_acc_pct), 0.0, 100.0))
+    if is_finite_number(final_corr):
+        components.append(50.0 * (clamp(float(final_corr), -1.0, 1.0) + 1.0))
+    if is_finite_number(final_edge_vs_last_move_bps) and is_finite_number(last_move_mae_bps):
+        denominator = max(abs(float(last_move_mae_bps)), 1e-9)
+        edge_ratio = float(final_edge_vs_last_move_bps) / denominator
+        components.append(clamp(50.0 + 50.0 * edge_ratio, 0.0, 100.0))
+    if not components:
+        return math.nan
+    return sum(components) / len(components)
+
+
+def is_finite_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and math.isfinite(float(value))
+
+
+def clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
 
 
 def should_log_wandb_scalar(label: str, key: str) -> bool:
@@ -1386,9 +1502,14 @@ def wandb_metric_aliases(label: str, row: dict[str, Any]) -> dict[str, float | i
     }
     h1_names = {
         "close_hard_decoded_mae_bps": ("h1_hard_decoded_mae_bps",),
-        "close_expected_signed_mae_bps": ("h1_expected_signed_mae_bps",),
-        "close_expected_signed_corr": ("h1_expected_signed_corr",),
-        "close_expected_dir_acc_pct": ("h1_expected_dir_acc_pct",),
+        "close_expected_signed_mae_bps": ("h1_expected_signed_mae_bps", "h1_final_mae_bps"),
+        "close_expected_signed_corr": ("h1_expected_signed_corr", "h1_final_corr"),
+        "close_expected_dir_acc_pct": ("h1_expected_dir_acc_pct", "h1_final_dir_acc_pct"),
+        "close_expected_edge_vs_last_move_naive_bps": (
+            "h1_expected_edge_vs_last_move_naive_bps",
+            "h1_final_edge_vs_last_move_naive_bps",
+        ),
+        "close_model_behavior_score": ("h1_model_behavior_score",),
         "close_mean_confidence": ("h1_mean_confidence",),
         "close_mean_magnitude_std_bps": ("h1_mean_magnitude_std_bps",),
         "close_coverage_at_conf_0_5_pct": ("h1_coverage_at_conf_0_5_pct",),
