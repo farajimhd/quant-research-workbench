@@ -1,0 +1,23 @@
+{
+  "colab_code_dir": "/content/drive/MyDrive/quant-research-workbench/colab_code/v14",
+  "colab_data_root": "/content/drive/MyDrive/quant-research-workbench/colab_data/v17_june2025/market_data",
+  "created_at": "2026-05-26T13:24:01",
+  "git_commit": "ebe6eefbcd1c9cf1c8699676c04e51e41cf640f5",
+  "notes": [
+    "API keys are read from Colab Secrets and are not stored in this package.",
+    "The package contains code only; market data remains under the Drive colab_data folder."
+  ],
+  "package_name": "inhouse_transformer_v14.zip",
+  "secret_names": [
+    "WANDB_API_KEY"
+  ],
+  "test_end_date": "2025-07-07",
+  "test_start_date": "2025-07-01",
+  "train_end_date": "2025-06-30",
+  "train_start_date": "2025-06-02",
+  "validation_end_date": "2025-07-07",
+  "validation_start_date": "2025-07-01",
+  "version": "v14",
+  "wandb_entity": "mehdifaraji",
+  "wandb_project": "May2026-1m-timeseries-v14-variants"
+}
