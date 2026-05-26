@@ -42,6 +42,7 @@ SOURCE_COLUMNS = (
 )
 
 LOG_RULE = "*" * 96
+ALL_TICKERS_SENTINEL = "__ALL_TICKERS__"
 
 
 @dataclass(slots=True)
@@ -53,7 +54,14 @@ class SessionCoverage:
 
 
 def parse_ticker_list(raw: str) -> tuple[str, ...]:
-    return tuple(part.strip().upper() for part in raw.split(",") if part.strip())
+    parts = tuple(part.strip().upper() for part in raw.split(",") if part.strip())
+    if len(parts) == 1 and parts[0] in {"ALL", "*"}:
+        return (ALL_TICKERS_SENTINEL,)
+    return parts
+
+
+def uses_all_tickers(tickers: tuple[str, ...]) -> bool:
+    return len(tickers) == 1 and tickers[0] == ALL_TICKERS_SENTINEL
 
 
 def available_sessions(processed_root: Path, start_date: str, end_date: str) -> list[str]:
@@ -110,7 +118,7 @@ def load_session_frame(config: DataConfig, session: str, tickers: tuple[str, ...
         raise SystemExit(f"Provider bars are missing required columns: {missing}")
 
     scan = scan.select([column for column in SOURCE_COLUMNS if column in names])
-    if tickers:
+    if tickers and not uses_all_tickers(tickers):
         scan = scan.filter(pl.col("ticker").is_in(list(tickers)))
     if config.session_scope == "regular":
         scan = scan.filter((pl.col("minute_of_day") >= 9 * 60 + 30) & (pl.col("minute_of_day") < 16 * 60))

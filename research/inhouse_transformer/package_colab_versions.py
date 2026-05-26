@@ -87,6 +87,9 @@ def build_manifest(version: str, git_commit: str) -> dict[str, Any]:
         "validation_end_date": VALIDATION_END,
         "test_start_date": VALIDATION_START,
         "test_end_date": VALIDATION_END,
+        "tickers": "ALL",
+        "allow_target_across_session": True,
+        "default_epochs": 3,
         "wandb_entity": WANDB_ENTITY,
         "wandb_project": WANDB_PROJECT,
         "secret_names": ["WANDB_API_KEY"],
@@ -185,14 +188,14 @@ def training_command_source(version: str) -> str:
         "\n"
         "# Tune these in Colab before launching a long run. L4/A100 runtimes can often use larger batches.\n"
         f"BATCH_SIZE = {default_batch_size}\n"
-        "EPOCHS = 1\n"
+        "EPOCHS = int(manifest.get('default_epochs', 3))\n"
         "MAX_STEPS = 0  # 0 means stream the configured epoch until exhaustion.\n"
-        "MAX_TICKERS = 2000\n"
+        "TICKERS = manifest.get('tickers', 'ALL')\n"
         "EVAL_STEPS = 500\n"
         "LOGGING_STEPS = 50\n"
         "VALIDATION_WINDOW_COUNT = 50000\n"
         "TEST_WINDOW_COUNT = 50000\n"
-        "ALLOW_TARGET_ACROSS_SESSION = False\n"
+        "ALLOW_TARGET_ACROSS_SESSION = bool(manifest.get('allow_target_across_session', True))\n"
         "\n"
         f"train_py = CODE_ROOT / 'research' / 'inhouse_transformer' / {version!r} / 'train.py'\n"
         "args = [\n"
@@ -206,7 +209,7 @@ def training_command_source(version: str) -> str:
         "    '--device', 'cuda',\n"
         "    '--batch-size', str(BATCH_SIZE),\n"
         "    '--epochs', str(EPOCHS),\n"
-        "    '--max-tickers', str(MAX_TICKERS),\n"
+        "    '--tickers', TICKERS,\n"
         "    '--eval-steps', str(EVAL_STEPS),\n"
         "    '--logging-steps', str(LOGGING_STEPS),\n"
         "    '--validation-window-count', str(VALIDATION_WINDOW_COUNT),\n"
@@ -216,8 +219,9 @@ def training_command_source(version: str) -> str:
         "]\n"
         "if MAX_STEPS > 0:\n"
         "    args += ['--max-steps', str(MAX_STEPS)]\n"
-        "if ALLOW_TARGET_ACROSS_SESSION:\n"
-        "    args.append('--allow-target-across-session')\n"
+        "if not ALLOW_TARGET_ACROSS_SESSION:\n"
+        "    raise ValueError('Colab generalization runs are configured to require --allow-target-across-session.')\n"
+        "args.append('--allow-target-across-session')\n"
         "\n"
         "print('Running in notebook process:')\n"
         "print('python', train_py, ' '.join(args), flush=True)\n"
@@ -243,7 +247,10 @@ def write_colab_readme(path: Path, version: str, manifest: dict[str, Any]) -> No
         "## Default Dates\n\n"
         f"- train: `{manifest['train_start_date']}` to `{manifest['train_end_date']}`\n"
         f"- validation: `{manifest['validation_start_date']}` to `{manifest['validation_end_date']}`\n"
-        f"- test: `{manifest['test_start_date']}` to `{manifest['test_end_date']}`\n",
+        f"- test: `{manifest['test_start_date']}` to `{manifest['test_end_date']}`\n"
+        f"- tickers: `{manifest['tickers']}`\n"
+        f"- allow target across session: `{manifest['allow_target_across_session']}`\n"
+        f"- default epochs: `{manifest['default_epochs']}`\n",
         encoding="utf-8",
     )
 

@@ -43,6 +43,7 @@ from research.inhouse_transformer.v17.data import (  # noqa: E402
     target_bit_count,
     ticker_arrays,
     target_values_to_bps,
+    uses_all_tickers,
     valid_origins,
 )
 from research.inhouse_transformer.v17.metrics import MetricAccumulator, append_jsonl  # noqa: E402
@@ -2511,7 +2512,7 @@ def metadata_payload(
             "test_sessions": len(test_sessions),
             "test_actual_start": test_sessions[0],
             "test_actual_end": test_sessions[-1],
-            "selected_tickers": len(tickers) if tickers else "all",
+            "selected_tickers": "all" if not tickers or uses_all_tickers(tickers) else len(tickers),
         },
         "model": config_to_dict(config)["model"],
         "train": config_to_dict(config)["train"],

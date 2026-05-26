@@ -16,3 +16,6 @@ Add `WANDB_API_KEY` in Colab Secrets before running `train_colab.ipynb`. No API 
 - train: `2025-06-02` to `2025-06-30`
 - validation: `2025-07-01` to `2025-07-07`
 - test: `2025-07-01` to `2025-07-07`
+- tickers: `ALL`
+- allow target across session: `True`
+- default epochs: `3`
