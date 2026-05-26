@@ -711,6 +711,38 @@ def decode_binary_magnitude_logits_to_bps(values: np.ndarray) -> np.ndarray:
     return sign * magnitude
 
 
+def binary_magnitude_logits_to_distribution_stats(values: np.ndarray) -> dict[str, np.ndarray]:
+    logits = np.asarray(values, dtype=np.float64)
+    if logits.ndim < 1 or logits.shape[-1] < 2:
+        raise ValueError(f"Expected binary magnitude logits with a bit axis, got shape {logits.shape}.")
+    probabilities = sigmoid_np(logits)
+    sign_probability = probabilities[..., 0]
+    magnitude_probabilities = probabilities[..., 1:]
+    weights = (1 << np.arange(magnitude_probabilities.shape[-1], dtype=np.int64)).astype(np.float64)
+
+    expected_magnitude = (magnitude_probabilities * weights).sum(axis=-1)
+    magnitude_variance = (magnitude_probabilities * (1.0 - magnitude_probabilities) * np.square(weights)).sum(axis=-1)
+    magnitude_std = np.sqrt(np.maximum(magnitude_variance, 0.0))
+
+    sign_mean = 2.0 * sign_probability - 1.0
+    expected_signed_bps = sign_mean * expected_magnitude
+    confidence_denominator = np.abs(expected_signed_bps) + magnitude_std + 1e-12
+    confidence = np.divide(
+        np.abs(expected_signed_bps),
+        confidence_denominator,
+        out=np.zeros_like(expected_signed_bps, dtype=np.float64),
+        where=confidence_denominator > 0.0,
+    )
+    return {
+        "expected_signed_bps": expected_signed_bps,
+        "expected_magnitude_bps": expected_magnitude,
+        "magnitude_std_bps": magnitude_std,
+        "confidence": np.clip(confidence, 0.0, 1.0),
+        "sign_confidence": np.abs(sign_mean),
+        "p_up": sign_probability,
+    }
+
+
 def sigmoid_np(values: np.ndarray) -> np.ndarray:
     values = np.asarray(values, dtype=np.float64)
     return 1.0 / (1.0 + np.exp(-np.clip(values, -60.0, 60.0)))

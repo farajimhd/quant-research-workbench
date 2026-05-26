@@ -30,6 +30,7 @@ from research.inhouse_transformer.v14.data import (  # noqa: E402
     BatchBuilder,
     RollingBarWindowDataset,
     available_sessions,
+    binary_magnitude_logits_to_distribution_stats,
     count_coverage,
     iter_ticker_frames,
     load_session_frame,
@@ -107,6 +108,66 @@ METRIC_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "description": "Horizon-1 close mean absolute forecast error, converted to basis points versus current close.",
         "unit": "bps",
         "interpretation": "Down is better.",
+    },
+    "h1_hard_decoded_mae_bps": {
+        "description": "Horizon-1 close MAE using the hard 0.5-threshold binary magnitude decode.",
+        "unit": "bps",
+        "interpretation": "Down is better. This is the legacy v14 decoded prediction error.",
+    },
+    "h1_expected_signed_mae_bps": {
+        "description": "Horizon-1 close MAE using probability-weighted expected signed bps from the binary bits.",
+        "unit": "bps",
+        "interpretation": "Down is better. Compare against hard_decoded_mae_bps.",
+    },
+    "h1_expected_signed_rmse_bps": {
+        "description": "RMSE for probability-weighted expected signed bps.",
+        "unit": "bps",
+        "interpretation": "Down is better and penalizes large expected-value misses.",
+    },
+    "h1_expected_signed_corr": {
+        "description": "Correlation between expected signed bps and actual horizon-1 close bps.",
+        "unit": "correlation",
+        "interpretation": "Higher is better; near zero means little linear relationship.",
+    },
+    "h1_expected_dir_acc_pct": {
+        "description": "Direction accuracy using expected signed bps rather than hard-decoded bps.",
+        "unit": "percent",
+        "interpretation": "Up is better.",
+    },
+    "h1_mean_confidence": {
+        "description": "Mean bounded value confidence abs(expected_signed_bps)/(abs(expected_signed_bps)+magnitude_std_bps).",
+        "unit": "0..1",
+        "interpretation": "Higher means the model's expected move is large relative to weighted bit uncertainty.",
+    },
+    "h1_mean_magnitude_std_bps": {
+        "description": "Mean weighted magnitude uncertainty implied by binary bit probabilities.",
+        "unit": "bps",
+        "interpretation": "Lower means the magnitude bits imply a tighter bps distribution.",
+    },
+    "h1_mean_p_up": {
+        "description": "Mean sign-bit probability of an up move.",
+        "unit": "probability",
+        "interpretation": "Values near 0.5 mean neutral aggregate directional bias.",
+    },
+    "h1_mean_sign_confidence": {
+        "description": "Mean absolute sign certainty abs(2*p_up-1).",
+        "unit": "0..1",
+        "interpretation": "Higher means the sign bit is farther from undecided.",
+    },
+    "h1_coverage_at_conf_0_5_pct": {
+        "description": "Share of horizon-1 close predictions with confidence >= 0.5.",
+        "unit": "percent",
+        "interpretation": "Higher means more predictions pass the confidence filter.",
+    },
+    "h1_mae_at_conf_0_5_bps": {
+        "description": "Expected signed bps MAE among horizon-1 close predictions with confidence >= 0.5.",
+        "unit": "bps",
+        "interpretation": "Down is better. Use with coverage_at_conf_0_5_pct.",
+    },
+    "h1_dir_acc_at_conf_0_5_pct": {
+        "description": "Expected-direction accuracy among horizon-1 close predictions with confidence >= 0.5.",
+        "unit": "percent",
+        "interpretation": "Up is better. Useful only if coverage is non-trivial.",
     },
     "h1_rmse_bps": {
         "description": "Horizon-1 close root mean squared forecast error in basis points.",
@@ -784,7 +845,10 @@ def main() -> None:
                 f"train step={step_text(step, planned_steps)} loss={avg_loss:.6f} "
                 f"reg={avg_regression:.6f} bit_acc={avg_bit_accuracy:.2f}% "
                 f"h1_mae={train_metrics.get('h1_close_mae_bps', math.nan):.3f}bps "
+                f"h1_exp_mae={train_metrics.get('h1_close_expected_signed_mae_bps', math.nan):.3f}bps "
                 f"h1_dir={train_metrics.get('h1_close_dir_acc_pct', math.nan):.2f}% "
+                f"h1_exp_dir={train_metrics.get('h1_close_expected_dir_acc_pct', math.nan):.2f}% "
+                f"conf={train_metrics.get('h1_close_mean_confidence', math.nan):.3f} "
                 f"h1_edge_last={train_metrics.get('h1_close_edge_vs_last_move_naive_bps', math.nan):.3f}bps "
                 f"lr={lr:.3e} samples_s={samples_per_sec:,.0f}",
                 flush=True,
@@ -1193,6 +1257,24 @@ def wandb_metric_aliases(label: str, row: dict[str, Any]) -> dict[str, float | i
     }
     h1_names = {
         "close_mae_bps": ("h1_mae_bps",),
+        "close_hard_decoded_mae_bps": ("h1_hard_decoded_mae_bps",),
+        "close_expected_signed_mae_bps": ("h1_expected_signed_mae_bps",),
+        "close_expected_signed_rmse_bps": ("h1_expected_signed_rmse_bps",),
+        "close_expected_signed_corr": ("h1_expected_signed_corr",),
+        "close_expected_dir_acc_pct": ("h1_expected_dir_acc_pct",),
+        "close_mean_confidence": ("h1_mean_confidence",),
+        "close_mean_magnitude_std_bps": ("h1_mean_magnitude_std_bps",),
+        "close_mean_p_up": ("h1_mean_p_up",),
+        "close_mean_sign_confidence": ("h1_mean_sign_confidence",),
+        "close_coverage_at_conf_0_5_pct": ("h1_coverage_at_conf_0_5_pct",),
+        "close_mae_at_conf_0_5_bps": ("h1_mae_at_conf_0_5_bps",),
+        "close_dir_acc_at_conf_0_5_pct": ("h1_dir_acc_at_conf_0_5_pct",),
+        "close_coverage_at_conf_0_7_pct": ("h1_coverage_at_conf_0_7_pct",),
+        "close_mae_at_conf_0_7_bps": ("h1_mae_at_conf_0_7_bps",),
+        "close_dir_acc_at_conf_0_7_pct": ("h1_dir_acc_at_conf_0_7_pct",),
+        "close_coverage_at_conf_0_9_pct": ("h1_coverage_at_conf_0_9_pct",),
+        "close_mae_at_conf_0_9_bps": ("h1_mae_at_conf_0_9_bps",),
+        "close_dir_acc_at_conf_0_9_pct": ("h1_dir_acc_at_conf_0_9_pct",),
         "close_rmse_bps": ("h1_rmse_bps",),
         "close_dir_acc_pct": ("h1_dir", "h1_dir_acc_pct"),
         "close_edge_vs_naive_bps": ("h1_edge_bps",),
@@ -1314,6 +1396,7 @@ def evaluate(
             batches += 1
             prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
             accumulator.update(prediction_bps, target_bps, last_close_return_bps_from_batch(batch))
+            update_confidence_metrics(accumulator, prediction, batch, config)
             if should_log_eval_progress(batches, config.train.eval_progress_batches):
                 progress_metrics = build_eval_progress_metrics(
                     accumulator=accumulator,
@@ -1374,6 +1457,7 @@ def evaluate_cached_batches(
             batch_count += 1
             prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
             accumulator.update(prediction_bps, target_bps, last_close_return_bps_from_batch(batch))
+            update_confidence_metrics(accumulator, prediction, batch, config)
             del batch, prediction, loss
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -1462,6 +1546,10 @@ def log_overfit_timeline_prediction_charts(
                     prediction_close,
                     float(row["target_bps"]),
                     float(row["prediction_bps"]),
+                    float(row["expected_signed_bps"]),
+                    float(row["confidence"]),
+                    float(row["magnitude_std_bps"]),
+                    float(row["p_up"]),
                     float(row["abs_error_bps"]),
                 ]
             )
@@ -1495,6 +1583,10 @@ def log_overfit_timeline_prediction_charts(
             "prediction_close",
             "target_bps",
             "prediction_bps",
+            "expected_signed_bps",
+            "confidence",
+            "magnitude_std_bps",
+            "p_up",
             "abs_error_bps",
         ],
         data=table_rows,
@@ -1635,6 +1727,7 @@ def infer_timeline_batch_rows(
         prediction = model(device_batch["values"], device_batch["time_features"])
     prediction_prices, target_prices = prediction_and_target_prices(prediction, device_batch, config)
     prediction_bps, target_bps = prediction_and_target_bps(prediction, device_batch, config)
+    confidence_stats = prediction_confidence_stats(prediction) if config.data.target_mode == "binary_magnitude_bps" else {}
     timestamps_ns = batch["target_timestamp_ns"].detach().cpu().numpy()
     current_close = batch["current_close"].detach().cpu().numpy()
     tickers = batch.get("ticker", [""] * len(origins))
@@ -1642,6 +1735,10 @@ def infer_timeline_batch_rows(
     for row_index, origin in enumerate(origins):
         target_bps_value = float(target_bps[row_index, 0, close_index])
         prediction_bps_value = float(prediction_bps[row_index, 0, close_index])
+        expected_bps_value = _stats_value(confidence_stats, "expected_signed_bps", row_index, close_index)
+        confidence_value = _stats_value(confidence_stats, "confidence", row_index, close_index)
+        magnitude_std_value = _stats_value(confidence_stats, "magnitude_std_bps", row_index, close_index)
+        p_up_value = _stats_value(confidence_stats, "p_up", row_index, close_index)
         timestamp_ns = int(timestamps_ns[row_index])
         rows.append(
             {
@@ -1654,10 +1751,21 @@ def infer_timeline_batch_rows(
                 "prediction_close": float(prediction_prices[row_index, 0, close_index]),
                 "target_bps": target_bps_value,
                 "prediction_bps": prediction_bps_value,
+                "expected_signed_bps": expected_bps_value,
+                "confidence": confidence_value,
+                "magnitude_std_bps": magnitude_std_value,
+                "p_up": p_up_value,
                 "abs_error_bps": abs(prediction_bps_value - target_bps_value),
             }
         )
     return rows
+
+
+def _stats_value(stats: dict[str, np.ndarray], key: str, row_index: int, close_index: int) -> float:
+    value = stats.get(key)
+    if value is None:
+        return math.nan
+    return float(value[row_index, 0, close_index])
 
 
 def batch_metrics_from_prediction(
@@ -1672,10 +1780,17 @@ def batch_metrics_from_prediction(
         direction_threshold_bps=config.model.direction_threshold_bps,
     )
     accumulator.update(prediction_bps, target_bps, last_close_return_bps_from_batch(batch))
+    update_confidence_metrics(accumulator, prediction, batch, config)
     computed = accumulator.compute()
     return {
         "h1_close_mae_bps": float(computed.get("h1_close_mae_bps", math.nan)),
+        "h1_close_expected_signed_mae_bps": float(
+            computed.get("h1_close_expected_signed_mae_bps", math.nan)
+        ),
         "h1_close_dir_acc_pct": float(computed.get("h1_close_dir_acc_pct", math.nan)),
+        "h1_close_expected_dir_acc_pct": float(computed.get("h1_close_expected_dir_acc_pct", math.nan)),
+        "h1_close_mean_confidence": float(computed.get("h1_close_mean_confidence", math.nan)),
+        "h1_close_mean_magnitude_std_bps": float(computed.get("h1_close_mean_magnitude_std_bps", math.nan)),
         "h1_close_edge_vs_naive_bps": float(computed.get("h1_close_edge_vs_naive_bps", math.nan)),
         "h1_close_last_move_naive_mae_bps": float(computed.get("h1_close_last_move_naive_mae_bps", math.nan)),
         "h1_close_edge_vs_last_move_naive_bps": float(
@@ -1692,6 +1807,29 @@ def batch_metrics_from_prediction(
             computed.get("h1_close_mean_reversion_dir_acc_pct", math.nan)
         ),
     }
+
+
+def update_confidence_metrics(
+    accumulator: MetricAccumulator,
+    prediction: torch.Tensor,
+    batch: dict[str, Any],
+    config: ExperimentConfig,
+) -> None:
+    if config.data.target_mode != "binary_magnitude_bps":
+        return
+    stats = prediction_confidence_stats(prediction)
+    accumulator.update_confidence(
+        expected_signed_bps=stats["expected_signed_bps"],
+        target=batch["target_bps"].detach().cpu().numpy(),
+        confidence=stats["confidence"],
+        magnitude_std_bps=stats["magnitude_std_bps"],
+        p_up=stats["p_up"],
+        sign_confidence=stats["sign_confidence"],
+    )
+
+
+def prediction_confidence_stats(prediction: torch.Tensor) -> dict[str, np.ndarray]:
+    return binary_magnitude_logits_to_distribution_stats(prediction.detach().cpu().numpy())
 
 
 def prediction_and_target_bps(
@@ -1780,6 +1918,9 @@ def print_metric_line(metrics: dict[str, Any]) -> None:
     for horizon in range(1, 4):
         mae_key = f"{label}_h{horizon}_close_mae_bps"
         dir_key = f"{label}_h{horizon}_close_dir_acc_pct"
+        expected_mae_key = f"{label}_h{horizon}_close_expected_signed_mae_bps"
+        expected_dir_key = f"{label}_h{horizon}_close_expected_dir_acc_pct"
+        confidence_key = f"{label}_h{horizon}_close_mean_confidence"
         edge_key = f"{label}_h{horizon}_close_edge_vs_naive_bps"
         last_move_edge_key = f"{label}_h{horizon}_close_edge_vs_last_move_naive_bps"
         last_move_dir_key = f"{label}_h{horizon}_close_last_move_dir_acc_pct"
@@ -1789,6 +1930,12 @@ def print_metric_line(metrics: dict[str, Any]) -> None:
                 f"h{horizon}_dir={metrics[dir_key]:.2f}% "
                 f"h{horizon}_edge={metrics[edge_key]:.3f}bps"
             )
+            if expected_mae_key in metrics:
+                parts.append(
+                    f"h{horizon}_exp_mae={metrics[expected_mae_key]:.3f}bps "
+                    f"h{horizon}_exp_dir={metrics[expected_dir_key]:.2f}% "
+                    f"h{horizon}_conf={metrics[confidence_key]:.3f}"
+                )
             if last_move_edge_key in metrics:
                 parts.append(
                     f"h{horizon}_edge_vs_last={metrics[last_move_edge_key]:.3f}bps "
