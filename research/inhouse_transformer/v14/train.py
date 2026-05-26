@@ -287,6 +287,15 @@ PRIORITY_WANDB_ALIASES = (
     ("17_h1_edge_vs_last_move_naive_bps", "h1_close_edge_vs_last_move_naive_bps"),
     ("18_h1_last_move_dir_acc_pct", "h1_close_last_move_dir_acc_pct"),
 )
+CORE_WANDB_DIRECT_KEYS = {
+    "loss",
+    "bit_accuracy_pct",
+    "lr",
+    "samples_per_sec",
+    "epoch",
+    "eval_batches",
+}
+CONFIDENCE_BUCKET_RANGES = tuple((i * 10, (i + 1) * 10) for i in range(10))
 
 
 def attach_wandb_metric_metadata(wandb_run: Any, wandb_module: Any) -> None:
@@ -1235,11 +1244,15 @@ def log_metrics(path: Path, wandb_run: Any, row: dict[str, Any]) -> None:
         return
     step = int(row.get("step") or 0)
     label = str(row.get("type") or "metrics")
+    if label.endswith("_progress"):
+        return
     payload: dict[str, float | int] = {}
     payload["train_step"] = step
     nonfinite_count = 0
     for key, value in row.items():
         if key in {"type", "time"}:
+            continue
+        if not should_log_wandb_scalar(label, key):
             continue
         if isinstance(value, bool):
             payload[f"{label}/{key}"] = int(value)
@@ -1248,10 +1261,61 @@ def log_metrics(path: Path, wandb_run: Any, row: dict[str, Any]) -> None:
         elif isinstance(value, (int, float)):
             nonfinite_count += 1
     payload.update(wandb_metric_aliases(label, row))
+    bucket_table = confidence_bucket_wandb_table(label, row)
+    if bucket_table is not None:
+        payload[f"{label}/confidence_calibration_buckets"] = bucket_table
     if nonfinite_count:
         payload[f"{label}/nonfinite_metric_count"] = nonfinite_count
     if payload:
         wandb_run.log(payload)
+
+
+def should_log_wandb_scalar(label: str, key: str) -> bool:
+    return key in CORE_WANDB_DIRECT_KEYS
+
+
+def confidence_bucket_wandb_table(label: str, row: dict[str, Any]) -> Any | None:
+    try:
+        import wandb
+    except ModuleNotFoundError:
+        return None
+    table_rows = []
+    for horizon in range(1, 4):
+        for low, high in CONFIDENCE_BUCKET_RANGES:
+            bucket_key = f"{low:02d}_{high:02d}"
+            prefix = f"{label}_h{horizon}_close_conf_bucket_{bucket_key}"
+            coverage = row.get(f"{prefix}_coverage_pct")
+            if not isinstance(coverage, (int, float)) or not math.isfinite(float(coverage)):
+                continue
+            table_rows.append(
+                [
+                    horizon,
+                    f"{low / 100:.1f}-{high / 100:.1f}",
+                    row.get(f"{prefix}_count"),
+                    coverage,
+                    row.get(f"{prefix}_mae_bps"),
+                    row.get(f"{prefix}_dir_acc_pct"),
+                    row.get(f"{prefix}_mean_abs_expected_bps"),
+                    row.get(f"{prefix}_mean_abs_actual_bps"),
+                    row.get(f"{prefix}_mean_magnitude_std_bps"),
+                ]
+            )
+    if not table_rows:
+        return None
+    return wandb.Table(
+        columns=[
+            "horizon",
+            "confidence_bucket",
+            "count",
+            "coverage_pct",
+            "mae_bps",
+            "dir_acc_pct",
+            "mean_abs_expected_bps",
+            "mean_abs_actual_bps",
+            "mean_magnitude_std_bps",
+        ],
+        data=table_rows,
+    )
 
 
 def stop_training_for_nonfinite_loss(
@@ -1307,7 +1371,6 @@ def wandb_metric_aliases(label: str, row: dict[str, Any]) -> dict[str, float | i
     aliases: dict[str, float | int] = {}
     direct_names = {
         "loss": "loss",
-        "regression_loss": "regression_loss",
         "bit_accuracy_pct": "bit_accuracy_pct",
         "lr": "lr",
         "samples_per_sec": "samples_per_sec",
@@ -1319,39 +1382,24 @@ def wandb_metric_aliases(label: str, row: dict[str, Any]) -> dict[str, float | i
         "bit_accuracy_pct": "bit_accuracy_pct",
         "batches": "batches",
         "windows": "windows",
-        "elapsed_sec": "elapsed_sec",
         "windows_per_sec": "windows_per_sec",
     }
     h1_names = {
-        "close_mae_bps": ("h1_mae_bps",),
         "close_hard_decoded_mae_bps": ("h1_hard_decoded_mae_bps",),
         "close_expected_signed_mae_bps": ("h1_expected_signed_mae_bps",),
-        "close_expected_signed_rmse_bps": ("h1_expected_signed_rmse_bps",),
         "close_expected_signed_corr": ("h1_expected_signed_corr",),
         "close_expected_dir_acc_pct": ("h1_expected_dir_acc_pct",),
         "close_mean_confidence": ("h1_mean_confidence",),
         "close_mean_magnitude_std_bps": ("h1_mean_magnitude_std_bps",),
-        "close_mean_p_up": ("h1_mean_p_up",),
-        "close_mean_sign_confidence": ("h1_mean_sign_confidence",),
         "close_coverage_at_conf_0_5_pct": ("h1_coverage_at_conf_0_5_pct",),
         "close_mae_at_conf_0_5_bps": ("h1_mae_at_conf_0_5_bps",),
         "close_dir_acc_at_conf_0_5_pct": ("h1_dir_acc_at_conf_0_5_pct",),
         "close_coverage_at_conf_0_7_pct": ("h1_coverage_at_conf_0_7_pct",),
         "close_mae_at_conf_0_7_bps": ("h1_mae_at_conf_0_7_bps",),
         "close_dir_acc_at_conf_0_7_pct": ("h1_dir_acc_at_conf_0_7_pct",),
-        "close_coverage_at_conf_0_9_pct": ("h1_coverage_at_conf_0_9_pct",),
-        "close_mae_at_conf_0_9_bps": ("h1_mae_at_conf_0_9_bps",),
-        "close_dir_acc_at_conf_0_9_pct": ("h1_dir_acc_at_conf_0_9_pct",),
-        "close_rmse_bps": ("h1_rmse_bps",),
-        "close_dir_acc_pct": ("h1_dir", "h1_dir_acc_pct"),
-        "close_edge_vs_naive_bps": ("h1_edge_bps",),
-        "close_naive_mae_bps": ("h1_naive_mae_bps",),
-        "close_last_move_naive_mae_bps": ("h1_last_move_naive_mae_bps",),
+        "close_dir_acc_pct": ("h1_dir_acc_pct",),
         "close_edge_vs_last_move_naive_bps": ("h1_edge_vs_last_move_naive_bps",),
         "close_last_move_dir_acc_pct": ("h1_last_move_dir_acc_pct",),
-        "close_mean_reversion_naive_mae_bps": ("h1_mean_reversion_naive_mae_bps",),
-        "close_edge_vs_mean_reversion_naive_bps": ("h1_edge_vs_mean_reversion_naive_bps",),
-        "close_mean_reversion_dir_acc_pct": ("h1_mean_reversion_dir_acc_pct",),
         "close_corr": ("h1_corr",),
     }
     for source, alias in direct_names.items():
