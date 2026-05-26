@@ -28,6 +28,8 @@ def save_model_architecture_artifacts(
     metadata_path = architecture_dir / "model_architecture.json"
     summary_path = architecture_dir / "model_summary.txt"
     graph_png_path = architecture_dir / "model_graph.png"
+    graph_svg_path = architecture_dir / "model_graph.svg"
+    graph_pdf_path = architecture_dir / "model_graph.pdf"
     graph_dot_path = architecture_dir / "model_graph.dot"
 
     artifact_info: dict[str, Any] = {
@@ -35,7 +37,10 @@ def save_model_architecture_artifacts(
         "architecture_dir": str(architecture_dir),
         "summary_path": str(summary_path),
         "graph_png_path": None,
+        "graph_svg_path": None,
+        "graph_pdf_path": None,
         "graph_dot_path": None,
+        "graph_png_dpi": None,
         "input_shapes": [],
         "errors": [],
     }
@@ -60,6 +65,8 @@ def save_model_architecture_artifacts(
             inputs=summary_inputs,
             version=version,
             png_path=graph_png_path,
+            svg_path=graph_svg_path,
+            pdf_path=graph_pdf_path,
             dot_path=graph_dot_path,
             torch_module=torch_module,
             depth=graph_depth,
@@ -75,6 +82,8 @@ def save_model_architecture_artifacts(
         wandb_run=wandb_run,
         summary_path=summary_path,
         graph_png_path=graph_png_path if artifact_info.get("graph_png_path") else None,
+        graph_svg_path=graph_svg_path if artifact_info.get("graph_svg_path") else None,
+        graph_pdf_path=graph_pdf_path if artifact_info.get("graph_pdf_path") else None,
         metadata_path=metadata_path,
     )
     return artifact_info
@@ -132,6 +141,14 @@ def _synthetic_input_for(
             device=device,
         )
     if name == "time_features":
+        if hasattr(model, "time_feature_count"):
+            return torch_module.zeros(
+                rows,
+                model.context_length,
+                model.time_feature_count,
+                dtype=dtype,
+                device=device,
+            )
         if hasattr(model, "time_projection"):
             return torch_module.zeros(
                 rows,
@@ -304,6 +321,8 @@ def _write_graph(
     inputs: tuple[Any, ...],
     version: str,
     png_path: Path,
+    svg_path: Path,
+    pdf_path: Path,
     dot_path: Path,
     torch_module: Any,
     depth: int,
@@ -330,10 +349,16 @@ def _write_graph(
             save_graph=False,
             device=str(_model_device(model, torch_module)),
         )
+        graph.visual_graph.attr(dpi="220")
         dot_path.write_text(graph.visual_graph.source, encoding="utf-8")
         graph.visual_graph.render(filename=str(png_path.with_suffix("")), format="png", cleanup=True)
+        graph.visual_graph.render(filename=str(svg_path.with_suffix("")), format="svg", cleanup=True)
+        graph.visual_graph.render(filename=str(pdf_path.with_suffix("")), format="pdf", cleanup=True)
         artifact_info["graph_png_path"] = str(png_path)
+        artifact_info["graph_svg_path"] = str(svg_path)
+        artifact_info["graph_pdf_path"] = str(pdf_path)
         artifact_info["graph_dot_path"] = str(dot_path)
+        artifact_info["graph_png_dpi"] = 220
         artifact_info["graphviz_dot"] = dot_path_resolved
     except Exception as exc:
         artifact_info["errors"].append(f"torchview graph failed: {exc}")
@@ -344,6 +369,8 @@ def _log_architecture_to_wandb(
     wandb_run: Any,
     summary_path: Path,
     graph_png_path: Path | None,
+    graph_svg_path: Path | None,
+    graph_pdf_path: Path | None,
     metadata_path: Path,
 ) -> None:
     if wandb_run is None:
@@ -367,6 +394,10 @@ def _log_architecture_to_wandb(
         wandb.save(str(metadata_path), base_path=str(metadata_path.parent))
         if graph_png_path is not None and graph_png_path.exists():
             wandb.save(str(graph_png_path), base_path=str(graph_png_path.parent))
+        if graph_svg_path is not None and graph_svg_path.exists():
+            wandb.save(str(graph_svg_path), base_path=str(graph_svg_path.parent))
+        if graph_pdf_path is not None and graph_pdf_path.exists():
+            wandb.save(str(graph_pdf_path), base_path=str(graph_pdf_path.parent))
     except Exception as exc:
         print(f"*** W&B model architecture logging skipped: {exc}", flush=True)
 
