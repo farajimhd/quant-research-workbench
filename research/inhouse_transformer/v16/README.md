@@ -169,6 +169,9 @@ python research\inhouse_transformer\v16\train.py --device cuda --overfit-session
 The default W&B run name starts with `v16-` and includes
 `binary_magnitude_bps` so it can be
 compared directly against the v14 baseline and later v14-derived variants.
+If `--wandb-run-name` is provided with another version prefix, for example
+`v14-overfit-baseline-b512`, the script rewrites that prefix to `v16-` and
+prints the normalized name before W&B init.
 
 Run the flat MLP overfit sanity test:
 

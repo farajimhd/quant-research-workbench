@@ -51,6 +51,7 @@ FeatureTemporalTransformer = None
 forecast_loss = None
 LOG_RULE = "*" * 96
 EXPERIMENT_VERSION = "v16"
+MODEL_ARCHITECTURE_NAME = "concat_market_time_tokens"
 DEFAULT_OVERFIT_REFERENCE_BATCH_SIZE = 1024
 DEFAULT_OVERFIT_WINDOW_COUNT = 8192
 METRIC_DESCRIPTIONS: dict[str, dict[str, str]] = {
@@ -626,7 +627,7 @@ def parse_column_list(raw: str) -> tuple[str, ...]:
 
 def make_wandb_run_name(args: argparse.Namespace, config: ExperimentConfig) -> str:
     if args.wandb_run_name:
-        return args.wandb_run_name
+        return versioned_wandb_run_name(args.wandb_run_name)
     target_columns = "-".join(config.data.target_columns)
     input_name = input_experiment_name(config)
     if args.overfit_session:
@@ -639,6 +640,18 @@ def make_wandb_run_name(args: argparse.Namespace, config: ExperimentConfig) -> s
         f"{EXPERIMENT_VERSION}-main-transformer-{input_name}-{config.data.target_mode}-ctx{config.data.context_length}-"
         f"h{config.data.horizon}-{target_columns}-{timestamp}"
     )
+
+
+def versioned_wandb_run_name(raw_name: str) -> str:
+    stripped = raw_name.strip()
+    if not stripped:
+        return stripped
+    if stripped.startswith(f"{EXPERIMENT_VERSION}-"):
+        return stripped
+    version_prefix = re.match(r"^v\d+[-_](.+)$", stripped)
+    if version_prefix:
+        return f"{EXPERIMENT_VERSION}-{version_prefix.group(1)}"
+    return f"{EXPERIMENT_VERSION}-{stripped}"
 
 
 def input_experiment_name(config: ExperimentConfig) -> str:
@@ -771,6 +784,12 @@ def main() -> None:
     output_dir = make_output_dir(config)
     output_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = output_dir / "metrics.jsonl"
+    wandb_run_name = make_wandb_run_name(args, config)
+    if args.wandb_run_name and wandb_run_name != args.wandb_run_name:
+        print(
+            f"*** WANDB RUN NAME NORMALIZED | requested={args.wandb_run_name} | using={wandb_run_name}",
+            flush=True,
+        )
     metadata = metadata_payload(config, train_sessions, validation_sessions, test_sessions, tickers, output_dir)
     metadata["runtime"] = {
         "overfit_session": args.overfit_session,
@@ -779,7 +798,7 @@ def main() -> None:
         "overfit_reference_batch_size": DEFAULT_OVERFIT_REFERENCE_BATCH_SIZE,
         "wandb_project": args.wandb_project,
         "wandb_entity": args.wandb_entity,
-        "wandb_run_name": make_wandb_run_name(args, config),
+        "wandb_run_name": wandb_run_name,
         "wandb_disabled": bool(args.disable_wandb),
     }
     write_json(output_dir / "metadata.json", metadata)
@@ -788,6 +807,13 @@ def main() -> None:
     print(
         f"Features={len(config.data.input_feature_columns)} time_features={len(config.data.time_feature_columns)} "
         f"targets={list(config.data.target_columns)} horizon={config.data.horizon}",
+        flush=True,
+    )
+    print(
+        f"Model architecture: {EXPERIMENT_VERSION} {MODEL_ARCHITECTURE_NAME} "
+        f"(market_tokens={len(config.data.input_feature_columns)} "
+        f"time_tokens={len(config.data.time_feature_columns)} "
+        f"total_feature_attention_tokens={len(config.data.input_feature_columns) + len(config.data.time_feature_columns)})",
         flush=True,
     )
     print(f"Target mode: {config.data.target_mode}", flush=True)
@@ -2497,6 +2523,7 @@ def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
             "carry_context_across_session": config.data.carry_context_across_session,
         },
         "model": {
+            "architecture_name": MODEL_ARCHITECTURE_NAME,
             "d_model": config.model.d_model,
             "feature_attention_layers": config.model.feature_attention_layers,
             "feature_attention_chunk_size": config.model.feature_attention_chunk_size,
