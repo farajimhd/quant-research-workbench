@@ -113,7 +113,9 @@ class TrainConfig:
     amp: bool = True
     compile_model: bool = False
     output_name: str = ""
-    resume_latest: bool = False
+    resume_latest: bool = True
+    fresh_start: bool = False
+    checkpoint_policy: str = "all"
 
 
 @dataclass(slots=True)

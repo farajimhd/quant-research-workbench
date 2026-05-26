@@ -20,6 +20,14 @@ Add `WANDB_API_KEY` in Colab Secrets before running `train_colab.ipynb`. No API 
 - allow target across session: `True`
 - default epochs: `3`
 
+## Resume and Checkpoints
+
+- output name: `v17_generalization_june2025_all_tickers`
+- wandb run name: `v17-generalization-june2025-all-tickers`
+- resume latest: `True`
+- fresh start default: `False`
+- checkpoint policy: `last_only`
+
 ## Training Setup
 
 - optimizer: `adamw`

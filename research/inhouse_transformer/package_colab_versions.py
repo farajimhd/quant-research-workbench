@@ -97,6 +97,11 @@ def build_manifest(version: str, git_commit: str) -> dict[str, Any]:
         "tickers": "ALL",
         "allow_target_across_session": True,
         "default_epochs": 3,
+        "output_name": f"{version}_generalization_june2025_all_tickers",
+        "wandb_run_name": f"{version}-generalization-june2025-all-tickers",
+        "resume_latest": True,
+        "fresh_start_default": False,
+        "checkpoint_policy": "last_only",
         "optimizer": "adamw",
         "loss": "binary_cross_entropy_with_logits",
         "learning_rate": DEFAULT_LEARNING_RATE,
@@ -111,8 +116,10 @@ def build_manifest(version: str, git_commit: str) -> dict[str, Any]:
         "secret_names": ["WANDB_API_KEY"],
         "notes": [
             "API keys are read from Colab Secrets and are not stored in this package.",
-            "The package contains code only; market data remains under the Drive colab_data folder.",
-            "Training uses the overfit-aligned setup: AdamW, BCE-with-logits target loss, and cosine warm restarts.",
+        "The package contains code only; market data remains under the Drive colab_data folder.",
+        "Training uses the overfit-aligned setup: AdamW, BCE-with-logits target loss, and cosine warm restarts.",
+        "Colab training resumes from last.pt in a stable output folder unless FRESH_START is set in the notebook.",
+        "Drive checkpoint policy is last_only, so last.pt is overwritten and best/nonfinite model checkpoint files are not kept.",
         ],
     }
 
@@ -208,6 +215,10 @@ def training_command_source(version: str) -> str:
         "EPOCHS = int(manifest.get('default_epochs', 3))\n"
         "MAX_STEPS = 0  # 0 means stream the configured epoch until exhaustion.\n"
         "TICKERS = manifest.get('tickers', 'ALL')\n"
+        "OUTPUT_NAME = manifest.get('output_name', f'{VERSION}_generalization_june2025_all_tickers')\n"
+        "WANDB_RUN_NAME = manifest.get('wandb_run_name', f'{VERSION}-generalization-june2025-all-tickers')\n"
+        "CHECKPOINT_POLICY = manifest.get('checkpoint_policy', 'last_only')\n"
+        "FRESH_START = bool(manifest.get('fresh_start_default', False))\n"
         "LEARNING_RATE = float(manifest.get('learning_rate', 3e-4))\n"
         "WEIGHT_DECAY = float(manifest.get('weight_decay', 1e-4))\n"
         "LR_SCHEDULER = manifest.get('lr_scheduler', 'cosine_warm_restarts')\n"
@@ -234,6 +245,9 @@ def training_command_source(version: str) -> str:
         "    '--batch-size', str(BATCH_SIZE),\n"
         "    '--epochs', str(EPOCHS),\n"
         "    '--tickers', TICKERS,\n"
+        "    '--output-name', OUTPUT_NAME,\n"
+        "    '--wandb-run-name', WANDB_RUN_NAME,\n"
+        "    '--checkpoint-policy', CHECKPOINT_POLICY,\n"
         "    '--learning-rate', str(LEARNING_RATE),\n"
         "    '--weight-decay', str(WEIGHT_DECAY),\n"
         "    '--lr-scheduler', LR_SCHEDULER,\n"
@@ -250,6 +264,10 @@ def training_command_source(version: str) -> str:
         "]\n"
         "if MAX_STEPS > 0:\n"
         "    args += ['--max-steps', str(MAX_STEPS)]\n"
+        "if FRESH_START:\n"
+        "    args.append('--fresh-start')\n"
+        "else:\n"
+        "    args.append('--resume-latest')\n"
         "if not ALLOW_TARGET_ACROSS_SESSION:\n"
         "    raise ValueError('Colab generalization runs are configured to require --allow-target-across-session.')\n"
         "args.append('--allow-target-across-session')\n"
@@ -282,6 +300,12 @@ def write_colab_readme(path: Path, version: str, manifest: dict[str, Any]) -> No
         f"- tickers: `{manifest['tickers']}`\n"
         f"- allow target across session: `{manifest['allow_target_across_session']}`\n"
         f"- default epochs: `{manifest['default_epochs']}`\n\n"
+        "## Resume and Checkpoints\n\n"
+        f"- output name: `{manifest['output_name']}`\n"
+        f"- wandb run name: `{manifest['wandb_run_name']}`\n"
+        f"- resume latest: `{manifest['resume_latest']}`\n"
+        f"- fresh start default: `{manifest['fresh_start_default']}`\n"
+        f"- checkpoint policy: `{manifest['checkpoint_policy']}`\n\n"
         "## Training Setup\n\n"
         f"- optimizer: `{manifest['optimizer']}`\n"
         f"- loss: `{manifest['loss']}`\n"

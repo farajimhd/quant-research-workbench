@@ -1,12 +1,14 @@
 {
   "allow_target_across_session": true,
+  "checkpoint_policy": "last_only",
   "colab_code_dir": "/content/drive/MyDrive/quant-research-workbench/colab_code/v17",
   "colab_data_root": "/content/drive/MyDrive/quant-research-workbench/colab_data/v17_june2025/market_data",
   "cosine_restart_t0_steps": 500,
   "cosine_restart_t_mult": 2,
-  "created_at": "2026-05-26T15:31:39",
+  "created_at": "2026-05-26T15:48:47",
   "default_epochs": 3,
-  "git_commit": "ba72505324341062bd7902d97b0343c25e7e6f3b",
+  "fresh_start_default": false,
+  "git_commit": "9430dcddcd3c0b63cb963573a8b11184d9df1686",
   "learning_rate": 0.0003,
   "loss": "binary_cross_entropy_with_logits",
   "lr_scheduler": "cosine_warm_restarts",
@@ -14,10 +16,14 @@
   "notes": [
     "API keys are read from Colab Secrets and are not stored in this package.",
     "The package contains code only; market data remains under the Drive colab_data folder.",
-    "Training uses the overfit-aligned setup: AdamW, BCE-with-logits target loss, and cosine warm restarts."
+    "Training uses the overfit-aligned setup: AdamW, BCE-with-logits target loss, and cosine warm restarts.",
+    "Colab training resumes from last.pt in a stable output folder unless FRESH_START is set in the notebook.",
+    "Drive checkpoint policy is last_only, so last.pt is overwritten and best/nonfinite model checkpoint files are not kept."
   ],
   "optimizer": "adamw",
+  "output_name": "v17_generalization_june2025_all_tickers",
   "package_name": "inhouse_transformer_v17.zip",
+  "resume_latest": true,
   "secret_names": [
     "WANDB_API_KEY"
   ],
@@ -31,6 +37,7 @@
   "version": "v17",
   "wandb_entity": "mehdifaraji",
   "wandb_project": "May2026-1m-timeseries-generalization",
+  "wandb_run_name": "v17-generalization-june2025-all-tickers",
   "warmup_steps": 1000,
   "weight_decay": 0.0001
 }

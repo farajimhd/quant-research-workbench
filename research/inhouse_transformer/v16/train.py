@@ -9,6 +9,7 @@ import random
 import re
 import sys
 import time
+import uuid
 from datetime import datetime
 from itertools import cycle
 from pathlib import Path
@@ -495,7 +496,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-amp", dest="amp", action="store_false")
     parser.add_argument("--compile-model", action="store_true")
     parser.add_argument("--output-name", default=defaults.train.output_name)
-    parser.add_argument("--resume-latest", action="store_true")
+    parser.add_argument("--resume-latest", dest="resume_latest", action="store_true", default=defaults.train.resume_latest)
+    parser.add_argument("--no-resume-latest", dest="resume_latest", action="store_false")
+    parser.add_argument("--fresh-start", action="store_true", help="Ignore and replace any existing checkpoint/run state.")
+    parser.add_argument(
+        "--checkpoint-policy",
+        choices=["all", "last_only"],
+        default=defaults.train.checkpoint_policy,
+        help="Use last_only for Drive-backed Colab runs to overwrite last.pt and avoid extra checkpoint files.",
+    )
     parser.add_argument(
         "--overfit-session",
         default="",
@@ -522,6 +531,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-entity", default="mehdifaraji")
     parser.add_argument("--wandb-project", default="May2026-1m-timeseries-v14-variants")
     parser.add_argument("--wandb-run-name", default="")
+    parser.add_argument("--wandb-run-id", default="")
     parser.add_argument("--disable-wandb", action="store_true")
     parser.add_argument("--device", default="cuda", help='Use "cuda" when available, otherwise "cpu".')
     parser.add_argument("--dry-run", action="store_true")
@@ -588,7 +598,9 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         amp=args.amp,
         compile_model=args.compile_model,
         output_name=args.output_name,
-        resume_latest=args.resume_latest,
+        resume_latest=bool(args.resume_latest) and not bool(args.fresh_start),
+        fresh_start=bool(args.fresh_start),
+        checkpoint_policy=args.checkpoint_policy,
     )
     return ExperimentConfig(data=data, model=model, train=train)
 
@@ -641,6 +653,57 @@ def make_wandb_run_name(args: argparse.Namespace, config: ExperimentConfig) -> s
         f"{EXPERIMENT_VERSION}-main-transformer-{input_name}-{config.data.target_mode}-ctx{config.data.context_length}-"
         f"h{config.data.horizon}-{target_columns}-{timestamp}"
     )
+
+
+def read_run_state(output_dir: Path) -> dict[str, Any]:
+    path = output_dir / "run_state.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"*** Run state could not be read from {path}: {exc}", flush=True)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_run_state(output_dir: Path, state: dict[str, Any]) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    write_json(output_dir / "run_state.json", state)
+
+
+def resolve_run_identity(args: argparse.Namespace, config: ExperimentConfig, output_dir: Path) -> tuple[str, str]:
+    state = read_run_state(output_dir) if config.train.resume_latest else {}
+    run_name = versioned_wandb_run_name(args.wandb_run_name) if args.wandb_run_name else str(
+        state.get("wandb_run_name") or ""
+    ) or make_wandb_run_name(args, config)
+    run_id = args.wandb_run_id or str(state.get("wandb_run_id") or "") or uuid.uuid4().hex[:12]
+    return run_name, run_id
+
+
+def initial_run_state(
+    *,
+    args: argparse.Namespace,
+    config: ExperimentConfig,
+    run_name: str,
+    run_id: str,
+    output_dir: Path,
+) -> dict[str, Any]:
+    state = read_run_state(output_dir) if config.train.resume_latest else {}
+    state.update(
+        {
+            "version": EXPERIMENT_VERSION,
+            "wandb_project": args.wandb_project,
+            "wandb_entity": args.wandb_entity,
+            "wandb_run_name": run_name,
+            "wandb_run_id": run_id,
+            "output_dir": str(output_dir),
+            "checkpoint_policy": config.train.checkpoint_policy,
+            "fresh_start": config.train.fresh_start,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    return state
 
 
 def versioned_wandb_run_name(raw_name: str) -> str:
@@ -704,7 +767,13 @@ def resolve_wandb_api_key() -> str:
     return ""
 
 
-def init_wandb(args: argparse.Namespace, config: ExperimentConfig, metadata: dict[str, Any]) -> Any:
+def init_wandb(
+    args: argparse.Namespace,
+    config: ExperimentConfig,
+    metadata: dict[str, Any],
+    run_name: str,
+    run_id: str,
+) -> Any:
     if args.disable_wandb:
         print("*** WANDB disabled by --disable-wandb", flush=True)
         return None
@@ -713,8 +782,11 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, metadata: dic
     except ModuleNotFoundError:
         print("*** WANDB package is not installed; metrics will only be written to metrics.jsonl.", flush=True)
         return None
-    run_name = make_wandb_run_name(args, config)
-    print(f"*** WANDB INIT | entity={args.wandb_entity} | project={args.wandb_project} | run={run_name}", flush=True)
+    print(
+        f"*** WANDB INIT | entity={args.wandb_entity} | project={args.wandb_project} "
+        f"| run={run_name} | id={run_id}",
+        flush=True,
+    )
     api_key = resolve_wandb_api_key()
     if not api_key:
         print(
@@ -737,6 +809,8 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, metadata: dic
             entity=args.wandb_entity,
             project=args.wandb_project,
             name=run_name,
+            id=run_id,
+            resume="allow",
             config=metadata,
         )
         print(f"*** WANDB RUN READY | url={getattr(run, 'url', '')}", flush=True)
@@ -783,9 +857,13 @@ def main() -> None:
     )
 
     output_dir = make_output_dir(config)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_output_dir(output_dir, config)
     metrics_path = output_dir / "metrics.jsonl"
-    wandb_run_name = make_wandb_run_name(args, config)
+    wandb_run_name, wandb_run_id = resolve_run_identity(args, config, output_dir)
+    write_run_state(
+        output_dir,
+        initial_run_state(args=args, config=config, run_name=wandb_run_name, run_id=wandb_run_id, output_dir=output_dir),
+    )
     if args.wandb_run_name and wandb_run_name != args.wandb_run_name:
         print(
             f"*** WANDB RUN NAME NORMALIZED | requested={args.wandb_run_name} | using={wandb_run_name}",
@@ -800,7 +878,11 @@ def main() -> None:
         "wandb_project": args.wandb_project,
         "wandb_entity": args.wandb_entity,
         "wandb_run_name": wandb_run_name,
+        "wandb_run_id": wandb_run_id,
         "wandb_disabled": bool(args.disable_wandb),
+        "fresh_start": config.train.fresh_start,
+        "resume_latest": config.train.resume_latest,
+        "checkpoint_policy": config.train.checkpoint_policy,
     }
     write_json(output_dir / "metadata.json", metadata)
 
@@ -848,7 +930,7 @@ def main() -> None:
         return
 
     load_torch_stack()
-    wandb_run = init_wandb(args, config, metadata)
+    wandb_run = init_wandb(args, config, metadata, wandb_run_name, wandb_run_id)
     set_seed(config.train.seed)
     device = resolve_device(args.device)
     model = FeatureTemporalTransformer(
@@ -927,6 +1009,10 @@ def main() -> None:
     last_eval_step = 0
     last_log_time = time.perf_counter()
     train_iterator = iter(train_iter)
+    if start_step > 0 and (planned_steps <= 0 or start_step < planned_steps):
+        skip_batches = start_step % len(cached_batches) if cached_batches else start_step
+        skipped_batches = advance_training_iterator(train_iterator, skip_batches)
+        print(f"*** RESUME DATA STATE READY | skipped_batches={skipped_batches:,} | next_step={step + 1:,}", flush=True)
     while True:
         if planned_steps > 0 and step >= planned_steps:
             break
@@ -1096,8 +1182,9 @@ def main() -> None:
             score = validation_metrics.get("validation_h1_close_mae_bps", math.inf)
             if score < best_score:
                 best_score = float(score)
-                save_checkpoint(output_dir / "best.pt", model, optimizer, scheduler, step, best_score, config)
-                print(f"*** BEST CHECKPOINT SAVED | step={step:,} | h1_close_mae_bps={best_score:.4f}", flush=True)
+                if config.train.checkpoint_policy != "last_only":
+                    save_checkpoint(output_dir / "best.pt", model, optimizer, scheduler, step, best_score, config)
+                    print(f"*** BEST CHECKPOINT SAVED | step={step:,} | h1_close_mae_bps={best_score:.4f}", flush=True)
             save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
             print_section(f"VALIDATION END step={step:,}")
             last_eval_step = step
@@ -1147,8 +1234,9 @@ def main() -> None:
         score = validation_metrics.get("validation_h1_close_mae_bps", math.inf)
         if score < best_score:
             best_score = float(score)
-            save_checkpoint(output_dir / "best.pt", model, optimizer, scheduler, step, best_score, config)
-            print(f"*** BEST CHECKPOINT SAVED | step={step:,} | h1_close_mae_bps={best_score:.4f}", flush=True)
+            if config.train.checkpoint_policy != "last_only":
+                save_checkpoint(output_dir / "best.pt", model, optimizer, scheduler, step, best_score, config)
+                print(f"*** BEST CHECKPOINT SAVED | step={step:,} | h1_close_mae_bps={best_score:.4f}", flush=True)
         save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
         print_section(f"FINAL VALIDATION END step={step:,}")
 
@@ -1249,6 +1337,23 @@ def collect_overfit_batches(loader: DataLoader, target_windows: int) -> list[dic
         raise SystemExit("No overfit batches were created. Pick a session/ticker set with enough bars.")
     print_section(f"OVERFIT CACHE BUILT windows={collected_windows:,} batches={len(batches):,}")
     return batches
+
+
+def advance_training_iterator(train_iterator: Iterable[dict[str, Any]], batches_to_skip: int) -> int:
+    if batches_to_skip <= 0:
+        return 0
+    print_section(f"RESUME DATA STATE | skipping {batches_to_skip:,} already-trained batches")
+    skipped = 0
+    for skipped in range(1, batches_to_skip + 1):
+        try:
+            next(train_iterator)
+        except StopIteration:
+            skipped -= 1
+            print(f"*** Resume skip reached dataset exhaustion after {skipped:,} batches.", flush=True)
+            return skipped
+        if skipped == 1 or skipped % 500 == 0 or skipped == batches_to_skip:
+            print(f"*** Resume skip progress {skipped:,}/{batches_to_skip:,}", flush=True)
+    return skipped
 
 
 def slice_batch(batch: dict[str, Any], max_rows: int) -> dict[str, Any]:
@@ -1494,10 +1599,12 @@ def stop_training_for_nonfinite_loss(
             "message": str(error),
         },
     )
-    save_checkpoint(output_dir / "nonfinite.pt", model, optimizer, scheduler, step, best_score, config)
+    if config.train.checkpoint_policy != "last_only":
+        save_checkpoint(output_dir / "nonfinite.pt", model, optimizer, scheduler, step, best_score, config)
     save_checkpoint(output_dir / "last.pt", model, optimizer, scheduler, step, best_score, config)
     print(f"*** Non-finite diagnostic written to {output_dir / 'nonfinite_stop.json'}", flush=True)
-    print(f"*** Non-finite checkpoint written to {output_dir / 'nonfinite.pt'}", flush=True)
+    if config.train.checkpoint_policy != "last_only":
+        print(f"*** Non-finite checkpoint written to {output_dir / 'nonfinite.pt'}", flush=True)
     finish_wandb_run(wandb_run, exit_code=1)
 
 
@@ -2387,6 +2494,37 @@ def make_output_dir(config: ExperimentConfig) -> Path:
     return root / name
 
 
+def prepare_output_dir(output_dir: Path, config: ExperimentConfig) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if config.train.fresh_start:
+        for filename in ("last.pt", "best.pt", "nonfinite.pt", "run_state.json", "metrics.jsonl"):
+            path = output_dir / filename
+            if path.exists():
+                path.unlink()
+        print(f"*** FRESH START | cleared checkpoint/run state files in {output_dir}", flush=True)
+    if config.train.checkpoint_policy == "last_only":
+        cleanup_extra_checkpoints(output_dir)
+
+
+def cleanup_extra_checkpoints(output_dir: Path) -> None:
+    for filename in ("best.pt", "nonfinite.pt"):
+        path = output_dir / filename
+        if path.exists():
+            path.unlink()
+
+
+def checkpoint_data_state(step: int, best_score: float, config: ExperimentConfig) -> dict[str, Any]:
+    return {
+        "completed_train_batches": step,
+        "batch_size": config.train.batch_size,
+        "epochs": config.train.epochs,
+        "seed": config.train.seed,
+        "max_steps": config.train.max_steps,
+        "max_batches_per_session": config.train.max_batches_per_session,
+        "best_score": best_score,
+    }
+
+
 def save_checkpoint(
     path: Path,
     model: torch.nn.Module,
@@ -2409,6 +2547,21 @@ def save_checkpoint(
         },
         path,
     )
+    state = read_run_state(path.parent)
+    state.update(
+        {
+            "version": EXPERIMENT_VERSION,
+            "last_checkpoint": path.name,
+            "step": step,
+            "best_score": best_score,
+            "checkpoint_policy": config.train.checkpoint_policy,
+            "data_state": checkpoint_data_state(step, best_score, config),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    write_run_state(path.parent, state)
+    if config.train.checkpoint_policy == "last_only":
+        cleanup_extra_checkpoints(path.parent)
 
 
 def maybe_resume(
