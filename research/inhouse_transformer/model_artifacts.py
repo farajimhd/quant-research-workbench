@@ -166,6 +166,12 @@ def _synthetic_input_for(
         )
 
     branch_by_name = {
+        "macro_15m_values": "macro_15m_encoder",
+        "macro_15m_time_features": "macro_15m_encoder",
+        "macro_1h_values": "macro_1h_encoder",
+        "macro_1h_time_features": "macro_1h_encoder",
+        "macro_1d_values": "macro_1d_encoder",
+        "macro_1d_time_features": "macro_1d_encoder",
         "five_min_values": "five_min_encoder",
         "five_min_time_features": "five_min_encoder",
         "thirty_min_values": "thirty_min_encoder",
