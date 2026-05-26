@@ -1,8 +1,8 @@
 {
   "colab_code_dir": "/content/drive/MyDrive/quant-research-workbench/colab_code/v16",
   "colab_data_root": "/content/drive/MyDrive/quant-research-workbench/colab_data/v17_june2025/market_data",
-  "created_at": "2026-05-26T13:33:44",
-  "git_commit": "21e3bc7c7a502e08af26e48cbbfdb4830bcd26cc",
+  "created_at": "2026-05-26T13:43:30",
+  "git_commit": "2667a13dbae7320b8141971453e463d62d4380e3",
   "notes": [
     "API keys are read from Colab Secrets and are not stored in this package.",
     "The package contains code only; market data remains under the Drive colab_data folder."
