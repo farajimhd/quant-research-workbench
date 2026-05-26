@@ -124,7 +124,7 @@ feature_attention_layers=1
 
 By default the loader carries the last context bars across sessions, but does not let targets cross a session boundary.
 
-The default objective is BCE-with-logits on the encoded multi-horizon OHLC target bits only. Direction is not part of the default training objective. The direction head exists for experiments and an auxiliary BCE direction loss can be enabled with `--direction-loss-weight`.
+The objective is BCE-with-logits on the encoded multi-horizon OHLC target bits only. The model has no direction head. Direction accuracy is reporting-only and is computed from decoded predicted and actual target moves.
 
 The default `--lr-scheduler auto` uses `CosineAnnealingWarmRestarts` for overfit runs and `ReduceLROnPlateau` for normal training. For overfit, `--cosine-restart-t0-steps 0` resolves to `--eval-steps`, and `--cosine-restart-t-mult` defaults to `2`. For normal training, plateau reduces LR after warmup when validation loss has not improved for `--lr-plateau-patience` eval points. Use `--lr-scheduler cosine`, `--lr-scheduler cosine_warm_restarts`, `--lr-scheduler plateau`, or `--lr-scheduler constant` to force a specific behavior.
 

@@ -66,14 +66,8 @@ class FeatureTemporalTransformer(nn.Module):
             nn.Dropout(config.dropout),
             nn.Linear(config.ff_dim, horizon * target_count * config.target_bit_count),
         )
-        self.direction_head = nn.Sequential(
-            nn.Linear(config.d_model, config.ff_dim // 2),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.ff_dim // 2, horizon),
-        )
 
-    def forward(self, values: torch.Tensor, time_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, values: torch.Tensor, time_features: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, feature_count = values.shape
         if seq_len != self.context_length:
             raise ValueError(f"Expected context length {self.context_length}, got {seq_len}.")
@@ -101,8 +95,7 @@ class FeatureTemporalTransformer(nn.Module):
             self.target_count,
             self.target_bit_count,
         )
-        direction_logits = self.direction_head(last_token)
-        return prediction, direction_logits
+        return prediction
 
     def encode_features(self, flat_tokens: torch.Tensor) -> torch.Tensor:
         if flat_tokens.shape[0] <= self.feature_attention_chunk_size:
@@ -117,21 +110,11 @@ class FeatureTemporalTransformer(nn.Module):
 def forecast_loss(
     prediction: torch.Tensor,
     target: torch.Tensor,
-    direction_logits: torch.Tensor,
-    direction_target: torch.Tensor,
-    direction_loss_weight: float,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    regression = nn.functional.binary_cross_entropy_with_logits(prediction, target)
+    total = nn.functional.binary_cross_entropy_with_logits(prediction, target)
     bit_accuracy = ((prediction.detach().sigmoid() >= 0.5) == (target >= 0.5)).float().mean()
-    if direction_loss_weight > 0.0:
-        direction = nn.functional.binary_cross_entropy_with_logits(direction_logits, direction_target)
-        total = regression + direction_loss_weight * direction
-    else:
-        direction = regression.new_zeros(())
-        total = regression
     return total, {
         "loss": float(total.detach().cpu()),
-        "regression_loss": float(regression.detach().cpu()),
+        "regression_loss": float(total.detach().cpu()),
         "bit_accuracy_pct": float(bit_accuracy.detach().cpu() * 100.0),
-        "direction_loss": float(direction.detach().cpu()),
     }

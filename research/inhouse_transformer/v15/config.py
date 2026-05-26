@@ -103,7 +103,6 @@ class ModelConfig:
     ff_dim: int = 1024
     dropout: float = 0.1
     target_bit_count: int = 40
-    direction_loss_weight: float = 0.0
     direction_threshold_bps: float = 0.0
 
 

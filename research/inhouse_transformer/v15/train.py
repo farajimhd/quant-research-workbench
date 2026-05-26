@@ -60,7 +60,7 @@ METRIC_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "loss": {
         "description": "Total objective used for the current split or progress row.",
         "unit": "target units",
-        "interpretation": "Down is better. For v15 this is binary cross entropy over signed ordinal exceedance bits unless direction loss is enabled.",
+        "interpretation": "Down is better. For v15 this is binary cross entropy over signed ordinal exceedance bits.",
     },
     "regression_loss": {
         "description": "Binary cross entropy between ordinal exceedance logits and target bits.",
@@ -71,11 +71,6 @@ METRIC_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "description": "Share of ordinal exceedance bits whose sigmoid probability is on the correct side of 0.5.",
         "unit": "percent",
         "interpretation": "Up is better. It is an encoding diagnostic, not decoded price accuracy.",
-    },
-    "direction_loss": {
-        "description": "Optional auxiliary binary direction loss.",
-        "unit": "loss",
-        "interpretation": "Down is better when direction_loss_weight is greater than zero; otherwise it should stay zero.",
     },
     "lr": {
         "description": "Current learning rate from the optimizer.",
@@ -260,7 +255,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-heads", type=int, default=defaults.model.num_heads)
     parser.add_argument("--ff-dim", type=int, default=defaults.model.ff_dim)
     parser.add_argument("--dropout", type=float, default=defaults.model.dropout)
-    parser.add_argument("--direction-loss-weight", type=float, default=defaults.model.direction_loss_weight)
     parser.add_argument("--direction-threshold-bps", type=float, default=defaults.model.direction_threshold_bps)
 
     parser.add_argument("--batch-size", type=int, default=defaults.train.batch_size)
@@ -386,7 +380,6 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         ff_dim=args.ff_dim,
         dropout=args.dropout,
         target_bit_count=target_bit_count(data),
-        direction_loss_weight=args.direction_loss_weight,
         direction_threshold_bps=args.direction_threshold_bps,
     )
     lr_scheduler = resolve_lr_scheduler(args)
@@ -714,7 +707,6 @@ def main() -> None:
 
     running_loss = 0.0
     running_regression = 0.0
-    running_direction = 0.0
     running_bit_accuracy = 0.0
     running_batches = 0
     step = start_step
@@ -734,13 +726,10 @@ def main() -> None:
         batch = move_batch(batch, device)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=config.train.amp and device.type == "cuda"):
-            prediction, direction_logits = model(batch["values"], batch["time_features"])
+            prediction = model(batch["values"], batch["time_features"])
             loss, loss_parts = forecast_loss(
                 prediction,
                 batch["targets"],
-                direction_logits,
-                batch["direction"],
-                config.model.direction_loss_weight,
             )
         try:
             raise_on_nonfinite_loss(loss, label="train", step=step, batch=batch)
@@ -767,7 +756,6 @@ def main() -> None:
 
         running_loss += loss_parts["loss"]
         running_regression += loss_parts["regression_loss"]
-        running_direction += loss_parts["direction_loss"]
         running_bit_accuracy += loss_parts.get("bit_accuracy_pct", math.nan)
         running_batches += 1
         epoch_value = estimate_epoch(step, cached_batches, config.train)
@@ -776,14 +764,13 @@ def main() -> None:
             elapsed = max(1e-6, time.perf_counter() - last_log_time)
             avg_loss = running_loss / max(1, running_batches)
             avg_regression = running_regression / max(1, running_batches)
-            avg_direction = running_direction / max(1, running_batches)
             avg_bit_accuracy = running_bit_accuracy / max(1, running_batches)
             samples_per_sec = config.train.batch_size * running_batches / elapsed
             lr = optimizer.param_groups[0]["lr"]
             train_metrics = batch_metrics_from_prediction(prediction.detach(), batch, config)
             print(
                 f"train step={step_text(step, planned_steps)} loss={avg_loss:.6f} "
-                f"reg={avg_regression:.6f} bit_acc={avg_bit_accuracy:.2f}% dir={avg_direction:.6f} "
+                f"reg={avg_regression:.6f} bit_acc={avg_bit_accuracy:.2f}% "
                 f"h1_mae={train_metrics.get('h1_close_mae_bps', math.nan):.3f}bps "
                 f"h1_dir={train_metrics.get('h1_close_dir_acc_pct', math.nan):.2f}% "
                 f"h1_edge_last={train_metrics.get('h1_close_edge_vs_last_move_naive_bps', math.nan):.3f}bps "
@@ -798,7 +785,6 @@ def main() -> None:
                     "step": step,
                     "loss": avg_loss,
                     "regression_loss": avg_regression,
-                    "direction_loss": avg_direction,
                     "bit_accuracy_pct": avg_bit_accuracy,
                     "lr": lr,
                     "samples_per_sec": samples_per_sec,
@@ -807,7 +793,7 @@ def main() -> None:
                     "time": datetime.now().isoformat(timespec="seconds"),
                 },
             )
-            running_loss = running_regression = running_direction = running_bit_accuracy = 0.0
+            running_loss = running_regression = running_bit_accuracy = 0.0
             running_batches = 0
             last_log_time = time.perf_counter()
 
@@ -1180,7 +1166,6 @@ def wandb_metric_aliases(label: str, row: dict[str, Any]) -> dict[str, float | i
         "loss": "loss",
         "regression_loss": "regression_loss",
         "bit_accuracy_pct": "bit_accuracy_pct",
-        "direction_loss": "direction_loss",
         "lr": "lr",
         "samples_per_sec": "samples_per_sec",
         "epoch": "epoch",
@@ -1306,13 +1291,10 @@ def evaluate(
                 dtype=torch.float16,
                 enabled=config.train.amp and device.type == "cuda",
             ):
-                prediction, direction_logits = model(batch["values"], batch["time_features"])
+                prediction = model(batch["values"], batch["time_features"])
                 loss, loss_parts = forecast_loss(
                     prediction,
                     batch["targets"],
-                    direction_logits,
-                    batch["direction"],
-                    config.model.direction_loss_weight,
                 )
             raise_on_nonfinite_loss(loss, label=label, step=step, batch=batch)
             loss_sum += float(loss.detach().cpu())
@@ -1333,7 +1315,7 @@ def evaluate(
                 if metrics_path is not None:
                     log_metrics(metrics_path, wandb_run, progress_metrics)
                 print_metric_line(progress_metrics)
-            del batch, prediction, direction_logits, loss
+            del batch, prediction, loss
     if device.type == "cuda":
         torch.cuda.empty_cache()
     metrics = accumulator.compute(prefix=f"{label}_")
@@ -1369,13 +1351,10 @@ def evaluate_cached_batches(
                 dtype=torch.float16,
                 enabled=config.train.amp and device.type == "cuda",
             ):
-                prediction, direction_logits = model(batch["values"], batch["time_features"])
+                prediction = model(batch["values"], batch["time_features"])
                 loss, loss_parts = forecast_loss(
                     prediction,
                     batch["targets"],
-                    direction_logits,
-                    batch["direction"],
-                    config.model.direction_loss_weight,
                 )
             raise_on_nonfinite_loss(loss, label=label, step=0, batch=batch)
             loss_sum += float(loss.detach().cpu())
@@ -1383,7 +1362,7 @@ def evaluate_cached_batches(
             batch_count += 1
             prediction_bps, target_bps = prediction_and_target_bps(prediction, batch, config)
             accumulator.update(prediction_bps, target_bps, last_close_return_bps_from_batch(batch))
-            del batch, prediction, direction_logits, loss
+            del batch, prediction, loss
     if device.type == "cuda":
         torch.cuda.empty_cache()
     metrics = accumulator.compute(prefix=f"{label}_")
@@ -2107,7 +2086,6 @@ def config_to_dict(config: ExperimentConfig) -> dict[str, Any]:
             "ff_dim": config.model.ff_dim,
             "dropout": config.model.dropout,
             "target_bit_count": config.model.target_bit_count,
-            "direction_loss_weight": config.model.direction_loss_weight,
             "direction_threshold_bps": config.model.direction_threshold_bps,
         },
         "train": {

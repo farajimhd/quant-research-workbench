@@ -315,7 +315,6 @@ class BatchBuilder:
         self.time_features = np.empty((batch_size, context_length, time_feature_count), dtype=np.float32)
         self.targets = np.empty((batch_size, horizon, target_count, target_bit_count), dtype=np.float32)
         self.target_bps = np.empty((batch_size, horizon, target_count), dtype=np.float32)
-        self.direction = np.empty((batch_size, horizon), dtype=np.float32)
         self.current_close = np.empty((batch_size,), dtype=np.float32)
         self.target_center = np.empty((batch_size,), dtype=np.float32)
         self.target_scale = np.empty((batch_size,), dtype=np.float32)
@@ -357,7 +356,6 @@ class BatchBuilder:
                 for column in config.target_columns
             ]
         )
-        close_index = config.target_columns.index("close")
         target_bps = log_return_bps(target_prices, current_close).astype(np.float32)
         if config.target_mode == "actual_price_zscore":
             center, scale = price_center, price_scale
@@ -381,7 +379,6 @@ class BatchBuilder:
         self.time_features[self.count] = arrays["time_features"][start:end]
         self.targets[self.count] = targets
         self.target_bps[self.count] = target_bps
-        self.direction[self.count] = (target_prices[:, close_index] > current_close).astype(np.float32)
         self.current_close[self.count] = current_close
         self.target_center[self.count] = center
         self.target_scale[self.count] = scale
@@ -399,7 +396,6 @@ class BatchBuilder:
             "time_features": torch.from_numpy(self.time_features[rows].copy()),
             "targets": torch.from_numpy(self.targets[rows].copy()),
             "target_bps": torch.from_numpy(self.target_bps[rows].copy()),
-            "direction": torch.from_numpy(self.direction[rows].copy()),
             "current_close": torch.from_numpy(self.current_close[rows].copy()),
             "target_center": torch.from_numpy(self.target_center[rows].copy()),
             "target_scale": torch.from_numpy(self.target_scale[rows].copy()),
