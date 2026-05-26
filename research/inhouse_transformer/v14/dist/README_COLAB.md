@@ -19,3 +19,11 @@ Add `WANDB_API_KEY` in Colab Secrets before running `train_colab.ipynb`. No API 
 - tickers: `ALL`
 - allow target across session: `True`
 - default epochs: `3`
+
+## Training Setup
+
+- optimizer: `adamw`
+- loss: `binary_cross_entropy_with_logits`
+- learning rate: `0.0003`
+- weight decay: `0.0001`
+- scheduler: `cosine_warm_restarts` (T_0 steps `500`, T_mult `2`)

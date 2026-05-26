@@ -21,6 +21,13 @@ VALIDATION_START = "2025-07-01"
 VALIDATION_END = "2025-07-07"
 WANDB_ENTITY = "mehdifaraji"
 WANDB_PROJECT = "May2026-1m-timeseries-generalization"
+DEFAULT_LEARNING_RATE = 3e-4
+DEFAULT_WEIGHT_DECAY = 1e-4
+DEFAULT_LR_SCHEDULER = "cosine_warm_restarts"
+DEFAULT_COSINE_RESTART_T0_STEPS = 500
+DEFAULT_COSINE_RESTART_T_MULT = 2
+DEFAULT_MIN_LEARNING_RATE = 1e-6
+DEFAULT_WARMUP_STEPS = 1000
 
 
 def main() -> None:
@@ -90,12 +97,22 @@ def build_manifest(version: str, git_commit: str) -> dict[str, Any]:
         "tickers": "ALL",
         "allow_target_across_session": True,
         "default_epochs": 3,
+        "optimizer": "adamw",
+        "loss": "binary_cross_entropy_with_logits",
+        "learning_rate": DEFAULT_LEARNING_RATE,
+        "weight_decay": DEFAULT_WEIGHT_DECAY,
+        "lr_scheduler": DEFAULT_LR_SCHEDULER,
+        "cosine_restart_t0_steps": DEFAULT_COSINE_RESTART_T0_STEPS,
+        "cosine_restart_t_mult": DEFAULT_COSINE_RESTART_T_MULT,
+        "min_learning_rate": DEFAULT_MIN_LEARNING_RATE,
+        "warmup_steps": DEFAULT_WARMUP_STEPS,
         "wandb_entity": WANDB_ENTITY,
         "wandb_project": WANDB_PROJECT,
         "secret_names": ["WANDB_API_KEY"],
         "notes": [
             "API keys are read from Colab Secrets and are not stored in this package.",
             "The package contains code only; market data remains under the Drive colab_data folder.",
+            "Training uses the overfit-aligned setup: AdamW, BCE-with-logits target loss, and cosine warm restarts.",
         ],
     }
 
@@ -191,6 +208,13 @@ def training_command_source(version: str) -> str:
         "EPOCHS = int(manifest.get('default_epochs', 3))\n"
         "MAX_STEPS = 0  # 0 means stream the configured epoch until exhaustion.\n"
         "TICKERS = manifest.get('tickers', 'ALL')\n"
+        "LEARNING_RATE = float(manifest.get('learning_rate', 3e-4))\n"
+        "WEIGHT_DECAY = float(manifest.get('weight_decay', 1e-4))\n"
+        "LR_SCHEDULER = manifest.get('lr_scheduler', 'cosine_warm_restarts')\n"
+        "COSINE_RESTART_T0_STEPS = int(manifest.get('cosine_restart_t0_steps', 500))\n"
+        "COSINE_RESTART_T_MULT = int(manifest.get('cosine_restart_t_mult', 2))\n"
+        "MIN_LEARNING_RATE = float(manifest.get('min_learning_rate', 1e-6))\n"
+        "WARMUP_STEPS = int(manifest.get('warmup_steps', 1000))\n"
         "EVAL_STEPS = 500\n"
         "LOGGING_STEPS = 50\n"
         "VALIDATION_WINDOW_COUNT = 50000\n"
@@ -210,6 +234,13 @@ def training_command_source(version: str) -> str:
         "    '--batch-size', str(BATCH_SIZE),\n"
         "    '--epochs', str(EPOCHS),\n"
         "    '--tickers', TICKERS,\n"
+        "    '--learning-rate', str(LEARNING_RATE),\n"
+        "    '--weight-decay', str(WEIGHT_DECAY),\n"
+        "    '--lr-scheduler', LR_SCHEDULER,\n"
+        "    '--cosine-restart-t0-steps', str(COSINE_RESTART_T0_STEPS),\n"
+        "    '--cosine-restart-t-mult', str(COSINE_RESTART_T_MULT),\n"
+        "    '--min-learning-rate', str(MIN_LEARNING_RATE),\n"
+        "    '--warmup-steps', str(WARMUP_STEPS),\n"
         "    '--eval-steps', str(EVAL_STEPS),\n"
         "    '--logging-steps', str(LOGGING_STEPS),\n"
         "    '--validation-window-count', str(VALIDATION_WINDOW_COUNT),\n"
@@ -250,7 +281,15 @@ def write_colab_readme(path: Path, version: str, manifest: dict[str, Any]) -> No
         f"- test: `{manifest['test_start_date']}` to `{manifest['test_end_date']}`\n"
         f"- tickers: `{manifest['tickers']}`\n"
         f"- allow target across session: `{manifest['allow_target_across_session']}`\n"
-        f"- default epochs: `{manifest['default_epochs']}`\n",
+        f"- default epochs: `{manifest['default_epochs']}`\n\n"
+        "## Training Setup\n\n"
+        f"- optimizer: `{manifest['optimizer']}`\n"
+        f"- loss: `{manifest['loss']}`\n"
+        f"- learning rate: `{manifest['learning_rate']}`\n"
+        f"- weight decay: `{manifest['weight_decay']}`\n"
+        f"- scheduler: `{manifest['lr_scheduler']}` "
+        f"(T_0 steps `{manifest['cosine_restart_t0_steps']}`, "
+        f"T_mult `{manifest['cosine_restart_t_mult']}`)\n",
         encoding="utf-8",
     )
 
