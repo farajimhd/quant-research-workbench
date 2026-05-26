@@ -42,6 +42,7 @@ from research.inhouse_transformer.v15.data import (  # noqa: E402
     valid_origins,
 )
 from research.inhouse_transformer.v15.metrics import MetricAccumulator, append_jsonl  # noqa: E402
+from research.inhouse_transformer.model_artifacts import save_model_architecture_artifacts  # noqa: E402
 
 torch = None
 DataLoader = None
@@ -656,6 +657,17 @@ def main() -> None:
         target_count=len(config.data.target_columns),
         config=config.model,
     ).to(device)
+    architecture_info = save_model_architecture_artifacts(
+        model=model,
+        data_config=config.data,
+        output_dir=output_dir,
+        version=EXPERIMENT_VERSION,
+        torch_module=torch,
+        wandb_run=wandb_run,
+    )
+    metadata["model_architecture"] = architecture_info
+    write_json(output_dir / "metadata.json", metadata)
+    print(f"*** Model architecture artifacts: {output_dir / 'model_architecture'}", flush=True)
     if config.train.compile_model:
         model = torch.compile(model)
 
