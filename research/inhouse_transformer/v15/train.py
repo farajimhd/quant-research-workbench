@@ -1620,7 +1620,7 @@ def infer_timeline_batch_rows(
         dtype=torch.float16,
         enabled=config.train.amp and device.type == "cuda",
     ):
-        prediction, _ = model(device_batch["values"], device_batch["time_features"])
+        prediction = model(device_batch["values"], device_batch["time_features"])
     prediction_prices, target_prices = prediction_and_target_prices(prediction, device_batch, config)
     prediction_bps, target_bps = prediction_and_target_bps(prediction, device_batch, config)
     timestamps_ns = batch["target_timestamp_ns"].detach().cpu().numpy()
