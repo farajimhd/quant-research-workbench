@@ -20,7 +20,7 @@ TRAIN_END = "2025-06-30"
 VALIDATION_START = "2025-07-01"
 VALIDATION_END = "2025-07-07"
 WANDB_ENTITY = "mehdifaraji"
-WANDB_PROJECT = "May2026-1m-timeseries-v14-variants"
+WANDB_PROJECT = "May2026-1m-timeseries-generalization"
 
 
 def main() -> None:
