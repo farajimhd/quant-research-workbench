@@ -16,7 +16,7 @@ DEFAULT_TEST_END = "2025-07-11"
 
 @dataclass(slots=True)
 class DataConfig:
-    flatfiles_root: Path = Path("G:/flatfiles/us_stock_sip")
+    flatfiles_root: Path = Path("D:/market-data/flatfiles/us_stock_sip")
     cache_root: Path = DEFAULT_PROCESSED_ROOT / "microstructure_cache" / "v21"
     train_start_date: str = DEFAULT_TRAIN_START
     train_end_date: str = DEFAULT_TRAIN_END
@@ -88,4 +88,3 @@ class ExperimentConfig:
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
-

@@ -15,7 +15,7 @@ DEFAULT_VERSIONS = ("v21",)
 DRIVE_CODE_ROOT = Path("G:/My Drive/quant-research-workbench/workstation_code")
 WANDB_ENTITY = "mehdifaraji"
 WANDB_PROJECT = "May2026-microstructure-hybrid-v21"
-DEFAULT_FLATFILES_ROOT = "G:/flatfiles/us_stock_sip"
+DEFAULT_FLATFILES_ROOT = "D:/market-data/flatfiles/us_stock_sip"
 DEFAULT_LOCAL_CACHE_ROOT = "D:/TradingData/quant-research-workbench/market_data/microstructure_cache/v21"
 
 

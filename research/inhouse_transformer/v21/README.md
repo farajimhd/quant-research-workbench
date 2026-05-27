@@ -71,8 +71,7 @@ usually bottleneck parsing and repeated training.
 Example workstation command:
 
 ```powershell
-python research\inhouse_transformer\v21\train.py --flatfiles-root D:\flatfiles\us_stock_sip --cache-root D:\TradingData\quant-research-workbench\market_data\microstructure_cache\v21 --device cuda --batch-size 4096 --num-workers 8 --prefetch-factor 4 --tickers ALL --wandb-entity mehdifaraji --wandb-project May2026-microstructure-hybrid-v21
+python research\inhouse_transformer\v21\train.py --flatfiles-root D:\market-data\flatfiles\us_stock_sip --cache-root D:\TradingData\quant-research-workbench\market_data\microstructure_cache\v21 --device cuda --batch-size 4096 --num-workers 8 --prefetch-factor 4 --tickers ALL --wandb-entity mehdifaraji --wandb-project May2026-microstructure-hybrid-v21
 ```
 
 Use `--count-coverage --dry-run` first to verify file discovery and window counts.
-
