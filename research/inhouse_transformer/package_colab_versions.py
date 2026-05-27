@@ -12,7 +12,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VERSIONS = ("v14", "v16", "v17", "v19")
+DEFAULT_VERSIONS = ("v14", "v16", "v17", "v19", "v20")
 DRIVE_CODE_ROOT = Path("G:/My Drive/quant-research-workbench/colab_code")
 COLAB_DATA_ROOT = "/content/drive/MyDrive/quant-research-workbench/colab_data/v17_june2025/market_data"
 TRAIN_START = "2025-06-02"
