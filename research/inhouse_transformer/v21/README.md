@@ -64,6 +64,12 @@ with Polars and writes cached one-second snapshots to:
 <cache-root>/one_second_snapshots/YYYY/MM/YYYY-MM-DD.parquet
 ```
 
+Prebuild the cache before training:
+
+```powershell
+python research\inhouse_transformer\v21\preprocess_microstructure.py --flatfiles-root D:\market-data\flatfiles\us_stock_sip --cache-root D:\TradingData\quant-research-workbench\market_data\microstructure_cache\v21 --start-date 2025-06-02 --end-date 2025-07-11 --tickers ALL --processes 8 --polars-threads-per-process 2
+```
+
 For workstation training, put both flatfiles and cache on a local SSD/NVMe when
 possible. Google Drive Desktop on HDD is acceptable for packaging, but it will
 usually bottleneck parsing and repeated training.

@@ -53,6 +53,7 @@ def main() -> None:
             drive_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(zip_path, drive_dir / zip_path.name)
             shutil.copy2(notebook_path, drive_dir / notebook_path.name)
+            shutil.copy2(version_dir / "preprocess_microstructure.py", drive_dir / "preprocess_microstructure.py")
             shutil.copy2(manifest_path, drive_dir / manifest_path.name)
             shutil.copy2(readme_path, drive_dir / readme_path.name)
 
@@ -92,6 +93,8 @@ def build_manifest(version: str, git_commit: str) -> dict[str, Any]:
         "default_batch_size": 4096,
         "default_num_workers": 8,
         "default_prefetch_factor": 4,
+        "default_preprocess_processes": 8,
+        "default_polars_threads_per_process": 2,
         "wandb_entity": WANDB_ENTITY,
         "wandb_project": WANDB_PROJECT,
         "wandb_run_name": f"{version}-hybrid-1s10s-binary-mid-june2025",
@@ -152,6 +155,11 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
         code_cell(
             "%pip install -q polars pyarrow wandb torchinfo torchview graphviz\n"
         ),
+        markdown_cell(
+            "Optional but recommended: prebuild the 1-second microstructure Parquet cache before training. "
+            "This is the slow CSV decompression step; later training epochs reuse the cache."
+        ),
+        code_cell(preprocess_source(version)),
         code_cell(training_source(version)),
     ]
     notebook = {
@@ -164,6 +172,37 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
         "nbformat_minor": 5,
     }
     path.write_text(json.dumps(notebook, indent=1) + "\n", encoding="utf-8")
+
+
+def preprocess_source(version: str) -> str:
+    return (
+        "import subprocess\n"
+        "import sys\n"
+        "\n"
+        "RUN_PREPROCESS = False  # Set True to build/refresh the 1s microstructure cache before training.\n"
+        "PREPROCESS_PROCESSES = int(manifest.get('default_preprocess_processes', 8))\n"
+        "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 2))\n"
+        "REBUILD_PREPROCESS_CACHE = False\n"
+        "\n"
+        f"preprocess_py = LOCAL_CODE_ROOT / 'research' / 'inhouse_transformer' / {version!r} / 'preprocess_microstructure.py'\n"
+        "preprocess_args = [\n"
+        "    '--flatfiles-root', str(FLATFILES_ROOT),\n"
+        "    '--cache-root', str(CACHE_ROOT),\n"
+        "    '--start-date', manifest['train_start_date'],\n"
+        "    '--end-date', manifest['test_end_date'],\n"
+        "    '--tickers', manifest.get('tickers', 'ALL'),\n"
+        "    '--processes', str(PREPROCESS_PROCESSES),\n"
+        "    '--polars-threads-per-process', str(POLARS_THREADS_PER_PROCESS),\n"
+        "]\n"
+        "if REBUILD_PREPROCESS_CACHE:\n"
+        "    preprocess_args.append('--rebuild-cache')\n"
+        "\n"
+        "if RUN_PREPROCESS:\n"
+        "    print('Running:', ' '.join([str(preprocess_py), *preprocess_args]))\n"
+        "    subprocess.check_call([sys.executable, str(preprocess_py), *preprocess_args])\n"
+        "else:\n"
+        "    print('Skipping preprocessing. Set RUN_PREPROCESS=True to build the cache first.')\n"
+    )
 
 
 def training_source(version: str) -> str:
@@ -225,8 +264,11 @@ def write_workstation_readme(path: Path, version: str, manifest: dict[str, Any])
         f"# Workstation package for {version}\n\n"
         "Open `train_workstation.ipynb` from the same Drive folder. The notebook extracts "
         "the zip to a local runtime directory and runs training in-process.\n\n"
+        "Run `preprocess_microstructure.py` first, or set `RUN_PREPROCESS=True` in the notebook, "
+        "to prebuild the 1-second quote/trade Parquet cache.\n\n"
         f"Default W&B project: `{manifest['wandb_project']}`\n\n"
-        "For performance, copy flatfiles to local SSD/NVMe and update `FLATFILES_ROOT` in the notebook.\n",
+        "For performance, keep flatfiles and cache output on local SSD/NVMe and update `FLATFILES_ROOT` "
+        "in the notebook if needed.\n",
         encoding="utf-8",
     )
 
