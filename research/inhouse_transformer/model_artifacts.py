@@ -164,6 +164,22 @@ def _synthetic_input_for(
             dtype=dtype,
             device=device,
         )
+    if name == "one_second_values":
+        return torch_module.zeros(
+            rows,
+            model.one_second_context,
+            model.one_second_feature_count,
+            dtype=dtype,
+            device=device,
+        )
+    if name == "ten_second_values":
+        return torch_module.zeros(
+            rows,
+            model.ten_second_context,
+            model.ten_second_feature_count,
+            dtype=dtype,
+            device=device,
+        )
 
     branch_by_name = {
         "macro_15m_values": "macro_15m_encoder",
