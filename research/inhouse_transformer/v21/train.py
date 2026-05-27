@@ -160,6 +160,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-amp", action="store_true")
     parser.add_argument("--compile-model", action="store_true")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--output-root", default=str(defaults.train.output_root))
     parser.add_argument("--output-name", default=defaults.train.output_name)
     parser.add_argument("--checkpoint-policy", choices=["all", "last_only"], default=defaults.train.checkpoint_policy)
     parser.add_argument("--fresh-start", action="store_true")
@@ -228,6 +229,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         seed=args.seed,
         amp=not args.no_amp,
         compile_model=args.compile_model,
+        output_root=Path(args.output_root),
         output_name=args.output_name,
         resume_latest=not args.no_resume_latest,
         fresh_start=args.fresh_start,
@@ -594,8 +596,7 @@ def current_lr(optimizer: Any) -> float:
 
 
 def resolve_output_dir(config: ExperimentConfig, args: argparse.Namespace) -> Path:
-    base = config.data.cache_root.parents[1] if len(config.data.cache_root.parents) > 1 else config.data.cache_root
-    model_root = base / "models" / "inhouse_transformer" / EXPERIMENT_VERSION
+    model_root = config.train.output_root
     if args.output_name:
         return model_root / args.output_name
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

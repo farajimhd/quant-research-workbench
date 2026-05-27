@@ -17,7 +17,7 @@ DEFAULT_TEST_END = "2025-07-11"
 @dataclass(slots=True)
 class DataConfig:
     flatfiles_root: Path = Path("D:/market-data/flatfiles/us_stock_sip")
-    cache_root: Path = DEFAULT_PROCESSED_ROOT / "microstructure_cache" / "v21"
+    cache_root: Path = Path("D:/market-data/flatfiles/us_stock_sip/derived/microstructure_1s_v1")
     train_start_date: str = DEFAULT_TRAIN_START
     train_end_date: str = DEFAULT_TRAIN_END
     validation_start_date: str = DEFAULT_VALIDATION_START
@@ -57,6 +57,7 @@ class ModelConfig:
 
 @dataclass(slots=True)
 class TrainConfig:
+    output_root: Path = DEFAULT_PROCESSED_ROOT / "models" / "inhouse_transformer" / "v21"
     batch_size: int = 4096
     epochs: int = 3
     max_steps: int = 0

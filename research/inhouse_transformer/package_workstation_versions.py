@@ -16,7 +16,8 @@ DRIVE_CODE_ROOT = Path("G:/My Drive/quant-research-workbench/workstation_code")
 WANDB_ENTITY = "mehdifaraji"
 WANDB_PROJECT = "May2026-microstructure-hybrid-v21"
 DEFAULT_FLATFILES_ROOT = "D:/market-data/flatfiles/us_stock_sip"
-DEFAULT_LOCAL_CACHE_ROOT = "D:/TradingData/quant-research-workbench/market_data/microstructure_cache/v21"
+DEFAULT_LOCAL_CACHE_ROOT = "D:/market-data/flatfiles/us_stock_sip/derived/microstructure_1s_v1"
+DEFAULT_MODEL_OUTPUT_ROOT = "D:/TradingData/quant-research-workbench/market_data/models/inhouse_transformer/v21"
 
 
 def main() -> None:
@@ -82,6 +83,7 @@ def build_manifest(version: str, git_commit: str) -> dict[str, Any]:
         "drive_code_dir": f"G:/My Drive/quant-research-workbench/workstation_code/{version}",
         "default_flatfiles_root": DEFAULT_FLATFILES_ROOT,
         "default_cache_root": DEFAULT_LOCAL_CACHE_ROOT,
+        "default_output_root": DEFAULT_MODEL_OUTPUT_ROOT,
         "train_start_date": "2025-06-02",
         "train_end_date": "2025-06-30",
         "validation_start_date": "2025-07-01",
@@ -103,7 +105,7 @@ def build_manifest(version: str, git_commit: str) -> dict[str, Any]:
         "lr_scheduler": "cosine_warm_restarts",
         "notes": [
             "API keys are read from the workstation environment or repo .env; no secrets are stored in this package.",
-            "For speed, copy flatfiles and cache_root to local SSD/NVMe. Google Drive Desktop on HDD can bottleneck parsing.",
+            "The default cache_root is a shared derived-data folder under the SIP flatfiles root so future versions can reuse it.",
             "The first pass builds per-session one-second Parquet caches; later epochs reuse them.",
         ],
     }
@@ -148,9 +150,12 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
             "# Edit FLATFILES_ROOT if you copy data from the HDD/Drive path to local SSD/NVMe.\n"
             "FLATFILES_ROOT = Path(manifest['default_flatfiles_root'])\n"
             "CACHE_ROOT = Path(manifest['default_cache_root'])\n"
+            "OUTPUT_ROOT = Path(manifest['default_output_root'])\n"
             "print('flatfiles root:', FLATFILES_ROOT, 'exists=', FLATFILES_ROOT.exists())\n"
             "print('cache root:', CACHE_ROOT)\n"
+            "print('output root:', OUTPUT_ROOT)\n"
             "CACHE_ROOT.mkdir(parents=True, exist_ok=True)\n"
+            "OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)\n"
         ),
         code_cell(
             "%pip install -q polars pyarrow wandb torchinfo torchview graphviz\n"
@@ -230,6 +235,7 @@ def training_source(version: str) -> str:
         "    '--test-start-date', manifest['test_start_date'],\n"
         "    '--test-end-date', manifest['test_end_date'],\n"
         "    '--device', 'cuda',\n"
+        "    '--output-root', str(OUTPUT_ROOT),\n"
         "    '--batch-size', str(BATCH_SIZE),\n"
         "    '--epochs', str(EPOCHS),\n"
         "    '--max-steps', str(MAX_STEPS),\n"
