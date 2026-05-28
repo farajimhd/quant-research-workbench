@@ -12,7 +12,8 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_VERSIONS = ("v21", "v22")
-DRIVE_CODE_ROOT = Path("G:/My Drive/quant-research-workbench/workstation_code")
+DRIVE_COPY_ROOT = Path("G:/My Drive/quant-research-workbench/workstation_code")
+WORKSTATION_CODE_ROOT = Path("H:/My Drive/quant-research-workbench/workstation_code")
 WANDB_ENTITY = "mehdifaraji"
 DEFAULT_FLATFILES_ROOT = "D:/market-data/flatfiles/us_stocks_sip"
 VERSION_SETTINGS = {
@@ -46,7 +47,8 @@ VERSION_SETTINGS = {
 def main() -> None:
     parser = argparse.ArgumentParser(description="Package in-house transformer versions for workstation training.")
     parser.add_argument("--versions", nargs="+", default=list(DEFAULT_VERSIONS))
-    parser.add_argument("--drive-code-root", default=str(DRIVE_CODE_ROOT))
+    parser.add_argument("--drive-code-root", default=str(DRIVE_COPY_ROOT))
+    parser.add_argument("--workstation-code-root", default=str(WORKSTATION_CODE_ROOT))
     parser.add_argument("--skip-drive-copy", action="store_true")
     args = parser.parse_args()
 
@@ -62,7 +64,7 @@ def main() -> None:
         dist_dir = version_dir / "dist"
         dist_dir.mkdir(parents=True, exist_ok=True)
 
-        manifest = build_manifest(version, git_commit)
+        manifest = build_manifest(version, git_commit, Path(args.workstation_code_root))
         write_notebook(notebook_path, version, manifest)
         manifest_path = dist_dir / "workstation_manifest.json"
         readme_path = dist_dir / "README_WORKSTATION.md"
@@ -100,14 +102,15 @@ def current_git_commit() -> str:
         return ""
 
 
-def build_manifest(version: str, git_commit: str) -> dict[str, Any]:
+def build_manifest(version: str, git_commit: str, workstation_code_root: Path) -> dict[str, Any]:
     settings = VERSION_SETTINGS[version]
+    workstation_version_dir = workstation_code_root / version
     return {
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "version": version,
         "git_commit": git_commit,
         "package_name": f"inhouse_transformer_{version}_workstation.zip",
-        "drive_code_dir": f"G:/My Drive/quant-research-workbench/workstation_code/{version}",
+        "drive_code_dir": workstation_version_dir.as_posix(),
         "default_flatfiles_root": DEFAULT_FLATFILES_ROOT,
         "default_cache_root": settings["cache_root"],
         "default_output_root": settings["output_root"],
@@ -157,7 +160,8 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
             "from pathlib import Path\n"
             "\n"
             f"VERSION = {version!r}\n"
-            "DRIVE_CODE_DIR = Path('G:/My Drive/quant-research-workbench/workstation_code') / VERSION\n"
+            f"DEFAULT_DRIVE_CODE_DIR = Path({manifest['drive_code_dir']!r})\n"
+            "DRIVE_CODE_DIR = Path(os.environ.get('QW_DRIVE_CODE_DIR', str(DEFAULT_DRIVE_CODE_DIR)))\n"
             "PACKAGE_ZIP = DRIVE_CODE_DIR / f'inhouse_transformer_{VERSION}_workstation.zip'\n"
             "MANIFEST_PATH = DRIVE_CODE_DIR / 'workstation_manifest.json'\n"
             "LOCAL_CODE_ROOT = Path(f'D:/TradingCodes/quant-research-workbench-{VERSION}-runtime')\n"
