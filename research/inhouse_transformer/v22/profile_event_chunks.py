@@ -19,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 from research.inhouse_transformer.v22.config import DataConfig  # noqa: E402
 
 
-DEFAULT_CHUNK_MS = (100, 250, 500, 1000)
+DEFAULT_CHUNK_MS = (250,)
 DEFAULT_CAPS = (64, 128, 256, 512)
 
 
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
         default=4,
         help="Maximum quote/trade sessions to profile. Use 0 to profile every available session.",
     )
-    parser.add_argument("--processes", type=int, default=max(1, min(2, (os.cpu_count() or 4) // 2)))
+    parser.add_argument("--processes", type=int, default=1)
     parser.add_argument("--polars-threads-per-process", type=int, default=2)
     parser.add_argument("--session-start-hour-utc", type=int, default=defaults.session_start_hour_utc)
     parser.add_argument("--session-end-hour-utc", type=int, default=defaults.session_end_hour_utc)
@@ -77,6 +77,11 @@ def main() -> None:
             "Set --max-profile-sessions 0 to profile all sessions.",
             flush=True,
         )
+    print(
+        f"Profile plan: sessions={len(sessions)} chunk_ms={chunk_ms_values} caps={caps} "
+        f"processes={args.processes} polars_threads_per_process={args.polars_threads_per_process}",
+        flush=True,
+    )
     started = time.time()
     results = []
     failures = []
@@ -88,7 +93,10 @@ def main() -> None:
         "polars_threads_per_process": args.polars_threads_per_process,
     }
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.processes)) as executor:
-        futures = {executor.submit(profile_session_worker, session, worker_payload): session for session in sessions}
+        futures = {}
+        for submit_index, session in enumerate(sessions, start=1):
+            print(f"[{submit_index}/{len(sessions)}] {session} submitted", flush=True)
+            futures[executor.submit(profile_session_worker, session, worker_payload)] = session
         for idx, future in enumerate(concurrent.futures.as_completed(futures), start=1):
             session = futures[future]
             try:
@@ -132,6 +140,7 @@ def main() -> None:
 def profile_session_worker(session: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
+        print(f"{session} worker start", flush=True)
         from research.inhouse_transformer.v22.config import DataConfig
         from research.inhouse_transformer.v22.data import parse_ticker_list
 
@@ -142,13 +151,16 @@ def profile_session_worker(session: str, payload: dict[str, Any]) -> dict[str, A
         config = DataConfig(**clean)
         rows: dict[str, Any] = {"session": session, "rows": 0, "chunk_profiles": {}}
         for chunk_ms in payload["chunk_ms_values"]:
+            print(f"{session} chunk_ms={chunk_ms} reading quote counts", flush=True)
             quote_counts = event_counts(config, session, "quotes", int(chunk_ms), "quote_count")
+            print(f"{session} chunk_ms={chunk_ms} reading trade counts", flush=True)
             trade_counts = event_counts(config, session, "trades", int(chunk_ms), "trade_count")
             if rows["rows"] <= 0:
                 rows["rows"] = int(quote_counts.get_column("quote_count").sum() or 0) + int(
                     trade_counts.get_column("trade_count").sum() or 0
                 )
             rows["chunk_profiles"][str(chunk_ms)] = profile_chunk_counts(quote_counts, trade_counts, payload["caps"])
+            print(f"{session} chunk_ms={chunk_ms} profile complete", flush=True)
         return rows
     except KeyboardInterrupt:
         raise
