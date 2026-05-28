@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-temp-normalized", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--heartbeat-seconds", type=float, default=30.0)
+    parser.add_argument("--max-pending", type=int, default=0, help="Maximum queued worker futures. Default is 2x processes.")
     parser.add_argument("--manifest-name", default="preprocess_event_chunks_manifest.jsonl")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -56,6 +57,7 @@ def main() -> None:
 
     from research.inhouse_transformer.v22.data import (
         available_sessions,
+        canonical_event_path,
         discover_canonical_groups,
         discover_temp_canonical_groups,
         event_chunk_path,
@@ -95,7 +97,8 @@ def main() -> None:
     print(f"sessions={sessions[0]} -> {sessions[-1]} count={len(sessions)}")
     print(f"months={','.join(months)}")
     print(f"chunk_ms={config.chunk_ms} max_quote={config.max_quote_events} max_trade={config.max_trade_events} max_total={config.max_total_events}")
-    print(f"processes={args.processes} polars_threads_per_process={args.polars_threads_per_process}")
+    max_pending = args.max_pending if args.max_pending > 0 else max(1, args.processes) * 2
+    print(f"processes={args.processes} polars_threads_per_process={args.polars_threads_per_process} max_pending={max_pending}")
     print(
         "polars_runtime="
         f"version={pl.__version__} thread_pool={pl.thread_pool_size()} "
@@ -127,7 +130,10 @@ def main() -> None:
         end_date=args.end_date,
         tickers=tickers,
     )
-    if existing_groups and not args.rebuild_cache:
+    temp_groups = discover_temp_canonical_groups(config) if not args.rebuild_cache else {}
+    if temp_groups and not args.rebuild_cache:
+        print(f"Temporary normalized parts found for {len(temp_groups):,} ticker-month groups; resuming canonical merge.", flush=True)
+    elif existing_groups and not args.rebuild_cache:
         print(f"Layer 1 canonical events already present for {len(existing_groups):,} ticker-month groups; skipping raw CSV normalization.", flush=True)
     else:
         print(LOG_RULE)
@@ -146,14 +152,25 @@ def main() -> None:
             started=started,
             fail_fast=args.fail_fast,
             heartbeat_seconds=args.heartbeat_seconds,
+            max_pending=max_pending,
         )
         temp_groups = discover_temp_canonical_groups(config)
+    if temp_groups:
         print(LOG_RULE)
         print(f"PHASE 2/3 merge temporary partitions into canonical ticker-month events groups={len(temp_groups):,}", flush=True)
         merge_items = [
             {"kind": kind, "year_month": year_month, "ticker": ticker, "paths": paths}
             for (kind, year_month, ticker), paths in sorted(temp_groups.items())
         ]
+        if not args.rebuild_cache:
+            before_skip = len(merge_items)
+            merge_items = [
+                item for item in merge_items
+                if not canonical_event_path(config, item["kind"], item["ticker"], item["year_month"]).exists()
+            ]
+            skipped_existing = before_skip - len(merge_items)
+            if skipped_existing:
+                print(f"PHASE 2 resume: skipped {skipped_existing:,} existing canonical files; remaining={len(merge_items):,}", flush=True)
         failed += run_parallel(
             label="canonical",
             items=merge_items,
@@ -163,6 +180,7 @@ def main() -> None:
             started=started,
             fail_fast=args.fail_fast,
             heartbeat_seconds=args.heartbeat_seconds,
+            max_pending=max_pending,
         )
         if not args.keep_temp_normalized and failed == 0:
             temp_root = temp_canonical_parts_root(config)
@@ -186,6 +204,7 @@ def main() -> None:
         started=started,
         fail_fast=args.fail_fast,
         heartbeat_seconds=args.heartbeat_seconds,
+        max_pending=max_pending,
     )
     print(LOG_RULE)
     print(f"Done. sessions={len(sessions)} canonical_groups={len(canonical_groups):,} failed={failed}")
@@ -288,22 +307,53 @@ def run_parallel(
     started: float,
     fail_fast: bool,
     heartbeat_seconds: float,
+    max_pending: int,
 ) -> int:
     if not items:
         print(f"{label}: no work items", flush=True)
         return 0
     failed = 0
     completed = 0
+    submitted = 0
+    stop_submitting = False
+    pending_limit = max(1, max_pending)
     submitted_at: dict[Any, float] = {}
     future_labels: dict[Any, str] = {}
+    item_iter = iter(enumerate(items, start=1))
+
+    def submit_next(executor: concurrent.futures.ProcessPoolExecutor, pending: set[Any]) -> bool:
+        nonlocal completed, failed, stop_submitting, submitted
+        if stop_submitting:
+            return False
+        try:
+            index, item = next(item_iter)
+        except StopIteration:
+            return False
+        item_name = item_label(item)
+        try:
+            future = submit(executor, item)
+        except BaseException:
+            submitted += 1
+            completed += 1
+            failed += 1
+            stop_submitting = True
+            result = failed_row(label, item_name, time.time() - started)
+            append_jsonl(manifest_path, result)
+            print(format_progress(result, completed, len(items), time.time() - started), flush=True)
+            print(format_error(result), flush=True)
+            return False
+        pending.add(future)
+        submitted += 1
+        submitted_at[future] = time.time()
+        future_labels[future] = item_name
+        print(f"[{index:,}/{len(items):,}] SUBMIT {label} {future_labels[future]}", flush=True)
+        return True
+
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, processes)) as executor:
         pending = set()
-        for index, item in enumerate(items, start=1):
-            future = submit(executor, item)
-            pending.add(future)
-            submitted_at[future] = time.time()
-            future_labels[future] = item_label(item)
-            print(f"[{index:,}/{len(items):,}] SUBMIT {label} {future_labels[future]}", flush=True)
+        while len(pending) < min(pending_limit, len(items)):
+            if not submit_next(executor, pending):
+                break
         next_heartbeat = time.time() + max(1.0, heartbeat_seconds)
         while pending:
             done, pending = concurrent.futures.wait(
@@ -333,8 +383,13 @@ def run_parallel(
                     failed += 1
                 append_jsonl(manifest_path, result)
                 print(format_progress(result, completed, len(items), time.time() - started), flush=True)
+                if result["status"] == "failed":
+                    print(format_error(result), flush=True)
                 if fail_fast and result["status"] == "failed":
                     raise SystemExit(f"{label} failed for {result.get('key')}: {result.get('error')}")
+                while not stop_submitting and len(pending) < pending_limit and submitted < len(items):
+                    if not submit_next(executor, pending):
+                        break
             if now >= next_heartbeat and pending:
                 print_heartbeat(label, pending, future_labels, submitted_at, completed, len(items), started)
                 next_heartbeat = now + max(1.0, heartbeat_seconds)
@@ -438,6 +493,13 @@ def format_progress(result: dict[str, Any], completed: int, total: int, elapsed:
         f"rows={int(result.get('rows') or 0):,} item_seconds={float(result.get('elapsed_seconds') or 0):.1f} "
         f"elapsed_minutes={elapsed / 60.0:.1f}"
     )
+
+
+def format_error(result: dict[str, Any]) -> str:
+    error = str(result.get("error") or "").strip()
+    if len(error) > 4000:
+        error = error[-4000:]
+    return f"ERROR {result.get('phase')} {result.get('key')}\n{error}"
 
 
 if __name__ == "__main__":
