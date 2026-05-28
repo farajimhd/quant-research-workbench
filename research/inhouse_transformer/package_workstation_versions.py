@@ -125,6 +125,7 @@ def build_manifest(version: str, git_commit: str, workstation_code_root: Path) -
         "default_batch_size": settings["batch_size"],
         "default_num_workers": 8,
         "default_prefetch_factor": 4,
+        "default_profile_processes": 2,
         "default_preprocess_processes": 8,
         "default_polars_threads_per_process": 2,
         "preprocess_script": settings["preprocess_script"],
@@ -261,7 +262,7 @@ def command_generation_source(version: str) -> str:
         "MAX_QUOTE_EVENTS = 96\n"
         "MAX_TRADE_EVENTS = 64\n"
         "MAX_TOTAL_EVENTS = 128\n"
-        "PROFILE_PROCESSES = int(manifest.get('default_preprocess_processes', 8))\n"
+        "PROFILE_PROCESSES = int(manifest.get('default_profile_processes', 2))\n"
         "PREPROCESS_PROCESSES = int(manifest.get('default_preprocess_processes', 8))\n"
         "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 2))\n"
         "REBUILD_PREPROCESS_CACHE = False\n"

@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tickers", default="ALL")
     parser.add_argument("--chunk-ms", default=",".join(str(value) for value in DEFAULT_CHUNK_MS))
     parser.add_argument("--caps", default=",".join(str(value) for value in DEFAULT_CAPS))
-    parser.add_argument("--processes", type=int, default=max(1, min(8, (os.cpu_count() or 4) // 2)))
+    parser.add_argument("--processes", type=int, default=max(1, min(2, (os.cpu_count() or 4) // 2)))
     parser.add_argument("--polars-threads-per-process", type=int, default=2)
     parser.add_argument("--session-start-hour-utc", type=int, default=defaults.session_start_hour_utc)
     parser.add_argument("--session-end-hour-utc", type=int, default=defaults.session_end_hour_utc)
@@ -114,18 +114,22 @@ def profile_session_worker(session: str, payload: dict[str, Any]) -> dict[str, A
     try:
         os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
         from research.inhouse_transformer.v22.config import DataConfig
-        from research.inhouse_transformer.v22.data import parse_ticker_list, read_quotes, read_trades
+        from research.inhouse_transformer.v22.data import parse_ticker_list
 
         clean = dict(payload["config"])
         clean["flatfiles_root"] = Path(clean["flatfiles_root"])
         clean["cache_root"] = Path(clean["cache_root"])
         clean["tickers"] = parse_ticker_list(payload["tickers_raw"])
         config = DataConfig(**clean)
-        quotes = read_quotes(config, session, config.tickers)
-        trades = read_trades(config, session, config.tickers)
-        rows: dict[str, Any] = {"session": session, "rows": int(quotes.height + trades.height), "chunk_profiles": {}}
+        rows: dict[str, Any] = {"session": session, "rows": 0, "chunk_profiles": {}}
         for chunk_ms in payload["chunk_ms_values"]:
-            rows["chunk_profiles"][str(chunk_ms)] = profile_chunk_size(quotes, trades, int(chunk_ms), payload["caps"])
+            quote_counts = event_counts(config, session, "quotes", int(chunk_ms), "quote_count")
+            trade_counts = event_counts(config, session, "trades", int(chunk_ms), "trade_count")
+            if rows["rows"] <= 0:
+                rows["rows"] = int(quote_counts.get_column("quote_count").sum() or 0) + int(
+                    trade_counts.get_column("trade_count").sum() or 0
+                )
+            rows["chunk_profiles"][str(chunk_ms)] = profile_chunk_counts(quote_counts, trade_counts, payload["caps"])
         return rows
     except KeyboardInterrupt:
         raise
@@ -138,12 +142,47 @@ def profile_session_worker(session: str, payload: dict[str, Any]) -> dict[str, A
         }
 
 
-def profile_chunk_size(quotes: Any, trades: Any, chunk_ms: int, caps: list[int]) -> dict[str, Any]:
+def event_counts(config: Any, session: str, kind: str, chunk_ms: int, count_name: str) -> Any:
+    import polars as pl
+    from research.inhouse_transformer.v22.data import (
+        NANOSECONDS_PER_SECOND,
+        collect_lazy,
+        find_flatfile,
+        header_columns,
+        uses_all_tickers,
+    )
+
+    path = find_flatfile(config.flatfiles_root, kind, session)
+    if path is None:
+        raise FileNotFoundError(f"Missing {kind} flatfile for {session} under {config.flatfiles_root}.")
+    names = header_columns(path)
+    missing = sorted({"ticker", "sip_timestamp"} - names)
+    if missing:
+        raise SystemExit(f"{kind} flatfile {path} is missing required columns for profiling: {missing}")
+    chunk_ns = int(chunk_ms) * 1_000_000
+    day_ns = pl.col("sip_timestamp").cast(pl.Int64, strict=False) % (24 * 3600 * NANOSECONDS_PER_SECOND)
+    start_ns = config.session_start_hour_utc * 3600 * NANOSECONDS_PER_SECOND
+    end_ns = config.session_end_hour_utc * 3600 * NANOSECONDS_PER_SECOND
+    scan = pl.scan_csv(str(path), infer_schema_length=0, ignore_errors=True).select(["ticker", "sip_timestamp"])
+    if config.tickers and not uses_all_tickers(config.tickers):
+        scan = scan.filter(pl.col("ticker").str.to_uppercase().is_in(list(config.tickers)))
+    return (
+        scan.filter((day_ns >= start_ns) & (day_ns < end_ns))
+        .with_columns(
+            pl.col("ticker").cast(pl.String).str.to_uppercase(),
+            pl.col("sip_timestamp").cast(pl.Int64, strict=False),
+        )
+        .filter(pl.col("sip_timestamp").is_not_null())
+        .with_columns(((pl.col("sip_timestamp") // chunk_ns) * chunk_ns).alias("chunk_start_ns"))
+        .group_by(["ticker", "chunk_start_ns"])
+        .agg(pl.len().alias(count_name))
+        .pipe(collect_lazy)
+    )
+
+
+def profile_chunk_counts(quote_counts: Any, trade_counts: Any, caps: list[int]) -> dict[str, Any]:
     import polars as pl
 
-    chunk_ns = int(chunk_ms) * 1_000_000
-    quote_counts = grouped_counts(quotes, chunk_ns, "quote_count")
-    trade_counts = grouped_counts(trades, chunk_ns, "trade_count")
     if quote_counts.is_empty() and trade_counts.is_empty():
         return {}
     counts = quote_counts.join(trade_counts, on=["ticker", "chunk_start_ns"], how="full", coalesce=True).with_columns(
@@ -167,18 +206,6 @@ def profile_chunk_size(quotes: Any, trades: Any, chunk_ms: int, caps: list[int])
         },
         "top_tickers": by_ticker.sort("total_count", descending=True).head(50).to_dicts(),
     }
-
-
-def grouped_counts(frame: Any, chunk_ns: int, name: str) -> Any:
-    import polars as pl
-
-    if frame.is_empty():
-        return pl.DataFrame({"ticker": [], "chunk_start_ns": [], name: []})
-    return (
-        frame.with_columns(((pl.col("sip_timestamp") // chunk_ns) * chunk_ns).alias("chunk_start_ns"))
-        .group_by(["ticker", "chunk_start_ns"])
-        .agg(pl.len().alias(name))
-    )
 
 
 def quantiles(values: Any) -> dict[str, float]:

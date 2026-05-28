@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import gzip
 import math
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -174,6 +175,15 @@ def find_flatfile(flatfiles_root: Path, kind: str, session: str) -> Path | None:
     return None
 
 
+def header_columns(path: Path) -> set[str]:
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8", newline="") as handle:
+        first_line = handle.readline()
+    if not first_line:
+        return set()
+    return {column.strip() for column in first_line.rstrip("\r\n").split(",") if column.strip()}
+
+
 def flatfile_root_candidates(flatfiles_root: Path) -> tuple[Path, ...]:
     candidates = [flatfiles_root]
     if flatfiles_root.name == "us_stock_sip":
@@ -251,8 +261,8 @@ def read_quotes(config: DataConfig, session: str, tickers: tuple[str, ...]) -> p
         "bid_exchange",
         "ask_exchange",
     ]
-    scan = pl.scan_csv(str(path), infer_schema_length=1000, ignore_errors=True)
-    names = set(scan.collect_schema().names())
+    names = header_columns(path)
+    scan = pl.scan_csv(str(path), infer_schema_length=0, ignore_errors=True)
     missing = sorted(set(columns[:7]) - names)
     if missing:
         raise SystemExit(f"Quote flatfile {path} is missing required columns: {missing}")
@@ -288,8 +298,8 @@ def read_trades(config: DataConfig, session: str, tickers: tuple[str, ...]) -> p
     if path is None:
         raise FileNotFoundError(f"Missing trades flatfile for {session} under {config.flatfiles_root}.")
     columns = ["ticker", "sip_timestamp", "sequence_number", "price", "size", "exchange"]
-    scan = pl.scan_csv(str(path), infer_schema_length=1000, ignore_errors=True)
-    names = set(scan.collect_schema().names())
+    names = header_columns(path)
+    scan = pl.scan_csv(str(path), infer_schema_length=0, ignore_errors=True)
     missing = sorted(set(columns[:5]) - names)
     if missing:
         raise SystemExit(f"Trade flatfile {path} is missing required columns: {missing}")
@@ -952,10 +962,10 @@ def target_bit_count(config: DataConfig) -> int:
 def collect_lazy(frame: pl.LazyFrame) -> pl.DataFrame:
     try:
         return frame.collect(engine="streaming")
-    except TypeError:
+    except (TypeError, ValueError):
         try:
             return frame.collect(streaming=True)
-        except TypeError:
+        except (TypeError, ValueError):
             return frame.collect()
 
 
