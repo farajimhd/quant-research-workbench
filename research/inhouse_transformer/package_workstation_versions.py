@@ -147,9 +147,10 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
     cells = [
         markdown_cell(
             f"# Train {version} on Workstation\n\n"
-            f"This notebook extracts the packaged code locally and launches {version} training in-process so "
-            "logs appear directly in the notebook. Keep API keys in environment variables or a local `.env`; "
-            "do not paste secrets into cells."
+            f"This notebook extracts the packaged code locally and creates terminal commands for {version}. "
+            "Run the generated PowerShell scripts for long jobs so progress and failures are visible directly "
+            "in the terminal. Keep API keys in environment variables or a local `.env`; do not paste secrets "
+            "into cells."
         ),
         code_cell(
             "import json\n"
@@ -190,7 +191,7 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
             "CACHE_ROOT.mkdir(parents=True, exist_ok=True)\n"
             "OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)\n"
         ),
-        code_cell(streamed_runner_source()),
+        code_cell(command_runner_source()),
         code_cell(
             "%pip install polars pyarrow wandb torchinfo torchview graphviz\n"
         ),
@@ -229,7 +230,7 @@ def preprocess_source(version: str) -> str:
             "    '--max-total-events', '128',\n"
         )
     return (
-        "RUN_PREPROCESS = False  # Set True to build/refresh the microstructure cache before training.\n"
+        "RUN_PREPROCESS_IN_NOTEBOOK = False  # Prefer running the printed PowerShell script in a terminal.\n"
         "PREPROCESS_PROCESSES = int(manifest.get('default_preprocess_processes', 8))\n"
         "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 2))\n"
         "REBUILD_PREPROCESS_CACHE = False\n"
@@ -248,10 +249,11 @@ def preprocess_source(version: str) -> str:
         "if REBUILD_PREPROCESS_CACHE:\n"
         "    preprocess_args.append('--rebuild-cache')\n"
         "\n"
-        "if RUN_PREPROCESS:\n"
+        "write_command_script('preprocess', preprocess_py, preprocess_args)\n"
+        "if RUN_PREPROCESS_IN_NOTEBOOK:\n"
         "    run_script_streamed('preprocess', preprocess_py, preprocess_args)\n"
         "else:\n"
-        "    print('Skipping preprocessing. Set RUN_PREPROCESS=True to build the cache first.')\n"
+        "    print('Preprocess was not started in the notebook. Run the printed PowerShell command in a terminal.')\n"
     )
 
 
@@ -260,7 +262,7 @@ def profile_source(version: str) -> str:
     if not script_name:
         return "print('No separate profiling script for this version.')\n"
     return (
-        "RUN_PROFILE = False  # Set True to profile chunk sizes and event caps before preprocessing.\n"
+        "RUN_PROFILE_IN_NOTEBOOK = False  # Prefer running the printed PowerShell script in a terminal.\n"
         "PROFILE_PROCESSES = int(manifest.get('default_preprocess_processes', 8))\n"
         "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 2))\n"
         f"profile_py = LOCAL_CODE_ROOT / 'research' / 'inhouse_transformer' / {version!r} / {script_name!r}\n"
@@ -274,20 +276,53 @@ def profile_source(version: str) -> str:
         "    '--processes', str(PROFILE_PROCESSES),\n"
         "    '--polars-threads-per-process', str(POLARS_THREADS_PER_PROCESS),\n"
         "]\n"
-        "if RUN_PROFILE:\n"
+        "write_command_script('profile', profile_py, profile_args)\n"
+        "if RUN_PROFILE_IN_NOTEBOOK:\n"
         "    run_script_streamed('profile', profile_py, profile_args)\n"
         "else:\n"
-        "    print('Skipping profiling. Set RUN_PROFILE=True to profile chunk/cap choices.')\n"
+        "    print('Profiling was not started in the notebook. Run the printed PowerShell command in a terminal.')\n"
     )
 
 
-def streamed_runner_source() -> str:
+def command_runner_source() -> str:
     return (
         "import subprocess\n"
         "import time\n"
         "\n"
         "RUN_LOG_DIR = OUTPUT_ROOT / 'workstation_logs'\n"
         "RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)\n"
+        "\n"
+        "def ps_quote(value):\n"
+        "    text = str(value).replace('`', '``').replace('\"', '`\"')\n"
+        "    return f'\"{text}\"'\n"
+        "\n"
+        "def terminal_command(script_path, args):\n"
+        "    return ' '.join([ps_quote(sys.executable), '-u', ps_quote(script_path), *[ps_quote(arg) for arg in args]])\n"
+        "\n"
+        "def write_command_script(label, script_path, args):\n"
+        "    script_path = Path(script_path)\n"
+        "    command = terminal_command(script_path, args)\n"
+        "    ps1_path = LOCAL_CODE_ROOT / f'run_{label}.ps1'\n"
+        "    log_path = RUN_LOG_DIR / f'{VERSION}_{label}.log'\n"
+        "    py_path = str(LOCAL_CODE_ROOT).replace(\"'\", \"''\")\n"
+        "    ps1 = (\n"
+        "        \"$ErrorActionPreference = 'Stop'\\n\"\n"
+        "        \"$env:PYTHONUNBUFFERED = '1'\\n\"\n"
+        "        f\"$env:PYTHONPATH = '{py_path}' + [System.IO.Path]::PathSeparator + $env:PYTHONPATH\\n\"\n"
+        "        f\"{command} 2>&1 | Tee-Object -FilePath {ps_quote(log_path)}\\n\"\n"
+        "        \"if ($LASTEXITCODE -ne 0) { throw \\\"Command failed with exit code $LASTEXITCODE\\\" }\\n\"\n"
+        "    )\n"
+        "    ps1_path.write_text(ps1, encoding='utf-8')\n"
+        "    print('=' * 96)\n"
+        "    print(f'{label.upper()} command generated')\n"
+        "    print('PowerShell script:', ps1_path)\n"
+        "    print('Log file:', log_path)\n"
+        "    print('Run this in PowerShell:')\n"
+        "    print('& ' + ps_quote(ps1_path))\n"
+        "    print('Direct command equivalent:')\n"
+        "    print(command)\n"
+        "    print('=' * 96)\n"
+        "    return ps1_path\n"
         "\n"
         "def run_script_streamed(label, script_path, args):\n"
         "    script_path = Path(script_path)\n"
@@ -336,15 +371,13 @@ def streamed_runner_source() -> str:
         "        raise RuntimeError(f'{label} failed with return code {return_code}. Full log: {log_path}')\n"
         "    return log_path\n"
         "\n"
-        "print('streamed runner ready; logs will be written to', RUN_LOG_DIR)\n"
+        "print('command helpers ready; generated scripts/logs will be written under', LOCAL_CODE_ROOT, 'and', RUN_LOG_DIR)\n"
     )
 
 
 def training_source(version: str) -> str:
     return (
-        "import runpy\n"
-        "import sys\n"
-        "\n"
+        "RUN_TRAINING_IN_NOTEBOOK = False  # Prefer running the printed PowerShell script in a terminal.\n"
         "BATCH_SIZE = int(manifest.get('default_batch_size', 4096))\n"
         "EPOCHS = int(manifest.get('default_epochs', 3))\n"
         "NUM_WORKERS = int(manifest.get('default_num_workers', 8))\n"
@@ -385,13 +418,11 @@ def training_source(version: str) -> str:
         "if DRY_RUN:\n"
         "    args.append('--dry-run')\n"
         "\n"
-        "print('Running:', ' '.join([str(train_py), *args]))\n"
-        "old_argv = sys.argv[:]\n"
-        "try:\n"
-        "    sys.argv = [str(train_py), *args]\n"
-        "    runpy.run_path(str(train_py), run_name='__main__')\n"
-        "finally:\n"
-        "    sys.argv = old_argv\n"
+        "write_command_script('train', train_py, args)\n"
+        "if RUN_TRAINING_IN_NOTEBOOK:\n"
+        "    run_script_streamed('train', train_py, args)\n"
+        "else:\n"
+        "    print('Training was not started in the notebook. Run the printed PowerShell command in a terminal.')\n"
     )
 
 
@@ -399,11 +430,12 @@ def write_workstation_readme(path: Path, version: str, manifest: dict[str, Any])
     path.write_text(
         f"# Workstation package for {version}\n\n"
         "Open `train_workstation.ipynb` from the same Drive folder. The notebook extracts "
-        "the zip to a local runtime directory and runs training in-process.\n\n"
-        f"Run `{manifest['preprocess_script']}` first, or set `RUN_PREPROCESS=True` in the notebook, "
-        "to prebuild the quote/trade Parquet cache.\n\n"
-        "Profile and preprocess cells stream child-process output directly in the notebook and write "
-        "`workstation_logs/*.log` under the model output root.\n\n"
+        "the zip to a local runtime directory and generates PowerShell scripts for profiling, "
+        "preprocessing, and training.\n\n"
+        "Preferred workflow: run the generated `run_profile.ps1`, `run_preprocess.ps1`, and "
+        "`run_train.ps1` scripts from a terminal so output is fully visible and restartable.\n\n"
+        "Notebook cells can still run jobs in-place by setting `RUN_*_IN_NOTEBOOK=True`, but terminal "
+        "execution is the default. Logs are written to `workstation_logs/*.log` under the model output root.\n\n"
         f"Default W&B project: `{manifest['wandb_project']}`\n\n"
         "For performance, keep flatfiles and cache output on local SSD/NVMe and update `FLATFILES_ROOT` "
         "in the notebook if needed.\n",
