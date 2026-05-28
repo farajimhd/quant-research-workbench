@@ -22,7 +22,7 @@ except ModuleNotFoundError:
     def get_worker_info() -> Any:  # type: ignore[no-redef]
         return None
 
-from research.inhouse_transformer.v14.data import encode_binary_magnitude_targets, log_return_bps
+from research.inhouse_transformer.v22.targets import encode_binary_magnitude_targets, log_return_bps
 from research.inhouse_transformer.v22.config import DataConfig
 
 
@@ -978,4 +978,3 @@ def count_coverage(*, config: DataConfig, sessions: list[str], tickers: tuple[st
             flush=True,
         )
     return coverage
-

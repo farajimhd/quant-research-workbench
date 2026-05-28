@@ -18,12 +18,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.inhouse_transformer.model_artifacts import save_model_architecture_artifacts  # noqa: E402
-from research.inhouse_transformer.v14.data import (  # noqa: E402
+from research.inhouse_transformer.v22.model_artifacts import save_model_architecture_artifacts  # noqa: E402
+from research.inhouse_transformer.v22.metrics import MetricAccumulator, append_jsonl  # noqa: E402
+from research.inhouse_transformer.v22.targets import (  # noqa: E402
     binary_magnitude_logits_to_distribution_stats,
     target_values_to_bps,
 )
-from research.inhouse_transformer.v14.metrics import MetricAccumulator, append_jsonl  # noqa: E402
 from research.inhouse_transformer.v22.config import DataConfig, ExperimentConfig, ModelConfig, TrainConfig  # noqa: E402
 from research.inhouse_transformer.v22.data import (  # noqa: E402
     CHUNK_SUMMARY_COLUMNS,
@@ -656,4 +656,3 @@ def set_seed(seed: int) -> None:
 
 if __name__ == "__main__":
     main()
-

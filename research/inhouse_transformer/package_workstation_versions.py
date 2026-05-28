@@ -359,11 +359,17 @@ def write_workstation_readme(path: Path, version: str, manifest: dict[str, Any])
 
 def write_package_zip(zip_path: Path, version: str, notebook_path: Path, manifest_path: Path, readme_path: Path) -> None:
     include_files = [
-        REPO_ROOT / "research" / "inhouse_transformer" / "model_artifacts.py",
-        REPO_ROOT / "research" / "inhouse_transformer" / "v14" / "data.py",
-        REPO_ROOT / "research" / "inhouse_transformer" / "v14" / "metrics.py",
         REPO_ROOT / "src" / "data_provider" / "config.py",
     ]
+    if version == "v21":
+        include_files.extend(
+            [
+                REPO_ROOT / "research" / "inhouse_transformer" / "model_artifacts.py",
+                REPO_ROOT / "research" / "inhouse_transformer" / "v14" / "data.py",
+                REPO_ROOT / "research" / "inhouse_transformer" / "v14" / "metrics.py",
+                REPO_ROOT / "research" / "inhouse_transformer" / "v14" / "config.py",
+            ]
+        )
     version_dir = REPO_ROOT / "research" / "inhouse_transformer" / version
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in version_dir.rglob("*"):
