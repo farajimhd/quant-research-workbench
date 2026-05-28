@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import gc
+import csv
 import gzip
 import math
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -472,18 +474,235 @@ def normalize_session_kind_to_temp_parts(
         return {"kind": kind, "session": session, "status": "skipped", "rows": rows, "path": str(output_root)}
     output_root.mkdir(parents=True, exist_ok=True)
     lazy = scanner(config, session, tickers)
-    lazy.sink_parquet(
-        pl.PartitionBy(
+    if hasattr(pl, "PartitionBy"):
+        lazy.sink_parquet(
+            pl.PartitionBy(
+                output_root,
+                key=["year_month", "ticker"],
+                include_key=True,
+                max_rows_per_file=1_000_000,
+            ),
+            compression="zstd",
+            mkdir=True,
+        )
+    else:
+        stream_normalized_csv_to_temp_parts(
+            config,
+            session,
+            kind,
+            tickers,
             output_root,
-            key=["year_month", "ticker"],
-            include_key=True,
-            max_rows_per_file=1_000_000,
-        ),
-        compression="zstd",
-        mkdir=True,
-    )
+        )
     rows = count_parquet_rows(output_root.rglob("*.parquet"))
     return {"kind": kind, "session": session, "status": "ok", "rows": rows, "path": str(output_root)}
+
+
+def stream_normalized_csv_to_temp_parts(
+    config: DataConfig,
+    session: str,
+    kind: str,
+    tickers: tuple[str, ...],
+    output_root: Path,
+    *,
+    flush_rows_per_ticker: int = 100_000,
+    flush_total_rows: int = 1_000_000,
+    progress_rows: int = 2_000_000,
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = find_flatfile(config.flatfiles_root, kind, session)
+    if path is None:
+        raise FileNotFoundError(f"Missing {kind} flatfile for {session} under {config.flatfiles_root}.")
+    selected_tickers = set(tickers) if tickers and not uses_all_tickers(tickers) else None
+    buffers: dict[str, list[dict[str, Any]]] = {}
+    part_index: dict[str, int] = {}
+    rows_seen = 0
+    rows_written = 0
+    rows_buffered = 0
+    started = time.time()
+    last_progress = started
+    required = {"ticker", "sip_timestamp"}
+    if kind == "quotes":
+        required |= {"sequence_number", "bid_price", "ask_price", "bid_size", "ask_size"}
+    else:
+        required |= {"sequence_number", "price", "size"}
+    with open_csv_text(path) as handle:
+        reader = csv.DictReader(handle)
+        missing = sorted(required - set(reader.fieldnames or []))
+        if missing:
+            raise SystemExit(f"{kind} flatfile {path} is missing required columns: {missing}")
+        for row in reader:
+            rows_seen += 1
+            normalized = normalize_raw_row(config, session, kind, row, selected_tickers)
+            if normalized is not None:
+                ticker = str(normalized["ticker"])
+                buffers.setdefault(ticker, []).append(normalized)
+                rows_buffered += 1
+                if len(buffers[ticker]) >= flush_rows_per_ticker:
+                    rows_written += flush_ticker_buffer(output_root, kind, ticker, buffers, part_index, pa, pq)
+                    rows_buffered = sum(len(items) for items in buffers.values())
+                if rows_buffered >= flush_total_rows:
+                    for flush_ticker in list(buffers):
+                        rows_written += flush_ticker_buffer(output_root, kind, flush_ticker, buffers, part_index, pa, pq)
+                    rows_buffered = 0
+            now = time.time()
+            if rows_seen % progress_rows == 0 or now - last_progress >= 30.0:
+                print(
+                    f"STREAM {kind}:{session} seen={rows_seen:,} written={rows_written:,} "
+                    f"buffered={rows_buffered:,} elapsed_minutes={(now - started) / 60.0:.1f}",
+                    flush=True,
+                )
+                last_progress = now
+    for flush_ticker in list(buffers):
+        rows_written += flush_ticker_buffer(output_root, kind, flush_ticker, buffers, part_index, pa, pq)
+    print(
+        f"STREAM {kind}:{session} complete seen={rows_seen:,} written={rows_written:,} "
+        f"elapsed_minutes={(time.time() - started) / 60.0:.1f}",
+        flush=True,
+    )
+
+
+def open_csv_text(path: Path) -> Any:
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8", newline="")
+    return path.open("rt", encoding="utf-8", newline="")
+
+
+def normalize_raw_row(
+    config: DataConfig,
+    session: str,
+    kind: str,
+    row: dict[str, str],
+    selected_tickers: set[str] | None,
+) -> dict[str, Any] | None:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    if not ticker or (selected_tickers is not None and ticker not in selected_tickers):
+        return None
+    sip_timestamp = parse_int(row.get("sip_timestamp"))
+    if sip_timestamp is None:
+        return None
+    day_ns = sip_timestamp % (24 * 3600 * NANOSECONDS_PER_SECOND)
+    start_ns = config.session_start_hour_utc * 3600 * NANOSECONDS_PER_SECOND
+    end_ns = config.session_end_hour_utc * 3600 * NANOSECONDS_PER_SECOND
+    if day_ns < start_ns or day_ns >= end_ns:
+        return None
+    sequence_number = parse_int(row.get("sequence_number")) or 0
+    if kind == "quotes":
+        bid_price = parse_float(row.get("bid_price"))
+        ask_price = parse_float(row.get("ask_price"))
+        if bid_price is None or ask_price is None or bid_price <= 0.0 or ask_price <= 0.0 or ask_price < bid_price:
+            return None
+        lot_multiplier = config.quote_size_lot_multiplier_before_2025_11_03 if session < QUOTE_SIZE_UNIT_SWITCH_DATE else 1
+        bid_size = max(0.0, parse_float(row.get("bid_size")) or 0.0) * float(lot_multiplier)
+        ask_size = max(0.0, parse_float(row.get("ask_size")) or 0.0) * float(lot_multiplier)
+        mid_price = (bid_price + ask_price) * 0.5
+        size_sum = max(1.0, bid_size + ask_size)
+        return {
+            "ticker": ticker,
+            "session_date": session,
+            "year_month": session[:7],
+            "sip_timestamp": sip_timestamp,
+            "sequence_number": sequence_number,
+            "bid_price": bid_price,
+            "ask_price": ask_price,
+            "bid_size": bid_size,
+            "ask_size": ask_size,
+            "bid_exchange": parse_int(row.get("bid_exchange")) or 0,
+            "ask_exchange": parse_int(row.get("ask_exchange")) or 0,
+            "mid_price": mid_price,
+            "spread_bps": 10000.0 * (ask_price - bid_price) / max(mid_price, 1e-6),
+            "quote_imbalance": (bid_size - ask_size) / size_sum,
+        }
+    price = parse_float(row.get("price"))
+    size = parse_float(row.get("size"))
+    if price is None or size is None or price <= 0.0 or size <= 0.0:
+        return None
+    return {
+        "ticker": ticker,
+        "session_date": session,
+        "year_month": session[:7],
+        "sip_timestamp": sip_timestamp,
+        "sequence_number": sequence_number,
+        "price": price,
+        "size": size,
+        "exchange": parse_int(row.get("exchange")) or 0,
+    }
+
+
+def parse_int(value: Any) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def flush_ticker_buffer(
+    output_root: Path,
+    kind: str,
+    ticker: str,
+    buffers: dict[str, list[dict[str, Any]]],
+    part_index: dict[str, int],
+    pa: Any,
+    pq: Any,
+) -> int:
+    rows = buffers.get(ticker) or []
+    if not rows:
+        return 0
+    index = part_index.get(ticker, 0)
+    part_index[ticker] = index + 1
+    year_month = str(rows[0]["year_month"])
+    output_dir = output_root / f"year_month={year_month}" / f"ticker={ticker}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{index:08d}.parquet"
+    columns = quote_canonical_columns() if kind == "quotes" else trade_canonical_columns()
+    table = pa.Table.from_pydict({column: [row[column] for row in rows] for column in columns})
+    pq.write_table(table, output_path, compression="zstd")
+    buffers[ticker] = []
+    return len(rows)
+
+
+def quote_canonical_columns() -> list[str]:
+    return [
+        "ticker",
+        "session_date",
+        "year_month",
+        "sip_timestamp",
+        "sequence_number",
+        "bid_price",
+        "ask_price",
+        "bid_size",
+        "ask_size",
+        "bid_exchange",
+        "ask_exchange",
+        "mid_price",
+        "spread_bps",
+        "quote_imbalance",
+    ]
+
+
+def trade_canonical_columns() -> list[str]:
+    return [
+        "ticker",
+        "session_date",
+        "year_month",
+        "sip_timestamp",
+        "sequence_number",
+        "price",
+        "size",
+        "exchange",
+    ]
 
 
 def discover_temp_canonical_groups(config: DataConfig) -> dict[tuple[str, str, str], list[Path]]:
@@ -520,11 +739,7 @@ def merge_temp_group_to_canonical(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = output_path.with_suffix(output_path.suffix + f".tmp.{os.getpid()}")
     sort_columns = ["sip_timestamp", "sequence_number"]
-    pl.scan_parquet([str(path) for path in paths]).sort(sort_columns).sink_parquet(
-        temp_path,
-        compression="zstd",
-        mkdir=True,
-    )
+    write_lazy_parquet(scan_parquet_paths(paths).sort(sort_columns), temp_path)
     os.replace(temp_path, output_path)
     return {
         "kind": kind,
@@ -612,7 +827,22 @@ def count_parquet_rows(paths: Any) -> int:
     path_list = [str(path) for path in paths]
     if not path_list:
         return 0
-    return int(pl.scan_parquet(path_list).select(pl.len()).collect().item())
+    return int(scan_parquet_paths(path_list).select(pl.len()).collect().item())
+
+
+def scan_parquet_paths(paths: Any) -> pl.LazyFrame:
+    path_list = [str(path) for path in paths]
+    if len(path_list) == 1:
+        return pl.scan_parquet(path_list[0])
+    return pl.concat([pl.scan_parquet(path) for path in path_list], how="vertical_relaxed")
+
+
+def write_lazy_parquet(frame: pl.LazyFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        frame.sink_parquet(path, compression="zstd", mkdir=True)
+    except (AttributeError, TypeError, ValueError):
+        frame.collect().write_parquet(path, compression="zstd")
 
 
 def quote_state_exprs() -> list[pl.Expr]:
