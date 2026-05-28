@@ -190,8 +190,9 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
             "CACHE_ROOT.mkdir(parents=True, exist_ok=True)\n"
             "OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)\n"
         ),
+        code_cell(streamed_runner_source()),
         code_cell(
-            "%pip install -q polars pyarrow wandb torchinfo torchview graphviz\n"
+            "%pip install polars pyarrow wandb torchinfo torchview graphviz\n"
         ),
         markdown_cell(
             "Optional: run the profiling cell before choosing chunk/cap settings. "
@@ -228,9 +229,6 @@ def preprocess_source(version: str) -> str:
             "    '--max-total-events', '128',\n"
         )
     return (
-        "import subprocess\n"
-        "import sys\n"
-        "\n"
         "RUN_PREPROCESS = False  # Set True to build/refresh the microstructure cache before training.\n"
         "PREPROCESS_PROCESSES = int(manifest.get('default_preprocess_processes', 8))\n"
         "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 2))\n"
@@ -251,8 +249,7 @@ def preprocess_source(version: str) -> str:
         "    preprocess_args.append('--rebuild-cache')\n"
         "\n"
         "if RUN_PREPROCESS:\n"
-        "    print('Running:', ' '.join([str(preprocess_py), *preprocess_args]))\n"
-        "    subprocess.check_call([sys.executable, str(preprocess_py), *preprocess_args])\n"
+        "    run_script_streamed('preprocess', preprocess_py, preprocess_args)\n"
         "else:\n"
         "    print('Skipping preprocessing. Set RUN_PREPROCESS=True to build the cache first.')\n"
     )
@@ -263,9 +260,6 @@ def profile_source(version: str) -> str:
     if not script_name:
         return "print('No separate profiling script for this version.')\n"
     return (
-        "import subprocess\n"
-        "import sys\n"
-        "\n"
         "RUN_PROFILE = False  # Set True to profile chunk sizes and event caps before preprocessing.\n"
         "PROFILE_PROCESSES = int(manifest.get('default_preprocess_processes', 8))\n"
         "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 2))\n"
@@ -281,10 +275,68 @@ def profile_source(version: str) -> str:
         "    '--polars-threads-per-process', str(POLARS_THREADS_PER_PROCESS),\n"
         "]\n"
         "if RUN_PROFILE:\n"
-        "    print('Running:', ' '.join([str(profile_py), *profile_args]))\n"
-        "    subprocess.check_call([sys.executable, str(profile_py), *profile_args])\n"
+        "    run_script_streamed('profile', profile_py, profile_args)\n"
         "else:\n"
         "    print('Skipping profiling. Set RUN_PROFILE=True to profile chunk/cap choices.')\n"
+    )
+
+
+def streamed_runner_source() -> str:
+    return (
+        "import subprocess\n"
+        "import time\n"
+        "\n"
+        "RUN_LOG_DIR = OUTPUT_ROOT / 'workstation_logs'\n"
+        "RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)\n"
+        "\n"
+        "def run_script_streamed(label, script_path, args):\n"
+        "    script_path = Path(script_path)\n"
+        "    timestamp = time.strftime('%Y%m%d_%H%M%S')\n"
+        "    log_path = RUN_LOG_DIR / f'{VERSION}_{label}_{timestamp}.log'\n"
+        "    command = [sys.executable, '-u', str(script_path), *map(str, args)]\n"
+        "    env = os.environ.copy()\n"
+        "    env['PYTHONUNBUFFERED'] = '1'\n"
+        "    env['PYTHONPATH'] = str(LOCAL_CODE_ROOT) + os.pathsep + env.get('PYTHONPATH', '')\n"
+        "    print('=' * 96, flush=True)\n"
+        "    print(f'*** {label.upper()} START | {time.strftime(\"%Y-%m-%d %H:%M:%S\")}', flush=True)\n"
+        "    print('cwd:', LOCAL_CODE_ROOT, flush=True)\n"
+        "    print('script:', script_path, flush=True)\n"
+        "    print('log:', log_path, flush=True)\n"
+        "    print('command:', ' '.join(command), flush=True)\n"
+        "    print('=' * 96, flush=True)\n"
+        "    start = time.perf_counter()\n"
+        "    tail = []\n"
+        "    with log_path.open('w', encoding='utf-8') as log_file:\n"
+        "        process = subprocess.Popen(\n"
+        "            command,\n"
+        "            cwd=str(LOCAL_CODE_ROOT),\n"
+        "            stdout=subprocess.PIPE,\n"
+        "            stderr=subprocess.STDOUT,\n"
+        "            text=True,\n"
+        "            bufsize=1,\n"
+        "            env=env,\n"
+        "        )\n"
+        "        assert process.stdout is not None\n"
+        "        for line in process.stdout:\n"
+        "            print(line, end='', flush=True)\n"
+        "            log_file.write(line)\n"
+        "            log_file.flush()\n"
+        "            tail.append(line.rstrip())\n"
+        "            if len(tail) > 40:\n"
+        "                tail.pop(0)\n"
+        "        return_code = process.wait()\n"
+        "    elapsed = time.perf_counter() - start\n"
+        "    print('=' * 96, flush=True)\n"
+        "    print(f'*** {label.upper()} END | return_code={return_code} | elapsed_sec={elapsed:.1f} | log={log_path}', flush=True)\n"
+        "    print('=' * 96, flush=True)\n"
+        "    if return_code != 0:\n"
+        "        print('Last output lines before failure:', flush=True)\n"
+        "        for line in tail[-20:]:\n"
+        "            print(line, flush=True)\n"
+        "        raise RuntimeError(f'{label} failed with return code {return_code}. Full log: {log_path}')\n"
+        "    return log_path\n"
+        "\n"
+        "print('streamed runner ready; logs will be written to', RUN_LOG_DIR)\n"
     )
 
 
@@ -350,6 +402,8 @@ def write_workstation_readme(path: Path, version: str, manifest: dict[str, Any])
         "the zip to a local runtime directory and runs training in-process.\n\n"
         f"Run `{manifest['preprocess_script']}` first, or set `RUN_PREPROCESS=True` in the notebook, "
         "to prebuild the quote/trade Parquet cache.\n\n"
+        "Profile and preprocess cells stream child-process output directly in the notebook and write "
+        "`workstation_logs/*.log` under the model output root.\n\n"
         f"Default W&B project: `{manifest['wandb_project']}`\n\n"
         "For performance, keep flatfiles and cache output on local SSD/NVMe and update `FLATFILES_ROOT` "
         "in the notebook if needed.\n",
