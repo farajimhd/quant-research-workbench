@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -61,6 +62,7 @@ def main() -> None:
     sessions = available_sessions(Path(args.flatfiles_root), args.start_date, args.end_date)
     started = time.time()
     results = []
+    failures = []
     worker_payload = {
         "config": config_payload,
         "tickers_raw": args.tickers,
@@ -71,13 +73,34 @@ def main() -> None:
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.processes)) as executor:
         futures = {executor.submit(profile_session_worker, session, worker_payload): session for session in sessions}
         for idx, future in enumerate(concurrent.futures.as_completed(futures), start=1):
-            result = future.result()
+            session = futures[future]
+            try:
+                result = future.result()
+            except BaseException:
+                result = {
+                    "session": session,
+                    "rows": 0,
+                    "chunk_profiles": {},
+                    "error": traceback.format_exc(),
+                }
+            if result.get("error"):
+                failures.append(result)
+                print(f"[{idx}/{len(sessions)}] {result['session']} FAILED", flush=True)
+                print(result["error"], flush=True)
+                continue
             results.append(result)
             print(f"[{idx}/{len(sessions)}] {result['session']} rows={result.get('rows', 0):,}", flush=True)
+    if not results:
+        failure_preview = "\n\n".join(
+            f"{failure['session']}:\n{failure.get('error', '')}" for failure in failures[:5]
+        )
+        raise SystemExit(f"All profile sessions failed. First failures:\n{failure_preview}")
     report = combine_reports(results, chunk_ms_values, caps)
     report["created_at"] = datetime.now().isoformat(timespec="seconds")
     report["elapsed_seconds"] = time.time() - started
     report["sessions"] = sessions
+    report["successful_sessions"] = [result["session"] for result in results]
+    report["failed_sessions"] = failures
     report["flatfiles_root"] = args.flatfiles_root
     report["tickers"] = args.tickers
     output = Path(args.output) if args.output else Path(args.flatfiles_root) / "derived" / "event_chunks_v1" / "profile_event_chunks_report.json"
@@ -88,21 +111,31 @@ def main() -> None:
 
 
 def profile_session_worker(session: str, payload: dict[str, Any]) -> dict[str, Any]:
-    os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
-    from research.inhouse_transformer.v22.config import DataConfig
-    from research.inhouse_transformer.v22.data import parse_ticker_list, read_quotes, read_trades
+    try:
+        os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
+        from research.inhouse_transformer.v22.config import DataConfig
+        from research.inhouse_transformer.v22.data import parse_ticker_list, read_quotes, read_trades
 
-    clean = dict(payload["config"])
-    clean["flatfiles_root"] = Path(clean["flatfiles_root"])
-    clean["cache_root"] = Path(clean["cache_root"])
-    clean["tickers"] = parse_ticker_list(payload["tickers_raw"])
-    config = DataConfig(**clean)
-    quotes = read_quotes(config, session, config.tickers)
-    trades = read_trades(config, session, config.tickers)
-    rows: dict[str, Any] = {"session": session, "rows": int(quotes.height + trades.height), "chunk_profiles": {}}
-    for chunk_ms in payload["chunk_ms_values"]:
-        rows["chunk_profiles"][str(chunk_ms)] = profile_chunk_size(quotes, trades, int(chunk_ms), payload["caps"])
-    return rows
+        clean = dict(payload["config"])
+        clean["flatfiles_root"] = Path(clean["flatfiles_root"])
+        clean["cache_root"] = Path(clean["cache_root"])
+        clean["tickers"] = parse_ticker_list(payload["tickers_raw"])
+        config = DataConfig(**clean)
+        quotes = read_quotes(config, session, config.tickers)
+        trades = read_trades(config, session, config.tickers)
+        rows: dict[str, Any] = {"session": session, "rows": int(quotes.height + trades.height), "chunk_profiles": {}}
+        for chunk_ms in payload["chunk_ms_values"]:
+            rows["chunk_profiles"][str(chunk_ms)] = profile_chunk_size(quotes, trades, int(chunk_ms), payload["caps"])
+        return rows
+    except KeyboardInterrupt:
+        raise
+    except BaseException:
+        return {
+            "session": session,
+            "rows": 0,
+            "chunk_profiles": {},
+            "error": traceback.format_exc(),
+        }
 
 
 def profile_chunk_size(quotes: Any, trades: Any, chunk_ms: int, caps: list[int]) -> dict[str, Any]:
