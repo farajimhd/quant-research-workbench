@@ -6,12 +6,12 @@ from pathlib import Path
 from src.data_provider.config import DEFAULT_PROCESSED_ROOT
 
 
-DEFAULT_TRAIN_START = "2025-06-02"
-DEFAULT_TRAIN_END = "2025-06-30"
-DEFAULT_VALIDATION_START = "2025-07-01"
-DEFAULT_VALIDATION_END = "2025-07-07"
-DEFAULT_TEST_START = "2025-07-08"
-DEFAULT_TEST_END = "2025-07-11"
+DEFAULT_TRAIN_START = "2025-11-01"
+DEFAULT_TRAIN_END = "2025-11-30"
+DEFAULT_VALIDATION_START = "2025-12-01"
+DEFAULT_VALIDATION_END = "2025-12-05"
+DEFAULT_TEST_START = "2025-12-08"
+DEFAULT_TEST_END = "2025-12-12"
 
 
 @dataclass(slots=True)
@@ -100,4 +100,3 @@ class ExperimentConfig:
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
-

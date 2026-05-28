@@ -38,13 +38,13 @@ log-return bps from current mid, encoded as v14-style binary magnitude bits.
 Before final training, profile chunk/cap choices:
 
 ```powershell
-python research\inhouse_transformer\v22\profile_event_chunks.py --flatfiles-root D:\market-data\flatfiles\us_stock_sip --start-date 2025-06-02 --end-date 2025-07-07 --tickers ALL --chunk-ms 100,250,500,1000 --caps 64,128,256,512 --processes 8 --polars-threads-per-process 2
+python research\inhouse_transformer\v22\profile_event_chunks.py --flatfiles-root D:\market-data\flatfiles\us_stock_sip --start-date 2025-11-01 --end-date 2025-12-05 --tickers ALL --chunk-ms 100,250,500,1000 --caps 64,128,256,512 --processes 8 --polars-threads-per-process 2
 ```
 
 Preprocess raw quote/trade CSV.GZ into shared sparse event-chunk Parquet:
 
 ```powershell
-python research\inhouse_transformer\v22\preprocess_event_chunks.py --flatfiles-root D:\market-data\flatfiles\us_stock_sip --cache-root D:\market-data\flatfiles\us_stock_sip\derived\event_chunks_v1 --start-date 2025-06-02 --end-date 2025-07-11 --tickers ALL --chunk-ms 250 --max-quote-events 96 --max-trade-events 64 --max-total-events 128 --processes 8 --polars-threads-per-process 2
+python research\inhouse_transformer\v22\preprocess_event_chunks.py --flatfiles-root D:\market-data\flatfiles\us_stock_sip --cache-root D:\market-data\flatfiles\us_stock_sip\derived\event_chunks_v1 --start-date 2025-11-01 --end-date 2025-12-12 --tickers ALL --chunk-ms 250 --max-quote-events 96 --max-trade-events 64 --max-total-events 128 --processes 8 --polars-threads-per-process 2
 ```
 
 Train from preprocessed chunks:
@@ -59,4 +59,3 @@ Numeric inputs are normalized causally per sample/context:
 - size/count/volume fields use `log1p`;
 - numeric event and chunk-summary features are z-scored over the current context;
 - masks and categorical event kind/index tensors are not z-scored.
-
