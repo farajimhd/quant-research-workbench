@@ -17,6 +17,7 @@ DEFAULT_TEST_END = "2025-12-12"
 @dataclass(slots=True)
 class DataConfig:
     flatfiles_root: Path = Path("D:/market-data/flatfiles/us_stocks_sip")
+    canonical_root: Path = Path("D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_v1")
     cache_root: Path = Path("D:/market-data/flatfiles/us_stocks_sip/derived/event_chunks_v1")
     train_start_date: str = DEFAULT_TRAIN_START
     train_end_date: str = DEFAULT_TRAIN_END
@@ -24,14 +25,14 @@ class DataConfig:
     validation_end_date: str = DEFAULT_VALIDATION_END
     test_start_date: str = DEFAULT_TEST_START
     test_end_date: str = DEFAULT_TEST_END
-    chunk_ms: int = 250
+    chunk_ms: int = 500
     context_seconds: int = 60
     horizon_steps: int = 6
     horizon_seconds: int = 10
     origin_stride_chunks: int = 1
-    max_quote_events: int = 96
-    max_trade_events: int = 64
-    max_total_events: int = 128
+    max_quote_events: int = 128
+    max_trade_events: int = 192
+    max_total_events: int = 256
     target_mode: str = "binary_magnitude_bps"
     binary_magnitude_bits: int = 12
     target_columns: tuple[str, ...] = ("close",)

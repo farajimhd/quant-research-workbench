@@ -3,6 +3,8 @@ from __future__ import annotations
 import gc
 import gzip
 import math
+import os
+import shutil
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -139,6 +141,15 @@ def date_range(start_date: str, end_date: str) -> list[str]:
     return days
 
 
+def year_month_range(start_date: str, end_date: str) -> list[str]:
+    months: list[str] = []
+    for session in date_range(start_date, end_date):
+        year_month = session[:7]
+        if not months or months[-1] != year_month:
+            months.append(year_month)
+    return months
+
+
 def available_sessions(flatfiles_root: Path, start_date: str, end_date: str) -> list[str]:
     sessions = []
     for session in date_range(start_date, end_date):
@@ -200,6 +211,21 @@ def flatfile_root_candidates(flatfiles_root: Path) -> tuple[Path, ...]:
     return tuple(unique)
 
 
+def canonical_event_path(config: DataConfig, kind: str, ticker: str, year_month: str) -> Path:
+    return config.canonical_root / kind / f"ticker={ticker}" / f"{year_month}.parquet"
+
+
+def event_chunk_path(config: DataConfig, ticker: str, year_month: str) -> Path:
+    return (
+        config.cache_root
+        / f"chunk_ms={config.chunk_ms}"
+        / f"mq={config.max_quote_events}_mt={config.max_trade_events}_m={config.max_total_events}"
+        / "event_chunks"
+        / f"ticker={ticker}"
+        / f"{year_month}.parquet"
+    )
+
+
 def cached_event_chunk_path(config: DataConfig, session: str) -> Path:
     return (
         config.cache_root
@@ -213,6 +239,9 @@ def cached_event_chunk_path(config: DataConfig, session: str) -> Path:
 
 
 def load_or_build_session_event_chunks(config: DataConfig, session: str, tickers: tuple[str, ...]) -> pl.DataFrame:
+    monthly = load_session_from_ticker_month_chunks(config, session, tickers)
+    if monthly is not None:
+        return monthly
     cache_path = cached_event_chunk_path(config, session)
     if cache_path.exists() and not config.rebuild_cache:
         scan = pl.scan_parquet(str(cache_path))
@@ -222,6 +251,38 @@ def load_or_build_session_event_chunks(config: DataConfig, session: str, tickers
     frame = build_sparse_event_chunks(config, session, tickers)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     frame.write_parquet(cache_path, compression="zstd")
+    return frame
+
+
+def load_session_from_ticker_month_chunks(
+    config: DataConfig,
+    session: str,
+    tickers: tuple[str, ...],
+) -> pl.DataFrame | None:
+    year_month = session[:7]
+    base = (
+        config.cache_root
+        / f"chunk_ms={config.chunk_ms}"
+        / f"mq={config.max_quote_events}_mt={config.max_trade_events}_m={config.max_total_events}"
+        / "event_chunks"
+    )
+    if not base.exists():
+        return None
+    if tickers and not uses_all_tickers(tickers):
+        paths = [event_chunk_path(config, ticker, year_month) for ticker in tickers]
+        paths = [path for path in paths if path.exists()]
+        if not paths:
+            return None
+        scans = [
+            pl.scan_parquet(str(path)).filter(pl.col("session_date") == session)
+            for path in paths
+        ]
+        frame = collect_lazy(pl.concat(scans, how="vertical_relaxed")).sort(["ticker", "chunk_end_ns"])
+    else:
+        glob_path = str(base / "ticker=*" / f"{year_month}.parquet")
+        if not list(base.glob(f"ticker=*/{year_month}.parquet")):
+            return None
+        frame = collect_lazy(pl.scan_parquet(glob_path).filter(pl.col("session_date") == session)).sort(["ticker", "chunk_end_ns"])
     return frame
 
 
@@ -247,6 +308,10 @@ def build_sparse_event_chunks(config: DataConfig, session: str, tickers: tuple[s
 
 
 def read_quotes(config: DataConfig, session: str, tickers: tuple[str, ...]) -> pl.DataFrame:
+    return scan_normalized_quotes(config, session, tickers).sort(["ticker", "sip_timestamp", "sequence_number"]).pipe(collect_lazy)
+
+
+def scan_normalized_quotes(config: DataConfig, session: str, tickers: tuple[str, ...]) -> pl.LazyFrame:
     path = find_flatfile(config.flatfiles_root, "quotes", session)
     if path is None:
         raise FileNotFoundError(f"Missing quotes flatfile for {session} under {config.flatfiles_root}.")
@@ -267,13 +332,11 @@ def read_quotes(config: DataConfig, session: str, tickers: tuple[str, ...]) -> p
     if missing:
         raise SystemExit(f"Quote flatfile {path} is missing required columns: {missing}")
     scan = scan.select([column for column in columns if column in names])
-    if tickers and not uses_all_tickers(tickers):
-        scan = scan.filter(pl.col("ticker").is_in(list(tickers)))
     day_ns = pl.col("sip_timestamp").cast(pl.Int64, strict=False) % (24 * 3600 * NANOSECONDS_PER_SECOND)
     start_ns = config.session_start_hour_utc * 3600 * NANOSECONDS_PER_SECOND
     end_ns = config.session_end_hour_utc * 3600 * NANOSECONDS_PER_SECOND
     lot_multiplier = config.quote_size_lot_multiplier_before_2025_11_03 if session < QUOTE_SIZE_UNIT_SWITCH_DATE else 1
-    return (
+    normalized = (
         scan.filter((day_ns >= start_ns) & (day_ns < end_ns))
         .with_columns(
             pl.col("ticker").cast(pl.String).str.to_uppercase(),
@@ -286,14 +349,40 @@ def read_quotes(config: DataConfig, session: str, tickers: tuple[str, ...]) -> p
             pl.col("bid_exchange").cast(pl.Int32, strict=False).fill_null(0) if "bid_exchange" in names else pl.lit(0).alias("bid_exchange"),
             pl.col("ask_exchange").cast(pl.Int32, strict=False).fill_null(0) if "ask_exchange" in names else pl.lit(0).alias("ask_exchange"),
         )
+        .with_columns(
+            pl.lit(session).alias("session_date"),
+            pl.lit(session[:7]).alias("year_month"),
+        )
         .filter((pl.col("bid_price") > 0.0) & (pl.col("ask_price") > 0.0) & (pl.col("ask_price") >= pl.col("bid_price")))
         .with_columns(quote_state_exprs())
-        .sort(["ticker", "sip_timestamp", "sequence_number"])
-        .pipe(collect_lazy)
+    )
+    if tickers and not uses_all_tickers(tickers):
+        normalized = normalized.filter(pl.col("ticker").is_in(list(tickers)))
+    return normalized.select(
+        [
+            "ticker",
+            "session_date",
+            "year_month",
+            "sip_timestamp",
+            "sequence_number",
+            "bid_price",
+            "ask_price",
+            "bid_size",
+            "ask_size",
+            "bid_exchange",
+            "ask_exchange",
+            "mid_price",
+            "spread_bps",
+            "quote_imbalance",
+        ]
     )
 
 
 def read_trades(config: DataConfig, session: str, tickers: tuple[str, ...]) -> pl.DataFrame:
+    return scan_normalized_trades(config, session, tickers).sort(["ticker", "sip_timestamp", "sequence_number"]).pipe(collect_lazy)
+
+
+def scan_normalized_trades(config: DataConfig, session: str, tickers: tuple[str, ...]) -> pl.LazyFrame:
     path = find_flatfile(config.flatfiles_root, "trades", session)
     if path is None:
         raise FileNotFoundError(f"Missing trades flatfile for {session} under {config.flatfiles_root}.")
@@ -304,12 +393,10 @@ def read_trades(config: DataConfig, session: str, tickers: tuple[str, ...]) -> p
     if missing:
         raise SystemExit(f"Trade flatfile {path} is missing required columns: {missing}")
     scan = scan.select([column for column in columns if column in names])
-    if tickers and not uses_all_tickers(tickers):
-        scan = scan.filter(pl.col("ticker").is_in(list(tickers)))
     day_ns = pl.col("sip_timestamp").cast(pl.Int64, strict=False) % (24 * 3600 * NANOSECONDS_PER_SECOND)
     start_ns = config.session_start_hour_utc * 3600 * NANOSECONDS_PER_SECOND
     end_ns = config.session_end_hour_utc * 3600 * NANOSECONDS_PER_SECOND
-    return (
+    normalized = (
         scan.filter((day_ns >= start_ns) & (day_ns < end_ns))
         .with_columns(
             pl.col("ticker").cast(pl.String).str.to_uppercase(),
@@ -319,10 +406,193 @@ def read_trades(config: DataConfig, session: str, tickers: tuple[str, ...]) -> p
             pl.col("size").cast(pl.Float64, strict=False).fill_null(0.0),
             pl.col("exchange").cast(pl.Int32, strict=False).fill_null(0) if "exchange" in names else pl.lit(0).alias("exchange"),
         )
+        .with_columns(
+            pl.lit(session).alias("session_date"),
+            pl.lit(session[:7]).alias("year_month"),
+        )
         .filter((pl.col("price") > 0.0) & (pl.col("size") > 0.0))
-        .sort(["ticker", "sip_timestamp", "sequence_number"])
-        .pipe(collect_lazy)
     )
+    if tickers and not uses_all_tickers(tickers):
+        normalized = normalized.filter(pl.col("ticker").is_in(list(tickers)))
+    return normalized.select(
+        [
+            "ticker",
+            "session_date",
+            "year_month",
+            "sip_timestamp",
+            "sequence_number",
+            "price",
+            "size",
+            "exchange",
+        ]
+    )
+
+
+def temp_canonical_parts_root(config: DataConfig) -> Path:
+    return config.cache_root / "_tmp_canonical_parts"
+
+
+def normalize_session_to_temp_parts(
+    config: DataConfig,
+    session: str,
+    tickers: tuple[str, ...],
+    *,
+    rebuild: bool = False,
+) -> dict[str, Any]:
+    root = temp_canonical_parts_root(config)
+    results: dict[str, Any] = {"session": session, "kinds": {}}
+    for kind, scanner in (("quotes", scan_normalized_quotes), ("trades", scan_normalized_trades)):
+        output_root = root / kind / f"session={session}"
+        if output_root.exists() and rebuild:
+            shutil.rmtree(output_root)
+        if output_root.exists() and list(output_root.rglob("*.parquet")):
+            rows = count_parquet_rows(output_root.rglob("*.parquet"))
+            results["kinds"][kind] = {"status": "skipped", "rows": rows, "path": str(output_root)}
+            continue
+        output_root.mkdir(parents=True, exist_ok=True)
+        lazy = scanner(config, session, tickers)
+        lazy.sink_parquet(
+            pl.PartitionBy(
+                output_root,
+                key=["year_month", "ticker"],
+                include_key=True,
+                max_rows_per_file=1_000_000,
+            ),
+            compression="zstd",
+            mkdir=True,
+        )
+        rows = count_parquet_rows(output_root.rglob("*.parquet"))
+        results["kinds"][kind] = {"status": "ok", "rows": rows, "path": str(output_root)}
+    return results
+
+
+def discover_temp_canonical_groups(config: DataConfig) -> dict[tuple[str, str, str], list[Path]]:
+    root = temp_canonical_parts_root(config)
+    groups: dict[tuple[str, str, str], list[Path]] = {}
+    for path in root.glob("*/session=*/year_month=*/ticker=*/*.parquet"):
+        parts = path.parts
+        kind = parts[-5]
+        year_month = parts[-3].split("=", 1)[1]
+        ticker = parts[-2].split("=", 1)[1]
+        groups.setdefault((kind, year_month, ticker), []).append(path)
+    return groups
+
+
+def merge_temp_group_to_canonical(
+    config: DataConfig,
+    *,
+    kind: str,
+    year_month: str,
+    ticker: str,
+    paths: list[Path],
+    rebuild: bool = False,
+) -> dict[str, Any]:
+    output_path = canonical_event_path(config, kind, ticker, year_month)
+    if output_path.exists() and not rebuild:
+        return {
+            "kind": kind,
+            "year_month": year_month,
+            "ticker": ticker,
+            "status": "skipped",
+            "rows": count_parquet_rows([output_path]),
+            "output_path": str(output_path),
+        }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_suffix(output_path.suffix + f".tmp.{os.getpid()}")
+    sort_columns = ["sip_timestamp", "sequence_number"]
+    pl.scan_parquet([str(path) for path in paths]).sort(sort_columns).sink_parquet(
+        temp_path,
+        compression="zstd",
+        mkdir=True,
+    )
+    os.replace(temp_path, output_path)
+    return {
+        "kind": kind,
+        "year_month": year_month,
+        "ticker": ticker,
+        "status": "ok",
+        "rows": count_parquet_rows([output_path]),
+        "output_path": str(output_path),
+    }
+
+
+def discover_canonical_groups(
+    config: DataConfig,
+    *,
+    start_date: str,
+    end_date: str,
+    tickers: tuple[str, ...],
+) -> list[tuple[str, str]]:
+    months = set(year_month_range(start_date, end_date))
+    groups: set[tuple[str, str]] = set()
+    if tickers and not uses_all_tickers(tickers):
+        for ticker in tickers:
+            for year_month in months:
+                if canonical_event_path(config, "quotes", ticker, year_month).exists() or canonical_event_path(config, "trades", ticker, year_month).exists():
+                    groups.add((ticker, year_month))
+        return sorted(groups)
+    for kind in ("quotes", "trades"):
+        base = config.canonical_root / kind
+        if not base.exists():
+            continue
+        for path in base.glob("ticker=*/*.parquet"):
+            year_month = path.stem
+            if year_month not in months:
+                continue
+            ticker = path.parent.name.split("=", 1)[1]
+            groups.add((ticker, year_month))
+    return sorted(groups)
+
+
+def read_canonical_events(config: DataConfig, kind: str, ticker: str, year_month: str) -> pl.DataFrame:
+    path = canonical_event_path(config, kind, ticker, year_month)
+    if not path.exists():
+        return pl.DataFrame()
+    return collect_lazy(pl.scan_parquet(str(path))).sort(["sip_timestamp", "sequence_number"])
+
+
+def build_event_chunks_from_canonical(
+    config: DataConfig,
+    *,
+    ticker: str,
+    year_month: str,
+    rebuild: bool = False,
+) -> dict[str, Any]:
+    output_path = event_chunk_path(config, ticker, year_month)
+    if output_path.exists() and not rebuild:
+        return {
+            "ticker": ticker,
+            "year_month": year_month,
+            "status": "skipped",
+            "rows": count_parquet_rows([output_path]),
+            "output_path": str(output_path),
+        }
+    quotes = read_canonical_events(config, "quotes", ticker, year_month)
+    trades = read_canonical_events(config, "trades", ticker, year_month)
+    if quotes.is_empty() and trades.is_empty():
+        return {"ticker": ticker, "year_month": year_month, "status": "empty", "rows": 0, "output_path": str(output_path)}
+    trades_with_quote = attach_quote_state_to_trades(trades, quotes)
+    chunks = build_ticker_sparse_chunks(config, "", ticker, quotes, trades_with_quote)
+    if chunks is None or chunks.is_empty():
+        return {"ticker": ticker, "year_month": year_month, "status": "empty", "rows": 0, "output_path": str(output_path)}
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_suffix(output_path.suffix + f".tmp.{os.getpid()}")
+    chunks.sort("chunk_end_ns").write_parquet(temp_path, compression="zstd")
+    os.replace(temp_path, output_path)
+    return {
+        "ticker": ticker,
+        "year_month": year_month,
+        "status": "ok",
+        "rows": chunks.height,
+        "output_path": str(output_path),
+    }
+
+
+def count_parquet_rows(paths: Any) -> int:
+    path_list = [str(path) for path in paths]
+    if not path_list:
+        return 0
+    return int(pl.scan_parquet(path_list).select(pl.len()).collect().item())
 
 
 def quote_state_exprs() -> list[pl.Expr]:
@@ -411,6 +681,7 @@ def quote_event_records(config: DataConfig, quotes: pl.DataFrame) -> list[dict[s
             {
                 "event_kind": 0,
                 "event_priority": 0,
+                "session_date": str(row.get("session_date") or ""),
                 "sip_timestamp": ts,
                 "chunk_start_ns": (ts // chunk_ns) * chunk_ns,
                 "bid_price": float(row["bid_price"]),
@@ -438,6 +709,7 @@ def trade_event_records(config: DataConfig, trades: pl.DataFrame) -> list[dict[s
             {
                 "event_kind": 1,
                 "event_priority": 1,
+                "session_date": str(row.get("session_date") or ""),
                 "sip_timestamp": ts,
                 "chunk_start_ns": (ts // chunk_ns) * chunk_ns,
                 "price": float(row["price"]),
@@ -459,11 +731,10 @@ def chunk_row(config: DataConfig, session: str, ticker: str, chunk_start_ns: int
     chunk_ns = config.chunk_ms * 1_000_000
     quote_events = [event for event in events if event["event_kind"] == 0]
     trade_events = [event for event in events if event["event_kind"] == 1]
-    selected_quotes = quote_events[-config.max_quote_events :]
-    selected_trades = trade_events[-config.max_trade_events :]
+    selected_trades = trade_events[-min(config.max_trade_events, config.max_total_events) :]
+    remaining_capacity = max(0, config.max_total_events - len(selected_trades))
+    selected_quotes = quote_events[-min(config.max_quote_events, remaining_capacity) :]
     selected_events = sorted(selected_quotes + selected_trades, key=lambda item: (item["sip_timestamp"], item["event_priority"]))
-    if len(selected_events) > config.max_total_events:
-        selected_events = enforce_total_cap(selected_events, config.max_total_events, reserve_trades=min(32, config.max_trade_events))
     quote_index = {id(event): idx for idx, event in enumerate(selected_quotes)}
     trade_index = {id(event): idx for idx, event in enumerate(selected_trades)}
     selected_event_kinds = []
@@ -482,7 +753,7 @@ def chunk_row(config: DataConfig, session: str, ticker: str, chunk_start_ns: int
     summary = chunk_summary(events, selected_events)
     return {
         "ticker": ticker,
-        "session_date": session,
+        "session_date": session or str(events[-1].get("session_date", "")),
         "chunk_start_ns": chunk_start_ns,
         "chunk_end_ns": chunk_start_ns + chunk_ns - 1,
         "quote_values": quote_values,

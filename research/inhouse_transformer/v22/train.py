@@ -51,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     defaults = ExperimentConfig()
     parser = argparse.ArgumentParser(description="Train v22 hierarchical quote/trade event-language transformer.")
     parser.add_argument("--flatfiles-root", default=str(defaults.data.flatfiles_root))
+    parser.add_argument("--canonical-root", default=str(defaults.data.canonical_root))
     parser.add_argument("--cache-root", default=str(defaults.data.cache_root))
     parser.add_argument("--train-start-date", default=defaults.data.train_start_date)
     parser.add_argument("--train-end-date", default=defaults.data.train_end_date)
@@ -121,6 +122,7 @@ def parse_args() -> argparse.Namespace:
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
     data = DataConfig(
         flatfiles_root=Path(args.flatfiles_root),
+        canonical_root=Path(args.canonical_root),
         cache_root=Path(args.cache_root),
         train_start_date=args.train_start_date,
         train_end_date=args.train_end_date,

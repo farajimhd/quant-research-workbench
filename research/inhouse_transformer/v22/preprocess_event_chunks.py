@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -26,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     defaults = DataConfig()
     parser = argparse.ArgumentParser(description="Prebuild v22 sparse quote/trade event chunks.")
     parser.add_argument("--flatfiles-root", default=str(defaults.flatfiles_root))
+    parser.add_argument("--canonical-root", default=str(defaults.canonical_root))
     parser.add_argument("--cache-root", default=str(defaults.cache_root))
     parser.add_argument("--start-date", default=defaults.train_start_date)
     parser.add_argument("--end-date", default=defaults.test_end_date)
@@ -39,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--session-start-hour-utc", type=int, default=defaults.session_start_hour_utc)
     parser.add_argument("--session-end-hour-utc", type=int, default=defaults.session_end_hour_utc)
     parser.add_argument("--rebuild-cache", action="store_true")
+    parser.add_argument("--keep-temp-normalized", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--manifest-name", default="preprocess_event_chunks_manifest.jsonl")
     parser.add_argument("--dry-run", action="store_true")
@@ -48,10 +51,21 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     os.environ.setdefault("POLARS_MAX_THREADS", str(max(1, args.polars_threads_per_process)))
-    from research.inhouse_transformer.v22.data import available_sessions, cached_event_chunk_path, parse_ticker_list
+    from research.inhouse_transformer.v22.data import (
+        available_sessions,
+        discover_canonical_groups,
+        discover_temp_canonical_groups,
+        event_chunk_path,
+        merge_temp_group_to_canonical,
+        normalize_session_to_temp_parts,
+        parse_ticker_list,
+        temp_canonical_parts_root,
+        year_month_range,
+    )
 
     config = DataConfig(
         flatfiles_root=Path(args.flatfiles_root),
+        canonical_root=Path(args.canonical_root),
         cache_root=Path(args.cache_root),
         train_start_date=args.start_date,
         train_end_date=args.end_date,
@@ -69,91 +83,219 @@ def main() -> None:
         rebuild_cache=args.rebuild_cache,
     )
     sessions = available_sessions(config.flatfiles_root, args.start_date, args.end_date)
+    months = year_month_range(args.start_date, args.end_date)
     print(LOG_RULE)
-    print("v22 event chunk preprocessing")
+    print("v22 canonical events + event chunk preprocessing")
     print(f"flatfiles_root={config.flatfiles_root}")
+    print(f"canonical_root={config.canonical_root}")
     print(f"cache_root={config.cache_root}")
     print(f"sessions={sessions[0]} -> {sessions[-1]} count={len(sessions)}")
+    print(f"months={','.join(months)}")
     print(f"chunk_ms={config.chunk_ms} max_quote={config.max_quote_events} max_trade={config.max_trade_events} max_total={config.max_total_events}")
     print(f"processes={args.processes} polars_threads_per_process={args.polars_threads_per_process}")
     print(LOG_RULE)
     if args.dry_run:
-        for session in sessions:
-            print(f"{session}: {cached_event_chunk_path(config, session)}")
+        for ticker in ("<ticker>",):
+            for year_month in months:
+                print(f"canonical quotes: {config.canonical_root / 'quotes' / f'ticker={ticker}' / f'{year_month}.parquet'}")
+                print(f"canonical trades: {config.canonical_root / 'trades' / f'ticker={ticker}' / f'{year_month}.parquet'}")
+                print(f"event chunks: {event_chunk_path(config, ticker, year_month)}")
         return
 
     manifest_path = config.cache_root / args.manifest_name
     started = time.time()
-    succeeded = 0
     failed = 0
     worker_payload = {
         "config": config_to_payload(config),
         "tickers_raw": args.tickers,
         "polars_threads_per_process": args.polars_threads_per_process,
+        "rebuild": args.rebuild_cache,
     }
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.processes)) as executor:
-        futures = {executor.submit(preprocess_session_worker, session, worker_payload): session for session in sessions}
-        for completed, future in enumerate(concurrent.futures.as_completed(futures), start=1):
-            session = futures[future]
-            try:
-                result = future.result()
-            except Exception as exc:
-                result = {
-                    "session": session,
-                    "status": "failed",
-                    "error": repr(exc),
-                    "traceback": traceback.format_exc(),
-                    "finished_at": datetime.now().isoformat(timespec="seconds"),
-                }
-            if result["status"] in {"ok", "skipped"}:
-                succeeded += 1
-            else:
-                failed += 1
-            append_jsonl(manifest_path, result)
-            print(format_progress(result, completed, len(sessions), time.time() - started), flush=True)
-            if args.fail_fast and result["status"] == "failed":
-                raise SystemExit(f"Failed preprocessing {session}: {result.get('error')}")
+    tickers = parse_ticker_list(args.tickers)
+    existing_groups = discover_canonical_groups(
+        config,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        tickers=tickers,
+    )
+    if existing_groups and not args.rebuild_cache:
+        print(f"Layer 1 canonical events already present for {len(existing_groups):,} ticker-month groups; skipping raw CSV normalization.", flush=True)
+    else:
+        print(LOG_RULE)
+        print("PHASE 1/3 normalize raw CSV.GZ sessions into temporary ticker partitions", flush=True)
+        failed += run_parallel(
+            label="normalize",
+            items=sessions,
+            submit=lambda executor, session: executor.submit(normalize_session_worker, session, worker_payload),
+            manifest_path=manifest_path,
+            processes=args.processes,
+            started=started,
+            fail_fast=args.fail_fast,
+        )
+        temp_groups = discover_temp_canonical_groups(config)
+        print(LOG_RULE)
+        print(f"PHASE 2/3 merge temporary partitions into canonical ticker-month events groups={len(temp_groups):,}", flush=True)
+        merge_items = [
+            {"kind": kind, "year_month": year_month, "ticker": ticker, "paths": paths}
+            for (kind, year_month, ticker), paths in sorted(temp_groups.items())
+        ]
+        failed += run_parallel(
+            label="canonical",
+            items=merge_items,
+            submit=lambda executor, item: executor.submit(merge_canonical_worker, item, worker_payload),
+            manifest_path=manifest_path,
+            processes=args.processes,
+            started=started,
+            fail_fast=args.fail_fast,
+        )
+        if not args.keep_temp_normalized and failed == 0:
+            temp_root = temp_canonical_parts_root(config)
+            if temp_root.exists():
+                shutil.rmtree(temp_root)
+                print(f"Deleted temporary normalized parts: {temp_root}", flush=True)
+    canonical_groups = discover_canonical_groups(
+        config,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        tickers=tickers,
+    )
     print(LOG_RULE)
-    print(f"Done. sessions={len(sessions)} succeeded_or_skipped={succeeded} failed={failed}")
+    print(f"PHASE 3/3 build model-specific event chunk cache from canonical events groups={len(canonical_groups):,}", flush=True)
+    failed += run_parallel(
+        label="chunks",
+        items=[{"ticker": ticker, "year_month": year_month} for ticker, year_month in canonical_groups],
+        submit=lambda executor, item: executor.submit(build_chunks_worker, item, worker_payload),
+        manifest_path=manifest_path,
+        processes=args.processes,
+        started=started,
+        fail_fast=args.fail_fast,
+    )
+    print(LOG_RULE)
+    print(f"Done. sessions={len(sessions)} canonical_groups={len(canonical_groups):,} failed={failed}")
     print(f"Manifest: {manifest_path}")
     print(LOG_RULE)
     if failed:
         raise SystemExit(1)
 
 
-def preprocess_session_worker(session: str, payload: dict[str, Any]) -> dict[str, Any]:
+def normalize_session_worker(session: str, payload: dict[str, Any]) -> dict[str, Any]:
     os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
     started = time.time()
-    from research.inhouse_transformer.v22.config import DataConfig
-    from research.inhouse_transformer.v22.data import (
-        build_sparse_event_chunks,
-        cached_event_chunk_path,
-        parse_ticker_list,
-    )
-    import polars as pl
+    from research.inhouse_transformer.v22.data import normalize_session_to_temp_parts, parse_ticker_list
 
-    config = payload_to_config(payload["config"])
-    tickers = parse_ticker_list(payload["tickers_raw"])
-    output_path = cached_event_chunk_path(config, session)
-    if output_path.exists() and not config.rebuild_cache:
-        rows = int(pl.scan_parquet(str(output_path)).select(pl.len()).collect().item())
-        return result_row(session, "skipped", output_path, rows, time.time() - started)
-
-    frame = build_sparse_event_chunks(config, session, tickers)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = output_path.with_suffix(output_path.suffix + f".tmp.{os.getpid()}")
-    frame.write_parquet(temp_path, compression="zstd")
-    os.replace(temp_path, output_path)
-    return result_row(session, "ok", output_path, frame.height, time.time() - started)
+    try:
+        config = payload_to_config(payload["config"])
+        result = normalize_session_to_temp_parts(
+            config,
+            session,
+            parse_ticker_list(payload["tickers_raw"]),
+            rebuild=bool(payload.get("rebuild")),
+        )
+        rows = sum(int(item.get("rows") or 0) for item in result["kinds"].values())
+        return result_row("normalize", session, result_status(result["kinds"].values()), rows, time.time() - started, result)
+    except BaseException:
+        return failed_row("normalize", session, time.time() - started)
 
 
-def result_row(session: str, status: str, output_path: Path, rows: int, elapsed: float) -> dict[str, Any]:
+def merge_canonical_worker(item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
+    started = time.time()
+    from research.inhouse_transformer.v22.data import merge_temp_group_to_canonical
+
+    try:
+        config = payload_to_config(payload["config"])
+        result = merge_temp_group_to_canonical(
+            config,
+            kind=item["kind"],
+            year_month=item["year_month"],
+            ticker=item["ticker"],
+            paths=[Path(path) for path in item["paths"]],
+            rebuild=bool(payload.get("rebuild")),
+        )
+        key = f"{item['kind']}:{item['ticker']}:{item['year_month']}"
+        return result_row("canonical", key, result["status"], int(result.get("rows") or 0), time.time() - started, result)
+    except BaseException:
+        return failed_row("canonical", f"{item.get('kind')}:{item.get('ticker')}:{item.get('year_month')}", time.time() - started)
+
+
+def build_chunks_worker(item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
+    started = time.time()
+    from research.inhouse_transformer.v22.data import build_event_chunks_from_canonical
+
+    try:
+        config = payload_to_config(payload["config"])
+        result = build_event_chunks_from_canonical(
+            config,
+            ticker=item["ticker"],
+            year_month=item["year_month"],
+            rebuild=bool(payload.get("rebuild")),
+        )
+        key = f"{item['ticker']}:{item['year_month']}"
+        return result_row("chunks", key, result["status"], int(result.get("rows") or 0), time.time() - started, result)
+    except BaseException:
+        return failed_row("chunks", f"{item.get('ticker')}:{item.get('year_month')}", time.time() - started)
+
+
+def run_parallel(
+    *,
+    label: str,
+    items: list[Any],
+    submit: Any,
+    manifest_path: Path,
+    processes: int,
+    started: float,
+    fail_fast: bool,
+) -> int:
+    if not items:
+        print(f"{label}: no work items", flush=True)
+        return 0
+    failed = 0
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, processes)) as executor:
+        futures = {submit(executor, item): item for item in items}
+        for completed, future in enumerate(concurrent.futures.as_completed(futures), start=1):
+            item = futures[future]
+            try:
+                result = future.result()
+            except BaseException:
+                result = failed_row(label, str(item), time.time() - started)
+            if result["status"] == "failed":
+                failed += 1
+            append_jsonl(manifest_path, result)
+            print(format_progress(result, completed, len(items), time.time() - started), flush=True)
+            if fail_fast and result["status"] == "failed":
+                raise SystemExit(f"{label} failed for {result.get('key')}: {result.get('error')}")
+    return failed
+
+
+def result_status(rows: Any) -> str:
+    statuses = {str(row.get("status")) for row in rows}
+    if "failed" in statuses:
+        return "failed"
+    if statuses and statuses <= {"skipped"}:
+        return "skipped"
+    return "ok"
+
+
+def result_row(phase: str, key: str, status: str, rows: int, elapsed: float, details: dict[str, Any]) -> dict[str, Any]:
     return {
-        "session": session,
+        "phase": phase,
+        "key": key,
         "status": status,
         "rows": rows,
-        "size_bytes": output_path.stat().st_size if output_path.exists() else 0,
-        "output_path": str(output_path),
+        "details": details,
+        "elapsed_seconds": elapsed,
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def failed_row(phase: str, key: str, elapsed: float) -> dict[str, Any]:
+    return {
+        "phase": phase,
+        "key": key,
+        "status": "failed",
+        "rows": 0,
+        "error": traceback.format_exc(),
         "elapsed_seconds": elapsed,
         "finished_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -162,6 +304,7 @@ def result_row(session: str, status: str, output_path: Path, rows: int, elapsed:
 def config_to_payload(config: DataConfig) -> dict[str, Any]:
     payload = asdict(config)
     payload["flatfiles_root"] = str(payload["flatfiles_root"])
+    payload["canonical_root"] = str(payload["canonical_root"])
     payload["cache_root"] = str(payload["cache_root"])
     return payload
 
@@ -169,6 +312,7 @@ def config_to_payload(config: DataConfig) -> dict[str, Any]:
 def payload_to_config(payload: dict[str, Any]) -> DataConfig:
     clean = dict(payload)
     clean["flatfiles_root"] = Path(clean["flatfiles_root"])
+    clean["canonical_root"] = Path(clean["canonical_root"])
     clean["cache_root"] = Path(clean["cache_root"])
     clean["tickers"] = tuple(clean.get("tickers") or ())
     return DataConfig(**clean)
@@ -181,14 +325,12 @@ def append_jsonl(path: Path, row: dict[str, Any]) -> None:
 
 
 def format_progress(result: dict[str, Any], completed: int, total: int, elapsed: float) -> str:
-    size_mb = float(result.get("size_bytes") or 0) / (1024.0 * 1024.0)
     return (
-        f"[{completed:,}/{total:,}] {result.get('session')} {result.get('status')} "
-        f"rows={int(result.get('rows') or 0):,} size_mb={size_mb:.1f} "
-        f"session_seconds={float(result.get('elapsed_seconds') or 0):.1f} elapsed_minutes={elapsed / 60.0:.1f}"
+        f"[{completed:,}/{total:,}] {result.get('phase')} {result.get('key')} {result.get('status')} "
+        f"rows={int(result.get('rows') or 0):,} item_seconds={float(result.get('elapsed_seconds') or 0):.1f} "
+        f"elapsed_minutes={elapsed / 60.0:.1f}"
     )
 
 
 if __name__ == "__main__":
     main()
-

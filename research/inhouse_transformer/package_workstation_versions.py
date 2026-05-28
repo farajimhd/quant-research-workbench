@@ -28,9 +28,10 @@ VERSION_SETTINGS = {
     },
     "v22": {
         "wandb_project": "May2026-microstructure-event-language-v22",
+        "canonical_root": "D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_v1",
         "cache_root": "D:/market-data/flatfiles/us_stocks_sip/derived/event_chunks_v1",
         "output_root": "D:/TradingData/quant-research-workbench/market_data/models/inhouse_transformer/v22",
-        "run_name": "v22-event-language-chunk250-nov2025",
+        "run_name": "v22-event-language-chunk500-nov2025",
         "batch_size": 512,
         "preprocess_script": "preprocess_event_chunks.py",
         "profile_script": "profile_event_chunks.py",
@@ -115,6 +116,7 @@ def build_manifest(version: str, git_commit: str, workstation_code_root: Path) -
         "package_name": f"inhouse_transformer_{version}_workstation.zip",
         "drive_code_dir": workstation_version_dir.as_posix(),
         "default_flatfiles_root": DEFAULT_FLATFILES_ROOT,
+        "default_canonical_root": settings.get("canonical_root", ""),
         "default_cache_root": settings["cache_root"],
         "default_output_root": settings["output_root"],
         "train_start_date": settings.get("train_start_date", "2025-06-02"),
@@ -193,11 +195,14 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
         code_cell(
             "# Edit FLATFILES_ROOT if you copy data from the HDD/Drive path to local SSD/NVMe.\n"
             "FLATFILES_ROOT = Path(manifest['default_flatfiles_root'])\n"
+            "CANONICAL_ROOT = Path(manifest.get('default_canonical_root') or (FLATFILES_ROOT / 'derived' / 'canonical_events_v1'))\n"
             "CACHE_ROOT = Path(manifest['default_cache_root'])\n"
             "OUTPUT_ROOT = Path(manifest['default_output_root'])\n"
             "print('flatfiles root:', FLATFILES_ROOT, 'exists=', FLATFILES_ROOT.exists())\n"
+            "print('canonical root:', CANONICAL_ROOT)\n"
             "print('cache root:', CACHE_ROOT)\n"
             "print('output root:', OUTPUT_ROOT)\n"
+            "CANONICAL_ROOT.mkdir(parents=True, exist_ok=True)\n"
             "CACHE_ROOT.mkdir(parents=True, exist_ok=True)\n"
             "OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)\n"
         ),
@@ -251,7 +256,9 @@ def command_generation_source(version: str) -> str:
         profile_block = "print('No profile script for this version; run_profile.ps1 was not generated.')\n"
 
     extra_preprocess_args = ""
+    canonical_arg = ""
     if version == "v22":
+        canonical_arg = "    '--canonical-root', str(CANONICAL_ROOT),\n"
         extra_preprocess_args = (
             "    '--chunk-ms', CHUNK_MS,\n"
             "    '--max-quote-events', str(MAX_QUOTE_EVENTS),\n"
@@ -263,10 +270,10 @@ def command_generation_source(version: str) -> str:
         "# Configure these values, then run this cell once to create all PowerShell scripts.\n"
         "PROFILE_CHUNK_MS = '100,250,500,1000'\n"
         "PROFILE_CAPS = '64,128,256,512'\n"
-        "CHUNK_MS = '250'\n"
-        "MAX_QUOTE_EVENTS = 96\n"
-        "MAX_TRADE_EVENTS = 64\n"
-        "MAX_TOTAL_EVENTS = 128\n"
+        "CHUNK_MS = '500'\n"
+        "MAX_QUOTE_EVENTS = 128\n"
+        "MAX_TRADE_EVENTS = 192\n"
+        "MAX_TOTAL_EVENTS = 256\n"
         "PROFILE_SESSIONS = int(manifest.get('default_profile_sessions', 4))\n"
         "PROFILE_PROCESSES = int(manifest.get('default_profile_processes', 2))\n"
         "PREPROCESS_PROCESSES = int(manifest.get('default_preprocess_processes', 8))\n"
@@ -348,6 +355,7 @@ def command_generation_source(version: str) -> str:
         f"preprocess_py = LOCAL_CODE_ROOT / 'research' / 'inhouse_transformer' / {version!r} / {preprocess_script!r}\n"
         "preprocess_args = [\n"
         "    '--flatfiles-root', str(FLATFILES_ROOT),\n"
+        f"{canonical_arg}"
         "    '--cache-root', str(CACHE_ROOT),\n"
         "    '--start-date', manifest['train_start_date'],\n"
         "    '--end-date', manifest['test_end_date'],\n"
@@ -361,6 +369,7 @@ def command_generation_source(version: str) -> str:
         f"train_py = LOCAL_CODE_ROOT / 'research' / 'inhouse_transformer' / {version!r} / 'train.py'\n"
         "args = [\n"
         "    '--flatfiles-root', str(FLATFILES_ROOT),\n"
+        f"{canonical_arg}"
         "    '--cache-root', str(CACHE_ROOT),\n"
         "    '--train-start-date', manifest['train_start_date'],\n"
         "    '--train-end-date', manifest['train_end_date'],\n"
