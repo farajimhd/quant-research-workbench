@@ -11,13 +11,30 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VERSIONS = ("v21",)
+DEFAULT_VERSIONS = ("v21", "v22")
 DRIVE_CODE_ROOT = Path("G:/My Drive/quant-research-workbench/workstation_code")
 WANDB_ENTITY = "mehdifaraji"
-WANDB_PROJECT = "May2026-microstructure-hybrid-v21"
 DEFAULT_FLATFILES_ROOT = "D:/market-data/flatfiles/us_stock_sip"
-DEFAULT_LOCAL_CACHE_ROOT = "D:/market-data/flatfiles/us_stock_sip/derived/microstructure_1s_v1"
-DEFAULT_MODEL_OUTPUT_ROOT = "D:/TradingData/quant-research-workbench/market_data/models/inhouse_transformer/v21"
+VERSION_SETTINGS = {
+    "v21": {
+        "wandb_project": "May2026-microstructure-hybrid-v21",
+        "cache_root": "D:/market-data/flatfiles/us_stock_sip/derived/microstructure_1s_v1",
+        "output_root": "D:/TradingData/quant-research-workbench/market_data/models/inhouse_transformer/v21",
+        "run_name": "v21-hybrid-1s10s-binary-mid-june2025",
+        "batch_size": 4096,
+        "preprocess_script": "preprocess_microstructure.py",
+        "profile_script": "",
+    },
+    "v22": {
+        "wandb_project": "May2026-microstructure-event-language-v22",
+        "cache_root": "D:/market-data/flatfiles/us_stock_sip/derived/event_chunks_v1",
+        "output_root": "D:/TradingData/quant-research-workbench/market_data/models/inhouse_transformer/v22",
+        "run_name": "v22-event-language-chunk250-june2025",
+        "batch_size": 512,
+        "preprocess_script": "preprocess_event_chunks.py",
+        "profile_script": "profile_event_chunks.py",
+    },
+}
 
 
 def main() -> None:
@@ -30,8 +47,8 @@ def main() -> None:
     git_commit = current_git_commit()
     generated = []
     for version in args.versions:
-        if version != "v21":
-            raise SystemExit("This workstation packager currently supports v21 only.")
+        if version not in VERSION_SETTINGS:
+            raise SystemExit(f"This workstation packager supports only: {', '.join(VERSION_SETTINGS)}")
         version_dir = REPO_ROOT / "research" / "inhouse_transformer" / version
         if not version_dir.exists():
             raise SystemExit(f"Version folder does not exist: {version_dir}")
@@ -54,7 +71,10 @@ def main() -> None:
             drive_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(zip_path, drive_dir / zip_path.name)
             shutil.copy2(notebook_path, drive_dir / notebook_path.name)
-            shutil.copy2(version_dir / "preprocess_microstructure.py", drive_dir / "preprocess_microstructure.py")
+            settings = VERSION_SETTINGS[version]
+            shutil.copy2(version_dir / settings["preprocess_script"], drive_dir / settings["preprocess_script"])
+            if settings["profile_script"]:
+                shutil.copy2(version_dir / settings["profile_script"], drive_dir / settings["profile_script"])
             shutil.copy2(manifest_path, drive_dir / manifest_path.name)
             shutil.copy2(readme_path, drive_dir / readme_path.name)
 
@@ -75,6 +95,7 @@ def current_git_commit() -> str:
 
 
 def build_manifest(version: str, git_commit: str) -> dict[str, Any]:
+    settings = VERSION_SETTINGS[version]
     return {
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "version": version,
@@ -82,8 +103,8 @@ def build_manifest(version: str, git_commit: str) -> dict[str, Any]:
         "package_name": f"inhouse_transformer_{version}_workstation.zip",
         "drive_code_dir": f"G:/My Drive/quant-research-workbench/workstation_code/{version}",
         "default_flatfiles_root": DEFAULT_FLATFILES_ROOT,
-        "default_cache_root": DEFAULT_LOCAL_CACHE_ROOT,
-        "default_output_root": DEFAULT_MODEL_OUTPUT_ROOT,
+        "default_cache_root": settings["cache_root"],
+        "default_output_root": settings["output_root"],
         "train_start_date": "2025-06-02",
         "train_end_date": "2025-06-30",
         "validation_start_date": "2025-07-01",
@@ -92,21 +113,23 @@ def build_manifest(version: str, git_commit: str) -> dict[str, Any]:
         "test_end_date": "2025-07-11",
         "tickers": "ALL",
         "default_epochs": 3,
-        "default_batch_size": 4096,
+        "default_batch_size": settings["batch_size"],
         "default_num_workers": 8,
         "default_prefetch_factor": 4,
         "default_preprocess_processes": 8,
         "default_polars_threads_per_process": 2,
+        "preprocess_script": settings["preprocess_script"],
+        "profile_script": settings["profile_script"],
         "wandb_entity": WANDB_ENTITY,
-        "wandb_project": WANDB_PROJECT,
-        "wandb_run_name": f"{version}-hybrid-1s10s-binary-mid-june2025",
+        "wandb_project": settings["wandb_project"],
+        "wandb_run_name": settings["run_name"],
         "optimizer": "adamw",
         "loss": "binary_cross_entropy_with_logits",
         "lr_scheduler": "cosine_warm_restarts",
         "notes": [
             "API keys are read from the workstation environment or repo .env; no secrets are stored in this package.",
             "The default cache_root is a shared derived-data folder under the SIP flatfiles root so future versions can reuse it.",
-            "The first pass builds per-session one-second Parquet caches; later epochs reuse them.",
+            "The first pass builds per-session microstructure Parquet caches; later epochs reuse them.",
         ],
     }
 
@@ -115,7 +138,7 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
     cells = [
         markdown_cell(
             f"# Train {version} on Workstation\n\n"
-            "This notebook extracts the packaged code locally and launches v21 training in-process so "
+            f"This notebook extracts the packaged code locally and launches {version} training in-process so "
             "logs appear directly in the notebook. Keep API keys in environment variables or a local `.env`; "
             "do not paste secrets into cells."
         ),
@@ -131,7 +154,7 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
             "DRIVE_CODE_DIR = Path('G:/My Drive/quant-research-workbench/workstation_code') / VERSION\n"
             "PACKAGE_ZIP = DRIVE_CODE_DIR / f'inhouse_transformer_{VERSION}_workstation.zip'\n"
             "MANIFEST_PATH = DRIVE_CODE_DIR / 'workstation_manifest.json'\n"
-            "LOCAL_CODE_ROOT = Path('D:/TradingCodes/quant-research-workbench-v21-runtime')\n"
+            "LOCAL_CODE_ROOT = Path(f'D:/TradingCodes/quant-research-workbench-{VERSION}-runtime')\n"
             "\n"
             "assert PACKAGE_ZIP.exists(), f'Missing package: {PACKAGE_ZIP}'\n"
             "assert MANIFEST_PATH.exists(), f'Missing manifest: {MANIFEST_PATH}'\n"
@@ -161,7 +184,12 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
             "%pip install -q polars pyarrow wandb torchinfo torchview graphviz\n"
         ),
         markdown_cell(
-            "Optional but recommended: prebuild the 1-second microstructure Parquet cache before training. "
+            "Optional: run the profiling cell before choosing chunk/cap settings. "
+            "This is available for v22 and skipped for older versions."
+        ),
+        code_cell(profile_source(version)),
+        markdown_cell(
+            "Optional but recommended: prebuild the microstructure Parquet cache before training. "
             "This is the slow CSV decompression step; later training epochs reuse the cache."
         ),
         code_cell(preprocess_source(version)),
@@ -180,22 +208,32 @@ def write_notebook(path: Path, version: str, manifest: dict[str, Any]) -> None:
 
 
 def preprocess_source(version: str) -> str:
+    script_name = VERSION_SETTINGS[version]["preprocess_script"]
+    extra_args = ""
+    if version == "v22":
+        extra_args = (
+            "    '--chunk-ms', '250',\n"
+            "    '--max-quote-events', '96',\n"
+            "    '--max-trade-events', '64',\n"
+            "    '--max-total-events', '128',\n"
+        )
     return (
         "import subprocess\n"
         "import sys\n"
         "\n"
-        "RUN_PREPROCESS = False  # Set True to build/refresh the 1s microstructure cache before training.\n"
+        "RUN_PREPROCESS = False  # Set True to build/refresh the microstructure cache before training.\n"
         "PREPROCESS_PROCESSES = int(manifest.get('default_preprocess_processes', 8))\n"
         "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 2))\n"
         "REBUILD_PREPROCESS_CACHE = False\n"
         "\n"
-        f"preprocess_py = LOCAL_CODE_ROOT / 'research' / 'inhouse_transformer' / {version!r} / 'preprocess_microstructure.py'\n"
+        f"preprocess_py = LOCAL_CODE_ROOT / 'research' / 'inhouse_transformer' / {version!r} / {script_name!r}\n"
         "preprocess_args = [\n"
         "    '--flatfiles-root', str(FLATFILES_ROOT),\n"
         "    '--cache-root', str(CACHE_ROOT),\n"
         "    '--start-date', manifest['train_start_date'],\n"
         "    '--end-date', manifest['test_end_date'],\n"
         "    '--tickers', manifest.get('tickers', 'ALL'),\n"
+        f"{extra_args}"
         "    '--processes', str(PREPROCESS_PROCESSES),\n"
         "    '--polars-threads-per-process', str(POLARS_THREADS_PER_PROCESS),\n"
         "]\n"
@@ -207,6 +245,36 @@ def preprocess_source(version: str) -> str:
         "    subprocess.check_call([sys.executable, str(preprocess_py), *preprocess_args])\n"
         "else:\n"
         "    print('Skipping preprocessing. Set RUN_PREPROCESS=True to build the cache first.')\n"
+    )
+
+
+def profile_source(version: str) -> str:
+    script_name = VERSION_SETTINGS[version]["profile_script"]
+    if not script_name:
+        return "print('No separate profiling script for this version.')\n"
+    return (
+        "import subprocess\n"
+        "import sys\n"
+        "\n"
+        "RUN_PROFILE = False  # Set True to profile chunk sizes and event caps before preprocessing.\n"
+        "PROFILE_PROCESSES = int(manifest.get('default_preprocess_processes', 8))\n"
+        "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 2))\n"
+        f"profile_py = LOCAL_CODE_ROOT / 'research' / 'inhouse_transformer' / {version!r} / {script_name!r}\n"
+        "profile_args = [\n"
+        "    '--flatfiles-root', str(FLATFILES_ROOT),\n"
+        "    '--start-date', manifest['train_start_date'],\n"
+        "    '--end-date', manifest['validation_end_date'],\n"
+        "    '--tickers', manifest.get('tickers', 'ALL'),\n"
+        "    '--chunk-ms', '100,250,500,1000',\n"
+        "    '--caps', '64,128,256,512',\n"
+        "    '--processes', str(PROFILE_PROCESSES),\n"
+        "    '--polars-threads-per-process', str(POLARS_THREADS_PER_PROCESS),\n"
+        "]\n"
+        "if RUN_PROFILE:\n"
+        "    print('Running:', ' '.join([str(profile_py), *profile_args]))\n"
+        "    subprocess.check_call([sys.executable, str(profile_py), *profile_args])\n"
+        "else:\n"
+        "    print('Skipping profiling. Set RUN_PROFILE=True to profile chunk/cap choices.')\n"
     )
 
 
@@ -270,8 +338,8 @@ def write_workstation_readme(path: Path, version: str, manifest: dict[str, Any])
         f"# Workstation package for {version}\n\n"
         "Open `train_workstation.ipynb` from the same Drive folder. The notebook extracts "
         "the zip to a local runtime directory and runs training in-process.\n\n"
-        "Run `preprocess_microstructure.py` first, or set `RUN_PREPROCESS=True` in the notebook, "
-        "to prebuild the 1-second quote/trade Parquet cache.\n\n"
+        f"Run `{manifest['preprocess_script']}` first, or set `RUN_PREPROCESS=True` in the notebook, "
+        "to prebuild the quote/trade Parquet cache.\n\n"
         f"Default W&B project: `{manifest['wandb_project']}`\n\n"
         "For performance, keep flatfiles and cache output on local SSD/NVMe and update `FLATFILES_ROOT` "
         "in the notebook if needed.\n",

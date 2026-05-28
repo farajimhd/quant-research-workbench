@@ -180,6 +180,47 @@ def _synthetic_input_for(
             dtype=dtype,
             device=device,
         )
+    if name == "quote_values":
+        return torch_module.zeros(
+            rows,
+            model.context_chunks,
+            model.max_quote_events,
+            model.quote_feature_count,
+            dtype=dtype,
+            device=device,
+        )
+    if name == "trade_values":
+        return torch_module.zeros(
+            rows,
+            model.context_chunks,
+            model.max_trade_events,
+            model.trade_feature_count,
+            dtype=dtype,
+            device=device,
+        )
+    if name == "event_kinds":
+        return torch_module.full(
+            (rows, model.context_chunks, model.max_total_events),
+            2,
+            dtype=torch_module.long,
+            device=device,
+        )
+    if name == "event_indices":
+        return torch_module.zeros(
+            rows,
+            model.context_chunks,
+            model.max_total_events,
+            dtype=torch_module.long,
+            device=device,
+        )
+    if name == "chunk_summary":
+        return torch_module.zeros(
+            rows,
+            model.context_chunks,
+            model.chunk_summary_count,
+            dtype=dtype,
+            device=device,
+        )
 
     branch_by_name = {
         "macro_15m_values": "macro_15m_encoder",
