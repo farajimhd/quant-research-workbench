@@ -14,11 +14,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_VERSIONS = ("v21", "v22")
 DRIVE_CODE_ROOT = Path("G:/My Drive/quant-research-workbench/workstation_code")
 WANDB_ENTITY = "mehdifaraji"
-DEFAULT_FLATFILES_ROOT = "D:/market-data/flatfiles/us_stock_sip"
+DEFAULT_FLATFILES_ROOT = "D:/market-data/flatfiles/us_stocks_sip"
 VERSION_SETTINGS = {
     "v21": {
         "wandb_project": "May2026-microstructure-hybrid-v21",
-        "cache_root": "D:/market-data/flatfiles/us_stock_sip/derived/microstructure_1s_v1",
+        "cache_root": "D:/market-data/flatfiles/us_stocks_sip/derived/microstructure_1s_v1",
         "output_root": "D:/TradingData/quant-research-workbench/market_data/models/inhouse_transformer/v21",
         "run_name": "v21-hybrid-1s10s-binary-mid-june2025",
         "batch_size": 4096,
@@ -27,7 +27,7 @@ VERSION_SETTINGS = {
     },
     "v22": {
         "wandb_project": "May2026-microstructure-event-language-v22",
-        "cache_root": "D:/market-data/flatfiles/us_stock_sip/derived/event_chunks_v1",
+        "cache_root": "D:/market-data/flatfiles/us_stocks_sip/derived/event_chunks_v1",
         "output_root": "D:/TradingData/quant-research-workbench/market_data/models/inhouse_transformer/v22",
         "run_name": "v22-event-language-chunk250-nov2025",
         "batch_size": 512,

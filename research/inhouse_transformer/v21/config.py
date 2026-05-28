@@ -16,8 +16,8 @@ DEFAULT_TEST_END = "2025-07-11"
 
 @dataclass(slots=True)
 class DataConfig:
-    flatfiles_root: Path = Path("D:/market-data/flatfiles/us_stock_sip")
-    cache_root: Path = Path("D:/market-data/flatfiles/us_stock_sip/derived/microstructure_1s_v1")
+    flatfiles_root: Path = Path("D:/market-data/flatfiles/us_stocks_sip")
+    cache_root: Path = Path("D:/market-data/flatfiles/us_stocks_sip/derived/microstructure_1s_v1")
     train_start_date: str = DEFAULT_TRAIN_START
     train_end_date: str = DEFAULT_TRAIN_END
     validation_start_date: str = DEFAULT_VALIDATION_START
