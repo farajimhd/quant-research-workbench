@@ -52,6 +52,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     os.environ.setdefault("POLARS_MAX_THREADS", str(max(1, args.polars_threads_per_process)))
+    import polars as pl
+
     from research.inhouse_transformer.v22.data import (
         available_sessions,
         discover_canonical_groups,
@@ -94,6 +96,12 @@ def main() -> None:
     print(f"months={','.join(months)}")
     print(f"chunk_ms={config.chunk_ms} max_quote={config.max_quote_events} max_trade={config.max_trade_events} max_total={config.max_total_events}")
     print(f"processes={args.processes} polars_threads_per_process={args.polars_threads_per_process}")
+    print(
+        "polars_runtime="
+        f"version={pl.__version__} thread_pool={pl.thread_pool_size()} "
+        f"has_partition_by={hasattr(pl, 'PartitionBy')} has_sink_parquet={hasattr(pl.LazyFrame, 'sink_parquet')}",
+        flush=True,
+    )
     print(LOG_RULE)
     if args.dry_run:
         for ticker in ("<ticker>",):
@@ -222,6 +230,7 @@ def normalize_session_kind_worker(item: dict[str, str], payload: dict[str, Any])
             parse_ticker_list(payload["tickers_raw"]),
             rebuild=bool(payload.get("rebuild")),
         )
+        print(f"WRITER normalize {key} {result.get('writer', 'unknown')}", flush=True)
         return result_row("normalize", key, result["status"], int(result.get("rows") or 0), time.time() - started, result)
     except BaseException:
         return failed_row("normalize", key, time.time() - started)

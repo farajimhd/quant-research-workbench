@@ -475,6 +475,7 @@ def normalize_session_kind_to_temp_parts(
     output_root.mkdir(parents=True, exist_ok=True)
     lazy = scanner(config, session, tickers)
     if hasattr(pl, "PartitionBy"):
+        writer = "polars_partitioned_sink"
         lazy.sink_parquet(
             pl.PartitionBy(
                 output_root,
@@ -484,8 +485,10 @@ def normalize_session_kind_to_temp_parts(
             ),
             compression="zstd",
             mkdir=True,
+            maintain_order=False,
         )
     else:
+        writer = "pyarrow_streaming_fallback"
         stream_normalized_csv_to_temp_parts(
             config,
             session,
@@ -494,7 +497,7 @@ def normalize_session_kind_to_temp_parts(
             output_root,
         )
     rows = count_parquet_rows(output_root.rglob("*.parquet"))
-    return {"kind": kind, "session": session, "status": "ok", "rows": rows, "path": str(output_root)}
+    return {"kind": kind, "session": session, "status": "ok", "rows": rows, "path": str(output_root), "writer": writer}
 
 
 def stream_normalized_csv_to_temp_parts(

@@ -132,8 +132,8 @@ def build_manifest(version: str, git_commit: str, workstation_code_root: Path) -
         "default_prefetch_factor": 4,
         "default_profile_processes": 2,
         "default_profile_sessions": 4,
-        "default_preprocess_processes": 8,
-        "default_polars_threads_per_process": 2,
+        "default_preprocess_processes": 4,
+        "default_polars_threads_per_process": 8,
         "preprocess_script": settings["preprocess_script"],
         "profile_script": settings["profile_script"],
         "wandb_entity": WANDB_ENTITY,
@@ -276,9 +276,9 @@ def command_generation_source(version: str) -> str:
         "MAX_TOTAL_EVENTS = 256\n"
         "PROFILE_SESSIONS = int(manifest.get('default_profile_sessions', 4))\n"
         "PROFILE_PROCESSES = int(manifest.get('default_profile_processes', 2))\n"
-        "PREPROCESS_PROCESSES = int(manifest.get('default_preprocess_processes', 8))\n"
+        "PREPROCESS_PROCESSES = int(manifest.get('default_preprocess_processes', 4))\n"
         "PREPROCESS_HEARTBEAT_SECONDS = 30\n"
-        "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 2))\n"
+        "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 8))\n"
         "REBUILD_PREPROCESS_CACHE = False\n"
         "BATCH_SIZE = int(manifest.get('default_batch_size', 4096))\n"
         "EPOCHS = int(manifest.get('default_epochs', 3))\n"
@@ -340,7 +340,7 @@ def command_generation_source(version: str) -> str:
         "\n"
         "install_ps1 = LOCAL_CODE_ROOT / 'run_install_deps.ps1'\n"
         "install_log = RUN_LOG_DIR / f'{VERSION}_install_deps.log'\n"
-        "install_command = f'& {ps_quote(sys.executable)} -m pip install polars pyarrow wandb torchinfo torchview graphviz'\n"
+        "install_command = f'& {ps_quote(sys.executable)} -m pip install \"polars[rt64]\" pyarrow wandb torchinfo torchview graphviz'\n"
         "install_ps1.parent.mkdir(parents=True, exist_ok=True)\n"
         "install_log.parent.mkdir(parents=True, exist_ok=True)\n"
         "install_ps1.write_text(\n"
