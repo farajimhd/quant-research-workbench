@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--keep-temp-normalized", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
+    parser.add_argument("--heartbeat-seconds", type=float, default=30.0)
     parser.add_argument("--manifest-name", default="preprocess_event_chunks_manifest.jsonl")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -122,15 +123,21 @@ def main() -> None:
         print(f"Layer 1 canonical events already present for {len(existing_groups):,} ticker-month groups; skipping raw CSV normalization.", flush=True)
     else:
         print(LOG_RULE)
-        print("PHASE 1/3 normalize raw CSV.GZ sessions into temporary ticker partitions", flush=True)
+        print("PHASE 1/3 normalize raw CSV.GZ quote/trade files into temporary ticker partitions", flush=True)
+        normalize_items = [
+            {"session": session, "kind": kind}
+            for session in sessions
+            for kind in ("quotes", "trades")
+        ]
         failed += run_parallel(
             label="normalize",
-            items=sessions,
-            submit=lambda executor, session: executor.submit(normalize_session_worker, session, worker_payload),
+            items=normalize_items,
+            submit=lambda executor, item: executor.submit(normalize_session_kind_worker, item, worker_payload),
             manifest_path=manifest_path,
             processes=args.processes,
             started=started,
             fail_fast=args.fail_fast,
+            heartbeat_seconds=args.heartbeat_seconds,
         )
         temp_groups = discover_temp_canonical_groups(config)
         print(LOG_RULE)
@@ -147,6 +154,7 @@ def main() -> None:
             processes=args.processes,
             started=started,
             fail_fast=args.fail_fast,
+            heartbeat_seconds=args.heartbeat_seconds,
         )
         if not args.keep_temp_normalized and failed == 0:
             temp_root = temp_canonical_parts_root(config)
@@ -169,6 +177,7 @@ def main() -> None:
         processes=args.processes,
         started=started,
         fail_fast=args.fail_fast,
+        heartbeat_seconds=args.heartbeat_seconds,
     )
     print(LOG_RULE)
     print(f"Done. sessions={len(sessions)} canonical_groups={len(canonical_groups):,} failed={failed}")
@@ -197,6 +206,27 @@ def normalize_session_worker(session: str, payload: dict[str, Any]) -> dict[str,
         return failed_row("normalize", session, time.time() - started)
 
 
+def normalize_session_kind_worker(item: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+    os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
+    started = time.time()
+    key = f"{item['kind']}:{item['session']}"
+    print(f"START normalize {key}", flush=True)
+    from research.inhouse_transformer.v22.data import normalize_session_kind_to_temp_parts, parse_ticker_list
+
+    try:
+        config = payload_to_config(payload["config"])
+        result = normalize_session_kind_to_temp_parts(
+            config,
+            item["session"],
+            item["kind"],
+            parse_ticker_list(payload["tickers_raw"]),
+            rebuild=bool(payload.get("rebuild")),
+        )
+        return result_row("normalize", key, result["status"], int(result.get("rows") or 0), time.time() - started, result)
+    except BaseException:
+        return failed_row("normalize", key, time.time() - started)
+
+
 def merge_canonical_worker(item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
     started = time.time()
@@ -204,6 +234,7 @@ def merge_canonical_worker(item: dict[str, Any], payload: dict[str, Any]) -> dic
 
     try:
         config = payload_to_config(payload["config"])
+        print(f"START canonical {item['kind']}:{item['ticker']}:{item['year_month']} paths={len(item['paths'])}", flush=True)
         result = merge_temp_group_to_canonical(
             config,
             kind=item["kind"],
@@ -225,6 +256,7 @@ def build_chunks_worker(item: dict[str, Any], payload: dict[str, Any]) -> dict[s
 
     try:
         config = payload_to_config(payload["config"])
+        print(f"START chunks {item['ticker']}:{item['year_month']}", flush=True)
         result = build_event_chunks_from_canonical(
             config,
             ticker=item["ticker"],
@@ -246,26 +278,93 @@ def run_parallel(
     processes: int,
     started: float,
     fail_fast: bool,
+    heartbeat_seconds: float,
 ) -> int:
     if not items:
         print(f"{label}: no work items", flush=True)
         return 0
     failed = 0
+    completed = 0
+    submitted_at: dict[Any, float] = {}
+    future_labels: dict[Any, str] = {}
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, processes)) as executor:
-        futures = {submit(executor, item): item for item in items}
-        for completed, future in enumerate(concurrent.futures.as_completed(futures), start=1):
-            item = futures[future]
-            try:
-                result = future.result()
-            except BaseException:
-                result = failed_row(label, str(item), time.time() - started)
-            if result["status"] == "failed":
-                failed += 1
-            append_jsonl(manifest_path, result)
-            print(format_progress(result, completed, len(items), time.time() - started), flush=True)
-            if fail_fast and result["status"] == "failed":
-                raise SystemExit(f"{label} failed for {result.get('key')}: {result.get('error')}")
+        pending = set()
+        for index, item in enumerate(items, start=1):
+            future = submit(executor, item)
+            pending.add(future)
+            submitted_at[future] = time.time()
+            future_labels[future] = item_label(item)
+            print(f"[{index:,}/{len(items):,}] SUBMIT {label} {future_labels[future]}", flush=True)
+        next_heartbeat = time.time() + max(1.0, heartbeat_seconds)
+        while pending:
+            done, pending = concurrent.futures.wait(
+                pending,
+                timeout=max(1.0, min(max(1.0, heartbeat_seconds), max(0.1, next_heartbeat - time.time()))),
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            now = time.time()
+            if not done and now >= next_heartbeat:
+                print_heartbeat(label, pending, future_labels, submitted_at, completed, len(items), started)
+                next_heartbeat = now + max(1.0, heartbeat_seconds)
+                continue
+            for future in done:
+                completed += 1
+                item = future_labels[future]
+                item_started = submitted_at[future]
+                wait_seconds = time.time() - item_started
+                if wait_seconds >= max(1.0, heartbeat_seconds):
+                    print(f"FINISH {label} {item} after {wait_seconds:.1f}s", flush=True)
+                else:
+                    print(f"FINISH {label} {item}", flush=True)
+                try:
+                    result = future.result()
+                except BaseException:
+                    result = failed_row(label, str(item), time.time() - started)
+                if result["status"] == "failed":
+                    failed += 1
+                append_jsonl(manifest_path, result)
+                print(format_progress(result, completed, len(items), time.time() - started), flush=True)
+                if fail_fast and result["status"] == "failed":
+                    raise SystemExit(f"{label} failed for {result.get('key')}: {result.get('error')}")
+            if now >= next_heartbeat and pending:
+                print_heartbeat(label, pending, future_labels, submitted_at, completed, len(items), started)
+                next_heartbeat = now + max(1.0, heartbeat_seconds)
     return failed
+
+
+def item_label(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        if "kind" in item and "session" in item:
+            return f"{item['kind']}:{item['session']}"
+        if "kind" in item and "ticker" in item and "year_month" in item:
+            return f"{item['kind']}:{item['ticker']}:{item['year_month']}"
+        if "ticker" in item and "year_month" in item:
+            return f"{item['ticker']}:{item['year_month']}"
+    return str(item)
+
+
+def print_heartbeat(
+    label: str,
+    pending: set[Any],
+    future_labels: dict[Any, str],
+    submitted_at: dict[Any, float],
+    completed: int,
+    total: int,
+    started: float,
+) -> None:
+    now = time.time()
+    longest = sorted(
+        ((now - submitted_at[future], future_labels[future]) for future in pending),
+        reverse=True,
+    )[:5]
+    in_flight = ", ".join(f"{name}={seconds:.0f}s" for seconds, name in longest)
+    print(
+        f"HEARTBEAT {label}: completed={completed:,}/{total:,} running={len(pending):,} "
+        f"elapsed_minutes={(now - started) / 60.0:.1f} longest=[{in_flight}]",
+        flush=True,
+    )
 
 
 def result_status(rows: Any) -> str:

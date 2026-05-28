@@ -439,31 +439,51 @@ def normalize_session_to_temp_parts(
     *,
     rebuild: bool = False,
 ) -> dict[str, Any]:
-    root = temp_canonical_parts_root(config)
     results: dict[str, Any] = {"session": session, "kinds": {}}
-    for kind, scanner in (("quotes", scan_normalized_quotes), ("trades", scan_normalized_trades)):
-        output_root = root / kind / f"session={session}"
-        if output_root.exists() and rebuild:
-            shutil.rmtree(output_root)
-        if output_root.exists() and list(output_root.rglob("*.parquet")):
-            rows = count_parquet_rows(output_root.rglob("*.parquet"))
-            results["kinds"][kind] = {"status": "skipped", "rows": rows, "path": str(output_root)}
-            continue
-        output_root.mkdir(parents=True, exist_ok=True)
-        lazy = scanner(config, session, tickers)
-        lazy.sink_parquet(
-            pl.PartitionBy(
-                output_root,
-                key=["year_month", "ticker"],
-                include_key=True,
-                max_rows_per_file=1_000_000,
-            ),
-            compression="zstd",
-            mkdir=True,
+    for kind in ("quotes", "trades"):
+        results["kinds"][kind] = normalize_session_kind_to_temp_parts(
+            config,
+            session,
+            kind,
+            tickers,
+            rebuild=rebuild,
         )
-        rows = count_parquet_rows(output_root.rglob("*.parquet"))
-        results["kinds"][kind] = {"status": "ok", "rows": rows, "path": str(output_root)}
     return results
+
+
+def normalize_session_kind_to_temp_parts(
+    config: DataConfig,
+    session: str,
+    kind: str,
+    tickers: tuple[str, ...],
+    *,
+    rebuild: bool = False,
+) -> dict[str, Any]:
+    scanner = {
+        "quotes": scan_normalized_quotes,
+        "trades": scan_normalized_trades,
+    }[kind]
+    root = temp_canonical_parts_root(config)
+    output_root = root / kind / f"session={session}"
+    if output_root.exists() and rebuild:
+        shutil.rmtree(output_root)
+    if output_root.exists() and list(output_root.rglob("*.parquet")):
+        rows = count_parquet_rows(output_root.rglob("*.parquet"))
+        return {"kind": kind, "session": session, "status": "skipped", "rows": rows, "path": str(output_root)}
+    output_root.mkdir(parents=True, exist_ok=True)
+    lazy = scanner(config, session, tickers)
+    lazy.sink_parquet(
+        pl.PartitionBy(
+            output_root,
+            key=["year_month", "ticker"],
+            include_key=True,
+            max_rows_per_file=1_000_000,
+        ),
+        compression="zstd",
+        mkdir=True,
+    )
+    rows = count_parquet_rows(output_root.rglob("*.parquet"))
+    return {"kind": kind, "session": session, "status": "ok", "rows": rows, "path": str(output_root)}
 
 
 def discover_temp_canonical_groups(config: DataConfig) -> dict[tuple[str, str, str], list[Path]]:
