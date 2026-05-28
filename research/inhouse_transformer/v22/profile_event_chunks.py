@@ -32,6 +32,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tickers", default="ALL")
     parser.add_argument("--chunk-ms", default=",".join(str(value) for value in DEFAULT_CHUNK_MS))
     parser.add_argument("--caps", default=",".join(str(value) for value in DEFAULT_CAPS))
+    parser.add_argument(
+        "--max-profile-sessions",
+        type=int,
+        default=4,
+        help="Maximum quote/trade sessions to profile. Use 0 to profile every available session.",
+    )
     parser.add_argument("--processes", type=int, default=max(1, min(2, (os.cpu_count() or 4) // 2)))
     parser.add_argument("--polars-threads-per-process", type=int, default=2)
     parser.add_argument("--session-start-hour-utc", type=int, default=defaults.session_start_hour_utc)
@@ -59,7 +65,18 @@ def main() -> None:
     )
     config_payload["flatfiles_root"] = str(config_payload["flatfiles_root"])
     config_payload["cache_root"] = str(config_payload["cache_root"])
-    sessions = available_sessions(Path(args.flatfiles_root), args.start_date, args.end_date)
+    available = available_sessions(Path(args.flatfiles_root), args.start_date, args.end_date)
+    sessions = available[: args.max_profile_sessions] if args.max_profile_sessions > 0 else available
+    if not sessions:
+        raise SystemExit(
+            f"No sessions found under {args.flatfiles_root} from {args.start_date} to {args.end_date}."
+        )
+    if args.max_profile_sessions > 0 and len(available) > len(sessions):
+        print(
+            f"Profiling first {len(sessions)} of {len(available)} available sessions. "
+            "Set --max-profile-sessions 0 to profile all sessions.",
+            flush=True,
+        )
     started = time.time()
     results = []
     failures = []
@@ -99,6 +116,8 @@ def main() -> None:
     report["created_at"] = datetime.now().isoformat(timespec="seconds")
     report["elapsed_seconds"] = time.time() - started
     report["sessions"] = sessions
+    report["available_sessions"] = available
+    report["max_profile_sessions"] = args.max_profile_sessions
     report["successful_sessions"] = [result["session"] for result in results]
     report["failed_sessions"] = failures
     report["flatfiles_root"] = args.flatfiles_root
