@@ -125,7 +125,7 @@ def build_manifest(version: str, git_commit: str, workstation_code_root: Path) -
         "default_batch_size": settings["batch_size"],
         "default_num_workers": 8,
         "default_prefetch_factor": 4,
-        "default_profile_processes": 1,
+        "default_profile_processes": 2,
         "default_profile_sessions": 4,
         "default_preprocess_processes": 8,
         "default_polars_threads_per_process": 2,
@@ -258,7 +258,7 @@ def command_generation_source(version: str) -> str:
 
     return (
         "# Configure these values, then run this cell once to create all PowerShell scripts.\n"
-        "PROFILE_CHUNK_MS = '250'\n"
+        "PROFILE_CHUNK_MS = '100,250,500,1000'\n"
         "PROFILE_CAPS = '64,128,256,512'\n"
         "CHUNK_MS = '250'\n"
         "MAX_QUOTE_EVENTS = 96\n"

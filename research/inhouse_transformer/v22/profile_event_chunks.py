@@ -19,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 from research.inhouse_transformer.v22.config import DataConfig  # noqa: E402
 
 
-DEFAULT_CHUNK_MS = (250,)
+DEFAULT_CHUNK_MS = (100, 250, 500, 1000)
 DEFAULT_CAPS = (64, 128, 256, 512)
 
 
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
         default=4,
         help="Maximum quote/trade sessions to profile. Use 0 to profile every available session.",
     )
-    parser.add_argument("--processes", type=int, default=1)
+    parser.add_argument("--processes", type=int, default=max(1, min(2, (os.cpu_count() or 4) // 2)))
     parser.add_argument("--polars-threads-per-process", type=int, default=2)
     parser.add_argument("--session-start-hour-utc", type=int, default=defaults.session_start_hour_utc)
     parser.add_argument("--session-end-hour-utc", type=int, default=defaults.session_end_hour_utc)
