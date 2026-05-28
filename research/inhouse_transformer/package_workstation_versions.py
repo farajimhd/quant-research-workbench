@@ -34,6 +34,7 @@ VERSION_SETTINGS = {
         "batch_size": 512,
         "preprocess_script": "preprocess_event_chunks.py",
         "profile_script": "profile_event_chunks.py",
+        "utility_scripts": ("inspect_flatfile_order.py",),
         "train_start_date": "2025-11-01",
         "train_end_date": "2025-11-30",
         "validation_start_date": "2025-12-01",
@@ -83,6 +84,8 @@ def main() -> None:
             shutil.copy2(version_dir / settings["preprocess_script"], drive_dir / settings["preprocess_script"])
             if settings["profile_script"]:
                 shutil.copy2(version_dir / settings["profile_script"], drive_dir / settings["profile_script"])
+            for utility_script in settings.get("utility_scripts", ()):
+                shutil.copy2(version_dir / utility_script, drive_dir / utility_script)
             shutil.copy2(manifest_path, drive_dir / manifest_path.name)
             shutil.copy2(readme_path, drive_dir / readme_path.name)
 
