@@ -43,7 +43,7 @@ VERSION_SETTINGS = {
         "test_start_date": "2025-12-08",
         "test_end_date": "2025-12-12",
         "preprocess_processes": 16,
-        "normalize_processes": 4,
+        "normalize_processes": 8,
         "canonical_processes": 16,
         "chunk_processes": 16,
         "polars_threads_per_process": 4,
