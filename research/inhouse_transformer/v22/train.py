@@ -69,6 +69,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-trade-events", type=int, default=defaults.data.max_trade_events)
     parser.add_argument("--max-total-events", type=int, default=defaults.data.max_total_events)
     parser.add_argument("--tickers", default="ALL")
+    parser.add_argument("--session-filter-mode", choices=["market_time", "utc_hour"], default=defaults.data.session_filter_mode)
+    parser.add_argument("--session-timezone", default=defaults.data.session_timezone)
+    parser.add_argument("--session-start-time-market", default=defaults.data.session_start_time_market)
+    parser.add_argument("--session-end-time-market", default=defaults.data.session_end_time_market)
     parser.add_argument("--session-start-hour-utc", type=int, default=defaults.data.session_start_hour_utc)
     parser.add_argument("--session-end-hour-utc", type=int, default=defaults.data.session_end_hour_utc)
     parser.add_argument("--rebuild-cache", action="store_true")
@@ -141,6 +145,10 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         max_quote_events=args.max_quote_events,
         max_trade_events=args.max_trade_events,
         max_total_events=args.max_total_events,
+        session_filter_mode=args.session_filter_mode,
+        session_timezone=args.session_timezone,
+        session_start_time_market=args.session_start_time_market,
+        session_end_time_market=args.session_end_time_market,
         session_start_hour_utc=args.session_start_hour_utc,
         session_end_hour_utc=args.session_end_hour_utc,
         rebuild_cache=args.rebuild_cache,

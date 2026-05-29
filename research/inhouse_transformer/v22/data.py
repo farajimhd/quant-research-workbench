@@ -8,9 +8,10 @@ import os
 import shutil
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time as datetime_time
 from pathlib import Path
 from typing import Any, Iterator
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import polars as pl
@@ -332,12 +333,9 @@ def scan_normalized_quotes(config: DataConfig, session: str, tickers: tuple[str,
     if missing:
         raise SystemExit(f"Quote flatfile {path} is missing required columns: {missing}")
     scan = scan.select([column for column in columns if column in names])
-    day_ns = pl.col("sip_timestamp").cast(pl.Int64, strict=False) % (24 * 3600 * NANOSECONDS_PER_SECOND)
-    start_ns = config.session_start_hour_utc * 3600 * NANOSECONDS_PER_SECOND
-    end_ns = config.session_end_hour_utc * 3600 * NANOSECONDS_PER_SECOND
     lot_multiplier = config.quote_size_lot_multiplier_before_2025_11_03 if session < QUOTE_SIZE_UNIT_SWITCH_DATE else 1
     normalized = (
-        scan.filter((day_ns >= start_ns) & (day_ns < end_ns))
+        scan.filter(session_timestamp_filter_expr(config, session))
         .with_columns(
             pl.col("ticker").cast(pl.String).str.to_uppercase(),
             pl.col("sip_timestamp").cast(pl.Int64, strict=False),
@@ -393,11 +391,8 @@ def scan_normalized_trades(config: DataConfig, session: str, tickers: tuple[str,
     if missing:
         raise SystemExit(f"Trade flatfile {path} is missing required columns: {missing}")
     scan = scan.select([column for column in columns if column in names])
-    day_ns = pl.col("sip_timestamp").cast(pl.Int64, strict=False) % (24 * 3600 * NANOSECONDS_PER_SECOND)
-    start_ns = config.session_start_hour_utc * 3600 * NANOSECONDS_PER_SECOND
-    end_ns = config.session_end_hour_utc * 3600 * NANOSECONDS_PER_SECOND
     normalized = (
-        scan.filter((day_ns >= start_ns) & (day_ns < end_ns))
+        scan.filter(session_timestamp_filter_expr(config, session))
         .with_columns(
             pl.col("ticker").cast(pl.String).str.to_uppercase(),
             pl.col("sip_timestamp").cast(pl.Int64, strict=False),
@@ -583,10 +578,7 @@ def normalize_raw_row(
     sip_timestamp = parse_int(row.get("sip_timestamp"))
     if sip_timestamp is None:
         return None
-    day_ns = sip_timestamp % (24 * 3600 * NANOSECONDS_PER_SECOND)
-    start_ns = config.session_start_hour_utc * 3600 * NANOSECONDS_PER_SECOND
-    end_ns = config.session_end_hour_utc * 3600 * NANOSECONDS_PER_SECOND
-    if day_ns < start_ns or day_ns >= end_ns:
+    if not timestamp_in_session(config, session, sip_timestamp):
         return None
     sequence_number = parse_int(row.get("sequence_number")) or 0
     if kind == "quotes":
@@ -647,6 +639,57 @@ def parse_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def session_timestamp_filter_expr(config: DataConfig, session: str) -> pl.Expr:
+    timestamp = pl.col("sip_timestamp").cast(pl.Int64, strict=False)
+    if config.session_filter_mode == "utc_hour":
+        day_ns = timestamp % (24 * 3600 * NANOSECONDS_PER_SECOND)
+        start_ns = config.session_start_hour_utc * 3600 * NANOSECONDS_PER_SECOND
+        end_ns = config.session_end_hour_utc * 3600 * NANOSECONDS_PER_SECOND
+        if start_ns <= end_ns:
+            return (day_ns >= start_ns) & (day_ns < end_ns)
+        return (day_ns >= start_ns) | (day_ns < end_ns)
+    start_ns, end_ns = session_market_window_utc_ns(config, session)
+    return (timestamp >= start_ns) & (timestamp < end_ns)
+
+
+def timestamp_in_session(config: DataConfig, session: str, sip_timestamp: int) -> bool:
+    if config.session_filter_mode == "utc_hour":
+        day_ns = sip_timestamp % (24 * 3600 * NANOSECONDS_PER_SECOND)
+        start_ns = config.session_start_hour_utc * 3600 * NANOSECONDS_PER_SECOND
+        end_ns = config.session_end_hour_utc * 3600 * NANOSECONDS_PER_SECOND
+        if start_ns <= end_ns:
+            return start_ns <= day_ns < end_ns
+        return day_ns >= start_ns or day_ns < end_ns
+    start_ns, end_ns = session_market_window_utc_ns(config, session)
+    return start_ns <= sip_timestamp < end_ns
+
+
+def session_market_window_utc_ns(config: DataConfig, session: str) -> tuple[int, int]:
+    timezone = ZoneInfo(config.session_timezone)
+    session_day = date.fromisoformat(session)
+    start_local = datetime.combine(
+        session_day,
+        parse_market_time(config.session_start_time_market),
+        tzinfo=timezone,
+    )
+    end_local = datetime.combine(
+        session_day,
+        parse_market_time(config.session_end_time_market),
+        tzinfo=timezone,
+    )
+    if end_local <= start_local:
+        end_local += timedelta(days=1)
+    return int(start_local.timestamp() * NANOSECONDS_PER_SECOND), int(end_local.timestamp() * NANOSECONDS_PER_SECOND)
+
+
+def parse_market_time(value: str) -> datetime_time:
+    try:
+        hour_text, minute_text = value.split(":", 1)
+        return datetime_time(hour=int(hour_text), minute=int(minute_text))
+    except Exception as exc:
+        raise ValueError(f"Expected HH:MM market time, got {value!r}.") from exc
 
 
 def flush_ticker_buffer(
@@ -814,6 +857,16 @@ def build_event_chunks_from_canonical(
     log_chunk_step(key, "read_trades_done", worker_started, timings, rows=trades.height)
     if quotes.is_empty() and trades.is_empty():
         return {"ticker": ticker, "year_month": year_month, "status": "empty", "rows": 0, "output_path": str(output_path)}
+    if quotes.is_empty():
+        if rebuild and output_path.exists():
+            output_path.unlink()
+        return {
+            "ticker": ticker,
+            "year_month": year_month,
+            "status": "empty_no_quotes",
+            "rows": 0,
+            "output_path": str(output_path),
+        }
     log_chunk_step(key, "attach_quote_state_start", worker_started)
     trades_with_quote = attach_quote_state_to_trades(trades, quotes)
     log_chunk_step(key, "attach_quote_state_done", worker_started, timings, rows=trades_with_quote.height)

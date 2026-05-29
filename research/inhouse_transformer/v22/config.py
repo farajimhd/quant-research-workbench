@@ -40,6 +40,10 @@ class DataConfig:
     binary_magnitude_bits: int = 12
     target_columns: tuple[str, ...] = ("close",)
     tickers: tuple[str, ...] = ()
+    session_filter_mode: str = "market_time"
+    session_timezone: str = "America/New_York"
+    session_start_time_market: str = "04:00"
+    session_end_time_market: str = "20:00"
     session_start_hour_utc: int = 8
     session_end_hour_utc: int = 22
     quote_size_lot_multiplier_before_2025_11_03: int = 100
