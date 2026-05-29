@@ -14,7 +14,7 @@ import sys
 import time
 import traceback
 from dataclasses import asdict
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,147 @@ if __name__ == "__main__":
 
 
 LOG_RULE = "*" * 96
+ALL_TICKERS_SENTINEL = "__ALL_TICKERS__"
+
+
+def parse_ticker_list(raw: str) -> tuple[str, ...]:
+    parts = tuple(part.strip().upper() for part in raw.split(",") if part.strip())
+    if not parts or (len(parts) == 1 and parts[0] in {"ALL", "*"}):
+        return (ALL_TICKERS_SENTINEL,)
+    return parts
+
+
+def uses_all_tickers(tickers: tuple[str, ...]) -> bool:
+    return len(tickers) == 1 and tickers[0] == ALL_TICKERS_SENTINEL
+
+
+def date_range(start_date: str, end_date: str) -> list[str]:
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if end < start:
+        return []
+    days: list[str] = []
+    current = start
+    while current <= end:
+        days.append(current.isoformat())
+        current += timedelta(days=1)
+    return days
+
+
+def year_month_range(start_date: str, end_date: str) -> list[str]:
+    months: list[str] = []
+    for session in date_range(start_date, end_date):
+        year_month = session[:7]
+        if not months or months[-1] != year_month:
+            months.append(year_month)
+    return months
+
+
+def flatfile_root_candidates(flatfiles_root: Path) -> tuple[Path, ...]:
+    candidates = [flatfiles_root]
+    if flatfiles_root.name == "us_stock_sip":
+        candidates.append(flatfiles_root.with_name("us_stocks_sip"))
+    elif flatfiles_root.name == "us_stocks_sip":
+        candidates.append(flatfiles_root.with_name("us_stock_sip"))
+    else:
+        candidates.append(flatfiles_root / "us_stocks_sip")
+        candidates.append(flatfiles_root / "us_stock_sip")
+    unique: list[Path] = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return tuple(unique)
+
+
+def find_flatfile(flatfiles_root: Path, kind: str, session: str) -> Path | None:
+    roots = {
+        "quotes": ("quotes_v1", "quotes"),
+        "trades": ("trades_v1", "trades"),
+    }[kind]
+    year, month, _ = session.split("-")
+    filenames = (f"{session}.csv.gz", f"{session}.csv", f"{session}.gz")
+    structured_bases: list[Path] = []
+    for candidate_root in flatfile_root_candidates(flatfiles_root):
+        for root_name in roots:
+            base = candidate_root / root_name
+            if base.exists():
+                structured_bases.append(base)
+            for filename in filenames:
+                for candidate in (base / year / month / filename, base / year / filename, base / filename):
+                    if candidate.exists():
+                        return candidate
+    if structured_bases:
+        return None
+    for candidate_root in flatfile_root_candidates(flatfiles_root):
+        for root_name in roots:
+            base = candidate_root / root_name
+            if base.exists():
+                matches = sorted(base.rglob(f"*{session}*.csv*"))
+                if matches:
+                    return matches[0]
+    return None
+
+
+def available_sessions(flatfiles_root: Path, start_date: str, end_date: str) -> list[str]:
+    sessions = []
+    for session in date_range(start_date, end_date):
+        if find_flatfile(flatfiles_root, "quotes", session) is not None and find_flatfile(flatfiles_root, "trades", session) is not None:
+            sessions.append(session)
+    if not sessions:
+        raise SystemExit(f"No quote/trade flatfile pairs found between {start_date} and {end_date} under {flatfiles_root}.")
+    return sessions
+
+
+def canonical_event_path(config: DataConfig, kind: str, ticker: str, year_month: str) -> Path:
+    return config.canonical_root / kind / f"ticker={ticker}" / f"{year_month}.parquet"
+
+
+def event_chunk_path(config: DataConfig, ticker: str, year_month: str) -> Path:
+    return (
+        config.cache_root
+        / f"chunk_ms={config.chunk_ms}"
+        / f"mq={config.max_quote_events}_mt={config.max_trade_events}_m={config.max_total_events}"
+        / f"ticker={ticker}"
+        / f"{year_month}.parquet"
+    )
+
+
+def temp_canonical_parts_root(config: DataConfig) -> Path:
+    return config.cache_root / "_tmp_canonical_parts"
+
+
+def discover_temp_canonical_groups(config: DataConfig) -> dict[tuple[str, str, str], list[Path]]:
+    root = temp_canonical_parts_root(config)
+    groups: dict[tuple[str, str, str], list[Path]] = {}
+    for path in root.glob("*/session=*/year_month=*/ticker_bucket=*/*.parquet"):
+        parts = path.parts
+        kind = parts[-5]
+        year_month = parts[-3].split("=", 1)[1]
+        ticker_bucket = parts[-2].split("=", 1)[1]
+        groups.setdefault((kind, year_month, ticker_bucket), []).append(path)
+    return groups
+
+
+def discover_canonical_groups(config: DataConfig, *, start_date: str, end_date: str, tickers: tuple[str, ...]) -> list[tuple[str, str]]:
+    months = set(year_month_range(start_date, end_date))
+    groups: set[tuple[str, str]] = set()
+    if tickers and not uses_all_tickers(tickers):
+        for ticker in tickers:
+            for year_month in months:
+                if canonical_event_path(config, "quotes", ticker, year_month).exists() or canonical_event_path(config, "trades", ticker, year_month).exists():
+                    groups.add((ticker, year_month))
+        return sorted(groups)
+    for kind in ("quotes", "trades"):
+        base = config.canonical_root / kind
+        if not base.exists():
+            continue
+        for path in base.glob("ticker=*/*.parquet"):
+            year_month = path.stem
+            if year_month not in months:
+                continue
+            ticker = path.parent.name.split("=", 1)[1]
+            groups.add((ticker, year_month))
+    return sorted(groups)
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,23 +215,7 @@ def main() -> None:
     args = parse_args()
     os.environ.setdefault("POLARS_MAX_THREADS", str(max(1, args.polars_threads_per_process)))
     os.environ["V22_SKIP_TORCH_IMPORT"] = "1"
-    print("v22 preprocess main entered; importing polars...", flush=True)
-    import polars as pl
-    print("v22 preprocess polars import complete; importing v22.data without torch...", flush=True)
-
-    from research.inhouse_transformer.v22.data import (
-        available_sessions,
-        canonical_event_path,
-        discover_canonical_groups,
-        discover_temp_canonical_groups,
-        event_chunk_path,
-        merge_temp_group_to_canonical,
-        normalize_session_to_temp_parts,
-        parse_ticker_list,
-        temp_canonical_parts_root,
-        year_month_range,
-    )
-    print("v22 preprocess v22.data import complete.", flush=True)
+    print("v22 preprocess main entered; using lightweight parent setup without polars.", flush=True)
 
     print(LOG_RULE, flush=True)
     print("v22 preprocessing startup", flush=True)
@@ -155,9 +280,7 @@ def main() -> None:
     )
     print(f"worker_step_logging={'on' if args.verbose_worker_steps else 'off'}")
     print(
-        "polars_runtime="
-        f"version={pl.__version__} thread_pool={pl.thread_pool_size()} "
-        f"has_partition_by={hasattr(pl, 'PartitionBy')} has_sink_parquet={hasattr(pl.LazyFrame, 'sink_parquet')}",
+        "polars_runtime=deferred_to_worker_imports",
         flush=True,
     )
     print(LOG_RULE)
@@ -294,7 +417,9 @@ def normalize_session_worker(session: str, payload: dict[str, Any]) -> dict[str,
     os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
     started = time.time()
     with worker_output_context(payload):
+        print(f"IMPORT normalize session {session} v22.data start", flush=True)
         from research.inhouse_transformer.v22.data import normalize_session_to_temp_parts, parse_ticker_list
+        print(f"IMPORT normalize session {session} v22.data done", flush=True)
 
         try:
             config = payload_to_config(payload["config"])
@@ -316,7 +441,9 @@ def normalize_session_kind_worker(item: dict[str, str], payload: dict[str, Any])
     key = f"{item['kind']}:{item['session']}"
     with worker_output_context(payload):
         print(f"START normalize {key}", flush=True)
+        print(f"IMPORT normalize {key} v22.data start", flush=True)
         from research.inhouse_transformer.v22.data import normalize_session_kind_to_temp_parts, parse_ticker_list
+        print(f"IMPORT normalize {key} v22.data done", flush=True)
 
         try:
             config = payload_to_config(payload["config"])
@@ -337,7 +464,9 @@ def merge_canonical_worker(item: dict[str, Any], payload: dict[str, Any]) -> dic
     os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
     started = time.time()
     with worker_output_context(payload):
+        print(f"IMPORT canonical {item.get('kind')}:bucket={item.get('ticker_bucket')}:{item.get('year_month')} v22.data start", flush=True)
         from research.inhouse_transformer.v22.data import merge_temp_group_to_canonical
+        print(f"IMPORT canonical {item.get('kind')}:bucket={item.get('ticker_bucket')}:{item.get('year_month')} v22.data done", flush=True)
 
         try:
             config = payload_to_config(payload["config"])
@@ -360,7 +489,9 @@ def build_chunks_worker(item: dict[str, Any], payload: dict[str, Any]) -> dict[s
     os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
     started = time.time()
     with worker_output_context(payload):
+        print(f"IMPORT chunks {item.get('ticker')}:{item.get('year_month')} v22.data start", flush=True)
         from research.inhouse_transformer.v22.data import build_event_chunks_from_canonical
+        print(f"IMPORT chunks {item.get('ticker')}:{item.get('year_month')} v22.data done", flush=True)
 
         try:
             config = payload_to_config(payload["config"])
