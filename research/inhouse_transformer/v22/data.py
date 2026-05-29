@@ -364,10 +364,10 @@ def scan_normalized_quotes(config: DataConfig, session: str, tickers: tuple[str,
             optional_int_expr("participant_timestamp", names),
             optional_int_expr("trf_timestamp", names),
             optional_int_expr("tape", names),
-            pl.col("bid_price").cast(pl.Float64, strict=False),
-            pl.col("ask_price").cast(pl.Float64, strict=False),
-            (pl.col("bid_size").cast(pl.Float64, strict=False).fill_null(0.0) * float(lot_multiplier)).alias("bid_size"),
-            (pl.col("ask_size").cast(pl.Float64, strict=False).fill_null(0.0) * float(lot_multiplier)).alias("ask_size"),
+            pl.col("bid_price").cast(pl.Float32, strict=False),
+            pl.col("ask_price").cast(pl.Float32, strict=False),
+            (pl.col("bid_size").cast(pl.Float32, strict=False).fill_null(0.0) * float(lot_multiplier)).cast(pl.Float32).alias("bid_size"),
+            (pl.col("ask_size").cast(pl.Float32, strict=False).fill_null(0.0) * float(lot_multiplier)).cast(pl.Float32).alias("ask_size"),
             pl.col("bid_exchange").cast(pl.Int32, strict=False).fill_null(0) if "bid_exchange" in names else pl.lit(0).alias("bid_exchange"),
             pl.col("ask_exchange").cast(pl.Int32, strict=False).fill_null(0) if "ask_exchange" in names else pl.lit(0).alias("ask_exchange"),
         )
@@ -458,8 +458,8 @@ def scan_normalized_trades(config: DataConfig, session: str, tickers: tuple[str,
             optional_int_expr("correction", names),
             optional_int_expr("id", names).alias("trade_id"),
             optional_int_expr("trf_id", names),
-            pl.col("price").cast(pl.Float64, strict=False),
-            pl.col("size").cast(pl.Float64, strict=False).fill_null(0.0),
+            pl.col("price").cast(pl.Float32, strict=False),
+            pl.col("size").cast(pl.Float32, strict=False).fill_null(0.0),
             pl.col("exchange").cast(pl.Int32, strict=False).fill_null(0) if "exchange" in names else pl.lit(0).alias("exchange"),
         )
         .with_columns(
@@ -1600,7 +1600,7 @@ def metadata_list_count_expr(column: str, names: set[str]) -> pl.Expr:
         pl.when(text.str.len_chars() > 0)
         .then(text.str.count_matches(",") + 1)
         .otherwise(0)
-        .cast(pl.Float64)
+        .cast(pl.Float32)
     )
 
 
@@ -1612,7 +1612,7 @@ def metadata_list_first_expr(column: str, names: set[str]) -> pl.Expr:
         pl.when(text.str.len_chars() > 0)
         .then(text.str.split(",").list.get(0).cast(pl.Float64, strict=False).fill_null(0.0))
         .otherwise(0.0)
-        .cast(pl.Float64)
+        .cast(pl.Float32)
     )
 
 
@@ -1623,15 +1623,15 @@ def timestamp_latency_ms_expr(source_column: str) -> pl.Expr:
         pl.when(source > 0)
         .then(((sip - source) / 1_000_000.0).clip(0.0, 60_000.0))
         .otherwise(0.0)
-        .cast(pl.Float64)
+        .cast(pl.Float32)
     )
 
 
 def quote_state_exprs() -> list[pl.Expr]:
     return [
-        ((pl.col("bid_price") + pl.col("ask_price")) * 0.5).alias("mid_price"),
-        (10000.0 * (pl.col("ask_price") - pl.col("bid_price")) / ((pl.col("bid_price") + pl.col("ask_price")) * 0.5)).alias("spread_bps"),
-        ((pl.col("bid_size") - pl.col("ask_size")) / (pl.col("bid_size") + pl.col("ask_size")).clip(1.0, None)).alias("quote_imbalance"),
+        ((pl.col("bid_price") + pl.col("ask_price")) * 0.5).cast(pl.Float32).alias("mid_price"),
+        (10000.0 * (pl.col("ask_price") - pl.col("bid_price")) / ((pl.col("bid_price") + pl.col("ask_price")) * 0.5)).cast(pl.Float32).alias("spread_bps"),
+        ((pl.col("bid_size") - pl.col("ask_size")) / (pl.col("bid_size") + pl.col("ask_size")).clip(1.0, None)).cast(pl.Float32).alias("quote_imbalance"),
     ]
 
 
