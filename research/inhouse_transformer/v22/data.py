@@ -36,6 +36,7 @@ LOG_RULE = "*" * 96
 ALL_TICKERS_SENTINEL = "__ALL_TICKERS__"
 NANOSECONDS_PER_SECOND = 1_000_000_000
 QUOTE_SIZE_UNIT_SWITCH_DATE = "2025-11-03"
+TEMP_TICKER_BUCKET_COUNT = 256
 
 QUOTE_FEATURE_COLUMNS: tuple[str, ...] = (
     "time_offset",
@@ -382,6 +383,7 @@ def scan_normalized_quotes(config: DataConfig, session: str, tickers: tuple[str,
         .with_columns(
             pl.lit(session).alias("session_date"),
             pl.lit(session[:7]).alias("year_month"),
+            ticker_bucket_expr().alias("ticker_bucket"),
         )
         .filter((pl.col("bid_price") > 0.0) & (pl.col("ask_price") > 0.0) & (pl.col("ask_price") >= pl.col("bid_price")))
         .with_columns(quote_state_exprs())
@@ -393,6 +395,7 @@ def scan_normalized_quotes(config: DataConfig, session: str, tickers: tuple[str,
             "ticker",
             "session_date",
             "year_month",
+            "ticker_bucket",
             "sip_timestamp",
             "sequence_number",
             "participant_timestamp",
@@ -471,6 +474,7 @@ def scan_normalized_trades(config: DataConfig, session: str, tickers: tuple[str,
         .with_columns(
             pl.lit(session).alias("session_date"),
             pl.lit(session[:7]).alias("year_month"),
+            ticker_bucket_expr().alias("ticker_bucket"),
         )
         .filter((pl.col("price") > 0.0) & (pl.col("size") > 0.0))
     )
@@ -481,6 +485,7 @@ def scan_normalized_trades(config: DataConfig, session: str, tickers: tuple[str,
             "ticker",
             "session_date",
             "year_month",
+            "ticker_bucket",
             "sip_timestamp",
             "sequence_number",
             "participant_timestamp",
@@ -549,7 +554,7 @@ def normalize_session_kind_to_temp_parts(
         lazy.sink_parquet(
             pl.PartitionBy(
                 output_root,
-                key=["year_month", "ticker"],
+                key=["year_month", "ticker_bucket"],
                 include_key=True,
                 max_rows_per_file=1_000_000,
             ),
@@ -895,12 +900,12 @@ def trade_canonical_columns() -> list[str]:
 def discover_temp_canonical_groups(config: DataConfig) -> dict[tuple[str, str, str], list[Path]]:
     root = temp_canonical_parts_root(config)
     groups: dict[tuple[str, str, str], list[Path]] = {}
-    for path in root.glob("*/session=*/year_month=*/ticker=*/*.parquet"):
+    for path in root.glob("*/session=*/year_month=*/ticker_bucket=*/*.parquet"):
         parts = path.parts
         kind = parts[-5]
         year_month = parts[-3].split("=", 1)[1]
-        ticker = parts[-2].split("=", 1)[1]
-        groups.setdefault((kind, year_month, ticker), []).append(path)
+        ticker_bucket = parts[-2].split("=", 1)[1]
+        groups.setdefault((kind, year_month, ticker_bucket), []).append(path)
     return groups
 
 
@@ -909,33 +914,43 @@ def merge_temp_group_to_canonical(
     *,
     kind: str,
     year_month: str,
-    ticker: str,
+    ticker_bucket: str,
     paths: list[Path],
     rebuild: bool = False,
 ) -> dict[str, Any]:
-    output_path = canonical_event_path(config, kind, ticker, year_month)
-    if output_path.exists() and not rebuild:
-        return {
-            "kind": kind,
-            "year_month": year_month,
-            "ticker": ticker,
-            "status": "skipped",
-            "rows": count_parquet_rows([output_path]),
-            "output_path": str(output_path),
-        }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = output_path.with_suffix(output_path.suffix + f".tmp.{os.getpid()}")
-    sort_columns = ["sip_timestamp", "sequence_number"]
-    write_lazy_parquet(scan_parquet_paths(paths).sort(sort_columns), temp_path)
-    os.replace(temp_path, output_path)
+    rows = count_parquet_rows(paths)
+    base_path = config.canonical_root / kind
+    base_path.mkdir(parents=True, exist_ok=True)
+    frame = scan_parquet_paths(paths).sort(["ticker", "sip_timestamp", "sequence_number"])
+    frame = frame.select([column for column in (quote_canonical_columns() if kind == "quotes" else trade_canonical_columns())])
+    frame.sink_parquet(
+        pl.PartitionBy(
+            base_path,
+            key="ticker",
+            include_key=True,
+            approximate_bytes_per_file=None,
+            file_path_provider=canonical_file_provider(config, kind, year_month),
+        ),
+        compression="zstd",
+        mkdir=True,
+        maintain_order=True,
+    )
     return {
         "kind": kind,
         "year_month": year_month,
-        "ticker": ticker,
+        "ticker_bucket": ticker_bucket,
         "status": "ok",
-        "rows": count_parquet_rows([output_path]),
-        "output_path": str(output_path),
+        "rows": rows,
+        "output_path": str(base_path),
     }
+
+
+def canonical_file_provider(config: DataConfig, kind: str, year_month: str) -> Any:
+    def provider(args: Any) -> Path:
+        ticker = str(args.partition_keys.get_column("ticker")[0])
+        return canonical_event_path(config, kind, ticker, year_month)
+
+    return provider
 
 
 def discover_canonical_groups(
@@ -1625,6 +1640,10 @@ def timestamp_latency_ms_expr(source_column: str) -> pl.Expr:
         .otherwise(0.0)
         .cast(pl.Float32)
     )
+
+
+def ticker_bucket_expr(bucket_count: int = TEMP_TICKER_BUCKET_COUNT) -> pl.Expr:
+    return (pl.col("ticker").hash(seed=17) % int(bucket_count)).cast(pl.Int32)
 
 
 def quote_state_exprs() -> list[pl.Expr]:

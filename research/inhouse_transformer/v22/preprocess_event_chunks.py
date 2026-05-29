@@ -201,23 +201,20 @@ def main() -> None:
             heartbeat_seconds=args.heartbeat_seconds,
             max_pending=quote_normalize_max_pending,
         )
+        if failed:
+            print(LOG_RULE)
+            print(f"PHASE 1/3 failed={failed}; aborting before canonical/chunk phases to avoid partial derived data.", flush=True)
+            print(f"Manifest: {manifest_path}", flush=True)
+            print(LOG_RULE)
+            raise SystemExit(1)
         temp_groups = discover_temp_canonical_groups(config)
     if temp_groups:
         print(LOG_RULE)
-        print(f"PHASE 2/3 merge temporary partitions into canonical ticker-month events groups={len(temp_groups):,}", flush=True)
+        print(f"PHASE 2/3 merge temporary ticker buckets into canonical ticker-month events groups={len(temp_groups):,}", flush=True)
         merge_items = [
-            {"kind": kind, "year_month": year_month, "ticker": ticker, "paths": paths}
-            for (kind, year_month, ticker), paths in sorted(temp_groups.items())
+            {"kind": kind, "year_month": year_month, "ticker_bucket": ticker_bucket, "paths": paths}
+            for (kind, year_month, ticker_bucket), paths in sorted(temp_groups.items())
         ]
-        if not args.rebuild_cache:
-            before_skip = len(merge_items)
-            merge_items = [
-                item for item in merge_items
-                if not canonical_event_path(config, item["kind"], item["ticker"], item["year_month"]).exists()
-            ]
-            skipped_existing = before_skip - len(merge_items)
-            if skipped_existing:
-                print(f"PHASE 2 resume: skipped {skipped_existing:,} existing canonical files; remaining={len(merge_items):,}", flush=True)
         failed += run_parallel(
             label="canonical",
             items=merge_items,
@@ -327,19 +324,19 @@ def merge_canonical_worker(item: dict[str, Any], payload: dict[str, Any]) -> dic
 
         try:
             config = payload_to_config(payload["config"])
-            print(f"START canonical {item['kind']}:{item['ticker']}:{item['year_month']} paths={len(item['paths'])}", flush=True)
+            print(f"START canonical {item['kind']}:bucket={item['ticker_bucket']}:{item['year_month']} paths={len(item['paths'])}", flush=True)
             result = merge_temp_group_to_canonical(
                 config,
                 kind=item["kind"],
                 year_month=item["year_month"],
-                ticker=item["ticker"],
+                ticker_bucket=item["ticker_bucket"],
                 paths=[Path(path) for path in item["paths"]],
                 rebuild=bool(payload.get("rebuild")),
             )
-            key = f"{item['kind']}:{item['ticker']}:{item['year_month']}"
+            key = f"{item['kind']}:bucket={item['ticker_bucket']}:{item['year_month']}"
             return result_row("canonical", key, result["status"], int(result.get("rows") or 0), time.time() - started, result)
         except BaseException:
-            return failed_row("canonical", f"{item.get('kind')}:{item.get('ticker')}:{item.get('year_month')}", time.time() - started)
+            return failed_row("canonical", f"{item.get('kind')}:bucket={item.get('ticker_bucket')}:{item.get('year_month')}", time.time() - started)
 
 
 def build_chunks_worker(item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:

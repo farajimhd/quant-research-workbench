@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import polars as pl
 
@@ -10,6 +12,10 @@ from research.inhouse_transformer.v22.data import (
     CHUNK_SUMMARY_COLUMNS,
     attach_quote_state_to_trades,
     build_ticker_sparse_chunks_vectorized,
+    canonical_event_path,
+    discover_temp_canonical_groups,
+    merge_temp_group_to_canonical,
+    normalize_session_kind_to_temp_parts,
     ticker_arrays,
 )
 from research.inhouse_transformer.v22.targets import log_return_bps
@@ -189,6 +195,59 @@ class VectorizedChunkTests(unittest.TestCase):
         self.assertAlmostEqual(float(arrays["chunk_summary"][1, seconds_since_quote_idx]), 0.5, places=5)
         self.assertAlmostEqual(float(arrays["chunk_summary"][2, seconds_since_quote_idx]), 1.0, places=5)
         self.assertEqual(int(arrays["event_kinds"][1, 0]), 2)
+
+    def test_temp_bucket_normalization_merges_to_canonical_ticker_files(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "sip"
+            session = "2025-11-03"
+            quote_dir = root / "quotes_v1" / "2025" / "11"
+            trade_dir = root / "trades_v1" / "2025" / "11"
+            quote_dir.mkdir(parents=True)
+            trade_dir.mkdir(parents=True)
+            (quote_dir / f"{session}.csv").write_text(
+                "ticker,ask_exchange,ask_price,ask_size,bid_exchange,bid_price,bid_size,"
+                "conditions,indicators,participant_timestamp,sequence_number,sip_timestamp,tape,trf_timestamp\n"
+                "A,1,10.02,100,2,10.00,120,1,,999000000,1,1000000000,3,0\n"
+                "B,1,20.04,200,2,20.00,210,12,4,1999000000,1,2000000000,3,0\n",
+                encoding="utf-8",
+            )
+            (trade_dir / f"{session}.csv").write_text(
+                "ticker,conditions,correction,exchange,id,participant_timestamp,price,"
+                "sequence_number,sip_timestamp,size,tape,trf_id,trf_timestamp\n"
+                "A,12,0,1,100,999000000,10.01,2,1000000001,50,3,0,0\n"
+                "B,37,0,1,200,1999000000,20.02,2,2000000001,60,3,0,0\n",
+                encoding="utf-8",
+            )
+            config = DataConfig(
+                flatfiles_root=root,
+                canonical_root=root / "derived" / "canonical",
+                cache_root=root / "derived" / "chunks",
+                session_filter_mode="utc_hour",
+                session_start_hour_utc=0,
+                session_end_hour_utc=24,
+            )
+
+            normalize_session_kind_to_temp_parts(config, session, "quotes", ("__ALL_TICKERS__",), rebuild=True)
+            normalize_session_kind_to_temp_parts(config, session, "trades", ("__ALL_TICKERS__",), rebuild=True)
+            temp_groups = discover_temp_canonical_groups(config)
+
+            self.assertTrue(temp_groups)
+            self.assertTrue(all("ticker_bucket=" in str(path) for paths in temp_groups.values() for path in paths))
+            for (kind, year_month, ticker_bucket), paths in temp_groups.items():
+                merge_temp_group_to_canonical(
+                    config,
+                    kind=kind,
+                    year_month=year_month,
+                    ticker_bucket=ticker_bucket,
+                    paths=paths,
+                    rebuild=True,
+                )
+
+            quote_a = pl.read_parquet(canonical_event_path(config, "quotes", "A", "2025-11"))
+            trade_b = pl.read_parquet(canonical_event_path(config, "trades", "B", "2025-11"))
+            self.assertNotIn("ticker_bucket", quote_a.columns)
+            self.assertEqual(quote_a.row(0, named=True)["ticker"], "A")
+            self.assertEqual(trade_b.row(0, named=True)["ticker"], "B")
 
 
 if __name__ == "__main__":
