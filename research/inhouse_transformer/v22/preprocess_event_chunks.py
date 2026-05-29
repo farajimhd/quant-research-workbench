@@ -39,6 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-total-events", type=int, default=defaults.max_total_events)
     parser.add_argument("--processes", type=int, default=max(1, min(8, (os.cpu_count() or 4) // 2)))
     parser.add_argument("--normalize-processes", type=int, default=0, help="Worker count for raw CSV normalization. Defaults to --processes.")
+    parser.add_argument("--quote-normalize-processes", type=int, default=0, help="Worker count for quote CSV normalization. Defaults to --normalize-processes.")
+    parser.add_argument("--trade-normalize-processes", type=int, default=0, help="Worker count for trade CSV normalization. Defaults to --normalize-processes.")
     parser.add_argument("--canonical-processes", type=int, default=0, help="Worker count for canonical ticker-month merge. Defaults to --processes.")
     parser.add_argument("--chunk-processes", type=int, default=0, help="Worker count for chunk materialization. Defaults to --processes.")
     parser.add_argument("--polars-threads-per-process", type=int, default=2)
@@ -117,17 +119,22 @@ def main() -> None:
         f"utc_hour_fallback={config.session_start_hour_utc}-{config.session_end_hour_utc}"
     )
     normalize_processes = args.normalize_processes if args.normalize_processes > 0 else args.processes
+    quote_normalize_processes = args.quote_normalize_processes if args.quote_normalize_processes > 0 else normalize_processes
+    trade_normalize_processes = args.trade_normalize_processes if args.trade_normalize_processes > 0 else normalize_processes
     canonical_processes = args.canonical_processes if args.canonical_processes > 0 else args.processes
     chunk_processes = args.chunk_processes if args.chunk_processes > 0 else args.processes
-    normalize_max_pending = args.max_pending if args.max_pending > 0 else max(1, normalize_processes) * 2
+    quote_normalize_max_pending = args.max_pending if args.max_pending > 0 else max(1, quote_normalize_processes) * 2
+    trade_normalize_max_pending = args.max_pending if args.max_pending > 0 else max(1, trade_normalize_processes) * 2
     canonical_max_pending = args.max_pending if args.max_pending > 0 else max(1, canonical_processes) * 2
     chunk_max_pending = args.max_pending if args.max_pending > 0 else max(1, chunk_processes) * 2
     print(
         f"processes={args.processes} normalize_processes={normalize_processes} "
+        f"quote_normalize_processes={quote_normalize_processes} "
+        f"trade_normalize_processes={trade_normalize_processes} "
         f"canonical_processes={canonical_processes} chunk_processes={chunk_processes} "
         f"polars_threads_per_process={args.polars_threads_per_process} "
-        f"max_pending(normalize/canonical/chunks)="
-        f"{normalize_max_pending}/{canonical_max_pending}/{chunk_max_pending}"
+        f"max_pending(quote_norm/trade_norm/canonical/chunks)="
+        f"{quote_normalize_max_pending}/{trade_normalize_max_pending}/{canonical_max_pending}/{chunk_max_pending}"
     )
     print(f"worker_step_logging={'on' if args.verbose_worker_steps else 'off'}")
     print(
@@ -170,21 +177,29 @@ def main() -> None:
     else:
         print(LOG_RULE)
         print("PHASE 1/3 normalize raw CSV.GZ quote/trade files into temporary ticker partitions", flush=True)
-        normalize_items = [
-            {"session": session, "kind": kind}
-            for session in sessions
-            for kind in ("quotes", "trades")
-        ]
+        trade_normalize_items = [{"session": session, "kind": "trades"} for session in sessions]
+        quote_normalize_items = [{"session": session, "kind": "quotes"} for session in sessions]
         failed += run_parallel(
-            label="normalize",
-            items=normalize_items,
+            label="normalize trades",
+            items=trade_normalize_items,
             submit=lambda executor, item: executor.submit(normalize_session_kind_worker, item, worker_payload),
             manifest_path=manifest_path,
-            processes=normalize_processes,
+            processes=trade_normalize_processes,
             started=started,
             fail_fast=args.fail_fast,
             heartbeat_seconds=args.heartbeat_seconds,
-            max_pending=normalize_max_pending,
+            max_pending=trade_normalize_max_pending,
+        )
+        failed += run_parallel(
+            label="normalize quotes",
+            items=quote_normalize_items,
+            submit=lambda executor, item: executor.submit(normalize_session_kind_worker, item, worker_payload),
+            manifest_path=manifest_path,
+            processes=quote_normalize_processes,
+            started=started,
+            fail_fast=args.fail_fast,
+            heartbeat_seconds=args.heartbeat_seconds,
+            max_pending=quote_normalize_max_pending,
         )
         temp_groups = discover_temp_canonical_groups(config)
     if temp_groups:
