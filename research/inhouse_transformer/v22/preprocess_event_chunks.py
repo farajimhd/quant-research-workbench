@@ -626,6 +626,9 @@ def item_label(item: Any) -> str:
     if isinstance(item, dict):
         if "kind" in item and "session" in item:
             return f"{item['kind']}:{item['session']}"
+        if "kind" in item and "year_month" in item and "ticker_bucket" in item:
+            path_count = len(item.get("paths") or [])
+            return f"{item['kind']}:bucket={item['ticker_bucket']}:{item['year_month']}:parts={path_count}"
         if "kind" in item and "ticker" in item and "year_month" in item:
             return f"{item['kind']}:{item['ticker']}:{item['year_month']}"
         if "ticker" in item and "year_month" in item:

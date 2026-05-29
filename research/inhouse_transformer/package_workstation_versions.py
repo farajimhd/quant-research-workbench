@@ -46,12 +46,12 @@ VERSION_SETTINGS = {
         "normalize_processes": 16,
         "quote_normalize_processes": 16,
         "trade_normalize_processes": 16,
-        "canonical_processes": 16,
-        "chunk_processes": 16,
+        "canonical_processes": 2,
+        "chunk_processes": 2,
         "polars_threads_per_process": 4,
-        "preprocess_rebuild_cache": True,
-        "preprocess_build_chunks": True,
-        "preprocess_verbose_worker_steps": True,
+        "preprocess_rebuild_cache": False,
+        "preprocess_build_chunks": False,
+        "preprocess_verbose_worker_steps": False,
     },
 }
 
