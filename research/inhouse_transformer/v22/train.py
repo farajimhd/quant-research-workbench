@@ -486,7 +486,7 @@ def step_scheduler(scheduler: Any | None, global_step: int) -> None:
 
 def move_batch_to_device(batch: dict[str, Any], device: Any) -> dict[str, Any]:
     moved = dict(batch)
-    for key in ("quote_values", "trade_values", "event_kinds", "event_indices", "chunk_summary", "targets", "target_bps", "current_mid", "last_close_return_bps"):
+    for key in ("quote_values", "trade_values", "event_kinds", "event_indices", "chunk_summary", "targets", "target_bps", "target_bid", "target_ask", "target_mid", "current_mid", "last_close_return_bps"):
         moved[key] = batch[key].to(device, non_blocking=True)
     return moved
 

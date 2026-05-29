@@ -33,6 +33,7 @@ class DataConfig:
     max_quote_events: int = 128
     max_trade_events: int = 192
     max_total_events: int = 256
+    target_cache_horizon_chunks: tuple[int, ...] = (20, 40, 60, 120, 240, 600)
     target_mode: str = "binary_magnitude_bps"
     binary_magnitude_bits: int = 12
     target_columns: tuple[str, ...] = ("close",)

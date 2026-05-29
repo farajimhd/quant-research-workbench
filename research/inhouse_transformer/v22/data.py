@@ -8,7 +8,7 @@ import os
 import shutil
 import time
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -796,6 +796,9 @@ def build_event_chunks_from_canonical(
     year_month: str,
     rebuild: bool = False,
 ) -> dict[str, Any]:
+    key = f"{ticker}:{year_month}"
+    worker_started = time.perf_counter()
+    timings: list[dict[str, Any]] = []
     output_path = event_chunk_path(config, ticker, year_month)
     if output_path.exists() and not rebuild:
         return {
@@ -805,24 +808,41 @@ def build_event_chunks_from_canonical(
             "rows": count_parquet_rows([output_path]),
             "output_path": str(output_path),
         }
+    log_chunk_step(key, "read_quotes_start", worker_started)
     quotes = read_canonical_events(config, "quotes", ticker, year_month)
+    log_chunk_step(key, "read_quotes_done", worker_started, timings, rows=quotes.height)
+    log_chunk_step(key, "read_trades_start", worker_started)
     trades = read_canonical_events(config, "trades", ticker, year_month)
+    log_chunk_step(key, "read_trades_done", worker_started, timings, rows=trades.height)
     if quotes.is_empty() and trades.is_empty():
         return {"ticker": ticker, "year_month": year_month, "status": "empty", "rows": 0, "output_path": str(output_path)}
+    log_chunk_step(key, "attach_quote_state_start", worker_started)
     trades_with_quote = attach_quote_state_to_trades(trades, quotes)
-    chunks = build_ticker_sparse_chunks_vectorized(config, ticker, quotes, trades_with_quote)
+    log_chunk_step(key, "attach_quote_state_done", worker_started, timings, rows=trades_with_quote.height)
+    chunks = build_ticker_sparse_chunks_vectorized(
+        config,
+        ticker,
+        quotes,
+        trades_with_quote,
+        timings=timings,
+        log_key=key,
+        worker_started=worker_started,
+    )
     if chunks is None or chunks.is_empty():
         return {"ticker": ticker, "year_month": year_month, "status": "empty", "rows": 0, "output_path": str(output_path)}
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = output_path.with_suffix(output_path.suffix + f".tmp.{os.getpid()}")
+    log_chunk_step(key, "write_start", worker_started, rows=chunks.height, output_path=str(output_path))
     chunks.sort("chunk_end_ns").write_parquet(temp_path, compression="zstd")
     os.replace(temp_path, output_path)
+    log_chunk_step(key, "write_done", worker_started, timings, rows=chunks.height, output_path=str(output_path))
     return {
         "ticker": ticker,
         "year_month": year_month,
         "status": "ok",
         "rows": chunks.height,
         "output_path": str(output_path),
+        "timings": timings,
     }
 
 
@@ -831,19 +851,40 @@ def build_ticker_sparse_chunks_vectorized(
     ticker: str,
     quotes: pl.DataFrame,
     trades: pl.DataFrame,
+    *,
+    timings: list[dict[str, Any]] | None = None,
+    log_key: str = "",
+    worker_started: float | None = None,
 ) -> pl.DataFrame | None:
     chunk_ns = config.chunk_ms * 1_000_000
+    step_started = worker_started or time.perf_counter()
+    key = log_key or ticker
+    log_chunk_step(key, "prepare_quote_events_start", step_started)
     quotes_prepared = prepare_quote_events_for_chunks(quotes, chunk_ns)
+    log_chunk_step(key, "prepare_quote_events_done", step_started, timings, rows=quotes_prepared.height)
+    log_chunk_step(key, "prepare_trade_events_start", step_started)
     trades_prepared = prepare_trade_events_for_chunks(trades, chunk_ns)
+    log_chunk_step(key, "prepare_trade_events_done", step_started, timings, rows=trades_prepared.height)
     if quotes_prepared.is_empty() and trades_prepared.is_empty():
         return None
 
+    log_chunk_step(key, "chunk_counts_start", step_started)
     counts = chunk_counts(config, quotes_prepared, trades_prepared)
+    log_chunk_step(key, "chunk_counts_done", step_started, timings, rows=counts.height)
+    log_chunk_step(key, "quote_aggregation_start", step_started)
     quote_chunks = selected_quote_chunk_values(config, quotes_prepared, counts, chunk_ns)
+    log_chunk_step(key, "quote_aggregation_done", step_started, timings, rows=quote_chunks.height)
+    log_chunk_step(key, "trade_aggregation_start", step_started)
     trade_chunks = selected_trade_chunk_values(config, trades_prepared, counts, chunk_ns)
+    log_chunk_step(key, "trade_aggregation_done", step_started, timings, rows=trade_chunks.height)
+    log_chunk_step(key, "event_order_start", step_started)
     order_chunks = selected_event_order_chunks(config, quotes_prepared, trades_prepared, counts)
+    log_chunk_step(key, "event_order_done", step_started, timings, rows=order_chunks.height)
+    log_chunk_step(key, "summary_start", step_started)
     summary = chunk_summary_vectorized(config, quotes_prepared, trades_prepared, counts)
+    log_chunk_step(key, "summary_done", step_started, timings, rows=summary.height)
 
+    log_chunk_step(key, "join_outputs_start", step_started)
     chunks = summary.join(quote_chunks, on=["session_date", "chunk_start_ns"], how="left")
     chunks = chunks.join(trade_chunks, on=["session_date", "chunk_start_ns"], how="left")
     chunks = chunks.join(order_chunks, on=["session_date", "chunk_start_ns"], how="left")
@@ -851,7 +892,12 @@ def build_ticker_sparse_chunks_vectorized(
         pl.lit(ticker).alias("ticker"),
         (pl.col("chunk_start_ns") + chunk_ns - 1).alias("chunk_end_ns"),
     )
-    return chunks.select(
+    target_columns = target_cache_columns(config)
+    if target_columns:
+        log_chunk_step(key, "target_cache_start", step_started, columns=len(target_columns))
+        chunks = add_target_cache_columns(chunks, config)
+        log_chunk_step(key, "target_cache_done", step_started, timings, columns=len(target_columns), rows=chunks.height)
+    output = chunks.select(
         [
             "ticker",
             "session_date",
@@ -862,8 +908,61 @@ def build_ticker_sparse_chunks_vectorized(
             "event_kinds",
             "event_indices",
             *CHUNK_SUMMARY_COLUMNS,
+            *target_columns,
         ]
     ).sort(["session_date", "chunk_start_ns"])
+    log_chunk_step(key, "join_outputs_done", step_started, timings, rows=output.height)
+    return output
+
+
+def log_chunk_step(
+    key: str,
+    step: str,
+    worker_started: float,
+    timings: list[dict[str, Any]] | None = None,
+    **fields: Any,
+) -> None:
+    elapsed = time.perf_counter() - worker_started
+    row = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "key": key,
+        "step": step,
+        "elapsed_seconds": round(elapsed, 3),
+        **fields,
+    }
+    if timings is not None and step.endswith("_done"):
+        timings.append(row)
+    details = " ".join(f"{name}={value}" for name, value in fields.items())
+    suffix = f" {details}" if details else ""
+    print(f"{row['ts']} CHUNK_STEP {key} {step} elapsed_seconds={elapsed:.3f}{suffix}", flush=True)
+
+
+def target_cache_columns(config: DataConfig) -> list[str]:
+    columns: list[str] = []
+    for horizon in config.target_cache_horizon_chunks:
+        columns.extend([f"target_bid_h{horizon}", f"target_ask_h{horizon}", f"target_mid_h{horizon}"])
+    return columns
+
+
+def add_target_cache_columns(chunks: pl.DataFrame, config: DataConfig) -> pl.DataFrame:
+    frame = chunks.sort(["session_date", "chunk_start_ns"])
+    expressions: list[pl.Expr] = []
+    for horizon in config.target_cache_horizon_chunks:
+        bid_name = f"target_bid_h{horizon}"
+        ask_name = f"target_ask_h{horizon}"
+        expressions.extend(
+            [
+                pl.col("latest_bid").shift(-int(horizon)).over("session_date").alias(bid_name),
+                pl.col("latest_ask").shift(-int(horizon)).over("session_date").alias(ask_name),
+            ]
+        )
+    frame = frame.with_columns(expressions)
+    return frame.with_columns(
+        [
+            ((pl.col(f"target_bid_h{horizon}") + pl.col(f"target_ask_h{horizon}")) * 0.5).alias(f"target_mid_h{horizon}")
+            for horizon in config.target_cache_horizon_chunks
+        ]
+    )
 
 
 def prepare_quote_events_for_chunks(quotes: pl.DataFrame, chunk_ns: int) -> pl.DataFrame:
@@ -1574,6 +1673,9 @@ class BatchBuilder:
         self.chunk_summary = np.empty((batch_size, context, len(CHUNK_SUMMARY_COLUMNS)), dtype=np.float32)
         self.targets = np.empty((batch_size, config.horizon_steps, 1, target_bit_count(config)), dtype=np.float32)
         self.target_bps = np.empty((batch_size, config.horizon_steps, 1), dtype=np.float32)
+        self.target_bid = np.empty((batch_size, config.horizon_steps, 1), dtype=np.float32)
+        self.target_ask = np.empty((batch_size, config.horizon_steps, 1), dtype=np.float32)
+        self.target_mid = np.empty((batch_size, config.horizon_steps, 1), dtype=np.float32)
         self.current_mid = np.empty((batch_size,), dtype=np.float32)
         self.last_close_return_bps = np.empty((batch_size,), dtype=np.float32)
         self.origin_timestamp_ns = np.empty((batch_size,), dtype=np.int64)
@@ -1595,9 +1697,12 @@ class BatchBuilder:
         start = origin - config.context_chunks + 1
         end = origin + 1
         future_indices = origin + np.arange(1, config.horizon_steps + 1, dtype=np.int64) * config.horizon_chunks
-        current_mid = float(arrays["mid"][origin])
-        previous_mid = float(arrays["mid"][max(0, origin - 1)])
-        target_bps = log_return_bps(arrays["mid"][future_indices].reshape(-1, 1), current_mid).astype(np.float32)
+        current_mid = float(mid_from_bid_ask(arrays["bid"][origin], arrays["ask"][origin], arrays["mid"][origin]))
+        previous_mid = float(mid_from_bid_ask(arrays["bid"][max(0, origin - 1)], arrays["ask"][max(0, origin - 1)], arrays["mid"][max(0, origin - 1)]))
+        future_bid = arrays["bid"][future_indices].reshape(-1, 1).astype(np.float32)
+        future_ask = arrays["ask"][future_indices].reshape(-1, 1).astype(np.float32)
+        future_mid = mid_from_bid_ask(future_bid, future_ask, arrays["mid"][future_indices].reshape(-1, 1)).astype(np.float32)
+        target_bps = log_return_bps(future_mid, current_mid).astype(np.float32)
 
         quote_window = arrays["quote_values"][start:end]
         trade_window = arrays["trade_values"][start:end]
@@ -1624,6 +1729,9 @@ class BatchBuilder:
         self.event_indices[self.count] = arrays["event_indices"][start:end]
         self.targets[self.count] = encode_binary_magnitude_targets(target_bps, bits=config.binary_magnitude_bits)
         self.target_bps[self.count] = target_bps
+        self.target_bid[self.count] = future_bid
+        self.target_ask[self.count] = future_ask
+        self.target_mid[self.count] = future_mid
         self.current_mid[self.count] = current_mid
         self.last_close_return_bps[self.count] = float(log_return_bps(current_mid, previous_mid))
         self.origin_timestamp_ns[self.count] = int(arrays["chunk_end_ns"][origin])
@@ -1642,6 +1750,9 @@ class BatchBuilder:
             "chunk_summary": torch.from_numpy(self.chunk_summary[rows].copy()),
             "targets": torch.from_numpy(self.targets[rows].copy()),
             "target_bps": torch.from_numpy(self.target_bps[rows].copy()),
+            "target_bid": torch.from_numpy(self.target_bid[rows].copy()),
+            "target_ask": torch.from_numpy(self.target_ask[rows].copy()),
+            "target_mid": torch.from_numpy(self.target_mid[rows].copy()),
             "current_mid": torch.from_numpy(self.current_mid[rows].copy()),
             "last_close_return_bps": torch.from_numpy(self.last_close_return_bps[rows].copy()),
             "origin_timestamp_ns": torch.from_numpy(self.origin_timestamp_ns[rows].copy()),
@@ -1688,6 +1799,8 @@ def ticker_arrays(frame: pl.DataFrame, config: DataConfig) -> dict[str, np.ndarr
     return {
         "chunk_end_ns": dense.get_column("chunk_end_ns").to_numpy().astype(np.int64),
         "mid": dense.get_column("latest_mid").to_numpy().astype(np.float32),
+        "bid": dense.get_column("latest_bid").to_numpy().astype(np.float32),
+        "ask": dense.get_column("latest_ask").to_numpy().astype(np.float32),
         "quote_values": quote_values,
         "trade_values": trade_values,
         "event_kinds": event_kinds,
@@ -1794,6 +1907,8 @@ def list_column_to_int_matrix(frame: pl.DataFrame, column: str, width: int, fill
 def valid_origins(arrays: dict[str, np.ndarray], config: DataConfig) -> np.ndarray:
     chunk_end = arrays["chunk_end_ns"]
     mid = arrays["mid"]
+    bid = arrays["bid"]
+    ask = arrays["ask"]
     future_offsets = np.arange(1, config.horizon_steps + 1, dtype=np.int64) * config.horizon_chunks
     earliest = config.context_chunks - 1
     latest = len(chunk_end) - int(future_offsets[-1]) - 1
@@ -1801,8 +1916,18 @@ def valid_origins(arrays: dict[str, np.ndarray], config: DataConfig) -> np.ndarr
         return np.empty((0,), dtype=np.int64)
     candidates = np.arange(earliest, latest + 1, max(1, config.origin_stride_chunks), dtype=np.int64)
     future_indices = candidates[:, None] + future_offsets.reshape(1, -1)
-    valid_mid = (mid[candidates] > 0.0) & np.all(mid[future_indices] > 0.0, axis=1)
+    valid_current = (bid[candidates] > 0.0) & (ask[candidates] > 0.0) & (mid[candidates] > 0.0)
+    valid_future = np.all((bid[future_indices] > 0.0) & (ask[future_indices] > 0.0), axis=1)
+    valid_mid = valid_current & valid_future
     return candidates[valid_mid]
+
+
+def mid_from_bid_ask(bid: Any, ask: Any, fallback_mid: Any) -> Any:
+    bid_array = np.asarray(bid, dtype=np.float32)
+    ask_array = np.asarray(ask, dtype=np.float32)
+    fallback = np.asarray(fallback_mid, dtype=np.float32)
+    quote_mid = (bid_array + ask_array) * 0.5
+    return np.where((bid_array > 0.0) & (ask_array > 0.0), quote_mid, fallback)
 
 
 def normalize_event_window(
