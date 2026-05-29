@@ -28,8 +28,8 @@ VERSION_SETTINGS = {
     },
     "v22": {
         "wandb_project": "May2026-microstructure-event-language-v22",
-        "canonical_root": "D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_v1",
-        "cache_root": "D:/market-data/flatfiles/us_stocks_sip/derived/event_chunks_v1",
+        "canonical_root": "D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_v2",
+        "cache_root": "D:/market-data/flatfiles/us_stocks_sip/derived/event_chunks_v2",
         "output_root": "D:/TradingData/quant-research-workbench/market_data/models/inhouse_transformer/v22",
         "run_name": "v22-event-language-chunk500-nov2025",
         "batch_size": 512,
@@ -42,6 +42,10 @@ VERSION_SETTINGS = {
         "validation_end_date": "2025-12-05",
         "test_start_date": "2025-12-08",
         "test_end_date": "2025-12-12",
+        "preprocess_processes": 20,
+        "preprocess_rebuild_cache": True,
+        "preprocess_build_chunks": True,
+        "preprocess_verbose_worker_steps": True,
     },
 }
 
@@ -132,7 +136,10 @@ def build_manifest(version: str, git_commit: str, workstation_code_root: Path) -
         "default_prefetch_factor": 4,
         "default_profile_processes": 2,
         "default_profile_sessions": 4,
-        "default_preprocess_processes": 4,
+        "default_preprocess_processes": settings.get("preprocess_processes", 4),
+        "default_preprocess_rebuild_cache": settings.get("preprocess_rebuild_cache", False),
+        "default_preprocess_build_chunks": settings.get("preprocess_build_chunks", True),
+        "default_preprocess_verbose_worker_steps": settings.get("preprocess_verbose_worker_steps", False),
         "default_polars_threads_per_process": 8,
         "preprocess_script": settings["preprocess_script"],
         "profile_script": settings["profile_script"],
@@ -280,8 +287,9 @@ def command_generation_source(version: str) -> str:
         "PREPROCESS_HEARTBEAT_SECONDS = 30\n"
         "PREPROCESS_MAX_PENDING = max(1, PREPROCESS_PROCESSES * 2)\n"
         "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 8))\n"
-        "BUILD_EVENT_CHUNKS = True\n"
-        "REBUILD_PREPROCESS_CACHE = False\n"
+        "BUILD_EVENT_CHUNKS = bool(manifest.get('default_preprocess_build_chunks', True))\n"
+        "REBUILD_PREPROCESS_CACHE = bool(manifest.get('default_preprocess_rebuild_cache', False))\n"
+        "VERBOSE_WORKER_STEPS = bool(manifest.get('default_preprocess_verbose_worker_steps', False))\n"
         "BATCH_SIZE = int(manifest.get('default_batch_size', 4096))\n"
         "EPOCHS = int(manifest.get('default_epochs', 3))\n"
         "NUM_WORKERS = int(manifest.get('default_num_workers', 8))\n"
@@ -342,6 +350,10 @@ def command_generation_source(version: str) -> str:
         "    if enabled:\n"
         "        args.append('--build-chunks')\n"
         "\n"
+        "def add_verbose_worker_steps_flag(args, enabled):\n"
+        "    if enabled:\n"
+        "        args.append('--verbose-worker-steps')\n"
+        "\n"
         f"PROFILE_ENABLED = {bool(profile_script)!r}\n"
         "\n"
         "install_ps1 = LOCAL_CODE_ROOT / 'run_install_deps.ps1'\n"
@@ -375,6 +387,7 @@ def command_generation_source(version: str) -> str:
         "]\n"
         "add_rebuild_flag(preprocess_args, REBUILD_PREPROCESS_CACHE)\n"
         "add_build_chunks_flag(preprocess_args, BUILD_EVENT_CHUNKS)\n"
+        "add_verbose_worker_steps_flag(preprocess_args, VERBOSE_WORKER_STEPS)\n"
         "\n"
         f"train_py = LOCAL_CODE_ROOT / 'research' / 'inhouse_transformer' / {version!r} / 'train.py'\n"
         "args = [\n"
