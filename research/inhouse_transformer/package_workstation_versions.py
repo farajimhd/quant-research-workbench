@@ -46,7 +46,7 @@ VERSION_SETTINGS = {
         "normalize_processes": 16,
         "quote_normalize_processes": 16,
         "trade_normalize_processes": 16,
-        "canonical_processes": 2,
+        "canonical_processes": 16,
         "chunk_processes": 2,
         "polars_threads_per_process": 4,
         "preprocess_rebuild_cache": False,

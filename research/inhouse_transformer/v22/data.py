@@ -939,7 +939,7 @@ def merge_temp_group_to_canonical(
     rows = count_parquet_rows(paths)
     base_path = config.canonical_root / kind
     base_path.mkdir(parents=True, exist_ok=True)
-    frame = scan_parquet_paths(paths).sort(["ticker", "sip_timestamp", "sequence_number"])
+    frame = scan_parquet_paths(paths)
     frame = frame.select([column for column in (quote_canonical_columns() if kind == "quotes" else trade_canonical_columns())])
     frame.sink_parquet(
         pl.PartitionBy(
@@ -951,7 +951,7 @@ def merge_temp_group_to_canonical(
         ),
         compression="zstd",
         mkdir=True,
-        maintain_order=True,
+        maintain_order=False,
     )
     return {
         "kind": kind,
@@ -960,6 +960,7 @@ def merge_temp_group_to_canonical(
         "status": "ok",
         "rows": rows,
         "output_path": str(base_path),
+        "writer": "partitioned_sink_no_global_sort",
     }
 
 
