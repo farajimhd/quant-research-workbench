@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--session-end-hour-utc", type=int, default=defaults.session_end_hour_utc)
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--keep-temp-normalized", action="store_true")
+    parser.add_argument("--build-chunks", action="store_true", help="Also materialize dense event chunk tensors. Use only for small ticker subsets.")
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--heartbeat-seconds", type=float, default=30.0)
     parser.add_argument("--max-pending", type=int, default=0, help="Maximum queued worker futures. Default is 2x processes.")
@@ -193,6 +194,21 @@ def main() -> None:
         end_date=args.end_date,
         tickers=tickers,
     )
+    if not args.build_chunks:
+        print(LOG_RULE)
+        print(
+            f"PHASE 3/3 dense event chunk cache skipped for {len(canonical_groups):,} canonical ticker-month groups.",
+            flush=True,
+        )
+        print("Reason: full-market 500ms dense chunk materialization is very large; training can build needed session chunks lazily.", flush=True)
+        print("Use --build-chunks only for small ticker subsets or profiling runs.", flush=True)
+        print(LOG_RULE)
+        print(f"Done. sessions={len(sessions)} canonical_groups={len(canonical_groups):,} failed={failed}")
+        print(f"Manifest: {manifest_path}")
+        print(LOG_RULE)
+        if failed:
+            raise SystemExit(1)
+        return
     print(LOG_RULE)
     print(f"PHASE 3/3 build model-specific event chunk cache from canonical events groups={len(canonical_groups):,}", flush=True)
     failed += run_parallel(
