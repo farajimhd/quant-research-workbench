@@ -44,7 +44,7 @@ VERSION_SETTINGS = {
         "test_end_date": "2025-12-12",
         "preprocess_processes": 16,
         "normalize_processes": 8,
-        "quote_normalize_processes": 2,
+        "quote_normalize_processes": 8,
         "trade_normalize_processes": 8,
         "canonical_processes": 16,
         "chunk_processes": 16,
