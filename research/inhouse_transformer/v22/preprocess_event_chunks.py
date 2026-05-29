@@ -22,7 +22,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+if __name__ == "__main__":
+    print("v22 preprocess stdlib imports complete; importing DataConfig...", flush=True)
 from research.inhouse_transformer.v22.config import DataConfig  # noqa: E402
+if __name__ == "__main__":
+    print("v22 preprocess DataConfig import complete.", flush=True)
 
 
 LOG_RULE = "*" * 96

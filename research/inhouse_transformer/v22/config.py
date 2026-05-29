@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.data_provider.config import DEFAULT_PROCESSED_ROOT
-
 
 DEFAULT_TRAIN_START = "2025-11-01"
 DEFAULT_TRAIN_END = "2025-11-30"
@@ -12,6 +10,7 @@ DEFAULT_VALIDATION_START = "2025-12-01"
 DEFAULT_VALIDATION_END = "2025-12-05"
 DEFAULT_TEST_START = "2025-12-08"
 DEFAULT_TEST_END = "2025-12-12"
+DEFAULT_PROCESSED_ROOT = Path("D:/TradingData/quant-research-workbench/market_data")
 
 
 @dataclass(slots=True)
