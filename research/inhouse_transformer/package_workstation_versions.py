@@ -47,11 +47,12 @@ VERSION_SETTINGS = {
         "quote_normalize_processes": 16,
         "trade_normalize_processes": 16,
         "canonical_processes": 16,
-        "chunk_processes": 2,
+        "chunk_processes": 16,
         "polars_threads_per_process": 4,
         "preprocess_rebuild_cache": False,
-        "preprocess_build_chunks": False,
+        "preprocess_build_chunks": True,
         "preprocess_verbose_worker_steps": False,
+        "preprocess_max_tasks_per_worker": 20,
     },
 }
 
@@ -151,6 +152,7 @@ def build_manifest(version: str, git_commit: str, workstation_code_root: Path) -
         "default_preprocess_rebuild_cache": settings.get("preprocess_rebuild_cache", False),
         "default_preprocess_build_chunks": settings.get("preprocess_build_chunks", True),
         "default_preprocess_verbose_worker_steps": settings.get("preprocess_verbose_worker_steps", False),
+        "default_preprocess_max_tasks_per_worker": settings.get("preprocess_max_tasks_per_worker", 0),
         "default_polars_threads_per_process": settings.get("polars_threads_per_process", 8),
         "preprocess_script": settings["preprocess_script"],
         "profile_script": settings["profile_script"],
@@ -302,6 +304,7 @@ def command_generation_source(version: str) -> str:
         "CHUNK_PROCESSES = int(manifest.get('default_chunk_processes', PREPROCESS_PROCESSES))\n"
         "PREPROCESS_HEARTBEAT_SECONDS = 30\n"
         "PREPROCESS_MAX_PENDING = 0\n"
+        "PREPROCESS_MAX_TASKS_PER_WORKER = int(manifest.get('default_preprocess_max_tasks_per_worker', 0))\n"
         "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 8))\n"
         "BUILD_EVENT_CHUNKS = bool(manifest.get('default_preprocess_build_chunks', True))\n"
         "REBUILD_PREPROCESS_CACHE = bool(manifest.get('default_preprocess_rebuild_cache', False))\n"
@@ -411,6 +414,7 @@ def command_generation_source(version: str) -> str:
         "    '--chunk-processes', str(CHUNK_PROCESSES),\n"
         "    '--heartbeat-seconds', str(PREPROCESS_HEARTBEAT_SECONDS),\n"
         "    '--max-pending', str(PREPROCESS_MAX_PENDING),\n"
+        "    '--max-tasks-per-worker', str(PREPROCESS_MAX_TASKS_PER_WORKER),\n"
         "    '--polars-threads-per-process', str(POLARS_THREADS_PER_PROCESS),\n"
         "]\n"
         "add_rebuild_flag(preprocess_args, REBUILD_PREPROCESS_CACHE)\n"

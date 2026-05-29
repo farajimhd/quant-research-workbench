@@ -205,6 +205,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--heartbeat-seconds", type=float, default=30.0)
     parser.add_argument("--max-pending", type=int, default=0, help="Maximum queued worker futures. Default is 2x processes.")
+    parser.add_argument(
+        "--max-tasks-per-worker",
+        type=int,
+        default=0,
+        help="Recycle worker processes after this many tasks. Use for long chunk-building runs to bound process memory growth.",
+    )
     parser.add_argument("--manifest-name", default="preprocess_event_chunks_manifest.jsonl")
     parser.add_argument("--verbose-worker-steps", action="store_true", help="Allow worker processes to print detailed internal step logs.")
     parser.add_argument("--dry-run", action="store_true")
@@ -275,6 +281,7 @@ def main() -> None:
         f"trade_normalize_processes={trade_normalize_processes} "
         f"canonical_processes={canonical_processes} chunk_processes={chunk_processes} "
         f"polars_threads_per_process={args.polars_threads_per_process} "
+        f"max_tasks_per_worker={args.max_tasks_per_worker} "
         f"max_pending(quote_norm/trade_norm/canonical/chunks)="
         f"{quote_normalize_max_pending}/{trade_normalize_max_pending}/{canonical_max_pending}/{chunk_max_pending}"
     )
@@ -329,6 +336,7 @@ def main() -> None:
             fail_fast=args.fail_fast,
             heartbeat_seconds=args.heartbeat_seconds,
             max_pending=trade_normalize_max_pending,
+            max_tasks_per_worker=args.max_tasks_per_worker,
         )
         failed += run_parallel(
             label="normalize quotes",
@@ -340,6 +348,7 @@ def main() -> None:
             fail_fast=args.fail_fast,
             heartbeat_seconds=args.heartbeat_seconds,
             max_pending=quote_normalize_max_pending,
+            max_tasks_per_worker=args.max_tasks_per_worker,
         )
         if failed:
             print(LOG_RULE)
@@ -365,6 +374,7 @@ def main() -> None:
             fail_fast=args.fail_fast,
             heartbeat_seconds=args.heartbeat_seconds,
             max_pending=canonical_max_pending,
+            max_tasks_per_worker=args.max_tasks_per_worker,
         )
         if not args.keep_temp_normalized and failed == 0:
             temp_root = temp_canonical_parts_root(config)
@@ -404,6 +414,7 @@ def main() -> None:
         fail_fast=args.fail_fast,
         heartbeat_seconds=args.heartbeat_seconds,
         max_pending=chunk_max_pending,
+        max_tasks_per_worker=args.max_tasks_per_worker,
     )
     print(LOG_RULE)
     print(f"Done. sessions={len(sessions)} canonical_groups={len(canonical_groups):,} failed={failed}")
@@ -529,6 +540,7 @@ def run_parallel(
     fail_fast: bool,
     heartbeat_seconds: float,
     max_pending: int,
+    max_tasks_per_worker: int = 0,
 ) -> int:
     if not items:
         print(f"{label}: no work items", flush=True)
@@ -570,7 +582,10 @@ def run_parallel(
         print(f"[{index:,}/{len(items):,}] SUBMIT {label} {future_labels[future]}", flush=True)
         return True
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, processes)) as executor:
+    executor_kwargs: dict[str, Any] = {"max_workers": max(1, processes)}
+    if max_tasks_per_worker > 0:
+        executor_kwargs["max_tasks_per_child"] = max_tasks_per_worker
+    with concurrent.futures.ProcessPoolExecutor(**executor_kwargs) as executor:
         pending = set()
         while len(pending) < min(pending_limit, len(items)):
             if not submit_next(executor, pending):
