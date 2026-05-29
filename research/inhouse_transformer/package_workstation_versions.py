@@ -43,6 +43,9 @@ VERSION_SETTINGS = {
         "test_start_date": "2025-12-08",
         "test_end_date": "2025-12-12",
         "preprocess_processes": 16,
+        "normalize_processes": 4,
+        "canonical_processes": 16,
+        "chunk_processes": 16,
         "polars_threads_per_process": 4,
         "preprocess_rebuild_cache": True,
         "preprocess_build_chunks": True,
@@ -138,6 +141,9 @@ def build_manifest(version: str, git_commit: str, workstation_code_root: Path) -
         "default_profile_processes": 2,
         "default_profile_sessions": 4,
         "default_preprocess_processes": settings.get("preprocess_processes", 4),
+        "default_normalize_processes": settings.get("normalize_processes", settings.get("preprocess_processes", 4)),
+        "default_canonical_processes": settings.get("canonical_processes", settings.get("preprocess_processes", 4)),
+        "default_chunk_processes": settings.get("chunk_processes", settings.get("preprocess_processes", 4)),
         "default_preprocess_rebuild_cache": settings.get("preprocess_rebuild_cache", False),
         "default_preprocess_build_chunks": settings.get("preprocess_build_chunks", True),
         "default_preprocess_verbose_worker_steps": settings.get("preprocess_verbose_worker_steps", False),
@@ -285,8 +291,11 @@ def command_generation_source(version: str) -> str:
         "PROFILE_SESSIONS = int(manifest.get('default_profile_sessions', 4))\n"
         "PROFILE_PROCESSES = int(manifest.get('default_profile_processes', 2))\n"
         "PREPROCESS_PROCESSES = int(manifest.get('default_preprocess_processes', 4))\n"
+        "NORMALIZE_PROCESSES = int(manifest.get('default_normalize_processes', PREPROCESS_PROCESSES))\n"
+        "CANONICAL_PROCESSES = int(manifest.get('default_canonical_processes', PREPROCESS_PROCESSES))\n"
+        "CHUNK_PROCESSES = int(manifest.get('default_chunk_processes', PREPROCESS_PROCESSES))\n"
         "PREPROCESS_HEARTBEAT_SECONDS = 30\n"
-        "PREPROCESS_MAX_PENDING = max(1, PREPROCESS_PROCESSES * 2)\n"
+        "PREPROCESS_MAX_PENDING = 0\n"
         "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 8))\n"
         "BUILD_EVENT_CHUNKS = bool(manifest.get('default_preprocess_build_chunks', True))\n"
         "REBUILD_PREPROCESS_CACHE = bool(manifest.get('default_preprocess_rebuild_cache', False))\n"
@@ -382,6 +391,9 @@ def command_generation_source(version: str) -> str:
         "    '--tickers', manifest.get('tickers', 'ALL'),\n"
         f"{extra_preprocess_args}"
         "    '--processes', str(PREPROCESS_PROCESSES),\n"
+        "    '--normalize-processes', str(NORMALIZE_PROCESSES),\n"
+        "    '--canonical-processes', str(CANONICAL_PROCESSES),\n"
+        "    '--chunk-processes', str(CHUNK_PROCESSES),\n"
         "    '--heartbeat-seconds', str(PREPROCESS_HEARTBEAT_SECONDS),\n"
         "    '--max-pending', str(PREPROCESS_MAX_PENDING),\n"
         "    '--polars-threads-per-process', str(POLARS_THREADS_PER_PROCESS),\n"
