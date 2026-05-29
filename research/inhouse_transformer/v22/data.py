@@ -936,23 +936,30 @@ def merge_temp_group_to_canonical(
     paths: list[Path],
     rebuild: bool = False,
 ) -> dict[str, Any]:
-    rows = count_parquet_rows(paths)
     base_path = config.canonical_root / kind
     base_path.mkdir(parents=True, exist_ok=True)
-    frame = scan_parquet_paths(paths)
-    frame = frame.select([column for column in (quote_canonical_columns() if kind == "quotes" else trade_canonical_columns())])
-    frame.sink_parquet(
-        pl.PartitionBy(
-            base_path,
-            key="ticker",
-            include_key=True,
-            approximate_bytes_per_file=None,
-            file_path_provider=canonical_file_provider(config, kind, year_month),
-        ),
-        compression="zstd",
-        mkdir=True,
-        maintain_order=False,
+    columns = quote_canonical_columns() if kind == "quotes" else trade_canonical_columns()
+    frame = scan_parquet_paths(paths).select([column for column in columns])
+    ticker_counts = collect_lazy(
+        frame.group_by("ticker")
+        .agg(pl.len().alias("rows"))
+        .sort("ticker")
     )
+    rows = int(ticker_counts["rows"].sum()) if ticker_counts.height else 0
+
+    for row in ticker_counts.iter_rows(named=True):
+        ticker = str(row["ticker"])
+        output_path = canonical_event_path(config, kind, ticker, year_month)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = output_path.with_name(f".{output_path.stem}.{os.getpid()}.tmp{output_path.suffix}")
+        if temp_path.exists():
+            temp_path.unlink()
+        ticker_frame = (
+            frame.filter(pl.col("ticker") == ticker)
+            .sort(["sip_timestamp", "sequence_number"])
+        )
+        write_lazy_parquet(ticker_frame, temp_path)
+        os.replace(temp_path, output_path)
     return {
         "kind": kind,
         "year_month": year_month,
@@ -960,7 +967,8 @@ def merge_temp_group_to_canonical(
         "status": "ok",
         "rows": rows,
         "output_path": str(base_path),
-        "writer": "partitioned_sink_no_global_sort",
+        "ticker_files": int(ticker_counts.height),
+        "writer": "per_ticker_sorted_sink",
     }
 
 

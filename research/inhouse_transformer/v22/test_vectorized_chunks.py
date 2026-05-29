@@ -210,7 +210,8 @@ class VectorizedChunkTests(unittest.TestCase):
             (quote_dir / f"{session}.csv").write_text(
                 "ticker,ask_exchange,ask_price,ask_size,bid_exchange,bid_price,bid_size,"
                 "conditions,indicators,participant_timestamp,sequence_number,sip_timestamp,tape,trf_timestamp\n"
-                "A,1,10.02,100,2,10.00,120,1,,999000000,1,1000000000,3,0\n"
+                "A,1,10.04,100,2,10.02,120,1,,999000000,2,1000000000,3,0\n"
+                "A,1,10.02,100,2,10.00,120,1,,899000000,1,900000000,3,0\n"
                 "B,1,20.04,200,2,20.00,210,12,4,1999000000,1,2000000000,3,0\n",
                 encoding="utf-8",
             )
@@ -250,6 +251,8 @@ class VectorizedChunkTests(unittest.TestCase):
             trade_b = pl.read_parquet(canonical_event_path(config, "trades", "B", "2025-11"))
             self.assertNotIn("ticker_bucket", quote_a.columns)
             self.assertEqual(quote_a.row(0, named=True)["ticker"], "A")
+            self.assertEqual(quote_a["sip_timestamp"].to_list(), [900000000, 1000000000])
+            self.assertEqual(quote_a["sequence_number"].to_list(), [1, 2])
             self.assertEqual(trade_b.row(0, named=True)["ticker"], "B")
 
     @unittest.skipUnless(importlib.util.find_spec("pyarrow") is not None, "pyarrow is required for streaming fallback")
