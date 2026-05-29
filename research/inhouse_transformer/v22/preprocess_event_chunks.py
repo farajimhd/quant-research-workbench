@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import json
 import os
 import shutil
@@ -47,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--heartbeat-seconds", type=float, default=30.0)
     parser.add_argument("--max-pending", type=int, default=0, help="Maximum queued worker futures. Default is 2x processes.")
     parser.add_argument("--manifest-name", default="preprocess_event_chunks_manifest.jsonl")
+    parser.add_argument("--verbose-worker-steps", action="store_true", help="Allow worker processes to print detailed internal step logs.")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -100,6 +102,7 @@ def main() -> None:
     print(f"chunk_ms={config.chunk_ms} max_quote={config.max_quote_events} max_trade={config.max_trade_events} max_total={config.max_total_events}")
     max_pending = args.max_pending if args.max_pending > 0 else max(1, args.processes) * 2
     print(f"processes={args.processes} polars_threads_per_process={args.polars_threads_per_process} max_pending={max_pending}")
+    print(f"worker_step_logging={'on' if args.verbose_worker_steps else 'off'}")
     print(
         "polars_runtime="
         f"version={pl.__version__} thread_pool={pl.thread_pool_size()} "
@@ -123,6 +126,7 @@ def main() -> None:
         "tickers_raw": args.tickers,
         "polars_threads_per_process": args.polars_threads_per_process,
         "rebuild": args.rebuild_cache,
+        "verbose_worker_steps": args.verbose_worker_steps,
     }
     tickers = parse_ticker_list(args.tickers)
     existing_groups = discover_canonical_groups(
@@ -233,84 +237,98 @@ def main() -> None:
 def normalize_session_worker(session: str, payload: dict[str, Any]) -> dict[str, Any]:
     os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
     started = time.time()
-    from research.inhouse_transformer.v22.data import normalize_session_to_temp_parts, parse_ticker_list
+    with worker_output_context(payload):
+        from research.inhouse_transformer.v22.data import normalize_session_to_temp_parts, parse_ticker_list
 
-    try:
-        config = payload_to_config(payload["config"])
-        result = normalize_session_to_temp_parts(
-            config,
-            session,
-            parse_ticker_list(payload["tickers_raw"]),
-            rebuild=bool(payload.get("rebuild")),
-        )
-        rows = sum(int(item.get("rows") or 0) for item in result["kinds"].values())
-        return result_row("normalize", session, result_status(result["kinds"].values()), rows, time.time() - started, result)
-    except BaseException:
-        return failed_row("normalize", session, time.time() - started)
+        try:
+            config = payload_to_config(payload["config"])
+            result = normalize_session_to_temp_parts(
+                config,
+                session,
+                parse_ticker_list(payload["tickers_raw"]),
+                rebuild=bool(payload.get("rebuild")),
+            )
+            rows = sum(int(item.get("rows") or 0) for item in result["kinds"].values())
+            return result_row("normalize", session, result_status(result["kinds"].values()), rows, time.time() - started, result)
+        except BaseException:
+            return failed_row("normalize", session, time.time() - started)
 
 
 def normalize_session_kind_worker(item: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
     os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
     started = time.time()
     key = f"{item['kind']}:{item['session']}"
-    print(f"START normalize {key}", flush=True)
-    from research.inhouse_transformer.v22.data import normalize_session_kind_to_temp_parts, parse_ticker_list
+    with worker_output_context(payload):
+        print(f"START normalize {key}", flush=True)
+        from research.inhouse_transformer.v22.data import normalize_session_kind_to_temp_parts, parse_ticker_list
 
-    try:
-        config = payload_to_config(payload["config"])
-        result = normalize_session_kind_to_temp_parts(
-            config,
-            item["session"],
-            item["kind"],
-            parse_ticker_list(payload["tickers_raw"]),
-            rebuild=bool(payload.get("rebuild")),
-        )
-        print(f"WRITER normalize {key} {result.get('writer', 'unknown')}", flush=True)
-        return result_row("normalize", key, result["status"], int(result.get("rows") or 0), time.time() - started, result)
-    except BaseException:
-        return failed_row("normalize", key, time.time() - started)
+        try:
+            config = payload_to_config(payload["config"])
+            result = normalize_session_kind_to_temp_parts(
+                config,
+                item["session"],
+                item["kind"],
+                parse_ticker_list(payload["tickers_raw"]),
+                rebuild=bool(payload.get("rebuild")),
+            )
+            print(f"WRITER normalize {key} {result.get('writer', 'unknown')}", flush=True)
+            return result_row("normalize", key, result["status"], int(result.get("rows") or 0), time.time() - started, result)
+        except BaseException:
+            return failed_row("normalize", key, time.time() - started)
 
 
 def merge_canonical_worker(item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
     started = time.time()
-    from research.inhouse_transformer.v22.data import merge_temp_group_to_canonical
+    with worker_output_context(payload):
+        from research.inhouse_transformer.v22.data import merge_temp_group_to_canonical
 
-    try:
-        config = payload_to_config(payload["config"])
-        print(f"START canonical {item['kind']}:{item['ticker']}:{item['year_month']} paths={len(item['paths'])}", flush=True)
-        result = merge_temp_group_to_canonical(
-            config,
-            kind=item["kind"],
-            year_month=item["year_month"],
-            ticker=item["ticker"],
-            paths=[Path(path) for path in item["paths"]],
-            rebuild=bool(payload.get("rebuild")),
-        )
-        key = f"{item['kind']}:{item['ticker']}:{item['year_month']}"
-        return result_row("canonical", key, result["status"], int(result.get("rows") or 0), time.time() - started, result)
-    except BaseException:
-        return failed_row("canonical", f"{item.get('kind')}:{item.get('ticker')}:{item.get('year_month')}", time.time() - started)
+        try:
+            config = payload_to_config(payload["config"])
+            print(f"START canonical {item['kind']}:{item['ticker']}:{item['year_month']} paths={len(item['paths'])}", flush=True)
+            result = merge_temp_group_to_canonical(
+                config,
+                kind=item["kind"],
+                year_month=item["year_month"],
+                ticker=item["ticker"],
+                paths=[Path(path) for path in item["paths"]],
+                rebuild=bool(payload.get("rebuild")),
+            )
+            key = f"{item['kind']}:{item['ticker']}:{item['year_month']}"
+            return result_row("canonical", key, result["status"], int(result.get("rows") or 0), time.time() - started, result)
+        except BaseException:
+            return failed_row("canonical", f"{item.get('kind')}:{item.get('ticker')}:{item.get('year_month')}", time.time() - started)
 
 
 def build_chunks_worker(item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     os.environ["POLARS_MAX_THREADS"] = str(max(1, int(payload["polars_threads_per_process"])))
     started = time.time()
-    from research.inhouse_transformer.v22.data import build_event_chunks_from_canonical
+    with worker_output_context(payload):
+        from research.inhouse_transformer.v22.data import build_event_chunks_from_canonical
 
-    try:
-        config = payload_to_config(payload["config"])
-        print(f"START chunks {item['ticker']}:{item['year_month']}", flush=True)
-        result = build_event_chunks_from_canonical(
-            config,
-            ticker=item["ticker"],
-            year_month=item["year_month"],
-            rebuild=bool(payload.get("rebuild")),
-        )
-        key = f"{item['ticker']}:{item['year_month']}"
-        return result_row("chunks", key, result["status"], int(result.get("rows") or 0), time.time() - started, result)
-    except BaseException:
-        return failed_row("chunks", f"{item.get('ticker')}:{item.get('year_month')}", time.time() - started)
+        try:
+            config = payload_to_config(payload["config"])
+            print(f"START chunks {item['ticker']}:{item['year_month']}", flush=True)
+            result = build_event_chunks_from_canonical(
+                config,
+                ticker=item["ticker"],
+                year_month=item["year_month"],
+                rebuild=bool(payload.get("rebuild")),
+            )
+            key = f"{item['ticker']}:{item['year_month']}"
+            return result_row("chunks", key, result["status"], int(result.get("rows") or 0), time.time() - started, result)
+        except BaseException:
+            return failed_row("chunks", f"{item.get('ticker')}:{item.get('year_month')}", time.time() - started)
+
+
+@contextlib.contextmanager
+def worker_output_context(payload: dict[str, Any]) -> Any:
+    if payload.get("verbose_worker_steps"):
+        yield
+        return
+    with open(os.devnull, "w", encoding="utf-8") as sink:
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            yield
 
 
 def run_parallel(
@@ -399,6 +417,9 @@ def run_parallel(
                     failed += 1
                 append_jsonl(manifest_path, result)
                 print(format_progress(result, completed, len(items), time.time() - started), flush=True)
+                timing_summary = format_timing_summary(result)
+                if timing_summary:
+                    print(timing_summary, flush=True)
                 if result["status"] == "failed":
                     print(format_error(result), flush=True)
                 if fail_fast and result["status"] == "failed":
@@ -509,6 +530,38 @@ def format_progress(result: dict[str, Any], completed: int, total: int, elapsed:
         f"rows={int(result.get('rows') or 0):,} item_seconds={float(result.get('elapsed_seconds') or 0):.1f} "
         f"elapsed_minutes={elapsed / 60.0:.1f}"
     )
+
+
+def format_timing_summary(result: dict[str, Any]) -> str:
+    details = result.get("details")
+    if not isinstance(details, dict):
+        return ""
+    timings = details.get("timings")
+    if not isinstance(timings, list) or not timings:
+        return ""
+    wanted_steps = {
+        "read_quotes_done",
+        "read_trades_done",
+        "attach_quote_state_done",
+        "quote_aggregation_done",
+        "trade_aggregation_done",
+        "target_cache_done",
+        "write_done",
+    }
+    parts: list[str] = []
+    for row in timings:
+        if not isinstance(row, dict) or row.get("step") not in wanted_steps:
+            continue
+        step = str(row["step"]).removesuffix("_done")
+        elapsed = float(row.get("elapsed_seconds") or 0.0)
+        rows = row.get("rows")
+        extra = f":{int(rows):,}" if isinstance(rows, (int, float)) else ""
+        if row.get("dense_grid_rows") is not None:
+            extra += f":grid={int(row['dense_grid_rows']):,}"
+        parts.append(f"{step}={elapsed:.1f}s{extra}")
+    if not parts:
+        return ""
+    return f"TIMINGS {result.get('phase')} {result.get('key')}: " + " ".join(parts)
 
 
 def format_error(result: dict[str, Any]) -> str:
