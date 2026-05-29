@@ -222,7 +222,7 @@ def event_chunk_path(config: DataConfig, ticker: str, year_month: str) -> Path:
         config.cache_root
         / f"chunk_ms={config.chunk_ms}"
         / f"mq={config.max_quote_events}_mt={config.max_trade_events}_m={config.max_total_events}"
-        / "event_chunks"
+        / "event_chunks_compact_v1"
         / f"ticker={ticker}"
         / f"{year_month}.parquet"
     )
@@ -266,7 +266,7 @@ def load_session_from_ticker_month_chunks(
         config.cache_root
         / f"chunk_ms={config.chunk_ms}"
         / f"mq={config.max_quote_events}_mt={config.max_trade_events}_m={config.max_total_events}"
-        / "event_chunks"
+        / "event_chunks_compact_v1"
     )
     if not base.exists():
         return None
@@ -810,7 +810,7 @@ def build_event_chunks_from_canonical(
     if quotes.is_empty() and trades.is_empty():
         return {"ticker": ticker, "year_month": year_month, "status": "empty", "rows": 0, "output_path": str(output_path)}
     trades_with_quote = attach_quote_state_to_trades(trades, quotes)
-    chunks = build_ticker_sparse_chunks(config, "", ticker, quotes, trades_with_quote)
+    chunks = build_ticker_sparse_chunks_vectorized(config, ticker, quotes, trades_with_quote)
     if chunks is None or chunks.is_empty():
         return {"ticker": ticker, "year_month": year_month, "status": "empty", "rows": 0, "output_path": str(output_path)}
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -824,6 +824,357 @@ def build_event_chunks_from_canonical(
         "rows": chunks.height,
         "output_path": str(output_path),
     }
+
+
+def build_ticker_sparse_chunks_vectorized(
+    config: DataConfig,
+    ticker: str,
+    quotes: pl.DataFrame,
+    trades: pl.DataFrame,
+) -> pl.DataFrame | None:
+    chunk_ns = config.chunk_ms * 1_000_000
+    quotes_prepared = prepare_quote_events_for_chunks(quotes, chunk_ns)
+    trades_prepared = prepare_trade_events_for_chunks(trades, chunk_ns)
+    if quotes_prepared.is_empty() and trades_prepared.is_empty():
+        return None
+
+    counts = chunk_counts(config, quotes_prepared, trades_prepared)
+    quote_chunks = selected_quote_chunk_values(config, quotes_prepared, counts, chunk_ns)
+    trade_chunks = selected_trade_chunk_values(config, trades_prepared, counts, chunk_ns)
+    order_chunks = selected_event_order_chunks(config, quotes_prepared, trades_prepared, counts)
+    summary = chunk_summary_vectorized(config, quotes_prepared, trades_prepared, counts)
+
+    chunks = summary.join(quote_chunks, on=["session_date", "chunk_start_ns"], how="left")
+    chunks = chunks.join(trade_chunks, on=["session_date", "chunk_start_ns"], how="left")
+    chunks = chunks.join(order_chunks, on=["session_date", "chunk_start_ns"], how="left")
+    chunks = chunks.with_columns(
+        pl.lit(ticker).alias("ticker"),
+        (pl.col("chunk_start_ns") + chunk_ns - 1).alias("chunk_end_ns"),
+    )
+    return chunks.select(
+        [
+            "ticker",
+            "session_date",
+            "chunk_start_ns",
+            "chunk_end_ns",
+            "quote_values",
+            "trade_values",
+            "event_kinds",
+            "event_indices",
+            *CHUNK_SUMMARY_COLUMNS,
+        ]
+    ).sort(["session_date", "chunk_start_ns"])
+
+
+def prepare_quote_events_for_chunks(quotes: pl.DataFrame, chunk_ns: int) -> pl.DataFrame:
+    if quotes.is_empty():
+        return quotes
+    return (
+        quotes.sort(["session_date", "sip_timestamp", "sequence_number"])
+        .with_columns(
+            ((pl.col("sip_timestamp") // chunk_ns) * chunk_ns).alias("chunk_start_ns"),
+        )
+        .with_columns(
+            pl.int_range(pl.len()).over(["session_date", "chunk_start_ns"]).alias("quote_pos"),
+            pl.len().over(["session_date", "chunk_start_ns"]).alias("quote_count"),
+        )
+    )
+
+
+def prepare_trade_events_for_chunks(trades: pl.DataFrame, chunk_ns: int) -> pl.DataFrame:
+    if trades.is_empty():
+        return trades
+    return (
+        trades.sort(["session_date", "sip_timestamp", "sequence_number"])
+        .with_columns(
+            ((pl.col("sip_timestamp") // chunk_ns) * chunk_ns).alias("chunk_start_ns"),
+        )
+        .with_columns(
+            pl.int_range(pl.len()).over(["session_date", "chunk_start_ns"]).alias("trade_pos"),
+            pl.len().over(["session_date", "chunk_start_ns"]).alias("trade_count"),
+        )
+    )
+
+
+def chunk_counts(config: DataConfig, quotes: pl.DataFrame, trades: pl.DataFrame) -> pl.DataFrame:
+    frames: list[pl.DataFrame] = []
+    if not quotes.is_empty():
+        frames.append(
+            quotes.group_by(["session_date", "chunk_start_ns"]).agg(
+                pl.len().cast(pl.Float64).alias("quote_count"),
+                pl.col("bid_price").last().alias("latest_bid"),
+                pl.col("ask_price").last().alias("latest_ask"),
+                pl.col("mid_price").last().alias("latest_mid"),
+                pl.col("spread_bps").last().alias("latest_spread_bps"),
+                pl.col("bid_size").last().alias("latest_bid_size"),
+                pl.col("ask_size").last().alias("latest_ask_size"),
+                pl.col("quote_imbalance").last().alias("latest_quote_imbalance"),
+            )
+        )
+    if not trades.is_empty():
+        trade_counts = trades.group_by(["session_date", "chunk_start_ns"]).agg(
+            pl.len().cast(pl.Float64).alias("trade_count"),
+            pl.col("size").sum().alias("trade_volume"),
+            (pl.col("size") * pl.col("side_proxy")).sum().alias("signed_trade_volume"),
+        )
+        frames.append(trade_counts)
+    if not frames:
+        return pl.DataFrame()
+    counts = frames[0]
+    for frame in frames[1:]:
+        counts = counts.join(frame, on=["session_date", "chunk_start_ns"], how="full", coalesce=True)
+    for column in (
+        "quote_count",
+        "trade_count",
+        "trade_volume",
+        "signed_trade_volume",
+        "latest_bid",
+        "latest_ask",
+        "latest_mid",
+        "latest_spread_bps",
+        "latest_bid_size",
+        "latest_ask_size",
+        "latest_quote_imbalance",
+    ):
+        if column not in counts.columns:
+            counts = counts.with_columns(pl.lit(None, dtype=pl.Float64).alias(column))
+    return counts.with_columns(
+        pl.col("quote_count").fill_null(0.0),
+        pl.col("trade_count").fill_null(0.0),
+        pl.col("trade_volume").fill_null(0.0),
+        pl.col("signed_trade_volume").fill_null(0.0),
+    ).with_columns(
+        pl.min_horizontal(
+            pl.col("trade_count"),
+            pl.lit(float(config.max_trade_events)),
+            pl.lit(float(config.max_total_events)),
+        ).alias("selected_trade_count"),
+    ).with_columns(
+        pl.min_horizontal(
+            pl.col("quote_count"),
+            pl.lit(float(config.max_quote_events)),
+            pl.max_horizontal(pl.lit(0.0), pl.lit(float(config.max_total_events)) - pl.col("selected_trade_count")),
+        ).alias("selected_quote_count"),
+    )
+
+
+def selected_quote_chunk_values(config: DataConfig, quotes: pl.DataFrame, counts: pl.DataFrame, chunk_ns: int) -> pl.DataFrame:
+    if quotes.is_empty():
+        return empty_chunk_value_frame("quote_values")
+    selected = (
+        quotes.join(counts.select(["session_date", "chunk_start_ns", "selected_quote_count"]), on=["session_date", "chunk_start_ns"], how="left")
+        .filter(pl.col("quote_pos") >= (pl.col("quote_count") - pl.col("selected_quote_count")))
+        .sort(["session_date", "chunk_start_ns", "sip_timestamp", "sequence_number"])
+        .with_columns(
+            pl.col("sip_timestamp").shift(1).over(["session_date", "chunk_start_ns"]).alias("_previous_ts"),
+        )
+        .with_columns(
+            pl.when(pl.col("_previous_ts").is_null())
+            .then(pl.col("chunk_start_ns"))
+            .otherwise(pl.col("_previous_ts"))
+            .alias("_previous_ts")
+        )
+        .with_columns(
+            pl.concat_list(
+                [
+                    ((pl.col("sip_timestamp") - pl.col("chunk_start_ns")) / float(chunk_ns)).cast(pl.Float32),
+                    ((pl.col("sip_timestamp") - pl.col("_previous_ts")) / float(NANOSECONDS_PER_SECOND)).clip(0.0, None).cast(pl.Float32),
+                    pl.col("bid_price").cast(pl.Float32),
+                    pl.col("ask_price").cast(pl.Float32),
+                    pl.col("mid_price").cast(pl.Float32),
+                    pl.col("spread_bps").cast(pl.Float32),
+                    pl.col("bid_size").cast(pl.Float32),
+                    pl.col("ask_size").cast(pl.Float32),
+                    pl.col("quote_imbalance").cast(pl.Float32),
+                    pl.col("bid_exchange").fill_null(0).cast(pl.Float32),
+                    pl.col("ask_exchange").fill_null(0).cast(pl.Float32),
+                ]
+            ).alias("quote_event"),
+        )
+    )
+    return selected.group_by(["session_date", "chunk_start_ns"], maintain_order=True).agg(
+        pl.col("quote_event").alias("quote_values")
+    )
+
+
+def selected_trade_chunk_values(config: DataConfig, trades: pl.DataFrame, counts: pl.DataFrame, chunk_ns: int) -> pl.DataFrame:
+    if trades.is_empty():
+        return empty_chunk_value_frame("trade_values")
+    selected = (
+        trades.join(counts.select(["session_date", "chunk_start_ns", "selected_trade_count"]), on=["session_date", "chunk_start_ns"], how="left")
+        .filter(pl.col("trade_pos") >= (pl.col("trade_count") - pl.col("selected_trade_count")))
+        .sort(["session_date", "chunk_start_ns", "sip_timestamp", "sequence_number"])
+        .with_columns(
+            pl.col("sip_timestamp").shift(1).over(["session_date", "chunk_start_ns"]).alias("_previous_ts"),
+        )
+        .with_columns(
+            pl.when(pl.col("_previous_ts").is_null())
+            .then(pl.col("chunk_start_ns"))
+            .otherwise(pl.col("_previous_ts"))
+            .alias("_previous_ts")
+        )
+        .with_columns(
+            pl.concat_list(
+                [
+                    ((pl.col("sip_timestamp") - pl.col("chunk_start_ns")) / float(chunk_ns)).cast(pl.Float32),
+                    ((pl.col("sip_timestamp") - pl.col("_previous_ts")) / float(NANOSECONDS_PER_SECOND)).clip(0.0, None).cast(pl.Float32),
+                    pl.col("price").cast(pl.Float32),
+                    pl.col("size").cast(pl.Float32),
+                    pl.col("exchange").fill_null(0).cast(pl.Float32),
+                    pl.col("latest_bid").fill_null(0.0).cast(pl.Float32),
+                    pl.col("latest_ask").fill_null(0.0).cast(pl.Float32),
+                    pl.col("latest_mid").fill_null(0.0).cast(pl.Float32),
+                    pl.col("latest_spread_bps").fill_null(0.0).cast(pl.Float32),
+                    pl.col("latest_quote_imbalance").fill_null(0.0).cast(pl.Float32),
+                    pl.col("price_vs_mid_bps").fill_null(0.0).cast(pl.Float32),
+                    pl.col("side_proxy").fill_null(0.0).cast(pl.Float32),
+                ]
+            ).alias("trade_event"),
+        )
+    )
+    return selected.group_by(["session_date", "chunk_start_ns"], maintain_order=True).agg(
+        pl.col("trade_event").alias("trade_values")
+    )
+
+
+def selected_event_order_chunks(config: DataConfig, quotes: pl.DataFrame, trades: pl.DataFrame, counts: pl.DataFrame) -> pl.DataFrame:
+    frames: list[pl.DataFrame] = []
+    if not quotes.is_empty():
+        q = (
+            quotes.join(counts.select(["session_date", "chunk_start_ns", "selected_quote_count"]), on=["session_date", "chunk_start_ns"], how="left")
+            .filter(pl.col("quote_pos") >= (pl.col("quote_count") - pl.col("selected_quote_count")))
+            .with_columns(
+                pl.lit(0).alias("event_kind"),
+                pl.lit(0).alias("event_priority"),
+                (pl.col("quote_pos") - (pl.col("quote_count") - pl.col("selected_quote_count"))).cast(pl.Int64).alias("event_index"),
+            )
+            .select(["session_date", "chunk_start_ns", "sip_timestamp", "event_priority", "event_kind", "event_index"])
+        )
+        frames.append(q)
+    if not trades.is_empty():
+        t = (
+            trades.join(counts.select(["session_date", "chunk_start_ns", "selected_trade_count"]), on=["session_date", "chunk_start_ns"], how="left")
+            .filter(pl.col("trade_pos") >= (pl.col("trade_count") - pl.col("selected_trade_count")))
+            .with_columns(
+                pl.lit(1).alias("event_kind"),
+                pl.lit(1).alias("event_priority"),
+                (pl.col("trade_pos") - (pl.col("trade_count") - pl.col("selected_trade_count"))).cast(pl.Int64).alias("event_index"),
+            )
+            .select(["session_date", "chunk_start_ns", "sip_timestamp", "event_priority", "event_kind", "event_index"])
+        )
+        frames.append(t)
+    if not frames:
+        return pl.DataFrame(
+            {
+                "session_date": pl.Series([], dtype=pl.Utf8),
+                "chunk_start_ns": pl.Series([], dtype=pl.Int64),
+                "event_kinds": pl.Series([], dtype=pl.List(pl.Int64)),
+                "event_indices": pl.Series([], dtype=pl.List(pl.Int64)),
+            }
+        )
+    selected = pl.concat(frames, how="vertical_relaxed").sort(["session_date", "chunk_start_ns", "sip_timestamp", "event_priority"])
+    return selected.group_by(["session_date", "chunk_start_ns"], maintain_order=True).agg(
+        pl.col("event_kind").cast(pl.Int64).alias("event_kinds"),
+        pl.col("event_index").cast(pl.Int64).alias("event_indices"),
+    )
+
+
+def chunk_summary_vectorized(config: DataConfig, quotes: pl.DataFrame, trades: pl.DataFrame, counts: pl.DataFrame) -> pl.DataFrame:
+    overflow_frames: list[pl.DataFrame] = []
+    if not quotes.is_empty():
+        overflow_quotes = (
+            quotes.join(counts.select(["session_date", "chunk_start_ns", "selected_quote_count"]), on=["session_date", "chunk_start_ns"], how="left")
+            .filter(pl.col("quote_pos") < (pl.col("quote_count") - pl.col("selected_quote_count")))
+            .select(
+                "session_date",
+                "chunk_start_ns",
+                pl.lit(1.0).alias("overflow_quote_count"),
+                pl.lit(0.0).alias("overflow_trade_count"),
+                pl.lit(0.0).alias("overflow_trade_volume"),
+                pl.lit(0.0).alias("overflow_signed_volume"),
+                pl.col("mid_price").alias("overflow_mid"),
+                pl.col("spread_bps").alias("overflow_spread"),
+            )
+        )
+        overflow_frames.append(overflow_quotes)
+    if not trades.is_empty():
+        overflow_trades = (
+            trades.join(counts.select(["session_date", "chunk_start_ns", "selected_trade_count"]), on=["session_date", "chunk_start_ns"], how="left")
+            .filter(pl.col("trade_pos") < (pl.col("trade_count") - pl.col("selected_trade_count")))
+            .select(
+                "session_date",
+                "chunk_start_ns",
+                pl.lit(0.0).alias("overflow_quote_count"),
+                pl.lit(1.0).alias("overflow_trade_count"),
+                pl.col("size").alias("overflow_trade_volume"),
+                (pl.col("size") * pl.col("side_proxy")).alias("overflow_signed_volume"),
+                pl.col("latest_mid").alias("overflow_mid"),
+                pl.col("latest_spread_bps").alias("overflow_spread"),
+            )
+        )
+        overflow_frames.append(overflow_trades)
+    if overflow_frames:
+        overflow = (
+            pl.concat(overflow_frames, how="vertical_relaxed")
+            .group_by(["session_date", "chunk_start_ns"])
+            .agg(
+                pl.col("overflow_quote_count").sum(),
+                pl.col("overflow_trade_count").sum(),
+                pl.col("overflow_trade_volume").sum(),
+                pl.col("overflow_signed_volume").sum(),
+                pl.col("overflow_mid").filter(pl.col("overflow_mid") > 0.0).min().fill_null(0.0).alias("overflow_mid_min"),
+                pl.col("overflow_mid").filter(pl.col("overflow_mid") > 0.0).max().fill_null(0.0).alias("overflow_mid_max"),
+                pl.col("overflow_spread").min().fill_null(0.0).alias("overflow_spread_min_bps"),
+                pl.col("overflow_spread").max().fill_null(0.0).alias("overflow_spread_max_bps"),
+            )
+        )
+    else:
+        overflow = empty_overflow_summary_frame()
+    summary = counts.join(overflow, on=["session_date", "chunk_start_ns"], how="left")
+    return summary.with_columns(
+        (pl.col("quote_count") + pl.col("trade_count")).alias("event_count"),
+        pl.col("overflow_quote_count").fill_null(0.0),
+        pl.col("overflow_trade_count").fill_null(0.0),
+        pl.col("overflow_trade_volume").fill_null(0.0),
+        pl.col("overflow_signed_volume").fill_null(0.0),
+        pl.col("overflow_mid_min").fill_null(0.0),
+        pl.col("overflow_mid_max").fill_null(0.0),
+        pl.col("overflow_spread_min_bps").fill_null(0.0),
+        pl.col("overflow_spread_max_bps").fill_null(0.0),
+        pl.lit(0.0).alias("seconds_since_trade"),
+        pl.lit(0.0).alias("seconds_since_quote"),
+        (pl.col("trade_count") > 0.0).cast(pl.Float64).alias("has_trade"),
+        (pl.col("quote_count") > 0.0).cast(pl.Float64).alias("has_quote"),
+    ).with_columns(
+        (pl.col("overflow_quote_count") + pl.col("overflow_trade_count")).alias("overflow_total_count")
+    ).select(["session_date", "chunk_start_ns", *CHUNK_SUMMARY_COLUMNS])
+
+
+def empty_chunk_value_frame(column: str) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "session_date": pl.Series([], dtype=pl.Utf8),
+            "chunk_start_ns": pl.Series([], dtype=pl.Int64),
+            column: pl.Series([], dtype=pl.List(pl.List(pl.Float32))),
+        }
+    )
+
+
+def empty_overflow_summary_frame() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "session_date": pl.Series([], dtype=pl.Utf8),
+            "chunk_start_ns": pl.Series([], dtype=pl.Int64),
+            "overflow_quote_count": pl.Series([], dtype=pl.Float64),
+            "overflow_trade_count": pl.Series([], dtype=pl.Float64),
+            "overflow_trade_volume": pl.Series([], dtype=pl.Float64),
+            "overflow_signed_volume": pl.Series([], dtype=pl.Float64),
+            "overflow_mid_min": pl.Series([], dtype=pl.Float64),
+            "overflow_mid_max": pl.Series([], dtype=pl.Float64),
+            "overflow_spread_min_bps": pl.Series([], dtype=pl.Float64),
+            "overflow_spread_max_bps": pl.Series([], dtype=pl.Float64),
+        }
+    )
 
 
 def count_parquet_rows(paths: Any) -> int:
@@ -1331,7 +1682,7 @@ def ticker_arrays(frame: pl.DataFrame, config: DataConfig) -> dict[str, np.ndarr
         return None
     quote_values = list_column_to_matrix(dense, "quote_values", config.max_quote_events, len(QUOTE_FEATURE_COLUMNS))
     trade_values = list_column_to_matrix(dense, "trade_values", config.max_trade_events, len(TRADE_FEATURE_COLUMNS))
-    event_kinds = list_column_to_int_matrix(dense, "event_kinds", config.max_total_events)
+    event_kinds = list_column_to_int_matrix(dense, "event_kinds", config.max_total_events, fill=2)
     event_indices = list_column_to_int_matrix(dense, "event_indices", config.max_total_events)
     chunk_summary = dense.select(list(CHUNK_SUMMARY_COLUMNS)).to_numpy().astype(np.float32)
     return {
@@ -1373,10 +1724,6 @@ def dense_ticker_frame(frame: pl.DataFrame, config: DataConfig) -> pl.DataFrame:
     joined = joined.with_columns(
         pl.col("seconds_since_trade").fill_null(1e6),
         pl.col("seconds_since_quote").fill_null(1e6),
-        pl.col("quote_values").fill_null(empty_float_list(config.max_quote_events * len(QUOTE_FEATURE_COLUMNS))),
-        pl.col("trade_values").fill_null(empty_float_list(config.max_trade_events * len(TRADE_FEATURE_COLUMNS))),
-        pl.col("event_kinds").fill_null([2] * config.max_total_events),
-        pl.col("event_indices").fill_null([0] * config.max_total_events),
     )
     joined = add_age_features(joined, config)
     return joined.select(
@@ -1426,16 +1773,21 @@ def list_column_to_matrix(frame: pl.DataFrame, column: str, rows: int, cols: int
     for idx, item in enumerate(frame.get_column(column).to_list()):
         arr = np.asarray(item or [], dtype=np.float32)
         if arr.size:
-            values[idx] = arr.reshape(rows, cols)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, cols)
+            arr = arr.reshape(-1, cols)
+            keep = min(rows, arr.shape[0])
+            values[idx, :keep] = arr[:keep]
     return values
 
 
-def list_column_to_int_matrix(frame: pl.DataFrame, column: str, width: int) -> np.ndarray:
-    values = np.zeros((frame.height, width), dtype=np.int64)
+def list_column_to_int_matrix(frame: pl.DataFrame, column: str, width: int, fill: int = 0) -> np.ndarray:
+    values = np.full((frame.height, width), fill, dtype=np.int64)
     for idx, item in enumerate(frame.get_column(column).to_list()):
         arr = np.asarray(item or [], dtype=np.int64)
         if arr.size:
-            values[idx] = arr[:width]
+            keep = min(width, arr.size)
+            values[idx, :keep] = arr[:keep]
     return values
 
 
