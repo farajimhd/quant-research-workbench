@@ -113,6 +113,41 @@ class VectorizedChunkTests(unittest.TestCase):
         self.assertAlmostEqual(float(batch.target_mid[0, 0, 0]), future_mid, places=5)
         self.assertAlmostEqual(float(batch.target_bps[0, 0, 0]), expected, delta=0.002)
 
+    def test_cached_targets_are_shifted_on_dense_chunk_grid(self) -> None:
+        config = DataConfig(
+            chunk_ms=500,
+            max_quote_events=2,
+            max_trade_events=2,
+            max_total_events=3,
+            target_cache_horizon_chunks=(2,),
+        )
+        base = 30_000_000_000
+        quotes = pl.DataFrame(
+            {
+                "ticker": ["T", "T"],
+                "session_date": ["2025-11-03", "2025-11-03"],
+                "sip_timestamp": [base + 100_000_000, base + 5_100_000_000],
+                "sequence_number": [1, 2],
+                "bid_price": [10.00, 11.00],
+                "ask_price": [10.02, 11.02],
+                "mid_price": [10.01, 11.01],
+                "spread_bps": [19.98, 18.16],
+                "bid_size": [100.0, 200.0],
+                "ask_size": [120.0, 220.0],
+                "quote_imbalance": [-0.09, -0.05],
+                "bid_exchange": [1, 1],
+                "ask_exchange": [2, 2],
+            }
+        )
+        chunks = build_ticker_sparse_chunks_vectorized(config, "T", quotes, pl.DataFrame())
+        self.assertIsNotNone(chunks)
+        first = chunks.row(0, named=True)
+
+        self.assertEqual(chunks.height, 2)
+        self.assertAlmostEqual(float(first["target_bid_h2"]), 10.00, places=5)
+        self.assertAlmostEqual(float(first["target_ask_h2"]), 10.02, places=5)
+        self.assertAlmostEqual(float(first["target_mid_h2"]), 10.01, places=5)
+
 
 if __name__ == "__main__":
     unittest.main()

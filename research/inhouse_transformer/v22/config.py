@@ -34,6 +34,7 @@ class DataConfig:
     max_trade_events: int = 192
     max_total_events: int = 256
     target_cache_horizon_chunks: tuple[int, ...] = (20, 40, 60, 120, 240, 600)
+    max_target_cache_grid_rows_per_ticker_month: int = 5_000_000
     target_mode: str = "binary_magnitude_bps"
     binary_magnitude_bits: int = 12
     target_columns: tuple[str, ...] = ("close",)

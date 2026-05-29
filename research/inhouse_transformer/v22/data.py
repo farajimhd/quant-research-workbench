@@ -892,9 +892,15 @@ def build_ticker_sparse_chunks_vectorized(
     )
     target_columns = target_cache_columns(config)
     if target_columns:
-        log_chunk_step(key, "target_cache_start", step_started, columns=len(target_columns))
+        target_grid_rows = estimate_target_cache_grid_rows(chunks, chunk_ns)
+        log_chunk_step(key, "target_cache_start", step_started, columns=len(target_columns), dense_grid_rows=target_grid_rows)
+        if target_grid_rows > config.max_target_cache_grid_rows_per_ticker_month:
+            raise ValueError(
+                f"Target cache dense grid too large for {key}: {target_grid_rows:,} rows. "
+                f"Check timestamp range/session_date quality in canonical data."
+            )
         chunks = add_target_cache_columns(chunks, config)
-        log_chunk_step(key, "target_cache_done", step_started, timings, columns=len(target_columns), rows=chunks.height)
+        log_chunk_step(key, "target_cache_done", step_started, timings, columns=len(target_columns), dense_grid_rows=target_grid_rows, rows=chunks.height)
     output = chunks.select(
         [
             "ticker",
@@ -942,8 +948,43 @@ def target_cache_columns(config: DataConfig) -> list[str]:
     return columns
 
 
+def estimate_target_cache_grid_rows(chunks: pl.DataFrame, chunk_ns: int) -> int:
+    if chunks.is_empty():
+        return 0
+    bounds = chunks.group_by("session_date").agg(
+        pl.col("chunk_start_ns").min().alias("min_chunk_start_ns"),
+        pl.col("chunk_start_ns").max().alias("max_chunk_start_ns"),
+    )
+    total = bounds.select(
+        (((pl.col("max_chunk_start_ns") - pl.col("min_chunk_start_ns")) // chunk_ns) + 1).sum().alias("grid_rows")
+    ).item()
+    return int(total or 0)
+
+
 def add_target_cache_columns(chunks: pl.DataFrame, config: DataConfig) -> pl.DataFrame:
+    chunk_ns = config.chunk_ms * 1_000_000
     frame = chunks.sort(["session_date", "chunk_start_ns"])
+    bounds = frame.group_by("session_date").agg(
+        pl.col("chunk_start_ns").min().alias("min_chunk_start_ns"),
+        pl.col("chunk_start_ns").max().alias("max_chunk_start_ns"),
+    )
+    quote_grid = (
+        bounds.with_columns(
+            pl.int_ranges(
+                pl.col("min_chunk_start_ns"),
+                pl.col("max_chunk_start_ns") + chunk_ns,
+                chunk_ns,
+            ).alias("chunk_start_ns")
+        )
+        .explode("chunk_start_ns")
+        .select(["session_date", "chunk_start_ns"])
+        .join(frame.select(["session_date", "chunk_start_ns", "latest_bid", "latest_ask"]), on=["session_date", "chunk_start_ns"], how="left")
+        .sort(["session_date", "chunk_start_ns"])
+        .with_columns(
+            pl.col("latest_bid").forward_fill().over("session_date"),
+            pl.col("latest_ask").forward_fill().over("session_date"),
+        )
+    )
     expressions: list[pl.Expr] = []
     for horizon in config.target_cache_horizon_chunks:
         bid_name = f"target_bid_h{horizon}"
@@ -954,7 +995,13 @@ def add_target_cache_columns(chunks: pl.DataFrame, config: DataConfig) -> pl.Dat
                 pl.col("latest_ask").shift(-int(horizon)).over("session_date").alias(ask_name),
             ]
         )
-    frame = frame.with_columns(expressions)
+    bid_ask_columns = [
+        name
+        for horizon in config.target_cache_horizon_chunks
+        for name in (f"target_bid_h{horizon}", f"target_ask_h{horizon}")
+    ]
+    target_grid = quote_grid.with_columns(expressions).select(["session_date", "chunk_start_ns", *bid_ask_columns])
+    frame = frame.join(target_grid, on=["session_date", "chunk_start_ns"], how="left")
     return frame.with_columns(
         [
             ((pl.col(f"target_bid_h{horizon}") + pl.col(f"target_ask_h{horizon}")) * 0.5).alias(f"target_mid_h{horizon}")
