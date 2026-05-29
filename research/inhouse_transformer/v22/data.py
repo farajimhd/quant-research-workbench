@@ -222,7 +222,6 @@ def event_chunk_path(config: DataConfig, ticker: str, year_month: str) -> Path:
         config.cache_root
         / f"chunk_ms={config.chunk_ms}"
         / f"mq={config.max_quote_events}_mt={config.max_trade_events}_m={config.max_total_events}"
-        / "event_chunks_compact_v1"
         / f"ticker={ticker}"
         / f"{year_month}.parquet"
     )
@@ -266,7 +265,6 @@ def load_session_from_ticker_month_chunks(
         config.cache_root
         / f"chunk_ms={config.chunk_ms}"
         / f"mq={config.max_quote_events}_mt={config.max_trade_events}_m={config.max_total_events}"
-        / "event_chunks_compact_v1"
     )
     if not base.exists():
         return None
