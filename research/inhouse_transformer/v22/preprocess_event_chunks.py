@@ -73,7 +73,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     os.environ.setdefault("POLARS_MAX_THREADS", str(max(1, args.polars_threads_per_process)))
+    os.environ["V22_SKIP_TORCH_IMPORT"] = "1"
+    print("v22 preprocess main entered; importing polars...", flush=True)
     import polars as pl
+    print("v22 preprocess polars import complete; importing v22.data without torch...", flush=True)
 
     from research.inhouse_transformer.v22.data import (
         available_sessions,
@@ -87,6 +90,7 @@ def main() -> None:
         temp_canonical_parts_root,
         year_month_range,
     )
+    print("v22 preprocess v22.data import complete.", flush=True)
 
     print(LOG_RULE, flush=True)
     print("v22 preprocessing startup", flush=True)

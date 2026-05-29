@@ -17,10 +17,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import polars as pl
 
-try:
-    import torch
-    from torch.utils.data import IterableDataset, get_worker_info
-except ModuleNotFoundError:
+if os.environ.get("V22_SKIP_TORCH_IMPORT") == "1":
     torch = None
 
     class IterableDataset:  # type: ignore[no-redef]
@@ -28,6 +25,18 @@ except ModuleNotFoundError:
 
     def get_worker_info() -> Any:  # type: ignore[no-redef]
         return None
+else:
+    try:
+        import torch
+        from torch.utils.data import IterableDataset, get_worker_info
+    except ModuleNotFoundError:
+        torch = None
+
+        class IterableDataset:  # type: ignore[no-redef]
+            pass
+
+        def get_worker_info() -> Any:  # type: ignore[no-redef]
+            return None
 
 from research.inhouse_transformer.v22.targets import encode_binary_magnitude_targets, log_return_bps
 from research.inhouse_transformer.v22.config import DataConfig
