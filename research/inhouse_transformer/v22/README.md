@@ -14,8 +14,8 @@ context_chunks = 120
 Each chunk keeps quote and trade events separately before the model:
 
 ```text
-quote_values:  [batch, context_chunks, max_quote_events, quote_feature_count]
-trade_values:  [batch, context_chunks, max_trade_events, trade_feature_count]
+quote_values:  [batch, context_chunks, max_quote_events, 18]
+trade_values:  [batch, context_chunks, max_trade_events, 20]
 event_kinds:   [batch, context_chunks, max_total_events]
 event_indices: [batch, context_chunks, max_total_events]
 chunk_summary: [batch, context_chunks, summary_feature_count]
@@ -25,6 +25,9 @@ The quote encoder and trade encoder project their own feature sets to the same
 `d_model`. The model then reassembles selected quote/trade embeddings into
 timestamp order inside each chunk, applies local attention inside chunks, pools
 one embedding per chunk, and applies global attention across the context.
+Quote/trade feature tensors include price, size, spread/imbalance, exchange,
+tape, condition metadata, latency-from-SIP timestamps, and trade correction/id
+metadata when present in the raw SIP flatfiles.
 
 Target:
 

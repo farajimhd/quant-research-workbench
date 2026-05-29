@@ -49,6 +49,13 @@ QUOTE_FEATURE_COLUMNS: tuple[str, ...] = (
     "quote_imbalance",
     "bid_exchange",
     "ask_exchange",
+    "tape",
+    "condition_count",
+    "condition_first",
+    "indicator_count",
+    "indicator_first",
+    "participant_latency_ms",
+    "trf_latency_ms",
 )
 TRADE_FEATURE_COLUMNS: tuple[str, ...] = (
     "time_offset",
@@ -63,6 +70,14 @@ TRADE_FEATURE_COLUMNS: tuple[str, ...] = (
     "latest_quote_imbalance",
     "price_vs_mid_bps",
     "side_proxy",
+    "tape",
+    "condition_count",
+    "condition_first",
+    "correction",
+    "trade_id",
+    "trf_id",
+    "participant_latency_ms",
+    "trf_latency_ms",
 )
 CHUNK_SUMMARY_COLUMNS: tuple[str, ...] = (
     "event_count",
@@ -99,6 +114,7 @@ LOG_COLUMNS = {
     "bid_size",
     "ask_size",
     "size",
+    "trade_id",
     "event_count",
     "quote_count",
     "trade_count",
@@ -320,6 +336,11 @@ def scan_normalized_quotes(config: DataConfig, session: str, tickers: tuple[str,
         "ticker",
         "sip_timestamp",
         "sequence_number",
+        "participant_timestamp",
+        "trf_timestamp",
+        "conditions",
+        "indicators",
+        "tape",
         "bid_price",
         "ask_price",
         "bid_size",
@@ -329,7 +350,7 @@ def scan_normalized_quotes(config: DataConfig, session: str, tickers: tuple[str,
     ]
     names = header_columns(path)
     scan = pl.scan_csv(str(path), infer_schema_length=0, ignore_errors=True)
-    missing = sorted(set(columns[:7]) - names)
+    missing = sorted({"ticker", "sip_timestamp", "sequence_number", "bid_price", "ask_price", "bid_size", "ask_size"} - names)
     if missing:
         raise SystemExit(f"Quote flatfile {path} is missing required columns: {missing}")
     scan = scan.select([column for column in columns if column in names])
@@ -340,12 +361,23 @@ def scan_normalized_quotes(config: DataConfig, session: str, tickers: tuple[str,
             pl.col("ticker").cast(pl.String).str.to_uppercase(),
             pl.col("sip_timestamp").cast(pl.Int64, strict=False),
             pl.col("sequence_number").cast(pl.Int64, strict=False).fill_null(0),
+            optional_int_expr("participant_timestamp", names),
+            optional_int_expr("trf_timestamp", names),
+            optional_int_expr("tape", names),
             pl.col("bid_price").cast(pl.Float64, strict=False),
             pl.col("ask_price").cast(pl.Float64, strict=False),
             (pl.col("bid_size").cast(pl.Float64, strict=False).fill_null(0.0) * float(lot_multiplier)).alias("bid_size"),
             (pl.col("ask_size").cast(pl.Float64, strict=False).fill_null(0.0) * float(lot_multiplier)).alias("ask_size"),
             pl.col("bid_exchange").cast(pl.Int32, strict=False).fill_null(0) if "bid_exchange" in names else pl.lit(0).alias("bid_exchange"),
             pl.col("ask_exchange").cast(pl.Int32, strict=False).fill_null(0) if "ask_exchange" in names else pl.lit(0).alias("ask_exchange"),
+        )
+        .with_columns(
+            metadata_list_count_expr("conditions", names).alias("condition_count"),
+            metadata_list_first_expr("conditions", names).alias("condition_first"),
+            metadata_list_count_expr("indicators", names).alias("indicator_count"),
+            metadata_list_first_expr("indicators", names).alias("indicator_first"),
+            timestamp_latency_ms_expr("participant_timestamp").alias("participant_latency_ms"),
+            timestamp_latency_ms_expr("trf_timestamp").alias("trf_latency_ms"),
         )
         .with_columns(
             pl.lit(session).alias("session_date"),
@@ -363,12 +395,21 @@ def scan_normalized_quotes(config: DataConfig, session: str, tickers: tuple[str,
             "year_month",
             "sip_timestamp",
             "sequence_number",
+            "participant_timestamp",
+            "trf_timestamp",
             "bid_price",
             "ask_price",
             "bid_size",
             "ask_size",
             "bid_exchange",
             "ask_exchange",
+            "tape",
+            "condition_count",
+            "condition_first",
+            "indicator_count",
+            "indicator_first",
+            "participant_latency_ms",
+            "trf_latency_ms",
             "mid_price",
             "spread_bps",
             "quote_imbalance",
@@ -384,10 +425,24 @@ def scan_normalized_trades(config: DataConfig, session: str, tickers: tuple[str,
     path = find_flatfile(config.flatfiles_root, "trades", session)
     if path is None:
         raise FileNotFoundError(f"Missing trades flatfile for {session} under {config.flatfiles_root}.")
-    columns = ["ticker", "sip_timestamp", "sequence_number", "price", "size", "exchange"]
+    columns = [
+        "ticker",
+        "sip_timestamp",
+        "sequence_number",
+        "participant_timestamp",
+        "trf_timestamp",
+        "conditions",
+        "correction",
+        "id",
+        "tape",
+        "trf_id",
+        "price",
+        "size",
+        "exchange",
+    ]
     names = header_columns(path)
     scan = pl.scan_csv(str(path), infer_schema_length=0, ignore_errors=True)
-    missing = sorted(set(columns[:5]) - names)
+    missing = sorted({"ticker", "sip_timestamp", "sequence_number", "price", "size"} - names)
     if missing:
         raise SystemExit(f"Trade flatfile {path} is missing required columns: {missing}")
     scan = scan.select([column for column in columns if column in names])
@@ -397,9 +452,21 @@ def scan_normalized_trades(config: DataConfig, session: str, tickers: tuple[str,
             pl.col("ticker").cast(pl.String).str.to_uppercase(),
             pl.col("sip_timestamp").cast(pl.Int64, strict=False),
             pl.col("sequence_number").cast(pl.Int64, strict=False).fill_null(0),
+            optional_int_expr("participant_timestamp", names),
+            optional_int_expr("trf_timestamp", names),
+            optional_int_expr("tape", names),
+            optional_int_expr("correction", names),
+            optional_int_expr("id", names).alias("trade_id"),
+            optional_int_expr("trf_id", names),
             pl.col("price").cast(pl.Float64, strict=False),
             pl.col("size").cast(pl.Float64, strict=False).fill_null(0.0),
             pl.col("exchange").cast(pl.Int32, strict=False).fill_null(0) if "exchange" in names else pl.lit(0).alias("exchange"),
+        )
+        .with_columns(
+            metadata_list_count_expr("conditions", names).alias("condition_count"),
+            metadata_list_first_expr("conditions", names).alias("condition_first"),
+            timestamp_latency_ms_expr("participant_timestamp").alias("participant_latency_ms"),
+            timestamp_latency_ms_expr("trf_timestamp").alias("trf_latency_ms"),
         )
         .with_columns(
             pl.lit(session).alias("session_date"),
@@ -416,9 +483,19 @@ def scan_normalized_trades(config: DataConfig, session: str, tickers: tuple[str,
             "year_month",
             "sip_timestamp",
             "sequence_number",
+            "participant_timestamp",
+            "trf_timestamp",
             "price",
             "size",
             "exchange",
+            "tape",
+            "condition_count",
+            "condition_first",
+            "correction",
+            "trade_id",
+            "trf_id",
+            "participant_latency_ms",
+            "trf_latency_ms",
         ]
     )
 
@@ -597,12 +674,21 @@ def normalize_raw_row(
             "year_month": session[:7],
             "sip_timestamp": sip_timestamp,
             "sequence_number": sequence_number,
+            "participant_timestamp": parse_int(row.get("participant_timestamp")) or 0,
+            "trf_timestamp": parse_int(row.get("trf_timestamp")) or 0,
             "bid_price": bid_price,
             "ask_price": ask_price,
             "bid_size": bid_size,
             "ask_size": ask_size,
             "bid_exchange": parse_int(row.get("bid_exchange")) or 0,
             "ask_exchange": parse_int(row.get("ask_exchange")) or 0,
+            "tape": parse_int(row.get("tape")) or 0,
+            "condition_count": metadata_list_count(row.get("conditions")),
+            "condition_first": metadata_list_first(row.get("conditions")),
+            "indicator_count": metadata_list_count(row.get("indicators")),
+            "indicator_first": metadata_list_first(row.get("indicators")),
+            "participant_latency_ms": timestamp_latency_ms(sip_timestamp, row.get("participant_timestamp")),
+            "trf_latency_ms": timestamp_latency_ms(sip_timestamp, row.get("trf_timestamp")),
             "mid_price": mid_price,
             "spread_bps": 10000.0 * (ask_price - bid_price) / max(mid_price, 1e-6),
             "quote_imbalance": (bid_size - ask_size) / size_sum,
@@ -617,9 +703,19 @@ def normalize_raw_row(
         "year_month": session[:7],
         "sip_timestamp": sip_timestamp,
         "sequence_number": sequence_number,
+        "participant_timestamp": parse_int(row.get("participant_timestamp")) or 0,
+        "trf_timestamp": parse_int(row.get("trf_timestamp")) or 0,
         "price": price,
         "size": size,
         "exchange": parse_int(row.get("exchange")) or 0,
+        "tape": parse_int(row.get("tape")) or 0,
+        "condition_count": metadata_list_count(row.get("conditions")),
+        "condition_first": metadata_list_first(row.get("conditions")),
+        "correction": parse_int(row.get("correction")) or 0,
+        "trade_id": parse_int(row.get("id")) or 0,
+        "trf_id": parse_int(row.get("trf_id")) or 0,
+        "participant_latency_ms": timestamp_latency_ms(sip_timestamp, row.get("participant_timestamp")),
+        "trf_latency_ms": timestamp_latency_ms(sip_timestamp, row.get("trf_timestamp")),
     }
 
 
@@ -639,6 +735,34 @@ def parse_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def metadata_list_count(value: Any) -> float:
+    if value is None:
+        return 0.0
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    return float(len([part for part in text.split(",") if part.strip()]))
+
+
+def metadata_list_first(value: Any) -> float:
+    if value is None:
+        return 0.0
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    try:
+        return float(text.split(",", 1)[0])
+    except ValueError:
+        return 0.0
+
+
+def timestamp_latency_ms(sip_timestamp: int, source_timestamp: Any) -> float:
+    source = parse_int(source_timestamp)
+    if source is None or source <= 0:
+        return 0.0
+    return float(min(60_000.0, max(0.0, (sip_timestamp - source) / 1_000_000.0)))
 
 
 def session_timestamp_filter_expr(config: DataConfig, session: str) -> pl.Expr:
@@ -724,12 +848,21 @@ def quote_canonical_columns() -> list[str]:
         "year_month",
         "sip_timestamp",
         "sequence_number",
+        "participant_timestamp",
+        "trf_timestamp",
         "bid_price",
         "ask_price",
         "bid_size",
         "ask_size",
         "bid_exchange",
         "ask_exchange",
+        "tape",
+        "condition_count",
+        "condition_first",
+        "indicator_count",
+        "indicator_first",
+        "participant_latency_ms",
+        "trf_latency_ms",
         "mid_price",
         "spread_bps",
         "quote_imbalance",
@@ -743,9 +876,19 @@ def trade_canonical_columns() -> list[str]:
         "year_month",
         "sip_timestamp",
         "sequence_number",
+        "participant_timestamp",
+        "trf_timestamp",
         "price",
         "size",
         "exchange",
+        "tape",
+        "condition_count",
+        "condition_first",
+        "correction",
+        "trade_id",
+        "trf_id",
+        "participant_latency_ms",
+        "trf_latency_ms",
     ]
 
 
@@ -1066,6 +1209,18 @@ def add_target_cache_columns(chunks: pl.DataFrame, config: DataConfig) -> pl.Dat
 def prepare_quote_events_for_chunks(quotes: pl.DataFrame, chunk_ns: int) -> pl.DataFrame:
     if quotes.is_empty():
         return quotes
+    quotes = ensure_columns(
+        quotes,
+        {
+            "tape": 0.0,
+            "condition_count": 0.0,
+            "condition_first": 0.0,
+            "indicator_count": 0.0,
+            "indicator_first": 0.0,
+            "participant_latency_ms": 0.0,
+            "trf_latency_ms": 0.0,
+        },
+    )
     return (
         quotes.sort(["session_date", "sip_timestamp", "sequence_number"])
         .with_columns(
@@ -1081,6 +1236,19 @@ def prepare_quote_events_for_chunks(quotes: pl.DataFrame, chunk_ns: int) -> pl.D
 def prepare_trade_events_for_chunks(trades: pl.DataFrame, chunk_ns: int) -> pl.DataFrame:
     if trades.is_empty():
         return trades
+    trades = ensure_columns(
+        trades,
+        {
+            "tape": 0.0,
+            "condition_count": 0.0,
+            "condition_first": 0.0,
+            "correction": 0.0,
+            "trade_id": 0.0,
+            "trf_id": 0.0,
+            "participant_latency_ms": 0.0,
+            "trf_latency_ms": 0.0,
+        },
+    )
     return (
         trades.sort(["session_date", "sip_timestamp", "sequence_number"])
         .with_columns(
@@ -1091,6 +1259,13 @@ def prepare_trade_events_for_chunks(trades: pl.DataFrame, chunk_ns: int) -> pl.D
             pl.len().over(["session_date", "chunk_start_ns"]).alias("trade_count"),
         )
     )
+
+
+def ensure_columns(frame: pl.DataFrame, defaults: dict[str, float]) -> pl.DataFrame:
+    missing = [pl.lit(value).alias(name) for name, value in defaults.items() if name not in frame.columns]
+    if not missing:
+        return frame
+    return frame.with_columns(missing)
 
 
 def chunk_counts(config: DataConfig, quotes: pl.DataFrame, trades: pl.DataFrame) -> pl.DataFrame:
@@ -1185,6 +1360,13 @@ def selected_quote_chunk_values(config: DataConfig, quotes: pl.DataFrame, counts
                     pl.col("quote_imbalance").cast(pl.Float32),
                     pl.col("bid_exchange").fill_null(0).cast(pl.Float32),
                     pl.col("ask_exchange").fill_null(0).cast(pl.Float32),
+                    pl.col("tape").fill_null(0).cast(pl.Float32),
+                    pl.col("condition_count").fill_null(0.0).cast(pl.Float32),
+                    pl.col("condition_first").fill_null(0.0).cast(pl.Float32),
+                    pl.col("indicator_count").fill_null(0.0).cast(pl.Float32),
+                    pl.col("indicator_first").fill_null(0.0).cast(pl.Float32),
+                    pl.col("participant_latency_ms").fill_null(0.0).cast(pl.Float32),
+                    pl.col("trf_latency_ms").fill_null(0.0).cast(pl.Float32),
                 ]
             ).alias("quote_event"),
         )
@@ -1225,6 +1407,14 @@ def selected_trade_chunk_values(config: DataConfig, trades: pl.DataFrame, counts
                     pl.col("latest_quote_imbalance").fill_null(0.0).cast(pl.Float32),
                     pl.col("price_vs_mid_bps").fill_null(0.0).cast(pl.Float32),
                     pl.col("side_proxy").fill_null(0.0).cast(pl.Float32),
+                    pl.col("tape").fill_null(0).cast(pl.Float32),
+                    pl.col("condition_count").fill_null(0.0).cast(pl.Float32),
+                    pl.col("condition_first").fill_null(0.0).cast(pl.Float32),
+                    pl.col("correction").fill_null(0.0).cast(pl.Float32),
+                    pl.col("trade_id").fill_null(0.0).cast(pl.Float32),
+                    pl.col("trf_id").fill_null(0.0).cast(pl.Float32),
+                    pl.col("participant_latency_ms").fill_null(0.0).cast(pl.Float32),
+                    pl.col("trf_latency_ms").fill_null(0.0).cast(pl.Float32),
                 ]
             ).alias("trade_event"),
         )
@@ -1396,6 +1586,47 @@ def write_lazy_parquet(frame: pl.LazyFrame, path: Path) -> None:
         frame.collect().write_parquet(path, compression="zstd")
 
 
+def optional_int_expr(column: str, names: set[str]) -> pl.Expr:
+    if column in names:
+        return pl.col(column).cast(pl.Int64, strict=False).fill_null(0)
+    return pl.lit(0, dtype=pl.Int64).alias(column)
+
+
+def metadata_list_count_expr(column: str, names: set[str]) -> pl.Expr:
+    if column not in names:
+        return pl.lit(0.0)
+    text = pl.col(column).cast(pl.String).fill_null("").str.strip_chars()
+    return (
+        pl.when(text.str.len_chars() > 0)
+        .then(text.str.count_matches(",") + 1)
+        .otherwise(0)
+        .cast(pl.Float64)
+    )
+
+
+def metadata_list_first_expr(column: str, names: set[str]) -> pl.Expr:
+    if column not in names:
+        return pl.lit(0.0)
+    text = pl.col(column).cast(pl.String).fill_null("").str.strip_chars()
+    return (
+        pl.when(text.str.len_chars() > 0)
+        .then(text.str.split(",").list.get(0).cast(pl.Float64, strict=False).fill_null(0.0))
+        .otherwise(0.0)
+        .cast(pl.Float64)
+    )
+
+
+def timestamp_latency_ms_expr(source_column: str) -> pl.Expr:
+    source = pl.col(source_column).cast(pl.Int64, strict=False).fill_null(0)
+    sip = pl.col("sip_timestamp").cast(pl.Int64, strict=False).fill_null(0)
+    return (
+        pl.when(source > 0)
+        .then(((sip - source) / 1_000_000.0).clip(0.0, 60_000.0))
+        .otherwise(0.0)
+        .cast(pl.Float64)
+    )
+
+
 def quote_state_exprs() -> list[pl.Expr]:
     return [
         ((pl.col("bid_price") + pl.col("ask_price")) * 0.5).alias("mid_price"),
@@ -1494,6 +1725,13 @@ def quote_event_records(config: DataConfig, quotes: pl.DataFrame) -> list[dict[s
                 "quote_imbalance": float(row["quote_imbalance"]),
                 "bid_exchange": float(row.get("bid_exchange") or 0),
                 "ask_exchange": float(row.get("ask_exchange") or 0),
+                "tape": float(row.get("tape") or 0),
+                "condition_count": float(row.get("condition_count") or 0.0),
+                "condition_first": float(row.get("condition_first") or 0.0),
+                "indicator_count": float(row.get("indicator_count") or 0.0),
+                "indicator_first": float(row.get("indicator_first") or 0.0),
+                "participant_latency_ms": float(row.get("participant_latency_ms") or 0.0),
+                "trf_latency_ms": float(row.get("trf_latency_ms") or 0.0),
             }
         )
     return result
@@ -1523,6 +1761,14 @@ def trade_event_records(config: DataConfig, trades: pl.DataFrame) -> list[dict[s
                 "latest_quote_imbalance": float(row.get("latest_quote_imbalance") or 0.0),
                 "price_vs_mid_bps": float(row.get("price_vs_mid_bps") or 0.0),
                 "side_proxy": float(row.get("side_proxy") or 0.0),
+                "tape": float(row.get("tape") or 0),
+                "condition_count": float(row.get("condition_count") or 0.0),
+                "condition_first": float(row.get("condition_first") or 0.0),
+                "correction": float(row.get("correction") or 0.0),
+                "trade_id": float(row.get("trade_id") or 0.0),
+                "trf_id": float(row.get("trf_id") or 0.0),
+                "participant_latency_ms": float(row.get("participant_latency_ms") or 0.0),
+                "trf_latency_ms": float(row.get("trf_latency_ms") or 0.0),
             }
         )
     return result
@@ -1593,6 +1839,13 @@ def quote_feature_matrix(config: DataConfig, events: list[dict[str, Any]], chunk
             event["quote_imbalance"],
             event["bid_exchange"],
             event["ask_exchange"],
+            event["tape"],
+            event["condition_count"],
+            event["condition_first"],
+            event["indicator_count"],
+            event["indicator_first"],
+            event["participant_latency_ms"],
+            event["trf_latency_ms"],
         ]
         previous_ts = ts
     return values
@@ -1616,6 +1869,14 @@ def trade_feature_matrix(config: DataConfig, events: list[dict[str, Any]], chunk
             event["latest_quote_imbalance"],
             event["price_vs_mid_bps"],
             event["side_proxy"],
+            event["tape"],
+            event["condition_count"],
+            event["condition_first"],
+            event["correction"],
+            event["trade_id"],
+            event["trf_id"],
+            event["participant_latency_ms"],
+            event["trf_latency_ms"],
         ]
         previous_ts = ts
     return values
