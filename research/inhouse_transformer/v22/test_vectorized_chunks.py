@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,6 +17,8 @@ from research.inhouse_transformer.v22.data import (
     discover_temp_canonical_groups,
     merge_temp_group_to_canonical,
     normalize_session_kind_to_temp_parts,
+    stream_normalized_csv_to_temp_parts,
+    temp_canonical_parts_root,
     ticker_arrays,
 )
 from research.inhouse_transformer.v22.targets import log_return_bps
@@ -248,6 +251,47 @@ class VectorizedChunkTests(unittest.TestCase):
             self.assertNotIn("ticker_bucket", quote_a.columns)
             self.assertEqual(quote_a.row(0, named=True)["ticker"], "A")
             self.assertEqual(trade_b.row(0, named=True)["ticker"], "B")
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow") is not None, "pyarrow is required for streaming fallback")
+    def test_streaming_fallback_writes_bucket_parts_discovered_by_canonical_merge(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "sip"
+            session = "2025-11-03"
+            quote_dir = root / "quotes_v1" / "2025" / "11"
+            quote_dir.mkdir(parents=True)
+            (quote_dir / f"{session}.csv").write_text(
+                "ticker,ask_exchange,ask_price,ask_size,bid_exchange,bid_price,bid_size,"
+                "conditions,indicators,participant_timestamp,sequence_number,sip_timestamp,tape,trf_timestamp\n"
+                "A,1,10.02,100,2,10.00,120,1,,999000000,1,1000000000,3,0\n"
+                "B,1,20.04,200,2,20.00,210,12,4,1999000000,1,2000000000,3,0\n",
+                encoding="utf-8",
+            )
+            config = DataConfig(
+                flatfiles_root=root,
+                canonical_root=root / "derived" / "canonical",
+                cache_root=root / "derived" / "chunks",
+                session_filter_mode="utc_hour",
+                session_start_hour_utc=0,
+                session_end_hour_utc=24,
+            )
+            output_root = temp_canonical_parts_root(config) / "quotes" / f"session={session}"
+
+            stream_normalized_csv_to_temp_parts(config, session, "quotes", ("__ALL_TICKERS__",), output_root)
+            temp_groups = discover_temp_canonical_groups(config)
+
+            self.assertTrue(temp_groups)
+            self.assertTrue(all("ticker_bucket=" in str(path) for paths in temp_groups.values() for path in paths))
+            for (kind, year_month, ticker_bucket), paths in temp_groups.items():
+                merge_temp_group_to_canonical(
+                    config,
+                    kind=kind,
+                    year_month=year_month,
+                    ticker_bucket=ticker_bucket,
+                    paths=paths,
+                    rebuild=True,
+                )
+            self.assertTrue(canonical_event_path(config, "quotes", "A", "2025-11").exists())
+            self.assertTrue(canonical_event_path(config, "quotes", "B", "2025-11").exists())
 
 
 if __name__ == "__main__":

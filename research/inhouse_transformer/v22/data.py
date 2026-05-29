@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import csv
 import gzip
+import zlib
 import math
 import os
 import shutil
@@ -677,6 +678,7 @@ def normalize_raw_row(
             "ticker": ticker,
             "session_date": session,
             "year_month": session[:7],
+            "ticker_bucket": temp_ticker_bucket(ticker),
             "sip_timestamp": sip_timestamp,
             "sequence_number": sequence_number,
             "participant_timestamp": parse_int(row.get("participant_timestamp")) or 0,
@@ -706,6 +708,7 @@ def normalize_raw_row(
         "ticker": ticker,
         "session_date": session,
         "year_month": session[:7],
+        "ticker_bucket": temp_ticker_bucket(ticker),
         "sip_timestamp": sip_timestamp,
         "sequence_number": sequence_number,
         "participant_timestamp": parse_int(row.get("participant_timestamp")) or 0,
@@ -836,9 +839,10 @@ def flush_ticker_buffer(
     index = part_index.get(ticker, 0)
     part_index[ticker] = index + 1
     year_month = str(rows[0]["year_month"])
-    output_dir = output_root / f"year_month={year_month}" / f"ticker={ticker}"
+    ticker_bucket = int(rows[0]["ticker_bucket"])
+    output_dir = output_root / f"year_month={year_month}" / f"ticker_bucket={ticker_bucket}"
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{index:08d}.parquet"
+    output_path = output_dir / f"{safe_temp_filename_part(ticker)}-{index:08d}.parquet"
     columns = quote_canonical_columns() if kind == "quotes" else trade_canonical_columns()
     table = pa.Table.from_pydict({column: [row[column] for row in rows] for column in columns})
     pq.write_table(table, output_path, compression="zstd")
@@ -1644,6 +1648,14 @@ def timestamp_latency_ms_expr(source_column: str) -> pl.Expr:
 
 def ticker_bucket_expr(bucket_count: int = TEMP_TICKER_BUCKET_COUNT) -> pl.Expr:
     return (pl.col("ticker").hash(seed=17) % int(bucket_count)).cast(pl.Int32)
+
+
+def temp_ticker_bucket(ticker: str, bucket_count: int = TEMP_TICKER_BUCKET_COUNT) -> int:
+    return int(zlib.crc32(ticker.encode("utf-8")) % int(bucket_count))
+
+
+def safe_temp_filename_part(value: str) -> str:
+    return "".join(character if character.isalnum() or character in "._-" else "_" for character in value)
 
 
 def quote_state_exprs() -> list[pl.Expr]:
