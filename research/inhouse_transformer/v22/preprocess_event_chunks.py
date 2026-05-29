@@ -200,6 +200,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--session-start-hour-utc", type=int, default=defaults.session_start_hour_utc)
     parser.add_argument("--session-end-hour-utc", type=int, default=defaults.session_end_hour_utc)
     parser.add_argument("--rebuild-cache", action="store_true")
+    parser.add_argument(
+        "--validate-existing-chunks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Validate existing chunk parquet files before skipping them. Invalid files are rebuilt.",
+    )
     parser.add_argument("--keep-temp-normalized", action="store_true")
     parser.add_argument("--build-chunks", action="store_true", help="Also materialize dense event chunk tensors. Use only for small ticker subsets.")
     parser.add_argument("--fail-fast", action="store_true")
@@ -250,6 +256,7 @@ def main() -> None:
         session_start_hour_utc=args.session_start_hour_utc,
         session_end_hour_utc=args.session_end_hour_utc,
         rebuild_cache=args.rebuild_cache,
+        validate_existing_chunks=args.validate_existing_chunks,
     )
     sessions = available_sessions(config.flatfiles_root, args.start_date, args.end_date)
     months = year_month_range(args.start_date, args.end_date)
@@ -286,6 +293,7 @@ def main() -> None:
         f"{quote_normalize_max_pending}/{trade_normalize_max_pending}/{canonical_max_pending}/{chunk_max_pending}"
     )
     print(f"worker_step_logging={'on' if args.verbose_worker_steps else 'off'}")
+    print(f"validate_existing_chunks={'on' if args.validate_existing_chunks else 'off'}")
     print(
         "polars_runtime=deferred_to_worker_imports",
         flush=True,
@@ -677,7 +685,7 @@ def result_status(rows: Any) -> str:
     statuses = {str(row.get("status")) for row in rows}
     if "failed" in statuses:
         return "failed"
-    if statuses and statuses <= {"skipped"}:
+    if statuses and statuses <= {"skipped", "skipped_valid"}:
         return "skipped"
     return "ok"
 

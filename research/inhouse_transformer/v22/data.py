@@ -1015,6 +1015,127 @@ def read_canonical_events(config: DataConfig, kind: str, ticker: str, year_month
     return collect_lazy(pl.scan_parquet(str(path))).sort(["sip_timestamp", "sequence_number"])
 
 
+def validate_event_chunk_file(config: DataConfig, *, ticker: str, year_month: str) -> dict[str, Any]:
+    path = event_chunk_path(config, ticker, year_month)
+    if not path.exists():
+        return {"status": "missing", "valid": False, "rows": 0, "path": str(path), "reason": "missing"}
+
+    required_columns = [
+        "ticker",
+        "session_date",
+        "chunk_start_ns",
+        "chunk_end_ns",
+        "quote_values",
+        "trade_values",
+        "event_kinds",
+        "event_indices",
+        *CHUNK_SUMMARY_COLUMNS,
+        *target_cache_columns(config),
+    ]
+    numeric_nonnegative_columns = [
+        "event_count",
+        "quote_count",
+        "trade_count",
+        "overflow_quote_count",
+        "overflow_trade_count",
+        "overflow_total_count",
+        "trade_volume",
+        "latest_bid",
+        "latest_ask",
+        "latest_mid",
+    ]
+
+    try:
+        scan = pl.scan_parquet(str(path))
+        schema_names = set(scan.collect_schema().names())
+        missing_columns = [column for column in required_columns if column not in schema_names]
+        if missing_columns:
+            return {
+                "status": "invalid_schema",
+                "valid": False,
+                "rows": 0,
+                "path": str(path),
+                "reason": f"missing_columns={missing_columns[:12]}",
+            }
+
+        available_nonnegative = [column for column in numeric_nonnegative_columns if column in schema_names]
+        aggregate = scan.select(
+            [
+                pl.len().alias("rows"),
+                pl.col("ticker").n_unique().alias("ticker_unique_count"),
+                pl.col("ticker").first().alias("first_ticker"),
+                pl.struct(["session_date", "chunk_start_ns"]).n_unique().alias("unique_chunk_keys"),
+                pl.col("session_date").null_count().alias("session_date_nulls"),
+                pl.col("chunk_start_ns").null_count().alias("chunk_start_ns_nulls"),
+                pl.col("chunk_end_ns").null_count().alias("chunk_end_ns_nulls"),
+                *[pl.col(column).min().alias(f"{column}_min") for column in available_nonnegative],
+            ]
+        ).collect()
+        row = aggregate.row(0, named=True)
+        rows = int(row.get("rows") or 0)
+        if rows <= 0:
+            return {"status": "invalid_empty", "valid": False, "rows": rows, "path": str(path), "reason": "empty parquet"}
+        if int(row.get("ticker_unique_count") or 0) != 1 or str(row.get("first_ticker") or "") != ticker:
+            return {
+                "status": "invalid_ticker",
+                "valid": False,
+                "rows": rows,
+                "path": str(path),
+                "reason": f"ticker_unique_count={row.get('ticker_unique_count')} first_ticker={row.get('first_ticker')}",
+            }
+        if int(row.get("unique_chunk_keys") or 0) != rows:
+            return {
+                "status": "invalid_duplicates",
+                "valid": False,
+                "rows": rows,
+                "path": str(path),
+                "reason": f"unique_chunk_keys={row.get('unique_chunk_keys')} rows={rows}",
+            }
+        for column in ("session_date_nulls", "chunk_start_ns_nulls", "chunk_end_ns_nulls"):
+            if int(row.get(column) or 0) != 0:
+                return {"status": "invalid_nulls", "valid": False, "rows": rows, "path": str(path), "reason": f"{column}={row.get(column)}"}
+        for column in available_nonnegative:
+            value = row.get(f"{column}_min")
+            if value is not None and float(value) < 0:
+                return {
+                    "status": "invalid_negative",
+                    "valid": False,
+                    "rows": rows,
+                    "path": str(path),
+                    "reason": f"{column}_min={value}",
+                }
+
+        order_violations = (
+            scan.select(["session_date", "chunk_start_ns"])
+            .with_columns(
+                (
+                    (pl.col("session_date") < pl.col("session_date").shift(1))
+                    | (
+                        (pl.col("session_date") == pl.col("session_date").shift(1))
+                        & (pl.col("chunk_start_ns") < pl.col("chunk_start_ns").shift(1))
+                    )
+                )
+                .fill_null(False)
+                .alias("order_violation")
+            )
+            .select(pl.col("order_violation").sum().alias("order_violations"))
+            .collect()
+            .item()
+        )
+        if int(order_violations or 0) != 0:
+            return {
+                "status": "invalid_order",
+                "valid": False,
+                "rows": rows,
+                "path": str(path),
+                "reason": f"order_violations={order_violations}",
+            }
+
+        return {"status": "valid", "valid": True, "rows": rows, "path": str(path), "reason": ""}
+    except Exception as exc:
+        return {"status": "invalid_read", "valid": False, "rows": 0, "path": str(path), "reason": repr(exc)}
+
+
 def build_event_chunks_from_canonical(
     config: DataConfig,
     *,
@@ -1027,13 +1148,36 @@ def build_event_chunks_from_canonical(
     timings: list[dict[str, Any]] = []
     output_path = event_chunk_path(config, ticker, year_month)
     if output_path.exists() and not rebuild:
-        return {
-            "ticker": ticker,
-            "year_month": year_month,
-            "status": "skipped",
-            "rows": count_parquet_rows([output_path]),
-            "output_path": str(output_path),
-        }
+        if config.validate_existing_chunks:
+            validation = validate_event_chunk_file(config, ticker=ticker, year_month=year_month)
+            if validation.get("valid"):
+                return {
+                    "ticker": ticker,
+                    "year_month": year_month,
+                    "status": "skipped_valid",
+                    "rows": int(validation.get("rows") or 0),
+                    "output_path": str(output_path),
+                    "validation": validation,
+                }
+            print(
+                f"{datetime.now().isoformat(timespec='seconds')} CHUNK_VALIDATE {key} invalid_existing "
+                f"status={validation.get('status')} reason={validation.get('reason')} path={output_path}",
+                flush=True,
+            )
+            try:
+                output_path.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            return {
+                "ticker": ticker,
+                "year_month": year_month,
+                "status": "skipped",
+                "rows": count_parquet_rows([output_path]),
+                "output_path": str(output_path),
+            }
+        if output_path.exists():
+            raise RuntimeError(f"Invalid existing chunk could not be removed before rebuild: {output_path}")
     log_chunk_step(key, "read_quotes_start", worker_started)
     quotes = read_canonical_events(config, "quotes", ticker, year_month)
     log_chunk_step(key, "read_quotes_done", worker_started, timings, rows=quotes.height)

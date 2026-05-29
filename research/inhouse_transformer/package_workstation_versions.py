@@ -47,7 +47,8 @@ VERSION_SETTINGS = {
         "quote_normalize_processes": 16,
         "trade_normalize_processes": 16,
         "canonical_processes": 16,
-        "chunk_processes": 16,
+        "chunk_processes": 8,
+        "preprocess_max_pending": 8,
         "polars_threads_per_process": 4,
         "preprocess_rebuild_cache": False,
         "preprocess_build_chunks": True,
@@ -153,6 +154,8 @@ def build_manifest(version: str, git_commit: str, workstation_code_root: Path) -
         "default_preprocess_build_chunks": settings.get("preprocess_build_chunks", True),
         "default_preprocess_verbose_worker_steps": settings.get("preprocess_verbose_worker_steps", False),
         "default_preprocess_max_tasks_per_worker": settings.get("preprocess_max_tasks_per_worker", 0),
+        "default_preprocess_max_pending": settings.get("preprocess_max_pending", 0),
+        "default_validate_existing_chunks": settings.get("validate_existing_chunks", True),
         "default_polars_threads_per_process": settings.get("polars_threads_per_process", 8),
         "preprocess_script": settings["preprocess_script"],
         "profile_script": settings["profile_script"],
@@ -303,11 +306,12 @@ def command_generation_source(version: str) -> str:
         "CANONICAL_PROCESSES = int(manifest.get('default_canonical_processes', PREPROCESS_PROCESSES))\n"
         "CHUNK_PROCESSES = int(manifest.get('default_chunk_processes', PREPROCESS_PROCESSES))\n"
         "PREPROCESS_HEARTBEAT_SECONDS = 30\n"
-        "PREPROCESS_MAX_PENDING = 0\n"
+        "PREPROCESS_MAX_PENDING = int(manifest.get('default_preprocess_max_pending', 0))\n"
         "PREPROCESS_MAX_TASKS_PER_WORKER = int(manifest.get('default_preprocess_max_tasks_per_worker', 0))\n"
         "POLARS_THREADS_PER_PROCESS = int(manifest.get('default_polars_threads_per_process', 8))\n"
         "BUILD_EVENT_CHUNKS = bool(manifest.get('default_preprocess_build_chunks', True))\n"
         "REBUILD_PREPROCESS_CACHE = bool(manifest.get('default_preprocess_rebuild_cache', False))\n"
+        "VALIDATE_EXISTING_CHUNKS = bool(manifest.get('default_validate_existing_chunks', True))\n"
         "VERBOSE_WORKER_STEPS = bool(manifest.get('default_preprocess_verbose_worker_steps', False))\n"
         "BATCH_SIZE = int(manifest.get('default_batch_size', 4096))\n"
         "EPOCHS = int(manifest.get('default_epochs', 3))\n"
@@ -380,6 +384,9 @@ def command_generation_source(version: str) -> str:
         "    if enabled:\n"
         "        args.append('--verbose-worker-steps')\n"
         "\n"
+        "def add_validate_existing_chunks_flag(args, enabled):\n"
+        "    args.append('--validate-existing-chunks' if enabled else '--no-validate-existing-chunks')\n"
+        "\n"
         f"PROFILE_ENABLED = {bool(profile_script)!r}\n"
         "\n"
         "install_ps1 = LOCAL_CODE_ROOT / 'run_install_deps.ps1'\n"
@@ -419,6 +426,7 @@ def command_generation_source(version: str) -> str:
         "]\n"
         "add_rebuild_flag(preprocess_args, REBUILD_PREPROCESS_CACHE)\n"
         "add_build_chunks_flag(preprocess_args, BUILD_EVENT_CHUNKS)\n"
+        "add_validate_existing_chunks_flag(preprocess_args, VALIDATE_EXISTING_CHUNKS)\n"
         "add_verbose_worker_steps_flag(preprocess_args, VERBOSE_WORKER_STEPS)\n"
         "\n"
         f"train_py = LOCAL_CODE_ROOT / 'research' / 'inhouse_transformer' / {version!r} / 'train.py'\n"

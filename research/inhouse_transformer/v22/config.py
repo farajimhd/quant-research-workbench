@@ -47,6 +47,7 @@ class DataConfig:
     session_end_hour_utc: int = 22
     quote_size_lot_multiplier_before_2025_11_03: int = 100
     rebuild_cache: bool = False
+    validate_existing_chunks: bool = True
     max_windows_per_ticker_session: int = 0
     shuffle_tickers: bool = True
 
