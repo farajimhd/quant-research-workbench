@@ -206,6 +206,12 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Validate existing chunk parquet files before skipping them. Invalid files are rebuilt.",
     )
+    parser.add_argument(
+        "--validate-chunks-against-canonical",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When validating existing chunks, compare chunk keys and quote/trade counts against canonical events.",
+    )
     parser.add_argument("--keep-temp-normalized", action="store_true")
     parser.add_argument("--build-chunks", action="store_true", help="Also materialize dense event chunk tensors. Use only for small ticker subsets.")
     parser.add_argument("--fail-fast", action="store_true")
@@ -257,6 +263,7 @@ def main() -> None:
         session_end_hour_utc=args.session_end_hour_utc,
         rebuild_cache=args.rebuild_cache,
         validate_existing_chunks=args.validate_existing_chunks,
+        validate_chunks_against_canonical=args.validate_chunks_against_canonical,
     )
     sessions = available_sessions(config.flatfiles_root, args.start_date, args.end_date)
     months = year_month_range(args.start_date, args.end_date)
@@ -294,6 +301,7 @@ def main() -> None:
     )
     print(f"worker_step_logging={'on' if args.verbose_worker_steps else 'off'}")
     print(f"validate_existing_chunks={'on' if args.validate_existing_chunks else 'off'}")
+    print(f"validate_chunks_against_canonical={'on' if args.validate_chunks_against_canonical else 'off'}")
     print(
         "polars_runtime=deferred_to_worker_imports",
         flush=True,

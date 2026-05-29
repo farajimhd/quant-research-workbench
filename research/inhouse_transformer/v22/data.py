@@ -1015,6 +1015,125 @@ def read_canonical_events(config: DataConfig, kind: str, ticker: str, year_month
     return collect_lazy(pl.scan_parquet(str(path))).sort(["sip_timestamp", "sequence_number"])
 
 
+def canonical_chunk_count_frame(config: DataConfig, *, ticker: str, year_month: str) -> pl.LazyFrame:
+    chunk_ns = config.chunk_ms * 1_000_000
+    frames: list[pl.LazyFrame] = []
+    quotes_path = canonical_event_path(config, "quotes", ticker, year_month)
+    has_quotes = quotes_path.exists()
+    if quotes_path.exists():
+        frames.append(
+            pl.scan_parquet(str(quotes_path))
+            .select(
+                [
+                    pl.col("session_date"),
+                    ((pl.col("sip_timestamp") // chunk_ns) * chunk_ns).alias("chunk_start_ns"),
+                ]
+            )
+            .group_by(["session_date", "chunk_start_ns"])
+            .agg(pl.len().cast(pl.Float64).alias("expected_quote_count"))
+        )
+    trades_path = canonical_event_path(config, "trades", ticker, year_month)
+    has_trades = trades_path.exists()
+    if trades_path.exists():
+        frames.append(
+            pl.scan_parquet(str(trades_path))
+            .select(
+                [
+                    pl.col("session_date"),
+                    ((pl.col("sip_timestamp") // chunk_ns) * chunk_ns).alias("chunk_start_ns"),
+                ]
+            )
+            .group_by(["session_date", "chunk_start_ns"])
+            .agg(pl.len().cast(pl.Float64).alias("expected_trade_count"))
+        )
+    if not frames:
+        return pl.LazyFrame(
+            {
+                "session_date": pl.Series([], dtype=pl.Utf8),
+                "chunk_start_ns": pl.Series([], dtype=pl.Int64),
+                "expected_quote_count": pl.Series([], dtype=pl.Float64),
+                "expected_trade_count": pl.Series([], dtype=pl.Float64),
+            }
+        )
+    counts = frames[0]
+    for frame in frames[1:]:
+        counts = counts.join(frame, on=["session_date", "chunk_start_ns"], how="full", coalesce=True)
+    if not has_quotes:
+        counts = counts.with_columns(pl.lit(None, dtype=pl.Float64).alias("expected_quote_count"))
+    if not has_trades:
+        counts = counts.with_columns(pl.lit(None, dtype=pl.Float64).alias("expected_trade_count"))
+    return counts.with_columns(
+        pl.col("expected_quote_count").fill_null(0.0),
+        pl.col("expected_trade_count").fill_null(0.0),
+    )
+
+
+def validate_event_chunk_against_canonical(config: DataConfig, *, ticker: str, year_month: str) -> dict[str, Any]:
+    path = event_chunk_path(config, ticker, year_month)
+    if not path.exists():
+        return {"status": "missing", "valid": False, "reason": "chunk file missing"}
+
+    expected = canonical_chunk_count_frame(config, ticker=ticker, year_month=year_month).with_columns(
+        pl.lit(True).alias("_expected_present")
+    )
+    actual = (
+        pl.scan_parquet(str(path))
+        .select(
+            [
+                "session_date",
+                "chunk_start_ns",
+                pl.col("quote_count").cast(pl.Float64),
+                pl.col("trade_count").cast(pl.Float64),
+            ]
+        )
+        .with_columns(pl.lit(True).alias("_actual_present"))
+    )
+    comparison = (
+        expected.join(actual, on=["session_date", "chunk_start_ns"], how="full", coalesce=True)
+        .with_columns(
+            pl.col("_expected_present").fill_null(False),
+            pl.col("_actual_present").fill_null(False),
+            pl.col("expected_quote_count").fill_null(0.0),
+            pl.col("expected_trade_count").fill_null(0.0),
+            pl.col("quote_count").fill_null(0.0),
+            pl.col("trade_count").fill_null(0.0),
+        )
+        .with_columns(
+            (pl.col("expected_quote_count") - pl.col("quote_count")).abs().alias("_quote_abs_diff"),
+            (pl.col("expected_trade_count") - pl.col("trade_count")).abs().alias("_trade_abs_diff"),
+        )
+    )
+    stats = comparison.select(
+        [
+            pl.len().alias("compared_chunk_keys"),
+            pl.col("_expected_present").sum().alias("expected_chunk_keys"),
+            pl.col("_actual_present").sum().alias("actual_chunk_keys"),
+            (~pl.col("_actual_present")).sum().alias("missing_actual_chunk_keys"),
+            (~pl.col("_expected_present")).sum().alias("extra_actual_chunk_keys"),
+            (pl.col("_quote_abs_diff") > 0.0).sum().alias("quote_count_mismatch_keys"),
+            (pl.col("_trade_abs_diff") > 0.0).sum().alias("trade_count_mismatch_keys"),
+            pl.col("_quote_abs_diff").max().alias("max_quote_count_abs_diff"),
+            pl.col("_trade_abs_diff").max().alias("max_trade_count_abs_diff"),
+            pl.col("expected_quote_count").sum().alias("expected_quote_rows"),
+            pl.col("quote_count").sum().alias("actual_quote_rows"),
+            pl.col("expected_trade_count").sum().alias("expected_trade_rows"),
+            pl.col("trade_count").sum().alias("actual_trade_rows"),
+        ]
+    ).collect()
+    row = stats.row(0, named=True)
+    invalid_fields = [
+        "missing_actual_chunk_keys",
+        "extra_actual_chunk_keys",
+        "quote_count_mismatch_keys",
+        "trade_count_mismatch_keys",
+    ]
+    invalid = any(int(row.get(field) or 0) != 0 for field in invalid_fields)
+    if invalid:
+        reason = " ".join(f"{field}={row.get(field)}" for field in invalid_fields)
+        return {"status": "invalid_canonical_mismatch", "valid": False, "reason": reason, "canonical": row}
+    return {"status": "canonical_valid", "valid": True, "reason": "", "canonical": row}
+
+
 def validate_event_chunk_file(config: DataConfig, *, ticker: str, year_month: str) -> dict[str, Any]:
     path = event_chunk_path(config, ticker, year_month)
     if not path.exists():
@@ -1131,7 +1250,27 @@ def validate_event_chunk_file(config: DataConfig, *, ticker: str, year_month: st
                 "reason": f"order_violations={order_violations}",
             }
 
-        return {"status": "valid", "valid": True, "rows": rows, "path": str(path), "reason": ""}
+        canonical_validation = {"status": "not_checked", "valid": True, "reason": ""}
+        if config.validate_chunks_against_canonical:
+            canonical_validation = validate_event_chunk_against_canonical(config, ticker=ticker, year_month=year_month)
+            if not canonical_validation.get("valid"):
+                return {
+                    "status": canonical_validation.get("status", "invalid_canonical_mismatch"),
+                    "valid": False,
+                    "rows": rows,
+                    "path": str(path),
+                    "reason": canonical_validation.get("reason", "canonical mismatch"),
+                    "canonical": canonical_validation.get("canonical"),
+                }
+
+        return {
+            "status": "valid",
+            "valid": True,
+            "rows": rows,
+            "path": str(path),
+            "reason": "",
+            "canonical": canonical_validation.get("canonical"),
+        }
     except Exception as exc:
         return {"status": "invalid_read", "valid": False, "rows": 0, "path": str(path), "reason": repr(exc)}
 

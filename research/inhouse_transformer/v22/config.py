@@ -48,6 +48,7 @@ class DataConfig:
     quote_size_lot_multiplier_before_2025_11_03: int = 100
     rebuild_cache: bool = False
     validate_existing_chunks: bool = True
+    validate_chunks_against_canonical: bool = True
     max_windows_per_ticker_session: int = 0
     shuffle_tickers: bool = True
 
