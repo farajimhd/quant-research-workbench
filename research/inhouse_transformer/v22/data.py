@@ -1716,11 +1716,12 @@ class BatchBuilder:
         self.event_kinds = np.empty((batch_size, context, config.max_total_events), dtype=np.int64)
         self.event_indices = np.empty((batch_size, context, config.max_total_events), dtype=np.int64)
         self.chunk_summary = np.empty((batch_size, context, len(CHUNK_SUMMARY_COLUMNS)), dtype=np.float32)
-        self.targets = np.empty((batch_size, config.horizon_steps, 1, target_bit_count(config)), dtype=np.float32)
-        self.target_bps = np.empty((batch_size, config.horizon_steps, 1), dtype=np.float32)
-        self.target_bid = np.empty((batch_size, config.horizon_steps, 1), dtype=np.float32)
-        self.target_ask = np.empty((batch_size, config.horizon_steps, 1), dtype=np.float32)
-        self.target_mid = np.empty((batch_size, config.horizon_steps, 1), dtype=np.float32)
+        horizon_count = config.target_horizon_count
+        self.targets = np.empty((batch_size, horizon_count, 1, target_bit_count(config)), dtype=np.float32)
+        self.target_bps = np.empty((batch_size, horizon_count, 1), dtype=np.float32)
+        self.target_bid = np.empty((batch_size, horizon_count, 1), dtype=np.float32)
+        self.target_ask = np.empty((batch_size, horizon_count, 1), dtype=np.float32)
+        self.target_mid = np.empty((batch_size, horizon_count, 1), dtype=np.float32)
         self.current_mid = np.empty((batch_size,), dtype=np.float32)
         self.last_close_return_bps = np.empty((batch_size,), dtype=np.float32)
         self.origin_timestamp_ns = np.empty((batch_size,), dtype=np.int64)
@@ -1741,7 +1742,7 @@ class BatchBuilder:
         config = self.config
         start = origin - config.context_chunks + 1
         end = origin + 1
-        future_indices = origin + np.arange(1, config.horizon_steps + 1, dtype=np.int64) * config.horizon_chunks
+        future_indices = origin + np.asarray(config.target_horizon_chunks, dtype=np.int64)
         current_mid = float(mid_from_bid_ask(arrays["bid"][origin], arrays["ask"][origin], arrays["mid"][origin]))
         previous_mid = float(mid_from_bid_ask(arrays["bid"][max(0, origin - 1)], arrays["ask"][max(0, origin - 1)], arrays["mid"][max(0, origin - 1)]))
         future_bid = arrays["bid"][future_indices].reshape(-1, 1).astype(np.float32)
@@ -1834,7 +1835,7 @@ def iter_ticker_frames(
 
 def ticker_arrays(frame: pl.DataFrame, config: DataConfig) -> dict[str, np.ndarray] | None:
     dense = dense_ticker_frame(frame, config)
-    if dense.height < config.context_chunks + config.horizon_steps * config.horizon_chunks:
+    if dense.height < config.context_chunks + max(config.target_horizon_chunks):
         return None
     quote_values = list_column_to_matrix(dense, "quote_values", config.max_quote_events, len(QUOTE_FEATURE_COLUMNS))
     trade_values = list_column_to_matrix(dense, "trade_values", config.max_trade_events, len(TRADE_FEATURE_COLUMNS))
@@ -1858,8 +1859,11 @@ def dense_ticker_frame(frame: pl.DataFrame, config: DataConfig) -> pl.DataFrame:
     chunk_ns = config.chunk_ms * 1_000_000
     min_start = int(frame.get_column("chunk_start_ns").min())
     max_start = int(frame.get_column("chunk_start_ns").max())
-    starts = np.arange(min_start, max_start + chunk_ns, chunk_ns, dtype=np.int64)
-    grid = pl.DataFrame({"chunk_start_ns": starts})
+    grid = (
+        pl.DataFrame({"_grid": [0]})
+        .select(pl.int_ranges(pl.lit(min_start), pl.lit(max_start + chunk_ns), pl.lit(chunk_ns)).alias("chunk_start_ns"))
+        .explode("chunk_start_ns")
+    )
     joined = grid.join(frame.drop(["ticker", "session_date"], strict=False), on="chunk_start_ns", how="left")
     joined = joined.with_columns((pl.col("chunk_start_ns") + chunk_ns - 1).alias("chunk_end_ns"))
     quote_state_cols = [
@@ -1898,27 +1902,24 @@ def dense_ticker_frame(frame: pl.DataFrame, config: DataConfig) -> pl.DataFrame:
 
 
 def add_age_features(frame: pl.DataFrame, config: DataConfig) -> pl.DataFrame:
-    chunk_seconds = config.chunk_ms / 1000.0
-    has_trade = frame.get_column("has_trade").to_numpy() > 0.0
-    has_quote = frame.get_column("has_quote").to_numpy() > 0.0
-    seconds_since_trade = np.empty(len(has_trade), dtype=np.float32)
-    seconds_since_quote = np.empty(len(has_quote), dtype=np.float32)
-    trade_age = 1e6
-    quote_age = 1e6
-    for idx in range(len(has_trade)):
-        if has_trade[idx]:
-            trade_age = 0.0
-        else:
-            trade_age = min(3600.0, trade_age + chunk_seconds)
-        if has_quote[idx]:
-            quote_age = 0.0
-        else:
-            quote_age = min(3600.0, quote_age + chunk_seconds)
-        seconds_since_trade[idx] = trade_age
-        seconds_since_quote[idx] = quote_age
-    return frame.with_columns(
-        pl.Series("seconds_since_trade", seconds_since_trade),
-        pl.Series("seconds_since_quote", seconds_since_quote),
+    return (
+        frame.with_columns(
+            pl.when(pl.col("has_trade") > 0.0).then(pl.col("chunk_start_ns")).otherwise(None).forward_fill().alias("_last_trade_chunk_ns"),
+            pl.when(pl.col("has_quote") > 0.0).then(pl.col("chunk_start_ns")).otherwise(None).forward_fill().alias("_last_quote_chunk_ns"),
+        )
+        .with_columns(
+            pl.when(pl.col("_last_trade_chunk_ns").is_null())
+            .then(1_000_000.0)
+            .otherwise(((pl.col("chunk_start_ns") - pl.col("_last_trade_chunk_ns")) / float(NANOSECONDS_PER_SECOND)).clip(0.0, 3600.0))
+            .cast(pl.Float32)
+            .alias("seconds_since_trade"),
+            pl.when(pl.col("_last_quote_chunk_ns").is_null())
+            .then(1_000_000.0)
+            .otherwise(((pl.col("chunk_start_ns") - pl.col("_last_quote_chunk_ns")) / float(NANOSECONDS_PER_SECOND)).clip(0.0, 3600.0))
+            .cast(pl.Float32)
+            .alias("seconds_since_quote"),
+        )
+        .drop(["_last_trade_chunk_ns", "_last_quote_chunk_ns"])
     )
 
 
@@ -1954,7 +1955,7 @@ def valid_origins(arrays: dict[str, np.ndarray], config: DataConfig) -> np.ndarr
     mid = arrays["mid"]
     bid = arrays["bid"]
     ask = arrays["ask"]
-    future_offsets = np.arange(1, config.horizon_steps + 1, dtype=np.int64) * config.horizon_chunks
+    future_offsets = np.asarray(config.target_horizon_chunks, dtype=np.int64)
     earliest = config.context_chunks - 1
     latest = len(chunk_end) - int(future_offsets[-1]) - 1
     if latest < earliest:

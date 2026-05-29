@@ -63,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context-seconds", type=int, default=defaults.data.context_seconds)
     parser.add_argument("--horizon-steps", type=int, default=defaults.data.horizon_steps)
     parser.add_argument("--horizon-seconds", type=int, default=defaults.data.horizon_seconds)
+    parser.add_argument("--uniform-horizons", action="store_true", help="Use evenly spaced horizon_seconds targets instead of target-cache horizons.")
     parser.add_argument("--origin-stride-chunks", type=int, default=defaults.data.origin_stride_chunks)
     parser.add_argument("--max-quote-events", type=int, default=defaults.data.max_quote_events)
     parser.add_argument("--max-trade-events", type=int, default=defaults.data.max_trade_events)
@@ -135,6 +136,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         context_seconds=args.context_seconds,
         horizon_steps=args.horizon_steps,
         horizon_seconds=args.horizon_seconds,
+        use_target_cache_horizons=not args.uniform_horizons,
         origin_stride_chunks=args.origin_stride_chunks,
         max_quote_events=args.max_quote_events,
         max_trade_events=args.max_trade_events,
@@ -222,9 +224,10 @@ def main() -> None:
     print(
         f"Inputs: context_chunks={config.data.context_chunks} quote={config.data.max_quote_events}x{len(QUOTE_FEATURE_COLUMNS)} "
         f"trade={config.data.max_trade_events}x{len(TRADE_FEATURE_COLUMNS)} total_events={config.data.max_total_events} "
-        f"summary={len(CHUNK_SUMMARY_COLUMNS)} target=[{config.data.horizon_steps}, 1, {target_bit_count(config.data)}]",
+        f"summary={len(CHUNK_SUMMARY_COLUMNS)} target=[{config.data.target_horizon_count}, 1, {target_bit_count(config.data)}]",
         flush=True,
     )
+    print(f"Target horizons seconds: {', '.join(f'{value:g}' for value in config.data.target_horizon_seconds)}", flush=True)
     print(f"Flatfiles root: {config.data.flatfiles_root}")
     print(f"Event chunk cache root: {config.data.cache_root}")
 
@@ -253,7 +256,7 @@ def main() -> None:
         max_quote_events=config.data.max_quote_events,
         max_trade_events=config.data.max_trade_events,
         max_total_events=config.data.max_total_events,
-        horizon_steps=config.data.horizon_steps,
+        horizon_steps=config.data.target_horizon_count,
         target_count=len(config.data.target_columns),
         config=config.model,
     ).to(device)
@@ -379,7 +382,7 @@ def main() -> None:
 def evaluate(*, model: Any, config: ExperimentConfig, sessions: list[str], tickers: tuple[str, ...], device: Any, max_windows: int) -> dict[str, Any]:
     loader = build_loader(config=config, sessions=sessions, tickers=tickers, mode="eval", epochs=1, max_windows=max_windows, shuffle=False)
     accumulator = MetricAccumulator(
-        horizon=config.data.horizon_steps,
+        horizon=config.data.target_horizon_count,
         target_columns=config.data.target_columns,
         direction_threshold_bps=config.model.direction_threshold_bps,
     )
@@ -434,7 +437,7 @@ def evaluate(*, model: Any, config: ExperimentConfig, sessions: list[str], ticke
     metrics["bit_accuracy_pct"] = total_bit_acc / max(1, total_windows)
     metrics["batches"] = total_batches
     metrics["windows_per_sec"] = total_windows / max(1e-6, time.time() - started)
-    add_final_aliases(metrics, horizon=config.data.horizon_steps)
+    add_final_aliases(metrics, horizon=config.data.target_horizon_count)
     return metrics
 
 
@@ -501,9 +504,19 @@ def resolve_output_dir(config: ExperimentConfig, args: argparse.Namespace) -> Pa
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return config.train.output_root / (
         f"event_language_chunk{config.data.chunk_ms}_ctx{config.data.context_chunks}_"
-        f"h{config.data.horizon_steps}x{config.data.horizon_seconds}s_{config.data.train_start_date}_"
+        f"h{config.data.target_horizon_count}_{horizon_slug(config.data)}_{config.data.train_start_date}_"
         f"{config.data.test_end_date}_{stamp}"
     )
+
+
+def horizon_slug(config: DataConfig) -> str:
+    values = []
+    for seconds in config.target_horizon_seconds:
+        if seconds >= 60.0 and seconds % 60.0 == 0:
+            values.append(f"{int(seconds // 60)}m")
+        else:
+            values.append(f"{seconds:g}s")
+    return "-".join(values)
 
 
 def write_config(output_dir: Path, config: ExperimentConfig, args: argparse.Namespace) -> None:

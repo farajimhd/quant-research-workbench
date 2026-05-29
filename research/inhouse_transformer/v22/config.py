@@ -29,6 +29,7 @@ class DataConfig:
     context_seconds: int = 60
     horizon_steps: int = 6
     horizon_seconds: int = 10
+    use_target_cache_horizons: bool = True
     origin_stride_chunks: int = 1
     max_quote_events: int = 128
     max_trade_events: int = 192
@@ -53,6 +54,22 @@ class DataConfig:
     @property
     def horizon_chunks(self) -> int:
         return int(self.horizon_seconds * 1000 // self.chunk_ms)
+
+    @property
+    def target_horizon_chunks(self) -> tuple[int, ...]:
+        if self.use_target_cache_horizons and self.target_cache_horizon_chunks:
+            horizons = tuple(int(value) for value in self.target_cache_horizon_chunks[: self.horizon_steps])
+            if len(horizons) == self.horizon_steps:
+                return horizons
+        return tuple((index + 1) * self.horizon_chunks for index in range(self.horizon_steps))
+
+    @property
+    def target_horizon_seconds(self) -> tuple[float, ...]:
+        return tuple(value * self.chunk_ms / 1000.0 for value in self.target_horizon_chunks)
+
+    @property
+    def target_horizon_count(self) -> int:
+        return len(self.target_horizon_chunks)
 
 
 @dataclass(slots=True)

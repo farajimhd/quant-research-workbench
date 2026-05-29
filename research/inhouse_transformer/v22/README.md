@@ -6,9 +6,9 @@ event-chunk model.
 The model input is fixed-time chunks:
 
 ```text
-chunk_ms = 250
+chunk_ms = 500
 context_seconds = 60
-context_chunks = 240
+context_chunks = 120
 ```
 
 Each chunk keeps quote and trade events separately before the model:
@@ -32,8 +32,9 @@ Target:
 targets: [batch, 6, 1, 13]
 ```
 
-The six horizons are `t+10s ... t+60s`. Each target is future mid-price
-log-return bps from current mid, encoded as v14-style binary magnitude bits.
+The default six horizons are `t+10s`, `t+20s`, `t+30s`, `t+60s`, `t+120s`,
+and `t+300s`. Each target is future mid-price log-return bps from current mid,
+encoded as v14-style binary magnitude bits.
 
 Before final training, profile chunk/cap choices:
 
@@ -41,10 +42,13 @@ Before final training, profile chunk/cap choices:
 python research\inhouse_transformer\v22\profile_event_chunks.py --flatfiles-root D:\market-data\flatfiles\us_stocks_sip --start-date 2025-11-01 --end-date 2025-12-05 --tickers ALL --chunk-ms 100,250,500,1000 --caps 64,128,256,512 --processes 8 --polars-threads-per-process 2
 ```
 
-Preprocess raw quote/trade CSV.GZ into shared sparse event-chunk Parquet:
+Preprocess raw quote/trade CSV.GZ into shared sparse event-chunk Parquet.
+The training data provider expands each ticker/session into a vectorized
+500ms wall-clock grid, so idle chunks for illiquid symbols are included during
+training without exploding the on-disk cache:
 
 ```powershell
-python research\inhouse_transformer\v22\preprocess_event_chunks.py --flatfiles-root D:\market-data\flatfiles\us_stocks_sip --cache-root D:\market-data\flatfiles\us_stocks_sip\derived\event_chunks_v1 --start-date 2025-11-01 --end-date 2025-12-12 --tickers ALL --chunk-ms 250 --max-quote-events 96 --max-trade-events 64 --max-total-events 128 --processes 8 --polars-threads-per-process 2
+python research\inhouse_transformer\v22\preprocess_event_chunks.py --flatfiles-root D:\market-data\flatfiles\us_stocks_sip --cache-root D:\market-data\flatfiles\us_stocks_sip\derived\event_chunks_v1 --start-date 2025-11-01 --end-date 2025-12-12 --tickers ALL --chunk-ms 500 --max-quote-events 128 --max-trade-events 192 --max-total-events 256 --processes 4 --polars-threads-per-process 8 --build-chunks
 ```
 
 Train from preprocessed chunks:

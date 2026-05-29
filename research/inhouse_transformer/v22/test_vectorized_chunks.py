@@ -7,6 +7,7 @@ import polars as pl
 from research.inhouse_transformer.v22.config import DataConfig
 from research.inhouse_transformer.v22.data import (
     BatchBuilder,
+    CHUNK_SUMMARY_COLUMNS,
     attach_quote_state_to_trades,
     build_ticker_sparse_chunks_vectorized,
     ticker_arrays,
@@ -147,6 +148,47 @@ class VectorizedChunkTests(unittest.TestCase):
         self.assertAlmostEqual(float(first["target_bid_h2"]), 10.00, places=5)
         self.assertAlmostEqual(float(first["target_ask_h2"]), 10.02, places=5)
         self.assertAlmostEqual(float(first["target_mid_h2"]), 10.01, places=5)
+
+    def test_ticker_arrays_include_vectorized_idle_chunks(self) -> None:
+        config = DataConfig(
+            chunk_ms=500,
+            context_seconds=1,
+            horizon_steps=1,
+            target_cache_horizon_chunks=(2,),
+        )
+        base = 40_000_000_000
+        quotes = pl.DataFrame(
+            {
+                "ticker": ["T", "T"],
+                "session_date": ["2025-11-03", "2025-11-03"],
+                "sip_timestamp": [base + 100_000_000, base + 2_100_000_000],
+                "sequence_number": [1, 2],
+                "bid_price": [10.00, 10.10],
+                "ask_price": [10.02, 10.12],
+                "mid_price": [10.01, 10.11],
+                "spread_bps": [19.98, 19.78],
+                "bid_size": [100.0, 120.0],
+                "ask_size": [110.0, 130.0],
+                "quote_imbalance": [-0.05, -0.04],
+                "bid_exchange": [1, 1],
+                "ask_exchange": [2, 2],
+            }
+        )
+        chunks = build_ticker_sparse_chunks_vectorized(config, "T", quotes, pl.DataFrame())
+        self.assertIsNotNone(chunks)
+        arrays = ticker_arrays(chunks, config)
+        self.assertIsNotNone(arrays)
+
+        event_count_idx = CHUNK_SUMMARY_COLUMNS.index("event_count")
+        has_quote_idx = CHUNK_SUMMARY_COLUMNS.index("has_quote")
+        seconds_since_quote_idx = CHUNK_SUMMARY_COLUMNS.index("seconds_since_quote")
+
+        self.assertEqual(arrays["chunk_summary"].shape[0], 5)
+        self.assertEqual(float(arrays["chunk_summary"][1, event_count_idx]), 0.0)
+        self.assertEqual(float(arrays["chunk_summary"][1, has_quote_idx]), 0.0)
+        self.assertAlmostEqual(float(arrays["chunk_summary"][1, seconds_since_quote_idx]), 0.5, places=5)
+        self.assertAlmostEqual(float(arrays["chunk_summary"][2, seconds_since_quote_idx]), 1.0, places=5)
+        self.assertEqual(int(arrays["event_kinds"][1, 0]), 2)
 
 
 if __name__ == "__main__":
