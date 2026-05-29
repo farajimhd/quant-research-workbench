@@ -80,6 +80,11 @@ def main() -> None:
         year_month_range,
     )
 
+    print(LOG_RULE, flush=True)
+    print("v22 preprocessing startup", flush=True)
+    print(f"flatfiles_root={args.flatfiles_root}", flush=True)
+    print(f"date_range={args.start_date} -> {args.end_date}", flush=True)
+    print("Discovering available quote/trade session pairs...", flush=True)
     config = DataConfig(
         flatfiles_root=Path(args.flatfiles_root),
         canonical_root=Path(args.canonical_root),

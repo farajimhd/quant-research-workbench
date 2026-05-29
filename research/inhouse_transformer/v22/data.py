@@ -190,13 +190,18 @@ def find_flatfile(flatfiles_root: Path, kind: str, session: str) -> Path | None:
     }[kind]
     year, month, _ = session.split("-")
     filenames = (f"{session}.csv.gz", f"{session}.csv", f"{session}.gz")
+    structured_bases: list[Path] = []
     for candidate_root in flatfile_root_candidates(flatfiles_root):
         for root_name in roots:
             base = candidate_root / root_name
+            if base.exists():
+                structured_bases.append(base)
             for filename in filenames:
                 for candidate in (base / year / month / filename, base / year / filename, base / filename):
                     if candidate.exists():
                         return candidate
+    if structured_bases:
+        return None
     for candidate_root in flatfile_root_candidates(flatfiles_root):
         for root_name in roots:
             base = candidate_root / root_name
