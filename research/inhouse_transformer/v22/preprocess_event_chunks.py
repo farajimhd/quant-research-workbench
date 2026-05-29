@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+if __name__ == "__main__":
+    print("*" * 96, flush=True)
+    print("v22 preprocess python process started; importing modules...", flush=True)
+
 import argparse
 import concurrent.futures
 import contextlib

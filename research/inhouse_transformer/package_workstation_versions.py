@@ -44,8 +44,8 @@ VERSION_SETTINGS = {
         "test_end_date": "2025-12-12",
         "preprocess_processes": 16,
         "normalize_processes": 8,
-        "quote_normalize_processes": 8,
-        "trade_normalize_processes": 8,
+        "quote_normalize_processes": 2,
+        "trade_normalize_processes": 6,
         "canonical_processes": 16,
         "chunk_processes": 16,
         "polars_threads_per_process": 4,
@@ -341,6 +341,10 @@ def command_generation_source(version: str) -> str:
         "        \"$ErrorActionPreference = 'Stop'\\n\"\n"
         "        \"$env:PYTHONUNBUFFERED = '1'\\n\"\n"
         "        f\"$env:PYTHONPATH = '{py_path}' + [System.IO.Path]::PathSeparator + $env:PYTHONPATH\\n\"\n"
+        "        f\"Write-Host 'Starting {label} at' (Get-Date -Format o)\\n\"\n"
+        "        f\"Write-Host 'Python:' {ps_quote(sys.executable)}\\n\"\n"
+        "        f\"Write-Host 'Script:' {ps_quote(script_path)}\\n\"\n"
+        "        f\"Write-Host 'Log:' {ps_quote(log_path)}\\n\"\n"
         "        f\"{command} 2>&1 | Tee-Object -FilePath {ps_quote(log_path)}\\n\"\n"
         "        \"if ($LASTEXITCODE -ne 0) { throw \\\"Command failed with exit code $LASTEXITCODE\\\" }\\n\"\n"
         "    )\n"
