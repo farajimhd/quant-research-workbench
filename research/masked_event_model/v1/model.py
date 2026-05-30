@@ -9,6 +9,13 @@ from research.masked_event_model.v1.config import ModelConfig
 from research.masked_event_model.v1.masking import MaskBatch
 
 
+def transformer_encoder(layer: nn.TransformerEncoderLayer, *, num_layers: int) -> nn.TransformerEncoder:
+    try:
+        return nn.TransformerEncoder(layer, num_layers=num_layers, enable_nested_tensor=False)
+    except TypeError:
+        return nn.TransformerEncoder(layer, num_layers=num_layers)
+
+
 @dataclass(slots=True)
 class ModelOutput:
     quote_reconstruction: torch.Tensor
@@ -93,8 +100,8 @@ class MaskedEventAutoencoder(nn.Module):
             activation="gelu",
             norm_first=True,
         )
-        self.quote_event_encoder = nn.TransformerEncoder(quote_layer, num_layers=config.quote_event_layers)
-        self.trade_event_encoder = nn.TransformerEncoder(trade_layer, num_layers=config.trade_event_layers)
+        self.quote_event_encoder = transformer_encoder(quote_layer, num_layers=config.quote_event_layers)
+        self.trade_event_encoder = transformer_encoder(trade_layer, num_layers=config.trade_event_layers)
 
         self.fusion = nn.Sequential(
             nn.Linear(config.d_model * 3, config.d_model),
@@ -111,7 +118,7 @@ class MaskedEventAutoencoder(nn.Module):
             activation="gelu",
             norm_first=True,
         )
-        self.temporal_encoder = nn.TransformerEncoder(temporal_layer, num_layers=config.temporal_layers)
+        self.temporal_encoder = transformer_encoder(temporal_layer, num_layers=config.temporal_layers)
         self.encoder_norm = nn.LayerNorm(config.d_model)
 
         decoder_layer = nn.TransformerEncoderLayer(
@@ -123,7 +130,7 @@ class MaskedEventAutoencoder(nn.Module):
             activation="gelu",
             norm_first=True,
         )
-        self.decoder = nn.TransformerEncoder(decoder_layer, num_layers=config.decoder_layers)
+        self.decoder = transformer_encoder(decoder_layer, num_layers=config.decoder_layers)
         self.decoder_norm = nn.LayerNorm(config.d_model)
 
         self.quote_decoder_head = nn.Linear(config.d_model, quote_feature_count)

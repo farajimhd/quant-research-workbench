@@ -1,13 +1,24 @@
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUNBUFFERED = '1'
-$env:PYTHONPATH = (Resolve-Path '.').Path + [System.IO.Path]::PathSeparator + $env:PYTHONPATH
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$runtimeCandidate = Join-Path $scriptDir 'research\masked_event_model\v1\train.py'
+if (Test-Path $runtimeCandidate) {
+  $runtimeRoot = $scriptDir
+} else {
+  $runtimeRoot = (Resolve-Path (Join-Path $scriptDir '..\..\..')).Path
+}
+$repoEnv = 'D:\TradingCodes\quant-research-workbench\.env'
+$runtimeEnv = Join-Path $runtimeRoot '.env'
+$env:PYTHONPATH = $runtimeRoot + [System.IO.Path]::PathSeparator + $env:PYTHONPATH
+$env:DOTENV_PATHS = $repoEnv + [System.IO.Path]::PathSeparator + $runtimeEnv + [System.IO.Path]::PathSeparator + $env:DOTENV_PATHS
 $runStamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $logDir = 'D:\TradingData\quant-research-workbench\market_data\models\masked_event_model\v1\workstation_logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $logPath = Join-Path $logDir ('masked_event_v1_train_' + $runStamp + '.log')
 Write-Host 'Starting masked event v1 training at' (Get-Date -Format o)
+Write-Host 'Runtime root:' $runtimeRoot
 Write-Host 'Log:' $logPath
-& "c:\Users\Mehdi\miniconda3\envs\ml4t\python.exe" -u "D:\TradingCodes\quant-research-workbench-masked-event-v1-runtime\research\masked_event_model\v1\train.py" `
+& "c:\Users\Mehdi\miniconda3\envs\ml4t\python.exe" -u (Join-Path $runtimeRoot 'research\masked_event_model\v1\train.py') `
   --cache-root "D:\market-data\flatfiles\us_stocks_sip\derived\event_chunks_v2" `
   --canonical-root "D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_v2" `
   --output-root "D:\TradingData\quant-research-workbench\market_data\models\masked_event_model\v1" `

@@ -4,11 +4,23 @@ import argparse
 import json
 import os
 import random
+import sys
 import time
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = next(
+    (
+        parent
+        for parent in Path(__file__).resolve().parents
+        if (parent / "research" / "masked_event_model" / "v1").exists()
+    ),
+    Path(__file__).resolve().parents[3],
+)
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 import polars as pl
@@ -83,7 +95,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    load_dotenv(Path.cwd() / ".env")
+    load_dotenv_files(discover_dotenv_paths())
     set_seed(args.seed)
     config = build_config(args)
     output_dir = resolve_output_dir(config, args)
@@ -272,6 +284,13 @@ def default_run_name(args: argparse.Namespace) -> str:
 def init_wandb(args: argparse.Namespace, config: ExperimentConfig, output_dir: Path, horizon_count: int) -> Any | None:
     if not args.wandb_project or args.wandb_project.lower() in {"off", "none", "disabled"}:
         return None
+    if not os.environ.get("WANDB_API_KEY") and not os.environ.get("WANDB_MODE"):
+        os.environ["WANDB_MODE"] = "offline"
+        print(
+            "WANDB_API_KEY was not found after .env discovery; using WANDB_MODE=offline. "
+            "Set WANDB_API_KEY in an environment variable or a discovered .env file for online logging.",
+            flush=True,
+        )
     try:
         import wandb
     except ModuleNotFoundError:
@@ -314,6 +333,40 @@ def dataclass_tree(value: Any) -> Any:
     if isinstance(value, tuple):
         return list(value)
     return value
+
+
+def discover_dotenv_paths() -> list[Path]:
+    paths: list[Path] = []
+    for raw in os.environ.get("DOTENV_PATHS", "").split(os.pathsep):
+        if raw.strip():
+            paths.append(Path(raw.strip()))
+    for base in [Path.cwd(), REPO_ROOT, *REPO_ROOT.parents]:
+        paths.append(base / ".env")
+    paths.append(Path("D:/TradingCodes/quant-research-workbench/.env"))
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        try:
+            key = str(path.resolve())
+        except OSError:
+            key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def load_dotenv_files(paths: list[Path]) -> None:
+    loaded: list[str] = []
+    for path in paths:
+        if path.exists():
+            load_dotenv(path)
+            loaded.append(str(path))
+    if loaded:
+        print(f"Loaded .env files: {'; '.join(loaded)}", flush=True)
+    else:
+        print("No .env file found in discovered locations.", flush=True)
 
 
 def load_dotenv(path: Path) -> None:
