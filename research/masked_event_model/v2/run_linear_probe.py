@@ -20,7 +20,6 @@ from research.masked_event_model.v2 import train_linear_probe
 
 
 PROBE_ARGS: dict[str, Any] = {
-    "output_root": r"D:\TradingData\quant-research-workbench\market_data\models\masked_event_model\v2",
     "pretrain_run_name": "mem-v2-d256-e2-t8-d4-mask70-chunk500-b256-nov2025",
     "cache_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\event_chunks_v2",
     "canonical_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_v2",
@@ -90,7 +89,7 @@ def print_help() -> None:
     print("  python research\\masked_event_model\\v2\\run_linear_probe.py")
     print()
     print("Optional overrides:")
-    print("  python research\\masked_event_model\\v2\\run_linear_probe.py --checkpoint-path D:\\path\\checkpoint_last.pt")
+    print("  python research\\masked_event_model\\v2\\run_linear_probe.py --checkpoint-path D:\\path\\checkpoints\\checkpoint_latest.pt")
     print()
     print("Current defaults:")
     for key, value in PROBE_ARGS.items():

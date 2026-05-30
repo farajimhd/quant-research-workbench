@@ -38,9 +38,19 @@ from research.masked_event_model.v2.masking import build_structured_masks
 from research.masked_event_model.v2.model import MaskedEventAutoencoder
 from research.masked_event_model.v2.model_artifacts import save_model_architecture_artifacts
 from research.masked_event_model.v2.schema import CHUNK_SUMMARY_COLUMNS, QUOTE_FEATURE_COLUMNS, TRADE_FEATURE_COLUMNS
+from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
+from research.mlops.env import discover_env_files, load_env_files
+from research.mlops.manifest import write_run_manifest
+from research.mlops.metrics import JsonlMetricLogger
+from research.mlops.paths import RunPaths, default_run_root
+from research.mlops.seeds import set_seed
+from research.mlops.wandb_utils import init_wandb as mlops_init_wandb
 
 
 EXPERIMENT_VERSION = "mem-v2"
+MODEL_FAMILY = "masked_event_model"
+MODEL_VERSION = "v2"
+JOB_TYPE = "pretrain"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -51,7 +61,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train masked event autoencoder v2.")
     parser.add_argument("--cache-root", default=str(data_defaults.cache_root))
     parser.add_argument("--canonical-root", default=str(data_defaults.canonical_root))
-    parser.add_argument("--output-root", default=str(train_defaults.output_root))
+    parser.add_argument("--output-root", default="")
+    parser.add_argument("--run-root", default="")
     parser.add_argument("--train-start-date", default=data_defaults.train_start_date)
     parser.add_argument("--train-end-date", default=data_defaults.train_end_date)
     parser.add_argument("--validation-start-date", default=data_defaults.validation_start_date)
@@ -84,6 +95,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pretrain-validation-frequency", type=int, default=train_defaults.pretrain_validation_frequency)
     parser.add_argument("--pretrain-validation-steps", type=int, default=train_defaults.pretrain_validation_steps)
     parser.add_argument("--checkpoint-steps", type=int, default=train_defaults.checkpoint_steps)
+    parser.add_argument("--checkpoint-latest-steps", type=int, default=10)
+    parser.add_argument("--checkpoint-archive-steps", type=int, default=5000)
     parser.add_argument("--loader-prefetch-batches", type=int, default=train_defaults.loader_prefetch_batches)
     parser.add_argument("--mask-ratio", type=float, default=mask_defaults.mask_ratio)
     parser.add_argument("--d-model", type=int, default=model_defaults.d_model)
@@ -113,18 +126,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    load_dotenv_files(discover_dotenv_paths())
+    load_env_files(discover_env_files(REPO_ROOT))
     set_seed(args.seed)
     config = build_config(args)
     output_dir = resolve_output_dir(config, args)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    metrics_path = output_dir / "metrics.jsonl"
+    run_paths = RunPaths.create(output_dir)
+    metrics_path = run_paths.metrics_path
     print(f"Output directory: {output_dir}", flush=True)
     print("Inferring available target horizons from chunk cache...", flush=True)
     horizon_count = infer_horizon_count(config.data)
     print(f"Horizons available: {horizon_count}", flush=True)
     run = init_wandb(args, config, output_dir, horizon_count)
+    metric_logger = JsonlMetricLogger(metrics_path, run)
     write_config(output_dir, config, args, horizon_count)
+    write_run_manifest(
+        run_paths.manifest_path,
+        repo_root=REPO_ROOT,
+        model_family=MODEL_FAMILY,
+        version=MODEL_VERSION,
+        job_type=JOB_TYPE,
+        run_name=config.train.wandb_run_name,
+        args=vars(args),
+        config=dataclass_tree(config),
+        data_roots={"cache_root": str(config.data.cache_root), "canonical_root": str(config.data.canonical_root)},
+        output_root=output_dir,
+        wandb_info={"project": args.wandb_project, "entity": args.wandb_entity, "run_name": config.train.wandb_run_name},
+    )
     print("Building masked event model...", flush=True)
     model = MaskedEventAutoencoder(
         quote_feature_count=len(QUOTE_FEATURE_COLUMNS),
@@ -145,6 +172,11 @@ def main(argv: list[str] | None = None) -> None:
     scheduler = build_scheduler(optimizer, config.train)
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and device.type == "cuda")
     global_step = maybe_resume(model, optimizer, scheduler, output_dir, fresh_start=args.fresh_start)
+    checkpointer = AsyncCheckpointManager(
+        run_paths.checkpoints_dir,
+        run_paths.checkpoint_manifest_path,
+        CheckpointPolicy(latest_steps=args.checkpoint_latest_steps, archive_steps=args.checkpoint_archive_steps),
+    )
     try:
         architecture_info = save_model_architecture_artifacts(
             model=model,
@@ -186,7 +218,7 @@ def main(argv: list[str] | None = None) -> None:
     validation_batches = build_pretrain_validation_cache(config, args)
     if validation_batches:
         validation_metrics = evaluate_pretrain_validation(train_model, validation_batches, config, device, seed=args.seed + 10_000)
-        log_metrics(validation_metrics, metrics_path, run, global_step)
+        metric_logger.log(validation_metrics, global_step)
         print("VALIDATION " + format_validation_metrics(global_step, validation_metrics), flush=True)
 
     model.train()
@@ -198,7 +230,7 @@ def main(argv: list[str] | None = None) -> None:
         metrics = {key: value for key, value in event.items() if isinstance(value, (int, float))}
         metrics["loader/event_count"] = float(loader_event_counter[0])
         metrics["train/step"] = float(global_step)
-        log_metrics(metrics, metrics_path, run, max(global_step, 0), prefix_print=False)
+        metric_logger.log(metrics, max(global_step, 0))
 
     for epoch in range(config.train.epochs):
         loader = make_loader(
@@ -272,18 +304,39 @@ def main(argv: list[str] | None = None) -> None:
                 metrics.update(profile_forecast_inference(model, batch, device))
             if global_step % config.train.logging_steps == 0:
                 metrics.update({"train/epoch": float(epoch + 1), "train/step": float(global_step), "train/lr": float(optimizer.param_groups[0]["lr"])})
-                log_metrics(metrics, metrics_path, run, global_step)
+                metric_logger.log(metrics, global_step)
                 print(format_metrics(global_step, epoch + 1, metrics), flush=True)
             if validation_batches and config.train.pretrain_validation_frequency > 0 and global_step % config.train.pretrain_validation_frequency == 0:
                 validation_metrics = evaluate_pretrain_validation(train_model, validation_batches, config, device, seed=args.seed + 10_000)
-                log_metrics(validation_metrics, metrics_path, run, global_step)
+                metric_logger.log(validation_metrics, global_step)
                 print("VALIDATION " + format_validation_metrics(global_step, validation_metrics), flush=True)
-            if global_step % config.train.checkpoint_steps == 0:
-                save_checkpoint(output_dir, model, optimizer, scheduler, global_step, config, args)
+                checkpointer.maybe_save(
+                    step=global_step,
+                    payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args),
+                    train_metrics=metrics,
+                    val_metrics=validation_metrics,
+                )
+            else:
+                checkpointer.maybe_save(
+                    step=global_step,
+                    payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args),
+                    train_metrics=metrics,
+                )
             if config.train.max_steps > 0 and global_step >= config.train.max_steps:
-                save_checkpoint(output_dir, model, optimizer, scheduler, global_step, config, args)
+                checkpointer.maybe_save(
+                    step=global_step,
+                    payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args),
+                    train_metrics=metrics,
+                    force=True,
+                )
+                checkpointer.close()
                 return
-    save_checkpoint(output_dir, model, optimizer, scheduler, global_step, config, args)
+    checkpointer.maybe_save(
+        step=global_step,
+        payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args),
+        force=True,
+    )
+    checkpointer.close()
 
 
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
@@ -650,6 +703,24 @@ def save_checkpoint(
     print(f"Saved checkpoint: {path}", flush=True)
 
 
+def checkpoint_payload(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    step: int,
+    config: ExperimentConfig,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    return {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler is not None else None,
+        "step": step,
+        "config": dataclass_tree(config),
+        "args": vars(args),
+    }
+
+
 def maybe_resume(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -658,7 +729,11 @@ def maybe_resume(
     *,
     fresh_start: bool,
 ) -> int:
-    path = output_dir / "checkpoint_last.pt"
+    path = output_dir / "checkpoints" / "checkpoint_latest.pt"
+    if not path.exists():
+        legacy_path = output_dir / "checkpoint_last.pt"
+        if legacy_path.exists():
+            path = legacy_path
     if fresh_start or not path.exists():
         return 0
     checkpoint = torch.load(path, map_location="cpu")
@@ -671,7 +746,11 @@ def maybe_resume(
 
 
 def resolve_output_dir(config: ExperimentConfig, args: argparse.Namespace) -> Path:
-    return config.train.output_root / config.train.wandb_run_name
+    if args.run_root:
+        return Path(args.run_root)
+    if args.output_root:
+        return Path(args.output_root) / config.train.wandb_run_name
+    return default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, config.train.wandb_run_name)
 
 
 def default_run_name(args: argparse.Namespace) -> str:
@@ -679,82 +758,15 @@ def default_run_name(args: argparse.Namespace) -> str:
 
 
 def init_wandb(args: argparse.Namespace, config: ExperimentConfig, output_dir: Path, horizon_count: int) -> Any | None:
-    if not args.wandb_project or args.wandb_project.lower() in {"off", "none", "disabled"}:
-        print("*** WANDB project disabled; writing metrics.jsonl only.", flush=True)
-        return None
-    mode = resolve_wandb_mode(args)
-    if mode == "disabled":
-        print("*** WANDB explicitly disabled; writing metrics.jsonl only.", flush=True)
-        return None
-    os.environ.setdefault("WANDB_INIT_TIMEOUT", str(args.wandb_init_timeout))
-    os.environ.setdefault("WANDB_LOGIN_TIMEOUT", str(min(args.wandb_init_timeout, 30)))
-    if mode == "offline":
-        os.environ["WANDB_MODE"] = "offline"
-    elif mode == "online":
-        os.environ["WANDB_MODE"] = "online"
-    print(
-        "*** WANDB INIT | "
-        f"entity={args.wandb_entity or '<none>'} "
-        f"project={args.wandb_project} "
-        f"run={config.train.wandb_run_name} "
-        f"mode={mode} "
-        f"api_key_present={bool(os.environ.get('WANDB_API_KEY'))} "
-        f"timeout_seconds={args.wandb_init_timeout}",
-        flush=True,
+    return mlops_init_wandb(
+        entity=args.wandb_entity,
+        project=args.wandb_project,
+        run_name=config.train.wandb_run_name,
+        config={"horizon_count": horizon_count, **dataclass_tree(config)},
+        run_dir=output_dir,
+        mode=args.wandb_mode,
+        timeout_seconds=args.wandb_init_timeout,
     )
-    if not os.environ.get("WANDB_API_KEY") and mode == "online":
-        raise RuntimeError("WANDB_API_KEY is required for --wandb-mode online.")
-    if not os.environ.get("WANDB_API_KEY") and mode == "offline":
-        print(
-            "*** WANDB_API_KEY was not found after .env discovery; using WANDB_MODE=offline. "
-            "Set WANDB_API_KEY in an environment variable or a discovered .env file for online logging.",
-            flush=True,
-        )
-    try:
-        import wandb
-    except ModuleNotFoundError:
-        raise RuntimeError("wandb is not installed, but W&B logging is enabled.") from None
-    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
-
-    def init_worker() -> None:
-        try:
-            api_key = os.environ.get("WANDB_API_KEY")
-            if api_key and mode == "online":
-                wandb.login(key=api_key, relogin=False)
-            settings = wandb.Settings(
-                init_timeout=max(1, int(args.wandb_init_timeout)),
-                login_timeout=max(1, min(int(args.wandb_init_timeout), 30)),
-            )
-            run = wandb.init(
-                entity=args.wandb_entity or None,
-                project=args.wandb_project,
-                name=config.train.wandb_run_name,
-                config={"horizon_count": horizon_count, **dataclass_tree(config)},
-                dir=str(output_dir),
-                resume="allow",
-                mode=mode,
-                settings=settings,
-            )
-            result_queue.put(("ok", run))
-        except Exception:
-            result_queue.put(("error", traceback.format_exc()))
-
-    thread = threading.Thread(target=init_worker, name="wandb-init", daemon=True)
-    thread.start()
-    thread.join(timeout=max(1, int(args.wandb_init_timeout)))
-    if thread.is_alive():
-        raise TimeoutError(
-            "W&B init timed out before returning. The backend did not start cleanly. "
-            "This usually indicates a W&B service/startup issue, not a model/data issue. "
-            "Try a larger --wandb-init-timeout only if the workstation network is slow."
-        )
-    if result_queue.empty():
-        raise RuntimeError("W&B init thread returned no result.")
-    status, payload = result_queue.get()
-    if status == "ok":
-        print(f"*** WANDB READY | mode={mode} dir={getattr(payload, 'dir', '<unknown>')}", flush=True)
-        return payload
-    raise RuntimeError(f"W&B init failed:\n{payload}")
 
 
 def resolve_wandb_mode(args: argparse.Namespace) -> str:

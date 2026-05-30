@@ -22,7 +22,6 @@ from research.masked_event_model.v2 import train
 TRAIN_ARGS: dict[str, Any] = {
     "cache_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\event_chunks_v2",
     "canonical_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_v2",
-    "output_root": r"D:\TradingData\quant-research-workbench\market_data\models\masked_event_model\v2",
     "train_start_date": "2025-11-01",
     "train_end_date": "2025-11-30",
     "validation_start_date": "2025-12-01",
@@ -61,6 +60,8 @@ TRAIN_ARGS: dict[str, Any] = {
     "pretrain_validation_frequency": 50,
     "pretrain_validation_steps": 4,
     "checkpoint_steps": 1000,
+    "checkpoint_latest_steps": 10,
+    "checkpoint_archive_steps": 5000,
     "loader_prefetch_batches": 1,
     "wandb_entity": "mehdifaraji",
     "wandb_project": "May2026-masked-event-modeling",

@@ -15,7 +15,8 @@ $runtimeEnv = Join-Path $runtimeRoot '.env'
 $env:PYTHONPATH = $runtimeRoot + [System.IO.Path]::PathSeparator + $env:PYTHONPATH
 $env:DOTENV_PATHS = $repoEnv + [System.IO.Path]::PathSeparator + $runtimeEnv + [System.IO.Path]::PathSeparator + $env:DOTENV_PATHS
 $runStamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-$logDir = 'D:\TradingData\quant-research-workbench\market_data\models\masked_event_model\v2\workstation_logs'
+$mlRoot = if ($env:QW_MLOPS_ROOT) { $env:QW_MLOPS_ROOT } else { 'D:\TradingML' }
+$logDir = Join-Path $mlRoot 'runtimes\masked_event_model\v2\launcher_logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $logPath = Join-Path $logDir ('masked_event_v2_train_' + $runStamp + '.log')
 $wandbMode = if ($env:MASKED_EVENT_WANDB_MODE) { $env:MASKED_EVENT_WANDB_MODE } else { 'online' }
@@ -29,7 +30,6 @@ $ErrorActionPreference = 'Continue'
 & "c:\Users\Mehdi\miniconda3\envs\ml4t\python.exe" -u (Join-Path $runtimeRoot 'research\masked_event_model\v2\train.py') `
   --cache-root "D:\market-data\flatfiles\us_stocks_sip\derived\event_chunks_v2" `
   --canonical-root "D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_v2" `
-  --output-root "D:\TradingData\quant-research-workbench\market_data\models\masked_event_model\v2" `
   --train-start-date "2025-11-01" `
   --train-end-date "2025-11-30" `
   --validation-start-date "2025-12-01" `
@@ -68,6 +68,8 @@ $ErrorActionPreference = 'Continue'
   --pretrain-validation-frequency 50 `
   --pretrain-validation-steps 4 `
   --checkpoint-steps 1000 `
+  --checkpoint-latest-steps 10 `
+  --checkpoint-archive-steps 5000 `
   --loader-prefetch-batches 1 `
   --wandb-entity "mehdifaraji" `
   --wandb-project "May2026-masked-event-modeling" `

@@ -99,7 +99,7 @@ class ProbeConfig:
 
 @dataclass(slots=True)
 class TrainConfig:
-    output_root: Path = Path("D:/TradingData/quant-research-workbench/market_data/models/masked_event_model/v2")
+    output_root: Path = Path("")
     batch_size: int = 256
     epochs: int = 3
     max_steps: int = 0

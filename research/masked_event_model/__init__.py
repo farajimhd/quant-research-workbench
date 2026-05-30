@@ -1,1 +1,1 @@
-"""Masked event modeling research package."""
+"""Masked event model experiments."""

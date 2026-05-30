@@ -34,9 +34,18 @@ from research.masked_event_model.v2.data import discover_chunk_files, target_hor
 from research.masked_event_model.v2.model import MaskedEventAutoencoder
 from research.masked_event_model.v2.probe import run_linear_probe
 from research.masked_event_model.v2.schema import CHUNK_SUMMARY_COLUMNS, QUOTE_FEATURE_COLUMNS, TRADE_FEATURE_COLUMNS
+from research.mlops.env import discover_env_files, load_env_files
+from research.mlops.manifest import write_run_manifest
+from research.mlops.metrics import JsonlMetricLogger
+from research.mlops.paths import RunPaths, default_run_root
+from research.mlops.seeds import set_seed
+from research.mlops.wandb_utils import init_wandb as mlops_init_wandb
 
 
 EXPERIMENT_VERSION = "mem-v2-linear-probe"
+MODEL_FAMILY = "masked_event_model"
+MODEL_VERSION = "v2"
+JOB_TYPE = "linear_probe"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -45,7 +54,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     probe_defaults = ProbeConfig()
     parser = argparse.ArgumentParser(description="Train a linear probe on a frozen masked event v2 checkpoint.")
     parser.add_argument("--checkpoint-path", default="")
-    parser.add_argument("--output-root", default=str(train_defaults.output_root))
+    parser.add_argument("--output-root", default="")
+    parser.add_argument("--run-root", default="")
     parser.add_argument("--pretrain-run-name", default=train_defaults.wandb_run_name)
     parser.add_argument("--cache-root", default="")
     parser.add_argument("--canonical-root", default="")
@@ -74,11 +84,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    load_dotenv_files(discover_dotenv_paths())
+    load_env_files(discover_env_files(REPO_ROOT))
     set_seed(args.seed)
     checkpoint_path = resolve_checkpoint_path(args)
     checkpoint_dir = checkpoint_path.parent
-    metrics_path = checkpoint_dir / "linear_probe_metrics.jsonl"
     config_json = read_checkpoint_config_json(checkpoint_dir)
     print(f"Linear probe checkpoint: {checkpoint_path}", flush=True)
     print(f"Linear probe metrics: {metrics_path}", flush=True)
@@ -101,8 +110,24 @@ def main(argv: list[str] | None = None) -> None:
         learning_rate=args.learning_rate,
     )
     run_name = args.wandb_run_name or default_probe_run_name(checkpoint_dir.name, checkpoint_step, probe_config)
-    run = init_wandb(args, run_name, checkpoint_path, checkpoint_step, data_config, model_config, probe_config, horizon_count)
-    write_probe_config(checkpoint_dir, args, checkpoint_path, checkpoint_step, data_config, model_config, probe_config, horizon_count)
+    run_paths = RunPaths.create(resolve_probe_run_root(args, run_name))
+    metrics_path = run_paths.metrics_path
+    run = init_wandb(args, run_name, checkpoint_path, checkpoint_step, data_config, model_config, probe_config, horizon_count, run_paths)
+    write_probe_config(run_paths.run_root, args, checkpoint_path, checkpoint_step, data_config, model_config, probe_config, horizon_count)
+    write_run_manifest(
+        run_paths.manifest_path,
+        repo_root=REPO_ROOT,
+        model_family=MODEL_FAMILY,
+        version=MODEL_VERSION,
+        job_type=JOB_TYPE,
+        run_name=run_name,
+        args=vars(args),
+        config={"data": dataclass_tree(data_config), "model": dataclass_tree(model_config), "probe": dataclass_tree(probe_config)},
+        data_roots={"cache_root": str(data_config.cache_root), "canonical_root": str(data_config.canonical_root)},
+        output_root=run_paths.run_root,
+        source_checkpoint=checkpoint_path,
+        wandb_info={"project": args.wandb_project, "entity": args.wandb_entity, "run_name": run_name},
+    )
     print(
         "Linear probe config "
         f"train_windows={probe_config.train_windows:,} val_windows={probe_config.val_windows:,} "
@@ -149,7 +174,7 @@ def main(argv: list[str] | None = None) -> None:
             "probe/horizon_count": float(horizon_count),
         }
     )
-    log_metrics(metrics, metrics_path, run, checkpoint_step)
+    JsonlMetricLogger(metrics_path, run).log(metrics, checkpoint_step)
     print("LINEAR PROBE METRICS " + json.dumps(metrics, sort_keys=True), flush=True)
     if run is not None:
         run.finish()
@@ -161,20 +186,38 @@ def resolve_checkpoint_path(args: argparse.Namespace) -> Path:
         if not path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {path}")
         return path
-    run_path = Path(args.output_root) / args.pretrain_run_name / "checkpoint_last.pt"
-    if run_path.exists():
-        return run_path
-    candidates = sorted(Path(args.output_root).glob("*/checkpoint_last.pt"), key=lambda path: path.stat().st_mtime, reverse=True)
+    roots: list[Path] = []
+    if args.run_root:
+        roots.append(Path(args.run_root))
+    if args.output_root:
+        roots.append(Path(args.output_root) / args.pretrain_run_name)
+    roots.append(default_run_root(MODEL_FAMILY, MODEL_VERSION, "pretrain", args.pretrain_run_name))
+    for root in roots:
+        for relative in ("checkpoints/checkpoint_latest.pt", "checkpoint_last.pt"):
+            path = root / relative
+            if path.exists():
+                return path
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend(root.parent.glob("*/checkpoints/checkpoint_latest.pt"))
+        candidates.extend(root.parent.glob("*/checkpoint_last.pt"))
+    candidates = sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)
     if not candidates:
-        raise FileNotFoundError(f"No checkpoint_last.pt found under {args.output_root}.")
+        raise FileNotFoundError("No checkpoint_latest.pt or checkpoint_last.pt found in configured roots.")
     return candidates[0]
 
 
+def resolve_probe_run_root(args: argparse.Namespace, run_name: str) -> Path:
+    if args.run_root:
+        return Path(args.run_root)
+    return default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, run_name)
+
+
 def read_checkpoint_config_json(checkpoint_dir: Path) -> dict[str, Any]:
-    path = checkpoint_dir / "config.json"
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    for path in (checkpoint_dir / "config.json", checkpoint_dir.parent / "config.json"):
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    return {}
 
 
 def data_config_from_raw(raw: dict[str, Any], args: argparse.Namespace) -> DataConfig:
@@ -237,71 +280,25 @@ def init_wandb(
     model_config: ModelConfig,
     probe_config: ProbeConfig,
     horizon_count: int,
+    run_paths: RunPaths,
 ) -> Any | None:
-    if not args.wandb_project or args.wandb_project.lower() in {"off", "none", "disabled"}:
-        print("*** WANDB project disabled; writing linear_probe_metrics.jsonl only.", flush=True)
-        return None
-    mode = resolve_wandb_mode(args)
-    if mode == "disabled":
-        print("*** WANDB explicitly disabled; writing linear_probe_metrics.jsonl only.", flush=True)
-        return None
-    os.environ.setdefault("WANDB_INIT_TIMEOUT", str(args.wandb_init_timeout))
-    os.environ.setdefault("WANDB_LOGIN_TIMEOUT", str(min(args.wandb_init_timeout, 30)))
-    os.environ["WANDB_MODE"] = mode
-    if not os.environ.get("WANDB_API_KEY") and mode == "online":
-        raise RuntimeError("WANDB_API_KEY is required for --wandb-mode online.")
-    print(
-        "*** WANDB INIT | "
-        f"entity={args.wandb_entity or '<none>'} project={args.wandb_project} "
-        f"run={run_name} mode={mode} api_key_present={bool(os.environ.get('WANDB_API_KEY'))}",
-        flush=True,
+    return mlops_init_wandb(
+        entity=args.wandb_entity,
+        project=args.wandb_project,
+        run_name=run_name,
+        config={
+            "version": EXPERIMENT_VERSION,
+            "checkpoint_path": str(checkpoint_path),
+            "checkpoint_step": checkpoint_step,
+            "horizon_count": horizon_count,
+            "data": dataclass_tree(data_config),
+            "model": dataclass_tree(model_config),
+            "probe": dataclass_tree(probe_config),
+        },
+        run_dir=run_paths.wandb_dir,
+        mode=args.wandb_mode,
+        timeout_seconds=args.wandb_init_timeout,
     )
-    try:
-        import wandb
-    except ModuleNotFoundError:
-        raise RuntimeError("wandb is not installed, but W&B logging is enabled.") from None
-    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
-
-    def init_worker() -> None:
-        try:
-            api_key = os.environ.get("WANDB_API_KEY")
-            if api_key and mode == "online":
-                wandb.login(key=api_key, relogin=False)
-            run = wandb.init(
-                entity=args.wandb_entity or None,
-                project=args.wandb_project,
-                name=run_name,
-                config={
-                    "version": EXPERIMENT_VERSION,
-                    "checkpoint_path": str(checkpoint_path),
-                    "checkpoint_step": checkpoint_step,
-                    "horizon_count": horizon_count,
-                    "data": dataclass_tree(data_config),
-                    "model": dataclass_tree(model_config),
-                    "probe": dataclass_tree(probe_config),
-                },
-                dir=str(checkpoint_path.parent),
-                resume="allow",
-                mode=mode,
-                settings=wandb.Settings(
-                    init_timeout=max(1, int(args.wandb_init_timeout)),
-                    login_timeout=max(1, min(int(args.wandb_init_timeout), 30)),
-                ),
-            )
-            result_queue.put(("ok", run))
-        except Exception:
-            result_queue.put(("error", traceback.format_exc()))
-
-    thread = threading.Thread(target=init_worker, name="wandb-linear-probe-init", daemon=True)
-    thread.start()
-    thread.join(timeout=max(1, int(args.wandb_init_timeout)))
-    if thread.is_alive():
-        raise TimeoutError("W&B init timed out before returning.")
-    status, payload = result_queue.get()
-    if status == "ok":
-        print(f"*** WANDB READY | mode={mode} dir={getattr(payload, 'dir', '<unknown>')}", flush=True)
-        return payload
-    raise RuntimeError(f"W&B init failed:\n{payload}")
 
 
 def resolve_wandb_mode(args: argparse.Namespace) -> str:

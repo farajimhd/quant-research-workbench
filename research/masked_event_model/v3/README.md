@@ -39,9 +39,12 @@ The training forward path uses sparse masked reconstruction: decoder heads run o
 
 v3 keeps the efficient v2 pretraining path but separates internal model width from exported embedding width: the encoder runs at `d_model=384`, projects to a `256` bottleneck embedding, and projects that bottleneck back to `384` for decoder reconstruction.
 
+Linear probing is intentionally separate from pretraining. Run it after a checkpoint exists; it loads the frozen encoder from `checkpoints/checkpoint_latest.pt`, trains only a linear probe head, writes metrics under the linear-probe run folder, and logs `probe/...` metrics to W&B.
+
 ## Workstation Run
 
 ```powershell
 cd D:\TradingCodes\quant-research-workbench-masked-event-v3-runtime
 .\run_train.ps1
+.\run_linear_probe.ps1
 ```
