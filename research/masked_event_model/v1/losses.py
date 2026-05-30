@@ -47,6 +47,9 @@ def masked_autoencoder_loss(
         "pretrain/loss_event_kind": float(event_kind_loss.detach().cpu()),
         "pretrain/quote_price_rmse_bps": masked_rmse(output.quote_reconstruction[..., 2:5], quote_target[..., 2:5], quote_mask[..., 2:5]),
         "pretrain/trade_price_rmse_bps": masked_rmse(output.trade_reconstruction[..., 2:3], trade_target[..., 2:3], trade_mask[..., 2:3]),
+        "pretrain/quote_psnr_peak6_db": masked_psnr(output.quote_reconstruction, quote_target, quote_mask),
+        "pretrain/trade_psnr_peak6_db": masked_psnr(output.trade_reconstruction, trade_target, trade_mask),
+        "pretrain/summary_psnr_peak6_db": masked_psnr(output.summary_reconstruction, summary_target, summary_mask),
         "pretrain/event_kind_acc_pct": masked_accuracy(output.event_kind_logits.argmax(dim=-1), event_target, event_mask),
     }
     metrics.update(masks.diagnostics())
@@ -60,23 +63,23 @@ def masked_mse(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tenso
 
 
 def masked_cross_entropy(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    if not bool(mask.any()):
-        return logits.sum() * 0.0
     loss = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), target.reshape(-1), reduction="none")
     weights = mask.reshape(-1).float()
     return (loss * weights).sum() / weights.sum().clamp_min(1.0)
 
 
 def masked_rmse(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> float:
-    if not bool(mask.any()):
-        return 0.0
     mse = masked_mse(prediction, target, mask)
     return float(torch.sqrt(mse.detach()).cpu())
 
 
+def masked_psnr(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, *, peak: float = 6.0) -> float:
+    mse = masked_mse(prediction, target, mask).detach().clamp_min(1e-12)
+    psnr = 20.0 * torch.log10(torch.tensor(float(peak), device=mse.device)) - 10.0 * torch.log10(mse)
+    return float(psnr.cpu())
+
+
 def masked_accuracy(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> float:
-    if not bool(mask.any()):
-        return 0.0
     correct = ((prediction == target) & mask).float().sum()
     return float((correct / mask.float().sum().clamp_min(1.0) * 100.0).detach().cpu())
 

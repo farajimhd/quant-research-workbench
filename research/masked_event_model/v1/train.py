@@ -13,7 +13,7 @@ import traceback
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 REPO_ROOT = next(
     (
@@ -80,8 +80,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scheduler-eta-min", type=float, default=train_defaults.scheduler_eta_min)
     parser.add_argument("--grad-clip-norm", type=float, default=train_defaults.grad_clip_norm)
     parser.add_argument("--logging-steps", type=int, default=train_defaults.logging_steps)
+    parser.add_argument("--profile-training-every-steps", type=int, default=train_defaults.profile_training_every_steps)
     parser.add_argument("--profile-inference-every-steps", type=int, default=train_defaults.profile_inference_every_steps)
     parser.add_argument("--checkpoint-steps", type=int, default=train_defaults.checkpoint_steps)
+    parser.add_argument("--loader-prefetch-batches", type=int, default=train_defaults.loader_prefetch_batches)
     parser.add_argument("--mask-ratio", type=float, default=mask_defaults.mask_ratio)
     parser.add_argument("--d-model", type=int, default=model_defaults.d_model)
     parser.add_argument("--n-heads", type=int, default=model_defaults.n_heads)
@@ -198,7 +200,7 @@ def main(argv: list[str] | None = None) -> None:
             args.seed + epoch,
             progress_callback=loader_progress,
         )
-        loader_iter = iter(loader)
+        loader_iter = prefetch_iterator(iter(loader), max_prefetch=config.train.loader_prefetch_batches)
         while True:
             loader_wait_started = time.perf_counter()
             try:
@@ -208,24 +210,29 @@ def main(argv: list[str] | None = None) -> None:
             loader_wait_seconds = time.perf_counter() - loader_wait_started
             step_started = time.perf_counter()
             global_step += 1
+            profile_step = config.train.profile_training_every_steps > 0 and global_step % config.train.profile_training_every_steps == 0
             transfer_started = time.perf_counter()
             batch = move_batch(batch, device)
-            synchronize_if_cuda(device)
+            if profile_step:
+                synchronize_if_cuda(device)
             transfer_seconds = time.perf_counter() - transfer_started
             mask_started = time.perf_counter()
             masks = build_structured_masks(quote_values=batch["quote_values"], trade_values=batch["trade_values"], chunk_summary=batch["chunk_summary"], event_kinds=batch["event_kinds"], config=config.masks)
-            synchronize_if_cuda(device)
+            if profile_step:
+                synchronize_if_cuda(device)
             mask_seconds = time.perf_counter() - mask_started
             forward_started = time.perf_counter()
             with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
                 output = model(batch["quote_values"], batch["trade_values"], batch["event_kinds"], batch["event_indices"], batch["chunk_summary"], masks)
                 loss, metrics = masked_autoencoder_loss(output, batch, masks, config.losses)
-            synchronize_if_cuda(device)
+            if profile_step:
+                synchronize_if_cuda(device)
             forward_loss_seconds = time.perf_counter() - forward_started
             backward_started = time.perf_counter()
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
-            synchronize_if_cuda(device)
+            if profile_step:
+                synchronize_if_cuda(device)
             backward_seconds = time.perf_counter() - backward_started
             optimizer_started = time.perf_counter()
             scaler.unscale_(optimizer)
@@ -234,20 +241,21 @@ def main(argv: list[str] | None = None) -> None:
             scaler.update()
             if scheduler is not None:
                 scheduler.step(global_step)
-            synchronize_if_cuda(device)
+            if profile_step:
+                synchronize_if_cuda(device)
             optimizer_seconds = time.perf_counter() - optimizer_started
-            metrics.update(
-                {
-                    "train/step_seconds": time.perf_counter() - step_started,
-                    "profile/loader_wait_seconds": loader_wait_seconds,
-                    "profile/transfer_seconds": transfer_seconds,
-                    "profile/mask_seconds": mask_seconds,
-                    "profile/forward_loss_seconds": forward_loss_seconds,
-                    "profile/backward_seconds": backward_seconds,
-                    "profile/optimizer_seconds": optimizer_seconds,
-                    "profile/batch_size": float(batch["quote_values"].shape[0]),
-                }
-            )
+            metrics.update({"train/step_seconds": time.perf_counter() - step_started, "profile/batch_size": float(batch["quote_values"].shape[0])})
+            if profile_step:
+                metrics.update(
+                    {
+                        "profile/loader_wait_seconds": loader_wait_seconds,
+                        "profile/transfer_seconds": transfer_seconds,
+                        "profile/mask_seconds": mask_seconds,
+                        "profile/forward_loss_seconds": forward_loss_seconds,
+                        "profile/backward_seconds": backward_seconds,
+                        "profile/optimizer_seconds": optimizer_seconds,
+                    }
+                )
             if config.train.profile_inference_every_steps > 0 and global_step % config.train.profile_inference_every_steps == 0:
                 metrics.update(profile_forecast_inference(model, batch, device))
             if global_step % config.train.logging_steps == 0:
@@ -321,10 +329,12 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             scheduler_eta_min=args.scheduler_eta_min,
             grad_clip_norm=args.grad_clip_norm,
             logging_steps=args.logging_steps,
+            profile_training_every_steps=args.profile_training_every_steps,
             checkpoint_steps=args.checkpoint_steps,
             profile_inference_every_steps=args.profile_inference_every_steps,
             num_workers=args.num_workers,
             prefetch_factor=args.prefetch_factor,
+            loader_prefetch_batches=args.loader_prefetch_batches,
             seed=args.seed,
             wandb_project=args.wandb_project,
             wandb_entity=args.wandb_entity,
@@ -356,6 +366,33 @@ def make_loader(
     if effective_workers > 0:
         kwargs.update({"prefetch_factor": max(1, prefetch_factor), "persistent_workers": True})
     return DataLoader(dataset, **kwargs)
+
+
+def prefetch_iterator(iterator: Iterator[Any], *, max_prefetch: int) -> Iterator[Any]:
+    if max_prefetch <= 0:
+        yield from iterator
+        return
+
+    sentinel = object()
+    items: queue.Queue[Any] = queue.Queue(maxsize=max(1, int(max_prefetch)))
+
+    def worker() -> None:
+        try:
+            for item in iterator:
+                items.put(item)
+            items.put(sentinel)
+        except BaseException as exc:
+            items.put(exc)
+
+    thread = threading.Thread(target=worker, name="loader-prefetch", daemon=True)
+    thread.start()
+    while True:
+        item = items.get()
+        if item is sentinel:
+            break
+        if isinstance(item, BaseException):
+            raise item
+        yield item
 
 
 def estimated_batch_gib(data_config: DataConfig, batch_size: int, horizon_count: int) -> float:
@@ -603,6 +640,8 @@ def format_metrics(step: int, epoch: int, metrics: dict[str, float]) -> str:
         "pretrain/loss_quote",
         "pretrain/loss_trade",
         "pretrain/loss_summary",
+        "pretrain/quote_psnr_peak6_db",
+        "pretrain/trade_psnr_peak6_db",
         "pretrain/event_kind_acc_pct",
         "mask/ratio_actual",
         "train/lr",

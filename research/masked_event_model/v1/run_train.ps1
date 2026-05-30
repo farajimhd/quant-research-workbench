@@ -61,8 +61,10 @@ $ErrorActionPreference = 'Continue'
   --scheduler-t-mult 2 `
   --scheduler-eta-min 1e-6 `
   --logging-steps 1 `
+  --profile-training-every-steps 10 `
   --profile-inference-every-steps 10 `
   --checkpoint-steps 1000 `
+  --loader-prefetch-batches 1 `
   --probe-every-steps 5000 `
   --probe-train-steps 200 `
   --probe-train-windows 20000 `
