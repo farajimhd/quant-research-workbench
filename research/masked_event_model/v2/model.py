@@ -199,16 +199,21 @@ class MaskedEventAutoencoder(nn.Module):
         event_kinds: torch.Tensor,
         event_indices: torch.Tensor,
         chunk_summary: torch.Tensor,
-        masks: MaskBatch,
+        masks: MaskBatch | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch, chunks, quote_events, _ = quote_values.shape
         trade_events = trade_values.shape[2]
         quote_valid = quote_values.abs().sum(dim=-1) > 0.0
         trade_valid = trade_values.abs().sum(dim=-1) > 0.0
 
-        masked_quote_values = quote_values.masked_fill(masks.quote_value_mask, 0.0)
-        masked_trade_values = trade_values.masked_fill(masks.trade_value_mask, 0.0)
-        masked_summary = chunk_summary.masked_fill(masks.summary_value_mask, 0.0)
+        if masks is None:
+            masked_quote_values = quote_values
+            masked_trade_values = trade_values
+            masked_summary = chunk_summary
+        else:
+            masked_quote_values = quote_values.masked_fill(masks.quote_value_mask, 0.0)
+            masked_trade_values = trade_values.masked_fill(masks.trade_value_mask, 0.0)
+            masked_summary = chunk_summary.masked_fill(masks.summary_value_mask, 0.0)
 
         quote_tokens = self.quote_value_projection(masked_quote_values)
         trade_tokens = self.trade_value_projection(masked_trade_values)
@@ -218,8 +223,9 @@ class MaskedEventAutoencoder(nn.Module):
         trade_pos = torch.arange(trade_events, device=trade_values.device)
         quote_tokens = quote_tokens + self.quote_position_embedding(quote_pos).view(1, 1, quote_events, -1)
         trade_tokens = trade_tokens + self.trade_position_embedding(trade_pos).view(1, 1, trade_events, -1)
-        quote_tokens = torch.where(masks.quote_token_mask.unsqueeze(-1), self.quote_mask_token, quote_tokens)
-        trade_tokens = torch.where(masks.trade_token_mask.unsqueeze(-1), self.trade_mask_token, trade_tokens)
+        if masks is not None:
+            quote_tokens = torch.where(masks.quote_token_mask.unsqueeze(-1), self.quote_mask_token, quote_tokens)
+            trade_tokens = torch.where(masks.trade_token_mask.unsqueeze(-1), self.trade_mask_token, trade_tokens)
 
         flat_quote = quote_tokens.reshape(batch * chunks, quote_events, self.d_model)
         flat_trade = trade_tokens.reshape(batch * chunks, trade_events, self.d_model)
@@ -232,7 +238,8 @@ class MaskedEventAutoencoder(nn.Module):
         trade_encoded = self.trade_event_encoder(flat_trade, src_key_padding_mask=trade_padding)
         quote_pooled = masked_mean(quote_encoded, ~quote_padding).reshape(batch, chunks, self.d_model)
         trade_pooled = masked_mean(trade_encoded, ~trade_padding).reshape(batch, chunks, self.d_model)
-        summary_tokens = torch.where(masks.chunk_mask.unsqueeze(-1), self.summary_mask_token, summary_tokens)
+        if masks is not None:
+            summary_tokens = torch.where(masks.chunk_mask.unsqueeze(-1), self.summary_mask_token, summary_tokens)
 
         chunk_tokens = self.fusion(torch.cat([quote_pooled, trade_pooled, summary_tokens], dim=-1))
         chunk_pos = torch.arange(chunks, device=quote_values.device)
@@ -249,16 +256,7 @@ class MaskedEventAutoencoder(nn.Module):
         event_indices: torch.Tensor,
         chunk_summary: torch.Tensor,
     ) -> torch.Tensor:
-        empty_masks = MaskBatch(
-            quote_value_mask=torch.zeros_like(quote_values, dtype=torch.bool),
-            trade_value_mask=torch.zeros_like(trade_values, dtype=torch.bool),
-            summary_value_mask=torch.zeros_like(chunk_summary, dtype=torch.bool),
-            event_kind_mask=torch.zeros_like(event_kinds, dtype=torch.bool),
-            quote_token_mask=torch.zeros_like(quote_values[..., 0], dtype=torch.bool),
-            trade_token_mask=torch.zeros_like(trade_values[..., 0], dtype=torch.bool),
-            chunk_mask=torch.zeros_like(chunk_summary[..., 0], dtype=torch.bool),
-        )
-        return self._encode_inputs(quote_values, trade_values, event_kinds, event_indices, chunk_summary, empty_masks)[1]
+        return self._encode_inputs(quote_values, trade_values, event_kinds, event_indices, chunk_summary, None)[1]
 
     def forecast_only(
         self,

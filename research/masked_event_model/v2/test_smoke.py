@@ -6,7 +6,7 @@ import torch
 
 from research.masked_event_model.v2.config import LossConfig, MaskConfig, ModelConfig
 from research.masked_event_model.v2.losses import masked_autoencoder_loss
-from research.masked_event_model.v2.masking import build_structured_masks
+from research.masked_event_model.v2.masking import MaskBatch, build_structured_masks
 from research.masked_event_model.v2.model import MaskedEventAutoencoder
 
 
@@ -30,8 +30,10 @@ class MaskedEventModelSmokeTests(unittest.TestCase):
                 temporal_layers=1,
                 decoder_layers=1,
                 ffn_mult=2,
+                dropout=0.0,
             ),
         )
+        model.eval()
         batch = {
             "quote_values": torch.randn(2, 4, 8, 18),
             "trade_values": torch.randn(2, 4, 10, 20),
@@ -61,6 +63,33 @@ class MaskedEventModelSmokeTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(loss))
         self.assertIn("pretrain/loss_total", metrics)
         self.assertGreater(metrics["mask/ratio_actual"], 0.5)
+
+        empty_masks = MaskBatch(
+            quote_value_mask=torch.zeros_like(batch["quote_values"], dtype=torch.bool),
+            trade_value_mask=torch.zeros_like(batch["trade_values"], dtype=torch.bool),
+            summary_value_mask=torch.zeros_like(batch["chunk_summary"], dtype=torch.bool),
+            event_kind_mask=torch.zeros_like(batch["event_kinds"], dtype=torch.bool),
+            quote_token_mask=torch.zeros_like(batch["quote_values"][..., 0], dtype=torch.bool),
+            trade_token_mask=torch.zeros_like(batch["trade_values"][..., 0], dtype=torch.bool),
+            chunk_mask=torch.zeros_like(batch["chunk_summary"][..., 0], dtype=torch.bool),
+        )
+        encoded_with_empty_masks = model._encode_inputs(
+            batch["quote_values"],
+            batch["trade_values"],
+            batch["event_kinds"],
+            batch["event_indices"],
+            batch["chunk_summary"],
+            empty_masks,
+        )[1]
+        encoded_with_no_mask = model.encode(
+            batch["quote_values"],
+            batch["trade_values"],
+            batch["event_kinds"],
+            batch["event_indices"],
+            batch["chunk_summary"],
+        )
+        self.assertEqual(tuple(encoded_with_no_mask.shape), (2, 64))
+        self.assertTrue(torch.allclose(encoded_with_no_mask, encoded_with_empty_masks, atol=1e-5))
 
 
 if __name__ == "__main__":

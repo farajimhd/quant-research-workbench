@@ -265,6 +265,7 @@ def main(argv: list[str] | None = None) -> None:
                     }
                 )
             if config.train.profile_inference_every_steps > 0 and global_step % config.train.profile_inference_every_steps == 0:
+                metrics.update(profile_encode_inference(model, batch, device))
                 metrics.update(profile_forecast_inference(model, batch, device))
             if global_step % config.train.logging_steps == 0:
                 metrics.update({"train/epoch": float(epoch + 1), "train/step": float(global_step), "train/lr": float(optimizer.param_groups[0]["lr"])})
@@ -590,6 +591,32 @@ def profile_forecast_inference(model: MaskedEventAutoencoder, batch: dict[str, A
     }
 
 
+def profile_encode_inference(model: MaskedEventAutoencoder, batch: dict[str, Any], device: torch.device) -> dict[str, float]:
+    was_training = model.training
+    model.eval()
+    synchronize_if_cuda(device)
+    started = time.perf_counter()
+    with torch.no_grad(), torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+        embedding = model.encode(
+            batch["quote_values"],
+            batch["trade_values"],
+            batch["event_kinds"],
+            batch["event_indices"],
+            batch["chunk_summary"],
+        )
+    synchronize_if_cuda(device)
+    elapsed = time.perf_counter() - started
+    if was_training:
+        model.train()
+    batch_size = float(batch["quote_values"].shape[0])
+    return {
+        "profile/inference_encode_seconds": elapsed,
+        "profile/inference_encode_ms_per_sample": elapsed * 1000.0 / max(batch_size, 1.0),
+        "profile/inference_encode_batch_size": batch_size,
+        "profile/inference_encode_output_elements": float(embedding.numel()),
+    }
+
+
 def build_scheduler(optimizer: torch.optim.Optimizer, train_config: TrainConfig) -> torch.optim.lr_scheduler.LRScheduler | None:
     if train_config.scheduler == "none":
         return None
@@ -764,6 +791,7 @@ def format_metrics(step: int, epoch: int, metrics: dict[str, float]) -> str:
         "profile/loader_wait_seconds",
         "profile/forward_loss_seconds",
         "profile/backward_seconds",
+        "profile/inference_encode_seconds",
         "profile/inference_forecast_seconds",
     ]
     parts = " ".join(f"{key}={metrics[key]:.4f}" for key in keys if key in metrics)
