@@ -39,7 +39,7 @@ $ErrorActionPreference = 'Continue'
   --tickers "ALL" `
   --context-seconds 30 `
   --chunk-ms 500 `
-  --batch-size 256 `
+  --batch-size 1024 `
   --epochs 3 `
   --num-workers 8 `
   --prefetch-factor 4 `
@@ -60,7 +60,7 @@ $ErrorActionPreference = 'Continue'
   --probe-val-windows 20000 `
   --wandb-entity "mehdifaraji" `
   --wandb-project "May2026-masked-event-modeling" `
-  --wandb-run-name "mem-v1-d512-e2-t8-d4-mask70-chunk500-nov2025" `
+  --wandb-run-name "mem-v1-d512-e2-t8-d4-mask70-chunk500-b1024-nov2025" `
   --wandb-mode $wandbMode `
   --wandb-init-timeout $wandbTimeout `
   2>&1 | ForEach-Object { $_.ToString() } | Tee-Object -FilePath $logPath

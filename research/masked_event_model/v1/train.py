@@ -43,7 +43,7 @@ from research.masked_event_model.v1.schema import CHUNK_SUMMARY_COLUMNS, QUOTE_F
 EXPERIMENT_VERSION = "mem-v1"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     data_defaults = DataConfig()
     train_defaults = TrainConfig()
     mask_defaults = MaskConfig()
@@ -96,11 +96,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fresh-start", action="store_true")
     parser.add_argument("--resume-latest", action="store_true", default=True)
     parser.add_argument("--dry-run", action="store_true")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     load_dotenv_files(discover_dotenv_paths())
     set_seed(args.seed)
     config = build_config(args)
