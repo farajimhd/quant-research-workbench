@@ -407,13 +407,23 @@ def valid_origins(arrays: dict[str, np.ndarray], config: DataConfig) -> np.ndarr
 
 
 class EventChunkDataset(IterableDataset):
-    def __init__(self, *, config: DataConfig, split: str, batch_size: int, seed: int = 17, progress_callback: Callable[[dict[str, Any]], None] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        config: DataConfig,
+        split: str,
+        batch_size: int,
+        seed: int = 17,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        shuffle: bool | None = None,
+    ) -> None:
         super().__init__()
         self.config = config
         self.split = split
         self.batch_size = batch_size
         self.seed = seed
         self.progress_callback = progress_callback
+        self.shuffle = shuffle
         self.start_date, self.end_date = split_dates(config, split)
         self.files = discover_chunk_files(config, start_date=self.start_date, end_date=self.end_date)
 
@@ -428,7 +438,8 @@ class EventChunkDataset(IterableDataset):
         worker = get_worker_info()
         files = list(self.files)
         rng = random.Random(self.seed + (worker.id if worker else 0))
-        if self.config.shuffle_files and self.split == "train":
+        shuffle = (self.config.shuffle_files and self.split == "train") if self.shuffle is None else self.shuffle
+        if shuffle:
             rng.shuffle(files)
         if worker is not None:
             files = files[worker.id :: worker.num_workers]
@@ -440,7 +451,7 @@ class EventChunkDataset(IterableDataset):
                 continue
             block_size = max(int(self.config.row_block_size), self.config.context_chunks)
             block_starts = list(range(first_origin, total_rows, block_size))
-            if self.config.shuffle_windows and self.split == "train":
+            if shuffle:
                 rng.shuffle(block_starts)
             self.progress(
                 {
@@ -476,7 +487,7 @@ class EventChunkDataset(IterableDataset):
                 local_end = origin_end - row_start
                 origins = valid_origins(arrays, self.config)
                 origins = origins[(origins >= local_start) & (origins < local_end)]
-                if self.config.shuffle_windows and self.split == "train":
+                if shuffle:
                     np_rng = np.random.default_rng(self.seed + origin_start + len(file_info.ticker) + len(file_info.year_month))
                     np_rng.shuffle(origins)
                 if self.config.max_windows_per_file > 0:

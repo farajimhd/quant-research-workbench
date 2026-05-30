@@ -63,6 +63,8 @@ $ErrorActionPreference = 'Continue'
   --logging-steps 1 `
   --profile-training-every-steps 10 `
   --profile-inference-every-steps 10 `
+  --pretrain-validation-frequency 50 `
+  --pretrain-validation-steps 4 `
   --checkpoint-steps 1000 `
   --loader-prefetch-batches 1 `
   --probe-every-steps 5000 `

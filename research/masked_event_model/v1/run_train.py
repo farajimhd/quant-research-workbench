@@ -56,6 +56,8 @@ TRAIN_ARGS: dict[str, Any] = {
     "logging_steps": 1,
     "profile_training_every_steps": 10,
     "profile_inference_every_steps": 10,
+    "pretrain_validation_frequency": 50,
+    "pretrain_validation_steps": 4,
     "checkpoint_steps": 1000,
     "loader_prefetch_batches": 1,
     "probe_every_steps": 5000,

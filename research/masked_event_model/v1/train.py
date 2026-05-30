@@ -82,6 +82,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--logging-steps", type=int, default=train_defaults.logging_steps)
     parser.add_argument("--profile-training-every-steps", type=int, default=train_defaults.profile_training_every_steps)
     parser.add_argument("--profile-inference-every-steps", type=int, default=train_defaults.profile_inference_every_steps)
+    parser.add_argument("--pretrain-validation-frequency", type=int, default=train_defaults.pretrain_validation_frequency)
+    parser.add_argument("--pretrain-validation-steps", type=int, default=train_defaults.pretrain_validation_steps)
     parser.add_argument("--checkpoint-steps", type=int, default=train_defaults.checkpoint_steps)
     parser.add_argument("--loader-prefetch-batches", type=int, default=train_defaults.loader_prefetch_batches)
     parser.add_argument("--mask-ratio", type=float, default=mask_defaults.mask_ratio)
@@ -180,6 +182,12 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(metrics, indent=2), flush=True)
         return
 
+    validation_batches = build_pretrain_validation_cache(config, args)
+    if validation_batches:
+        validation_metrics = evaluate_pretrain_validation(model, validation_batches, config, device, seed=args.seed + 10_000)
+        log_metrics(validation_metrics, metrics_path, run, global_step)
+        print("VALIDATION " + format_validation_metrics(global_step, validation_metrics), flush=True)
+
     model.train()
     loader_event_counter = [0]
 
@@ -262,6 +270,10 @@ def main(argv: list[str] | None = None) -> None:
                 metrics.update({"train/epoch": float(epoch + 1), "train/step": float(global_step), "train/lr": float(optimizer.param_groups[0]["lr"])})
                 log_metrics(metrics, metrics_path, run, global_step)
                 print(format_metrics(global_step, epoch + 1, metrics), flush=True)
+            if validation_batches and config.train.pretrain_validation_frequency > 0 and global_step % config.train.pretrain_validation_frequency == 0:
+                validation_metrics = evaluate_pretrain_validation(model, validation_batches, config, device, seed=args.seed + 10_000)
+                log_metrics(validation_metrics, metrics_path, run, global_step)
+                print("VALIDATION " + format_validation_metrics(global_step, validation_metrics), flush=True)
             if config.probe.enabled and global_step % config.probe.every_steps == 0:
                 probe_metrics = run_linear_probe(
                     encoder=model,
@@ -332,6 +344,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             profile_training_every_steps=args.profile_training_every_steps,
             checkpoint_steps=args.checkpoint_steps,
             profile_inference_every_steps=args.profile_inference_every_steps,
+            pretrain_validation_frequency=args.pretrain_validation_frequency,
+            pretrain_validation_steps=args.pretrain_validation_steps,
             num_workers=args.num_workers,
             prefetch_factor=args.prefetch_factor,
             loader_prefetch_batches=args.loader_prefetch_batches,
@@ -351,6 +365,7 @@ def make_loader(
     prefetch_factor: int,
     seed: int,
     progress_callback: Any | None = None,
+    shuffle: bool | None = None,
 ) -> DataLoader:
     effective_workers = max(0, num_workers)
     if effective_workers > 0 and platform.system().lower().startswith("win"):
@@ -361,11 +376,111 @@ def make_loader(
         )
         effective_workers = 0
     callback = progress_callback if effective_workers == 0 else None
-    dataset = EventChunkDataset(config=data_config, split=split, batch_size=batch_size, seed=seed, progress_callback=callback)
+    dataset = EventChunkDataset(config=data_config, split=split, batch_size=batch_size, seed=seed, progress_callback=callback, shuffle=shuffle)
     kwargs: dict[str, Any] = {"batch_size": None, "num_workers": effective_workers, "pin_memory": False}
     if effective_workers > 0:
         kwargs.update({"prefetch_factor": max(1, prefetch_factor), "persistent_workers": True})
     return DataLoader(dataset, **kwargs)
+
+
+def build_pretrain_validation_cache(config: ExperimentConfig, args: argparse.Namespace) -> list[dict[str, Any]]:
+    if config.train.pretrain_validation_frequency <= 0 or config.train.pretrain_validation_steps <= 0:
+        return []
+    print(
+        "Building fixed random pretrain validation cache from validation split "
+        f"{config.data.validation_start_date} -> {config.data.validation_end_date}; "
+        f"steps={config.train.pretrain_validation_steps}",
+        flush=True,
+    )
+    loader = make_loader(
+        config.data,
+        "validation",
+        config.train.batch_size,
+        num_workers=0,
+        prefetch_factor=1,
+        seed=args.seed + 50_000,
+        shuffle=True,
+    )
+    batches: list[dict[str, Any]] = []
+    iterator = iter(loader)
+    for index in range(config.train.pretrain_validation_steps):
+        try:
+            batch = next(iterator)
+        except StopIteration:
+            break
+        batches.append(batch)
+        print(
+            f"validation cache batch {index + 1}/{config.train.pretrain_validation_steps} "
+            f"size={batch['quote_values'].shape[0]}",
+            flush=True,
+        )
+    if not batches:
+        print("WARNING: no pretrain validation batches were created.", flush=True)
+    return batches
+
+
+def evaluate_pretrain_validation(
+    model: MaskedEventAutoencoder,
+    validation_batches: list[dict[str, Any]],
+    config: ExperimentConfig,
+    device: torch.device,
+    *,
+    seed: int,
+) -> dict[str, float]:
+    was_training = model.training
+    model.eval()
+    started = time.perf_counter()
+    totals: dict[str, float] = {}
+    with torch.no_grad():
+        for index, cpu_batch in enumerate(validation_batches):
+            batch = move_batch(cpu_batch, device)
+            with fork_torch_rng(device, seed + index):
+                masks = build_structured_masks(
+                    quote_values=batch["quote_values"],
+                    trade_values=batch["trade_values"],
+                    chunk_summary=batch["chunk_summary"],
+                    event_kinds=batch["event_kinds"],
+                    config=config.masks,
+                )
+            with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
+                output = model(batch["quote_values"], batch["trade_values"], batch["event_kinds"], batch["event_indices"], batch["chunk_summary"], masks)
+                _, metrics = masked_autoencoder_loss(output, batch, masks, config.losses)
+            for key, value in metrics.items():
+                if key.startswith("pretrain/"):
+                    out_key = "validation/" + key
+                elif key.startswith("mask/"):
+                    out_key = "validation/" + key
+                else:
+                    out_key = "validation/pretrain/" + key.replace("/", "_")
+                totals[out_key] = totals.get(out_key, 0.0) + float(value)
+    count = max(1, len(validation_batches))
+    averaged = {key: value / count for key, value in totals.items()}
+    averaged["validation/pretrain/batches"] = float(len(validation_batches))
+    averaged["validation/pretrain/seconds"] = time.perf_counter() - started
+    if was_training:
+        model.train()
+    return averaged
+
+
+class fork_torch_rng:
+    def __init__(self, device: torch.device, seed: int) -> None:
+        self.device = device
+        self.seed = seed
+        self.context: Any | None = None
+
+    def __enter__(self) -> None:
+        devices = []
+        if self.device.type == "cuda":
+            devices = [self.device.index if self.device.index is not None else torch.cuda.current_device()]
+        self.context = torch.random.fork_rng(devices=devices, enabled=True)
+        self.context.__enter__()
+        torch.manual_seed(self.seed)
+        if self.device.type == "cuda":
+            torch.cuda.manual_seed_all(self.seed)
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self.context is not None:
+            self.context.__exit__(exc_type, exc, tb)
 
 
 def prefetch_iterator(iterator: Iterator[Any], *, max_prefetch: int) -> Iterator[Any]:
@@ -653,6 +768,21 @@ def format_metrics(step: int, epoch: int, metrics: dict[str, float]) -> str:
     ]
     parts = " ".join(f"{key}={metrics[key]:.4f}" for key in keys if key in metrics)
     return f"step={step:,} epoch={epoch} {parts}"
+
+
+def format_validation_metrics(step: int, metrics: dict[str, float]) -> str:
+    keys = [
+        "validation/pretrain/loss_total",
+        "validation/pretrain/loss_quote",
+        "validation/pretrain/loss_trade",
+        "validation/pretrain/loss_summary",
+        "validation/pretrain/quote_psnr_peak6_db",
+        "validation/pretrain/trade_psnr_peak6_db",
+        "validation/pretrain/event_kind_acc_pct",
+        "validation/pretrain/seconds",
+    ]
+    parts = " ".join(f"{key}={metrics[key]:.4f}" for key in keys if key in metrics)
+    return f"step={step:,} {parts}"
 
 
 def write_config(output_dir: Path, config: ExperimentConfig, args: argparse.Namespace, horizon_count: int) -> None:

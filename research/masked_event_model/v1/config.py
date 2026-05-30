@@ -112,6 +112,8 @@ class TrainConfig:
     logging_steps: int = 1
     profile_training_every_steps: int = 10
     profile_inference_every_steps: int = 10
+    pretrain_validation_frequency: int = 50
+    pretrain_validation_steps: int = 4
     checkpoint_steps: int = 1000
     num_workers: int = 0
     prefetch_factor: int = 1
