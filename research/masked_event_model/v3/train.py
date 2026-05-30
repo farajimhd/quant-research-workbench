@@ -846,7 +846,9 @@ def discover_dotenv_paths() -> list[Path]:
             paths.append(Path(raw.strip()))
     for base in [Path.cwd(), REPO_ROOT, *REPO_ROOT.parents]:
         paths.append(base / ".env")
-    paths.append(Path("D:/TradingCodes/quant-research-workbench/.env"))
+    ml_root = Path(os.environ.get("QW_MLOPS_ROOT", "D:/TradingML"))
+    paths.append(ml_root / ".env")
+    paths.append(ml_root / "secrets" / ".env")
 
     unique: list[Path] = []
     seen: set[str] = set()

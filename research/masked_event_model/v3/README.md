@@ -43,8 +43,17 @@ Linear probing is intentionally separate from pretraining. Run it after a checkp
 
 ## Workstation Run
 
+Default workstation layout:
+
+```text
+D:\TradingML\codes\masked_event_model\v3
+D:\TradingML\runtimes\masked_event_model\v3
+```
+
+Keep secrets in `D:\TradingML\.env` or `D:\TradingML\secrets\.env`, not inside copied code or run directories.
+
 ```powershell
-cd D:\TradingCodes\quant-research-workbench-masked-event-v3-runtime
-.\run_train.ps1
-.\run_linear_probe.ps1
+cd D:\TradingML\codes\masked_event_model\v3
+python research\masked_event_model\v3\run_train.py
+python research\masked_event_model\v3\run_linear_probe.py
 ```

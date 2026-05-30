@@ -10,12 +10,16 @@ if (Test-Path $runtimeCandidate) {
 } else {
   $runtimeRoot = (Resolve-Path (Join-Path $scriptDir '..\..\..')).Path
 }
-$repoEnv = 'D:\TradingCodes\quant-research-workbench\.env'
-$runtimeEnv = Join-Path $runtimeRoot '.env'
 $env:PYTHONPATH = $runtimeRoot + [System.IO.Path]::PathSeparator + $env:PYTHONPATH
-$env:DOTENV_PATHS = $repoEnv + [System.IO.Path]::PathSeparator + $runtimeEnv + [System.IO.Path]::PathSeparator + $env:DOTENV_PATHS
 $runStamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $mlRoot = if ($env:QW_MLOPS_ROOT) { $env:QW_MLOPS_ROOT } else { 'D:\TradingML' }
+$mlEnv = Join-Path $mlRoot '.env'
+$mlSecretsEnv = Join-Path (Join-Path $mlRoot 'secrets') '.env'
+$envCandidates = @($mlEnv, $mlSecretsEnv) | Where-Object { Test-Path $_ }
+if ($envCandidates.Count -gt 0) {
+  $env:DOTENV_PATHS = [string]::Join([System.IO.Path]::PathSeparator, $envCandidates)
+}
+$env:QW_MLOPS_ROOT = $mlRoot
 $logDir = Join-Path $mlRoot 'runtimes\masked_event_model\v3\launcher_logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $logPath = Join-Path $logDir ('masked_event_v3_linear_probe_' + $runStamp + '.log')
