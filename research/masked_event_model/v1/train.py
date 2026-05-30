@@ -111,6 +111,8 @@ def main() -> None:
     print("Inferring available target horizons from chunk cache...", flush=True)
     horizon_count = infer_horizon_count(config.data)
     print(f"Horizons available: {horizon_count}", flush=True)
+    run = init_wandb(args, config, output_dir, horizon_count)
+    write_config(output_dir, config, args, horizon_count)
     print("Building masked event model...", flush=True)
     model = MaskedEventAutoencoder(
         quote_feature_count=len(QUOTE_FEATURE_COLUMNS),
@@ -130,8 +132,6 @@ def main() -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and device.type == "cuda")
     global_step = maybe_resume(model, optimizer, output_dir, fresh_start=args.fresh_start)
-    run = init_wandb(args, config, output_dir, horizon_count)
-    write_config(output_dir, config, args, horizon_count)
     try:
         architecture_info = save_model_architecture_artifacts(
             model=model,
@@ -308,10 +308,11 @@ def default_run_name(args: argparse.Namespace) -> str:
 
 def init_wandb(args: argparse.Namespace, config: ExperimentConfig, output_dir: Path, horizon_count: int) -> Any | None:
     if not args.wandb_project or args.wandb_project.lower() in {"off", "none", "disabled"}:
+        print("*** WANDB project disabled; writing metrics.jsonl only.", flush=True)
         return None
     mode = resolve_wandb_mode(args)
     if mode == "disabled":
-        print("*** WANDB disabled; writing metrics.jsonl only.", flush=True)
+        print("*** WANDB explicitly disabled; writing metrics.jsonl only.", flush=True)
         return None
     os.environ.setdefault("WANDB_INIT_TIMEOUT", str(args.wandb_init_timeout))
     os.environ.setdefault("WANDB_LOGIN_TIMEOUT", str(min(args.wandb_init_timeout, 30)))
@@ -330,9 +331,7 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, output_dir: P
         flush=True,
     )
     if not os.environ.get("WANDB_API_KEY") and mode == "online":
-        print("*** WANDB_API_KEY is missing; falling back to offline mode.", flush=True)
-        os.environ["WANDB_MODE"] = "offline"
-        mode = "offline"
+        raise RuntimeError("WANDB_API_KEY is required for --wandb-mode online.")
     if not os.environ.get("WANDB_API_KEY") and mode == "offline":
         print(
             "*** WANDB_API_KEY was not found after .env discovery; using WANDB_MODE=offline. "
@@ -342,12 +341,14 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, output_dir: P
     try:
         import wandb
     except ModuleNotFoundError:
-        print("wandb not installed; writing metrics.jsonl only.", flush=True)
-        return None
+        raise RuntimeError("wandb is not installed, but W&B logging is enabled.") from None
     result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
 
     def init_worker() -> None:
         try:
+            api_key = os.environ.get("WANDB_API_KEY")
+            if api_key and mode == "online":
+                wandb.login(key=api_key, relogin=False)
             settings = wandb.Settings(
                 init_timeout=max(1, int(args.wandb_init_timeout)),
                 login_timeout=max(1, min(int(args.wandb_init_timeout), 30)),
@@ -370,25 +371,18 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, output_dir: P
     thread.start()
     thread.join(timeout=max(1, int(args.wandb_init_timeout)))
     if thread.is_alive():
-        print(
-            "*** W&B init timed out; continuing with metrics.jsonl only. "
-            "Set --wandb-mode disabled to skip W&B entirely, or --wandb-init-timeout N to wait longer.",
-            flush=True,
+        raise TimeoutError(
+            "W&B init timed out before returning. The backend did not start cleanly. "
+            "This usually indicates a W&B service/startup issue, not a model/data issue. "
+            "Try a larger --wandb-init-timeout only if the workstation network is slow."
         )
-        os.environ["WANDB_MODE"] = "disabled"
-        return None
     if result_queue.empty():
-        print("*** W&B init returned no result; continuing with metrics.jsonl only.", flush=True)
-        os.environ["WANDB_MODE"] = "disabled"
-        return None
+        raise RuntimeError("W&B init thread returned no result.")
     status, payload = result_queue.get()
     if status == "ok":
         print(f"*** WANDB READY | mode={mode} dir={getattr(payload, 'dir', '<unknown>')}", flush=True)
         return payload
-    print("*** W&B init failed; continuing with metrics.jsonl only. Full traceback:", flush=True)
-    print(payload, flush=True)
-    os.environ["WANDB_MODE"] = "disabled"
-    return None
+    raise RuntimeError(f"W&B init failed:\n{payload}")
 
 
 def resolve_wandb_mode(args: argparse.Namespace) -> str:
