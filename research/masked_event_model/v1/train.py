@@ -80,6 +80,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scheduler-eta-min", type=float, default=train_defaults.scheduler_eta_min)
     parser.add_argument("--grad-clip-norm", type=float, default=train_defaults.grad_clip_norm)
     parser.add_argument("--logging-steps", type=int, default=train_defaults.logging_steps)
+    parser.add_argument("--profile-inference-every-steps", type=int, default=train_defaults.profile_inference_every_steps)
     parser.add_argument("--checkpoint-steps", type=int, default=train_defaults.checkpoint_steps)
     parser.add_argument("--mask-ratio", type=float, default=mask_defaults.mask_ratio)
     parser.add_argument("--d-model", type=int, default=model_defaults.d_model)
@@ -197,23 +198,58 @@ def main(argv: list[str] | None = None) -> None:
             args.seed + epoch,
             progress_callback=loader_progress,
         )
-        for batch in loader:
+        loader_iter = iter(loader)
+        while True:
+            loader_wait_started = time.perf_counter()
+            try:
+                batch = next(loader_iter)
+            except StopIteration:
+                break
+            loader_wait_seconds = time.perf_counter() - loader_wait_started
             step_started = time.perf_counter()
             global_step += 1
+            transfer_started = time.perf_counter()
             batch = move_batch(batch, device)
+            synchronize_if_cuda(device)
+            transfer_seconds = time.perf_counter() - transfer_started
+            mask_started = time.perf_counter()
             masks = build_structured_masks(quote_values=batch["quote_values"], trade_values=batch["trade_values"], chunk_summary=batch["chunk_summary"], event_kinds=batch["event_kinds"], config=config.masks)
+            synchronize_if_cuda(device)
+            mask_seconds = time.perf_counter() - mask_started
+            forward_started = time.perf_counter()
             with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
                 output = model(batch["quote_values"], batch["trade_values"], batch["event_kinds"], batch["event_indices"], batch["chunk_summary"], masks)
                 loss, metrics = masked_autoencoder_loss(output, batch, masks, config.losses)
+            synchronize_if_cuda(device)
+            forward_loss_seconds = time.perf_counter() - forward_started
+            backward_started = time.perf_counter()
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
+            synchronize_if_cuda(device)
+            backward_seconds = time.perf_counter() - backward_started
+            optimizer_started = time.perf_counter()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
             scaler.step(optimizer)
             scaler.update()
             if scheduler is not None:
                 scheduler.step(global_step)
-            metrics.update({"train/step_seconds": time.perf_counter() - step_started})
+            synchronize_if_cuda(device)
+            optimizer_seconds = time.perf_counter() - optimizer_started
+            metrics.update(
+                {
+                    "train/step_seconds": time.perf_counter() - step_started,
+                    "profile/loader_wait_seconds": loader_wait_seconds,
+                    "profile/transfer_seconds": transfer_seconds,
+                    "profile/mask_seconds": mask_seconds,
+                    "profile/forward_loss_seconds": forward_loss_seconds,
+                    "profile/backward_seconds": backward_seconds,
+                    "profile/optimizer_seconds": optimizer_seconds,
+                    "profile/batch_size": float(batch["quote_values"].shape[0]),
+                }
+            )
+            if config.train.profile_inference_every_steps > 0 and global_step % config.train.profile_inference_every_steps == 0:
+                metrics.update(profile_forecast_inference(model, batch, device))
             if global_step % config.train.logging_steps == 0:
                 metrics.update({"train/epoch": float(epoch + 1), "train/step": float(global_step), "train/lr": float(optimizer.param_groups[0]["lr"])})
                 log_metrics(metrics, metrics_path, run, global_step)
@@ -286,6 +322,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             grad_clip_norm=args.grad_clip_norm,
             logging_steps=args.logging_steps,
             checkpoint_steps=args.checkpoint_steps,
+            profile_inference_every_steps=args.profile_inference_every_steps,
             num_workers=args.num_workers,
             prefetch_factor=args.prefetch_factor,
             seed=args.seed,
@@ -368,6 +405,37 @@ def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     for key in ("quote_values", "trade_values", "event_kinds", "event_indices", "chunk_summary", "targets", "target_bps"):
         moved[key] = batch[key].to(device, non_blocking=True)
     return moved
+
+
+def synchronize_if_cuda(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def profile_forecast_inference(model: MaskedEventAutoencoder, batch: dict[str, Any], device: torch.device) -> dict[str, float]:
+    was_training = model.training
+    model.eval()
+    synchronize_if_cuda(device)
+    started = time.perf_counter()
+    with torch.no_grad(), torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+        forecast = model.forecast_only(
+            batch["quote_values"],
+            batch["trade_values"],
+            batch["event_kinds"],
+            batch["event_indices"],
+            batch["chunk_summary"],
+        )
+    synchronize_if_cuda(device)
+    elapsed = time.perf_counter() - started
+    if was_training:
+        model.train()
+    batch_size = float(batch["quote_values"].shape[0])
+    return {
+        "profile/inference_forecast_seconds": elapsed,
+        "profile/inference_forecast_ms_per_sample": elapsed * 1000.0 / max(batch_size, 1.0),
+        "profile/inference_forecast_batch_size": batch_size,
+        "profile/inference_forecast_output_elements": float(forecast.numel()),
+    }
 
 
 def build_scheduler(optimizer: torch.optim.Optimizer, train_config: TrainConfig) -> torch.optim.lr_scheduler.LRScheduler | None:
@@ -539,6 +607,10 @@ def format_metrics(step: int, epoch: int, metrics: dict[str, float]) -> str:
         "mask/ratio_actual",
         "train/lr",
         "train/step_seconds",
+        "profile/loader_wait_seconds",
+        "profile/forward_loss_seconds",
+        "profile/backward_seconds",
+        "profile/inference_forecast_seconds",
     ]
     parts = " ".join(f"{key}={metrics[key]:.4f}" for key in keys if key in metrics)
     return f"step={step:,} epoch={epoch} {parts}"

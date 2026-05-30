@@ -54,6 +54,7 @@ TRAIN_ARGS: dict[str, Any] = {
     "scheduler_t_mult": 2,
     "scheduler_eta_min": 1e-6,
     "logging_steps": 1,
+    "profile_inference_every_steps": 10,
     "checkpoint_steps": 1000,
     "probe_every_steps": 5000,
     "probe_train_steps": 200,

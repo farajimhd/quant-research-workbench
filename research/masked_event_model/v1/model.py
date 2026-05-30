@@ -159,6 +159,48 @@ class MaskedEventAutoencoder(nn.Module):
         chunk_summary: torch.Tensor,
         masks: MaskBatch,
     ) -> ModelOutput:
+        encoded_chunks, embedding = self._encode_inputs(
+            quote_values,
+            trade_values,
+            event_kinds,
+            event_indices,
+            chunk_summary,
+            masks,
+        )
+        batch, chunks, quote_events, _ = quote_values.shape
+        trade_events = trade_values.shape[2]
+        quote_pos = torch.arange(quote_events, device=quote_values.device)
+        trade_pos = torch.arange(trade_events, device=trade_values.device)
+        decoded_chunks = self.decoder_norm(self.decoder(encoded_chunks))
+        quote_dec_tokens = decoded_chunks.unsqueeze(2) + self.quote_position_embedding(quote_pos).view(1, 1, quote_events, -1)
+        trade_dec_tokens = decoded_chunks.unsqueeze(2) + self.trade_position_embedding(trade_pos).view(1, 1, trade_events, -1)
+        event_pos = torch.arange(self.max_total_events, device=quote_values.device)
+        kind_inputs = event_kinds.clamp(0, 2)
+        event_dec_tokens = (
+            decoded_chunks.unsqueeze(2)
+            + self.event_position_embedding(event_pos).view(1, 1, self.max_total_events, -1)
+            + self.event_kind_embedding(kind_inputs)
+        )
+        forecast = self.forecast_head(embedding).reshape(batch, self.horizon_count, 1, self.target_bit_count)
+        return ModelOutput(
+            quote_reconstruction=self.quote_decoder_head(quote_dec_tokens),
+            trade_reconstruction=self.trade_decoder_head(trade_dec_tokens),
+            summary_reconstruction=self.summary_decoder_head(decoded_chunks),
+            event_kind_logits=self.event_kind_head(event_dec_tokens),
+            forecast_logits=forecast,
+            embeddings=embedding,
+            encoded_chunks=encoded_chunks,
+        )
+
+    def _encode_inputs(
+        self,
+        quote_values: torch.Tensor,
+        trade_values: torch.Tensor,
+        event_kinds: torch.Tensor,
+        event_indices: torch.Tensor,
+        chunk_summary: torch.Tensor,
+        masks: MaskBatch,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         batch, chunks, quote_events, _ = quote_values.shape
         trade_events = trade_values.shape[2]
         quote_valid = quote_values.abs().sum(dim=-1) > 0.0
@@ -197,27 +239,7 @@ class MaskedEventAutoencoder(nn.Module):
         chunk_tokens = chunk_tokens + self.chunk_position_embedding(chunk_pos).view(1, chunks, -1)
         encoded_chunks = self.encoder_norm(self.temporal_encoder(chunk_tokens))
         embedding = encoded_chunks[:, -1, :]
-
-        decoded_chunks = self.decoder_norm(self.decoder(encoded_chunks))
-        quote_dec_tokens = decoded_chunks.unsqueeze(2) + self.quote_position_embedding(quote_pos).view(1, 1, quote_events, -1)
-        trade_dec_tokens = decoded_chunks.unsqueeze(2) + self.trade_position_embedding(trade_pos).view(1, 1, trade_events, -1)
-        event_pos = torch.arange(self.max_total_events, device=quote_values.device)
-        kind_inputs = event_kinds.clamp(0, 2)
-        event_dec_tokens = (
-            decoded_chunks.unsqueeze(2)
-            + self.event_position_embedding(event_pos).view(1, 1, self.max_total_events, -1)
-            + self.event_kind_embedding(kind_inputs)
-        )
-        forecast = self.forecast_head(embedding).reshape(batch, self.horizon_count, 1, self.target_bit_count)
-        return ModelOutput(
-            quote_reconstruction=self.quote_decoder_head(quote_dec_tokens),
-            trade_reconstruction=self.trade_decoder_head(trade_dec_tokens),
-            summary_reconstruction=self.summary_decoder_head(decoded_chunks),
-            event_kind_logits=self.event_kind_head(event_dec_tokens),
-            forecast_logits=forecast,
-            embeddings=embedding,
-            encoded_chunks=encoded_chunks,
-        )
+        return encoded_chunks, embedding
 
     def encode(
         self,
@@ -236,7 +258,19 @@ class MaskedEventAutoencoder(nn.Module):
             trade_token_mask=torch.zeros_like(trade_values[..., 0], dtype=torch.bool),
             chunk_mask=torch.zeros_like(chunk_summary[..., 0], dtype=torch.bool),
         )
-        return self.forward(quote_values, trade_values, event_kinds, event_indices, chunk_summary, empty_masks).embeddings
+        return self._encode_inputs(quote_values, trade_values, event_kinds, event_indices, chunk_summary, empty_masks)[1]
+
+    def forecast_only(
+        self,
+        quote_values: torch.Tensor,
+        trade_values: torch.Tensor,
+        event_kinds: torch.Tensor,
+        event_indices: torch.Tensor,
+        chunk_summary: torch.Tensor,
+    ) -> torch.Tensor:
+        embedding = self.encode(quote_values, trade_values, event_kinds, event_indices, chunk_summary)
+        batch = quote_values.shape[0]
+        return self.forecast_head(embedding).reshape(batch, self.horizon_count, 1, self.target_bit_count)
 
 
 def ensure_not_all_padding(mask: torch.Tensor) -> torch.Tensor:
