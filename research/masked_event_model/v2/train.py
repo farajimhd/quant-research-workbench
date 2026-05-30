@@ -31,13 +31,12 @@ import polars as pl
 import torch
 from torch.utils.data import DataLoader
 
-from research.masked_event_model.v2.config import DataConfig, ExperimentConfig, MaskConfig, ModelConfig, ProbeConfig, TrainConfig
+from research.masked_event_model.v2.config import DataConfig, ExperimentConfig, MaskConfig, ModelConfig, TrainConfig
 from research.masked_event_model.v2.data import EventChunkDataset, discover_chunk_files, target_horizons_from_columns
 from research.masked_event_model.v2.losses import masked_autoencoder_loss
 from research.masked_event_model.v2.masking import build_structured_masks
 from research.masked_event_model.v2.model import MaskedEventAutoencoder
 from research.masked_event_model.v2.model_artifacts import save_model_architecture_artifacts
-from research.masked_event_model.v2.probe import run_linear_probe
 from research.masked_event_model.v2.schema import CHUNK_SUMMARY_COLUMNS, QUOTE_FEATURE_COLUMNS, TRADE_FEATURE_COLUMNS
 
 
@@ -49,7 +48,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train_defaults = TrainConfig()
     mask_defaults = MaskConfig()
     model_defaults = ModelConfig()
-    probe_defaults = ProbeConfig()
     parser = argparse.ArgumentParser(description="Train masked event autoencoder v2.")
     parser.add_argument("--cache-root", default=str(data_defaults.cache_root))
     parser.add_argument("--canonical-root", default=str(data_defaults.canonical_root))
@@ -97,17 +95,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ffn-mult", type=int, default=model_defaults.ffn_mult)
     parser.add_argument("--dropout", type=float, default=model_defaults.dropout)
     parser.add_argument("--encoder-visible-ratio", type=float, default=model_defaults.encoder_visible_ratio)
-    parser.add_argument("--probe-every-steps", type=int, default=probe_defaults.every_steps)
-    parser.add_argument("--probe-train-steps", type=int, default=probe_defaults.train_steps)
-    parser.add_argument("--probe-train-windows", type=int, default=probe_defaults.train_windows)
-    parser.add_argument("--probe-val-windows", type=int, default=probe_defaults.val_windows)
-    parser.add_argument(
-        "--probe-batch-size",
-        type=int,
-        default=probe_defaults.batch_size,
-        help="Linear-probe encoder batch size. Use 0 to match --batch-size.",
-    )
-    parser.add_argument("--disable-probe", action="store_true")
     parser.add_argument("--wandb-project", default=train_defaults.wandb_project)
     parser.add_argument("--wandb-entity", default=train_defaults.wandb_entity)
     parser.add_argument("--wandb-run-name", default="")
@@ -291,17 +278,6 @@ def main(argv: list[str] | None = None) -> None:
                 validation_metrics = evaluate_pretrain_validation(train_model, validation_batches, config, device, seed=args.seed + 10_000)
                 log_metrics(validation_metrics, metrics_path, run, global_step)
                 print("VALIDATION " + format_validation_metrics(global_step, validation_metrics), flush=True)
-            if config.probe.enabled and global_step % config.probe.every_steps == 0:
-                probe_metrics = run_linear_probe(
-                    encoder=model,
-                    data_config=config.data,
-                    probe_config=config.probe,
-                    device=device,
-                    num_workers=max(0, min(2, config.train.num_workers)),
-                    seed=args.seed + global_step,
-                )
-                log_metrics(probe_metrics, metrics_path, run, global_step)
-                print("PROBE " + json.dumps(probe_metrics, sort_keys=True), flush=True)
             if global_step % config.train.checkpoint_steps == 0:
                 save_checkpoint(output_dir, model, optimizer, scheduler, global_step, config, args)
             if config.train.max_steps > 0 and global_step >= config.train.max_steps:
@@ -338,14 +314,6 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             ffn_mult=args.ffn_mult,
             dropout=args.dropout,
             encoder_visible_ratio=args.encoder_visible_ratio,
-        ),
-        probe=ProbeConfig(
-            enabled=not args.disable_probe,
-            every_steps=args.probe_every_steps,
-            train_steps=args.probe_train_steps,
-            train_windows=args.probe_train_windows,
-            val_windows=args.probe_val_windows,
-            batch_size=args.probe_batch_size if args.probe_batch_size > 0 else args.batch_size,
         ),
         train=TrainConfig(
             output_root=Path(args.output_root),

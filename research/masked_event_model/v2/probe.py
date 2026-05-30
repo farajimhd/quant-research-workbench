@@ -34,11 +34,18 @@ def run_linear_probe(
     device: torch.device,
     num_workers: int,
     seed: int,
+    log_progress: bool = False,
 ) -> dict[str, float]:
     if not probe_config.enabled:
         return {}
     encoder_was_training = encoder.training
     encoder.eval()
+    if log_progress:
+        print(
+            "LINEAR PROBE collect train embeddings "
+            f"windows={probe_config.train_windows:,} batch={probe_config.batch_size}",
+            flush=True,
+        )
     train_embeddings, train_targets, _ = collect_probe_tensors(
         encoder=encoder,
         data_config=data_config,
@@ -48,7 +55,14 @@ def run_linear_probe(
         device=device,
         num_workers=num_workers,
         seed=seed,
+        log_progress=log_progress,
     )
+    if log_progress:
+        print(
+            "LINEAR PROBE collect validation embeddings "
+            f"windows={probe_config.val_windows:,} batch={probe_config.batch_size}",
+            flush=True,
+        )
     val_embeddings, val_targets, val_bps = collect_probe_tensors(
         encoder=encoder,
         data_config=data_config,
@@ -58,6 +72,7 @@ def run_linear_probe(
         device=device,
         num_workers=num_workers,
         seed=seed + 101,
+        log_progress=log_progress,
     )
     if train_embeddings.numel() == 0 or val_embeddings.numel() == 0:
         if encoder_was_training:
@@ -68,7 +83,13 @@ def run_linear_probe(
     optimizer = torch.optim.AdamW(probe.parameters(), lr=probe_config.learning_rate)
     train_embeddings = train_embeddings.to(device)
     train_targets = train_targets.reshape(train_targets.shape[0], -1).to(device)
-    for _ in range(max(1, probe_config.train_steps)):
+    if log_progress:
+        print(
+            "LINEAR PROBE train head "
+            f"steps={max(1, probe_config.train_steps):,} train_windows={train_embeddings.shape[0]:,}",
+            flush=True,
+        )
+    for step_index in range(max(1, probe_config.train_steps)):
         order = torch.randperm(train_embeddings.shape[0], device=device)
         for start in range(0, train_embeddings.shape[0], probe_config.batch_size):
             rows = order[start : start + probe_config.batch_size]
@@ -77,7 +98,11 @@ def run_linear_probe(
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
+        if log_progress and ((step_index + 1) % 25 == 0 or step_index + 1 == probe_config.train_steps):
+            print(f"LINEAR PROBE head step {step_index + 1:,}/{probe_config.train_steps:,}", flush=True)
     probe.eval()
+    if log_progress:
+        print("LINEAR PROBE evaluate validation metrics", flush=True)
     with torch.no_grad():
         logits = probe(val_embeddings.to(device)).detach().cpu().numpy().reshape(val_targets.shape)
     metrics = forecast_metrics(logits, val_bps.numpy(), prefix="probe/val")
@@ -99,6 +124,7 @@ def collect_probe_tensors(
     device: torch.device,
     num_workers: int,
     seed: int,
+    log_progress: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     dataset = EventChunkDataset(config=data_config, split=split, batch_size=batch_size, seed=seed)
     loader = DataLoader(dataset, batch_size=None, num_workers=max(0, num_workers))
@@ -120,6 +146,8 @@ def collect_probe_tensors(
             targets.append(batch["targets"].detach().cpu())
             bps.append(batch["target_bps"].detach().cpu())
             total += emb.shape[0]
+            if log_progress and (total == emb.shape[0] or total % max(batch_size * 5, 1) == 0):
+                print(f"LINEAR PROBE collected {split} windows={total:,}/{limit:,}", flush=True)
             if limit > 0 and total >= limit:
                 break
     if not embeddings:

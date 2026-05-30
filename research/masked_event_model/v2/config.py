@@ -137,5 +137,4 @@ class ExperimentConfig:
     masks: MaskConfig = field(default_factory=MaskConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     losses: LossConfig = field(default_factory=LossConfig)
-    probe: ProbeConfig = field(default_factory=ProbeConfig)
     train: TrainConfig = field(default_factory=TrainConfig)

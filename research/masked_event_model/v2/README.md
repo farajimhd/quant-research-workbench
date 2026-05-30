@@ -36,9 +36,12 @@ The reconstruction loss is backpropagated only on masked parts. Continuous quote
 
 The training forward path uses sparse masked reconstruction: decoder heads run only for masked quote/trade/summary/event-kind targets. Masked event tokens are dropped from the quote/trade event encoders, capped by `encoder_visible_ratio`, while the production `encode()` path remains unmasked and uses all events.
 
+Linear probing is intentionally separate from pretraining. Run it after a checkpoint exists; it loads the frozen encoder from `checkpoint_last.pt`, trains only a linear probe head, writes `linear_probe_metrics.jsonl`, and logs `probe/...` metrics to W&B.
+
 ## Workstation Run
 
 ```powershell
 cd D:\TradingCodes\quant-research-workbench-masked-event-v2-runtime
 .\run_train.ps1
+.\run_linear_probe.ps1
 ```

@@ -62,11 +62,6 @@ TRAIN_ARGS: dict[str, Any] = {
     "pretrain_validation_steps": 4,
     "checkpoint_steps": 1000,
     "loader_prefetch_batches": 1,
-    "probe_every_steps": 5000,
-    "probe_train_steps": 200,
-    "probe_train_windows": 20000,
-    "probe_val_windows": 20000,
-    "probe_batch_size": 256,
     "wandb_entity": "mehdifaraji",
     "wandb_project": "May2026-masked-event-modeling",
     "wandb_run_name": "mem-v2-d256-e2-t8-d4-mask70-chunk500-b256-nov2025",
@@ -75,7 +70,7 @@ TRAIN_ARGS: dict[str, Any] = {
     "compile_model": False,
 }
 
-BOOLEAN_FLAGS = {"compile_model", "disable_probe", "fresh_start", "dry_run"}
+BOOLEAN_FLAGS = {"compile_model", "fresh_start", "dry_run"}
 
 
 def build_argv(overrides: dict[str, Any] | None = None) -> list[str]:
