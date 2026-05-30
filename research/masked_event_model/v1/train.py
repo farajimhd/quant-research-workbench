@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import random
 import sys
+import threading
 import time
 import traceback
 from dataclasses import asdict
@@ -342,28 +344,51 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, output_dir: P
     except ModuleNotFoundError:
         print("wandb not installed; writing metrics.jsonl only.", flush=True)
         return None
-    try:
-        settings = wandb.Settings(
-            init_timeout=max(1, int(args.wandb_init_timeout)),
-            login_timeout=max(1, min(int(args.wandb_init_timeout), 30)),
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+    def init_worker() -> None:
+        try:
+            settings = wandb.Settings(
+                init_timeout=max(1, int(args.wandb_init_timeout)),
+                login_timeout=max(1, min(int(args.wandb_init_timeout), 30)),
+            )
+            run = wandb.init(
+                entity=args.wandb_entity or None,
+                project=args.wandb_project,
+                name=config.train.wandb_run_name,
+                config={"horizon_count": horizon_count, **dataclass_tree(config)},
+                dir=str(output_dir),
+                resume="allow",
+                mode=mode,
+                settings=settings,
+            )
+            result_queue.put(("ok", run))
+        except Exception:
+            result_queue.put(("error", traceback.format_exc()))
+
+    thread = threading.Thread(target=init_worker, name="wandb-init", daemon=True)
+    thread.start()
+    thread.join(timeout=max(1, int(args.wandb_init_timeout)))
+    if thread.is_alive():
+        print(
+            "*** W&B init timed out; continuing with metrics.jsonl only. "
+            "Set --wandb-mode disabled to skip W&B entirely, or --wandb-init-timeout N to wait longer.",
+            flush=True,
         )
-        run = wandb.init(
-            entity=args.wandb_entity or None,
-            project=args.wandb_project,
-            name=config.train.wandb_run_name,
-            config={"horizon_count": horizon_count, **dataclass_tree(config)},
-            dir=str(output_dir),
-            resume="allow",
-            mode=mode,
-            settings=settings,
-        )
-        print(f"*** WANDB READY | mode={mode} dir={getattr(run, 'dir', '<unknown>')}", flush=True)
-        return run
-    except Exception:
-        print("*** W&B init failed; continuing with metrics.jsonl only. Full traceback:", flush=True)
-        traceback.print_exc()
         os.environ["WANDB_MODE"] = "disabled"
         return None
+    if result_queue.empty():
+        print("*** W&B init returned no result; continuing with metrics.jsonl only.", flush=True)
+        os.environ["WANDB_MODE"] = "disabled"
+        return None
+    status, payload = result_queue.get()
+    if status == "ok":
+        print(f"*** WANDB READY | mode={mode} dir={getattr(payload, 'dir', '<unknown>')}", flush=True)
+        return payload
+    print("*** W&B init failed; continuing with metrics.jsonl only. Full traceback:", flush=True)
+    print(payload, flush=True)
+    os.environ["WANDB_MODE"] = "disabled"
+    return None
 
 
 def resolve_wandb_mode(args: argparse.Namespace) -> str:

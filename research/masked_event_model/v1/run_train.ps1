@@ -15,9 +15,12 @@ $runStamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $logDir = 'D:\TradingData\quant-research-workbench\market_data\models\masked_event_model\v1\workstation_logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $logPath = Join-Path $logDir ('masked_event_v1_train_' + $runStamp + '.log')
+$wandbMode = if ($env:MASKED_EVENT_WANDB_MODE) { $env:MASKED_EVENT_WANDB_MODE } else { 'disabled' }
+$wandbTimeout = if ($env:MASKED_EVENT_WANDB_INIT_TIMEOUT) { $env:MASKED_EVENT_WANDB_INIT_TIMEOUT } else { '30' }
 Write-Host 'Starting masked event v1 training at' (Get-Date -Format o)
 Write-Host 'Runtime root:' $runtimeRoot
 Write-Host 'Log:' $logPath
+Write-Host 'W&B mode:' $wandbMode
 & "c:\Users\Mehdi\miniconda3\envs\ml4t\python.exe" -u (Join-Path $runtimeRoot 'research\masked_event_model\v1\train.py') `
   --cache-root "D:\market-data\flatfiles\us_stocks_sip\derived\event_chunks_v2" `
   --canonical-root "D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_v2" `
@@ -53,7 +56,7 @@ Write-Host 'Log:' $logPath
   --wandb-entity "mehdifaraji" `
   --wandb-project "May2026-masked-event-modeling" `
   --wandb-run-name "mem-v1-d512-e2-t8-d4-mask70-chunk500-nov2025" `
-  --wandb-mode auto `
-  --wandb-init-timeout 60 `
+  --wandb-mode $wandbMode `
+  --wandb-init-timeout $wandbTimeout `
   2>&1 | Tee-Object -FilePath $logPath
 if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
