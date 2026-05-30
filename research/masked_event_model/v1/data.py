@@ -114,28 +114,29 @@ def load_chunk_file(path: Path, *, start_date: str, end_date: str) -> pl.DataFra
 
 
 def list_column_to_matrix(frame: pl.DataFrame, column: str, rows: int, cols: int) -> np.ndarray:
-    out = np.zeros((frame.height, rows, cols), dtype=np.float32)
     if column not in frame.columns or frame.height == 0:
-        return out
-    for index, value in enumerate(frame[column].to_list()):
-        if value is None:
-            continue
-        arr = np.asarray(value, dtype=np.float32)
-        if arr.size == rows * cols:
-            out[index] = arr.reshape(rows, cols)
-    return out
+        return np.zeros((frame.height, rows, cols), dtype=np.float32)
+    zero_rows = [[0.0] * cols for _ in range(rows)]
+    values = frame.select(
+        pl.concat_list([pl.col(column).fill_null([]), pl.lit(zero_rows)])
+        .list.head(rows)
+        .list.to_array(rows)
+        .alias(column)
+    )[column].to_numpy()
+    values = np.stack(values.reshape(-1)).reshape(frame.height, rows, cols)
+    return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
 
 def list_column_to_int_matrix(frame: pl.DataFrame, column: str, rows: int, fill: int = 0) -> np.ndarray:
-    out = np.full((frame.height, rows), fill, dtype=np.int64)
     if column not in frame.columns or frame.height == 0:
-        return out
-    for index, value in enumerate(frame[column].to_list()):
-        if value is None:
-            continue
-        arr = np.asarray(value, dtype=np.int64)
-        out[index, : min(rows, arr.size)] = arr[:rows]
-    return out
+        return np.full((frame.height, rows), fill, dtype=np.int64)
+    values = frame.select(
+        pl.concat_list([pl.col(column).fill_null([]), pl.lit([int(fill)] * rows)])
+        .list.head(rows)
+        .list.to_array(rows)
+        .alias(column)
+    )[column].to_numpy()
+    return values.astype(np.int64, copy=False)
 
 
 def mid_from_bid_ask(bid: Any, ask: Any, fallback_mid: Any) -> Any:
@@ -281,15 +282,15 @@ class BatchBuilder:
     def as_torch(self) -> dict[str, Any]:
         rows = slice(0, self.count)
         return {
-            "quote_values": torch.from_numpy(self.quote_values[rows].copy()),
-            "trade_values": torch.from_numpy(self.trade_values[rows].copy()),
-            "event_kinds": torch.from_numpy(self.event_kinds[rows].copy()),
-            "event_indices": torch.from_numpy(self.event_indices[rows].copy()),
-            "chunk_summary": torch.from_numpy(self.chunk_summary[rows].copy()),
-            "targets": torch.from_numpy(self.targets[rows].copy()),
-            "target_bps": torch.from_numpy(self.target_bps[rows].copy()),
-            "current_mid": torch.from_numpy(self.current_mid[rows].copy()),
-            "origin_timestamp_ns": torch.from_numpy(self.origin_timestamp_ns[rows].copy()),
+            "quote_values": torch.from_numpy(self.quote_values[rows]),
+            "trade_values": torch.from_numpy(self.trade_values[rows]),
+            "event_kinds": torch.from_numpy(self.event_kinds[rows]),
+            "event_indices": torch.from_numpy(self.event_indices[rows]),
+            "chunk_summary": torch.from_numpy(self.chunk_summary[rows]),
+            "targets": torch.from_numpy(self.targets[rows]),
+            "target_bps": torch.from_numpy(self.target_bps[rows]),
+            "current_mid": torch.from_numpy(self.current_mid[rows]),
+            "origin_timestamp_ns": torch.from_numpy(self.origin_timestamp_ns[rows]),
             "ticker": list(self.tickers[: self.count]),
         }
 

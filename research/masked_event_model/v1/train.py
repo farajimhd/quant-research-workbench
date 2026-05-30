@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import queue
 import random
 import sys
@@ -149,6 +150,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Model architecture artifact generation skipped: {exc}", flush=True)
 
     print(f"Inputs: quote={config.data.max_quote_events}x{len(QUOTE_FEATURE_COLUMNS)} trade={config.data.max_trade_events}x{len(TRADE_FEATURE_COLUMNS)} summary={len(CHUNK_SUMMARY_COLUMNS)}", flush=True)
+    print(f"Estimated CPU batch size: {estimated_batch_gib(config.data, config.train.batch_size, horizon_count):.2f} GiB", flush=True)
     print(f"Model: d={config.model.d_model} heads={config.model.n_heads} qlayers={config.model.quote_event_layers} tlayers={config.model.temporal_layers} decoder={config.model.decoder_layers}", flush=True)
     print(f"Training configuration ready; mask_ratio={config.masks.mask_ratio}", flush=True)
     if args.dry_run:
@@ -256,10 +258,36 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
 
 def make_loader(data_config: DataConfig, split: str, batch_size: int, num_workers: int, prefetch_factor: int, seed: int) -> DataLoader:
     dataset = EventChunkDataset(config=data_config, split=split, batch_size=batch_size, seed=seed)
-    kwargs: dict[str, Any] = {"batch_size": None, "num_workers": max(0, num_workers), "pin_memory": True}
-    if num_workers > 0:
+    effective_workers = max(0, num_workers)
+    if effective_workers > 0 and platform.system().lower().startswith("win"):
+        print(
+            "DataLoader multiprocessing disabled on Windows for prebatched event tensors; "
+            "large batches exceed Windows shared-memory mapping limits.",
+            flush=True,
+        )
+        effective_workers = 0
+    kwargs: dict[str, Any] = {"batch_size": None, "num_workers": effective_workers, "pin_memory": False}
+    if effective_workers > 0:
         kwargs.update({"prefetch_factor": max(1, prefetch_factor), "persistent_workers": True})
     return DataLoader(dataset, **kwargs)
+
+
+def estimated_batch_gib(data_config: DataConfig, batch_size: int, horizon_count: int) -> float:
+    context = data_config.context_chunks
+    float_values = (
+        batch_size * context * data_config.max_quote_events * len(QUOTE_FEATURE_COLUMNS)
+        + batch_size * context * data_config.max_trade_events * len(TRADE_FEATURE_COLUMNS)
+        + batch_size * context * len(CHUNK_SUMMARY_COLUMNS)
+        + batch_size * horizon_count * data_config.target_bit_count
+        + batch_size * horizon_count
+        + batch_size
+    )
+    int64_values = (
+        batch_size * context * data_config.max_total_events
+        + batch_size * context * data_config.max_total_events
+        + batch_size
+    )
+    return (float_values * 4 + int64_values * 8) / (1024**3)
 
 
 def infer_horizon_count(config: DataConfig) -> int:

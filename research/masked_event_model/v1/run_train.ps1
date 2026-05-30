@@ -41,8 +41,8 @@ $ErrorActionPreference = 'Continue'
   --chunk-ms 500 `
   --batch-size 1024 `
   --epochs 3 `
-  --num-workers 8 `
-  --prefetch-factor 4 `
+  --num-workers 0 `
+  --prefetch-factor 1 `
   --device cuda `
   --d-model 512 `
   --n-heads 8 `

@@ -105,8 +105,8 @@ class TrainConfig:
     grad_clip_norm: float = 1.0
     logging_steps: int = 50
     checkpoint_steps: int = 1000
-    num_workers: int = 4
-    prefetch_factor: int = 4
+    num_workers: int = 0
+    prefetch_factor: int = 1
     seed: int = 17
     amp: bool = True
     compile_model: bool = False
