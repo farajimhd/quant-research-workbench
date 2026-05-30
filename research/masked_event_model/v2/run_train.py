@@ -66,6 +66,7 @@ TRAIN_ARGS: dict[str, Any] = {
     "probe_train_steps": 200,
     "probe_train_windows": 20000,
     "probe_val_windows": 20000,
+    "probe_batch_size": 256,
     "wandb_entity": "mehdifaraji",
     "wandb_project": "May2026-masked-event-modeling",
     "wandb_run_name": "mem-v2-d256-e2-t8-d4-mask70-chunk500-b256-nov2025",

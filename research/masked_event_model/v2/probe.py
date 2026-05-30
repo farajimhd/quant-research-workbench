@@ -83,6 +83,7 @@ def run_linear_probe(
     metrics = forecast_metrics(logits, val_bps.numpy(), prefix="probe/val")
     metrics["probe/train_windows"] = float(train_embeddings.shape[0])
     metrics["probe/val_windows"] = float(val_embeddings.shape[0])
+    metrics["probe/batch_size"] = float(probe_config.batch_size)
     if encoder_was_training:
         encoder.train()
     return metrics

@@ -92,7 +92,7 @@ class ProbeConfig:
     train_steps: int = 200
     train_windows: int = 20000
     val_windows: int = 20000
-    batch_size: int = 2048
+    batch_size: int = 0
     hidden_dim: int = 0
     learning_rate: float = 1e-3
 

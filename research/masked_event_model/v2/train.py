@@ -101,6 +101,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--probe-train-steps", type=int, default=probe_defaults.train_steps)
     parser.add_argument("--probe-train-windows", type=int, default=probe_defaults.train_windows)
     parser.add_argument("--probe-val-windows", type=int, default=probe_defaults.val_windows)
+    parser.add_argument(
+        "--probe-batch-size",
+        type=int,
+        default=probe_defaults.batch_size,
+        help="Linear-probe encoder batch size. Use 0 to match --batch-size.",
+    )
     parser.add_argument("--disable-probe", action="store_true")
     parser.add_argument("--wandb-project", default=train_defaults.wandb_project)
     parser.add_argument("--wandb-entity", default=train_defaults.wandb_entity)
@@ -339,6 +345,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             train_steps=args.probe_train_steps,
             train_windows=args.probe_train_windows,
             val_windows=args.probe_val_windows,
+            batch_size=args.probe_batch_size if args.probe_batch_size > 0 else args.batch_size,
         ),
         train=TrainConfig(
             output_root=Path(args.output_root),

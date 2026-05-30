@@ -73,6 +73,7 @@ $ErrorActionPreference = 'Continue'
   --probe-train-steps 200 `
   --probe-train-windows 20000 `
   --probe-val-windows 20000 `
+  --probe-batch-size 256 `
   --wandb-entity "mehdifaraji" `
   --wandb-project "May2026-masked-event-modeling" `
   --wandb-run-name "mem-v2-d256-e2-t8-d4-mask70-chunk500-b256-nov2025" `
