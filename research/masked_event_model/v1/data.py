@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import gc
 import random
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import numpy as np
 import polars as pl
@@ -160,8 +161,13 @@ def mid_from_bid_ask(bid: Any, ask: Any, fallback_mid: Any) -> Any:
 
 
 def normalize_event_window(window: np.ndarray, columns: tuple[str, ...], price_columns: set[str], *, current_mid: float) -> np.ndarray:
-    values = np.asarray(window, dtype=np.float32).copy()
-    current_mid_safe = max(float(current_mid), 1e-6)
+    return normalize_event_windows(np.asarray(window, dtype=np.float32)[None, ...], columns, price_columns, current_mid=np.asarray([current_mid], dtype=np.float32))[0]
+
+
+def normalize_event_windows(windows: np.ndarray, columns: tuple[str, ...], price_columns: set[str], *, current_mid: np.ndarray) -> np.ndarray:
+    values = np.asarray(windows, dtype=np.float32).copy()
+    current_mid_values = np.asarray(current_mid, dtype=np.float32).reshape(-1)
+    current_mid_safe = np.maximum(current_mid_values, 1e-6).reshape((-1,) + (1,) * (values.ndim - 2))
     for index, column in enumerate(columns):
         column_values = values[..., index]
         if column in price_columns:
@@ -169,10 +175,12 @@ def normalize_event_window(window: np.ndarray, columns: tuple[str, ...], price_c
             values[..., index] = np.where(column_values > 0.0, np.log(safe / current_mid_safe) * 10000.0, 0.0)
         elif column in LOG_COLUMNS or column.endswith("_count") or column.endswith("_volume"):
             values[..., index] = np.log1p(np.maximum(column_values, 0.0))
-    flat = values.reshape(-1, values.shape[-1])
-    mean = flat.mean(axis=0, keepdims=True)
-    std = np.where(flat.std(axis=0, keepdims=True) > 1e-6, flat.std(axis=0, keepdims=True), 1.0)
-    normalized = (values - mean.reshape((1,) * (values.ndim - 1) + (-1,))) / std.reshape((1,) * (values.ndim - 1) + (-1,))
+    flat = values.reshape(values.shape[0], -1, values.shape[-1])
+    mean = flat.mean(axis=1)
+    std_values = flat.std(axis=1)
+    std = np.where(std_values > 1e-6, std_values, 1.0)
+    reshape = (values.shape[0],) + (1,) * (values.ndim - 2) + (values.shape[-1],)
+    normalized = (values - mean.reshape(reshape)) / std.reshape(reshape)
     return np.nan_to_num(normalized, nan=0.0, posinf=10.0, neginf=-10.0).astype(np.float32)
 
 
@@ -319,6 +327,58 @@ class BatchBuilder:
         self.tickers[self.count] = ticker
         self.count += 1
 
+    def add_many(self, arrays: dict[str, np.ndarray], origins: np.ndarray, ticker: str) -> int:
+        if origins.size == 0 or self.full:
+            return 0
+        capacity = self.quote_values.shape[0] - self.count
+        selected = np.asarray(origins[:capacity], dtype=np.int64)
+        if selected.size == 0:
+            return 0
+        future_mid = arrays["target_mid"][selected].astype(np.float32)
+        current_mid = arrays["current_mid"][selected].astype(np.float32)
+        valid = (
+            np.all(np.isfinite(future_mid) & (future_mid > 0.0), axis=1)
+            & np.isfinite(current_mid)
+            & (current_mid > 0.0)
+        )
+        selected = selected[valid]
+        future_mid = future_mid[valid]
+        current_mid = current_mid[valid]
+        if selected.size == 0:
+            return 0
+
+        offsets = np.arange(self.config.context_chunks, dtype=np.int64)
+        window_indices = selected[:, None] - self.config.context_chunks + 1 + offsets[None, :]
+        target_bps = log_return_bps(future_mid[..., None], current_mid[:, None, None]).astype(np.float32)
+        row_slice = slice(self.count, self.count + selected.size)
+        self.quote_values[row_slice] = normalize_event_windows(
+            arrays["quote_values"][window_indices],
+            QUOTE_FEATURE_COLUMNS,
+            QUOTE_PRICE_COLUMNS,
+            current_mid=current_mid,
+        )
+        self.trade_values[row_slice] = normalize_event_windows(
+            arrays["trade_values"][window_indices],
+            TRADE_FEATURE_COLUMNS,
+            TRADE_PRICE_COLUMNS,
+            current_mid=current_mid,
+        )
+        self.chunk_summary[row_slice] = normalize_event_windows(
+            arrays["chunk_summary"][window_indices],
+            CHUNK_SUMMARY_COLUMNS,
+            SUMMARY_PRICE_COLUMNS,
+            current_mid=current_mid,
+        )
+        self.event_kinds[row_slice] = arrays["event_kinds"][window_indices]
+        self.event_indices[row_slice] = arrays["event_indices"][window_indices]
+        self.targets[row_slice] = encode_binary_magnitude_targets(target_bps, bits=self.config.binary_magnitude_bits)
+        self.target_bps[row_slice] = target_bps
+        self.current_mid[row_slice] = current_mid
+        self.origin_timestamp_ns[row_slice] = arrays["chunk_end_ns"][selected]
+        self.tickers[self.count : self.count + selected.size] = [ticker] * int(selected.size)
+        self.count += int(selected.size)
+        return int(selected.size)
+
     def as_torch(self) -> dict[str, Any]:
         rows = slice(0, self.count)
         return {
@@ -347,14 +407,22 @@ def valid_origins(arrays: dict[str, np.ndarray], config: DataConfig) -> np.ndarr
 
 
 class EventChunkDataset(IterableDataset):
-    def __init__(self, *, config: DataConfig, split: str, batch_size: int, seed: int = 17) -> None:
+    def __init__(self, *, config: DataConfig, split: str, batch_size: int, seed: int = 17, progress_callback: Callable[[dict[str, Any]], None] | None = None) -> None:
         super().__init__()
         self.config = config
         self.split = split
         self.batch_size = batch_size
         self.seed = seed
+        self.progress_callback = progress_callback
         self.start_date, self.end_date = split_dates(config, split)
         self.files = discover_chunk_files(config, start_date=self.start_date, end_date=self.end_date)
+
+    def progress(self, event: dict[str, Any]) -> None:
+        message = event.pop("message", "")
+        if message:
+            print(message, flush=True)
+        if self.progress_callback is not None:
+            self.progress_callback(event)
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         worker = get_worker_info()
@@ -374,12 +442,20 @@ class EventChunkDataset(IterableDataset):
             block_starts = list(range(first_origin, total_rows, block_size))
             if self.config.shuffle_windows and self.split == "train":
                 rng.shuffle(block_starts)
-            print(
-                f"{self.split} file {file_info.ticker}:{file_info.year_month} rows={total_rows:,} blocks={len(block_starts):,}",
-                flush=True,
+            self.progress(
+                {
+                    "message": f"{self.split} file {file_info.ticker}:{file_info.year_month} rows={total_rows:,} blocks={len(block_starts):,}",
+                    "loader/event": "file_start",
+                    "loader/split": self.split,
+                    "loader/ticker": file_info.ticker,
+                    "loader/year_month": file_info.year_month,
+                    "loader/file_rows": total_rows,
+                    "loader/file_blocks": len(block_starts),
+                }
             )
             windows_from_file = 0
             for origin_start in block_starts:
+                block_started = time.perf_counter()
                 if self.config.max_windows_per_file > 0 and windows_from_file >= self.config.max_windows_per_file:
                     break
                 origin_end = min(origin_start + block_size, total_rows)
@@ -408,15 +484,50 @@ class EventChunkDataset(IterableDataset):
                     origins = origins[:remaining]
                 if batch is None:
                     batch = BatchBuilder(self.config, self.batch_size, int(arrays["target_mid"].shape[1]))
-                for origin in origins:
-                    before = len(batch)
-                    batch.add(arrays, int(origin), file_info.ticker)
-                    if len(batch) == before:
-                        continue
-                    windows_from_file += 1
+                cursor = 0
+                last_progress = 0
+                while cursor < origins.size:
+                    added = batch.add_many(arrays, origins[cursor:], file_info.ticker)
+                    if added <= 0:
+                        break
+                    cursor += added
+                    windows_from_file += added
+                    if windows_from_file - last_progress >= self.config.loader_progress_windows:
+                        last_progress = windows_from_file
+                        self.progress(
+                            {
+                                "message": (
+                                    f"{self.split} block {file_info.ticker}:{file_info.year_month} "
+                                    f"origin={origin_start:,}-{origin_end:,} windows={windows_from_file:,} "
+                                    f"batch_fill={len(batch):,}/{self.batch_size}"
+                                ),
+                                "loader/event": "block_progress",
+                                "loader/split": self.split,
+                                "loader/ticker": file_info.ticker,
+                                "loader/year_month": file_info.year_month,
+                                "loader/windows_from_file": windows_from_file,
+                                "loader/batch_fill": len(batch),
+                                "loader/batch_size": self.batch_size,
+                            }
+                        )
                     if batch.full:
                         yield batch.as_torch()
                         batch = BatchBuilder(self.config, self.batch_size, int(arrays["target_mid"].shape[1]))
+                self.progress(
+                    {
+                        "message": (
+                            f"{self.split} block_done {file_info.ticker}:{file_info.year_month} "
+                            f"origin={origin_start:,}-{origin_end:,} valid_origins={origins.size:,} "
+                            f"seconds={time.perf_counter() - block_started:.1f}"
+                        ),
+                        "loader/event": "block_done",
+                        "loader/split": self.split,
+                        "loader/ticker": file_info.ticker,
+                        "loader/year_month": file_info.year_month,
+                        "loader/block_seconds": time.perf_counter() - block_started,
+                        "loader/block_valid_origins": int(origins.size),
+                    }
+                )
                 del arrays
                 gc.collect()
         if batch is not None and len(batch) > 0:

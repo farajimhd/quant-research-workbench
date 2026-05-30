@@ -64,6 +64,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--context-seconds", type=int, default=data_defaults.context_seconds)
     parser.add_argument("--chunk-ms", type=int, default=data_defaults.chunk_ms)
     parser.add_argument("--row-block-size", type=int, default=data_defaults.row_block_size)
+    parser.add_argument("--loader-progress-windows", type=int, default=data_defaults.loader_progress_windows)
     parser.add_argument("--batch-size", type=int, default=train_defaults.batch_size)
     parser.add_argument("--epochs", type=int, default=train_defaults.epochs)
     parser.add_argument("--max-steps", type=int, default=train_defaults.max_steps)
@@ -167,9 +168,27 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     model.train()
+    loader_event_counter = [0]
+
+    def loader_progress(event: dict[str, Any]) -> None:
+        loader_event_counter[0] += 1
+        metrics = {key: value for key, value in event.items() if isinstance(value, (int, float))}
+        metrics["loader/event_count"] = float(loader_event_counter[0])
+        metrics["train/step"] = float(global_step)
+        log_metrics(metrics, metrics_path, run, max(global_step, 0), prefix_print=False)
+
     for epoch in range(config.train.epochs):
-        loader = make_loader(config.data, "train", config.train.batch_size, config.train.num_workers, config.train.prefetch_factor, args.seed + epoch)
+        loader = make_loader(
+            config.data,
+            "train",
+            config.train.batch_size,
+            config.train.num_workers,
+            config.train.prefetch_factor,
+            args.seed + epoch,
+            progress_callback=loader_progress,
+        )
         for batch in loader:
+            step_started = time.perf_counter()
             global_step += 1
             batch = move_batch(batch, device)
             masks = build_structured_masks(quote_values=batch["quote_values"], trade_values=batch["trade_values"], chunk_summary=batch["chunk_summary"], event_kinds=batch["event_kinds"], config=config.masks)
@@ -182,6 +201,7 @@ def main(argv: list[str] | None = None) -> None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
             scaler.step(optimizer)
             scaler.update()
+            metrics.update({"train/step_seconds": time.perf_counter() - step_started})
             if global_step % config.train.logging_steps == 0:
                 metrics.update({"train/epoch": float(epoch + 1), "train/step": float(global_step), "train/lr": float(optimizer.param_groups[0]["lr"])})
                 log_metrics(metrics, metrics_path, run, global_step)
@@ -220,6 +240,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             chunk_ms=args.chunk_ms,
             context_seconds=args.context_seconds,
             row_block_size=args.row_block_size,
+            loader_progress_windows=args.loader_progress_windows,
         ),
         masks=MaskConfig(mask_ratio=args.mask_ratio),
         model=ModelConfig(
@@ -259,8 +280,15 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
     )
 
 
-def make_loader(data_config: DataConfig, split: str, batch_size: int, num_workers: int, prefetch_factor: int, seed: int) -> DataLoader:
-    dataset = EventChunkDataset(config=data_config, split=split, batch_size=batch_size, seed=seed)
+def make_loader(
+    data_config: DataConfig,
+    split: str,
+    batch_size: int,
+    num_workers: int,
+    prefetch_factor: int,
+    seed: int,
+    progress_callback: Any | None = None,
+) -> DataLoader:
     effective_workers = max(0, num_workers)
     if effective_workers > 0 and platform.system().lower().startswith("win"):
         print(
@@ -269,6 +297,8 @@ def make_loader(data_config: DataConfig, split: str, batch_size: int, num_worker
             flush=True,
         )
         effective_workers = 0
+    callback = progress_callback if effective_workers == 0 else None
+    dataset = EventChunkDataset(config=data_config, split=split, batch_size=batch_size, seed=seed, progress_callback=callback)
     kwargs: dict[str, Any] = {"batch_size": None, "num_workers": effective_workers, "pin_memory": False}
     if effective_workers > 0:
         kwargs.update({"prefetch_factor": max(1, prefetch_factor), "persistent_workers": True})
@@ -438,7 +468,7 @@ def resolve_wandb_mode(args: argparse.Namespace) -> str:
     return "online" if os.environ.get("WANDB_API_KEY") else "offline"
 
 
-def log_metrics(metrics: dict[str, float], metrics_path: Path, run: Any | None, step: int) -> None:
+def log_metrics(metrics: dict[str, float], metrics_path: Path, run: Any | None, step: int, *, prefix_print: bool = True) -> None:
     row = {"step": step, "ts": datetime.now().isoformat(timespec="seconds"), **metrics}
     with metrics_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, sort_keys=True) + "\n")

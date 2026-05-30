@@ -40,7 +40,8 @@ $ErrorActionPreference = 'Continue'
   --context-seconds 30 `
   --chunk-ms 500 `
   --row-block-size 8192 `
-  --batch-size 1024 `
+  --loader-progress-windows 256 `
+  --batch-size 256 `
   --epochs 3 `
   --num-workers 0 `
   --prefetch-factor 1 `
@@ -53,7 +54,7 @@ $ErrorActionPreference = 'Continue'
   --decoder-layers 4 `
   --ffn-mult 4 `
   --mask-ratio 0.70 `
-  --logging-steps 50 `
+  --logging-steps 1 `
   --checkpoint-steps 1000 `
   --probe-every-steps 5000 `
   --probe-train-steps 200 `
@@ -61,7 +62,7 @@ $ErrorActionPreference = 'Continue'
   --probe-val-windows 20000 `
   --wandb-entity "mehdifaraji" `
   --wandb-project "May2026-masked-event-modeling" `
-  --wandb-run-name "mem-v1-d512-e2-t8-d4-mask70-chunk500-b1024-nov2025" `
+  --wandb-run-name "mem-v1-d512-e2-t8-d4-mask70-chunk500-b256-nov2025" `
   --wandb-mode $wandbMode `
   --wandb-init-timeout $wandbTimeout `
   2>&1 | ForEach-Object { $_.ToString() } | Tee-Object -FilePath $logPath

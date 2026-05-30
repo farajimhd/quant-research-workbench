@@ -30,6 +30,7 @@ class DataConfig:
     max_total_events: int = 256
     binary_magnitude_bits: int = 12
     row_block_size: int = 8192
+    loader_progress_windows: int = 256
     shuffle_files: bool = True
     shuffle_windows: bool = True
     max_files: int = 0
@@ -104,7 +105,7 @@ class TrainConfig:
     learning_rate: float = 2e-4
     weight_decay: float = 1e-4
     grad_clip_norm: float = 1.0
-    logging_steps: int = 50
+    logging_steps: int = 1
     checkpoint_steps: int = 1000
     num_workers: int = 0
     prefetch_factor: int = 1
