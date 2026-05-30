@@ -18,7 +18,7 @@ $runStamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $logDir = 'D:\TradingData\quant-research-workbench\market_data\models\masked_event_model\v2\workstation_logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $logPath = Join-Path $logDir ('masked_event_v2_train_' + $runStamp + '.log')
-$wandbMode = if ($env:MASKED_EVENT_WANDB_MODE) { $env:MASKED_EVENT_WANDB_MODE } else { 'auto' }
+$wandbMode = if ($env:MASKED_EVENT_WANDB_MODE) { $env:MASKED_EVENT_WANDB_MODE } else { 'online' }
 $wandbTimeout = if ($env:MASKED_EVENT_WANDB_INIT_TIMEOUT) { $env:MASKED_EVENT_WANDB_INIT_TIMEOUT } else { '120' }
 Write-Host 'Starting masked event v2 training at' (Get-Date -Format o)
 Write-Host 'Runtime root:' $runtimeRoot

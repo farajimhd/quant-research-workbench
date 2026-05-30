@@ -103,7 +103,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-project", default=train_defaults.wandb_project)
     parser.add_argument("--wandb-entity", default=train_defaults.wandb_entity)
     parser.add_argument("--wandb-run-name", default="")
-    parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="auto")
+    parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="online")
     parser.add_argument("--wandb-init-timeout", type=int, default=60)
     parser.add_argument("--fresh-start", action="store_true")
     parser.add_argument("--resume-latest", action="store_true", default=True)

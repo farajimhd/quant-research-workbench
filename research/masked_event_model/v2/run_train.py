@@ -67,7 +67,7 @@ TRAIN_ARGS: dict[str, Any] = {
     "wandb_entity": "mehdifaraji",
     "wandb_project": "May2026-masked-event-modeling",
     "wandb_run_name": "mem-v2-d256-e2-t8-d4-mask70-chunk500-b256-nov2025",
-    "wandb_mode": "auto",
+    "wandb_mode": "online",
     "wandb_init_timeout": 120,
 }
 
