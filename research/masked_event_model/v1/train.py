@@ -32,6 +32,7 @@ from research.masked_event_model.v1.data import EventChunkDataset, discover_chun
 from research.masked_event_model.v1.losses import masked_autoencoder_loss
 from research.masked_event_model.v1.masking import build_structured_masks
 from research.masked_event_model.v1.model import MaskedEventAutoencoder
+from research.masked_event_model.v1.model_artifacts import save_model_architecture_artifacts
 from research.masked_event_model.v1.probe import run_linear_probe
 from research.masked_event_model.v1.schema import CHUNK_SUMMARY_COLUMNS, QUOTE_FEATURE_COLUMNS, TRADE_FEATURE_COLUMNS
 
@@ -121,6 +122,21 @@ def main() -> None:
     global_step = maybe_resume(model, optimizer, output_dir, fresh_start=args.fresh_start)
     run = init_wandb(args, config, output_dir, horizon_count)
     write_config(output_dir, config, args, horizon_count)
+    try:
+        architecture_info = save_model_architecture_artifacts(
+            model=model,
+            data_config=config.data,
+            output_dir=output_dir,
+            version=EXPERIMENT_VERSION,
+            torch_module=torch,
+            wandb_run=run,
+            summary_batch_size=1,
+            summary_depth=8,
+            graph_depth=3,
+        )
+        print(f"Model architecture artifacts: {architecture_info.get('architecture_dir')}", flush=True)
+    except Exception as exc:
+        print(f"Model architecture artifact generation skipped: {exc}", flush=True)
 
     print(f"Output directory: {output_dir}", flush=True)
     print(f"Inputs: quote={config.data.max_quote_events}x{len(QUOTE_FEATURE_COLUMNS)} trade={config.data.max_trade_events}x{len(TRADE_FEATURE_COLUMNS)} summary={len(CHUNK_SUMMARY_COLUMNS)}", flush=True)
