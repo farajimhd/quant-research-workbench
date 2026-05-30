@@ -104,6 +104,10 @@ class TrainConfig:
     max_steps: int = 0
     learning_rate: float = 2e-4
     weight_decay: float = 1e-4
+    scheduler: str = "cosine_warm_restarts"
+    scheduler_t0_steps: int = 1000
+    scheduler_t_mult: int = 2
+    scheduler_eta_min: float = 1e-6
     grad_clip_norm: float = 1.0
     logging_steps: int = 1
     checkpoint_steps: int = 1000

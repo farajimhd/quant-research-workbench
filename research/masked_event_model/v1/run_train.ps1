@@ -54,6 +54,12 @@ $ErrorActionPreference = 'Continue'
   --decoder-layers 4 `
   --ffn-mult 4 `
   --mask-ratio 0.70 `
+  --learning-rate 2e-4 `
+  --weight-decay 1e-4 `
+  --scheduler "cosine_warm_restarts" `
+  --scheduler-t0-steps 1000 `
+  --scheduler-t-mult 2 `
+  --scheduler-eta-min 1e-6 `
   --logging-steps 1 `
   --checkpoint-steps 1000 `
   --probe-every-steps 5000 `

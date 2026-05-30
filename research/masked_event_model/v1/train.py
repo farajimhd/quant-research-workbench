@@ -74,6 +74,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=train_defaults.seed)
     parser.add_argument("--learning-rate", type=float, default=train_defaults.learning_rate)
     parser.add_argument("--weight-decay", type=float, default=train_defaults.weight_decay)
+    parser.add_argument("--scheduler", choices=("none", "cosine_warm_restarts"), default=train_defaults.scheduler)
+    parser.add_argument("--scheduler-t0-steps", type=int, default=train_defaults.scheduler_t0_steps)
+    parser.add_argument("--scheduler-t-mult", type=int, default=train_defaults.scheduler_t_mult)
+    parser.add_argument("--scheduler-eta-min", type=float, default=train_defaults.scheduler_eta_min)
     parser.add_argument("--grad-clip-norm", type=float, default=train_defaults.grad_clip_norm)
     parser.add_argument("--logging-steps", type=int, default=train_defaults.logging_steps)
     parser.add_argument("--checkpoint-steps", type=int, default=train_defaults.checkpoint_steps)
@@ -133,8 +137,9 @@ def main(argv: list[str] | None = None) -> None:
     model.to(device)
     print(f"Model moved to device={device}", flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
+    scheduler = build_scheduler(optimizer, config.train)
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and device.type == "cuda")
-    global_step = maybe_resume(model, optimizer, output_dir, fresh_start=args.fresh_start)
+    global_step = maybe_resume(model, optimizer, scheduler, output_dir, fresh_start=args.fresh_start)
     try:
         architecture_info = save_model_architecture_artifacts(
             model=model,
@@ -155,7 +160,12 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Estimated CPU batch size: {estimated_batch_gib(config.data, config.train.batch_size, horizon_count):.2f} GiB", flush=True)
     print(f"Estimated loader block size: {estimated_loader_block_gib(config.data, horizon_count):.2f} GiB", flush=True)
     print(f"Model: d={config.model.d_model} heads={config.model.n_heads} qlayers={config.model.quote_event_layers} tlayers={config.model.temporal_layers} decoder={config.model.decoder_layers}", flush=True)
-    print(f"Training configuration ready; mask_ratio={config.masks.mask_ratio}", flush=True)
+    print(
+        f"Training configuration ready; mask_ratio={config.masks.mask_ratio} "
+        f"scheduler={config.train.scheduler} t0={config.train.scheduler_t0_steps} "
+        f"t_mult={config.train.scheduler_t_mult} eta_min={config.train.scheduler_eta_min}",
+        flush=True,
+    )
     if args.dry_run:
         batch = next(iter(make_loader(config.data, "train", config.train.batch_size, config.train.num_workers, config.train.prefetch_factor, args.seed)))
         batch = move_batch(batch, device)
@@ -201,6 +211,8 @@ def main(argv: list[str] | None = None) -> None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
             scaler.step(optimizer)
             scaler.update()
+            if scheduler is not None:
+                scheduler.step(global_step)
             metrics.update({"train/step_seconds": time.perf_counter() - step_started})
             if global_step % config.train.logging_steps == 0:
                 metrics.update({"train/epoch": float(epoch + 1), "train/step": float(global_step), "train/lr": float(optimizer.param_groups[0]["lr"])})
@@ -218,11 +230,11 @@ def main(argv: list[str] | None = None) -> None:
                 log_metrics(probe_metrics, metrics_path, run, global_step)
                 print("PROBE " + json.dumps(probe_metrics, sort_keys=True), flush=True)
             if global_step % config.train.checkpoint_steps == 0:
-                save_checkpoint(output_dir, model, optimizer, global_step, config, args)
+                save_checkpoint(output_dir, model, optimizer, scheduler, global_step, config, args)
             if config.train.max_steps > 0 and global_step >= config.train.max_steps:
-                save_checkpoint(output_dir, model, optimizer, global_step, config, args)
+                save_checkpoint(output_dir, model, optimizer, scheduler, global_step, config, args)
                 return
-    save_checkpoint(output_dir, model, optimizer, global_step, config, args)
+    save_checkpoint(output_dir, model, optimizer, scheduler, global_step, config, args)
 
 
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
@@ -267,6 +279,10 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             max_steps=args.max_steps,
             learning_rate=args.learning_rate,
             weight_decay=args.weight_decay,
+            scheduler=args.scheduler,
+            scheduler_t0_steps=args.scheduler_t0_steps,
+            scheduler_t_mult=args.scheduler_t_mult,
+            scheduler_eta_min=args.scheduler_eta_min,
             grad_clip_norm=args.grad_clip_norm,
             logging_steps=args.logging_steps,
             checkpoint_steps=args.checkpoint_steps,
@@ -354,20 +370,57 @@ def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     return moved
 
 
-def save_checkpoint(output_dir: Path, model: torch.nn.Module, optimizer: torch.optim.Optimizer, step: int, config: ExperimentConfig, args: argparse.Namespace) -> None:
-    payload = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "step": step, "config": dataclass_tree(config), "args": vars(args)}
+def build_scheduler(optimizer: torch.optim.Optimizer, train_config: TrainConfig) -> torch.optim.lr_scheduler.LRScheduler | None:
+    if train_config.scheduler == "none":
+        return None
+    if train_config.scheduler != "cosine_warm_restarts":
+        raise ValueError(f"Unsupported scheduler: {train_config.scheduler}")
+    return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=max(1, int(train_config.scheduler_t0_steps)),
+        T_mult=max(1, int(train_config.scheduler_t_mult)),
+        eta_min=max(0.0, float(train_config.scheduler_eta_min)),
+    )
+
+
+def save_checkpoint(
+    output_dir: Path,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    step: int,
+    config: ExperimentConfig,
+    args: argparse.Namespace,
+) -> None:
+    payload = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler is not None else None,
+        "step": step,
+        "config": dataclass_tree(config),
+        "args": vars(args),
+    }
     path = output_dir / "checkpoint_last.pt"
     torch.save(payload, path)
     print(f"Saved checkpoint: {path}", flush=True)
 
 
-def maybe_resume(model: torch.nn.Module, optimizer: torch.optim.Optimizer, output_dir: Path, *, fresh_start: bool) -> int:
+def maybe_resume(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    output_dir: Path,
+    *,
+    fresh_start: bool,
+) -> int:
     path = output_dir / "checkpoint_last.pt"
     if fresh_start or not path.exists():
         return 0
     checkpoint = torch.load(path, map_location="cpu")
     model.load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
+    if scheduler is not None and checkpoint.get("scheduler") is not None:
+        scheduler.load_state_dict(checkpoint["scheduler"])
     print(f"Resumed checkpoint: {path} step={checkpoint.get('step', 0)}", flush=True)
     return int(checkpoint.get("step", 0))
 
@@ -477,7 +530,16 @@ def log_metrics(metrics: dict[str, float], metrics_path: Path, run: Any | None, 
 
 
 def format_metrics(step: int, epoch: int, metrics: dict[str, float]) -> str:
-    keys = ["pretrain/loss_total", "pretrain/loss_quote", "pretrain/loss_trade", "pretrain/loss_summary", "pretrain/event_kind_acc_pct", "mask/ratio_actual"]
+    keys = [
+        "pretrain/loss_total",
+        "pretrain/loss_quote",
+        "pretrain/loss_trade",
+        "pretrain/loss_summary",
+        "pretrain/event_kind_acc_pct",
+        "mask/ratio_actual",
+        "train/lr",
+        "train/step_seconds",
+    ]
     parts = " ".join(f"{key}={metrics[key]:.4f}" for key in keys if key in metrics)
     return f"step={step:,} epoch={epoch} {parts}"
 
