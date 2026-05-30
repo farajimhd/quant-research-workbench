@@ -29,6 +29,7 @@ class DataConfig:
     max_trade_events: int = 192
     max_total_events: int = 256
     binary_magnitude_bits: int = 12
+    row_block_size: int = 8192
     shuffle_files: bool = True
     shuffle_windows: bool = True
     max_files: int = 0

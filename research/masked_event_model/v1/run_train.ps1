@@ -39,6 +39,7 @@ $ErrorActionPreference = 'Continue'
   --tickers "ALL" `
   --context-seconds 30 `
   --chunk-ms 500 `
+  --row-block-size 8192 `
   --batch-size 1024 `
   --epochs 3 `
   --num-workers 0 `

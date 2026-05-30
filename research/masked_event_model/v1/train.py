@@ -63,6 +63,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tickers", default="ALL")
     parser.add_argument("--context-seconds", type=int, default=data_defaults.context_seconds)
     parser.add_argument("--chunk-ms", type=int, default=data_defaults.chunk_ms)
+    parser.add_argument("--row-block-size", type=int, default=data_defaults.row_block_size)
     parser.add_argument("--batch-size", type=int, default=train_defaults.batch_size)
     parser.add_argument("--epochs", type=int, default=train_defaults.epochs)
     parser.add_argument("--max-steps", type=int, default=train_defaults.max_steps)
@@ -151,6 +152,7 @@ def main(argv: list[str] | None = None) -> None:
 
     print(f"Inputs: quote={config.data.max_quote_events}x{len(QUOTE_FEATURE_COLUMNS)} trade={config.data.max_trade_events}x{len(TRADE_FEATURE_COLUMNS)} summary={len(CHUNK_SUMMARY_COLUMNS)}", flush=True)
     print(f"Estimated CPU batch size: {estimated_batch_gib(config.data, config.train.batch_size, horizon_count):.2f} GiB", flush=True)
+    print(f"Estimated loader block size: {estimated_loader_block_gib(config.data, horizon_count):.2f} GiB", flush=True)
     print(f"Model: d={config.model.d_model} heads={config.model.n_heads} qlayers={config.model.quote_event_layers} tlayers={config.model.temporal_layers} decoder={config.model.decoder_layers}", flush=True)
     print(f"Training configuration ready; mask_ratio={config.masks.mask_ratio}", flush=True)
     if args.dry_run:
@@ -217,6 +219,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             tickers=tuple(part.strip().upper() for part in args.tickers.split(",") if part.strip()) or ("ALL",),
             chunk_ms=args.chunk_ms,
             context_seconds=args.context_seconds,
+            row_block_size=args.row_block_size,
         ),
         masks=MaskConfig(mask_ratio=args.mask_ratio),
         model=ModelConfig(
@@ -287,6 +290,19 @@ def estimated_batch_gib(data_config: DataConfig, batch_size: int, horizon_count:
         + batch_size * context * data_config.max_total_events
         + batch_size
     )
+    return (float_values * 4 + int64_values * 8) / (1024**3)
+
+
+def estimated_loader_block_gib(data_config: DataConfig, horizon_count: int) -> float:
+    rows = max(data_config.row_block_size, data_config.context_chunks) + data_config.context_chunks
+    float_values = (
+        rows * data_config.max_quote_events * len(QUOTE_FEATURE_COLUMNS)
+        + rows * data_config.max_trade_events * len(TRADE_FEATURE_COLUMNS)
+        + rows * len(CHUNK_SUMMARY_COLUMNS)
+        + rows * horizon_count
+        + rows
+    )
+    int64_values = rows * data_config.max_total_events * 2 + rows
     return (float_values * 4 + int64_values * 8) / (1024**3)
 
 

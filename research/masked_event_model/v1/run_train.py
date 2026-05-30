@@ -32,6 +32,7 @@ TRAIN_ARGS: dict[str, Any] = {
     "tickers": "ALL",
     "context_seconds": 30,
     "chunk_ms": 500,
+    "row_block_size": 8192,
     "batch_size": 1024,
     "epochs": 3,
     "num_workers": 0,

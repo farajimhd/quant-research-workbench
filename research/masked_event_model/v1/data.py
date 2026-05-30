@@ -113,6 +113,18 @@ def load_chunk_file(path: Path, *, start_date: str, end_date: str) -> pl.DataFra
     )
 
 
+def chunk_scan(path: Path, *, start_date: str, end_date: str) -> pl.LazyFrame:
+    return pl.scan_parquet(str(path)).filter((pl.col("session_date") >= start_date) & (pl.col("session_date") <= end_date))
+
+
+def count_chunk_rows(path: Path, *, start_date: str, end_date: str) -> int:
+    return int(chunk_scan(path, start_date=start_date, end_date=end_date).select(pl.len()).collect().item())
+
+
+def load_chunk_block(path: Path, *, start_date: str, end_date: str, row_offset: int, row_count: int) -> pl.DataFrame:
+    return chunk_scan(path, start_date=start_date, end_date=end_date).slice(row_offset, row_count).collect()
+
+
 def list_column_to_matrix(frame: pl.DataFrame, column: str, rows: int, cols: int) -> np.ndarray:
     if column not in frame.columns or frame.height == 0:
         return np.zeros((frame.height, rows, cols), dtype=np.float32)
@@ -212,8 +224,36 @@ def dense_ticker_frame(frame: pl.DataFrame, config: DataConfig) -> pl.DataFrame:
     )
 
 
+def prepare_loaded_chunk_frame(frame: pl.DataFrame, config: DataConfig) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    target_horizons = target_horizons_from_columns(frame.columns)
+    chunk_ns = config.chunk_ms * 1_000_000
+    if "chunk_end_ns" not in frame.columns:
+        frame = frame.with_columns((pl.col("chunk_start_ns") + chunk_ns - 1).alias("chunk_end_ns"))
+    for list_col in ("quote_values", "trade_values", "event_kinds", "event_indices"):
+        if list_col not in frame.columns:
+            frame = frame.with_columns(pl.lit(None).alias(list_col))
+    for column in CHUNK_SUMMARY_COLUMNS:
+        if column not in frame.columns:
+            frame = frame.with_columns(pl.lit(0.0).alias(column))
+    return frame.select(
+        [
+            "session_date",
+            "chunk_start_ns",
+            "chunk_end_ns",
+            "quote_values",
+            "trade_values",
+            "event_kinds",
+            "event_indices",
+            *CHUNK_SUMMARY_COLUMNS,
+            *[f"target_mid_h{horizon}" for horizon in target_horizons],
+        ]
+    )
+
+
 def frame_to_arrays(frame: pl.DataFrame, config: DataConfig) -> dict[str, np.ndarray] | None:
-    dense = dense_ticker_frame(frame, config)
+    dense = prepare_loaded_chunk_frame(frame, config)
     if dense.height < config.context_chunks + 1:
         return None
     quote_values = list_column_to_matrix(dense, "quote_values", config.max_quote_events, len(QUOTE_FEATURE_COLUMNS))
@@ -299,7 +339,9 @@ def valid_origins(arrays: dict[str, np.ndarray], config: DataConfig) -> np.ndarr
     if arrays["target_mid"].shape[1] == 0:
         return np.asarray([], dtype=np.int64)
     start = config.context_chunks - 1
-    valid = np.where(np.all(np.isfinite(arrays["target_mid"]) & (arrays["target_mid"] > 0.0), axis=1))[0]
+    valid_targets = np.all(np.isfinite(arrays["target_mid"]) & (arrays["target_mid"] > 0.0), axis=1)
+    valid_current = np.isfinite(arrays["current_mid"]) & (arrays["current_mid"] > 0.0)
+    valid = np.where(valid_targets & valid_current)[0]
     valid = valid[valid >= start]
     return valid[:: max(1, config.origin_stride_chunks)]
 
@@ -324,29 +366,59 @@ class EventChunkDataset(IterableDataset):
             files = files[worker.id :: worker.num_workers]
         batch: BatchBuilder | None = None
         for file_info in files:
-            frame = load_chunk_file(file_info.path, start_date=self.start_date, end_date=self.end_date)
-            arrays = frame_to_arrays(frame, self.config)
-            del frame
-            if arrays is None:
+            total_rows = count_chunk_rows(file_info.path, start_date=self.start_date, end_date=self.end_date)
+            first_origin = self.config.context_chunks - 1
+            if total_rows <= first_origin:
                 continue
-            origins = valid_origins(arrays, self.config)
+            block_size = max(int(self.config.row_block_size), self.config.context_chunks)
+            block_starts = list(range(first_origin, total_rows, block_size))
             if self.config.shuffle_windows and self.split == "train":
-                np_rng = np.random.default_rng(self.seed + len(file_info.ticker) + len(file_info.year_month))
-                np_rng.shuffle(origins)
-            if self.config.max_windows_per_file > 0:
-                origins = origins[: self.config.max_windows_per_file]
-            if batch is None:
-                batch = BatchBuilder(self.config, self.batch_size, int(arrays["target_mid"].shape[1]))
-            for origin in origins:
-                before = len(batch)
-                batch.add(arrays, int(origin), file_info.ticker)
-                if len(batch) == before:
+                rng.shuffle(block_starts)
+            print(
+                f"{self.split} file {file_info.ticker}:{file_info.year_month} rows={total_rows:,} blocks={len(block_starts):,}",
+                flush=True,
+            )
+            windows_from_file = 0
+            for origin_start in block_starts:
+                if self.config.max_windows_per_file > 0 and windows_from_file >= self.config.max_windows_per_file:
+                    break
+                origin_end = min(origin_start + block_size, total_rows)
+                row_start = max(0, origin_start - self.config.context_chunks + 1)
+                row_count = origin_end - row_start
+                frame = load_chunk_block(
+                    file_info.path,
+                    start_date=self.start_date,
+                    end_date=self.end_date,
+                    row_offset=row_start,
+                    row_count=row_count,
+                )
+                arrays = frame_to_arrays(frame, self.config)
+                del frame
+                if arrays is None:
                     continue
-                if batch.full:
-                    yield batch.as_torch()
+                local_start = origin_start - row_start
+                local_end = origin_end - row_start
+                origins = valid_origins(arrays, self.config)
+                origins = origins[(origins >= local_start) & (origins < local_end)]
+                if self.config.shuffle_windows and self.split == "train":
+                    np_rng = np.random.default_rng(self.seed + origin_start + len(file_info.ticker) + len(file_info.year_month))
+                    np_rng.shuffle(origins)
+                if self.config.max_windows_per_file > 0:
+                    remaining = self.config.max_windows_per_file - windows_from_file
+                    origins = origins[:remaining]
+                if batch is None:
                     batch = BatchBuilder(self.config, self.batch_size, int(arrays["target_mid"].shape[1]))
-            del arrays
-            gc.collect()
+                for origin in origins:
+                    before = len(batch)
+                    batch.add(arrays, int(origin), file_info.ticker)
+                    if len(batch) == before:
+                        continue
+                    windows_from_file += 1
+                    if batch.full:
+                        yield batch.as_torch()
+                        batch = BatchBuilder(self.config, self.batch_size, int(arrays["target_mid"].shape[1]))
+                del arrays
+                gc.collect()
         if batch is not None and len(batch) > 0:
             yield batch.as_torch()
 
