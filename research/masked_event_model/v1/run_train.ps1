@@ -53,5 +53,7 @@ Write-Host 'Log:' $logPath
   --wandb-entity "mehdifaraji" `
   --wandb-project "May2026-masked-event-modeling" `
   --wandb-run-name "mem-v1-d512-e2-t8-d4-mask70-chunk500-nov2025" `
+  --wandb-mode auto `
+  --wandb-init-timeout 60 `
   2>&1 | Tee-Object -FilePath $logPath
 if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }

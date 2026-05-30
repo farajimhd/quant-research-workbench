@@ -6,6 +6,7 @@ import os
 import random
 import sys
 import time
+import traceback
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -88,6 +89,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-project", default=train_defaults.wandb_project)
     parser.add_argument("--wandb-entity", default=train_defaults.wandb_entity)
     parser.add_argument("--wandb-run-name", default="")
+    parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="auto")
+    parser.add_argument("--wandb-init-timeout", type=int, default=60)
     parser.add_argument("--fresh-start", action="store_true")
     parser.add_argument("--resume-latest", action="store_true", default=True)
     parser.add_argument("--dry-run", action="store_true")
@@ -102,7 +105,11 @@ def main() -> None:
     output_dir = resolve_output_dir(config, args)
     output_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = output_dir / "metrics.jsonl"
+    print(f"Output directory: {output_dir}", flush=True)
+    print("Inferring available target horizons from chunk cache...", flush=True)
     horizon_count = infer_horizon_count(config.data)
+    print(f"Horizons available: {horizon_count}", flush=True)
+    print("Building masked event model...", flush=True)
     model = MaskedEventAutoencoder(
         quote_feature_count=len(QUOTE_FEATURE_COLUMNS),
         trade_feature_count=len(TRADE_FEATURE_COLUMNS),
@@ -117,6 +124,7 @@ def main() -> None:
     )
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
     model.to(device)
+    print(f"Model moved to device={device}", flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and device.type == "cuda")
     global_step = maybe_resume(model, optimizer, output_dir, fresh_start=args.fresh_start)
@@ -138,10 +146,9 @@ def main() -> None:
     except Exception as exc:
         print(f"Model architecture artifact generation skipped: {exc}", flush=True)
 
-    print(f"Output directory: {output_dir}", flush=True)
     print(f"Inputs: quote={config.data.max_quote_events}x{len(QUOTE_FEATURE_COLUMNS)} trade={config.data.max_trade_events}x{len(TRADE_FEATURE_COLUMNS)} summary={len(CHUNK_SUMMARY_COLUMNS)}", flush=True)
     print(f"Model: d={config.model.d_model} heads={config.model.n_heads} qlayers={config.model.quote_event_layers} tlayers={config.model.temporal_layers} decoder={config.model.decoder_layers}", flush=True)
-    print(f"Horizons available: {horizon_count}; mask_ratio={config.masks.mask_ratio}", flush=True)
+    print(f"Training configuration ready; mask_ratio={config.masks.mask_ratio}", flush=True)
     if args.dry_run:
         batch = next(iter(make_loader(config.data, "train", config.train.batch_size, config.train.num_workers, config.train.prefetch_factor, args.seed)))
         batch = move_batch(batch, device)
@@ -300,10 +307,33 @@ def default_run_name(args: argparse.Namespace) -> str:
 def init_wandb(args: argparse.Namespace, config: ExperimentConfig, output_dir: Path, horizon_count: int) -> Any | None:
     if not args.wandb_project or args.wandb_project.lower() in {"off", "none", "disabled"}:
         return None
-    if not os.environ.get("WANDB_API_KEY") and not os.environ.get("WANDB_MODE"):
+    mode = resolve_wandb_mode(args)
+    if mode == "disabled":
+        print("*** WANDB disabled; writing metrics.jsonl only.", flush=True)
+        return None
+    os.environ.setdefault("WANDB_INIT_TIMEOUT", str(args.wandb_init_timeout))
+    os.environ.setdefault("WANDB_LOGIN_TIMEOUT", str(min(args.wandb_init_timeout, 30)))
+    if mode == "offline":
         os.environ["WANDB_MODE"] = "offline"
+    elif mode == "online":
+        os.environ["WANDB_MODE"] = "online"
+    print(
+        "*** WANDB INIT | "
+        f"entity={args.wandb_entity or '<none>'} "
+        f"project={args.wandb_project} "
+        f"run={config.train.wandb_run_name} "
+        f"mode={mode} "
+        f"api_key_present={bool(os.environ.get('WANDB_API_KEY'))} "
+        f"timeout_seconds={args.wandb_init_timeout}",
+        flush=True,
+    )
+    if not os.environ.get("WANDB_API_KEY") and mode == "online":
+        print("*** WANDB_API_KEY is missing; falling back to offline mode.", flush=True)
+        os.environ["WANDB_MODE"] = "offline"
+        mode = "offline"
+    if not os.environ.get("WANDB_API_KEY") and mode == "offline":
         print(
-            "WANDB_API_KEY was not found after .env discovery; using WANDB_MODE=offline. "
+            "*** WANDB_API_KEY was not found after .env discovery; using WANDB_MODE=offline. "
             "Set WANDB_API_KEY in an environment variable or a discovered .env file for online logging.",
             flush=True,
         )
@@ -312,14 +342,37 @@ def init_wandb(args: argparse.Namespace, config: ExperimentConfig, output_dir: P
     except ModuleNotFoundError:
         print("wandb not installed; writing metrics.jsonl only.", flush=True)
         return None
-    return wandb.init(
-        entity=args.wandb_entity or None,
-        project=args.wandb_project,
-        name=config.train.wandb_run_name,
-        config={"horizon_count": horizon_count, **dataclass_tree(config)},
-        dir=str(output_dir),
-        resume="allow",
-    )
+    try:
+        settings = wandb.Settings(
+            init_timeout=max(1, int(args.wandb_init_timeout)),
+            login_timeout=max(1, min(int(args.wandb_init_timeout), 30)),
+        )
+        run = wandb.init(
+            entity=args.wandb_entity or None,
+            project=args.wandb_project,
+            name=config.train.wandb_run_name,
+            config={"horizon_count": horizon_count, **dataclass_tree(config)},
+            dir=str(output_dir),
+            resume="allow",
+            mode=mode,
+            settings=settings,
+        )
+        print(f"*** WANDB READY | mode={mode} dir={getattr(run, 'dir', '<unknown>')}", flush=True)
+        return run
+    except Exception:
+        print("*** W&B init failed; continuing with metrics.jsonl only. Full traceback:", flush=True)
+        traceback.print_exc()
+        os.environ["WANDB_MODE"] = "disabled"
+        return None
+
+
+def resolve_wandb_mode(args: argparse.Namespace) -> str:
+    if args.wandb_mode != "auto":
+        return args.wandb_mode
+    env_mode = os.environ.get("WANDB_MODE", "").strip().lower()
+    if env_mode in {"online", "offline", "disabled"}:
+        return env_mode
+    return "online" if os.environ.get("WANDB_API_KEY") else "offline"
 
 
 def log_metrics(metrics: dict[str, float], metrics_path: Path, run: Any | None, step: int) -> None:
@@ -405,4 +458,9 @@ def set_seed(seed: int) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        print("*** FATAL masked_event_model.v1.train error. Full traceback:", flush=True)
+        traceback.print_exc()
+        raise
