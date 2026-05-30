@@ -53,6 +53,7 @@ $ErrorActionPreference = 'Continue'
   --temporal-layers 8 `
   --decoder-layers 4 `
   --ffn-mult 4 `
+  --encoder-visible-ratio 0.30 `
   --mask-ratio 0.70 `
   --learning-rate 2e-4 `
   --weight-decay 1e-4 `
@@ -61,6 +62,7 @@ $ErrorActionPreference = 'Continue'
   --scheduler-t-mult 2 `
   --scheduler-eta-min 1e-6 `
   --logging-steps 1 `
+  --detailed-metrics-steps 10 `
   --profile-training-every-steps 10 `
   --profile-inference-every-steps 10 `
   --pretrain-validation-frequency 50 `

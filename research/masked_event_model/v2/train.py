@@ -80,6 +80,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scheduler-eta-min", type=float, default=train_defaults.scheduler_eta_min)
     parser.add_argument("--grad-clip-norm", type=float, default=train_defaults.grad_clip_norm)
     parser.add_argument("--logging-steps", type=int, default=train_defaults.logging_steps)
+    parser.add_argument("--detailed-metrics-steps", type=int, default=train_defaults.detailed_metrics_steps)
     parser.add_argument("--profile-training-every-steps", type=int, default=train_defaults.profile_training_every_steps)
     parser.add_argument("--profile-inference-every-steps", type=int, default=train_defaults.profile_inference_every_steps)
     parser.add_argument("--pretrain-validation-frequency", type=int, default=train_defaults.pretrain_validation_frequency)
@@ -95,6 +96,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--decoder-layers", type=int, default=model_defaults.decoder_layers)
     parser.add_argument("--ffn-mult", type=int, default=model_defaults.ffn_mult)
     parser.add_argument("--dropout", type=float, default=model_defaults.dropout)
+    parser.add_argument("--encoder-visible-ratio", type=float, default=model_defaults.encoder_visible_ratio)
     parser.add_argument("--probe-every-steps", type=int, default=probe_defaults.every_steps)
     parser.add_argument("--probe-train-steps", type=int, default=probe_defaults.train_steps)
     parser.add_argument("--probe-train-windows", type=int, default=probe_defaults.train_windows)
@@ -105,6 +107,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-run-name", default="")
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="online")
     parser.add_argument("--wandb-init-timeout", type=int, default=60)
+    parser.add_argument(
+        "--compile-model",
+        action="store_true",
+        default=train_defaults.compile_model or os.environ.get("MASKED_EVENT_COMPILE_MODEL", "").strip().lower() in {"1", "true", "yes", "on"},
+    )
     parser.add_argument("--fresh-start", action="store_true")
     parser.add_argument("--resume-latest", action="store_true", default=True)
     parser.add_argument("--dry-run", action="store_true")
@@ -160,6 +167,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Model architecture artifacts: {architecture_info.get('architecture_dir')}", flush=True)
     except Exception as exc:
         print(f"Model architecture artifact generation skipped: {exc}", flush=True)
+    train_model = maybe_compile_model(model, config.train.compile_model)
 
     print(f"Inputs: quote={config.data.max_quote_events}x{len(QUOTE_FEATURE_COLUMNS)} trade={config.data.max_trade_events}x{len(TRADE_FEATURE_COLUMNS)} summary={len(CHUNK_SUMMARY_COLUMNS)}", flush=True)
     print(f"Estimated CPU batch size: {estimated_batch_gib(config.data, config.train.batch_size, horizon_count):.2f} GiB", flush=True)
@@ -184,11 +192,12 @@ def main(argv: list[str] | None = None) -> None:
 
     validation_batches = build_pretrain_validation_cache(config, args)
     if validation_batches:
-        validation_metrics = evaluate_pretrain_validation(model, validation_batches, config, device, seed=args.seed + 10_000)
+        validation_metrics = evaluate_pretrain_validation(train_model, validation_batches, config, device, seed=args.seed + 10_000)
         log_metrics(validation_metrics, metrics_path, run, global_step)
         print("VALIDATION " + format_validation_metrics(global_step, validation_metrics), flush=True)
 
     model.train()
+    train_model.train()
     loader_event_counter = [0]
 
     def loader_progress(event: dict[str, Any]) -> None:
@@ -230,9 +239,10 @@ def main(argv: list[str] | None = None) -> None:
                 synchronize_if_cuda(device)
             mask_seconds = time.perf_counter() - mask_started
             forward_started = time.perf_counter()
+            detailed_metrics = config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0
             with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
-                output = model(batch["quote_values"], batch["trade_values"], batch["event_kinds"], batch["event_indices"], batch["chunk_summary"], masks)
-                loss, metrics = masked_autoencoder_loss(output, batch, masks, config.losses)
+                output = train_model(batch["quote_values"], batch["trade_values"], batch["event_kinds"], batch["event_indices"], batch["chunk_summary"], masks)
+                loss, metrics = masked_autoencoder_loss(output, batch, masks, config.losses, include_diagnostics=detailed_metrics)
             if profile_step:
                 synchronize_if_cuda(device)
             forward_loss_seconds = time.perf_counter() - forward_started
@@ -272,7 +282,7 @@ def main(argv: list[str] | None = None) -> None:
                 log_metrics(metrics, metrics_path, run, global_step)
                 print(format_metrics(global_step, epoch + 1, metrics), flush=True)
             if validation_batches and config.train.pretrain_validation_frequency > 0 and global_step % config.train.pretrain_validation_frequency == 0:
-                validation_metrics = evaluate_pretrain_validation(model, validation_batches, config, device, seed=args.seed + 10_000)
+                validation_metrics = evaluate_pretrain_validation(train_model, validation_batches, config, device, seed=args.seed + 10_000)
                 log_metrics(validation_metrics, metrics_path, run, global_step)
                 print("VALIDATION " + format_validation_metrics(global_step, validation_metrics), flush=True)
             if config.probe.enabled and global_step % config.probe.every_steps == 0:
@@ -321,6 +331,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             decoder_layers=args.decoder_layers,
             ffn_mult=args.ffn_mult,
             dropout=args.dropout,
+            encoder_visible_ratio=args.encoder_visible_ratio,
         ),
         probe=ProbeConfig(
             enabled=not args.disable_probe,
@@ -342,6 +353,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             scheduler_eta_min=args.scheduler_eta_min,
             grad_clip_norm=args.grad_clip_norm,
             logging_steps=args.logging_steps,
+            detailed_metrics_steps=args.detailed_metrics_steps,
             profile_training_every_steps=args.profile_training_every_steps,
             checkpoint_steps=args.checkpoint_steps,
             profile_inference_every_steps=args.profile_inference_every_steps,
@@ -350,6 +362,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             num_workers=args.num_workers,
             prefetch_factor=args.prefetch_factor,
             loader_prefetch_batches=args.loader_prefetch_batches,
+            compile_model=args.compile_model,
             seed=args.seed,
             wandb_project=args.wandb_project,
             wandb_entity=args.wandb_entity,
@@ -628,6 +641,16 @@ def build_scheduler(optimizer: torch.optim.Optimizer, train_config: TrainConfig)
         T_mult=max(1, int(train_config.scheduler_t_mult)),
         eta_min=max(0.0, float(train_config.scheduler_eta_min)),
     )
+
+
+def maybe_compile_model(model: torch.nn.Module, enabled: bool) -> torch.nn.Module:
+    if not enabled:
+        return model
+    if not hasattr(torch, "compile"):
+        print("torch.compile requested but unavailable in this PyTorch build; using eager model.", flush=True)
+        return model
+    print("Compiling model with torch.compile...", flush=True)
+    return torch.compile(model)
 
 
 def save_checkpoint(

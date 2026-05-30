@@ -29,9 +29,12 @@ trade_event_layers = 2
 temporal_layers = 8
 decoder_layers = 4
 mask_ratio ~= 70%
+encoder_visible_ratio = 30%
 ```
 
 The reconstruction loss is backpropagated only on masked parts. Continuous quote/trade/summary fields use masked MSE. Event-kind reconstruction uses masked cross entropy. Each component is averaged independently before the weighted total is formed.
+
+The training forward path uses sparse masked reconstruction: decoder heads run only for masked quote/trade/summary/event-kind targets. Masked event tokens are dropped from the quote/trade event encoders, capped by `encoder_visible_ratio`, while the production `encode()` path remains unmasked and uses all events.
 
 ## Workstation Run
 

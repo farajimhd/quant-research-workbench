@@ -46,6 +46,7 @@ TRAIN_ARGS: dict[str, Any] = {
     "temporal_layers": 8,
     "decoder_layers": 4,
     "ffn_mult": 4,
+    "encoder_visible_ratio": 0.30,
     "mask_ratio": 0.70,
     "learning_rate": 2e-4,
     "weight_decay": 1e-4,
@@ -54,6 +55,7 @@ TRAIN_ARGS: dict[str, Any] = {
     "scheduler_t_mult": 2,
     "scheduler_eta_min": 1e-6,
     "logging_steps": 1,
+    "detailed_metrics_steps": 10,
     "profile_training_every_steps": 10,
     "profile_inference_every_steps": 10,
     "pretrain_validation_frequency": 50,
@@ -69,9 +71,10 @@ TRAIN_ARGS: dict[str, Any] = {
     "wandb_run_name": "mem-v2-d256-e2-t8-d4-mask70-chunk500-b256-nov2025",
     "wandb_mode": "online",
     "wandb_init_timeout": 120,
+    "compile_model": False,
 }
 
-BOOLEAN_FLAGS = {"disable_probe", "fresh_start", "dry_run"}
+BOOLEAN_FLAGS = {"compile_model", "disable_probe", "fresh_start", "dry_run"}
 
 
 def build_argv(overrides: dict[str, Any] | None = None) -> list[str]:

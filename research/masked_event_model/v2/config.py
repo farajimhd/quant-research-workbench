@@ -69,6 +69,7 @@ class ModelConfig:
     decoder_layers: int = 4
     ffn_mult: int = 4
     dropout: float = 0.08
+    encoder_visible_ratio: float = 0.30
 
     @property
     def ff_dim(self) -> int:
@@ -110,6 +111,7 @@ class TrainConfig:
     scheduler_eta_min: float = 1e-6
     grad_clip_norm: float = 1.0
     logging_steps: int = 1
+    detailed_metrics_steps: int = 10
     profile_training_every_steps: int = 10
     profile_inference_every_steps: int = 10
     pretrain_validation_frequency: int = 50

@@ -19,9 +19,13 @@ def transformer_encoder(layer: nn.TransformerEncoderLayer, *, num_layers: int) -
 @dataclass(slots=True)
 class ModelOutput:
     quote_reconstruction: torch.Tensor
+    quote_reconstruction_indices: torch.Tensor
     trade_reconstruction: torch.Tensor
+    trade_reconstruction_indices: torch.Tensor
     summary_reconstruction: torch.Tensor
+    summary_reconstruction_indices: torch.Tensor
     event_kind_logits: torch.Tensor
+    event_kind_indices: torch.Tensor
     forecast_logits: torch.Tensor
     embeddings: torch.Tensor
     encoded_chunks: torch.Tensor
@@ -67,10 +71,12 @@ class MaskedEventAutoencoder(nn.Module):
         self.horizon_count = horizon_count
         self.target_bit_count = target_bit_count
         self.d_model = config.d_model
+        self.quote_encoder_visible_events = max(1, min(max_quote_events, int(round(max_quote_events * config.encoder_visible_ratio))))
+        self.trade_encoder_visible_events = max(1, min(max_trade_events, int(round(max_trade_events * config.encoder_visible_ratio))))
 
-        self.quote_value_projection = MLPProjection(quote_feature_count, config.d_model, config.ff_dim, config.dropout)
-        self.trade_value_projection = MLPProjection(trade_feature_count, config.d_model, config.ff_dim, config.dropout)
-        self.summary_projection = MLPProjection(summary_feature_count, config.d_model, config.ff_dim, config.dropout)
+        self.quote_value_projection = MLPProjection(quote_feature_count, config.d_model, config.d_model, config.dropout)
+        self.trade_value_projection = MLPProjection(trade_feature_count, config.d_model, config.d_model, config.dropout)
+        self.summary_projection = MLPProjection(summary_feature_count, config.d_model, config.d_model, config.dropout)
 
         self.quote_position_embedding = nn.Embedding(max_quote_events, config.d_model)
         self.trade_position_embedding = nn.Embedding(max_trade_events, config.d_model)
@@ -172,24 +178,68 @@ class MaskedEventAutoencoder(nn.Module):
         quote_pos = torch.arange(quote_events, device=quote_values.device)
         trade_pos = torch.arange(trade_events, device=trade_values.device)
         decoded_chunks = self.decoder_norm(self.decoder(encoded_chunks))
-        quote_dec_tokens = decoded_chunks.unsqueeze(2) + self.quote_position_embedding(quote_pos).view(1, 1, quote_events, -1)
-        trade_dec_tokens = decoded_chunks.unsqueeze(2) + self.trade_position_embedding(trade_pos).view(1, 1, trade_events, -1)
+        quote_indices = (masks.quote_value_mask & (quote_values.abs().sum(dim=-1, keepdim=True) > 0.0)).any(dim=-1).nonzero(as_tuple=False)
+        trade_indices = (masks.trade_value_mask & (trade_values.abs().sum(dim=-1, keepdim=True) > 0.0)).any(dim=-1).nonzero(as_tuple=False)
+        summary_indices = masks.summary_value_mask.any(dim=-1).nonzero(as_tuple=False)
+        event_kind_indices = (masks.event_kind_mask & (event_kinds != 2)).nonzero(as_tuple=False)
         event_pos = torch.arange(self.max_total_events, device=quote_values.device)
         kind_inputs = event_kinds.clamp(0, 2)
-        event_dec_tokens = (
-            decoded_chunks.unsqueeze(2)
-            + self.event_position_embedding(event_pos).view(1, 1, self.max_total_events, -1)
-            + self.event_kind_embedding(kind_inputs)
+
+        quote_dec_tokens = self._sparse_event_tokens(
+            decoded_chunks,
+            quote_indices,
+            self.quote_position_embedding(quote_pos),
+        )
+        trade_dec_tokens = self._sparse_event_tokens(
+            decoded_chunks,
+            trade_indices,
+            self.trade_position_embedding(trade_pos),
+        )
+        summary_dec_tokens = decoded_chunks[summary_indices[:, 0], summary_indices[:, 1]] if summary_indices.numel() else decoded_chunks.new_empty((0, self.d_model))
+        event_dec_tokens = self._sparse_event_kind_tokens(
+            decoded_chunks,
+            event_kind_indices,
+            self.event_position_embedding(event_pos),
+            self.event_kind_embedding(kind_inputs),
         )
         forecast = self.forecast_head(embedding).reshape(batch, self.horizon_count, 1, self.target_bit_count)
         return ModelOutput(
             quote_reconstruction=self.quote_decoder_head(quote_dec_tokens),
+            quote_reconstruction_indices=quote_indices,
             trade_reconstruction=self.trade_decoder_head(trade_dec_tokens),
-            summary_reconstruction=self.summary_decoder_head(decoded_chunks),
+            trade_reconstruction_indices=trade_indices,
+            summary_reconstruction=self.summary_decoder_head(summary_dec_tokens),
+            summary_reconstruction_indices=summary_indices,
             event_kind_logits=self.event_kind_head(event_dec_tokens),
+            event_kind_indices=event_kind_indices,
             forecast_logits=forecast,
             embeddings=embedding,
             encoded_chunks=encoded_chunks,
+        )
+
+    def _sparse_event_tokens(
+        self,
+        decoded_chunks: torch.Tensor,
+        indices: torch.Tensor,
+        position_embeddings: torch.Tensor,
+    ) -> torch.Tensor:
+        if indices.numel() == 0:
+            return decoded_chunks.new_empty((0, self.d_model))
+        return decoded_chunks[indices[:, 0], indices[:, 1]] + position_embeddings[indices[:, 2]]
+
+    def _sparse_event_kind_tokens(
+        self,
+        decoded_chunks: torch.Tensor,
+        indices: torch.Tensor,
+        event_position_embeddings: torch.Tensor,
+        event_kind_embeddings: torch.Tensor,
+    ) -> torch.Tensor:
+        if indices.numel() == 0:
+            return decoded_chunks.new_empty((0, self.d_model))
+        return (
+            decoded_chunks[indices[:, 0], indices[:, 1]]
+            + event_position_embeddings[indices[:, 2]]
+            + event_kind_embeddings[indices[:, 0], indices[:, 1], indices[:, 2]]
         )
 
     def _encode_inputs(
@@ -223,19 +273,32 @@ class MaskedEventAutoencoder(nn.Module):
         trade_pos = torch.arange(trade_events, device=trade_values.device)
         quote_tokens = quote_tokens + self.quote_position_embedding(quote_pos).view(1, 1, quote_events, -1)
         trade_tokens = trade_tokens + self.trade_position_embedding(trade_pos).view(1, 1, trade_events, -1)
+        quote_padding = (~quote_valid).reshape(batch * chunks, quote_events)
+        trade_padding = (~trade_valid).reshape(batch * chunks, trade_events)
         if masks is not None:
             quote_tokens = torch.where(masks.quote_token_mask.unsqueeze(-1), self.quote_mask_token, quote_tokens)
             trade_tokens = torch.where(masks.trade_token_mask.unsqueeze(-1), self.trade_mask_token, trade_tokens)
+            quote_visible = quote_valid & ~masks.quote_token_mask
+            trade_visible = trade_valid & ~masks.trade_token_mask
+            quote_tokens, quote_padding = compact_visible_tokens(
+                quote_tokens.reshape(batch * chunks, quote_events, self.d_model),
+                quote_visible.reshape(batch * chunks, quote_events),
+                max_tokens=self.quote_encoder_visible_events,
+            )
+            trade_tokens, trade_padding = compact_visible_tokens(
+                trade_tokens.reshape(batch * chunks, trade_events, self.d_model),
+                trade_visible.reshape(batch * chunks, trade_events),
+                max_tokens=self.trade_encoder_visible_events,
+            )
+        else:
+            quote_tokens = quote_tokens.reshape(batch * chunks, quote_events, self.d_model)
+            trade_tokens = trade_tokens.reshape(batch * chunks, trade_events, self.d_model)
 
-        flat_quote = quote_tokens.reshape(batch * chunks, quote_events, self.d_model)
-        flat_trade = trade_tokens.reshape(batch * chunks, trade_events, self.d_model)
-        quote_padding = (~quote_valid).reshape(batch * chunks, quote_events)
-        trade_padding = (~trade_valid).reshape(batch * chunks, trade_events)
         quote_padding = ensure_not_all_padding(quote_padding)
         trade_padding = ensure_not_all_padding(trade_padding)
 
-        quote_encoded = self.quote_event_encoder(flat_quote, src_key_padding_mask=quote_padding)
-        trade_encoded = self.trade_event_encoder(flat_trade, src_key_padding_mask=trade_padding)
+        quote_encoded = self.quote_event_encoder(quote_tokens, src_key_padding_mask=quote_padding)
+        trade_encoded = self.trade_event_encoder(trade_tokens, src_key_padding_mask=trade_padding)
         quote_pooled = masked_mean(quote_encoded, ~quote_padding).reshape(batch, chunks, self.d_model)
         trade_pooled = masked_mean(trade_encoded, ~trade_padding).reshape(batch, chunks, self.d_model)
         if masks is not None:
@@ -272,15 +335,24 @@ class MaskedEventAutoencoder(nn.Module):
 
 
 def ensure_not_all_padding(mask: torch.Tensor) -> torch.Tensor:
-    if not mask.any():
+    if mask.shape[1] == 0:
         return mask
-    all_padding = mask.all(dim=1)
-    if all_padding.any():
-        mask = mask.clone()
-        mask[all_padding, 0] = False
-    return mask
+    all_padding = mask.all(dim=1, keepdim=True)
+    first = mask[:, :1] & ~all_padding
+    if mask.shape[1] == 1:
+        return first
+    return torch.cat([first, mask[:, 1:]], dim=1)
 
 
 def masked_mean(values: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
     weights = valid.float().unsqueeze(-1)
     return (values * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)
+
+
+def compact_visible_tokens(tokens: torch.Tensor, visible_mask: torch.Tensor, *, max_tokens: int) -> tuple[torch.Tensor, torch.Tensor]:
+    keep_count = max(1, min(int(max_tokens), tokens.shape[1]))
+    scores = torch.rand(visible_mask.shape, device=tokens.device).masked_fill(~visible_mask, -1.0)
+    indices = scores.topk(keep_count, dim=1).indices.sort(dim=1).values
+    compact_tokens = tokens.gather(1, indices.unsqueeze(-1).expand(-1, -1, tokens.shape[-1]))
+    compact_padding = ~visible_mask.gather(1, indices)
+    return compact_tokens, compact_padding

@@ -15,6 +15,8 @@ def masked_autoencoder_loss(
     batch: dict[str, Any],
     masks: MaskBatch,
     config: LossConfig,
+    *,
+    include_diagnostics: bool = True,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     quote_target = batch["quote_values"]
     trade_target = batch["trade_values"]
@@ -23,15 +25,20 @@ def masked_autoencoder_loss(
 
     quote_valid = quote_target.abs().sum(dim=-1, keepdim=True) > 0.0
     trade_valid = trade_target.abs().sum(dim=-1, keepdim=True) > 0.0
-    quote_mask = masks.quote_value_mask & quote_valid
-    trade_mask = masks.trade_value_mask & trade_valid
-    summary_mask = masks.summary_value_mask
-    event_mask = masks.event_kind_mask & (event_target != 2)
+    quote_mask = gather_by_indices(masks.quote_value_mask & quote_valid, output.quote_reconstruction_indices)
+    trade_mask = gather_by_indices(masks.trade_value_mask & trade_valid, output.trade_reconstruction_indices)
+    summary_mask = gather_by_indices(masks.summary_value_mask, output.summary_reconstruction_indices)
+    event_target_sparse = gather_by_indices(event_target, output.event_kind_indices)
+    event_mask = gather_by_indices(masks.event_kind_mask & (event_target != 2), output.event_kind_indices)
 
-    quote_loss = masked_mse(output.quote_reconstruction, quote_target, quote_mask)
-    trade_loss = masked_mse(output.trade_reconstruction, trade_target, trade_mask)
-    summary_loss = masked_mse(output.summary_reconstruction, summary_target, summary_mask)
-    event_kind_loss = masked_cross_entropy(output.event_kind_logits, event_target, event_mask)
+    quote_target_sparse = gather_by_indices(quote_target, output.quote_reconstruction_indices)
+    trade_target_sparse = gather_by_indices(trade_target, output.trade_reconstruction_indices)
+    summary_target_sparse = gather_by_indices(summary_target, output.summary_reconstruction_indices)
+
+    quote_loss = masked_mse(output.quote_reconstruction, quote_target_sparse, quote_mask)
+    trade_loss = masked_mse(output.trade_reconstruction, trade_target_sparse, trade_mask)
+    summary_loss = masked_mse(output.summary_reconstruction, summary_target_sparse, summary_mask)
+    event_kind_loss = masked_cross_entropy(output.event_kind_logits, event_target_sparse, event_mask)
 
     total = (
         config.quote_weight * quote_loss
@@ -45,15 +52,35 @@ def masked_autoencoder_loss(
         "pretrain/loss_trade": float(trade_loss.detach().cpu()),
         "pretrain/loss_summary": float(summary_loss.detach().cpu()),
         "pretrain/loss_event_kind": float(event_kind_loss.detach().cpu()),
-        "pretrain/quote_price_rmse_bps": masked_rmse(output.quote_reconstruction[..., 2:5], quote_target[..., 2:5], quote_mask[..., 2:5]),
-        "pretrain/trade_price_rmse_bps": masked_rmse(output.trade_reconstruction[..., 2:3], trade_target[..., 2:3], trade_mask[..., 2:3]),
-        "pretrain/quote_psnr_peak6_db": masked_psnr(output.quote_reconstruction, quote_target, quote_mask),
-        "pretrain/trade_psnr_peak6_db": masked_psnr(output.trade_reconstruction, trade_target, trade_mask),
-        "pretrain/summary_psnr_peak6_db": masked_psnr(output.summary_reconstruction, summary_target, summary_mask),
-        "pretrain/event_kind_acc_pct": masked_accuracy(output.event_kind_logits.argmax(dim=-1), event_target, event_mask),
     }
-    metrics.update(masks.diagnostics())
+    if include_diagnostics:
+        metrics.update(
+            {
+                "pretrain/quote_price_rmse_bps": masked_rmse(output.quote_reconstruction[..., 2:5], quote_target_sparse[..., 2:5], quote_mask[..., 2:5]),
+                "pretrain/trade_price_rmse_bps": masked_rmse(output.trade_reconstruction[..., 2:3], trade_target_sparse[..., 2:3], trade_mask[..., 2:3]),
+                "pretrain/quote_psnr_peak6_db": masked_psnr(output.quote_reconstruction, quote_target_sparse, quote_mask),
+                "pretrain/trade_psnr_peak6_db": masked_psnr(output.trade_reconstruction, trade_target_sparse, trade_mask),
+                "pretrain/summary_psnr_peak6_db": masked_psnr(output.summary_reconstruction, summary_target_sparse, summary_mask),
+                "pretrain/event_kind_acc_pct": masked_accuracy(output.event_kind_logits.argmax(dim=-1), event_target_sparse, event_mask),
+            }
+        )
+        metrics.update(masks.diagnostics())
     return total, metrics
+
+
+def gather_by_indices(values: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    if indices.numel() == 0:
+        indexed_dims = indices.shape[1] if indices.ndim == 2 else values.ndim
+        return values.new_empty((0, *values.shape[indexed_dims:]))
+    if values.ndim == 4:
+        return values[indices[:, 0], indices[:, 1], indices[:, 2]]
+    if values.ndim == 3 and indices.shape[1] == 3:
+        return values[indices[:, 0], indices[:, 1], indices[:, 2]]
+    if values.ndim == 3 and indices.shape[1] == 2:
+        return values[indices[:, 0], indices[:, 1]]
+    if values.ndim == 2:
+        return values[indices[:, 0], indices[:, 1]]
+    raise ValueError(f"Unsupported indexed tensor rank: {values.ndim}")
 
 
 def masked_mse(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
