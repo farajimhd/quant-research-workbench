@@ -1,0 +1,318 @@
+{
+  "count": 27,
+  "downloaded_at_utc": "2026-05-31T17:22:19.463375+00:00",
+  "endpoint": "/v3/reference/exchanges",
+  "name": "stock_exchanges",
+  "pages": [
+    {
+      "count": 27,
+      "elapsed_seconds": 0.492,
+      "page": 1,
+      "results": 27,
+      "status": "OK"
+    }
+  ],
+  "params": {
+    "asset_class": "stocks",
+    "locale": "us"
+  },
+  "provider": "massive",
+  "results": [
+    {
+      "acronym": "AMEX",
+      "asset_class": "stocks",
+      "id": 1,
+      "locale": "us",
+      "mic": "XASE",
+      "name": "NYSE American, LLC",
+      "operating_mic": "XNYS",
+      "participant_id": "A",
+      "type": "exchange",
+      "url": "https://www.nyse.com/markets/nyse-american"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 2,
+      "locale": "us",
+      "mic": "XBOS",
+      "name": "Nasdaq Texas, Inc.",
+      "operating_mic": "XNAS",
+      "participant_id": "B",
+      "type": "exchange",
+      "url": "https://www.nasdaq.com/solutions/nasdaq-bx-stock-market"
+    },
+    {
+      "acronym": "NSX",
+      "asset_class": "stocks",
+      "id": 3,
+      "locale": "us",
+      "mic": "XCIS",
+      "name": "NYSE National, Inc.",
+      "operating_mic": "XNYS",
+      "participant_id": "C",
+      "type": "exchange",
+      "url": "https://www.nyse.com/markets/nyse-national"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 4,
+      "locale": "us",
+      "mic": "XADF",
+      "name": "FINRA Alternative Display Facility",
+      "operating_mic": "FINR",
+      "participant_id": "D",
+      "type": "TRF",
+      "url": "https://www.finra.org"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 5,
+      "locale": "us",
+      "name": "Unlisted Trading Privileges",
+      "operating_mic": "XNAS",
+      "participant_id": "E",
+      "type": "SIP",
+      "url": "https://www.utpplan.com"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 6,
+      "locale": "us",
+      "mic": "XISE",
+      "name": "International Securities Exchange, LLC - Stocks",
+      "operating_mic": "XNAS",
+      "participant_id": "I",
+      "type": "TRF",
+      "url": "https://nasdaq.com/solutions/nasdaq-ise"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 7,
+      "locale": "us",
+      "mic": "EDGA",
+      "name": "Cboe EDGA",
+      "operating_mic": "XCBO",
+      "participant_id": "J",
+      "type": "exchange",
+      "url": "https://www.cboe.com/us/equities"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 8,
+      "locale": "us",
+      "mic": "EDGX",
+      "name": "Cboe EDGX",
+      "operating_mic": "XCBO",
+      "participant_id": "K",
+      "type": "exchange",
+      "url": "https://www.cboe.com/us/equities"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 9,
+      "locale": "us",
+      "mic": "XCHI",
+      "name": "NYSE Texas, Inc.",
+      "operating_mic": "XNYS",
+      "participant_id": "M",
+      "type": "exchange",
+      "url": "https://www.nyse.com/markets/nyse-texas"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 10,
+      "locale": "us",
+      "mic": "XNYS",
+      "name": "New York Stock Exchange",
+      "operating_mic": "XNYS",
+      "participant_id": "N",
+      "type": "exchange",
+      "url": "https://www.nyse.com"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 11,
+      "locale": "us",
+      "mic": "ARCX",
+      "name": "NYSE Arca, Inc.",
+      "operating_mic": "XNYS",
+      "participant_id": "P",
+      "type": "exchange",
+      "url": "https://www.nyse.com/markets/nyse-arca"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 12,
+      "locale": "us",
+      "mic": "XNAS",
+      "name": "Nasdaq",
+      "operating_mic": "XNAS",
+      "participant_id": "T",
+      "type": "exchange",
+      "url": "https://www.nasdaq.com"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 13,
+      "locale": "us",
+      "name": "Consolidated Tape Association",
+      "operating_mic": "XNYS",
+      "participant_id": "S",
+      "type": "SIP",
+      "url": "https://www.nyse.com/data/cta"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 14,
+      "locale": "us",
+      "mic": "LTSE",
+      "name": "Long-Term Stock Exchange",
+      "operating_mic": "LTSE",
+      "participant_id": "L",
+      "type": "exchange",
+      "url": "https://www.ltse.com"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 15,
+      "locale": "us",
+      "mic": "IEXG",
+      "name": "Investors Exchange",
+      "operating_mic": "IEXG",
+      "participant_id": "V",
+      "type": "exchange",
+      "url": "https://www.iextrading.com"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 16,
+      "locale": "us",
+      "mic": "CBSX",
+      "name": "Cboe Stock Exchange",
+      "operating_mic": "XCBO",
+      "participant_id": "W",
+      "type": "TRF",
+      "url": "https://www.cboe.com"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 17,
+      "locale": "us",
+      "mic": "XPHL",
+      "name": "Nasdaq Philadelphia Exchange LLC",
+      "operating_mic": "XNAS",
+      "participant_id": "X",
+      "type": "exchange",
+      "url": "https://www.nasdaq.com/solutions/nasdaq-phlx"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 18,
+      "locale": "us",
+      "mic": "BATY",
+      "name": "Cboe BYX",
+      "operating_mic": "XCBO",
+      "participant_id": "Y",
+      "type": "exchange",
+      "url": "https://www.cboe.com/us/equities"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 19,
+      "locale": "us",
+      "mic": "BATS",
+      "name": "Cboe BZX",
+      "operating_mic": "XCBO",
+      "participant_id": "Z",
+      "type": "exchange",
+      "url": "https://www.cboe.com/us/equities"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 20,
+      "locale": "us",
+      "mic": "EPRL",
+      "name": "MIAX Pearl",
+      "operating_mic": "MIHI",
+      "participant_id": "H",
+      "type": "exchange",
+      "url": "https://www.miaxoptions.com/alerts/pearl-equities"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 21,
+      "locale": "us",
+      "mic": "MEMX",
+      "name": "Members Exchange",
+      "operating_mic": "MEMX",
+      "participant_id": "U",
+      "type": "exchange",
+      "url": "https://www.memx.com"
+    },
+    {
+      "acronym": "24X",
+      "asset_class": "stocks",
+      "id": 22,
+      "locale": "us",
+      "mic": "24EQ",
+      "name": "24X National Exchange LLC",
+      "operating_mic": "24EQ",
+      "participant_id": "G",
+      "type": "exchange",
+      "url": "https://24exchange.com/"
+    },
+    {
+      "acronym": "TXSE",
+      "asset_class": "stocks",
+      "id": 23,
+      "locale": "us",
+      "mic": "TXSE",
+      "name": "Texas Stock Exchange LLC",
+      "operating_mic": "TXSE",
+      "participant_id": "F",
+      "type": "exchange",
+      "url": "https://txse.com/"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 62,
+      "locale": "us",
+      "mic": "OOTC",
+      "name": "OTC Equity Security",
+      "operating_mic": "FINR",
+      "type": "ORF",
+      "url": "https://www.finra.org/filing-reporting/over-the-counter-reporting-facility-orf"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 201,
+      "locale": "us",
+      "mic": "FINY",
+      "name": "FINRA NYSE TRF",
+      "operating_mic": "FINR",
+      "type": "TRF",
+      "url": "https://www.finra.org"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 202,
+      "locale": "us",
+      "mic": "FINN",
+      "name": "FINRA Nasdaq TRF Carteret",
+      "operating_mic": "FINR",
+      "type": "TRF",
+      "url": "https://www.finra.org"
+    },
+    {
+      "asset_class": "stocks",
+      "id": 203,
+      "locale": "us",
+      "mic": "FINC",
+      "name": "FINRA Nasdaq TRF Chicago",
+      "operating_mic": "FINR",
+      "type": "TRF",
+      "url": "https://www.finra.org"
+    }
+  ],
+  "source_notes": []
+}

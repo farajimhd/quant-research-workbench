@@ -1,0 +1,43 @@
+{
+  "encoding_notes": {
+    "dense_id_bits": "Bits needed if remapping table rows to dense IDs with 0 reserved for missing/unknown.",
+    "raw_id_bits": "Bits needed if preserving Massive numeric IDs directly.",
+    "recommended_model_input": "Use dense integer IDs for categorical embeddings; keep these tables to map back to Massive IDs."
+  },
+  "generated_at_utc": "2026-05-31T17:22:19.463419+00:00",
+  "tables": {
+    "stock_conditions": {
+      "by_data_type": {
+        "bbo": 38,
+        "nbbo": 30,
+        "trade": 55
+      },
+      "by_type": {
+        "financial_status_indicator": 10,
+        "market_condition": 2,
+        "quote_condition": 33,
+        "sale_condition": 40,
+        "settlement_condition": 2,
+        "short_sale_restriction_indicator": 4,
+        "sip_generated_flag": 2,
+        "trade_thru_exempt": 1
+      },
+      "dense_id_bits_with_unknown": 7,
+      "max_raw_id": 94,
+      "raw_id_bits": 7,
+      "rows": 94
+    },
+    "stock_exchanges": {
+      "dense_id_bits_with_unknown": 5,
+      "max_raw_id": 203,
+      "raw_id_bits": 8,
+      "rows": 27
+    },
+    "stock_tapes": {
+      "dense_id_bits_with_unknown": 2,
+      "max_raw_id": 3,
+      "raw_id_bits": 2,
+      "rows": 3
+    }
+  }
+}

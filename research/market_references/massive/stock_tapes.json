@@ -1,0 +1,35 @@
+{
+  "count": 3,
+  "downloaded_at_utc": "2026-05-31T17:22:19.461658+00:00",
+  "endpoint": null,
+  "name": "stock_tapes",
+  "pages": [],
+  "params": {},
+  "provider": "massive",
+  "results": [
+    {
+      "code": "NYSE",
+      "description": "Tape value documented by Massive stock quote/trade websocket docs.",
+      "id": 1,
+      "massive_doc_label": "NYSE",
+      "name": "NYSE tape"
+    },
+    {
+      "code": "AMEX",
+      "description": "Tape value documented by Massive stock quote/trade websocket docs.",
+      "id": 2,
+      "massive_doc_label": "AMEX",
+      "name": "AMEX tape"
+    },
+    {
+      "code": "NASDAQ",
+      "description": "Tape value documented by Massive stock quote/trade websocket docs.",
+      "id": 3,
+      "massive_doc_label": "Nasdaq",
+      "name": "Nasdaq tape"
+    }
+  ],
+  "source_notes": [
+    "Massive websocket stock trades and quotes docs list z: tape as 1 = NYSE, 2 = AMEX, 3 = Nasdaq."
+  ]
+}
