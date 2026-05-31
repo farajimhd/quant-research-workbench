@@ -52,13 +52,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-chunks", type=int, default=10_000)
     parser.add_argument("--context-chunks", type=int, default=64)
     parser.add_argument("--anchor-mode", choices=("latest-ask", "median-context"), default="median-context")
-    parser.add_argument("--quant-bits", type=int, default=6)
+    parser.add_argument("--quant-bits", default="6", help="Single bit width or comma-separated widths, e.g. 6 or 7,8,9,10.")
     parser.add_argument("--max-source-files", type=int, default=250)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--chunk-ms", type=int, default=500)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--progress-every-files", type=int, default=10)
     return parser.parse_args()
+
+
+def parse_quant_bits(value: str | int) -> list[int]:
+    if isinstance(value, int):
+        values = [value]
+    else:
+        values = [int(part.strip()) for part in str(value).split(",") if part.strip()]
+    if not values:
+        raise ValueError("--quant-bits must contain at least one integer bit width")
+    unique = sorted(set(values))
+    for bits in unique:
+        if bits < 2:
+            raise ValueError("--quant-bits values must be at least 2 for signed context deltas")
+    return unique
 
 
 def layout_root(root: Path, chunk_ms: int) -> Path:
@@ -344,7 +358,7 @@ def extract_context_prices(context_rows: list[dict[str, Any]]) -> dict[str, np.n
     }
 
 
-def analyze_context(context_rows: list[dict[str, Any]], *, origin_index: int, quant_bits: int) -> dict[str, Any]:
+def analyze_context(context_rows: list[dict[str, Any]], *, origin_index: int, quant_bits_list: list[int]) -> dict[str, Any]:
     origin = context_rows[-1]
     prices = extract_context_prices(context_rows)
     anchor_candidates = prices["quote_asks"]
@@ -424,10 +438,11 @@ def analyze_context(context_rows: list[dict[str, Any]], *, origin_index: int, qu
         "quote_spread": (quote_spread, int(spread_anchor_ticks)),
         "trade_price": (to_ticks(trade_prices, tick_unit) if trade_prices.size else np.empty(0, dtype=np.int64), anchor_ticks),
     }
-    for prefix, (values, quant_anchor) in quant_inputs.items():
-        quant = quantize_delta(values, anchor_ticks=quant_anchor, bits=quant_bits)
-        for key, value in quant.items():
-            result[f"{prefix}_q{quant_bits}_{key}"] = value
+    for quant_bits in quant_bits_list:
+        for prefix, (values, quant_anchor) in quant_inputs.items():
+            quant = quantize_delta(values, anchor_ticks=quant_anchor, bits=quant_bits)
+            for key, value in quant.items():
+                result[f"{prefix}_q{quant_bits}_{key}"] = value
     return result
 
 
@@ -539,9 +554,73 @@ def column_floats(rows: list[dict[str, Any]], column: str) -> list[float]:
     return values
 
 
+def summarize_quantization(
+    valid_rows: list[dict[str, Any]],
+    *,
+    quant_bits: int,
+    anchor_bits: int,
+    spread_anchor_bits: int,
+    context_chunks: int,
+) -> dict[str, Any]:
+    quantized_fields = {}
+    for name in ("quote_ask", "quote_spread", "trade_price"):
+        prefix = f"{name}_q{quant_bits}"
+        counts = column_values(valid_rows, f"{prefix}_count")
+        scales = column_values(valid_rows, f"{prefix}_scale_ticks")
+        error_max = column_values(valid_rows, f"{prefix}_error_max")
+        error_mean = column_floats(valid_rows, f"{prefix}_error_mean")
+        error_p95 = column_floats(valid_rows, f"{prefix}_error_p95")
+        error_p99 = column_floats(valid_rows, f"{prefix}_error_p99")
+        lossless_flags = column_values(valid_rows, f"{prefix}_lossless")
+        clipped_counts = column_values(valid_rows, f"{prefix}_clipped_count")
+        active_contexts = sum(1 for value in counts if value > 0)
+        quantized_fields[name] = {
+            "bits_per_code": quant_bits,
+            "active_contexts": active_contexts,
+            "lossless_contexts": int(sum(lossless_flags)),
+            "lossless_context_rate": float(sum(lossless_flags) / active_contexts) if active_contexts else None,
+            "scale_ticks_quantiles": value_quantiles(scales),
+            "scale_ticks_unsigned_lossless_bits": bits_for_unsigned(max(scales)) if scales else 0,
+            "error_max_tick_quantiles": value_quantiles(error_max),
+            "error_mean_tick_quantiles": float_quantiles(error_mean),
+            "error_p95_tick_quantiles": float_quantiles(error_p95),
+            "error_p99_tick_quantiles": float_quantiles(error_p99),
+            "contexts_with_clipping": int(sum(1 for value in clipped_counts if value > 0)),
+            "total_clipped_values": int(sum(clipped_counts)),
+        }
+    scale_bits = {
+        name: metrics["scale_ticks_unsigned_lossless_bits"]
+        for name, metrics in quantized_fields.items()
+    }
+    quantized_bits = {
+        "ask_anchor_ticks_unsigned_bits": anchor_bits,
+        "tick_regime_bits": 1,
+        "spread_anchor_unsigned_bits": spread_anchor_bits,
+        "quote_ask_scale_unsigned_bits": scale_bits.get("quote_ask", 0),
+        "quote_spread_scale_unsigned_bits": scale_bits.get("quote_spread", 0),
+        "trade_price_scale_unsigned_bits": scale_bits.get("trade_price", 0),
+        "context_prefix_bits": anchor_bits
+        + 1
+        + spread_anchor_bits
+        + scale_bits.get("quote_ask", 0)
+        + scale_bits.get("quote_spread", 0)
+        + scale_bits.get("trade_price", 0),
+        "quote_ask_code_bits": quant_bits,
+        "quote_spread_code_bits": quant_bits,
+        "trade_price_code_bits": quant_bits,
+        "per_triplet_code_bits": quant_bits * 3,
+    }
+    quantized_bits[f"context_prefix_plus_{context_chunks}_triplets_bits"] = quantized_bits["context_prefix_bits"] + (
+        context_chunks * quantized_bits["per_triplet_code_bits"]
+    )
+    quantized_bits[f"float16_{context_chunks}_triplets_bits"] = context_chunks * 3 * 16
+    return {"quantized_fields": quantized_fields, "quantized_bits": quantized_bits}
+
+
 def build_summary(rows: list[dict[str, Any]], *, elapsed_seconds: float, config: dict[str, Any]) -> dict[str, Any]:
     valid_rows = [row for row in rows if row.get("valid_anchor") == 1]
-    quant_bits = int(config.get("quant_bits", 6))
+    quant_bits_list = [int(bits) for bits in (config.get("quant_bits_list") or [config.get("quant_bits", 6)])]
+    primary_quant_bits = quant_bits_list[0]
     price_fields = {}
     for name, signed in (
         ("quote_ask_delta", True),
@@ -597,59 +676,18 @@ def build_summary(rows: list[dict[str, Any]], *, elapsed_seconds: float, config:
         per_chunk_lossless_bits["context_prefix_bits"]
         + per_chunk_lossless_bits["total_for_one_triplet_without_validity"]
     )
-    quantized_fields = {}
-    for name in ("quote_ask", "quote_spread", "trade_price"):
-        prefix = f"{name}_q{quant_bits}"
-        counts = column_values(valid_rows, f"{prefix}_count")
-        scales = column_values(valid_rows, f"{prefix}_scale_ticks")
-        error_max = column_values(valid_rows, f"{prefix}_error_max")
-        error_mean = column_floats(valid_rows, f"{prefix}_error_mean")
-        error_p95 = column_floats(valid_rows, f"{prefix}_error_p95")
-        error_p99 = column_floats(valid_rows, f"{prefix}_error_p99")
-        lossless_flags = column_values(valid_rows, f"{prefix}_lossless")
-        clipped_counts = column_values(valid_rows, f"{prefix}_clipped_count")
-        active_contexts = sum(1 for value in counts if value > 0)
-        quantized_fields[name] = {
-            "bits_per_code": quant_bits,
-            "active_contexts": active_contexts,
-            "lossless_contexts": int(sum(lossless_flags)),
-            "lossless_context_rate": float(sum(lossless_flags) / active_contexts) if active_contexts else None,
-            "scale_ticks_quantiles": value_quantiles(scales),
-            "scale_ticks_unsigned_lossless_bits": bits_for_unsigned(max(scales)) if scales else 0,
-            "error_max_tick_quantiles": value_quantiles(error_max),
-            "error_mean_tick_quantiles": float_quantiles(error_mean),
-            "error_p95_tick_quantiles": float_quantiles(error_p95),
-            "error_p99_tick_quantiles": float_quantiles(error_p99),
-            "contexts_with_clipping": int(sum(1 for value in clipped_counts if value > 0)),
-            "total_clipped_values": int(sum(clipped_counts)),
-        }
-    scale_bits = {
-        name: metrics["scale_ticks_unsigned_lossless_bits"]
-        for name, metrics in quantized_fields.items()
-    }
-    quantized_bits = {
-        "ask_anchor_ticks_unsigned_bits": anchor_bits,
-        "tick_regime_bits": 1,
-        "spread_anchor_unsigned_bits": spread_anchor_bits,
-        "quote_ask_scale_unsigned_bits": scale_bits.get("quote_ask", 0),
-        "quote_spread_scale_unsigned_bits": scale_bits.get("quote_spread", 0),
-        "trade_price_scale_unsigned_bits": scale_bits.get("trade_price", 0),
-        "context_prefix_bits": anchor_bits
-        + 1
-        + spread_anchor_bits
-        + scale_bits.get("quote_ask", 0)
-        + scale_bits.get("quote_spread", 0)
-        + scale_bits.get("trade_price", 0),
-        "quote_ask_code_bits": quant_bits,
-        "quote_spread_code_bits": quant_bits,
-        "trade_price_code_bits": quant_bits,
-        "per_triplet_code_bits": quant_bits * 3,
-    }
     context_chunks = int(config.get("context_chunks", 64))
-    quantized_bits[f"context_prefix_plus_{context_chunks}_triplets_bits"] = quantized_bits["context_prefix_bits"] + (
-        context_chunks * quantized_bits["per_triplet_code_bits"]
-    )
-    quantized_bits[f"float16_{context_chunks}_triplets_bits"] = context_chunks * 3 * 16
+    quantized_by_bits = {
+        str(bits): summarize_quantization(
+            valid_rows,
+            quant_bits=int(bits),
+            anchor_bits=anchor_bits,
+            spread_anchor_bits=spread_anchor_bits,
+            context_chunks=context_chunks,
+        )
+        for bits in quant_bits_list
+    }
+    primary_quant = quantized_by_bits[str(primary_quant_bits)]
     return {
         "config": config,
         "processed": {
@@ -670,9 +708,10 @@ def build_summary(rows: list[dict[str, Any]], *, elapsed_seconds: float, config:
             },
         },
         "price_fields": price_fields,
-        "quantized_fields": quantized_fields,
+        "quantized_fields": primary_quant["quantized_fields"],
+        "quantized_by_bits": quantized_by_bits,
         "lossless_bits": per_chunk_lossless_bits,
-        "quantized_bits": quantized_bits,
+        "quantized_bits": primary_quant["quantized_bits"],
         "float16_baseline_bits_per_chunk_triplet": 3 * 16,
     }
 
@@ -690,6 +729,7 @@ def write_rows_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def main() -> None:
     args = parse_args()
+    quant_bits_list = parse_quant_bits(args.quant_bits)
     started = time.perf_counter()
     rng = random.Random(args.seed)
     print(
@@ -725,7 +765,10 @@ def main() -> None:
         try:
             if args.anchor_mode == "median-context":
                 sampled_contexts = read_sampled_contexts(file.path, indices, context_chunks=args.context_chunks)
-                rows.extend(analyze_context(context_rows, origin_index=origin_index, quant_bits=args.quant_bits) for origin_index, context_rows in sampled_contexts)
+                rows.extend(
+                    analyze_context(context_rows, origin_index=origin_index, quant_bits_list=quant_bits_list)
+                    for origin_index, context_rows in sampled_contexts
+                )
             else:
                 sampled_rows = read_sampled_rows(file.path, indices)
                 rows.extend(analyze_chunk(row) for row in sampled_rows)
@@ -748,7 +791,8 @@ def main() -> None:
         "chunk_ms": args.chunk_ms,
         "context_chunks": args.context_chunks,
         "anchor_mode": args.anchor_mode,
-        "quant_bits": args.quant_bits,
+        "quant_bits": quant_bits_list[0],
+        "quant_bits_list": quant_bits_list,
         "anchor": "median context ask" if args.anchor_mode == "median-context" else "latest_ask",
         "spread_anchor": "median context quote spread" if args.anchor_mode == "median-context" else None,
         "tick_rule": "anchor >= 1 uses 0.01, anchor < 1 uses 0.0001; all deltas use anchor tick unit",
@@ -756,7 +800,8 @@ def main() -> None:
     }
     report = build_summary(rows, elapsed_seconds=time.perf_counter() - started, config=config)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    suffix = f"{args.anchor_mode.replace('-', '_')}_ctx{args.context_chunks}_q{args.quant_bits}_{args.year_month}_{args.sample_chunks}"
+    quant_suffix = "q" + "-".join(str(bits) for bits in quant_bits_list)
+    suffix = f"{args.anchor_mode.replace('-', '_')}_ctx{args.context_chunks}_{quant_suffix}_{args.year_month}_{args.sample_chunks}"
     rows_path = args.output_dir / f"context_price_bits_rows_{suffix}.csv"
     report_path = args.output_dir / f"context_price_bits_report_{suffix}.json"
     write_rows_csv(rows_path, rows)
