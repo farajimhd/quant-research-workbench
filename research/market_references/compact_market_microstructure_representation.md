@@ -1,11 +1,11 @@
 # Compact Market Microstructure Representation
 
-This document defines the compact event-level representation used for market
+This document defines the compact byte-level representation used for market
 microstructure experiments. It is intended to be implementation-ready: field
-names, bit widths, encoding formulas, reference-table usage, extraction order,
-and validation rules are specified here.
+names, byte layout, bit widths, reference-table usage, extraction order, and
+validation rules are specified here.
 
-## Naming
+## Learning Unit
 
 The atomic learning unit is an `EventsChunk`.
 
@@ -16,24 +16,85 @@ EventsChunk
 ```
 
 An `EventsChunk` is a fixed number of consecutive quote/trade events for one
-ticker, sorted by market-event time. It is not a fixed wall-clock time bar. Time
-is represented as encoded features inside the chunk.
+ticker, sorted by market-event time. It is not a fixed wall-clock bar. Time is
+represented as encoded features inside the chunk.
 
 Default parameters:
 
 ```text
 events_per_chunk = 128
-price_delta_bits = 9
+event_bytes = 16
+header_bytes = 14
+price_delta_dtype = signed int16
 size_bucket_bits = 8
 time_bucket_bits = 10
 anchor_bits = 20
 spread_anchor_bits = 16
-scale_bits = 16
 ```
 
-`events_per_chunk` is a configuration value. The logical layout below works for
-other values, but count-field bit widths must be derived from
-`events_per_chunk`.
+`events_per_chunk` is a configuration value. The default model representation
+uses `128` events. If `events_per_chunk > 255`, count fields must be widened
+from `uint8` to `uint16` and the header layout must be versioned.
+
+## Why Semantic Bytes
+
+The most compact logical bitstream for the previous 128-event design was about
+`1.68 KB`, but it was not aligned to meaningful byte tokens. For neural
+training, especially masked byte modeling, byte alignment matters:
+
+- A model can consume `uint8` byte tokens through a 256-entry embedding table.
+- BCE reconstruction can still predict the underlying bits of masked bytes.
+- The GPU does not need to expand every bit to `float16`, which would waste
+  memory.
+- A byte should represent a coherent field or tightly related fields, not a
+  random mix of unrelated bits.
+- Storage and data transfer stay compact because each byte remains one byte
+  until it reaches the model embedding/loss path.
+
+Therefore the physical model input is a semantic byte stream:
+
+```text
+EventsChunk bytes = 14 header bytes + 128 * 16 event bytes
+                  = 2,062 bytes
+```
+
+This is larger than the theoretically packed bitstream, but much more useful as
+a model tokenization. Each byte token has stable semantics.
+
+All multi-byte numeric fields use little-endian byte order. Reserved bits must
+be written as `0`.
+
+## Semantic Packing
+
+Semantic packing means bytes are allocated by field meaning first, then by bit
+compactness. This intentionally leaves some reserved bits where doing so keeps a
+byte interpretable and stable across versions.
+
+The packing rules are:
+
+- Keep multi-byte numeric values byte-aligned, for example signed `int16` price
+  deltas and `uint16` spread anchors.
+- Pack only closely related boolean or small categorical fields into the same
+  byte, for example event type, presence, and correction code.
+- Keep every condition slot in its own byte so the condition ID and slot
+  presence bit travel together.
+- Keep quote/trade event rows identical in length and layout, even when a trade
+  does not use `price_2_delta_ticks`, `size_2_bucket`, or `exchange_2_dense_id`.
+- Use reserved bits for forward compatibility. Reserved bits must be zero in
+  generated data and ignored by current models.
+
+The default semantic groups are:
+
+| Group | Bytes | Purpose |
+|---|---:|---|
+| Header price anchors | `H0-H4` | Decode local price deltas without storing full raw prices per event |
+| Header timing/counts | `H5-H12` | Decode chunk duration, origin age, start gap, and quote/trade counts |
+| Header flags | `H13` | Chunk-level quote/trade/tick-regime state |
+| Event flags/time | `E0-E2` | Event type, presence, correction, and event-to-event time gap |
+| Event prices | `E3-E6` | Two signed `int16` local tick deltas |
+| Event sizes | `E7-E9` | Size buckets, small-size flags, and tape |
+| Event venues | `E10-E11` | Exchange dense IDs |
+| Event conditions | `E12-E15` | Four condition slots, each with dense ID plus presence bit |
 
 ## Source Data
 
@@ -71,14 +132,12 @@ conditions or condition fields
 correction
 ```
 
-The encoder must not combine events from different tickers. Session boundaries
-may be crossed only if the source stream is explicitly configured to carry
-history across sessions. In all cases, the event order is ticker-local.
+The encoder must not combine events from different tickers. The event stream is
+ticker-local.
 
 ## Event Ordering
 
-For each ticker, quotes and trades are merged into one event stream and sorted
-by:
+For each ticker, quotes and trades are merged into one stream and sorted by:
 
 ```text
 sip_timestamp ASC
@@ -142,51 +201,37 @@ chunk.
 ## Header
 
 The header describes the whole `EventsChunk` and provides the information needed
-to decode event-level deltas.
-
-`count_bits` is derived from the configured event count:
-
-```text
-count_bits = ceil(log2(events_per_chunk + 1))
-```
-
-For the default `events_per_chunk=128`, `count_bits=8`.
-
-| Field | Description | Bits |
-|---|---|---:|
-| `block_duration_us_bucket` | Time from first event to last event in the chunk | 10 |
-| `age_to_origin_us_bucket` | Time from chunk end to prediction/origin time | 10 |
-| `start_delta_us_bucket` | Time from previous chunk end to this chunk start | 10 |
-| `quote_event_count` | Number of quote events in this chunk | `count_bits` |
-| `trade_event_count` | Number of trade events in this chunk | `count_bits` |
-| `has_quote_state` | Latest valid quote exists at or before chunk end | 1 |
-| `has_trade_event` | At least one trade event exists in chunk | 1 |
-| `tick_regime` | `1` for penny tick, `0` for sub-dollar tick | 1 |
-| `ask_anchor_ticks` | Latest ask anchor in ticks | 20 |
-| `spread_anchor_ticks` | Latest `(ask - bid)` anchor in ticks | 16 |
-| `ask_delta_scale` | Scale used for quote ask deltas | 16 |
-| `spread_delta_scale` | Scale used for quote spread deltas | 16 |
-| `trade_delta_scale` | Scale used for trade price deltas | 16 |
+to decode event-level price deltas.
 
 Default header size:
 
 ```text
-events_per_chunk = 128
-count_bits = 8
-header_bits = 133
+14 bytes = 112 bits
 ```
 
-Formula:
+### Header Byte Layout
 
-```text
-header_bits = 30 + 2 * count_bits + 3 + anchor_bits + spread_anchor_bits + 3 * scale_bits
-```
+| Byte(s) | Field | Encoding |
+|---:|---|---|
+| `H0-H2` | `ask_anchor_ticks` | 20-bit unsigned integer, lower 20 bits used, upper 4 bits reserved |
+| `H3-H4` | `spread_anchor_ticks` | `uint16` |
+| `H5-H6` | `block_duration_us_bucket` | 10-bit unsigned bucket, upper 6 bits reserved |
+| `H7-H8` | `age_to_origin_us_bucket` | 10-bit unsigned bucket, upper 6 bits reserved |
+| `H9-H10` | `start_delta_us_bucket` | 10-bit unsigned bucket, upper 6 bits reserved |
+| `H11` | `quote_event_count` | `uint8`, number of quote events in the chunk |
+| `H12` | `trade_event_count` | `uint8`, number of trade events in the chunk |
+| `H13` | flags | bit-packed flags |
 
-With defaults:
+`H13` flags:
 
-```text
-30 + 16 + 3 + 20 + 16 + 48 = 133 bits
-```
+| Bit | Field |
+|---:|---|
+| 0 | `has_quote_state` |
+| 1 | `has_trade_event` |
+| 2 | `tick_regime` |
+| 3-7 | reserved, must be `0` |
+
+For the default `events_per_chunk=128`, both count fields fit in `uint8`.
 
 ### Header Time Buckets
 
@@ -202,6 +247,17 @@ With `time_bucket_bits=10`, bucket values are `0..1023`.
 This intentionally saturates very long gaps. There is no maximum block-duration
 filter in this representation; long illiquid intervals remain valid but their
 large time gaps are represented by saturated/high time buckets.
+
+Header time fields:
+
+```text
+block_duration_us_bucket = time from first event to last event in the chunk
+age_to_origin_us_bucket = time from chunk end to prediction/origin time
+start_delta_us_bucket = time from previous chunk end to this chunk start
+```
+
+For standalone reconstruction pretraining where no prediction origin exists,
+`age_to_origin_us_bucket` should be `0`.
 
 ### Header Anchors
 
@@ -233,14 +289,14 @@ without quote state.
 Validation:
 
 ```text
-ask_anchor_ticks < 2^anchor_bits
-spread_anchor_ticks < 2^spread_anchor_bits
+ask_anchor_ticks < 2^20
+spread_anchor_ticks < 2^16
 ```
 
-If either check fails, skip the chunk or increase the corresponding bit width in
-the experiment config. Do not silently wrap values.
+If either check fails, skip the chunk or explicitly create a new version with
+wider anchor fields. Do not silently wrap values.
 
-## Detail Rows
+## Event Details
 
 Each `EventsChunk` has exactly `events_per_chunk` unified event detail rows.
 
@@ -248,59 +304,125 @@ Default:
 
 ```text
 events_per_chunk = 128
+event_bytes = 16
 ```
 
-Each detail row has the same logical layout for quote and trade events.
+Each event row has the same 16-byte layout for quote and trade events.
 
-| Field | Quote Meaning | Trade Meaning | Bits |
-|---|---|---|---:|
-| `event_type` | `0` | `1` | 1 |
-| `event_presence` | Real event vs pad | Real event vs pad | 1 |
-| `event_delta_us_bucket` | Time since previous event | Time since previous event | 10 |
-| `price_1_delta_bucket` | Ask delta | Trade price delta | 9 |
-| `price_2_delta_bucket` | Spread delta | `0` | 9 |
-| `size_1_bucket` | Bid size bucket | Trade size bucket | 8 |
-| `size_1_small_flag` | `0 < bid_size < 100` | `0 < trade_size < 100` | 1 |
-| `size_2_bucket` | Ask size bucket | `0` | 8 |
-| `size_2_small_flag` | `0 < ask_size < 100` | `0` | 1 |
-| `exchange_1_dense_id` | Bid exchange | Trade exchange | 5 |
-| `exchange_2_dense_id` | Ask exchange | `0` | 5 |
-| `tape_dense_id` | Tape | Tape | 3 |
-| `condition_1_dense_id` | Condition slot 1 | Condition slot 1 | 7 |
-| `condition_2_dense_id` | Condition slot 2 | Condition slot 2 | 7 |
-| `condition_3_dense_id` | Condition slot 3 | Condition slot 3 | 7 |
-| `condition_4_dense_id` | Condition slot 4 | Condition slot 4 | 7 |
-| `condition_mask` | Which condition slots are present | Which condition slots are present | 4 |
-| `correction_code` | `0` | Trade correction code | 4 |
+### Event Byte Layout
 
-Detail row size:
+| Byte(s) | Field | Quote Meaning | Trade Meaning |
+|---:|---|---|---|
+| `E0` | flags/correction | type/presence/correction | type/presence/correction |
+| `E1-E2` | `event_delta_us_bucket` | time since previous event | time since previous event |
+| `E3-E4` | `price_1_delta_ticks` | ask delta ticks | trade price delta ticks |
+| `E5-E6` | `price_2_delta_ticks` | spread delta ticks | `0` |
+| `E7` | `size_1_bucket` | bid size bucket | trade size bucket |
+| `E8` | `size_2_bucket` | ask size bucket | `0` |
+| `E9` | size flags + tape | size flags + tape | size flags + tape |
+| `E10` | `exchange_1_dense_id` | bid exchange | trade exchange |
+| `E11` | `exchange_2_dense_id` | ask exchange | `0` |
+| `E12` | condition slot 1 | condition 1 + mask bit 1 | condition 1 + mask bit 1 |
+| `E13` | condition slot 2 | condition 2 + mask bit 2 | condition 2 + mask bit 2 |
+| `E14` | condition slot 3 | condition 3 + mask bit 3 | condition 3 + mask bit 3 |
+| `E15` | condition slot 4 | condition 4 + mask bit 4 | condition 4 + mask bit 4 |
+
+`E0` flags:
+
+| Bit(s) | Field |
+|---:|---|
+| 0 | `event_type`, `0=quote`, `1=trade` |
+| 1 | `event_presence`, `1=real event`, `0=padding` |
+| 2-5 | `correction_code`, trade-only; quote rows use `0` |
+| 6-7 | reserved, must be `0` |
+
+`E1-E2`:
 
 ```text
-104 bits per event
+event_delta_us_bucket: lower 10 bits
+upper 6 bits: reserved, must be 0
 ```
 
-Default chunk detail size:
+`E3-E4` and `E5-E6`:
 
 ```text
-128 * 104 = 13,312 bits
+signed int16, little-endian, two's complement
 ```
 
-Default total chunk size:
+`E9`:
+
+| Bit(s) | Field |
+|---:|---|
+| 0 | `size_1_small_flag` |
+| 1 | `size_2_small_flag` |
+| 2-4 | `tape_dense_id` |
+| 5-7 | reserved, must be `0` |
+
+`E10` and `E11`:
 
 ```text
-header_bits + detail_bits = 133 + 13,312 = 13,445 bits
-13,445 bits = 1,680.625 bytes
+lower 5 bits: exchange_dense_id
+upper 3 bits: reserved, must be 0
+```
+
+`E12-E15`:
+
+```text
+lower 7 bits: condition_dense_id
+bit 7: condition slot presence mask bit
+```
+
+### Quote Mapping
+
+For a quote event:
+
+```text
+event_type = 0
+event_presence = 1
+correction_code = 0
+price_1_delta_ticks = ask_delta_ticks
+price_2_delta_ticks = spread_delta_ticks
+size_1_bucket = bid_size_bucket
+size_1_small_flag = bid_small_size_flag
+size_2_bucket = ask_size_bucket
+size_2_small_flag = ask_small_size_flag
+exchange_1_dense_id = bid_exchange_dense_id
+exchange_2_dense_id = ask_exchange_dense_id
+tape_dense_id = tape_dense_id
+condition slots = up to 4 quote conditions
+```
+
+### Trade Mapping
+
+For a trade event:
+
+```text
+event_type = 1
+event_presence = 1
+correction_code = encoded trade correction
+price_1_delta_ticks = trade_delta_ticks
+price_2_delta_ticks = 0
+size_1_bucket = trade_size_bucket
+size_1_small_flag = trade_small_size_flag
+size_2_bucket = 0
+size_2_small_flag = 0
+exchange_1_dense_id = trade_exchange_dense_id
+exchange_2_dense_id = 0
+tape_dense_id = tape_dense_id
+condition slots = up to 4 trade conditions
 ```
 
 ## Price Delta Encoding
 
-Price deltas are signed integer buckets relative to the chunk header anchors.
+Price deltas are signed integer tick deltas relative to the chunk header
+anchors. They are stored directly as signed `int16`; there is no per-chunk price
+scale field.
 
-Signed 9-bit range:
+Signed `int16` range:
 
 ```text
-min_bucket = -256
-max_bucket = 255
+min_delta = -32768 ticks
+max_delta = 32767 ticks
 ```
 
 Quote event:
@@ -320,40 +442,19 @@ trade_ticks = round(trade_price / tick_size)
 trade_delta_ticks = trade_ticks - ask_anchor_ticks
 ```
 
-Per chunk scales:
-
-```text
-positive_max = 2^(price_delta_bits - 1) - 1
-
-ask_delta_scale = max(1, ceil(max(abs(ask_delta_ticks)) / positive_max))
-spread_delta_scale = max(1, ceil(max(abs(spread_delta_ticks)) / positive_max))
-trade_delta_scale = max(1, ceil(max(abs(trade_delta_ticks)) / positive_max))
-```
-
-If a chunk has no quote events, `ask_delta_scale=1` and `spread_delta_scale=1`.
-If a chunk has no trade events, `trade_delta_scale=1`.
-
-Bucketization:
-
-```text
-bucket = round(delta_ticks / scale)
-bucket = clip(bucket, -256, 255)
-```
-
-Decoding:
-
-```text
-reconstructed_delta_ticks = bucket * scale
-```
-
 Validation:
 
 ```text
-scale < 2^scale_bits
+-32768 <= ask_delta_ticks <= 32767
+-32768 <= spread_delta_ticks <= 32767
+-32768 <= trade_delta_ticks <= 32767
 ```
 
-If a required scale does not fit in `scale_bits`, skip the chunk or increase
-`scale_bits`. Do not silently wrap the scale.
+If a delta does not fit in signed `int16`, skip the chunk or create a new
+version with wider price deltas. Do not silently clip. The reason for keeping
+anchors even with `int16` deltas is that raw 16-bit price ticks cannot safely
+cover all market prices, while local anchored deltas cover the expected
+microstructure range and preserve scale information through the header anchor.
 
 ## Size Encoding
 
@@ -403,14 +504,6 @@ With `time_bucket_bits=10`, values are `0..1023`.
 
 Each event gets four condition slots.
 
-```text
-condition_1_dense_id
-condition_2_dense_id
-condition_3_dense_id
-condition_4_dense_id
-condition_mask
-```
-
 Rules:
 
 - Preserve provider condition order if the canonical event stores ordered
@@ -418,8 +511,8 @@ Rules:
 - If canonical data only stores individual condition columns, use that canonical
   order.
 - Missing condition slots encode as `0`.
-- `condition_mask` is a 4-bit mask. Bit `i` is `1` when condition slot `i` is
-  present and non-zero.
+- Each condition byte stores the 7-bit dense condition ID plus its own presence
+  bit.
 - If more than four conditions exist, keep the first four in provider/canonical
   order and drop the rest. This must be counted in data-quality metrics, but the
   compact event row does not currently include a condition-overflow flag.
@@ -461,8 +554,8 @@ For each ticker:
 
 1. Load canonical quote events and canonical trade events.
 2. Normalize categorical raw IDs to dense IDs using the market reference tables.
-3. Normalize condition arrays to at most four dense condition IDs plus a 4-bit
-   mask.
+3. Normalize condition arrays to at most four dense condition IDs with per-slot
+   presence bits.
 4. Merge quotes and trades into one stream.
 5. Sort by `sip_timestamp`, `sequence_number`, `event_type`.
 6. Split the sorted stream into `EventsChunk` records of `events_per_chunk`
@@ -480,21 +573,22 @@ end = start + events_per_chunk
    experiment explicitly enables padding.
 8. Find the latest valid quote at or before the chunk end.
 9. If no valid quote state exists, skip the chunk.
-10. Compute the header anchors, tick regime, counts, duration, and scales.
-11. Encode each event into the unified 104-bit detail layout.
-12. Validate that anchors and scales fit their configured bit widths.
+10. Compute the header anchors, tick regime, counts, and duration buckets.
+11. Encode each event into the unified 16-byte detail layout.
+12. Validate that anchors and signed price deltas fit their configured widths.
 13. Write the chunk plus metadata.
 
 Required metadata per materialized dataset:
 
 ```text
 events_per_chunk
-price_delta_bits
+event_bytes
+header_bytes
+price_delta_dtype
 size_bucket_bits
 time_bucket_bits
 anchor_bits
 spread_anchor_bits
-scale_bits
 reference_table_versions or generated_at_utc values
 source canonical root
 date range
@@ -508,7 +602,7 @@ Targets should use the same representation as inputs.
 For masked reconstruction:
 
 ```text
-target = original header/detail fields for masked parts
+target = original header/detail bytes for masked parts
 ```
 
 For next-event-chunk prediction:
@@ -529,41 +623,83 @@ Do not create higher-precision targets such as midpoint, bps return, or raw
 float prices unless the experiment explicitly defines a separate target head.
 The default target precision is the same compact representation used for input.
 
-## Physical Storage
+## Model Input Contract
 
-This document defines the logical bit representation.
-
-Implementations may store the data as:
+The preferred byte-model input is:
 
 ```text
-packed bits
-uint8/uint16 integer columns
-tensor arrays with one integer per field
-binary {0,1} tensors for bit-level models
+uint8 tensor shape = [batch, 2062]
 ```
 
-The storage format must preserve the logical values exactly. If data is stored
-unpacked for speed, the dataset manifest must still record the logical bit
-widths from this document.
+For `events_per_chunk=128`:
 
-## Default Bit Summary
+```text
+header bytes = bytes[0:14]
+event i bytes = bytes[14 + i * 16 : 14 + (i + 1) * 16]
+```
+
+Masked-byte pretraining can:
+
+1. Mask selected byte positions.
+2. Feed visible byte IDs through a 256-entry byte embedding table.
+3. Decode masked byte logits.
+4. Apply BCE to the 8 target bits of each masked byte, or cross-entropy over
+   the 256 byte values.
+
+If using BCE, bytes are unpacked only inside the loss for masked positions.
+Do not expand the full input into `float16` bits unless a specific experiment
+requires that representation.
+
+## Physical Storage
+
+This document defines the semantic byte representation.
+
+Recommended storage:
+
+```text
+uint8 array: [num_chunks, 2062]
+```
+
+For large datasets, use contiguous shard files with a manifest:
+
+```text
+manifest.json
+events_chunks_uint8_000000.bin
+events_chunks_uint8_000001.bin
+...
+```
+
+Each shard should record:
+
+```text
+num_chunks
+row_bytes
+events_per_chunk
+date range
+ticker range or ticker list
+reference table versions
+```
+
+The storage format must preserve the byte values exactly. If an implementation
+also stores decoded integer columns for debugging, the byte representation
+remains the source of truth for byte-model experiments.
+
+## Default Size Summary
 
 With `events_per_chunk=128`:
 
 ```text
-header:      133 bits
-event row:   104 bits
-details:  13,312 bits
-total:    13,445 bits
-bytes:     1,680.625
+header:        14 bytes
+event row:     16 bytes
+details:    2,048 bytes
+total:      2,062 bytes
 ```
 
-With `events_per_chunk=256` and the same field widths:
+With `events_per_chunk=256` and `uint16` count fields:
 
 ```text
-count_bits = 9
-header:      135 bits
-details:  26,624 bits
-total:    26,759 bits
-bytes:     3,344.875
+header:        16 bytes
+event row:     16 bytes
+details:    4,096 bytes
+total:      4,112 bytes
 ```
