@@ -23,7 +23,6 @@ Default parameters:
 
 ```text
 events_per_chunk = 128
-stride_events = 64
 price_delta_bits = 9
 size_bucket_bits = 8
 time_bucket_bits = 10
@@ -32,9 +31,9 @@ spread_anchor_bits = 16
 scale_bits = 16
 ```
 
-`events_per_chunk` and `stride_events` are configuration values. The logical
-layout below works for other values, but count-field bit widths must be derived
-from `events_per_chunk`.
+`events_per_chunk` is a configuration value. The logical layout below works for
+other values, but count-field bit widths must be derived from
+`events_per_chunk`.
 
 ## Source Data
 
@@ -466,10 +465,14 @@ For each ticker:
    mask.
 4. Merge quotes and trades into one stream.
 5. Sort by `sip_timestamp`, `sequence_number`, `event_type`.
-6. Slide over the stream using:
+6. Split the sorted stream into `EventsChunk` records of `events_per_chunk`
+   consecutive events. At this stage, no stride or overlap policy is part of the
+   representation contract. Training code may later choose non-overlapping,
+   overlapping, or sampled chunks, but that policy must be recorded separately
+   from this encoding spec.
 
 ```text
-start = 0, stride_events, 2 * stride_events, ...
+start = chunk_start_event_index
 end = start + events_per_chunk
 ```
 
@@ -486,7 +489,6 @@ Required metadata per materialized dataset:
 
 ```text
 events_per_chunk
-stride_events
 price_delta_bits
 size_bucket_bits
 time_bucket_bits
@@ -565,4 +567,3 @@ details:  26,624 bits
 total:    26,759 bits
 bytes:     3,344.875
 ```
-
