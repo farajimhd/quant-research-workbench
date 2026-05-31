@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--year-month", default="2025-11")
     parser.add_argument("--sample-chunks", type=int, default=10_000)
     parser.add_argument("--context-chunks", type=int, default=64)
-    parser.add_argument("--anchor-mode", choices=("latest-ask", "median-context"), default="median-context")
+    parser.add_argument("--anchor-mode", choices=("latest-ask", "median-context", "latest-context"), default="median-context")
     parser.add_argument("--quant-bits", default="6", help="Single bit width or comma-separated widths, e.g. 6 or 7,8,9,10.")
     parser.add_argument("--max-source-files", type=int, default=250)
     parser.add_argument("--seed", type=int, default=17)
@@ -358,16 +358,32 @@ def extract_context_prices(context_rows: list[dict[str, Any]]) -> dict[str, np.n
     }
 
 
-def analyze_context(context_rows: list[dict[str, Any]], *, origin_index: int, quant_bits_list: list[int]) -> dict[str, Any]:
+def analyze_context(
+    context_rows: list[dict[str, Any]],
+    *,
+    origin_index: int,
+    quant_bits_list: list[int],
+    anchor_mode: str,
+) -> dict[str, Any]:
     origin = context_rows[-1]
     prices = extract_context_prices(context_rows)
-    anchor_candidates = prices["quote_asks"]
-    if anchor_candidates.size == 0:
-        anchor_candidates = prices["trade_latest_asks"]
-    if anchor_candidates.size == 0:
-        anchor = float("nan")
+    if anchor_mode == "latest-context":
+        if prices["quote_asks"].size:
+            anchor = float(prices["quote_asks"][-1])
+        elif prices["trade_latest_asks"].size:
+            anchor = float(prices["trade_latest_asks"][-1])
+        else:
+            anchor = float("nan")
     else:
-        anchor = float(np.median(anchor_candidates))
+        anchor_candidates = prices["quote_asks"]
+        if anchor_candidates.size == 0:
+            anchor_candidates = prices["trade_latest_asks"]
+        if anchor_candidates.size == 0:
+            anchor = float("nan")
+        else:
+            anchor = float(np.median(anchor_candidates))
+    if not math.isfinite(anchor):
+        anchor = float("nan")
 
     result: dict[str, Any] = {
         "ticker": origin.get("ticker"),
@@ -396,14 +412,14 @@ def analyze_context(context_rows: list[dict[str, Any]], *, origin_index: int, qu
         bid_ticks = to_ticks(quote_bids, tick_unit)
         quote_ask_delta = ask_ticks - anchor_ticks
         quote_spread = ask_ticks - bid_ticks
-        spread_anchor_ticks = median_int(quote_spread)
+        spread_anchor_ticks = int(quote_spread[-1]) if anchor_mode == "latest-context" else median_int(quote_spread)
         quote_spread_delta = quote_spread - int(spread_anchor_ticks)
     else:
         trade_latest_asks = prices["trade_latest_asks"]
         trade_latest_bids = prices["trade_latest_bids"]
         if trade_latest_asks.size:
             spread_ticks = to_ticks(trade_latest_asks, tick_unit) - to_ticks(trade_latest_bids, tick_unit)
-            spread_anchor_ticks = median_int(spread_ticks)
+            spread_anchor_ticks = int(spread_ticks[-1]) if anchor_mode == "latest-context" else median_int(spread_ticks)
 
     if trade_prices.size:
         trade_delta = to_ticks(trade_prices, tick_unit) - anchor_ticks
@@ -746,7 +762,7 @@ def main() -> None:
     if not files:
         raise FileNotFoundError(f"No {args.year_month} parquet files found under {layout_root(args.chunk_root, args.chunk_ms)}")
     source_files = weighted_source_files(files, max_files=args.max_source_files, rng=rng)
-    if args.anchor_mode == "median-context":
+    if args.anchor_mode in {"median-context", "latest-context"}:
         allocations = allocate_context_samples(
             source_files,
             sample_count=args.sample_chunks,
@@ -763,10 +779,15 @@ def main() -> None:
             continue
         file_started = time.perf_counter()
         try:
-            if args.anchor_mode == "median-context":
+            if args.anchor_mode in {"median-context", "latest-context"}:
                 sampled_contexts = read_sampled_contexts(file.path, indices, context_chunks=args.context_chunks)
                 rows.extend(
-                    analyze_context(context_rows, origin_index=origin_index, quant_bits_list=quant_bits_list)
+                    analyze_context(
+                        context_rows,
+                        origin_index=origin_index,
+                        quant_bits_list=quant_bits_list,
+                        anchor_mode=args.anchor_mode,
+                    )
                     for origin_index, context_rows in sampled_contexts
                 )
             else:
@@ -793,8 +814,20 @@ def main() -> None:
         "anchor_mode": args.anchor_mode,
         "quant_bits": quant_bits_list[0],
         "quant_bits_list": quant_bits_list,
-        "anchor": "median context ask" if args.anchor_mode == "median-context" else "latest_ask",
-        "spread_anchor": "median context quote spread" if args.anchor_mode == "median-context" else None,
+        "anchor": (
+            "median context ask"
+            if args.anchor_mode == "median-context"
+            else "latest context ask"
+            if args.anchor_mode == "latest-context"
+            else "latest_ask"
+        ),
+        "spread_anchor": (
+            "median context quote spread"
+            if args.anchor_mode == "median-context"
+            else "latest context quote spread"
+            if args.anchor_mode == "latest-context"
+            else None
+        ),
         "tick_rule": "anchor >= 1 uses 0.01, anchor < 1 uses 0.0001; all deltas use anchor tick unit",
         "price_fields": ["quote_ask_delta", "quote_spread_delta", "trade_delta"],
     }
