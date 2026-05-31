@@ -27,3 +27,8 @@ Use `dense_id` for model embeddings and binary/categorical packing:
 - `dense_id_binary` stores the fixed-width binary representation using `dense_id_bits`.
 
 Keep raw Massive IDs in these tables for reverse mapping and reproducibility.
+
+## Compact Microstructure Encoding
+
+The compact quote/trade event representation is specified in
+`compact_market_microstructure_representation.md`.
