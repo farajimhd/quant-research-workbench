@@ -1,12 +1,14 @@
 {
   "encoding_notes": {
+    "dense_id_binary": "Fixed-width binary string for the dense ID, using dense_id_bits.",
     "dense_id_bits": "Bits needed if remapping table rows to dense IDs with 0 reserved for missing/unknown.",
     "raw_id_bits": "Bits needed if preserving Massive numeric IDs directly.",
     "recommended_model_input": "Use dense integer IDs for categorical embeddings; keep these tables to map back to Massive IDs."
   },
-  "generated_at_utc": "2026-05-31T17:22:19.463419+00:00",
+  "generated_at_utc": "2026-05-31T17:37:04.677046+00:00",
   "tables": {
     "stock_conditions": {
+      "actual_rows": 94,
       "by_data_type": {
         "bbo": 38,
         "nbbo": 30,
@@ -22,22 +24,36 @@
         "sip_generated_flag": 2,
         "trade_thru_exempt": 1
       },
-      "dense_id_bits_with_unknown": 7,
+      "dense_id_bits": 7,
+      "dense_id_capacity": 128,
       "max_raw_id": 94,
       "raw_id_bits": 7,
-      "rows": 94
+      "reserved_future_rows": 33,
+      "rows": 94,
+      "total_rows_with_reserved": 128,
+      "unknown_dense_id": 0
     },
     "stock_exchanges": {
-      "dense_id_bits_with_unknown": 5,
+      "actual_rows": 27,
+      "dense_id_bits": 5,
+      "dense_id_capacity": 32,
       "max_raw_id": 203,
       "raw_id_bits": 8,
-      "rows": 27
+      "reserved_future_rows": 4,
+      "rows": 27,
+      "total_rows_with_reserved": 32,
+      "unknown_dense_id": 0
     },
     "stock_tapes": {
-      "dense_id_bits_with_unknown": 2,
+      "actual_rows": 3,
+      "dense_id_bits": 3,
+      "dense_id_capacity": 8,
       "max_raw_id": 3,
       "raw_id_bits": 2,
-      "rows": 3
+      "reserved_future_rows": 4,
+      "rows": 3,
+      "total_rows_with_reserved": 8,
+      "unknown_dense_id": 0
     }
   }
 }

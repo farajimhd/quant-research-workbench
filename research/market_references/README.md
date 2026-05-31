@@ -19,4 +19,11 @@ Saved files:
 - `massive/stock_tapes.json`
 - `massive/reference_summary.json`
 
-Use dense integer IDs for model embeddings, with `0` reserved for missing or unknown. Keep raw Massive IDs in these tables for reverse mapping and reproducibility.
+Use `dense_id` for model embeddings and binary/categorical packing:
+
+- `dense_id = 0` is reserved for missing or unknown provider values.
+- `dense_id_kind = actual` rows map to current Massive reference rows.
+- `dense_id_kind = reserved_future` rows reserve capacity for future provider additions without changing the encoded bit width.
+- `dense_id_binary` stores the fixed-width binary representation using `dense_id_bits`.
+
+Keep raw Massive IDs in these tables for reverse mapping and reproducibility.

@@ -1,12 +1,20 @@
 {
-  "count": 94,
-  "downloaded_at_utc": "2026-05-31T17:22:19.463384+00:00",
+  "count": 128,
+  "dense_encoding": {
+    "actual_rows": 94,
+    "dense_id_bits": 7,
+    "dense_id_capacity": 128,
+    "min_future_slots_requested": 4,
+    "reserved_future_rows": 33,
+    "unknown_dense_id": 0
+  },
+  "downloaded_at_utc": "2026-05-31T17:37:04.677009+00:00",
   "endpoint": "/v3/reference/conditions",
   "name": "stock_conditions",
   "pages": [
     {
       "count": 94,
-      "elapsed_seconds": 0.267,
+      "elapsed_seconds": 0.313,
       "page": 1,
       "results": 94,
       "status": "OK"
@@ -19,12 +27,47 @@
   "provider": "massive",
   "results": [
     {
+      "code": "__UNKNOWN__",
+      "dense_id": 0,
+      "dense_id_binary": "0000000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "unknown",
+      "description": "Reserved internal row for missing values or provider codes absent from this reference snapshot.",
+      "id": null,
+      "name": "stock_conditions missing or unknown",
+      "provider": "internal"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 1,
+      "dense_id_binary": "0000001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 1,
+      "name": "Regular Two-Sided Open",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "R",
+        "UTP": "R"
+      },
+      "type": "quote_condition"
+    },
+    {
       "asset_class": "stocks",
       "data_types": [
         "trade"
       ],
+      "dense_id": 2,
+      "dense_id_binary": "0000010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 1,
       "name": "Acquisition",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "A"
       },
@@ -45,10 +88,32 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "nbbo"
+      ],
+      "dense_id": 3,
+      "dense_id_binary": "0000011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 2,
+      "name": "Regular One-Sided Open",
+      "provider": "massive",
+      "sip_mapping": {
+        "UTP": "Y"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 4,
+      "dense_id_binary": "0000100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 2,
       "name": "Average Price Trade",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "B",
         "FINRA_TDDS": "W",
@@ -71,10 +136,33 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 5,
+      "dense_id_binary": "0000101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 3,
+      "name": "Slow Ask",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "A"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 6,
+      "dense_id_binary": "0000110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 3,
       "name": "Automatic Execution",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "E"
       },
@@ -95,10 +183,33 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 7,
+      "dense_id_binary": "0000111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 4,
+      "name": "Slow Bid",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "B"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 8,
+      "dense_id_binary": "0001000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 4,
       "name": "Bunched Trade",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "B"
       },
@@ -119,10 +230,33 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 9,
+      "dense_id_binary": "0001001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 5,
+      "name": "Slow Bid and Ask",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "H"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 10,
+      "dense_id_binary": "0001010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 5,
       "name": "Bunched Sold Trade",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "G"
       },
@@ -143,11 +277,34 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 11,
+      "dense_id_binary": "0001011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 6,
+      "name": "Slow Due LRP Bid",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "E"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 12,
+      "dense_id_binary": "0001100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 6,
       "legacy": true,
       "name": "CAP Election",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "I"
       },
@@ -168,10 +325,33 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 13,
+      "dense_id_binary": "0001101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 7,
+      "name": "Slow Due LRP Ask",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "F"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 14,
+      "dense_id_binary": "0001110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 7,
       "name": "Cash Sale",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "C",
         "FINRA_TDDS": "C",
@@ -196,8 +376,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 15,
+      "dense_id_binary": "0001111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 8,
       "name": "Closing Prints",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "6"
       },
@@ -218,10 +403,34 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 16,
+      "dense_id_binary": "0010000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 9,
+      "name": "Slow Due Set Slow List Bid Ask",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "W",
+        "UTP": "W"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 17,
+      "dense_id_binary": "0010001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 9,
       "name": "Cross Trade",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "X",
         "UTP": "X"
@@ -243,10 +452,33 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 18,
+      "dense_id_binary": "0010010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 10,
+      "name": "Manual Ask Automated Bid",
+      "provider": "massive",
+      "sip_mapping": {
+        "UTP": "A"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 19,
+      "dense_id_binary": "0010011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 10,
       "name": "Derivatively Priced",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "4",
         "UTP": "4"
@@ -268,10 +500,33 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 20,
+      "dense_id_binary": "0010100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 11,
+      "name": "Manual Bid Automated Ask",
+      "provider": "massive",
+      "sip_mapping": {
+        "UTP": "B"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 21,
+      "dense_id_binary": "0010101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 11,
       "name": "Distribution",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "D"
       },
@@ -292,10 +547,33 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 22,
+      "dense_id_binary": "0010110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 12,
+      "name": "Manual Bid and Ask",
+      "provider": "massive",
+      "sip_mapping": {
+        "UTP": "H"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 23,
+      "dense_id_binary": "0010111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 12,
       "name": "Form T/Extended Hours",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "T",
         "FINRA_TDDS": "T",
@@ -318,10 +596,34 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 24,
+      "dense_id_binary": "0011000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 13,
+      "name": "Opening",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "O",
+        "UTP": "O"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 25,
+      "dense_id_binary": "0011001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 13,
       "name": "Extended Hours (Sold Out Of Sequence)",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "U",
         "FINRA_TDDS": "U",
@@ -344,10 +646,32 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo"
+      ],
+      "dense_id": 26,
+      "dense_id_binary": "0011010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 14,
+      "name": "Closing",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "C"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 27,
+      "dense_id_binary": "0011011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 14,
       "name": "Intermarket Sweep",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "F",
         "UTP": "F"
@@ -369,10 +693,33 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 28,
+      "dense_id_binary": "0011100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 15,
+      "name": "Closed",
+      "provider": "massive",
+      "sip_mapping": {
+        "UTP": "L"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 29,
+      "dense_id_binary": "0011101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 15,
       "name": "Market Center Official Close",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "M",
         "UTP": "M"
@@ -394,10 +741,34 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 30,
+      "dense_id_binary": "0011110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 16,
+      "name": "Resume",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "T",
+        "UTP": "T"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 31,
+      "dense_id_binary": "0011111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 16,
       "name": "Market Center Official Open",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "Q",
         "UTP": "Q"
@@ -419,10 +790,32 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo"
+      ],
+      "dense_id": 32,
+      "dense_id_binary": "0100000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 17,
+      "name": "Fast Trading",
+      "provider": "massive",
+      "sip_mapping": {
+        "UTP": "F"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 33,
+      "dense_id_binary": "0100001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 17,
       "name": "Market Center Opening Trade",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "O"
       },
@@ -443,10 +836,34 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 34,
+      "dense_id_binary": "0100010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 18,
+      "name": "Trading Range Indication",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "G",
+        "UTP": "G"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 35,
+      "dense_id_binary": "0100011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 18,
       "name": "Market Center Reopening Trade",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "5"
       },
@@ -467,10 +884,32 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo"
+      ],
+      "dense_id": 36,
+      "dense_id_binary": "0100100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 19,
+      "name": "Market Maker Quotes Closed",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "L"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 37,
+      "dense_id_binary": "0100101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 19,
       "name": "Market Center Closing Trade",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "6"
       },
@@ -491,10 +930,33 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo"
+      ],
+      "dense_id": 38,
+      "dense_id_binary": "0100110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 20,
+      "name": "Non-Firm",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "N",
+        "UTP": "N"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 39,
+      "dense_id_binary": "0100111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 20,
       "name": "Next Day",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "N",
         "FINRA_TDDS": "N",
@@ -517,10 +979,34 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 40,
+      "dense_id_binary": "0101000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 21,
+      "name": "News Dissemination",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "J",
+        "UTP": "J"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 41,
+      "dense_id_binary": "0101001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 21,
       "name": "Price Variation Trade",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "H",
         "UTP": "H"
@@ -542,10 +1028,32 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo"
+      ],
+      "dense_id": 42,
+      "dense_id_binary": "0101010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 22,
+      "name": "Order Influx",
+      "provider": "massive",
+      "sip_mapping": {
+        "UTP": "X"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 43,
+      "dense_id_binary": "0101011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 22,
       "name": "Prior Reference Price",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "P",
         "FINRA_TDDS": "P",
@@ -568,11 +1076,33 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo"
+      ],
+      "dense_id": 44,
+      "dense_id_binary": "0101100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 23,
+      "name": "Order Imbalance",
+      "provider": "massive",
+      "sip_mapping": {
+        "UTP": "I"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 45,
+      "dense_id_binary": "0101101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "exchange": 1,
       "id": 23,
       "name": "Rule 155 Trade (AMEX)",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "K",
         "UTP": "K"
@@ -596,9 +1126,14 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 46,
+      "dense_id_binary": "0101110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "exchange": 10,
       "id": 24,
       "name": "Rule 127 (NYSE Only)",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "K"
       },
@@ -621,8 +1156,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 47,
+      "dense_id_binary": "0101111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 25,
       "name": "Opening Prints",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "O"
       },
@@ -643,11 +1183,55 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 48,
+      "dense_id_binary": "0110000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 26,
+      "legacy": true,
+      "name": "Additional Information",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "M",
+        "UTP": "M"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 49,
+      "dense_id_binary": "0110001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 27,
+      "name": "News Pending",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "P",
+        "UTP": "P"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 50,
+      "dense_id_binary": "0110010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 27,
       "legacy": true,
       "name": "Stopped Stock (Regular Trade)",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "1"
       },
@@ -668,10 +1252,34 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 51,
+      "dense_id_binary": "0110011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 28,
+      "name": "Additional Information Due To Related Security",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "Q",
+        "UTP": "Q"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 52,
+      "dense_id_binary": "0110100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 28,
       "name": "Re-Opening Prints",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "5"
       },
@@ -692,10 +1300,34 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 53,
+      "dense_id_binary": "0110101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 29,
+      "name": "Due To Related Security",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "S",
+        "UTP": "S"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 54,
+      "dense_id_binary": "0110110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 29,
       "name": "Seller",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "R",
         "FINRA_TDDS": "R",
@@ -718,10 +1350,54 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 55,
+      "dense_id_binary": "0110111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 30,
+      "legacy": true,
+      "name": "Equipment Changeover",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "X",
+        "UTP": "X"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 56,
+      "dense_id_binary": "0111000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 30,
+      "name": "In View Of Common",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "V",
+        "UTP": "V"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 57,
+      "dense_id_binary": "0111001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 30,
       "name": "Sold Last",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "L",
         "UTP": "L"
@@ -745,9 +1421,14 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 58,
+      "dense_id_binary": "0111010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 31,
       "legacy": true,
       "name": "Sold Last and Stopped Stock",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "2"
       },
@@ -768,10 +1449,32 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo"
+      ],
+      "dense_id": 59,
+      "dense_id_binary": "0111011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 32,
+      "name": "No Open No Resume",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "Z"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 60,
+      "dense_id_binary": "0111100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 32,
       "name": "Sold (Out Of Sequence)",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "Z",
         "FINRA_TDDS": "Z",
@@ -796,9 +1499,14 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 61,
+      "dense_id_binary": "0111101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 33,
       "legacy": true,
       "name": "Sold (Out of Sequence) and Stopped Stock",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "3"
       },
@@ -821,8 +1529,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 62,
+      "dense_id_binary": "0111110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 34,
       "name": "Split Trade",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "S"
       },
@@ -845,9 +1558,14 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 63,
+      "dense_id_binary": "0111111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 35,
       "legacy": true,
       "name": "Stock Option",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "V"
       },
@@ -870,8 +1588,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 64,
+      "dense_id_binary": "1000000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 36,
       "name": "Yellow Flag Regular Trade",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "Y"
       },
@@ -894,8 +1617,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 65,
+      "dense_id_binary": "1000001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 37,
       "name": "Odd Lot Trade",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "I",
         "FINRA_TDDS": "I",
@@ -920,8 +1648,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 66,
+      "dense_id_binary": "1000010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 38,
       "name": "Corrected Consolidated Close (per listing market)",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "9",
         "UTP": "9"
@@ -943,10 +1676,51 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo"
+      ],
+      "dense_id": 67,
+      "dense_id_binary": "1000011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 40,
+      "name": "On Demand Auction",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "4",
+        "UTP": "4"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 68,
+      "dense_id_binary": "1000100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 41,
+      "name": "Cash Only Settlement",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "A"
+      },
+      "type": "settlement_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 69,
+      "dense_id_binary": "1000101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 41,
       "name": "Trade Thru Exempt",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "1",
         "UTP": "X"
@@ -968,10 +1742,52 @@
     {
       "asset_class": "stocks",
       "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 70,
+      "dense_id_binary": "1000110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 42,
+      "name": "Next Day Settlement",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "B"
+      },
+      "type": "settlement_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
+        "bbo",
+        "nbbo"
+      ],
+      "dense_id": 71,
+      "dense_id_binary": "1000111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
+      "id": 43,
+      "name": "LULD Trading Pause",
+      "provider": "massive",
+      "sip_mapping": {
+        "CTA": "M",
+        "UTP": "M"
+      },
+      "type": "quote_condition"
+    },
+    {
+      "asset_class": "stocks",
+      "data_types": [
         "trade"
       ],
+      "dense_id": 72,
+      "dense_id_binary": "1001000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 52,
       "name": "Contingent Trade",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "V",
         "UTP": "V"
@@ -995,8 +1811,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 73,
+      "dense_id_binary": "1001001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 53,
       "name": "Qualified Contingent Trade",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "7",
         "UTP": "7"
@@ -1020,9 +1841,14 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 74,
+      "dense_id_binary": "1001010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 55,
       "legacy": true,
       "name": "Opening Reopening Trade Detail",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "G"
       },
@@ -1045,8 +1871,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 75,
+      "dense_id_binary": "1001011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 57,
       "name": "Short Sale Restriction Activated",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "A"
       },
@@ -1057,8 +1888,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 76,
+      "dense_id_binary": "1001100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 58,
       "name": "Short Sale Restriction Continued",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "C"
       },
@@ -1069,8 +1905,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 77,
+      "dense_id_binary": "1001101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 59,
       "name": "Short Sale Restriction Deactivated",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "D"
       },
@@ -1081,8 +1922,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 78,
+      "dense_id_binary": "1001110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 60,
       "name": "Short Sale Restriction In Effect",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "E"
       },
@@ -1093,8 +1939,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 79,
+      "dense_id_binary": "1001111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 62,
       "name": "Financial Status - Bankrupt",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "1"
       },
@@ -1105,8 +1956,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 80,
+      "dense_id_binary": "1010000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 63,
       "name": "Financial Status - Deficient",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "2"
       },
@@ -1117,8 +1973,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 81,
+      "dense_id_binary": "1010001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 64,
       "name": "Financial Status - Delinquent",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "3"
       },
@@ -1129,8 +1990,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 82,
+      "dense_id_binary": "1010010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 65,
       "name": "Financial Status - Bankrupt and Deficient",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "4"
       },
@@ -1141,8 +2007,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 83,
+      "dense_id_binary": "1010011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 66,
       "name": "Financial Status - Bankrupt and Delinquent",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "5"
       },
@@ -1153,8 +2024,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 84,
+      "dense_id_binary": "1010100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 67,
       "name": "Financial Status - Deficient and Delinquent",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "6"
       },
@@ -1165,8 +2041,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 85,
+      "dense_id_binary": "1010101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 68,
       "name": "Financial Status - Deficient, Delinquent, and Bankrupt",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "7"
       },
@@ -1177,8 +2058,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 86,
+      "dense_id_binary": "1010110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 69,
       "name": "Financial Status - Liquidation",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "A"
       },
@@ -1189,8 +2075,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 87,
+      "dense_id_binary": "1010111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 70,
       "name": "Financial Status - Creations Suspended",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "8"
       },
@@ -1201,8 +2092,13 @@
       "data_types": [
         "trade"
       ],
+      "dense_id": 88,
+      "dense_id_binary": "1011000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 71,
       "name": "Financial Status - Redemptions Suspended",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "9"
       },
@@ -1211,447 +2107,15 @@
     {
       "asset_class": "stocks",
       "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 1,
-      "name": "Regular Two-Sided Open",
-      "sip_mapping": {
-        "CTA": "R",
-        "UTP": "R"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "nbbo"
-      ],
-      "id": 2,
-      "name": "Regular One-Sided Open",
-      "sip_mapping": {
-        "UTP": "Y"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 3,
-      "name": "Slow Ask",
-      "sip_mapping": {
-        "CTA": "A"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 4,
-      "name": "Slow Bid",
-      "sip_mapping": {
-        "CTA": "B"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 5,
-      "name": "Slow Bid and Ask",
-      "sip_mapping": {
-        "CTA": "H"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 6,
-      "name": "Slow Due LRP Bid",
-      "sip_mapping": {
-        "CTA": "E"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 7,
-      "name": "Slow Due LRP Ask",
-      "sip_mapping": {
-        "CTA": "F"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 9,
-      "name": "Slow Due Set Slow List Bid Ask",
-      "sip_mapping": {
-        "CTA": "W",
-        "UTP": "W"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 10,
-      "name": "Manual Ask Automated Bid",
-      "sip_mapping": {
-        "UTP": "A"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 11,
-      "name": "Manual Bid Automated Ask",
-      "sip_mapping": {
-        "UTP": "B"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 12,
-      "name": "Manual Bid and Ask",
-      "sip_mapping": {
-        "UTP": "H"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 13,
-      "name": "Opening",
-      "sip_mapping": {
-        "CTA": "O",
-        "UTP": "O"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
         "bbo"
       ],
-      "id": 14,
-      "name": "Closing",
-      "sip_mapping": {
-        "CTA": "C"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 15,
-      "name": "Closed",
-      "sip_mapping": {
-        "UTP": "L"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 16,
-      "name": "Resume",
-      "sip_mapping": {
-        "CTA": "T",
-        "UTP": "T"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo"
-      ],
-      "id": 17,
-      "name": "Fast Trading",
-      "sip_mapping": {
-        "UTP": "F"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 18,
-      "name": "Trading Range Indication",
-      "sip_mapping": {
-        "CTA": "G",
-        "UTP": "G"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo"
-      ],
-      "id": 19,
-      "name": "Market Maker Quotes Closed",
-      "sip_mapping": {
-        "CTA": "L"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo"
-      ],
-      "id": 20,
-      "name": "Non-Firm",
-      "sip_mapping": {
-        "CTA": "N",
-        "UTP": "N"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 21,
-      "name": "News Dissemination",
-      "sip_mapping": {
-        "CTA": "J",
-        "UTP": "J"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo"
-      ],
-      "id": 22,
-      "name": "Order Influx",
-      "sip_mapping": {
-        "UTP": "X"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo"
-      ],
-      "id": 23,
-      "name": "Order Imbalance",
-      "sip_mapping": {
-        "UTP": "I"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 26,
-      "legacy": true,
-      "name": "Additional Information",
-      "sip_mapping": {
-        "CTA": "M",
-        "UTP": "M"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 27,
-      "name": "News Pending",
-      "sip_mapping": {
-        "CTA": "P",
-        "UTP": "P"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 28,
-      "name": "Additional Information Due To Related Security",
-      "sip_mapping": {
-        "CTA": "Q",
-        "UTP": "Q"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 29,
-      "name": "Due To Related Security",
-      "sip_mapping": {
-        "CTA": "S",
-        "UTP": "S"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 30,
-      "name": "In View Of Common",
-      "sip_mapping": {
-        "CTA": "V",
-        "UTP": "V"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 30,
-      "legacy": true,
-      "name": "Equipment Changeover",
-      "sip_mapping": {
-        "CTA": "X",
-        "UTP": "X"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo"
-      ],
-      "id": 32,
-      "name": "No Open No Resume",
-      "sip_mapping": {
-        "CTA": "Z"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo"
-      ],
-      "id": 40,
-      "name": "On Demand Auction",
-      "sip_mapping": {
-        "CTA": "4",
-        "UTP": "4"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 41,
-      "name": "Cash Only Settlement",
-      "sip_mapping": {
-        "CTA": "A"
-      },
-      "type": "settlement_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 42,
-      "name": "Next Day Settlement",
-      "sip_mapping": {
-        "CTA": "B"
-      },
-      "type": "settlement_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo",
-        "nbbo"
-      ],
-      "id": 43,
-      "name": "LULD Trading Pause",
-      "sip_mapping": {
-        "CTA": "M",
-        "UTP": "M"
-      },
-      "type": "quote_condition"
-    },
-    {
-      "asset_class": "stocks",
-      "data_types": [
-        "bbo"
-      ],
+      "dense_id": 89,
+      "dense_id_binary": "1011001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 71,
       "name": "Slow Due LRP Bid and Ask",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "U"
       },
@@ -1663,8 +2127,13 @@
         "bbo",
         "nbbo"
       ],
+      "dense_id": 90,
+      "dense_id_binary": "1011010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 81,
       "name": "Corrected Price Indication",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "C"
       },
@@ -1676,8 +2145,13 @@
         "bbo",
         "nbbo"
       ],
+      "dense_id": 91,
+      "dense_id_binary": "1011011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 82,
       "name": "SIP Generated",
+      "provider": "massive",
       "sip_mapping": {
         "UTP": "E"
       },
@@ -1689,8 +2163,13 @@
         "bbo",
         "nbbo"
       ],
+      "dense_id": 92,
+      "dense_id_binary": "1011100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 84,
       "name": "Crossed Market",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "A"
       },
@@ -1702,8 +2181,13 @@
         "bbo",
         "nbbo"
       ],
+      "dense_id": 93,
+      "dense_id_binary": "1011101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 85,
       "name": "Locked Market",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "B"
       },
@@ -1715,12 +2199,380 @@
         "bbo",
         "nbbo"
       ],
+      "dense_id": 94,
+      "dense_id_binary": "1011110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "actual",
       "id": 94,
       "name": "CQS Generated",
+      "provider": "massive",
       "sip_mapping": {
         "CTA": "S"
       },
       "type": "sip_generated_flag"
+    },
+    {
+      "code": "__FUTURE_95__",
+      "dense_id": 95,
+      "dense_id_binary": "1011111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 95",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_96__",
+      "dense_id": 96,
+      "dense_id_binary": "1100000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 96",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_97__",
+      "dense_id": 97,
+      "dense_id_binary": "1100001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 97",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_98__",
+      "dense_id": 98,
+      "dense_id_binary": "1100010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 98",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_99__",
+      "dense_id": 99,
+      "dense_id_binary": "1100011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 99",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_100__",
+      "dense_id": 100,
+      "dense_id_binary": "1100100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 100",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_101__",
+      "dense_id": 101,
+      "dense_id_binary": "1100101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 101",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_102__",
+      "dense_id": 102,
+      "dense_id_binary": "1100110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 102",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_103__",
+      "dense_id": 103,
+      "dense_id_binary": "1100111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 103",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_104__",
+      "dense_id": 104,
+      "dense_id_binary": "1101000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 104",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_105__",
+      "dense_id": 105,
+      "dense_id_binary": "1101001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 105",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_106__",
+      "dense_id": 106,
+      "dense_id_binary": "1101010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 106",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_107__",
+      "dense_id": 107,
+      "dense_id_binary": "1101011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 107",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_108__",
+      "dense_id": 108,
+      "dense_id_binary": "1101100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 108",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_109__",
+      "dense_id": 109,
+      "dense_id_binary": "1101101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 109",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_110__",
+      "dense_id": 110,
+      "dense_id_binary": "1101110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 110",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_111__",
+      "dense_id": 111,
+      "dense_id_binary": "1101111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 111",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_112__",
+      "dense_id": 112,
+      "dense_id_binary": "1110000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 112",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_113__",
+      "dense_id": 113,
+      "dense_id_binary": "1110001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 113",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_114__",
+      "dense_id": 114,
+      "dense_id_binary": "1110010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 114",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_115__",
+      "dense_id": 115,
+      "dense_id_binary": "1110011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 115",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_116__",
+      "dense_id": 116,
+      "dense_id_binary": "1110100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 116",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_117__",
+      "dense_id": 117,
+      "dense_id_binary": "1110101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 117",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_118__",
+      "dense_id": 118,
+      "dense_id_binary": "1110110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 118",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_119__",
+      "dense_id": 119,
+      "dense_id_binary": "1110111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 119",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_120__",
+      "dense_id": 120,
+      "dense_id_binary": "1111000",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 120",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_121__",
+      "dense_id": 121,
+      "dense_id_binary": "1111001",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 121",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_122__",
+      "dense_id": 122,
+      "dense_id_binary": "1111010",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 122",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_123__",
+      "dense_id": 123,
+      "dense_id_binary": "1111011",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 123",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_124__",
+      "dense_id": 124,
+      "dense_id_binary": "1111100",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 124",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_125__",
+      "dense_id": 125,
+      "dense_id_binary": "1111101",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 125",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_126__",
+      "dense_id": 126,
+      "dense_id_binary": "1111110",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 126",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_127__",
+      "dense_id": 127,
+      "dense_id_binary": "1111111",
+      "dense_id_bits": 7,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_conditions reserved future dense id 127",
+      "provider": "internal"
     }
   ],
   "source_notes": []

@@ -1,6 +1,14 @@
 {
-  "count": 3,
-  "downloaded_at_utc": "2026-05-31T17:22:19.461658+00:00",
+  "count": 8,
+  "dense_encoding": {
+    "actual_rows": 3,
+    "dense_id_bits": 3,
+    "dense_id_capacity": 8,
+    "min_future_slots_requested": 4,
+    "reserved_future_rows": 4,
+    "unknown_dense_id": 0
+  },
+  "downloaded_at_utc": "2026-05-31T17:37:04.676990+00:00",
   "endpoint": null,
   "name": "stock_tapes",
   "pages": [],
@@ -8,25 +16,95 @@
   "provider": "massive",
   "results": [
     {
+      "code": "__UNKNOWN__",
+      "dense_id": 0,
+      "dense_id_binary": "000",
+      "dense_id_bits": 3,
+      "dense_id_kind": "unknown",
+      "description": "Reserved internal row for missing values or provider codes absent from this reference snapshot.",
+      "id": null,
+      "name": "stock_tapes missing or unknown",
+      "provider": "internal"
+    },
+    {
       "code": "NYSE",
+      "dense_id": 1,
+      "dense_id_binary": "001",
+      "dense_id_bits": 3,
+      "dense_id_kind": "actual",
       "description": "Tape value documented by Massive stock quote/trade websocket docs.",
       "id": 1,
       "massive_doc_label": "NYSE",
-      "name": "NYSE tape"
+      "name": "NYSE tape",
+      "provider": "massive"
     },
     {
       "code": "AMEX",
+      "dense_id": 2,
+      "dense_id_binary": "010",
+      "dense_id_bits": 3,
+      "dense_id_kind": "actual",
       "description": "Tape value documented by Massive stock quote/trade websocket docs.",
       "id": 2,
       "massive_doc_label": "AMEX",
-      "name": "AMEX tape"
+      "name": "AMEX tape",
+      "provider": "massive"
     },
     {
       "code": "NASDAQ",
+      "dense_id": 3,
+      "dense_id_binary": "011",
+      "dense_id_bits": 3,
+      "dense_id_kind": "actual",
       "description": "Tape value documented by Massive stock quote/trade websocket docs.",
       "id": 3,
       "massive_doc_label": "Nasdaq",
-      "name": "Nasdaq tape"
+      "name": "Nasdaq tape",
+      "provider": "massive"
+    },
+    {
+      "code": "__FUTURE_4__",
+      "dense_id": 4,
+      "dense_id_binary": "100",
+      "dense_id_bits": 3,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_tapes reserved future dense id 4",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_5__",
+      "dense_id": 5,
+      "dense_id_binary": "101",
+      "dense_id_bits": 3,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_tapes reserved future dense id 5",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_6__",
+      "dense_id": 6,
+      "dense_id_binary": "110",
+      "dense_id_bits": 3,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_tapes reserved future dense id 6",
+      "provider": "internal"
+    },
+    {
+      "code": "__FUTURE_7__",
+      "dense_id": 7,
+      "dense_id_binary": "111",
+      "dense_id_bits": 3,
+      "dense_id_kind": "reserved_future",
+      "description": "Reserved internal row for future provider additions without changing the encoded bit width.",
+      "id": null,
+      "name": "stock_tapes reserved future dense id 7",
+      "provider": "internal"
     }
   ],
   "source_notes": [
