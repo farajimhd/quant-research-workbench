@@ -50,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk-root", type=Path, default=DEFAULT_CHUNK_ROOT)
     parser.add_argument("--year-month", default="2025-11")
     parser.add_argument("--sample-chunks", type=int, default=10_000)
+    parser.add_argument("--context-chunks", type=int, default=64)
+    parser.add_argument("--anchor-mode", choices=("latest-ask", "median-context"), default="median-context")
     parser.add_argument("--max-source-files", type=int, default=250)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--chunk-ms", type=int, default=500)
@@ -118,6 +120,36 @@ def allocate_samples(files: list[ChunkFile], *, sample_count: int, rng: random.R
     return out
 
 
+def allocate_context_samples(
+    files: list[ChunkFile],
+    *,
+    sample_count: int,
+    context_chunks: int,
+    rng: random.Random,
+) -> dict[Path, np.ndarray]:
+    eligible = [file for file in files if file.rows >= context_chunks]
+    if not eligible:
+        return {}
+    weights = np.asarray([max(0, file.rows - context_chunks + 1) for file in eligible], dtype=np.float64)
+    probs = weights / weights.sum()
+    allocations = np.random.default_rng(rng.randrange(1 << 32)).multinomial(sample_count, probs)
+    out: dict[Path, np.ndarray] = {}
+    for file, count in zip(eligible, allocations):
+        if count <= 0:
+            continue
+        origin_count = max(0, file.rows - context_chunks + 1)
+        count = min(int(count), origin_count)
+        indices = rng_np_choice(
+            origin_count,
+            size=count,
+            replace=False,
+            p=np.full(origin_count, 1.0 / origin_count),
+            seed=rng.randrange(1 << 32),
+        )
+        out[file.path] = np.sort(indices.astype(np.int64) + context_chunks - 1)
+    return out
+
+
 def tick_unit_from_price(price: float) -> float:
     return 0.0001 if price < 1.0 else 0.01
 
@@ -144,6 +176,13 @@ def summary(values: np.ndarray) -> tuple[int, int | None, int | None, float | No
     if values.size == 0:
         return 0, None, None, None
     return int(values.size), int(values.min()), int(values.max()), float(np.median(values))
+
+
+def median_int(values: np.ndarray) -> int | None:
+    values = np.asarray(values, dtype=np.int64).reshape(-1)
+    if values.size == 0:
+        return None
+    return int(round(float(np.median(values))))
 
 
 def analyze_chunk(row: dict[str, Any]) -> dict[str, Any]:
@@ -213,6 +252,126 @@ def analyze_chunk(row: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def extract_context_prices(context_rows: list[dict[str, Any]]) -> dict[str, np.ndarray]:
+    quote_asks: list[np.ndarray] = []
+    quote_bids: list[np.ndarray] = []
+    trade_prices: list[np.ndarray] = []
+    trade_latest_asks: list[np.ndarray] = []
+    trade_latest_bids: list[np.ndarray] = []
+
+    for row in context_rows:
+        quote_values = list_to_array(row.get("quote_values"), len(QUOTE_FEATURE_COLUMNS))
+        if quote_values.size:
+            bid = quote_values[:, QUOTE["bid_price"]]
+            ask = quote_values[:, QUOTE["ask_price"]]
+            valid = finite_positive(bid) & finite_positive(ask) & (ask >= bid)
+            if valid.any():
+                quote_bids.append(bid[valid])
+                quote_asks.append(ask[valid])
+
+        trade_values = list_to_array(row.get("trade_values"), len(TRADE_FEATURE_COLUMNS))
+        if trade_values.size:
+            price = trade_values[:, TRADE["price"]]
+            valid_trade = finite_positive(price)
+            if valid_trade.any():
+                trade_prices.append(price[valid_trade])
+            latest_bid = trade_values[:, TRADE["latest_bid"]]
+            latest_ask = trade_values[:, TRADE["latest_ask"]]
+            valid_trade_quote = finite_positive(latest_bid) & finite_positive(latest_ask) & (latest_ask >= latest_bid)
+            if valid_trade_quote.any():
+                trade_latest_bids.append(latest_bid[valid_trade_quote])
+                trade_latest_asks.append(latest_ask[valid_trade_quote])
+
+    def concat(parts: list[np.ndarray]) -> np.ndarray:
+        return np.concatenate(parts).astype(np.float64) if parts else np.empty(0, dtype=np.float64)
+
+    return {
+        "quote_bids": concat(quote_bids),
+        "quote_asks": concat(quote_asks),
+        "trade_prices": concat(trade_prices),
+        "trade_latest_bids": concat(trade_latest_bids),
+        "trade_latest_asks": concat(trade_latest_asks),
+    }
+
+
+def analyze_context(context_rows: list[dict[str, Any]], *, origin_index: int) -> dict[str, Any]:
+    origin = context_rows[-1]
+    prices = extract_context_prices(context_rows)
+    anchor_candidates = prices["quote_asks"]
+    if anchor_candidates.size == 0:
+        anchor_candidates = prices["trade_latest_asks"]
+    if anchor_candidates.size == 0:
+        anchor = float("nan")
+    else:
+        anchor = float(np.median(anchor_candidates))
+
+    result: dict[str, Any] = {
+        "ticker": origin.get("ticker"),
+        "session_date": origin.get("session_date"),
+        "origin_row_index": origin_index,
+        "chunk_start_ns": origin.get("chunk_start_ns"),
+        "chunk_end_ns": origin.get("chunk_end_ns"),
+        "anchor_ask": anchor,
+    }
+    if not math.isfinite(anchor) or anchor <= 0.0:
+        result["valid_anchor"] = 0
+        return result
+
+    tick_unit = tick_unit_from_price(anchor)
+    anchor_ticks = int(round(anchor / tick_unit))
+    quote_asks = prices["quote_asks"]
+    quote_bids = prices["quote_bids"]
+    trade_prices = prices["trade_prices"]
+    quote_ask_delta = np.empty(0, dtype=np.int64)
+    quote_spread = np.empty(0, dtype=np.int64)
+    quote_spread_delta = np.empty(0, dtype=np.int64)
+    spread_anchor_ticks: int | None = None
+
+    if quote_asks.size:
+        ask_ticks = to_ticks(quote_asks, tick_unit)
+        bid_ticks = to_ticks(quote_bids, tick_unit)
+        quote_ask_delta = ask_ticks - anchor_ticks
+        quote_spread = ask_ticks - bid_ticks
+        spread_anchor_ticks = median_int(quote_spread)
+        quote_spread_delta = quote_spread - int(spread_anchor_ticks)
+    else:
+        trade_latest_asks = prices["trade_latest_asks"]
+        trade_latest_bids = prices["trade_latest_bids"]
+        if trade_latest_asks.size:
+            spread_ticks = to_ticks(trade_latest_asks, tick_unit) - to_ticks(trade_latest_bids, tick_unit)
+            spread_anchor_ticks = median_int(spread_ticks)
+
+    if trade_prices.size:
+        trade_delta = to_ticks(trade_prices, tick_unit) - anchor_ticks
+    else:
+        trade_delta = np.empty(0, dtype=np.int64)
+
+    if spread_anchor_ticks is None:
+        spread_anchor_ticks = 0
+
+    result.update(
+        {
+            "valid_anchor": 1,
+            "tick_unit": tick_unit,
+            "anchor_ticks": anchor_ticks,
+            "spread_anchor_ticks": int(spread_anchor_ticks),
+            "anchor_tick_regime": "sub_dollar" if tick_unit < 0.01 else "penny",
+        }
+    )
+    for prefix, values in (
+        ("quote_ask_delta", quote_ask_delta),
+        ("quote_spread", quote_spread),
+        ("quote_spread_delta", quote_spread_delta),
+        ("trade_delta", trade_delta),
+    ):
+        count, minimum, maximum, median = summary(values)
+        result[f"{prefix}_count"] = count
+        result[f"{prefix}_min"] = minimum
+        result[f"{prefix}_max"] = maximum
+        result[f"{prefix}_median"] = median
+    return result
+
+
 def read_sampled_rows(path: Path, indices: np.ndarray) -> list[dict[str, Any]]:
     if indices.size == 0:
         return []
@@ -234,6 +393,47 @@ def read_sampled_rows(path: Path, indices: np.ndarray) -> list[dict[str, Any]]:
         .collect()
     )
     return frame.to_dicts()
+
+
+def read_sampled_contexts(path: Path, origin_indices: np.ndarray, *, context_chunks: int) -> list[tuple[int, list[dict[str, Any]]]]:
+    if origin_indices.size == 0:
+        return []
+    needed: set[int] = set()
+    for origin_index in origin_indices:
+        start = int(origin_index) - context_chunks + 1
+        if start < 0:
+            continue
+        needed.update(range(start, int(origin_index) + 1))
+    if not needed:
+        return []
+    frame = (
+        pl.scan_parquet(str(path))
+        .with_row_index("_row_nr")
+        .filter(pl.col("_row_nr").is_in(sorted(needed)))
+        .select(
+            [
+                "_row_nr",
+                "ticker",
+                "session_date",
+                "chunk_start_ns",
+                "chunk_end_ns",
+                "latest_ask",
+                "quote_values",
+                "trade_values",
+            ]
+        )
+        .collect()
+        .sort("_row_nr")
+    )
+    by_index = {int(row["_row_nr"]): row for row in frame.to_dicts()}
+    contexts: list[tuple[int, list[dict[str, Any]]]] = []
+    for origin_index in origin_indices:
+        origin_index = int(origin_index)
+        start = origin_index - context_chunks + 1
+        rows = [by_index[index] for index in range(start, origin_index + 1) if index in by_index]
+        if len(rows) == context_chunks:
+            contexts.append((origin_index, rows))
+    return contexts
 
 
 def bits_for_unsigned(maximum: int) -> int:
@@ -270,6 +470,7 @@ def build_summary(rows: list[dict[str, Any]], *, elapsed_seconds: float, config:
     for name, signed in (
         ("quote_ask_delta", True),
         ("quote_spread", False),
+        ("quote_spread_delta", True),
         ("trade_delta", True),
     ):
         mins = column_values(valid_rows, f"{name}_min")
@@ -292,18 +493,33 @@ def build_summary(rows: list[dict[str, Any]], *, elapsed_seconds: float, config:
             "lossless_bits": bit_width,
         }
     anchor_ticks = column_values(valid_rows, "anchor_ticks")
+    spread_anchor_ticks = column_values(valid_rows, "spread_anchor_ticks")
     anchor_bits = bits_for_unsigned(max(anchor_ticks)) if anchor_ticks else 0
+    spread_anchor_bits = bits_for_unsigned(max(spread_anchor_ticks)) if spread_anchor_ticks else 0
+    spread_delta_bits = price_fields.get("quote_spread_delta", {}).get("lossless_bits", {}).get("total_bits")
+    spread_bits = price_fields.get("quote_spread", {}).get("lossless_bits", {}).get("total_bits", 0)
     per_chunk_lossless_bits = {
         "anchor_ticks_unsigned_bits": anchor_bits,
         "tick_regime_bits": 1,
         "quote_ask_delta_bits": price_fields.get("quote_ask_delta", {}).get("lossless_bits", {}).get("total_bits", 0),
-        "quote_spread_bits": price_fields.get("quote_spread", {}).get("lossless_bits", {}).get("total_bits", 0),
+        "spread_anchor_unsigned_bits": spread_anchor_bits,
+        "quote_spread_delta_bits": spread_delta_bits or 0,
+        "quote_spread_bits": spread_bits,
         "trade_delta_bits": price_fields.get("trade_delta", {}).get("lossless_bits", {}).get("total_bits", 0),
     }
     per_chunk_lossless_bits["total_for_one_triplet_without_validity"] = (
         per_chunk_lossless_bits["quote_ask_delta_bits"]
-        + per_chunk_lossless_bits["quote_spread_bits"]
+        + (per_chunk_lossless_bits["quote_spread_delta_bits"] or per_chunk_lossless_bits["quote_spread_bits"])
         + per_chunk_lossless_bits["trade_delta_bits"]
+    )
+    per_chunk_lossless_bits["context_prefix_bits"] = (
+        per_chunk_lossless_bits["anchor_ticks_unsigned_bits"]
+        + per_chunk_lossless_bits["tick_regime_bits"]
+        + per_chunk_lossless_bits["spread_anchor_unsigned_bits"]
+    )
+    per_chunk_lossless_bits["context_prefix_plus_one_triplet_bits"] = (
+        per_chunk_lossless_bits["context_prefix_bits"]
+        + per_chunk_lossless_bits["total_for_one_triplet_without_validity"]
     )
     return {
         "config": config,
@@ -316,6 +532,9 @@ def build_summary(rows: list[dict[str, Any]], *, elapsed_seconds: float, config:
             "anchor_ticks_min": min(anchor_ticks) if anchor_ticks else None,
             "anchor_ticks_max": max(anchor_ticks) if anchor_ticks else None,
             "anchor_ticks_unsigned_lossless_bits": anchor_bits,
+            "spread_anchor_ticks_min": min(spread_anchor_ticks) if spread_anchor_ticks else None,
+            "spread_anchor_ticks_max": max(spread_anchor_ticks) if spread_anchor_ticks else None,
+            "spread_anchor_ticks_unsigned_lossless_bits": spread_anchor_bits,
             "tick_regime_counts": {
                 "penny": sum(1 for row in valid_rows if row.get("anchor_tick_regime") == "penny"),
                 "sub_dollar": sum(1 for row in valid_rows if row.get("anchor_tick_regime") == "sub_dollar"),
@@ -356,7 +575,15 @@ def main() -> None:
     if not files:
         raise FileNotFoundError(f"No {args.year_month} parquet files found under {layout_root(args.chunk_root, args.chunk_ms)}")
     source_files = weighted_source_files(files, max_files=args.max_source_files, rng=rng)
-    allocations = allocate_samples(source_files, sample_count=args.sample_chunks, rng=rng)
+    if args.anchor_mode == "median-context":
+        allocations = allocate_context_samples(
+            source_files,
+            sample_count=args.sample_chunks,
+            context_chunks=args.context_chunks,
+            rng=rng,
+        )
+    else:
+        allocations = allocate_samples(source_files, sample_count=args.sample_chunks, rng=rng)
     rows: list[dict[str, Any]] = []
     print(f"START source_files={len(source_files):,} allocated_files={len(allocations):,}", flush=True)
     for file_index, file in enumerate(source_files, start=1):
@@ -365,8 +592,12 @@ def main() -> None:
             continue
         file_started = time.perf_counter()
         try:
-            sampled_rows = read_sampled_rows(file.path, indices)
-            rows.extend(analyze_chunk(row) for row in sampled_rows)
+            if args.anchor_mode == "median-context":
+                sampled_contexts = read_sampled_contexts(file.path, indices, context_chunks=args.context_chunks)
+                rows.extend(analyze_context(context_rows, origin_index=origin_index) for origin_index, context_rows in sampled_contexts)
+            else:
+                sampled_rows = read_sampled_rows(file.path, indices)
+                rows.extend(analyze_chunk(row) for row in sampled_rows)
         except Exception as exc:
             print(f"[{file_index}/{len(source_files)}] FAILED {file.ticker} rows={indices.size}: {exc}", flush=True)
             continue
@@ -384,14 +615,18 @@ def main() -> None:
         "max_source_files": args.max_source_files,
         "seed": args.seed,
         "chunk_ms": args.chunk_ms,
-        "anchor": "latest_ask",
+        "context_chunks": args.context_chunks,
+        "anchor_mode": args.anchor_mode,
+        "anchor": "median context ask" if args.anchor_mode == "median-context" else "latest_ask",
+        "spread_anchor": "median context quote spread" if args.anchor_mode == "median-context" else None,
         "tick_rule": "anchor >= 1 uses 0.01, anchor < 1 uses 0.0001; all deltas use anchor tick unit",
-        "price_fields": ["quote_ask_delta", "quote_spread", "trade_delta"],
+        "price_fields": ["quote_ask_delta", "quote_spread_delta", "trade_delta"],
     }
     report = build_summary(rows, elapsed_seconds=time.perf_counter() - started, config=config)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    rows_path = args.output_dir / f"context_price_bits_rows_{args.year_month}_{args.sample_chunks}.csv"
-    report_path = args.output_dir / f"context_price_bits_report_{args.year_month}_{args.sample_chunks}.json"
+    suffix = f"{args.anchor_mode.replace('-', '_')}_ctx{args.context_chunks}_{args.year_month}_{args.sample_chunks}"
+    rows_path = args.output_dir / f"context_price_bits_rows_{suffix}.csv"
+    report_path = args.output_dir / f"context_price_bits_report_{suffix}.json"
     write_rows_csv(rows_path, rows)
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"DONE rows={len(rows):,} report={report_path} rows_csv={rows_path}", flush=True)
