@@ -21,7 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "processes": 32,
     "event_processes": 40,
     "chunk_processes": 20,
-    "polars_threads_per_process": 1,
+    "polars_threads_per_process": 2,
     "event_max_tasks_per_worker": 16,
     "chunk_max_tasks_per_worker": 1,
     "heartbeat_seconds": 30,
