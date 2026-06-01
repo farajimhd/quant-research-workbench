@@ -161,7 +161,9 @@ def main(argv: list[str] | None = None) -> None:
     loader = make_loader(config, "train", args.seed)
     loader_iter = iter(loader)
     while config.train.max_steps <= 0 or global_step < config.train.max_steps:
+        data_wait_started = time.perf_counter()
         batch = next(loader_iter)
+        data_wait_seconds = time.perf_counter() - data_wait_started
         step_started = time.perf_counter()
         global_step += 1
         profile_step = config.train.profile_training_every_steps > 0 and global_step % config.train.profile_training_every_steps == 0
@@ -197,7 +199,18 @@ def main(argv: list[str] | None = None) -> None:
         metrics = dict(result.metrics)
         metrics.update({"train/lr": float(optimizer.param_groups[0]["lr"]), "train/step_seconds": time.perf_counter() - step_started, "profile/batch_size": float(batch["header_uint8"].shape[0])})
         if profile_step:
-            metrics.update({"profile/transfer_seconds": transfer_seconds, "profile/mask_seconds": mask_seconds, "profile/forward_loss_seconds": forward_loss_seconds, "profile/backward_seconds": backward_seconds, "profile/optimizer_seconds": optimizer_seconds})
+            data_profile = batch.get("profile", {})
+            metrics.update(
+                {
+                    "profile/data_wait_seconds": data_wait_seconds,
+                    "profile/transfer_seconds": transfer_seconds,
+                    "profile/mask_seconds": mask_seconds,
+                    "profile/forward_loss_seconds": forward_loss_seconds,
+                    "profile/backward_seconds": backward_seconds,
+                    "profile/optimizer_seconds": optimizer_seconds,
+                    **{f"profile/{key}": float(value) for key, value in data_profile.items()},
+                }
+            )
         if config.train.profile_inference_every_steps > 0 and global_step % config.train.profile_inference_every_steps == 0:
             metrics.update(profile_encode(model, batch, device))
         if global_step % config.train.logging_steps == 0:

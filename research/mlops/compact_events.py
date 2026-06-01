@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -387,10 +388,15 @@ class TickerMonthCache:
         self.config = config
         self.cache: dict[tuple[str, str], pl.DataFrame] = {}
         self.order: list[tuple[str, str]] = []
+        self.last_get_seconds = 0.0
+        self.last_cache_hit = False
 
     def get(self, ticker: str, year_month: str) -> pl.DataFrame:
+        started = time.perf_counter()
         key = (ticker, year_month)
         if key in self.cache:
+            self.last_get_seconds = time.perf_counter() - started
+            self.last_cache_hit = True
             return self.cache[key]
         quote_path = canonical_event_path(self.config.canonical_root, "quotes", ticker, year_month)
         trade_path = canonical_event_path(self.config.canonical_root, "trades", ticker, year_month)
@@ -406,6 +412,8 @@ class TickerMonthCache:
             self.cache.pop(oldest, None)
         self.cache[key] = frame
         self.order.append(key)
+        self.last_get_seconds = time.perf_counter() - started
+        self.last_cache_hit = False
         return frame
 
 
@@ -436,6 +444,7 @@ class CompactEventIterableDataset(IterableDataset):
             yield self._next_batch(rng, cache)
 
     def _next_batch(self, rng: random.Random, cache: TickerMonthCache) -> dict[str, Any]:
+        batch_started = time.perf_counter()
         batch_session = rng.choice(self.sessions)
         session_rows = self.by_session[batch_session]
         session_min = min(row.min_ts for row in session_rows)
@@ -447,16 +456,30 @@ class CompactEventIterableDataset(IterableDataset):
         sessions: list[str] = []
         filled = 0
         attempts = 0
+        sample_seconds = 0.0
+        cache_seconds = 0.0
+        encode_seconds = 0.0
+        cache_hits = 0
+        cache_misses = 0
+        rejected_samples = 0
         max_attempts = max(self.config.batch_size, self.config.batch_size * self.config.max_sample_attempts_per_batch)
         while filled < self.config.batch_size and attempts < max_attempts:
             attempts += 1
+            sample_started = time.perf_counter()
             row, timestamp = self._sample_origin_from_session(
                 rng,
                 session_rows=session_rows,
                 session_min=session_min,
                 session_max=session_max,
             )
+            sample_seconds += time.perf_counter() - sample_started
             frame = cache.get(row.ticker, row.year_month)
+            cache_seconds += cache.last_get_seconds
+            if cache.last_cache_hit:
+                cache_hits += 1
+            else:
+                cache_misses += 1
+            encode_started = time.perf_counter()
             encoded = encode_events_chunk_from_frame(
                 frame,
                 origin_timestamp_ns=timestamp,
@@ -464,7 +487,9 @@ class CompactEventIterableDataset(IterableDataset):
                 references=self.references,
                 strict_lossless=self.config.strict_lossless,
             )
+            encode_seconds += time.perf_counter() - encode_started
             if encoded is None:
+                rejected_samples += 1
                 continue
             headers[filled] = encoded[0]
             events[filled] = encoded[1]
@@ -483,6 +508,18 @@ class CompactEventIterableDataset(IterableDataset):
             "batch_session_date": batch_session,
             "row_bytes": self.config.row_bytes,
             "events_per_chunk": self.config.events_per_chunk,
+            "profile": {
+                "data/batch_build_seconds": time.perf_counter() - batch_started,
+                "data/sample_select_seconds": sample_seconds,
+                "data/cache_get_seconds": cache_seconds,
+                "data/encode_seconds": encode_seconds,
+                "data/attempts": float(attempts),
+                "data/filled": float(filled),
+                "data/rejected_samples": float(rejected_samples),
+                "data/cache_hits": float(cache_hits),
+                "data/cache_misses": float(cache_misses),
+                "data/cache_hit_pct": 100.0 * float(cache_hits) / max(1.0, float(cache_hits + cache_misses)),
+            },
         }
 
     def _sample_origin_from_session(
