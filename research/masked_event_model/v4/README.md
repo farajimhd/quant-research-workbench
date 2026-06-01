@@ -38,7 +38,7 @@ D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_compact_v1
 Build canonical compact data first:
 
 ```powershell
-python -m research.mlops.build_compact_canonical --flatfiles-root D:\market-data\flatfiles\us_stocks_sip --canonical-root D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_compact_v1 --issue-root D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_compact_v1_issues --temp-root D:\market-data\flatfiles\us_stocks_sip\derived\_tmp_compact_canonical_parts --start-date 2025-11-01 --end-date 2025-12-05 --tickers ALL --processes 16 --normalize-processes 16 --merge-processes 16 --rebuild
+python -m research.mlops.run_build_compact_canonical --rebuild
 ```
 
 Rows dropped by canonical normalization, plus quote rows with suspicious size fields, are written to:

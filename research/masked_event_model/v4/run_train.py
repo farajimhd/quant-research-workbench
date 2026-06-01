@@ -9,7 +9,7 @@ from typing import Any
 
 DEFAULTS: dict[str, Any] = {
     "canonical_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_compact_v1",
-    "reference_dir": r"D:\TradingCodes\quant-research-workbench\research\market_references\massive",
+    "reference_dir": None,
     "train_start_date": "2025-11-01",
     "train_end_date": "2025-11-30",
     "validation_start_date": "2025-12-01",
@@ -41,7 +41,9 @@ def main() -> None:
     parser.add_argument("--fresh-start", action="store_true")
     parser.add_argument("--print-only", action="store_true")
     known, extra = parser.parse_known_args()
-    argv = build_argv(DEFAULTS)
+    defaults = dict(DEFAULTS)
+    defaults["reference_dir"] = str(repo_root() / "research" / "market_references" / "massive")
+    argv = build_argv(defaults)
     if known.dry_run:
         argv.append("--dry-run")
     if known.fresh_start:

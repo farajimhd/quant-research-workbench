@@ -21,6 +21,7 @@ def sync_version_code(
     destination_root = config.shared_code_root_from_laptop(model_family, version)
     research_destination = destination_root / "research"
     copy_tree(repo_root / "research" / "mlops", research_destination / "mlops")
+    copy_tree(repo_root / "research" / "market_references", research_destination / "market_references")
     copy_tree(repo_root / "research" / model_family / version, research_destination / model_family / version)
     init_path = research_destination / "__init__.py"
     init_path.parent.mkdir(parents=True, exist_ok=True)
