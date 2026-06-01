@@ -12,15 +12,16 @@ DEFAULTS: dict[str, Any] = {
     "canonical_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_compact_v1",
     "issue_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_compact_v1_issues",
     "temp_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\_tmp_compact_canonical_parts",
-    "start_date": "2025-11-01",
-    "end_date": "2025-12-05",
+    "start_date": "2025-01-01",
+    "end_date": "2025-12-31",
     "tickers": "ALL",
-    "processes": 22,
-    "normalize_processes": 22,
-    "merge_processes": 22,
+    "processes": 32,
+    "normalize_processes": 32,
+    "merge_processes": 32,
     "polars_threads_per_process": 2,
     "heartbeat_seconds": 30,
     "rebuild": False,
+    "keep_temp": True,
 }
 
 
