@@ -13,7 +13,7 @@ from typing import Any
 from urllib import parse, request
 
 
-DEFAULT_DATABASE = "qrw_quote_ingest_profile"
+DEFAULT_DATABASE_PREFIX = "qrw_quote_ingest_profile"
 DEFAULT_CLICKHOUSE_URL = "http://localhost:8123"
 DEFAULT_FLATFILES_ROOT_WIN = Path("D:/market-data/flatfiles/us_stocks_sip")
 DEFAULT_FLATFILES_ROOT_CH = "/mnt/d/market-data/flatfiles/us_stocks_sip"
@@ -55,15 +55,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clickhouse-url", default=os.environ.get("CLICKHOUSE_URL", DEFAULT_CLICKHOUSE_URL))
     parser.add_argument("--user", default=os.environ.get("CLICKHOUSE_USER", "default"))
     parser.add_argument("--password", default=os.environ.get("CLICKHOUSE_PASSWORD", ""))
-    parser.add_argument("--database", default=DEFAULT_DATABASE)
+    parser.add_argument("--database", default="", help="ClickHouse database name. Defaults to a unique qrw_quote_ingest_profile_<timestamp> database.")
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
     parser.add_argument("--flatfiles-root-ch", default=DEFAULT_FLATFILES_ROOT_CH)
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN))
     parser.add_argument("--dates", default="", help="Comma-separated YYYY-MM-DD dates. Defaults to first three discovered 2025 quote files.")
     parser.add_argument("--start-date", default="2025-01-01")
     parser.add_argument("--end-date", default="2025-12-31")
-    parser.add_argument("--drop-database", action="store_true", default=True)
-    parser.add_argument("--keep-database", action="store_true", help="Do not drop the test database before running.")
+    parser.add_argument("--drop-database", action="store_true", help="Drop the target database before running. Requires DROP DATABASE permission.")
     parser.add_argument("--max-discovery-files", type=int, default=3)
     parser.add_argument("--max-memory-usage", default="0", help="Optional ClickHouse max_memory_usage setting, e.g. 64G or bytes. 0 leaves unlimited/default.")
     parser.add_argument("--max-threads", type=int, default=0, help="Optional per-query ClickHouse max_threads setting.")
@@ -72,9 +71,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    database = args.database.strip() or f"{DEFAULT_DATABASE_PREFIX}_{run_stamp}"
     output_root = Path(args.output_root_win)
     output_root.mkdir(parents=True, exist_ok=True)
-    report_path = output_root / f"quote_ingest_profile_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    report_path = output_root / f"quote_ingest_profile_{run_stamp}.json"
     small_csv_win = output_root / "small_quotes_smoke.csv"
     small_csv_ch = windows_path_to_clickhouse_path(small_csv_win, args.flatfiles_root_win, args.flatfiles_root_ch)
     write_small_quote_csv(small_csv_win)
@@ -94,42 +95,42 @@ def main() -> None:
     print("=" * 96, flush=True)
     print("ClickHouse quote ingest profile", flush=True)
     print(f"clickhouse_url={args.clickhouse_url}", flush=True)
-    print(f"database={args.database}", flush=True)
+    print(f"database={database}", flush=True)
     print(f"small_csv={small_csv_win} -> {small_csv_ch}", flush=True)
     for path_win, path_ch in zip(quote_files, quote_files_ch):
         print(f"quote_file={path_win} size_gb={path_win.stat().st_size / (1024 ** 3):.2f} clickhouse_path={path_ch}", flush=True)
     print("=" * 96, flush=True)
 
     snapshots.append({"label": "before", "memory": read_memory_snapshot(client)})
-    if args.drop_database and not args.keep_database:
-        profiles.append(run_profiled(client, "drop_database", f"DROP DATABASE IF EXISTS {quote_ident(args.database)}"))
-    profiles.append(run_profiled(client, "create_database", f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.database)}"))
-    profiles.append(run_profiled(client, "create_table", create_table_sql(args.database)))
+    if args.drop_database:
+        profiles.append(run_profiled(client, "drop_database", f"DROP DATABASE IF EXISTS {quote_ident(database)}"))
+    profiles.append(run_profiled(client, "create_database", f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}"))
+    profiles.append(run_profiled(client, "create_table", create_table_sql(database)))
     snapshots.append({"label": "after_create", "memory": read_memory_snapshot(client)})
 
-    profiles.append(run_profiled(client, "insert_small_csv", insert_quotes_sql(args.database, small_csv_ch, "small_quotes_smoke.csv"), settings))
-    print_table_stats(client, args.database, "after small smoke")
+    profiles.append(run_profiled(client, "insert_small_csv", insert_quotes_sql(database, small_csv_ch, "small_quotes_smoke.csv"), settings))
+    print_table_stats(client, database, "after small smoke")
 
     for index, (path_win, path_ch) in enumerate(zip(quote_files, quote_files_ch), start=1):
         label = f"insert_quotes_{index}_{path_win.stem.replace('.', '_')}"
-        profiles.append(run_profiled(client, label, insert_quotes_sql(args.database, path_ch, path_win.name), settings))
-        print_table_stats(client, args.database, f"after {path_win.name}")
+        profiles.append(run_profiled(client, label, insert_quotes_sql(database, path_ch, path_win.name), settings))
+        print_table_stats(client, database, f"after {path_win.name}")
         snapshots.append({"label": label, "memory": read_memory_snapshot(client)})
 
-    profiles.append(run_profiled(client, "optimize_final", f"OPTIMIZE TABLE {quote_ident(args.database)}.quotes_raw FINAL"))
-    print_table_stats(client, args.database, "after optimize final")
+    profiles.append(run_profiled(client, "optimize_final", f"OPTIMIZE TABLE {quote_ident(database)}.quotes_raw FINAL"))
+    print_table_stats(client, database, "after optimize final")
     snapshots.append({"label": "after_optimize", "memory": read_memory_snapshot(client)})
 
-    count_rows = client.query_tsv(f"SELECT count() FROM {quote_ident(args.database)}.quotes_raw").strip()
+    count_rows = client.query_tsv(f"SELECT count() FROM {quote_ident(database)}.quotes_raw").strip()
     active_parts = client.query_tsv(
         "SELECT partition, count(), sum(rows), formatReadableSize(sum(bytes_on_disk)) "
         "FROM system.parts "
-        f"WHERE database = {sql_string(args.database)} AND table = 'quotes_raw' AND active "
+        f"WHERE database = {sql_string(database)} AND table = 'quotes_raw' AND active "
         "GROUP BY partition ORDER BY partition"
     )
     report = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "database": args.database,
+        "database": database,
         "clickhouse_url": args.clickhouse_url,
         "quote_files": [{"windows_path": str(path), "clickhouse_path": path_ch, "bytes": path.stat().st_size} for path, path_ch in zip(quote_files, quote_files_ch)],
         "settings": settings,
