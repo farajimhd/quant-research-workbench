@@ -508,7 +508,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   const [positions, setPositions] = useState<PositionRow[]>(initialSharedState.positions);
   const [trades, setTrades] = useState<TradeRow[]>(initialSharedState.trades);
   const [portfolioSnapshot, setPortfolioSnapshot] = useState<RealLivePortfolioPayload | null>(null);
-  const [portfolioTab, setPortfolioTab] = useState("Trades");
+  const [portfolioTab, setPortfolioTab] = useState("P/L");
   const [portfolioDetailsOpen, setPortfolioDetailsOpen] = useState(false);
   const [tradeDraft, setTradeDraft] = useState({ limit: "", quantity: "3000", side: "BUY" as "BUY" | "SELL", stop: "", type: "LIMIT" });
   const [layouts, setLayouts] = useState<Record<WindowId, WindowLayout>>(initialCanvas.layouts);
@@ -1775,13 +1775,12 @@ function PortfolioContainer({
   selectedTab: string;
   trades: TradeRow[];
 }) {
-  const tabs = ["Open Positions", "P/L", "Fills", "Orders", "Balances", "Errors"];
+  const tabs = ["P/L", "Fills", "Orders", "Balances", "Errors"];
   const activeTab = tabs.includes(selectedTab) ? selectedTab : tabs[0];
   const balanceRows = portfolioBalanceRows(portfolioSnapshot);
   const errorRows = portfolioSnapshot?.errors ?? [];
   return (
     <div className={detailsOpen ? "live-container-stack portfolio-expanded" : "live-container-stack"}>
-      <PortfolioSnapshotHeader snapshot={portfolioSnapshot} />
       <PortfolioPositions positions={positions} />
       <button className="live-portfolio-expand-button" onClick={onToggleDetails} title={detailsOpen ? "Hide tabs" : "Show tabs"} type="button">
         {detailsOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
@@ -1789,7 +1788,6 @@ function PortfolioContainer({
       {detailsOpen ? (
         <>
           <Tabs tabs={tabs} active={activeTab} onChange={onTabChange} />
-          {activeTab === "Open Positions" ? <DataTable rows={positions} empty="No open positions." /> : null}
           {activeTab === "P/L" ? <DataTable rows={buildProfitLossRows(positions, trades, portfolioSnapshot)} empty="No broker P/L rows." /> : null}
           {activeTab === "Fills" ? <DataTable rows={trades} empty="No broker executions yet." /> : null}
           {activeTab === "Orders" ? <DataTable rows={orders} empty="No live orders." /> : null}
@@ -1798,39 +1796,6 @@ function PortfolioContainer({
         </>
       ) : null}
     </div>
-  );
-}
-
-function PortfolioSnapshotHeader({ snapshot }: { snapshot: RealLivePortfolioPayload | null }) {
-  const balances = portfolioBalanceRows(snapshot);
-  const totalCash = balances.reduce((total, row) => total + numberValue(row, "available_funds"), 0);
-  const totalNetLiquidation = balances.reduce((total, row) => total + numberValue(row, "net_liquidation"), 0);
-  const connection = snapshot?.connection ?? {};
-  return (
-    <section className="live-portfolio-header" aria-label="Broker portfolio snapshot">
-      <div className="live-debug-metric-strip">
-        <article className="live-debug-metric-card" data-tone={snapshot ? "success" : "muted"}>
-          <span className="live-debug-metric-label">Source</span>
-          <strong>{snapshot?.source?.toUpperCase() || "IBKR"}</strong>
-        </article>
-        <article className="live-debug-metric-card" data-tone={connection.portfolio === "blocked" ? "danger" : "success"}>
-          <span className="live-debug-metric-label">Portfolio</span>
-          <strong>{connection.portfolio || "waiting"}</strong>
-        </article>
-        <article className="live-debug-metric-card" data-tone={connection.iserver === "blocked" ? "danger" : "success"}>
-          <span className="live-debug-metric-label">Orders</span>
-          <strong>{connection.iserver || "waiting"}</strong>
-        </article>
-        <article className="live-debug-metric-card" data-tone={totalCash ? "info" : "muted"}>
-          <span className="live-debug-metric-label">Available</span>
-          <strong>{money(totalCash)}</strong>
-        </article>
-        <article className="live-debug-metric-card" data-tone={totalNetLiquidation ? "info" : "muted"}>
-          <span className="live-debug-metric-label">Net Liq</span>
-          <strong>{money(totalNetLiquidation)}</strong>
-        </article>
-      </div>
-    </section>
   );
 }
 
@@ -3337,6 +3302,7 @@ function buildPortfolioMetrics({ orders, positions, snapshot, trades }: { orders
   const balances = portfolioBalanceRows(snapshot);
   const cash = brokerAvailableFunds(snapshot);
   const equity = balances.reduce((total, row) => total + numberValue(row, "net_liquidation"), 0);
+  const connection = snapshot?.connection ?? {};
   const stagedOrders = orders.filter((order) => order.status === "STAGED").length;
   const fills = orders.filter((order) => order.status === "FILLED").length;
   const wins = trades.filter((trade) => trade.gross_pnl > 0).length;
@@ -3344,6 +3310,9 @@ function buildPortfolioMetrics({ orders, positions, snapshot, trades }: { orders
   const errors = snapshot?.errors?.length ?? 0;
   return {
     items: [
+      { icon: <WalletCards size={14} />, label: "Source", tone: snapshot ? "success" : "muted", value: snapshot?.source?.toUpperCase() || "IBKR" },
+      { icon: <Activity size={14} />, label: "Portfolio Conn", tone: connection.portfolio === "blocked" ? "danger" : connection.portfolio ? "success" : "muted", value: connection.portfolio || "waiting" },
+      { icon: <ClipboardList size={14} />, label: "Order Conn", tone: connection.iserver === "blocked" ? "danger" : connection.iserver ? "success" : "muted", value: connection.iserver || "waiting" },
       { icon: <Banknote size={14} />, label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
       { icon: <CircleDollarSign size={14} />, label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
       { icon: <Activity size={14} />, label: "Unrealized P/L", tone: signedMetricTone(unrealized), value: money(unrealized) },
