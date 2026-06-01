@@ -6,7 +6,7 @@ import random
 import sys
 import time
 from collections import OrderedDict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -40,6 +40,7 @@ class ValidationConfig:
     prepared_root: Path = DEFAULT_OUTPUT_ROOT
     event_shard_root: Path | None = None
     chunk_root: Path | None = None
+    index_root: Path | None = None
     output_root: Path | None = None
     reference_dir: Path = Path(__file__).resolve().parents[1] / "market_references" / "massive"
     start_date: str = "2025-01-01"
@@ -47,12 +48,14 @@ class ValidationConfig:
     events_per_chunk: int = 128
     stride_events: int = 1
     bucket_ids: tuple[int, ...] = ()
-    mode: str = "all"
+    mode: str = "quick-sample"
     structural_max_files: int = 0
+    quick_structural_files: int = 200
     completeness_max_buckets: int = 0
     completeness_encode_expected: bool = False
     sample_chunks: int = 1000
     boundary_sample_chunks: int = 1000
+    sample_origin_chunks: int = 1000
     issue_limit: int = 10000
     seed: int = 17
     event_cache_size: int = 8
@@ -122,6 +125,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prepared-root", default=str(defaults.prepared_root))
     parser.add_argument("--event-shard-root", default="")
     parser.add_argument("--chunk-root", default="")
+    parser.add_argument("--index-root", default="")
     parser.add_argument("--output-root", default="")
     parser.add_argument("--reference-dir", default=str(defaults.reference_dir))
     parser.add_argument("--start-date", default=defaults.start_date)
@@ -129,12 +133,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--events-per-chunk", type=int, default=defaults.events_per_chunk)
     parser.add_argument("--stride-events", type=int, default=defaults.stride_events)
     parser.add_argument("--bucket-ids", default="")
-    parser.add_argument("--mode", choices=("all", "structural", "completeness", "sample-bytes"), default=defaults.mode)
+    parser.add_argument("--mode", choices=("all", "quick-sample", "structural", "completeness", "sample-bytes", "sample-origins"), default=defaults.mode)
     parser.add_argument("--structural-max-files", type=int, default=defaults.structural_max_files)
+    parser.add_argument("--quick-structural-files", type=int, default=defaults.quick_structural_files)
     parser.add_argument("--completeness-max-buckets", type=int, default=defaults.completeness_max_buckets)
     parser.add_argument("--completeness-encode-expected", action="store_true")
     parser.add_argument("--sample-chunks", type=int, default=defaults.sample_chunks)
     parser.add_argument("--boundary-sample-chunks", type=int, default=defaults.boundary_sample_chunks)
+    parser.add_argument("--sample-origin-chunks", type=int, default=defaults.sample_origin_chunks)
     parser.add_argument("--issue-limit", type=int, default=defaults.issue_limit)
     parser.add_argument("--seed", type=int, default=defaults.seed)
     parser.add_argument("--event-cache-size", type=int, default=defaults.event_cache_size)
@@ -147,6 +153,7 @@ def main() -> None:
         prepared_root=Path(args.prepared_root),
         event_shard_root=Path(args.event_shard_root) if args.event_shard_root else None,
         chunk_root=Path(args.chunk_root) if args.chunk_root else None,
+        index_root=Path(args.index_root) if args.index_root else None,
         output_root=Path(args.output_root) if args.output_root else None,
         reference_dir=Path(args.reference_dir),
         start_date=args.start_date,
@@ -156,10 +163,12 @@ def main() -> None:
         bucket_ids=parse_bucket_ids(args.bucket_ids),
         mode=args.mode,
         structural_max_files=max(0, int(args.structural_max_files)),
+        quick_structural_files=max(0, int(args.quick_structural_files)),
         completeness_max_buckets=max(0, int(args.completeness_max_buckets)),
         completeness_encode_expected=bool(args.completeness_encode_expected),
         sample_chunks=max(0, int(args.sample_chunks)),
         boundary_sample_chunks=max(0, int(args.boundary_sample_chunks)),
+        sample_origin_chunks=max(0, int(args.sample_origin_chunks)),
         issue_limit=max(0, int(args.issue_limit)),
         seed=int(args.seed),
         event_cache_size=max(1, int(args.event_cache_size)),
@@ -175,18 +184,23 @@ def main() -> None:
     print(f"prepared_root={config.prepared_root}", flush=True)
     print(f"event_shard_root={resolved_event_shard_root(config)}", flush=True)
     print(f"chunk_root={resolved_chunk_root(config)}", flush=True)
+    print(f"index_root={resolved_index_root(config)}", flush=True)
     print(f"output_root={output_root}", flush=True)
     print(f"date_range={config.start_date} -> {config.end_date} mode={config.mode}", flush=True)
     print("=" * 96, flush=True)
 
     summary: dict[str, Any] = {"config": config_payload(config), "started_at": timestamp_text(), "modes": {}}
     try:
+        if config.mode == "quick-sample":
+            summary["modes"]["quick_sample"] = validate_quick_sample(config, issues)
         if config.mode in {"all", "structural"}:
             summary["modes"]["structural"] = validate_structural(config, issues)
         if config.mode in {"all", "completeness"}:
             summary["modes"]["completeness"] = validate_completeness(config, issues)
         if config.mode in {"all", "sample-bytes"}:
             summary["modes"]["sample_bytes"] = validate_sample_bytes(config, issues)
+        if config.mode in {"all", "sample-origins"}:
+            summary["modes"]["sample_origins"] = validate_sample_origins(config, issues)
     finally:
         summary["finished_at"] = timestamp_text()
         summary["elapsed_seconds"] = time.time() - started
@@ -201,9 +215,32 @@ def main() -> None:
         raise SystemExit(1)
 
 
+def validate_quick_sample(config: ValidationConfig, issues: IssueWriter) -> dict[str, Any]:
+    print(
+        f"QUICK_SAMPLE start structural_files={config.quick_structural_files:,} "
+        f"sample_chunks={config.sample_chunks:,} boundary_chunks={config.boundary_sample_chunks:,} "
+        f"origin_chunks={config.sample_origin_chunks:,}",
+        flush=True,
+    )
+    quick_config = replace(
+        config,
+        structural_max_files=config.structural_max_files or config.quick_structural_files,
+    )
+    started = time.time()
+    result = {
+        "structural": validate_structural(quick_config, issues),
+        "sample_bytes": validate_sample_bytes(config, issues),
+        "sample_origins": validate_sample_origins(config, issues),
+    }
+    result["elapsed_seconds"] = time.time() - started
+    return result
+
+
 def validate_structural(config: ValidationConfig, issues: IssueWriter) -> dict[str, Any]:
     chunk_files = discover_chunk_files(config)
     if config.structural_max_files:
+        rng = random.Random(config.seed + 211)
+        rng.shuffle(chunk_files)
         chunk_files = chunk_files[: config.structural_max_files]
     print(f"STRUCTURAL start files={len(chunk_files):,}", flush=True)
     totals = {"files": 0, "rows": 0, "bad_rows": 0, "duplicate_rows_in_shard": 0}
@@ -333,6 +370,88 @@ def validate_sample_bytes(config: ValidationConfig, issues: IssueWriter) -> dict
         if index == 1 or index % 100 == 0 or index == len(combined):
             print(f"SAMPLE_BYTES [{index:,}/{len(combined):,}] matched={totals['matched']:,} mismatched={totals['mismatched']:,}", flush=True)
     return totals
+
+
+def validate_sample_origins(config: ValidationConfig, issues: IssueWriter) -> dict[str, Any]:
+    if config.sample_origin_chunks <= 0:
+        return {"sampled": 0, "encoded": 0, "present": 0, "missing": 0, "rejected": 0}
+    references = ReferenceMaps.load(config.reference_dir)
+    cache = EventFrameCache(config)
+    rng = random.Random(config.seed + 503)
+    bucket_ids = selected_bucket_ids(config)
+    rng.shuffle(bucket_ids)
+    print(f"SAMPLE_ORIGINS start target={config.sample_origin_chunks:,} candidate_buckets={len(bucket_ids):,}", flush=True)
+    expected_rows: list[dict[str, Any]] = []
+    rejected = 0
+    attempts = 0
+    max_attempts = max(config.sample_origin_chunks * 25, 1000)
+    while len(expected_rows) < config.sample_origin_chunks and attempts < max_attempts and bucket_ids:
+        attempts += 1
+        bucket_id = rng.choice(bucket_ids)
+        sessions = [session for session in cache.sessions_between(bucket_id, config.start_date, config.end_date)]
+        if not sessions:
+            continue
+        session = rng.choice(sessions)
+        frame = cache.get(bucket_id, session)
+        if frame.height == 0:
+            continue
+        tickers = frame["ticker"].unique().to_list()
+        if not tickers:
+            continue
+        ticker = str(rng.choice(tickers))
+        source = reconstruct_builder_source_for_sample(config, cache, bucket_id, ticker, session)
+        if source.height < config.events_per_chunk:
+            rejected += 1
+            continue
+        session_mask = source["session_date"].to_numpy() == session
+        eligible = np.flatnonzero(session_mask)
+        eligible = eligible[eligible >= config.events_per_chunk - 1]
+        if config.stride_events > 1:
+            eligible = eligible[((eligible - (config.events_per_chunk - 1)) % config.stride_events) == 0]
+        if eligible.size == 0:
+            rejected += 1
+            continue
+        origin_idx = int(rng.choice(eligible.tolist()))
+        origin_ts = int(source["sip_timestamp"][origin_idx])
+        encoded = encode_events_chunk_from_frame(
+            source,
+            origin_timestamp_ns=origin_ts,
+            events_per_chunk=config.events_per_chunk,
+            references=references,
+        )
+        if encoded is None:
+            rejected += 1
+            continue
+        expected_rows.append(
+            {
+                "bucket_id": bucket_id,
+                "chunk_id": chunk_id_for(ticker, origin_ts, config.events_per_chunk),
+                "ticker": ticker,
+                "origin_timestamp_ns": origin_ts,
+                "origin_session_date": session,
+            }
+        )
+        if len(expected_rows) == 1 or len(expected_rows) % 100 == 0:
+            print(f"SAMPLE_ORIGINS selected={len(expected_rows):,}/{config.sample_origin_chunks:,} attempts={attempts:,} rejected={rejected:,}", flush=True)
+    present_ids = read_saved_chunk_ids_for_expected(config, expected_rows)
+    missing = 0
+    for row in expected_rows:
+        if row["chunk_id"] not in present_ids:
+            missing += 1
+            issues.write(ValidationIssue("sample-origins", "error", "sampled expected chunk missing", row))
+    print(
+        f"SAMPLE_ORIGINS done sampled={len(expected_rows):,} present={len(expected_rows) - missing:,} missing={missing:,} "
+        f"attempts={attempts:,} rejected={rejected:,}",
+        flush=True,
+    )
+    return {
+        "sampled": len(expected_rows),
+        "encoded": len(expected_rows),
+        "present": len(expected_rows) - missing,
+        "missing": missing,
+        "rejected": rejected,
+        "attempts": attempts,
+    }
 
 
 def expected_chunk_rows_for_source(
@@ -536,6 +655,41 @@ def read_saved_bucket_session(config: ValidationConfig, bucket_id: int, session:
     )
 
 
+def read_saved_chunk_ids_for_expected(config: ValidationConfig, rows: list[dict[str, Any]]) -> set[str]:
+    if not rows:
+        return set()
+    found: set[str] = set()
+    grouped: dict[int, set[str]] = {}
+    for row in rows:
+        grouped.setdefault(int(row["bucket_id"]), set()).add(str(row["chunk_id"]))
+    for bucket_id, chunk_ids in grouped.items():
+        paths = saved_lookup_paths(config, bucket_id)
+        if not paths:
+            continue
+        ids = list(chunk_ids)
+        try:
+            frame = (
+                pl.scan_parquet([str(path) for path in paths])
+                .filter(pl.col("chunk_id").is_in(ids))
+                .select("chunk_id")
+                .unique()
+                .collect()
+            )
+        except Exception:
+            continue
+        found.update(str(value) for value in frame["chunk_id"].to_list())
+    return found
+
+
+def saved_lookup_paths(config: ValidationConfig, bucket_id: int) -> list[Path]:
+    index_dir = resolved_index_root(config) / f"bucket={bucket_id:04d}"
+    index_paths = sorted(index_dir.glob("part-*.parquet"))
+    if index_paths:
+        return index_paths
+    chunk_dir = resolved_chunk_root(config) / f"bucket={bucket_id:04d}"
+    return sorted(chunk_dir.glob("part-*.parquet"))
+
+
 def discover_chunk_files(config: ValidationConfig) -> list[Path]:
     paths = sorted(resolved_chunk_root(config).glob("bucket=*/part-*.parquet"))
     if config.bucket_ids:
@@ -590,6 +744,10 @@ def resolved_chunk_root(config: ValidationConfig) -> Path:
     if config.chunk_root is not None:
         return resolve_precomputed_chunk_root(config.chunk_root)
     return resolve_precomputed_chunk_root(config.prepared_root)
+
+
+def resolved_index_root(config: ValidationConfig) -> Path:
+    return config.index_root or (config.prepared_root / "indexes")
 
 
 def required_chunk_columns() -> set[str]:

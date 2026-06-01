@@ -14,9 +14,11 @@ DEFAULTS: dict[str, Any] = {
     "end_date": "2025-12-31",
     "events_per_chunk": 128,
     "stride_events": 1,
-    "mode": "all",
+    "mode": "quick-sample",
+    "quick_structural_files": 200,
     "sample_chunks": 1000,
     "boundary_sample_chunks": 1000,
+    "sample_origin_chunks": 1000,
     "issue_limit": 10000,
     "event_cache_size": 8,
 }
