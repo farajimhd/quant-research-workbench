@@ -9,7 +9,7 @@ from typing import Any
 
 DEFAULTS: dict[str, Any] = {
     "flatfiles_root": r"D:\market-data\flatfiles\us_stocks_sip",
-    "output_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\v4_compact_chunks_v1",
+    "output_root": r"D:\market-data\prepared\us_stocks_sip\v4_compact_event_chunks_v1",
     "reference_dir": None,
     "start_date": "2025-01-01",
     "end_date": "2025-12-31",

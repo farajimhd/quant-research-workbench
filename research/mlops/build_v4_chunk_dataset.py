@@ -51,9 +51,9 @@ from research.mlops.compact_events import (  # noqa: E402
 
 ENCODING_VERSION = "v4_compact_byte_chunks_1"
 DEFAULT_FLATFILES_ROOT = Path("D:/market-data/flatfiles/us_stocks_sip")
-DEFAULT_OUTPUT_ROOT = DEFAULT_FLATFILES_ROOT / "derived" / "v4_compact_chunks_v1"
-DEFAULT_ISSUE_ROOT = DEFAULT_FLATFILES_ROOT / "derived" / "v4_compact_chunks_v1_issues"
-DEFAULT_STATE_ROOT = DEFAULT_FLATFILES_ROOT / "derived" / "v4_compact_chunks_v1_state"
+DEFAULT_OUTPUT_ROOT = Path("D:/market-data/prepared/us_stocks_sip/v4_compact_event_chunks_v1")
+DEFAULT_ISSUE_ROOT = DEFAULT_OUTPUT_ROOT / "issues"
+DEFAULT_STATE_ROOT = DEFAULT_OUTPUT_ROOT / "_state"
 DEFAULT_EVENT_SHARD_ROOT = DEFAULT_OUTPUT_ROOT / "event_shards"
 DEFAULT_CHUNK_ROOT = DEFAULT_OUTPUT_ROOT / "chunks"
 DEFAULT_INDEX_ROOT = DEFAULT_OUTPUT_ROOT / "indexes"
