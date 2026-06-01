@@ -301,9 +301,8 @@ def build_event_shards_for_session_kind(config: V4ChunkBuildConfig, *, session: 
         normalized = normalized.filter(pl.col("ticker").is_in(list(config.tickers)))
     event_frame = quote_event_frame(normalized) if kind == "quotes" else trade_event_frame(normalized)
     event_frame = event_frame.with_columns((pl.col("ticker").hash(seed=17) % config.bucket_count).cast(pl.UInt32).alias("bucket_id"))
-    event_frame = event_frame.sort(["ticker", "sip_timestamp", "sequence_number", "event_type"])
     partition = pl.PartitionBy(output_root, key="bucket_id", include_key=True, max_rows_per_file=2_000_000)
-    event_frame.sink_parquet(partition, compression="zstd", mkdir=True, maintain_order=True)
+    event_frame.sink_parquet(partition, compression="zstd", mkdir=True, maintain_order=False)
     files = list(output_root.rglob("*.parquet"))
     rows = sum_parquet_rows(files)
     write_success(
