@@ -32,6 +32,8 @@ DEFAULT_USER_FILES_RELATIVE_FLATFILES_ROOT_CH = "market-data/flatfiles/us_stocks
 USER_FILES_RELATIVE_SYMBOL_ROOT_CH = "us_stocks_sip"
 USER_FILES_RELATIVE_FLATFILES_ALIAS_CH = "flatfiles/us_stocks_sip"
 USER_FILES_RELATIVE_FLATFILE_ALIAS_CH = "flatfile/us_stocks_sip"
+USER_FILES_RELATIVE_WORKSTATION_D_FLATFILES_CH = "workstation-d/flatfiles/us_stocks_sip"
+USER_FILES_RELATIVE_WORKSTATION_D_MARKET_DATA_CH = "workstation-d/market-data/flatfiles/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_ingest_profile")
 QUOTE_SCHEMA_STRING = (
     "ticker String, "
@@ -475,9 +477,9 @@ def select_readable_path_mapping(
     print_server_context(client)
     raise RuntimeError(
         "ClickHouse cannot read the real quote CSV through file(). "
-        "The server must see the file path itself, and file() may be restricted to user_files_path. "
+        "The server must see the file path itself, and file() is restricted to ClickHouse user_files_path. "
         f"Either set {CLICKHOUSE_FILE_ROOT_ENV} / CLICKHOUSE_FLATFILES_ROOT to the path visible to the ClickHouse server, "
-        f"or configure ClickHouse user_files_path / container volume so D:/market-data/flatfiles/us_stocks_sip is visible. "
+        f"or bind/copy D:/market-data/flatfiles/us_stocks_sip under the ClickHouse user_files_path root. "
         f"See path preflight log: {log_path}"
     )
 
@@ -535,6 +537,20 @@ def build_path_mappings(
             "user_files_relative_symbol_root",
             USER_FILES_RELATIVE_SYMBOL_ROOT_CH,
             lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, USER_FILES_RELATIVE_SYMBOL_ROOT_CH),
+        )
+
+    if configured_root.rstrip("/") != USER_FILES_RELATIVE_WORKSTATION_D_FLATFILES_CH.rstrip("/"):
+        append_mapping(
+            "user_files_relative_workstation_d_flatfiles",
+            USER_FILES_RELATIVE_WORKSTATION_D_FLATFILES_CH,
+            lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, USER_FILES_RELATIVE_WORKSTATION_D_FLATFILES_CH),
+        )
+
+    if configured_root.rstrip("/") != USER_FILES_RELATIVE_WORKSTATION_D_MARKET_DATA_CH.rstrip("/"):
+        append_mapping(
+            "user_files_relative_workstation_d_market_data",
+            USER_FILES_RELATIVE_WORKSTATION_D_MARKET_DATA_CH,
+            lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, USER_FILES_RELATIVE_WORKSTATION_D_MARKET_DATA_CH),
         )
 
     for name, root_win in (
