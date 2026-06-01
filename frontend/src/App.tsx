@@ -27,7 +27,7 @@ export function App() {
   }, [page]);
 
   return (
-    <Layout page={page} onPageChange={setPage} topbarCenter={page === "live-trading" ? topbarCenter : null}>
+    <Layout page={page} onPageChange={setPage} topbarCenter={page === "live-trading" || page === "real-live-trading" ? topbarCenter : null}>
       <div aria-hidden={page !== "strategy"} className={page === "strategy" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "strategy" || visitedPages.has("strategy") ? <StrategyPage /> : null}
       </div>
@@ -41,10 +41,10 @@ export function App() {
         {page === "review-data" || visitedPages.has("review-data") ? <MarketDataReviewPage /> : null}
       </div>
       <div aria-hidden={page !== "live-trading"} className={page === "live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "live-trading" || visitedPages.has("live-trading") ? <LiveTradingPage onTopbarCenterChange={setTopbarCenter} /> : null}
+        {page === "live-trading" || visitedPages.has("live-trading") ? <LiveTradingPage onTopbarCenterChange={page === "live-trading" ? setTopbarCenter : undefined} /> : null}
       </div>
       <div aria-hidden={page !== "real-live-trading"} className={page === "real-live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage /> : null}
+        {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
       </div>
     </Layout>
   );
