@@ -86,6 +86,7 @@ class TickerEventStoreConfig:
     tickers: tuple[str, ...] = (ALL_TICKERS_SENTINEL,)
     bucket_count: int = 1024
     fragment_bucket_count: int = 128
+    derive_batch_rows: int = 500_000
     max_rows_per_fragment_file: int = 2_000_000
     session_timezone: str = "America/New_York"
     session_start_time_market: str = "04:00"
@@ -108,6 +109,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tickers", default="ALL")
     parser.add_argument("--bucket-count", type=int, default=defaults.bucket_count)
     parser.add_argument("--fragment-bucket-count", type=int, default=defaults.fragment_bucket_count)
+    parser.add_argument("--derive-batch-rows", type=int, default=defaults.derive_batch_rows)
     parser.add_argument("--max-rows-per-fragment-file", type=int, default=defaults.max_rows_per_fragment_file)
     parser.add_argument("--processes", type=int, default=max(1, min(32, os.cpu_count() or 4)))
     parser.add_argument("--derive-processes", type=int, default=0)
@@ -146,6 +148,7 @@ def main() -> None:
         tickers=parse_ticker_list(args.tickers),
         bucket_count=max(1, int(args.bucket_count)),
         fragment_bucket_count=max(1, min(int(args.fragment_bucket_count), int(args.bucket_count))),
+        derive_batch_rows=max(1, int(args.derive_batch_rows)),
         max_rows_per_fragment_file=max(1, int(args.max_rows_per_fragment_file)),
         session_timezone=args.session_timezone,
         session_start_time_market=args.session_start_time_market,
@@ -175,6 +178,7 @@ def main() -> None:
     print(f"sessions={sessions[0]} -> {sessions[-1]} count={len(sessions):,}", flush=True)
     print(f"bucket_count={config.bucket_count:,} tickers={','.join(config.tickers)}", flush=True)
     print(f"fragment_bucket_count={config.fragment_bucket_count:,}", flush=True)
+    print(f"derive_batch_rows={config.derive_batch_rows:,}", flush=True)
     print(f"derive_processes={derive_processes} compact_processes={compact_processes} index_processes={index_processes}", flush=True)
     print(f"polars_threads_per_process={args.polars_threads_per_process}", flush=True)
     print("=" * 96, flush=True)
@@ -344,17 +348,19 @@ def derive_session_kind(config: TickerEventStoreConfig, *, session: str, kind: s
         normalized = normalized.filter(pl.col("ticker").is_in(list(config.tickers)))
     references = load_reference_maps(config.reference_dir)
     compact = compact_quote_frame(normalized, config, references) if kind == "quotes" else compact_trade_frame(normalized, config, references)
-    compact = compact.with_columns(fragment_bucket_expr(config).alias("fragment_bucket_id"))
-    compact = compact.select(COMPACT_EVENT_COLUMNS)
-    partition = pl.PartitionBy(
-        output_root,
-        key=["year_month", "fragment_bucket_id"],
-        include_key=True,
-        max_rows_per_file=config.max_rows_per_fragment_file,
-    )
-    compact.sink_parquet(partition, compression="zstd", mkdir=True, maintain_order=False)
+    compact = compact.with_columns(fragment_bucket_expr(config).alias("fragment_bucket_id")).select(COMPACT_EVENT_COLUMNS)
+    rows = 0
+    for batch_index, batch in enumerate(compact.collect_batches(chunk_size=config.derive_batch_rows, maintain_order=False), start=1):
+        if batch.is_empty():
+            continue
+        batch_files, batch_rows = write_derive_batch(batch, output_root, batch_index)
+        rows += batch_rows
+        print(
+            f"DERIVE batch {kind}:{session} batch={batch_index:,} rows={batch_rows:,} "
+            f"files={batch_files:,} total_rows={rows:,}",
+            flush=True,
+        )
     files = list(output_root.rglob("*.parquet"))
-    rows = sum_parquet_rows(files)
     write_success(
         state_path,
         {
@@ -368,6 +374,20 @@ def derive_session_kind(config: TickerEventStoreConfig, *, session: str, kind: s
         },
     )
     return {"status": "ok", "session": session, "kind": kind, "rows": rows, "files": len(files), "output_root": str(output_root)}
+
+
+def write_derive_batch(batch: pl.DataFrame, output_root: Path, batch_index: int) -> tuple[int, int]:
+    files = 0
+    rows = 0
+    for key, part in batch.partition_by(["year_month", "fragment_bucket_id"], include_key=True, as_dict=True, maintain_order=False).items():
+        year_month, fragment_bucket_id = key
+        fragment_id = int(fragment_bucket_id)
+        output_path = output_root / f"year_month={year_month}" / f"fragment_bucket_id={fragment_id:04d}" / f"batch_{batch_index:08d}.parquet"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        part.write_parquet(output_path, compression="zstd")
+        files += 1
+        rows += part.height
+    return files, rows
 
 
 def compact_quote_frame(frame: pl.LazyFrame, config: TickerEventStoreConfig, references: dict[str, dict[int, int]]) -> pl.LazyFrame:
@@ -459,13 +479,26 @@ def compact_bucket_month(config: TickerEventStoreConfig, *, year_month: str, fra
     temp_output = output_path.with_name(output_path.name + ".tmp")
     remove_path(temp_output)
     temp_output.mkdir(parents=True, exist_ok=True)
-    partition = pl.PartitionBy(temp_output, key="bucket_id", include_key=True, max_rows_per_file=config.max_rows_per_fragment_file)
-    (
-        pl.scan_parquet([str(path) for path in paths])
-        .select(COMPACT_EVENT_COLUMNS)
-        .sort(["bucket_id", "ticker", "sip_timestamp", "sequence_number", "event_type"])
-        .sink_parquet(partition, compression="zstd", mkdir=True, maintain_order=True)
-    )
+    bucket_ids = list(range(fragment_bucket_id, config.bucket_count, config.fragment_bucket_count))
+    for index, bucket_id in enumerate(bucket_ids, start=1):
+        bucket_file = temp_output / f"bucket_id={bucket_id}" / "events.parquet"
+        bucket_file.parent.mkdir(parents=True, exist_ok=True)
+        (
+            pl.scan_parquet([str(path) for path in paths])
+            .filter(pl.col("bucket_id") == bucket_id)
+            .select(COMPACT_EVENT_COLUMNS)
+            .sort(["ticker", "sip_timestamp", "sequence_number", "event_type"])
+            .sink_parquet(bucket_file, compression="zstd", mkdir=True, maintain_order=True)
+        )
+        bucket_rows = parquet_row_count(bucket_file)
+        if bucket_rows <= 0:
+            remove_path(bucket_file.parent)
+            continue
+        print(
+            f"COMPACT {year_month}:fragment={fragment_bucket_id:04d} "
+            f"bucket={bucket_id:04d} rows={bucket_rows:,} bucket_step={index:,}/{len(bucket_ids):,}",
+            flush=True,
+        )
     os.replace(temp_output, output_path)
     files = list(output_path.rglob("*.parquet"))
     rows = sum_parquet_rows(files)

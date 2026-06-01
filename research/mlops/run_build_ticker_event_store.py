@@ -16,6 +16,7 @@ DEFAULTS: dict[str, Any] = {
     "tickers": "ALL",
     "bucket_count": 1024,
     "fragment_bucket_count": 128,
+    "derive_batch_rows": 500_000,
     "max_rows_per_fragment_file": 2_000_000,
     "processes": 48,
     "derive_processes": 32,

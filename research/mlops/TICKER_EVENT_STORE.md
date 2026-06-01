@@ -59,9 +59,9 @@ fragment_bucket_id
 
 ## Stages
 
-`derive` reads raw daily CSV files, validates/filter invalid rows through the existing canonical rules, computes compact columns, and writes temporary fragments partitioned by month and coarse fragment bucket. Fragment buckets keep each worker from opening 1024 partition writers at once.
+`derive` reads raw daily CSV files, validates/filter invalid rows through the existing canonical rules, computes compact columns, and collects bounded output batches controlled by `derive_batch_rows`. Each bounded batch is then split into temporary month/fragment files. This keeps memory tied to the configured batch size instead of the full raw file size.
 
-`compact` reads fragments for each `(year_month, fragment_bucket_id)`, sorts them by bucket/ticker/time, and writes final bucket partitions atomically. `fragment_bucket_id` is only a coarse compaction partition used to keep memory and writer fanout bounded; `bucket_id` remains the stable ticker hash bucket used by loaders.
+`compact` reads fragments for each `(year_month, fragment_bucket_id)` and writes final bucket partitions atomically. It processes one `bucket_id` at a time, sorting only that bucket by ticker/time, so compact memory is bounded by one final bucket rather than a whole month/fragment. `fragment_bucket_id` is only a coarse compaction partition; `bucket_id` remains the stable ticker hash bucket used by loaders.
 
 `index` builds per-ticker availability metadata used by loaders for sampling.
 
