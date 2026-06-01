@@ -8,12 +8,13 @@ This pipeline builds reusable compact quote/trade event rows for masked event mo
 prepared/us_stocks_sip/ticker_compact_events_v1/
   events/
     year_month=2025-01/
-      bucket=0000/events.parquet
-      bucket=0001/events.parquet
+      fragment_bucket=0000/
+        bucket_id=0/*.parquet
+        bucket_id=128/*.parquet
   _index/
     availability.parquet
     schema.json
-    parts/year_month=2025-01/bucket=0000.parquet
+    parts/year_month=2025-01/fragment_bucket=0000/bucket=0524_00000000.parquet
   _state/
     derive/*.SUCCESS.json
     compact/*.SUCCESS.json
@@ -53,13 +54,14 @@ condition_3_id
 condition_4_id
 correction_code
 bucket_id
+fragment_bucket_id
 ```
 
 ## Stages
 
-`derive` reads raw daily CSV files, validates/filter invalid rows through the existing canonical rules, computes compact columns, and writes temporary fragments partitioned by month and bucket.
+`derive` reads raw daily CSV files, validates/filter invalid rows through the existing canonical rules, computes compact columns, and writes temporary fragments partitioned by month and coarse fragment bucket. Fragment buckets keep each worker from opening 1024 partition writers at once.
 
-`compact` reads fragments for each `(year_month, bucket_id)`, sorts them by ticker/time, and writes one final parquet atomically.
+`compact` reads fragments for each `(year_month, fragment_bucket_id)`, sorts them by bucket/ticker/time, and writes final bucket partitions atomically. `fragment_bucket_id` is only a coarse compaction partition used to keep memory and writer fanout bounded; `bucket_id` remains the stable ticker hash bucket used by loaders.
 
 `index` builds per-ticker availability metadata used by loaders for sampling.
 

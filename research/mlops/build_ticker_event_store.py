@@ -69,6 +69,7 @@ COMPACT_EVENT_COLUMNS = [
     "condition_4_id",
     "correction_code",
     "bucket_id",
+    "fragment_bucket_id",
 ]
 
 
@@ -84,6 +85,7 @@ class TickerEventStoreConfig:
     end_date: str = "2025-12-31"
     tickers: tuple[str, ...] = (ALL_TICKERS_SENTINEL,)
     bucket_count: int = 1024
+    fragment_bucket_count: int = 128
     max_rows_per_fragment_file: int = 2_000_000
     session_timezone: str = "America/New_York"
     session_start_time_market: str = "04:00"
@@ -105,6 +107,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", default=defaults.end_date)
     parser.add_argument("--tickers", default="ALL")
     parser.add_argument("--bucket-count", type=int, default=defaults.bucket_count)
+    parser.add_argument("--fragment-bucket-count", type=int, default=defaults.fragment_bucket_count)
     parser.add_argument("--max-rows-per-fragment-file", type=int, default=defaults.max_rows_per_fragment_file)
     parser.add_argument("--processes", type=int, default=max(1, min(32, os.cpu_count() or 4)))
     parser.add_argument("--derive-processes", type=int, default=0)
@@ -142,6 +145,7 @@ def main() -> None:
         end_date=args.end_date,
         tickers=parse_ticker_list(args.tickers),
         bucket_count=max(1, int(args.bucket_count)),
+        fragment_bucket_count=max(1, min(int(args.fragment_bucket_count), int(args.bucket_count))),
         max_rows_per_fragment_file=max(1, int(args.max_rows_per_fragment_file)),
         session_timezone=args.session_timezone,
         session_start_time_market=args.session_start_time_market,
@@ -170,6 +174,7 @@ def main() -> None:
     print(f"reference_dir={config.reference_dir}", flush=True)
     print(f"sessions={sessions[0]} -> {sessions[-1]} count={len(sessions):,}", flush=True)
     print(f"bucket_count={config.bucket_count:,} tickers={','.join(config.tickers)}", flush=True)
+    print(f"fragment_bucket_count={config.fragment_bucket_count:,}", flush=True)
     print(f"derive_processes={derive_processes} compact_processes={compact_processes} index_processes={index_processes}", flush=True)
     print(f"polars_threads_per_process={args.polars_threads_per_process}", flush=True)
     print("=" * 96, flush=True)
@@ -285,10 +290,10 @@ def compact_worker(item: dict[str, Any], payload: dict[str, Any], polars_threads
     started = time.time()
     config = config_from_payload(payload)
     year_month = str(item["year_month"])
-    bucket_id = int(item["bucket_id"])
-    key = f"{year_month}:bucket={bucket_id:04d}"
+    fragment_bucket_id = int(item["fragment_bucket_id"])
+    key = f"{year_month}:fragment={fragment_bucket_id:04d}"
     try:
-        result = compact_bucket_month(config, year_month=year_month, bucket_id=bucket_id, paths=[Path(path) for path in item["paths"]])
+        result = compact_bucket_month(config, year_month=year_month, fragment_bucket_id=fragment_bucket_id, paths=[Path(path) for path in item["paths"]])
         elapsed = time.time() - started
         print(f"FINISH compact {key} rows={result['rows']:,} elapsed={elapsed:.1f}s", flush=True)
         return result_row("compact", key, result["status"], result["rows"], elapsed, result)
@@ -339,10 +344,11 @@ def derive_session_kind(config: TickerEventStoreConfig, *, session: str, kind: s
         normalized = normalized.filter(pl.col("ticker").is_in(list(config.tickers)))
     references = load_reference_maps(config.reference_dir)
     compact = compact_quote_frame(normalized, config, references) if kind == "quotes" else compact_trade_frame(normalized, config, references)
+    compact = compact.with_columns(fragment_bucket_expr(config).alias("fragment_bucket_id"))
     compact = compact.select(COMPACT_EVENT_COLUMNS)
     partition = pl.PartitionBy(
         output_root,
-        key=["year_month", "bucket_id"],
+        key=["year_month", "fragment_bucket_id"],
         include_key=True,
         max_rows_per_file=config.max_rows_per_fragment_file,
     )
@@ -437,45 +443,52 @@ def bucket_expr(bucket_count: int) -> pl.Expr:
     return (pl.col("ticker").hash(seed=17) % int(bucket_count)).cast(pl.UInt32).alias("bucket_id")
 
 
-def compact_bucket_month(config: TickerEventStoreConfig, *, year_month: str, bucket_id: int, paths: list[Path]) -> dict[str, Any]:
-    output_path = final_event_path(config, year_month, bucket_id)
-    state_path = success_path(config, "compact", f"{year_month}_bucket_{bucket_id:04d}")
-    fingerprint = work_fingerprint(config, f"compact:{year_month}:bucket={bucket_id:04d}", paths)
+def fragment_bucket_expr(config: TickerEventStoreConfig) -> pl.Expr:
+    return (pl.col("bucket_id") % int(config.fragment_bucket_count)).cast(pl.UInt32)
+
+
+def compact_bucket_month(config: TickerEventStoreConfig, *, year_month: str, fragment_bucket_id: int, paths: list[Path]) -> dict[str, Any]:
+    output_path = final_event_path(config, year_month, fragment_bucket_id)
+    state_path = success_path(config, "compact", f"{year_month}_fragment_{fragment_bucket_id:04d}")
+    fingerprint = work_fingerprint(config, f"compact:{year_month}:fragment={fragment_bucket_id:04d}", paths)
     if should_skip_success(state_path, fingerprint):
-        return {"status": "skipped", "year_month": year_month, "bucket_id": bucket_id, "rows": success_rows(state_path), "output_path": str(output_path)}
+        return {"status": "skipped", "year_month": year_month, "fragment_bucket_id": fragment_bucket_id, "rows": success_rows(state_path), "output_path": str(output_path)}
     cleanup_work_outputs(output_path, state_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"START compact {year_month}:bucket={bucket_id:04d} files={len(paths):,}", flush=True)
+    print(f"START compact {year_month}:fragment={fragment_bucket_id:04d} files={len(paths):,}", flush=True)
     temp_output = output_path.with_name(output_path.name + ".tmp")
-    if temp_output.exists():
-        temp_output.unlink()
+    remove_path(temp_output)
+    temp_output.mkdir(parents=True, exist_ok=True)
+    partition = pl.PartitionBy(temp_output, key="bucket_id", include_key=True, max_rows_per_file=config.max_rows_per_fragment_file)
     (
         pl.scan_parquet([str(path) for path in paths])
         .select(COMPACT_EVENT_COLUMNS)
-        .sort(["ticker", "sip_timestamp", "sequence_number", "event_type"])
-        .sink_parquet(temp_output, compression="zstd", mkdir=True, maintain_order=True)
+        .sort(["bucket_id", "ticker", "sip_timestamp", "sequence_number", "event_type"])
+        .sink_parquet(partition, compression="zstd", mkdir=True, maintain_order=True)
     )
     os.replace(temp_output, output_path)
-    rows = parquet_row_count(output_path)
+    files = list(output_path.rglob("*.parquet"))
+    rows = sum_parquet_rows(files)
     write_success(
         state_path,
         {
             "stage": "compact",
-            "work_id": f"compact:{year_month}:bucket={bucket_id:04d}",
+            "work_id": f"compact:{year_month}:fragment={fragment_bucket_id:04d}",
             "fingerprint": fingerprint,
             "input_file_count": len(paths),
             "row_count": rows,
-            "file_count": 1,
+            "file_count": len(files),
             "output_path": str(output_path),
         },
     )
-    return {"status": "ok", "year_month": year_month, "bucket_id": bucket_id, "rows": rows, "output_path": str(output_path)}
+    return {"status": "ok", "year_month": year_month, "fragment_bucket_id": fragment_bucket_id, "rows": rows, "output_path": str(output_path)}
 
 
 def build_index_part(config: TickerEventStoreConfig, *, path: Path, year_month: str, bucket_id: int) -> dict[str, Any]:
-    output_path = config.index_root / "parts" / f"year_month={year_month}" / f"bucket={bucket_id:04d}.parquet"
-    state_path = success_path(config, "index", f"{year_month}_bucket_{bucket_id:04d}")
-    fingerprint = work_fingerprint(config, f"index:{year_month}:bucket={bucket_id:04d}", [path])
+    fragment_bucket_id = fragment_bucket_from_path(path)
+    output_path = config.index_root / "parts" / f"year_month={year_month}" / f"fragment_bucket={fragment_bucket_id:04d}" / f"bucket={bucket_id:04d}_{safe_name(path.stem)}.parquet"
+    state_path = success_path(config, "index", f"{year_month}_fragment_{fragment_bucket_id:04d}_bucket_{bucket_id:04d}_{safe_name(path.stem)}")
+    fingerprint = work_fingerprint(config, f"index:{year_month}:fragment={fragment_bucket_id:04d}:bucket={bucket_id:04d}:{path.name}", [path])
     if should_skip_success(state_path, fingerprint):
         return {"status": "skipped", "year_month": year_month, "bucket_id": bucket_id, "rows": success_rows(state_path), "tickers": success_rows(state_path), "output_path": str(output_path)}
     cleanup_work_outputs(output_path, state_path)
@@ -494,11 +507,13 @@ def build_index_part(config: TickerEventStoreConfig, *, path: Path, year_month: 
         .with_columns(
             pl.lit(year_month).alias("year_month"),
             pl.lit(bucket_id, dtype=pl.UInt32).alias("bucket_id"),
+            pl.lit(fragment_bucket_id, dtype=pl.UInt32).alias("fragment_bucket_id"),
             pl.lit(str(path)).alias("file_path"),
         )
         .select(
             "ticker",
             "bucket_id",
+            "fragment_bucket_id",
             "year_month",
             "row_count",
             "quote_count",
@@ -528,7 +543,7 @@ def build_index_part(config: TickerEventStoreConfig, *, path: Path, year_month: 
 
 
 def write_availability_index(config: TickerEventStoreConfig) -> None:
-    parts = sorted((config.index_root / "parts").glob("year_month=*/*.parquet"))
+    parts = sorted((config.index_root / "parts").glob("year_month=*/*/*.parquet"))
     output_path = config.index_root / "availability.parquet"
     if not parts:
         pl.DataFrame().write_parquet(output_path)
@@ -549,8 +564,9 @@ def write_dataset_schema(config: TickerEventStoreConfig) -> None:
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "schema": {name: str(dtype) for name, dtype in compact_schema().items()},
         "sort_order": ["ticker", "sip_timestamp", "sequence_number", "event_type"],
-        "partitioning": ["year_month", "bucket_id"],
+        "partitioning": ["year_month", "fragment_bucket_id", "bucket_id"],
         "bucket_count": config.bucket_count,
+        "fragment_bucket_count": config.fragment_bucket_count,
         "bucket_hash_seed": 17,
         "price_scale": "price_1e4 = round(price * 10000)",
         "output_root": str(config.output_root),
@@ -560,7 +576,27 @@ def write_dataset_schema(config: TickerEventStoreConfig) -> None:
 
 def discover_compact_items(config: TickerEventStoreConfig) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, int], list[Path]] = {}
-    for path in sorted(config.temp_root.glob("session=*/kind=*/year_month=*/bucket_id=*/*.parquet")):
+    for path in sorted(config.temp_root.glob("session=*/kind=*/year_month=*/fragment_bucket_id=*/*.parquet")):
+        year_month = ""
+        fragment_bucket_id = -1
+        for part in path.parts:
+            if part.startswith("year_month="):
+                year_month = part.split("=", 1)[1]
+            elif part.startswith("fragment_bucket_id="):
+                fragment_bucket_id = int(part.split("=", 1)[1])
+        if year_month and fragment_bucket_id >= 0:
+            grouped.setdefault((year_month, fragment_bucket_id), []).append(path)
+    items = [
+        {"year_month": year_month, "fragment_bucket_id": fragment_bucket_id, "paths": [str(path) for path in paths]}
+        for (year_month, fragment_bucket_id), paths in sorted(grouped.items())
+    ]
+    print(f"Discovered {len(items):,} compact fragment-month items.", flush=True)
+    return items
+
+
+def discover_final_event_files(config: TickerEventStoreConfig) -> list[dict[str, Any]]:
+    items = []
+    for path in sorted((config.output_root / "events").glob("year_month=*/fragment_bucket=*/bucket_id=*/*.parquet")):
         year_month = ""
         bucket_id = -1
         for part in path.parts:
@@ -569,33 +605,20 @@ def discover_compact_items(config: TickerEventStoreConfig) -> list[dict[str, Any
             elif part.startswith("bucket_id="):
                 bucket_id = int(part.split("=", 1)[1])
         if year_month and bucket_id >= 0:
-            grouped.setdefault((year_month, bucket_id), []).append(path)
-    items = [
-        {"year_month": year_month, "bucket_id": bucket_id, "paths": [str(path) for path in paths]}
-        for (year_month, bucket_id), paths in sorted(grouped.items())
-    ]
-    print(f"Discovered {len(items):,} compact bucket-month items.", flush=True)
-    return items
-
-
-def discover_final_event_files(config: TickerEventStoreConfig) -> list[dict[str, Any]]:
-    items = []
-    for path in sorted((config.output_root / "events").glob("year_month=*/bucket=*/events.parquet")):
-        year_month = ""
-        bucket_id = -1
-        for part in path.parts:
-            if part.startswith("year_month="):
-                year_month = part.split("=", 1)[1]
-            elif part.startswith("bucket="):
-                bucket_id = int(part.split("=", 1)[1])
-        if year_month and bucket_id >= 0:
             items.append({"year_month": year_month, "bucket_id": bucket_id, "path": str(path)})
     print(f"Discovered {len(items):,} final event files for index.", flush=True)
     return items
 
 
-def final_event_path(config: TickerEventStoreConfig, year_month: str, bucket_id: int) -> Path:
-    return config.output_root / "events" / f"year_month={year_month}" / f"bucket={bucket_id:04d}" / "events.parquet"
+def final_event_path(config: TickerEventStoreConfig, year_month: str, fragment_bucket_id: int) -> Path:
+    return config.output_root / "events" / f"year_month={year_month}" / f"fragment_bucket={fragment_bucket_id:04d}"
+
+
+def fragment_bucket_from_path(path: Path) -> int:
+    for part in path.parts:
+        if part.startswith("fragment_bucket="):
+            return int(part.split("=", 1)[1])
+    return -1
 
 
 def load_reference_maps(reference_dir: Path) -> dict[str, dict[int, int]]:
@@ -652,6 +675,7 @@ def compact_schema() -> dict[str, pl.DataType]:
         "condition_4_id": pl.UInt8,
         "correction_code": pl.UInt8,
         "bucket_id": pl.UInt32,
+        "fragment_bucket_id": pl.UInt32,
     }
 
 
@@ -822,6 +846,8 @@ def item_label(item: Any) -> str:
     if isinstance(item, dict):
         if "session" in item and "kind" in item:
             return f"{item['kind']}:{item['session']}"
+        if "year_month" in item and "fragment_bucket_id" in item:
+            return f"{item['year_month']}:fragment={int(item['fragment_bucket_id']):04d}"
         if "year_month" in item and "bucket_id" in item:
             return f"{item['year_month']}:bucket={int(item['bucket_id']):04d}"
     return str(item)
