@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 import sys
@@ -29,8 +28,8 @@ CLICKHOUSE_USER_ENV = "TD__DATABASE__CLICKHOUSE__USER"
 CLICKHOUSE_FILE_ROOT_ENV = "TD__DATABASE__CLICKHOUSE__FILE_ROOT"
 DEFAULT_FLATFILES_ROOT_WIN = Path("D:/market-data/flatfiles/us_stocks_sip")
 DEFAULT_FLATFILES_ROOT_CH = "/mnt/d/market-data/flatfiles/us_stocks_sip"
-DEFAULT_USER_FILES_RELATIVE_FLATFILES_ROOT_CH = "flatfiles/us_stocks_sip"
-USER_FILES_RELATIVE_FLATFILE_ALIAS_CH = "flatfile/us_stocks_sip"
+DEFAULT_USER_FILES_RELATIVE_FLATFILES_ROOT_CH = "flatfile/us_stocks_sip"
+USER_FILES_RELATIVE_FLATFILES_ALIAS_CH = "flatfiles/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_ingest_profile")
 QUOTE_SCHEMA_STRING = (
     "ticker String, "
@@ -68,7 +67,6 @@ class QueryProfile:
 class ClickHousePathMapping:
     name: str
     flatfiles_root_ch: str
-    small_csv_ch: str
     quote_files_ch: list[str]
 
 
@@ -84,7 +82,7 @@ def parse_args() -> argparse.Namespace:
         default=default_clickhouse_file_root(),
         help=(
             "ClickHouse-visible flatfiles root. Use a relative path such as "
-            "'flatfiles/us_stocks_sip' when ClickHouse user_files_path is D:/market-data "
+            "'flatfile/us_stocks_sip' when ClickHouse user_files_path is D:/market-data "
             "or '/mnt/d/market-data'. Absolute /mnt/... paths are still supported."
         ),
     )
@@ -150,9 +148,6 @@ def main() -> None:
     output_root = Path(args.output_root_win)
     output_root.mkdir(parents=True, exist_ok=True)
     report_path = output_root / f"quote_ingest_profile_{run_stamp}.json"
-    small_csv_win = Path(args.flatfiles_root_win) / "_clickhouse_profile_smoke" / "small_quotes_smoke.csv"
-    small_csv_ch = windows_path_to_clickhouse_path(small_csv_win, args.flatfiles_root_win, args.flatfiles_root_ch)
-    write_small_quote_csv(small_csv_win)
 
     dates = parse_dates(args)
     quote_files = [quote_file_for_date(Path(args.flatfiles_root_win), date) for date in dates]
@@ -164,8 +159,7 @@ def main() -> None:
     settings = query_settings(args)
     profiles: list[QueryProfile] = []
     snapshots: list[dict[str, Any]] = []
-    path_mapping = select_readable_path_mapping(client, small_csv_win, quote_files, args.flatfiles_root_win, args.flatfiles_root_ch, settings)
-    small_csv_ch = path_mapping.small_csv_ch
+    path_mapping = select_readable_path_mapping(client, quote_files, args.flatfiles_root_win, args.flatfiles_root_ch, settings)
     quote_files_ch = path_mapping.quote_files_ch
 
     print("=" * 96, flush=True)
@@ -176,7 +170,6 @@ def main() -> None:
     print(f"secret_status={secret_status([CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_USER_ENV, CLICKHOUSE_PASSWORD_ENV, CLICKHOUSE_FILE_ROOT_ENV])}", flush=True)
     print(f"database={database}", flush=True)
     print(f"selected_file_path_mapping={path_mapping.name} flatfiles_root_ch={path_mapping.flatfiles_root_ch}", flush=True)
-    print(f"small_csv={small_csv_win} -> {small_csv_ch}", flush=True)
     for path_win, path_ch in zip(quote_files, quote_files_ch):
         print(f"quote_file={path_win} size_gb={path_win.stat().st_size / (1024 ** 3):.2f} clickhouse_path={path_ch}", flush=True)
     print("=" * 96, flush=True)
@@ -187,10 +180,6 @@ def main() -> None:
     profiles.append(run_profiled(client, "create_database", f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}"))
     profiles.append(run_profiled(client, "create_table", create_table_sql(database)))
     snapshots.append({"label": "after_create", "memory": read_memory_snapshot(client)})
-
-    profiles.append(run_profiled(client, "read_small_csv", read_quotes_count_sql(small_csv_ch), settings))
-    profiles.append(run_profiled(client, "insert_small_csv", insert_quotes_sql(database, small_csv_ch, "small_quotes_smoke.csv"), settings))
-    print_table_stats(client, database, "after small smoke")
 
     for index, (path_win, path_ch) in enumerate(zip(quote_files, quote_files_ch), start=1):
         label = f"insert_quotes_{index}_{path_win.stem.replace('.', '_')}"
@@ -381,10 +370,11 @@ FROM file({sql_string(clickhouse_path)}, 'CSVWithNames', {sql_string(QUOTE_SCHEM
 """
 
 
-def read_quotes_count_sql(clickhouse_path: str) -> str:
+def read_quotes_probe_sql(clickhouse_path: str) -> str:
     return f"""
-SELECT count()
+SELECT ticker
 FROM file({sql_string(clickhouse_path)}, 'CSVWithNames', {sql_string(QUOTE_SCHEMA_STRING)})
+LIMIT 1
 """
 
 
@@ -430,39 +420,39 @@ def print_table_stats(client: ClickHouseHttpClient, database: str, label: str) -
 
 def select_readable_path_mapping(
     client: ClickHouseHttpClient,
-    small_csv_win: Path,
     quote_files_win: list[Path],
     flatfiles_root_win: str,
     configured_flatfiles_root_ch: str,
     settings: str,
 ) -> ClickHousePathMapping:
-    candidates = build_path_mappings(small_csv_win, quote_files_win, flatfiles_root_win, configured_flatfiles_root_ch)
+    candidates = build_path_mappings(quote_files_win, flatfiles_root_win, configured_flatfiles_root_ch)
     errors: list[dict[str, str]] = []
-    print("Testing ClickHouse server-side file() access with small smoke CSV.", flush=True)
+    print("Testing ClickHouse server-side file() access with first real quote file.", flush=True)
     for candidate in candidates:
-        sql = read_quotes_count_sql(candidate.small_csv_ch).rstrip(";") + settings
+        probe_path = candidate.quote_files_ch[0]
+        sql = read_quotes_probe_sql(probe_path).rstrip(";") + settings
+        print(f"  trying {candidate.name}: {probe_path}", flush=True)
         try:
-            count = client.query_tsv(sql).strip()
-            if count == "2":
-                print(f"ClickHouse file() path mapping works: {candidate.name} -> {candidate.small_csv_ch}", flush=True)
+            first_ticker = client.query_tsv(sql).strip()
+            if first_ticker:
+                print(f"ClickHouse file() path mapping works: {candidate.name} -> {probe_path}", flush=True)
                 return candidate
-            errors.append({"name": candidate.name, "path": candidate.small_csv_ch, "error": f"unexpected_count={count}"})
+            errors.append({"name": candidate.name, "path": probe_path, "error": "query_returned_no_rows"})
         except Exception as exc:  # noqa: BLE001
-            errors.append({"name": candidate.name, "path": candidate.small_csv_ch, "error": repr(exc)})
+            errors.append({"name": candidate.name, "path": probe_path, "error": repr(exc)})
     print("ClickHouse file() path preflight failed for all candidate paths:", flush=True)
     for item in errors:
         print(f"  {item['name']}: {item['path']} -> {item['error'][:500]}", flush=True)
     print_server_context(client)
     raise RuntimeError(
-        "ClickHouse cannot read the smoke CSV through file(). "
-        "The server must see the path itself, and file() may be restricted to user_files_path. "
+        "ClickHouse cannot read the real quote CSV through file(). "
+        "The server must see the file path itself, and file() may be restricted to user_files_path. "
         f"Either set {CLICKHOUSE_FILE_ROOT_ENV} / CLICKHOUSE_FLATFILES_ROOT to the path visible to the ClickHouse server, "
         "or configure ClickHouse user_files_path / container volume so D:/market-data/flatfiles/us_stocks_sip is visible."
     )
 
 
 def build_path_mappings(
-    small_csv_win: Path,
     quote_files_win: list[Path],
     flatfiles_root_win: str,
     configured_flatfiles_root_ch: str,
@@ -474,10 +464,9 @@ def build_path_mappings(
         mapping = ClickHousePathMapping(
             name=name,
             flatfiles_root_ch=root_ch,
-            small_csv_ch=mapper(small_csv_win),
             quote_files_ch=[mapper(path) for path in quote_files_win],
         )
-        key = (mapping.name, mapping.small_csv_ch)
+        key = (mapping.name, mapping.quote_files_ch[0] if mapping.quote_files_ch else "")
         if key not in seen:
             seen.add(key)
             mappings.append(mapping)
@@ -497,11 +486,11 @@ def build_path_mappings(
             lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, default_relative_root),
         )
 
-    if configured_root.rstrip("/") != USER_FILES_RELATIVE_FLATFILE_ALIAS_CH.rstrip("/"):
+    if configured_root.rstrip("/") != USER_FILES_RELATIVE_FLATFILES_ALIAS_CH.rstrip("/"):
         append_mapping(
-            "user_files_relative_flatfile_alias",
-            USER_FILES_RELATIVE_FLATFILE_ALIAS_CH,
-            lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, USER_FILES_RELATIVE_FLATFILE_ALIAS_CH),
+            "user_files_relative_flatfiles_alias",
+            USER_FILES_RELATIVE_FLATFILES_ALIAS_CH,
+            lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, USER_FILES_RELATIVE_FLATFILES_ALIAS_CH),
         )
 
     for name, root_win in (
@@ -552,19 +541,6 @@ def print_server_context(client: ClickHouseHttpClient) -> None:
             print(client.query_tsv(sql).strip(), flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"ClickHouse diagnostic {label} failed: {exc!r}", flush=True)
-
-
-def write_small_quote_csv(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    columns = [item.split(" ", 1)[0] for item in QUOTE_SCHEMA_STRING.split(", ")]
-    rows = [
-        ["TESTA", "11", "10.02", "100", "12", "10.01", "200", "", "", "1745222340018686000", "1", "1745222340018990592", "1", "0"],
-        ["TESTB", "11", "20.05", "300", "12", "20.04", "400", "1,81", "", "1745222341018686000", "2", "1745222341018990592", "1", "0"],
-    ]
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(columns)
-        writer.writerows(rows)
 
 
 def parse_dates(args: argparse.Namespace) -> list[str]:
