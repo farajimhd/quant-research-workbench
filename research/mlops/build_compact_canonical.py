@@ -374,6 +374,7 @@ def build_quote_issue_frame(prepared: pl.LazyFrame, source: Path) -> pl.LazyFram
             pl.lit("quotes").alias("kind"),
             pl.lit(str(source)).alias("source_path"),
             quote_issue_reason_expr(),
+            quote_resolution_hint_expr(),
             (~quote_canonical_valid_expr()).fill_null(True).alias("dropped_by_canonical"),
         )
         .filter(issue_filter)
@@ -385,6 +386,7 @@ def build_quote_issue_frame(prepared: pl.LazyFrame, source: Path) -> pl.LazyFram
                 "raw_row_number",
                 "dropped_by_canonical",
                 "issue_reason",
+                "resolution_hint",
                 "raw_ticker",
                 "ticker",
                 "raw_sip_timestamp",
@@ -420,6 +422,7 @@ def build_trade_issue_frame(prepared: pl.LazyFrame, source: Path) -> pl.LazyFram
             pl.lit("trades").alias("kind"),
             pl.lit(str(source)).alias("source_path"),
             trade_issue_reason_expr(),
+            trade_resolution_hint_expr(),
             (~trade_canonical_valid_expr()).fill_null(True).alias("dropped_by_canonical"),
         )
         .filter(issue_filter)
@@ -431,6 +434,7 @@ def build_trade_issue_frame(prepared: pl.LazyFrame, source: Path) -> pl.LazyFram
                 "raw_row_number",
                 "dropped_by_canonical",
                 "issue_reason",
+                "resolution_hint",
                 "raw_ticker",
                 "ticker",
                 "raw_sip_timestamp",
@@ -507,20 +511,44 @@ def quote_issue_reason_expr() -> pl.Expr:
             (pl.col("is_in_session") & (pl.col("ticker") == ""), "invalid_ticker"),
             (pl.col("is_in_session") & pl.col("bid_price").is_null(), "missing_or_invalid_bid_price"),
             (pl.col("is_in_session") & pl.col("ask_price").is_null(), "missing_or_invalid_ask_price"),
-            (pl.col("is_in_session") & (pl.col("bid_price") <= 0.0), "non_positive_bid_price"),
-            (pl.col("is_in_session") & (pl.col("ask_price") <= 0.0), "non_positive_ask_price"),
+            (pl.col("is_in_session") & (pl.col("bid_price") <= 0.0) & (pl.col("ask_price") > 0.0), "one_sided_ask_quote"),
+            (pl.col("is_in_session") & (pl.col("ask_price") <= 0.0) & (pl.col("bid_price") > 0.0), "one_sided_bid_quote"),
+            (pl.col("is_in_session") & (pl.col("bid_price") <= 0.0) & (pl.col("ask_price") <= 0.0), "empty_quote"),
             (
                 pl.col("is_in_session")
                 & pl.col("bid_price").is_not_null()
                 & pl.col("ask_price").is_not_null()
+                & (pl.col("bid_price") > 0.0)
+                & (pl.col("ask_price") > 0.0)
                 & (pl.col("ask_price") < pl.col("bid_price")),
                 "ask_below_bid",
             ),
-            (pl.col("is_in_session") & bid_size_raw.is_null(), "missing_or_invalid_bid_size"),
-            (pl.col("is_in_session") & ask_size_raw.is_null(), "missing_or_invalid_ask_size"),
-            (pl.col("is_in_session") & (bid_size_raw <= 0.0), "non_positive_bid_size"),
-            (pl.col("is_in_session") & (ask_size_raw <= 0.0), "non_positive_ask_size"),
+            (pl.col("is_in_session") & (pl.col("bid_price") > 0.0) & bid_size_raw.is_null(), "missing_or_invalid_bid_size"),
+            (pl.col("is_in_session") & (pl.col("ask_price") > 0.0) & ask_size_raw.is_null(), "missing_or_invalid_ask_size"),
+            (pl.col("is_in_session") & (pl.col("bid_price") > 0.0) & (bid_size_raw <= 0.0), "non_positive_bid_size"),
+            (pl.col("is_in_session") & (pl.col("ask_price") > 0.0) & (ask_size_raw <= 0.0), "non_positive_ask_size"),
         ]
+    )
+
+
+def quote_resolution_hint_expr() -> pl.Expr:
+    return (
+        pl.when(pl.col("sip_timestamp").is_null())
+        .then(pl.lit("skip_row_invalid_time"))
+        .when(pl.col("is_in_session") & (pl.col("ticker") == ""))
+        .then(pl.lit("skip_row_invalid_ticker"))
+        .when(pl.col("is_in_session") & (pl.col("bid_price") <= 0.0) & (pl.col("ask_price") <= 0.0))
+        .then(pl.lit("skip_empty_quote_no_nbbo"))
+        .when(pl.col("is_in_session") & (pl.col("ask_price") <= 0.0) & (pl.col("bid_price") > 0.0))
+        .then(pl.lit("skip_one_sided_bid_quote_or_forward_fill_if_model_supports_l1_state"))
+        .when(pl.col("is_in_session") & (pl.col("bid_price") <= 0.0) & (pl.col("ask_price") > 0.0))
+        .then(pl.lit("skip_one_sided_ask_quote_or_forward_fill_if_model_supports_l1_state"))
+        .when(pl.col("is_in_session") & (pl.col("bid_price") > 0.0) & (pl.col("ask_price") > 0.0) & (pl.col("ask_price") < pl.col("bid_price")))
+        .then(pl.lit("skip_crossed_quote_for_current_bid_ask_spread_encoding"))
+        .when(pl.col("is_in_session") & quote_size_issue_expr())
+        .then(pl.lit("keep_only_after_confirming_size_zero_is_valid_for_this_quote_side"))
+        .otherwise(pl.lit("review"))
+        .alias("resolution_hint")
     )
 
 
@@ -534,6 +562,21 @@ def trade_issue_reason_expr() -> pl.Expr:
             (pl.col("is_in_session") & pl.col("size").is_null(), "missing_or_invalid_size"),
             (pl.col("is_in_session") & (pl.col("size") <= 0.0), "non_positive_size"),
         ]
+    )
+
+
+def trade_resolution_hint_expr() -> pl.Expr:
+    return (
+        pl.when(pl.col("sip_timestamp").is_null())
+        .then(pl.lit("skip_row_invalid_time"))
+        .when(pl.col("is_in_session") & (pl.col("ticker") == ""))
+        .then(pl.lit("skip_row_invalid_ticker"))
+        .when(pl.col("is_in_session") & (pl.col("price") <= 0.0))
+        .then(pl.lit("skip_trade_without_positive_price"))
+        .when(pl.col("is_in_session") & (pl.col("size") <= 0.0))
+        .then(pl.lit("skip_trade_without_positive_size"))
+        .otherwise(pl.lit("review"))
+        .alias("resolution_hint")
     )
 
 
