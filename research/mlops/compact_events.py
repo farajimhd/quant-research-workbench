@@ -18,7 +18,7 @@ ALL_TICKERS = {"ALL", "*", "__ALL_TICKERS__"}
 NANOSECONDS_PER_MICROSECOND = 1_000
 NANOSECONDS_PER_DAY = 24 * 60 * 60 * 1_000_000_000
 
-DEFAULT_CANONICAL_ROOT = Path("D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_v2")
+DEFAULT_CANONICAL_ROOT = Path("D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_compact_v1")
 DEFAULT_REFERENCE_DIR = Path(__file__).resolve().parents[1] / "market_references" / "massive"
 
 HEADER_BYTES = 14
@@ -43,6 +43,10 @@ QUOTE_COLUMNS = (
     "tape",
     "condition_count",
     "condition_first",
+    "condition_1",
+    "condition_2",
+    "condition_3",
+    "condition_4",
 )
 
 TRADE_COLUMNS = (
@@ -57,6 +61,10 @@ TRADE_COLUMNS = (
     "tape",
     "condition_count",
     "condition_first",
+    "condition_1",
+    "condition_2",
+    "condition_3",
+    "condition_4",
     "correction",
 )
 
@@ -262,6 +270,11 @@ def scan_quote_events(path: Path) -> pl.LazyFrame:
             pl.lit(None, dtype=pl.Float64).alias("size"),
             pl.lit(0, dtype=pl.Int32).alias("exchange"),
             pl.lit(0, dtype=pl.Int32).alias("correction"),
+            optional_condition_first(names),
+            optional_int_column("condition_1", names, fallback="condition_first"),
+            optional_int_column("condition_2", names),
+            optional_int_column("condition_3", names),
+            optional_int_column("condition_4", names),
         )
         .select(unified_event_columns())
     )
@@ -284,9 +297,30 @@ def scan_trade_events(path: Path) -> pl.LazyFrame:
             pl.lit(None, dtype=pl.Float64).alias("ask_size"),
             pl.lit(0, dtype=pl.Int32).alias("bid_exchange"),
             pl.lit(0, dtype=pl.Int32).alias("ask_exchange"),
+            optional_condition_first(names),
+            optional_int_column("condition_1", names, fallback="condition_first"),
+            optional_int_column("condition_2", names),
+            optional_int_column("condition_3", names),
+            optional_int_column("condition_4", names),
         )
         .select(unified_event_columns())
     )
+
+
+def optional_int_column(column: str, names: set[str], *, fallback: str | None = None) -> pl.Expr:
+    if column in names:
+        return pl.col(column).cast(pl.Int32, strict=False).fill_null(0).alias(column)
+    if fallback and fallback in names:
+        return pl.col(fallback).cast(pl.Int32, strict=False).fill_null(0).alias(column)
+    return pl.lit(0, dtype=pl.Int32).alias(column)
+
+
+def optional_condition_first(names: set[str]) -> pl.Expr:
+    if "condition_first" in names:
+        return pl.col("condition_first").cast(pl.Int32, strict=False).fill_null(0).alias("condition_first")
+    if "condition_1" in names:
+        return pl.col("condition_1").cast(pl.Int32, strict=False).fill_null(0).alias("condition_first")
+    return pl.lit(0, dtype=pl.Int32).alias("condition_first")
 
 
 def unified_event_columns() -> list[pl.Expr]:
@@ -309,6 +343,10 @@ def unified_event_columns() -> list[pl.Expr]:
         pl.col("tape").cast(pl.Int32, strict=False).fill_null(0),
         pl.col("condition_count").cast(pl.Int32, strict=False).fill_null(0),
         pl.col("condition_first").cast(pl.Int32, strict=False).fill_null(0),
+        pl.col("condition_1").cast(pl.Int32, strict=False).fill_null(0),
+        pl.col("condition_2").cast(pl.Int32, strict=False).fill_null(0),
+        pl.col("condition_3").cast(pl.Int32, strict=False).fill_null(0),
+        pl.col("condition_4").cast(pl.Int32, strict=False).fill_null(0),
         pl.col("correction"),
     ]
 
@@ -582,9 +620,10 @@ def encode_event_row(
     out[9] = np.uint8((1 if 0.0 < size_1 < 100.0 else 0) | ((1 if 0.0 < size_2 < 100.0 else 0) << 1) | ((tape_id & 0x07) << 2))
     out[10] = np.uint8(exchange_1 & 0x1F)
     out[11] = np.uint8(exchange_2 & 0x1F)
-    first_condition = references.condition_id(event.get("condition_first"))
-    if first_condition:
-        out[12] = np.uint8(0x80 | (first_condition & 0x7F))
+    for slot in range(4):
+        condition = references.condition_id(event.get(f"condition_{slot + 1}"))
+        if condition:
+            out[12 + slot] = np.uint8(0x80 | (condition & 0x7F))
     return out
 
 
