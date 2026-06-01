@@ -10,6 +10,7 @@ import shutil
 import sys
 import time
 import traceback
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -43,8 +44,8 @@ from research.mlops.compact_events import (  # noqa: E402
     QUOTE_EVENT_TYPE,
     ReferenceMaps,
     TRADE_EVENT_TYPE,
-    as_float,
-    encode_events_chunk_from_frame,
+    correction_code,
+    log_time_bucket,
     unified_event_columns,
 )
 
@@ -103,7 +104,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--events-per-chunk", type=int, default=defaults.events_per_chunk)
     parser.add_argument("--stride-events", type=int, default=defaults.stride_events)
     parser.add_argument("--chunk-rows-per-shard", type=int, default=defaults.chunk_rows_per_shard)
-    parser.add_argument("--processes", type=int, default=max(1, min(16, os.cpu_count() or 4)))
+    parser.add_argument("--processes", type=int, default=max(1, min(32, os.cpu_count() or 4)))
     parser.add_argument("--event-processes", type=int, default=0)
     parser.add_argument("--chunk-processes", type=int, default=0)
     parser.add_argument("--polars-threads-per-process", type=int, default=1)
@@ -374,6 +375,7 @@ def build_chunks_for_bucket(config: V4ChunkBuildConfig, *, bucket_id: int, work_
     writers = ChunkShardWriter(config, output_dir=output_dir, index_dir=index_dir, bucket_id=bucket_id)
     input_rows = 0
     rejected = 0
+    rejected_by_reason: Counter[str] = Counter()
     try:
         for ordinal, (session, paths) in enumerate(session_files, start=1):
             started = time.time()
@@ -392,11 +394,13 @@ def build_chunks_for_bucket(config: V4ChunkBuildConfig, *, bucket_id: int, work_
                 result = write_chunks_for_ticker_frame(config, source, ticker, references, writers)
                 session_chunks += result["chunks"]
                 rejected += result["rejected"]
+                rejected_by_reason.update(result.get("rejected_by_reason", {}))
                 carries[ticker] = source.tail(config.events_per_chunk - 1).clone()
                 del source, ticker_frame
             print(
                 f"BUCKET {bucket_id:04d} session {ordinal:,}/{len(session_files):,} {session} "
                 f"rows={frame.height:,} tickers={len(tickers):,} chunks={session_chunks:,} "
+                f"rejected_total={rejected:,} "
                 f"elapsed={time.time() - started:.1f}s total_chunks={writers.total_rows:,}",
                 flush=True,
             )
@@ -417,6 +421,7 @@ def build_chunks_for_bucket(config: V4ChunkBuildConfig, *, bucket_id: int, work_
             "row_count": writers.row_count,
             "file_count": writers.file_count,
             "rejected_chunks": rejected,
+            "rejected_by_reason": dict(sorted(rejected_by_reason.items())),
             "output_dir": str(output_dir),
             "index_dir": str(index_dir),
         },
@@ -427,6 +432,7 @@ def build_chunks_for_bucket(config: V4ChunkBuildConfig, *, bucket_id: int, work_
         "chunks": writers.row_count,
         "files": writers.file_count,
         "rejected_chunks": rejected,
+        "rejected_by_reason": dict(sorted(rejected_by_reason.items())),
         "index_dir": str(index_dir),
     }
 
@@ -437,40 +443,223 @@ def write_chunks_for_ticker_frame(
     ticker: str,
     references: ReferenceMaps,
     writer: "ChunkShardWriter",
-) -> dict[str, int]:
+) -> dict[str, Any]:
     if frame.height < config.events_per_chunk:
-        return {"chunks": 0, "rejected": 0}
+        return {"chunks": 0, "rejected": 0, "rejected_by_reason": {}}
+    array_encoder = TickerFrameChunkEncoder(config, frame, references)
     chunks = 0
-    rejected = 0
+    rejected_by_reason: Counter[str] = Counter()
     min_origin = config.events_per_chunk - 1
     for origin_idx in range(min_origin, frame.height, config.stride_events):
-        origin_ts = int(frame["sip_timestamp"][origin_idx])
-        encoded = encode_events_chunk_from_frame(
-            frame,
-            origin_timestamp_ns=origin_ts,
-            events_per_chunk=config.events_per_chunk,
-            references=references,
-            strict_lossless=config.strict_lossless,
-        )
-        if encoded is None:
-            rejected += 1
+        encoded = array_encoder.encode_at(origin_idx)
+        if encoded.header is None or encoded.events is None:
+            rejected_by_reason[encoded.reason] += 1
             continue
         start_idx = origin_idx - config.events_per_chunk + 1
-        window_sessions = frame["session_date"].slice(start_idx, config.events_per_chunk).unique().to_list()
         writer.add(
             ticker=ticker,
-            origin_timestamp_ns=origin_ts,
-            origin_session_date=str(frame["session_date"][origin_idx]),
-            source_start_timestamp_ns=int(frame["sip_timestamp"][start_idx]),
-            source_end_timestamp_ns=origin_ts,
-            source_start_session_date=str(frame["session_date"][start_idx]),
-            source_end_session_date=str(frame["session_date"][origin_idx]),
-            crosses_session_boundary=len(window_sessions) > 1,
-            header=encoded[0],
-            events=encoded[1],
+            origin_timestamp_ns=int(array_encoder.timestamps[origin_idx]),
+            origin_session_date=str(array_encoder.session_dates[origin_idx]),
+            source_start_timestamp_ns=int(array_encoder.timestamps[start_idx]),
+            source_end_timestamp_ns=int(array_encoder.timestamps[origin_idx]),
+            source_start_session_date=str(array_encoder.session_dates[start_idx]),
+            source_end_session_date=str(array_encoder.session_dates[origin_idx]),
+            crosses_session_boundary=str(array_encoder.session_dates[start_idx]) != str(array_encoder.session_dates[origin_idx]),
+            header=encoded.header,
+            events=encoded.events,
         )
         chunks += 1
-    return {"chunks": chunks, "rejected": rejected}
+    return {"chunks": chunks, "rejected": sum(rejected_by_reason.values()), "rejected_by_reason": dict(rejected_by_reason)}
+
+
+@dataclass(slots=True)
+class EncodedChunk:
+    header: np.ndarray | None
+    events: np.ndarray | None
+    reason: str = ""
+
+
+class TickerFrameChunkEncoder:
+    def __init__(self, config: V4ChunkBuildConfig, frame: pl.DataFrame, references: ReferenceMaps) -> None:
+        self.config = config
+        self.frame = frame
+        self.references = references
+        self.events_per_chunk = config.events_per_chunk
+        self.timestamps = frame["sip_timestamp"].to_numpy().astype(np.int64, copy=False)
+        self.session_dates = frame["session_date"].to_list()
+        self.event_types = frame["event_type"].to_numpy().astype(np.uint8, copy=False)
+        self.bid_price = float_series(frame, "bid_price")
+        self.ask_price = float_series(frame, "ask_price")
+        self.bid_size = float_series(frame, "bid_size")
+        self.ask_size = float_series(frame, "ask_size")
+        self.price = float_series(frame, "price")
+        self.size = float_series(frame, "size")
+        self.bid_exchange = dense_id_array(frame, "bid_exchange", references.exchange)
+        self.ask_exchange = dense_id_array(frame, "ask_exchange", references.exchange)
+        self.exchange = dense_id_array(frame, "exchange", references.exchange)
+        self.tape = dense_id_array(frame, "tape", references.tape)
+        self.conditions = [dense_id_array(frame, f"condition_{slot}", references.condition) for slot in range(1, 5)]
+        self.correction = correction_array(frame, "correction")
+        quote_positions = np.where(self.event_types == QUOTE_EVENT_TYPE, np.arange(frame.height, dtype=np.int64), -1)
+        self.last_quote_idx = np.maximum.accumulate(quote_positions)
+
+    def encode_at(self, origin_idx: int) -> EncodedChunk:
+        start_idx = origin_idx - self.events_per_chunk + 1
+        if start_idx < 0:
+            return EncodedChunk(None, None, "insufficient_context")
+        anchor_idx = int(self.last_quote_idx[origin_idx])
+        if anchor_idx < 0:
+            return EncodedChunk(None, None, "no_quote_anchor")
+        anchor_ask = float(self.ask_price[anchor_idx])
+        anchor_bid = float(self.bid_price[anchor_idx])
+        if anchor_ask <= 0.0 or anchor_bid <= 0.0 or anchor_ask < anchor_bid:
+            return EncodedChunk(None, None, "invalid_quote_anchor")
+        tick_size = 0.01 if anchor_ask >= 1.0 else 0.0001
+        ask_anchor_ticks = int(round(anchor_ask / tick_size))
+        spread_anchor_ticks = int(round((anchor_ask - anchor_bid) / tick_size))
+        if ask_anchor_ticks >= 2**20:
+            return EncodedChunk(None, None, "ask_anchor_overflow")
+        if spread_anchor_ticks >= 2**16:
+            return EncodedChunk(None, None, "spread_anchor_overflow")
+
+        window = slice(start_idx, origin_idx + 1)
+        event_types = self.event_types[window]
+        event_ts = self.timestamps[window]
+        quote_count = int(np.count_nonzero(event_types == QUOTE_EVENT_TYPE))
+        trade_count = int(np.count_nonzero(event_types == TRADE_EVENT_TYPE))
+        if quote_count > 255 or trade_count > 255:
+            return EncodedChunk(None, None, "event_count_overflow")
+
+        header = np.zeros((HEADER_BYTES,), dtype=np.uint8)
+        put_uint_le_local(header, 0, ask_anchor_ticks, 3)
+        header[2] &= 0x0F
+        put_uint_le_local(header, 3, spread_anchor_ticks, 2)
+        put_uint_le_local(header, 5, log_time_bucket(int((event_ts[-1] - event_ts[0]) // NANOSECONDS_PER_MICROSECOND)), 2)
+        put_uint_le_local(header, 7, 0, 2)
+        start_gap_us = 0
+        if start_idx > 0:
+            start_gap_us = max(0, int((event_ts[0] - self.timestamps[start_idx - 1]) // NANOSECONDS_PER_MICROSECOND))
+        put_uint_le_local(header, 9, log_time_bucket(start_gap_us), 2)
+        header[11] = quote_count
+        header[12] = trade_count
+        header[13] = 0x01 | (0x02 if trade_count > 0 else 0) | (0x04 if tick_size == 0.01 else 0)
+
+        events = np.zeros((self.events_per_chunk, EVENT_BYTES), dtype=np.uint8)
+        reason = self.fill_event_bytes(events, window, event_types, event_ts, ask_anchor_ticks, spread_anchor_ticks, tick_size)
+        if reason:
+            if self.config.strict_lossless:
+                return EncodedChunk(None, None, reason)
+            return EncodedChunk(header, events, "")
+        return EncodedChunk(header, events, "")
+
+    def fill_event_bytes(
+        self,
+        events: np.ndarray,
+        window: slice,
+        event_types: np.ndarray,
+        event_ts: np.ndarray,
+        ask_anchor_ticks: int,
+        spread_anchor_ticks: int,
+        tick_size: float,
+    ) -> str:
+        deltas_us = np.zeros((self.events_per_chunk,), dtype=np.int64)
+        deltas_us[1:] = np.maximum(0, (event_ts[1:] - event_ts[:-1]) // NANOSECONDS_PER_MICROSECOND)
+        correction = self.correction[window]
+        events[:, 0] = ((event_types & 0x01) | 0x02 | ((correction & 0x0F) << 2)).astype(np.uint8)
+        write_uint16_columns(events[:, 1:3], log_time_buckets_array(deltas_us))
+
+        quote_mask = event_types == QUOTE_EVENT_TYPE
+        trade_mask = event_types == TRADE_EVENT_TYPE
+        price_1 = np.zeros((self.events_per_chunk,), dtype=np.int64)
+        price_2 = np.zeros((self.events_per_chunk,), dtype=np.int64)
+        size_1 = np.zeros((self.events_per_chunk,), dtype=np.float64)
+        size_2 = np.zeros((self.events_per_chunk,), dtype=np.float64)
+        exchange_1 = np.zeros((self.events_per_chunk,), dtype=np.uint8)
+        exchange_2 = np.zeros((self.events_per_chunk,), dtype=np.uint8)
+
+        if np.any(quote_mask):
+            ask = self.ask_price[window][quote_mask]
+            bid = self.bid_price[window][quote_mask]
+            if np.any((ask <= 0.0) | (bid <= 0.0) | (ask < bid)):
+                return "invalid_quote_event"
+            ask_ticks = np.rint(ask / tick_size).astype(np.int64)
+            spread_ticks = np.rint((ask - bid) / tick_size).astype(np.int64)
+            price_1[quote_mask] = ask_ticks - ask_anchor_ticks
+            price_2[quote_mask] = spread_ticks - spread_anchor_ticks
+            size_1[quote_mask] = self.bid_size[window][quote_mask]
+            size_2[quote_mask] = self.ask_size[window][quote_mask]
+            exchange_1[quote_mask] = self.bid_exchange[window][quote_mask]
+            exchange_2[quote_mask] = self.ask_exchange[window][quote_mask]
+
+        if np.any(trade_mask):
+            price = self.price[window][trade_mask]
+            if np.any(price <= 0.0):
+                return "invalid_trade_event"
+            trade_ticks = np.rint(price / tick_size).astype(np.int64)
+            price_1[trade_mask] = trade_ticks - ask_anchor_ticks
+            size_1[trade_mask] = self.size[window][trade_mask]
+            exchange_1[trade_mask] = self.exchange[window][trade_mask]
+
+        if np.any((price_1 < -32768) | (price_1 > 32767) | (price_2 < -32768) | (price_2 > 32767)):
+            return "price_delta_overflow"
+        write_int16_columns(events[:, 3:5], price_1)
+        write_int16_columns(events[:, 5:7], price_2)
+        events[:, 7] = size_buckets_array(size_1)
+        events[:, 8] = size_buckets_array(size_2)
+        tape = self.tape[window]
+        events[:, 9] = (((size_1 > 0.0) & (size_1 < 100.0)).astype(np.uint8) | (((size_2 > 0.0) & (size_2 < 100.0)).astype(np.uint8) << 1) | ((tape & 0x07) << 2)).astype(np.uint8)
+        events[:, 10] = exchange_1 & 0x1F
+        events[:, 11] = exchange_2 & 0x1F
+        for slot, condition_values in enumerate(self.conditions):
+            condition = condition_values[window]
+            events[:, 12 + slot] = np.where(condition > 0, 0x80 | (condition & 0x7F), 0).astype(np.uint8)
+        return ""
+
+
+def float_series(frame: pl.DataFrame, column: str) -> np.ndarray:
+    values = frame[column].to_numpy().astype(np.float64, copy=False)
+    return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def dense_id_array(frame: pl.DataFrame, column: str, mapping: dict[int, int]) -> np.ndarray:
+    return np.fromiter((dense_lookup_local(mapping, value) for value in frame[column].to_list()), dtype=np.uint8, count=frame.height)
+
+
+def dense_lookup_local(mapping: dict[int, int], value: Any) -> int:
+    try:
+        if value is None:
+            return 0
+        if isinstance(value, float) and not np.isfinite(value):
+            return 0
+        return int(mapping.get(int(value), 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def correction_array(frame: pl.DataFrame, column: str) -> np.ndarray:
+    return np.fromiter((correction_code(value) for value in frame[column].to_list()), dtype=np.uint8, count=frame.height)
+
+
+def log_time_buckets_array(duration_us: np.ndarray, *, scale: int = 32, bits: int = 10) -> np.ndarray:
+    values = np.rint(np.log2(1.0 + np.maximum(0, duration_us.astype(np.float64, copy=False))) * scale).astype(np.int64)
+    return np.clip(values, 0, (1 << bits) - 1).astype(np.uint16)
+
+
+def size_buckets_array(size: np.ndarray, *, scale: int = 16) -> np.ndarray:
+    values = np.rint(np.log2(1.0 + np.maximum(0.0, size.astype(np.float64, copy=False)) / 100.0) * scale).astype(np.int64)
+    return np.clip(values, 0, 255).astype(np.uint8)
+
+
+def write_uint16_columns(target: np.ndarray, values: np.ndarray) -> None:
+    target[:, :] = np.ascontiguousarray(values.astype("<u2", copy=False)).view(np.uint8).reshape(-1, 2)
+
+
+def write_int16_columns(target: np.ndarray, values: np.ndarray) -> None:
+    target[:, :] = np.ascontiguousarray(values.astype("<i2", copy=False)).view(np.uint8).reshape(-1, 2)
+
+
+def put_uint_le_local(buffer: np.ndarray, offset: int, value: int, width: int) -> None:
+    buffer[offset : offset + width] = np.frombuffer(int(value).to_bytes(width, byteorder="little", signed=False), dtype=np.uint8)
 
 
 class ChunkShardWriter:
