@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import os
+import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -13,8 +14,18 @@ from typing import Any
 from urllib import parse, request
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
+
+
 DEFAULT_DATABASE_PREFIX = "qrw_quote_ingest_profile"
 DEFAULT_CLICKHOUSE_URL = "http://localhost:8123"
+CLICKHOUSE_ENDPOINT_ENV = "TD__DATABASE__CLICKHOUSE__ENDPOINT_URL"
+CLICKHOUSE_PASSWORD_ENV = "TD__DATABASE__CLICKHOUSE__PASSWORD"
+CLICKHOUSE_USER_ENV = "TD__DATABASE__CLICKHOUSE__USER"
 DEFAULT_FLATFILES_ROOT_WIN = Path("D:/market-data/flatfiles/us_stocks_sip")
 DEFAULT_FLATFILES_ROOT_CH = "/mnt/d/market-data/flatfiles/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_ingest_profile")
@@ -52,9 +63,9 @@ class QueryProfile:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Profile ClickHouse loading of Massive SIP quote CSV files.")
-    parser.add_argument("--clickhouse-url", default=os.environ.get("CLICKHOUSE_URL", DEFAULT_CLICKHOUSE_URL))
-    parser.add_argument("--user", default=os.environ.get("CLICKHOUSE_USER", "default"))
-    parser.add_argument("--password", default=os.environ.get("CLICKHOUSE_PASSWORD", ""))
+    parser.add_argument("--clickhouse-url", default=default_clickhouse_url())
+    parser.add_argument("--user", default=default_clickhouse_user())
+    parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--database", default="", help="ClickHouse database name. Defaults to a unique qrw_quote_ingest_profile_<timestamp> database.")
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
     parser.add_argument("--flatfiles-root-ch", default=DEFAULT_FLATFILES_ROOT_CH)
@@ -69,7 +80,43 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def default_clickhouse_url() -> str:
+    return (
+        os.environ.get("CLICKHOUSE_URL")
+        or os.environ.get(CLICKHOUSE_ENDPOINT_ENV)
+        or DEFAULT_CLICKHOUSE_URL
+    )
+
+
+def default_clickhouse_user() -> str:
+    return os.environ.get("CLICKHOUSE_USER") or os.environ.get(CLICKHOUSE_USER_ENV) or "default"
+
+
+def default_clickhouse_password() -> str:
+    return os.environ.get("CLICKHOUSE_PASSWORD") or os.environ.get(CLICKHOUSE_PASSWORD_ENV) or ""
+
+
+def discover_clickhouse_env_files() -> list[Path]:
+    paths = discover_env_files(REPO_ROOT)
+    for parent in REPO_ROOT.parents:
+        if (parent / "codes").exists() and (parent / "secrets").exists():
+            paths.extend([parent / ".env", parent / "secrets" / ".env"])
+            break
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        try:
+            key = str(path.resolve())
+        except OSError:
+            key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
 def main() -> None:
+    loaded_env_files = load_env_files(discover_clickhouse_env_files(), verbose=True)
     args = parse_args()
     run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     database = args.database.strip() or f"{DEFAULT_DATABASE_PREFIX}_{run_stamp}"
@@ -95,6 +142,9 @@ def main() -> None:
     print("=" * 96, flush=True)
     print("ClickHouse quote ingest profile", flush=True)
     print(f"clickhouse_url={args.clickhouse_url}", flush=True)
+    print(f"clickhouse_user={args.user}", flush=True)
+    print(f"clickhouse_password_present={bool(args.password)}", flush=True)
+    print(f"secret_status={secret_status([CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_USER_ENV, CLICKHOUSE_PASSWORD_ENV])}", flush=True)
     print(f"database={database}", flush=True)
     print(f"small_csv={small_csv_win} -> {small_csv_ch}", flush=True)
     for path_win, path_ch in zip(quote_files, quote_files_ch):
@@ -132,6 +182,10 @@ def main() -> None:
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "database": database,
         "clickhouse_url": args.clickhouse_url,
+        "clickhouse_user": args.user,
+        "clickhouse_password_present": bool(args.password),
+        "loaded_env_files": [str(path) for path in loaded_env_files],
+        "secret_status": secret_status([CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_USER_ENV, CLICKHOUSE_PASSWORD_ENV]),
         "quote_files": [{"windows_path": str(path), "clickhouse_path": path_ch, "bytes": path.stat().st_size} for path, path_ch in zip(quote_files, quote_files_ch)],
         "settings": settings,
         "total_rows": int(count_rows) if count_rows else 0,
