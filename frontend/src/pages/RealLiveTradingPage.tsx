@@ -126,12 +126,21 @@ type RealLiveScannerPayload = {
 };
 
 type RealLivePortfolioPayload = {
+  as_of?: string;
   account_id: string;
   account_type: string;
   accounts: RealLiveAccountConfig[];
+  balances?: Record<string, unknown>[];
+  connection?: Record<string, string>;
+  errors?: Record<string, unknown>[];
+  executions?: Record<string, unknown>[];
+  ledger?: Record<string, unknown>;
   orders: Record<string, unknown>[];
+  pnl?: Record<string, unknown>[];
   portfolios?: Record<string, unknown>[];
   positions: Record<string, unknown>[];
+  selected_account_keys?: string[];
+  source?: string;
   summary?: Record<string, unknown>;
 };
 
@@ -225,12 +234,16 @@ type LiveCanvasTarget = {
 type DecisionState = "approved" | "skipped" | "watching";
 
 type OrderRow = {
+  account_class?: string;
+  account_id?: string;
   account_key?: string;
   account_label?: string;
   account_type?: string;
   account_keys?: string[];
   avg_fill_price?: number | null;
   broker_order_id?: string;
+  client_order_id?: string;
+  conid?: string;
   filled_quantity?: number;
   id: string;
   last_fill_price?: number | null;
@@ -246,6 +259,15 @@ type OrderRow = {
 };
 
 type PositionRow = {
+  account_class?: string;
+  account_id?: string;
+  account_key?: string;
+  account_label?: string;
+  asset_class?: string;
+  conid?: string;
+  currency?: string;
+  market_value?: number;
+  realized_pnl?: number | null;
   avg_price: number;
   entry_session_date?: string;
   entry_time?: string;
@@ -258,9 +280,17 @@ type PositionRow = {
 };
 
 type TradeRow = {
+  account_class?: string;
+  account_id?: string;
+  account_key?: string;
+  account_label?: string;
+  broker_order_id?: string;
+  commission?: number | null;
+  conid?: string;
   entry_price: number;
   entry_session_date?: string;
   entry_time?: string;
+  execution_id?: string;
   exit_order_id?: string;
   exit_price: number;
   exit_session_date: string;
@@ -294,7 +324,6 @@ const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.real-live-trading.scann
 const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.real-live-trading.scanner-query.v2";
 const LIVE_CHART_VISIBILITY_STORAGE_KEY = "quant-research-workbench.real-live-trading.chart-visibility.v1";
 const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
-const LIVE_STARTING_CASH = 10_000;
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const LIVE_METRICS_DOCK_HEIGHT = 86;
 const LIVE_PORTFOLIO_DEFAULT_HEIGHT = 210;
@@ -478,6 +507,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   const [orders, setOrders] = useState<OrderRow[]>(initialSharedState.orders);
   const [positions, setPositions] = useState<PositionRow[]>(initialSharedState.positions);
   const [trades, setTrades] = useState<TradeRow[]>(initialSharedState.trades);
+  const [portfolioSnapshot, setPortfolioSnapshot] = useState<RealLivePortfolioPayload | null>(null);
   const [portfolioTab, setPortfolioTab] = useState("Trades");
   const [portfolioDetailsOpen, setPortfolioDetailsOpen] = useState(false);
   const [tradeDraft, setTradeDraft] = useState({ limit: "", quantity: "3000", side: "BUY" as "BUY" | "SELL", stop: "", type: "LIMIT" });
@@ -489,9 +519,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   const [selectedLayoutName, setSelectedLayoutName] = useState("");
   const [canvasTargetsVersion, setCanvasTargetsVersion] = useState(0);
   const canvasRemovedRef = useRef(false);
-  const ordersRef = useRef(orders);
   const positionsRef = useRef(positions);
-  const tradesRef = useRef(trades);
   const seekCancelRef = useRef(0);
   const paceRunRef = useRef(0);
   const liveClockModeRef = useRef<LiveClockMode>("idle");
@@ -576,9 +604,10 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     [marketSnapshot]
   );
   const portfolioMetrics = useMemo(
-    () => buildPortfolioMetrics({ orders, positions, trades }),
-    [orders, positions, trades]
+    () => buildPortfolioMetrics({ orders, positions, snapshot: portfolioSnapshot, trades }),
+    [orders, portfolioSnapshot, positions, trades]
   );
+  const availableBrokerCash = useMemo(() => brokerAvailableFunds(portfolioSnapshot), [portfolioSnapshot]);
   const selectedAccounts = useMemo(() => selectedAccountList(availableAccounts, selectedAccountKeys), [availableAccounts, selectedAccountKeys]);
   const primaryAccountKey = selectedAccountKeys[0] || "paper";
   const globalMetrics = useMemo(
@@ -628,22 +657,14 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   }, [scannerRows, selectedRow]);
 
   useEffect(() => {
-    ordersRef.current = orders;
-  }, [orders]);
-
-  useEffect(() => {
     positionsRef.current = positions;
   }, [positions]);
 
   useEffect(() => {
-    tradesRef.current = trades;
-  }, [trades]);
-
-  useEffect(() => {
     if (!started) return;
-    const payload = { decisions, orders, positions, trades };
+    const payload = { decisions };
     window.localStorage.setItem(LIVE_SHARED_STATE_STORAGE_KEY, JSON.stringify(payload));
-  }, [decisions, orders, positions, started, trades]);
+  }, [decisions, started]);
 
   useEffect(() => {
     if (canvasRemovedRef.current) return;
@@ -656,20 +677,8 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     const onStorage = (event: StorageEvent) => {
       if (event.key === LIVE_SHARED_STATE_STORAGE_KEY && event.newValue) {
         try {
-          const parsed = JSON.parse(event.newValue) as { decisions?: Record<string, DecisionState>; orders?: OrderRow[]; positions?: PositionRow[]; trades?: TradeRow[] };
-          const incomingOrders = parsed.orders ?? [];
-          const incomingPositions = (parsed.positions ?? []).filter((row) => row.quantity > 0);
-          const incomingTrades = parsed.trades ?? [];
-          const hasNewOrders = incomingOrders.length > ordersRef.current.length;
-          const hasNewTrades = incomingTrades.length > tradesRef.current.length;
-          const hasPositionState = JSON.stringify(incomingPositions) !== JSON.stringify(positionsRef.current);
-          const isInitialSync = ordersRef.current.length === 0 && tradesRef.current.length === 0 && !positionsRef.current.length;
-          if (hasNewOrders || hasNewTrades || hasPositionState || isInitialSync) {
-            setDecisions(parsed.decisions ?? {});
-            setOrders(incomingOrders);
-            setPositions(incomingPositions);
-            setTrades(incomingTrades);
-          }
+          const parsed = JSON.parse(event.newValue) as { decisions?: Record<string, DecisionState> };
+          setDecisions(parsed.decisions ?? {});
         } catch {
           // Ignore malformed cross-tab state.
         }
@@ -773,6 +782,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     setOrders([]);
     setPositions([]);
     setTrades([]);
+    setPortfolioSnapshot(null);
     setSignalRows([]);
     setSnapshot(null);
     setMarketSnapshot(null);
@@ -848,8 +858,10 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     try {
       const accountKeys = ensureSelectedAccountKeys(availableAccounts, selectedAccountKeys);
       const payload = await api<RealLivePortfolioPayload>(`/api/real-live-trading/portfolio${query({ account_keys: accountKeys.join(","), account_type: accountKeys[0] || "paper" })}`);
+      setPortfolioSnapshot(payload);
       setPositions(payload.positions.map(normalizeRealLivePosition).filter((position) => position.symbol && position.quantity !== 0));
       setOrders(payload.orders.map(normalizeRealLiveOrder).filter((order) => order.symbol));
+      setTrades((payload.executions ?? []).map(normalizeRealLiveExecution).filter((trade) => trade.symbol || trade.execution_id));
     } catch (requestError) {
       setError((current) => current || (requestError instanceof Error ? requestError.message : "IBKR portfolio request failed."));
     }
@@ -928,30 +940,6 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
       return [...fresh, ...current].slice(0, 1000);
     });
   }
-
-  const markPositionToMarket = useCallback((symbol: string, mark: number) => {
-    if (!symbol || !Number.isFinite(mark) || mark <= 0) return;
-    setPositions((current) =>
-      current.map((position) => {
-        if (position.symbol !== symbol) return position;
-        const unrealizedPnl = (mark - position.avg_price) * position.quantity;
-        const unrealizedPnlPct = position.avg_price > 0 ? (mark / position.avg_price) - 1 : 0;
-        if (
-          Math.abs(position.mark - mark) < 0.000001 &&
-          Math.abs(position.unrealized_pnl - unrealizedPnl) < 0.000001 &&
-          Math.abs(position.unrealized_pnl_pct - unrealizedPnlPct) < 0.000001
-        ) {
-          return position;
-        }
-        return {
-          ...position,
-          mark,
-          unrealized_pnl: unrealizedPnl,
-          unrealized_pnl_pct: unrealizedPnlPct,
-        };
-      })
-    );
-  }, []);
 
   function saveScannerQueryGroup(name: string, savedQuery: BackendTableQuery) {
     const trimmedName = name.trim() || "Scanner Query";
@@ -1247,6 +1235,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
                 <PortfolioContainer
                   detailsOpen={portfolioDetailsOpen}
                   orders={orders}
+                  portfolioSnapshot={portfolioSnapshot}
                   positions={positions}
                   selectedTab={portfolioTab}
                   trades={trades}
@@ -1267,6 +1256,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
                 draft={tradeDraft}
                 mainTimeframe={mainTimeframe}
                 mainVisibleColumns={mainVisibleColumns}
+                availableCash={availableBrokerCash}
                 marketRows={marketRows}
                 orders={orders}
                 positions={positions}
@@ -1281,7 +1271,6 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
                 onMainTimeframeChange={setMainTimeframe}
                 onMainVisibleColumnsChange={setMainVisibleColumns}
                 onCompactVisibleColumnsChange={setCompactVisibleColumns}
-                onMarkPosition={markPositionToMarket}
                 onStage={stageOrder}
                 onToggleDayChart={() => setLowerChartVisibility((current) => ({ ...current, day: !current.day }))}
                 onToggleFiveMinuteChart={() => setLowerChartVisibility((current) => ({ ...current, fiveMinute: !current.fiveMinute }))}
@@ -1740,10 +1729,10 @@ function PortfolioPositions({ positions }: { positions: PositionRow[] }) {
           {positions.map((position) => {
             const pnlTone = position.unrealized_pnl >= 0 ? "positive" : "negative";
             return (
-              <article className={`live-portfolio-position-card ${pnlTone}`} key={position.symbol}>
+              <article className={`live-portfolio-position-card ${pnlTone}`} key={`${position.account_key || "account"}-${position.conid || position.symbol}`}>
                 <div className="live-portfolio-position-main">
                   <strong>{position.symbol}</strong>
-                  <span>{integer(position.quantity)} sh</span>
+                  <span>{position.account_label ? `${position.account_label} - ` : ""}{integer(position.quantity)} sh</span>
                 </div>
                 <div>
                   <span>Avg</span>
@@ -1774,6 +1763,7 @@ function PortfolioContainer({
   onToggleDetails,
   onTabChange,
   orders,
+  portfolioSnapshot,
   positions,
   selectedTab,
   trades,
@@ -1782,14 +1772,18 @@ function PortfolioContainer({
   onToggleDetails: () => void;
   onTabChange: (tab: string) => void;
   orders: OrderRow[];
+  portfolioSnapshot: RealLivePortfolioPayload | null;
   positions: PositionRow[];
   selectedTab: string;
   trades: TradeRow[];
 }) {
-  const tabs = ["Open Positions", "P/L", "Trades", "Orders"];
+  const tabs = ["Open Positions", "P/L", "Fills", "Orders", "Balances", "Errors"];
   const activeTab = tabs.includes(selectedTab) ? selectedTab : tabs[0];
+  const balanceRows = portfolioBalanceRows(portfolioSnapshot);
+  const errorRows = portfolioSnapshot?.errors ?? [];
   return (
     <div className={detailsOpen ? "live-container-stack portfolio-expanded" : "live-container-stack"}>
+      <PortfolioSnapshotHeader snapshot={portfolioSnapshot} />
       <PortfolioPositions positions={positions} />
       <button className="live-portfolio-expand-button" onClick={onToggleDetails} title={detailsOpen ? "Hide tabs" : "Show tabs"} type="button">
         {detailsOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
@@ -1798,16 +1792,52 @@ function PortfolioContainer({
         <>
           <Tabs tabs={tabs} active={activeTab} onChange={onTabChange} />
           {activeTab === "Open Positions" ? <DataTable rows={positions} empty="No open positions." /> : null}
-          {activeTab === "P/L" ? <DataTable rows={buildProfitLossRows(positions, trades)} empty="No P/L rows." /> : null}
-          {activeTab === "Trades" ? <DataTable rows={trades} empty="No completed trades yet." /> : null}
+          {activeTab === "P/L" ? <DataTable rows={buildProfitLossRows(positions, trades, portfolioSnapshot)} empty="No broker P/L rows." /> : null}
+          {activeTab === "Fills" ? <DataTable rows={trades} empty="No broker executions yet." /> : null}
           {activeTab === "Orders" ? <DataTable rows={orders} empty="No live orders." /> : null}
+          {activeTab === "Balances" ? <DataTable rows={balanceRows} empty="No broker balance rows." /> : null}
+          {activeTab === "Errors" ? <DataTable rows={errorRows} empty="No broker portfolio errors." /> : null}
         </>
       ) : null}
     </div>
   );
 }
 
+function PortfolioSnapshotHeader({ snapshot }: { snapshot: RealLivePortfolioPayload | null }) {
+  const balances = portfolioBalanceRows(snapshot);
+  const totalCash = balances.reduce((total, row) => total + numberValue(row, "available_funds"), 0);
+  const totalNetLiquidation = balances.reduce((total, row) => total + numberValue(row, "net_liquidation"), 0);
+  const connection = snapshot?.connection ?? {};
+  return (
+    <section className="live-portfolio-header" aria-label="Broker portfolio snapshot">
+      <div className="live-debug-metric-strip">
+        <article className="live-debug-metric-card" data-tone={snapshot ? "success" : "muted"}>
+          <span className="live-debug-metric-label">Source</span>
+          <strong>{snapshot?.source?.toUpperCase() || "IBKR"}</strong>
+        </article>
+        <article className="live-debug-metric-card" data-tone={connection.portfolio === "blocked" ? "danger" : "success"}>
+          <span className="live-debug-metric-label">Portfolio</span>
+          <strong>{connection.portfolio || "waiting"}</strong>
+        </article>
+        <article className="live-debug-metric-card" data-tone={connection.iserver === "blocked" ? "danger" : "success"}>
+          <span className="live-debug-metric-label">Orders</span>
+          <strong>{connection.iserver || "waiting"}</strong>
+        </article>
+        <article className="live-debug-metric-card" data-tone={totalCash ? "info" : "muted"}>
+          <span className="live-debug-metric-label">Available</span>
+          <strong>{money(totalCash)}</strong>
+        </article>
+        <article className="live-debug-metric-card" data-tone={totalNetLiquidation ? "info" : "muted"}>
+          <span className="live-debug-metric-label">Net Liq</span>
+          <strong>{money(totalNetLiquidation)}</strong>
+        </article>
+      </div>
+    </section>
+  );
+}
+
 function LiveChartWindow({
+  availableCash,
   catalog,
   chart,
   compactVisibleColumns,
@@ -1819,7 +1849,6 @@ function LiveChartWindow({
   onDraftChange,
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
-  onMarkPosition,
   onStage,
   onToggleDayChart,
   onToggleFiveMinuteChart,
@@ -1833,6 +1862,7 @@ function LiveChartWindow({
   showFiveMinuteChart,
   trades,
 }: {
+  availableCash: number;
   catalog: CatalogPayload | null;
   chart: ChartWindow;
   compactVisibleColumns: string[];
@@ -1853,7 +1883,6 @@ function LiveChartWindow({
   onDraftChange: (draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string }) => void;
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
-  onMarkPosition: (symbol: string, mark: number) => void;
   onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
   onToggleDayChart: () => void;
   onToggleFiveMinuteChart: () => void;
@@ -1871,11 +1900,7 @@ function LiveChartWindow({
     numberValue(liveRow, "open");
   const quote = quoteFromRow(liveRow, selectedOpen);
   const position = positions.find((row) => row.symbol === chart.ticker);
-  const availableCash = availableCashFromState(positions, trades);
   const liveEntryLine = buildLiveEntryLine(position, quote.bid);
-  useEffect(() => {
-    if (position && quote.bid > 0) onMarkPosition(chart.ticker, quote.bid);
-  }, [chart.ticker, onMarkPosition, position, quote.bid]);
   function closeLivePosition() {
     if (!position || position.quantity <= 0) return;
     onStage("SELL", "STAGED", {
@@ -2702,28 +2727,43 @@ function normalizeRealLivePosition(row: Record<string, unknown>): PositionRow {
   const quantity = numberValue(row, "quantity");
   const avgPrice = numberValue(row, "avg_price");
   const mark = numberValue(row, "mark_price") || avgPrice;
+  const unrealizedPnl = numberValue(row, "unrealized_pnl") || (mark - avgPrice) * quantity;
   return {
+    account_class: stringValue(row, "account_class"),
+    account_id: stringValue(row, "account_id"),
+    account_key: stringValue(row, "account_key"),
+    account_label: stringValue(row, "account_label"),
+    asset_class: stringValue(row, "asset_class"),
     avg_price: avgPrice,
+    conid: stringValue(row, "conid"),
+    currency: stringValue(row, "currency"),
     mark,
+    market_value: optionalNumber(row, "market_value") ?? mark * quantity,
     quantity,
+    realized_pnl: optionalNumber(row, "realized_pnl"),
     stop: 0,
     symbol,
-    unrealized_pnl: numberValue(row, "unrealized_pnl") || (mark - avgPrice) * quantity,
-    unrealized_pnl_pct: avgPrice > 0 ? mark / avgPrice - 1 : 0,
+    unrealized_pnl: unrealizedPnl,
+    unrealized_pnl_pct: avgPrice > 0 ? unrealizedPnl / (avgPrice * Math.abs(quantity || 1)) : 0,
   };
 }
 
 function normalizeRealLiveOrder(row: Record<string, unknown>): OrderRow {
   const quantity = numberValue(row, "quantity");
   const filled = numberValue(row, "filled_quantity");
+  const brokerOrderId = stringValue(row, "broker_order_id");
   return {
+    account_class: stringValue(row, "account_class"),
+    account_id: stringValue(row, "account_id"),
     account_key: stringValue(row, "account_key"),
     account_label: stringValue(row, "account_label"),
     account_type: stringValue(row, "account_key"),
     avg_fill_price: optionalNumber(row, "avg_fill_price"),
-    broker_order_id: stringValue(row, "broker_order_id"),
+    broker_order_id: brokerOrderId,
+    client_order_id: stringValue(row, "client_order_id"),
+    conid: stringValue(row, "conid"),
     filled_quantity: filled,
-    id: stringValue(row, "broker_order_id") || `${Date.now()}-${stringValue(row, "symbol")}`,
+    id: `${stringValue(row, "account_key") || "account"}-${brokerOrderId || stringValue(row, "client_order_id") || `${stringValue(row, "symbol")}-${stringValue(row, "submitted_at")}`}`,
     last_fill_price: optionalNumber(row, "last_fill_price"),
     limit: numberValue(row, "limit_price"),
     quantity,
@@ -2734,6 +2774,35 @@ function normalizeRealLiveOrder(row: Record<string, unknown>): OrderRow {
     symbol: stringValue(row, "symbol"),
     timestamp: stringValue(row, "submitted_at"),
     type: stringValue(row, "order_type"),
+  };
+}
+
+function normalizeRealLiveExecution(row: Record<string, unknown>): TradeRow {
+  const fillPrice = numberValue(row, "fill_price");
+  const quantity = numberValue(row, "filled_quantity");
+  const timestamp = stringValue(row, "timestamp");
+  const sideText = stringValue(row, "side");
+  return {
+    account_class: stringValue(row, "account_class"),
+    account_id: stringValue(row, "account_id"),
+    account_key: stringValue(row, "account_key"),
+    account_label: stringValue(row, "account_label"),
+    broker_order_id: stringValue(row, "broker_order_id"),
+    commission: optionalNumber(row, "commission"),
+    conid: stringValue(row, "conid"),
+    entry_price: sideText === "BUY" ? fillPrice : 0,
+    entry_time: timestamp,
+    execution_id: stringValue(row, "execution_id"),
+    exit_order_id: stringValue(row, "broker_order_id"),
+    exit_price: sideText === "SELL" ? fillPrice : 0,
+    exit_session_date: timestamp.split(" ")[0] || "",
+    exit_time: timestamp,
+    gross_pnl: numberValue(row, "gross_amount"),
+    gross_pnl_pct: 0,
+    id: `${stringValue(row, "account_key") || "account"}-${stringValue(row, "execution_id") || stringValue(row, "broker_order_id") || `${stringValue(row, "symbol")}-${timestamp}`}`,
+    quantity,
+    side: "LONG",
+    symbol: stringValue(row, "symbol"),
   };
 }
 
@@ -3226,20 +3295,15 @@ function realizedPnlFromTrades(trades: TradeRow[]) {
 }
 
 function positionExposure(positions: PositionRow[]) {
-  return positions.reduce((total, row) => total + row.mark * row.quantity, 0);
+  return positions.reduce((total, row) => total + (row.market_value ?? row.mark * row.quantity), 0);
 }
 
-function openPositionCost(positions: PositionRow[]) {
-  return positions.reduce((total, row) => total + row.avg_price * row.quantity, 0);
-}
-
-function availableCashFromState(positions: PositionRow[], trades: TradeRow[]) {
-  return Math.max(0, LIVE_STARTING_CASH + realizedPnlFromTrades(trades) - openPositionCost(positions));
-}
-
-function buildProfitLossRows(positions: PositionRow[], trades: TradeRow[]) {
+function buildProfitLossRows(positions: PositionRow[], trades: TradeRow[], snapshot: RealLivePortfolioPayload | null) {
+  const brokerPnl = brokerPnlRows(snapshot);
   return [
+    ...brokerPnl,
     ...positions.map((row) => ({
+      account: row.account_label,
       avg_price: row.avg_price,
       mark: row.mark,
       pnl: row.unrealized_pnl,
@@ -3249,6 +3313,7 @@ function buildProfitLossRows(positions: PositionRow[], trades: TradeRow[]) {
       symbol: row.symbol,
     })),
     ...trades.map((row) => ({
+      account: row.account_label,
       entry_price: row.entry_price,
       exit_price: row.exit_price,
       pnl: row.gross_pnl,
@@ -3260,31 +3325,51 @@ function buildProfitLossRows(positions: PositionRow[], trades: TradeRow[]) {
   ];
 }
 
-function buildPortfolioMetrics({ orders, positions, trades }: { orders: OrderRow[]; positions: PositionRow[]; trades: TradeRow[] }) {
-  const realized = realizedPnlFromTrades(trades);
-  const unrealized = positions.reduce((total, row) => total + row.unrealized_pnl, 0);
+function buildPortfolioMetrics({ orders, positions, snapshot, trades }: { orders: OrderRow[]; positions: PositionRow[]; snapshot: RealLivePortfolioPayload | null; trades: TradeRow[] }) {
+  const brokerPnl = brokerPnlRows(snapshot);
+  const realized = positions.reduce((total, row) => total + (row.realized_pnl ?? 0), 0);
+  const unrealized = brokerPnl.length ? brokerPnl.reduce((total, row) => total + numberValue(row, "unrealized_pnl"), 0) : positions.reduce((total, row) => total + row.unrealized_pnl, 0);
   const exposure = positionExposure(positions);
-  const cash = availableCashFromState(positions, trades);
+  const balances = portfolioBalanceRows(snapshot);
+  const cash = brokerAvailableFunds(snapshot);
+  const equity = balances.reduce((total, row) => total + numberValue(row, "net_liquidation"), 0);
   const stagedOrders = orders.filter((order) => order.status === "STAGED").length;
   const fills = orders.filter((order) => order.status === "FILLED").length;
   const wins = trades.filter((trade) => trade.gross_pnl > 0).length;
   const winRate = trades.length ? wins / trades.length : 0;
+  const errors = snapshot?.errors?.length ?? 0;
   return {
     items: [
       { icon: <Banknote size={14} />, label: "Total P/L", tone: signedMetricTone(realized + unrealized), value: money(realized + unrealized) },
       { icon: <CircleDollarSign size={14} />, label: "Realized P/L", tone: signedMetricTone(realized), value: money(realized) },
       { icon: <Activity size={14} />, label: "Unrealized P/L", tone: signedMetricTone(unrealized), value: money(unrealized) },
-      { icon: <Banknote size={14} />, label: "Cash", tone: cash > LIVE_STARTING_CASH ? "success" : cash < LIVE_STARTING_CASH ? "warning" : "muted", value: money(cash) },
-      { icon: <Banknote size={14} />, label: "Equity", tone: signedMetricTone(realized + unrealized), value: money(LIVE_STARTING_CASH + realized + unrealized) },
+      { icon: <Banknote size={14} />, label: "Available", tone: cash ? "info" : "muted", value: money(cash) },
+      { icon: <Banknote size={14} />, label: "Net Liq", tone: equity ? "info" : "muted", value: money(equity) },
       { icon: <BarChart3 size={14} />, label: "Exposure", tone: exposure ? "info" : "muted", value: money(exposure) },
       { icon: <WalletCards size={14} />, label: "Open Positions", tone: positions.length ? "info" : "muted", value: integer(positions.length) },
       { icon: <ClipboardList size={14} />, label: "Orders", tone: orders.length ? "info" : "muted", value: integer(orders.length) },
-      { icon: <CheckCircle2 size={14} />, label: "Trades", tone: trades.length ? "success" : "muted", value: integer(trades.length) },
+      { icon: <CheckCircle2 size={14} />, label: "Fills", tone: trades.length ? "success" : "muted", value: integer(trades.length) },
       { icon: <Save size={14} />, label: "Staged", tone: stagedOrders ? "warning" : "muted", value: integer(stagedOrders) },
-      { icon: <CheckCircle2 size={14} />, label: "Fills", tone: fills ? "success" : "muted", value: integer(fills) },
+      { icon: <CheckCircle2 size={14} />, label: "Filled Orders", tone: fills ? "success" : "muted", value: integer(fills) },
       { icon: <ShieldAlert size={14} />, label: "Win Rate", tone: trades.length ? signedMetricTone(winRate - 0.5) : "muted", value: percent(winRate) },
+      { icon: <ShieldAlert size={14} />, label: "Broker Errors", tone: errors ? "danger" : "muted", value: integer(errors) },
     ],
   };
+}
+
+function portfolioBalanceRows(snapshot: RealLivePortfolioPayload | null): Record<string, unknown>[] {
+  return (snapshot?.balances ?? []).filter((row) => row && typeof row === "object");
+}
+
+function brokerPnlRows(snapshot: RealLivePortfolioPayload | null): Record<string, unknown>[] {
+  return (snapshot?.pnl ?? []).filter((row) => row && typeof row === "object").map((row) => ({ ...row, status: "BROKER_PNL" }));
+}
+
+function brokerAvailableFunds(snapshot: RealLivePortfolioPayload | null) {
+  const balances = portfolioBalanceRows(snapshot);
+  const available = balances.reduce((total, row) => total + numberValue(row, "available_funds"), 0);
+  if (available > 0) return available;
+  return balances.reduce((total, row) => total + numberValue(row, "cash"), 0);
 }
 
 function buildGlobalLiveMetrics({

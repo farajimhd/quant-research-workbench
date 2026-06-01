@@ -185,35 +185,92 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
 
 def real_live_portfolio(account_type: str, account_keys: str | list[str] | None = None) -> dict[str, Any]:
     selected_accounts = resolve_real_live_accounts(account_keys, account_type)
-    portfolios = [real_live_portfolio_for_account(account) for account in selected_accounts]
+    now = datetime.now(NEW_YORK).isoformat()
+    selected_account_ids = {account.account_id for account in selected_accounts if account.account_id}
+    selected_by_id = {account.account_id: account for account in selected_accounts if account.account_id}
+    selected_by_key = {account.account_key: account for account in selected_accounts}
+    errors: list[dict[str, Any]] = []
+    portfolio_accounts, portfolio_accounts_error = ibkr_get_optional("/portfolio/accounts", timeout=8)
+    iserver_accounts, iserver_accounts_error = ibkr_get_optional("/iserver/accounts", timeout=8)
+    raw_orders, orders_error = ibkr_get_optional("/iserver/account/orders", timeout=8)
+    raw_trades, trades_error = ibkr_get_optional("/iserver/account/trades?days=7", timeout=8)
+    raw_pnl, pnl_error = ibkr_get_optional("/iserver/account/pnl/partitioned", timeout=8)
+
+    for scope, error in (
+        ("portfolio_accounts", portfolio_accounts_error),
+        ("iserver_accounts", iserver_accounts_error),
+        ("orders", orders_error),
+        ("trades", trades_error),
+        ("pnl", pnl_error),
+    ):
+        if error:
+            errors.append({"account_key": "", "scope": scope, "message": error})
+
+    portfolios = [real_live_portfolio_for_account(account, now=now, errors=errors) for account in selected_accounts]
+    orders = normalize_ibkr_orders(raw_orders, selected_by_id=selected_by_id, fallback_account=selected_accounts[0] if len(selected_accounts) == 1 else None)
+    orders = [order for order in orders if account_row_matches_selection(order, selected_by_key, selected_account_ids)]
+    executions = normalize_ibkr_trades(raw_trades, selected_by_id=selected_by_id, fallback_account=selected_accounts[0] if len(selected_accounts) == 1 else None)
+    executions = [execution for execution in executions if account_row_matches_selection(execution, selected_by_key, selected_account_ids)]
+    pnl_rows = normalize_pnl_rows(raw_pnl, selected_accounts)
     return {
+        "as_of": now,
         "account_type": selected_accounts[0].account_key,
         "account_id": ", ".join(portfolio["account_id"] for portfolio in portfolios if portfolio.get("account_id")),
         "accounts": [public_account(account) for account in selected_accounts],
+        "balances": [portfolio.get("balances", {}) for portfolio in portfolios],
+        "connection": {
+            "portfolio": "blocked" if portfolio_accounts_error else "ready",
+            "iserver": "blocked" if iserver_accounts_error else "ready",
+        },
+        "errors": errors,
+        "executions": executions,
+        "ledger": {portfolio["account_key"]: portfolio.get("ledger", {}) for portfolio in portfolios},
+        "orders": orders,
+        "pnl": pnl_rows,
         "portfolios": portfolios,
+        "selected_account_keys": [account.account_key for account in selected_accounts],
         "summary": {portfolio["account_key"]: portfolio.get("summary", {}) for portfolio in portfolios},
         "positions": [position for portfolio in portfolios for position in portfolio.get("positions", [])],
-        "orders": [order for portfolio in portfolios for order in portfolio.get("orders", [])],
+        "source": "ibkr",
+        "raw_refs": {
+            "iserver_accounts": mask_account_payload(iserver_accounts),
+            "portfolio_accounts": mask_account_payload(portfolio_accounts),
+        },
     }
 
 
-def real_live_portfolio_for_account(account: RealLiveAccount) -> dict[str, Any]:
+def real_live_portfolio_for_account(account: RealLiveAccount, *, now: str | None = None, errors: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     if not account.account_id:
         raise RuntimeError(f"Missing configured IBKR {account.label} account id.")
     account_path = urllib.parse.quote(account.account_id, safe="")
-    raw_positions = ibkr_get_json(f"/portfolio/{account_path}/positions/0", timeout=8)
-    raw_summary = ibkr_get_json(f"/portfolio/{account_path}/summary", timeout=8)
-    raw_orders = ibkr_get_json("/iserver/account/orders", timeout=8)
+    snapshot_time = now or datetime.now(NEW_YORK).isoformat()
+    account_errors: list[dict[str, Any]] = []
+    raw_positions, positions_error = ibkr_get_optional(f"/portfolio2/{account_path}/positions", timeout=8)
+    if positions_error:
+        raw_positions, positions_error = ibkr_get_optional(f"/portfolio/{account_path}/positions/0", timeout=8)
+    raw_summary, summary_error = ibkr_get_optional(f"/portfolio/{account_path}/summary", timeout=8)
+    raw_ledger, ledger_error = ibkr_get_optional(f"/portfolio/{account_path}/ledger", timeout=8)
+    for scope, error in (("positions", positions_error), ("summary", summary_error), ("ledger", ledger_error)):
+        if error:
+            item = {"account_key": account.account_key, "account_id": mask_account_id(account.account_id), "scope": scope, "message": error}
+            account_errors.append(item)
+            if errors is not None:
+                errors.append(item)
+    summary = normalize_account_summary(raw_summary)
+    ledger = normalize_ledger(raw_ledger)
     return {
+        "as_of": snapshot_time,
         "account_key": account.account_key,
         "account_type": account.account_key,
         "account_class": account.account_class,
         "account_id": mask_account_id(account.account_id),
         "label": account.label,
         "trading_mode": account.trading_mode,
-        "summary": normalize_account_summary(raw_summary),
-        "positions": normalize_positions(raw_positions if isinstance(raw_positions, list) else raw_positions.get("positions", []), account),
-        "orders": normalize_ibkr_orders(raw_orders, account),
+        "balances": broker_balances(summary, ledger, account),
+        "errors": account_errors,
+        "ledger": ledger,
+        "summary": summary,
+        "positions": normalize_positions(position_rows(raw_positions), account, as_of=snapshot_time),
     }
 
 
@@ -351,19 +408,31 @@ def normalize_submitted_order(order: dict[str, Any], response: Any, account: Rea
     }
 
 
-def normalize_ibkr_orders(payload: Any, account: RealLiveAccount | None = None) -> list[dict[str, Any]]:
+def normalize_ibkr_orders(
+    payload: Any,
+    account: RealLiveAccount | None = None,
+    *,
+    selected_by_id: dict[str, RealLiveAccount] | None = None,
+    fallback_account: RealLiveAccount | None = None,
+) -> list[dict[str, Any]]:
     raw_orders = payload.get("orders", []) if isinstance(payload, dict) else payload if isinstance(payload, list) else []
-    return [normalize_ibkr_order(item, account) for item in raw_orders if isinstance(item, dict)]
+    return [normalize_ibkr_order(item, account or account_from_broker_row(item, selected_by_id, fallback_account)) for item in raw_orders if isinstance(item, dict)]
 
 
 def normalize_ibkr_order(item: dict[str, Any], account: RealLiveAccount | None = None) -> dict[str, Any]:
     quantity = float_value(item.get("totalSize") or item.get("quantity") or item.get("size"))
     filled = float_value(item.get("filledQuantity") or item.get("filled") or 0)
     avg_price = float_value(item.get("avgPrice") or item.get("avg_fill_price") or 0)
+    account_id = broker_account_id(item)
+    broker_order_id = str(item.get("orderId") or item.get("order_id") or item.get("id") or "")
     return {
         "account_key": account.account_key if account else "",
         "account_label": account.label if account else "",
-        "broker_order_id": str(item.get("orderId") or item.get("order_id") or item.get("id") or ""),
+        "account_class": account.account_class if account else "",
+        "account_id": mask_account_id(account_id or account.account_id if account else account_id),
+        "broker_order_id": broker_order_id,
+        "client_order_id": str(item.get("cOID") or item.get("client_order_id") or item.get("order_ref") or ""),
+        "conid": str(item.get("conid") or item.get("con_id") or ""),
         "symbol": str(item.get("ticker") or item.get("symbol") or "").upper(),
         "side": str(item.get("side") or "").upper(),
         "order_type": str(item.get("orderType") or item.get("order_type") or ""),
@@ -373,30 +442,39 @@ def normalize_ibkr_order(item: dict[str, Any], account: RealLiveAccount | None =
         "avg_fill_price": avg_price or None,
         "last_fill_price": float_value(item.get("lastExecutionPrice")) or None,
         "status": str(item.get("status") or "UNKNOWN").upper(),
-        "submitted_at": item.get("lastExecutionTime") or item.get("submitted_at") or "",
+        "submitted_at": item.get("lastExecutionTime") or item.get("submitted_at") or item.get("orderTime") or "",
+        "updated_at": item.get("lastExecutionTime") or item.get("modifiedTime") or "",
         "raw_broker_order": item,
     }
 
 
-def normalize_positions(rows: list[dict[str, Any]], account: RealLiveAccount | None = None) -> list[dict[str, Any]]:
-    return [normalize_position(row, account) for row in rows if isinstance(row, dict)]
+def normalize_positions(rows: list[dict[str, Any]], account: RealLiveAccount | None = None, *, as_of: str = "") -> list[dict[str, Any]]:
+    return [normalize_position(row, account, as_of=as_of) for row in rows if isinstance(row, dict)]
 
 
-def normalize_position(row: dict[str, Any], account: RealLiveAccount | None = None) -> dict[str, Any]:
+def normalize_position(row: dict[str, Any], account: RealLiveAccount | None = None, *, as_of: str = "") -> dict[str, Any]:
     symbol = str(row.get("ticker") or row.get("symbol") or row.get("contractDesc") or "").split(" ")[0].upper()
     quantity = float_value(row.get("position") or row.get("quantity"))
     avg_price = float_value(row.get("avgCost") or row.get("averageCost"))
     mark = float_value(row.get("mktPrice") or row.get("marketPrice"))
+    market_value = float_value(row.get("mktValue") or row.get("marketValue"))
     return {
         "account_key": account.account_key if account else "",
         "account_label": account.label if account else "",
+        "account_class": account.account_class if account else "",
+        "account_id": mask_account_id(account.account_id) if account else "",
+        "asset_class": str(row.get("assetClass") or row.get("asset_class") or row.get("secType") or "STK"),
+        "conid": str(row.get("conid") or row.get("con_id") or row.get("contractId") or ""),
+        "currency": str(row.get("currency") or row.get("listingExchange") or ""),
         "symbol": symbol,
         "quantity": quantity,
+        "avg_cost": avg_price,
         "avg_price": avg_price,
         "mark_price": mark,
-        "market_value": float_value(row.get("mktValue") or row.get("marketValue")),
+        "market_value": market_value,
         "unrealized_pnl": float_value(row.get("unrealizedPnl")),
         "realized_pnl": float_value(row.get("realizedPnl")),
+        "as_of": as_of,
         "raw_broker_position": row,
     }
 
@@ -405,6 +483,172 @@ def normalize_account_summary(summary: Any) -> dict[str, Any]:
     if not isinstance(summary, dict):
         return {}
     return {str(key): value for key, value in summary.items() if any(token in str(key).lower() for token in ("netliquidation", "availablefunds", "buyingpower", "cashbalance", "totalcashvalue"))}
+
+
+def normalize_ledger(ledger: Any) -> dict[str, Any]:
+    if not isinstance(ledger, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    for key, value in ledger.items():
+        if isinstance(value, dict):
+            normalized[str(key)] = {str(item_key): item_value for item_key, item_value in value.items()}
+        else:
+            normalized[str(key)] = value
+    return normalized
+
+
+def broker_balances(summary: dict[str, Any], ledger: dict[str, Any], account: RealLiveAccount) -> dict[str, Any]:
+    cash = first_summary_amount(summary, ("totalcashvalue", "cashbalance", "availablefunds"))
+    available_funds = first_summary_amount(summary, ("availablefunds", "cashbalance", "totalcashvalue"))
+    buying_power = first_summary_amount(summary, ("buyingpower", "availablefunds"))
+    net_liquidation = first_summary_amount(summary, ("netliquidation", "netliquidationvalue"))
+    currency = first_summary_currency(summary) or first_ledger_currency(ledger) or "USD"
+    return {
+        "account_key": account.account_key,
+        "account_label": account.label,
+        "account_class": account.account_class,
+        "account_id": mask_account_id(account.account_id),
+        "available_funds": available_funds,
+        "buying_power": buying_power,
+        "cash": cash,
+        "currency": currency,
+        "net_liquidation": net_liquidation,
+        "source": "ibkr",
+    }
+
+
+def normalize_ibkr_trades(
+    payload: Any,
+    *,
+    selected_by_id: dict[str, RealLiveAccount] | None = None,
+    fallback_account: RealLiveAccount | None = None,
+) -> list[dict[str, Any]]:
+    raw_trades = payload.get("trades", []) if isinstance(payload, dict) else payload if isinstance(payload, list) else []
+    rows: list[dict[str, Any]] = []
+    for item in raw_trades:
+        if not isinstance(item, dict):
+            continue
+        account = account_from_broker_row(item, selected_by_id, fallback_account)
+        account_id = broker_account_id(item)
+        price = float_value(item.get("price") or item.get("tradePrice") or item.get("executionPrice"))
+        quantity = float_value(item.get("quantity") or item.get("size") or item.get("shares"))
+        side = str(item.get("side") or item.get("buySell") or "").upper()
+        rows.append(
+            {
+                "account_key": account.account_key if account else "",
+                "account_label": account.label if account else "",
+                "account_class": account.account_class if account else "",
+                "account_id": mask_account_id(account_id or account.account_id if account else account_id),
+                "broker_order_id": str(item.get("orderId") or item.get("order_id") or ""),
+                "commission": optional_float(item.get("commission")),
+                "conid": str(item.get("conid") or item.get("con_id") or ""),
+                "execution_id": str(item.get("execution_id") or item.get("execId") or item.get("tradeId") or item.get("id") or ""),
+                "fill_price": price,
+                "filled_quantity": quantity,
+                "gross_amount": price * quantity if price and quantity else 0,
+                "side": side,
+                "symbol": str(item.get("ticker") or item.get("symbol") or "").upper(),
+                "timestamp": item.get("time") or item.get("trade_time") or item.get("executionTime") or "",
+                "raw_broker_execution": item,
+            }
+        )
+    return rows
+
+
+def normalize_pnl_rows(payload: Any, accounts: list[RealLiveAccount]) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    by_id = {account.account_id: account for account in accounts if account.account_id}
+    raw_upnl = payload.get("upnl") if isinstance(payload.get("upnl"), dict) else {}
+    raw_dpl = payload.get("dpl") if isinstance(payload.get("dpl"), dict) else {}
+    raw_nlv = payload.get("nl") if isinstance(payload.get("nl"), dict) else payload.get("nlv") if isinstance(payload.get("nlv"), dict) else {}
+    for account_id, account in by_id.items():
+        rows.append(
+            {
+                "account_key": account.account_key,
+                "account_label": account.label,
+                "account_class": account.account_class,
+                "account_id": mask_account_id(account_id),
+                "daily_pnl": float_value(raw_dpl.get(account_id)),
+                "net_liquidation": float_value(raw_nlv.get(account_id)),
+                "unrealized_pnl": float_value(raw_upnl.get(account_id)),
+                "source": "ibkr",
+            }
+        )
+    return rows
+
+
+def position_rows(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        raw_rows = payload.get("positions") or payload.get("data") or payload.get("results") or []
+        if isinstance(raw_rows, list):
+            return [item for item in raw_rows if isinstance(item, dict)]
+    return []
+
+
+def account_from_broker_row(item: dict[str, Any], selected_by_id: dict[str, RealLiveAccount] | None, fallback_account: RealLiveAccount | None) -> RealLiveAccount | None:
+    account_id = broker_account_id(item)
+    if account_id and selected_by_id and account_id in selected_by_id:
+        return selected_by_id[account_id]
+    return fallback_account
+
+
+def account_row_matches_selection(row: dict[str, Any], selected_by_key: dict[str, RealLiveAccount], selected_account_ids: set[str]) -> bool:
+    account_key = str(row.get("account_key") or "")
+    if account_key and account_key in selected_by_key:
+        return True
+    raw_account_id = str(row.get("account_id") or "")
+    return bool(raw_account_id and raw_account_id in {mask_account_id(account_id) for account_id in selected_account_ids})
+
+
+def broker_account_id(item: dict[str, Any]) -> str:
+    return str(item.get("acct") or item.get("acctId") or item.get("account") or item.get("accountId") or item.get("account_id") or "")
+
+
+def first_summary_amount(summary: dict[str, Any], key_tokens: tuple[str, ...]) -> float:
+    for key, value in summary.items():
+        lower_key = key.lower()
+        if any(token in lower_key for token in key_tokens):
+            amount = amount_from_summary_value(value)
+            if amount is not None:
+                return amount
+    return 0.0
+
+
+def amount_from_summary_value(value: Any) -> float | None:
+    if isinstance(value, dict):
+        for key in ("amount", "value", "val"):
+            if key in value:
+                return float_value(value.get(key))
+    if isinstance(value, (int, float, str)):
+        return float_value(value)
+    return None
+
+
+def first_summary_currency(summary: dict[str, Any]) -> str:
+    for value in summary.values():
+        if isinstance(value, dict) and value.get("currency"):
+            return str(value.get("currency"))
+    return ""
+
+
+def first_ledger_currency(ledger: dict[str, Any]) -> str:
+    for key, value in ledger.items():
+        if isinstance(value, dict):
+            if value.get("currency"):
+                return str(value.get("currency"))
+            if key and len(key) == 3:
+                return str(key)
+    return ""
+
+
+def optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    return float_value(value)
 
 
 def public_account(account: RealLiveAccount) -> dict[str, Any]:
@@ -508,6 +752,13 @@ def ibkr_get_json(path: str, *, timeout: int) -> Any:
     return http_json("GET", f"{ibkr_base_url()}{path}", timeout=timeout, allow_self_signed=True)
 
 
+def ibkr_get_optional(path: str, *, timeout: int) -> tuple[Any, str]:
+    try:
+        return ibkr_get_json(path, timeout=timeout), ""
+    except Exception as exc:
+        return None, str(exc)
+
+
 def ibkr_post_json(path: str, payload: dict[str, Any], *, timeout: int) -> Any:
     return http_json("POST", f"{ibkr_base_url()}{path}", payload=payload, timeout=timeout, allow_self_signed=True)
 
@@ -546,6 +797,24 @@ def ibkr_account_ids(payload: Any) -> list[str]:
     if isinstance(payload, list):
         return [str(item.get("id") if isinstance(item, dict) else item) for item in payload if item]
     return []
+
+
+def mask_account_payload(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        return {key: mask_account_payload_value(key, value) for key, value in payload.items()}
+    if isinstance(payload, list):
+        return [mask_account_payload(item) for item in payload]
+    return payload
+
+
+def mask_account_payload_value(key: Any, value: Any) -> Any:
+    key_text = str(key).lower()
+    if key_text in {"account", "accountid", "account_id", "acct", "acctid", "selectedaccount"}:
+        if isinstance(value, str):
+            return mask_account_id(value)
+        if isinstance(value, list):
+            return [mask_account_id(str(item)) if not isinstance(item, dict) else mask_account_payload(item) for item in value]
+    return mask_account_payload(value)
 
 
 def float_value(value: Any) -> float:
