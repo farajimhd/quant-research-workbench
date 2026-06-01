@@ -26,6 +26,7 @@ DEFAULT_CLICKHOUSE_URL = "http://localhost:8123"
 CLICKHOUSE_ENDPOINT_ENV = "TD__DATABASE__CLICKHOUSE__ENDPOINT_URL"
 CLICKHOUSE_PASSWORD_ENV = "TD__DATABASE__CLICKHOUSE__PASSWORD"
 CLICKHOUSE_USER_ENV = "TD__DATABASE__CLICKHOUSE__USER"
+CLICKHOUSE_FILE_ROOT_ENV = "TD__DATABASE__CLICKHOUSE__FILE_ROOT"
 DEFAULT_FLATFILES_ROOT_WIN = Path("D:/market-data/flatfiles/us_stocks_sip")
 DEFAULT_FLATFILES_ROOT_CH = "/mnt/d/market-data/flatfiles/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_ingest_profile")
@@ -61,6 +62,14 @@ class QueryProfile:
     exception: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ClickHousePathMapping:
+    name: str
+    flatfiles_root_ch: str
+    small_csv_ch: str
+    quote_files_ch: list[str]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Profile ClickHouse loading of Massive SIP quote CSV files.")
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url())
@@ -68,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--database", default="", help="ClickHouse database name. Defaults to a unique qrw_quote_ingest_profile_<timestamp> database.")
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
-    parser.add_argument("--flatfiles-root-ch", default=DEFAULT_FLATFILES_ROOT_CH)
+    parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN))
     parser.add_argument("--dates", default="", help="Comma-separated YYYY-MM-DD dates. Defaults to first three discovered 2025 quote files.")
     parser.add_argument("--start-date", default="2025-01-01")
@@ -94,6 +103,10 @@ def default_clickhouse_user() -> str:
 
 def default_clickhouse_password() -> str:
     return os.environ.get("CLICKHOUSE_PASSWORD") or os.environ.get(CLICKHOUSE_PASSWORD_ENV) or ""
+
+
+def default_clickhouse_file_root() -> str:
+    return os.environ.get("CLICKHOUSE_FLATFILES_ROOT") or os.environ.get(CLICKHOUSE_FILE_ROOT_ENV) or DEFAULT_FLATFILES_ROOT_CH
 
 
 def discover_clickhouse_env_files() -> list[Path]:
@@ -132,20 +145,23 @@ def main() -> None:
     missing = [str(path) for path in quote_files if not path.exists()]
     if missing:
         raise FileNotFoundError("Missing quote files:\n" + "\n".join(missing))
-    quote_files_ch = [windows_path_to_clickhouse_path(path, args.flatfiles_root_win, args.flatfiles_root_ch) for path in quote_files]
 
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     settings = query_settings(args)
     profiles: list[QueryProfile] = []
     snapshots: list[dict[str, Any]] = []
+    path_mapping = select_readable_path_mapping(client, small_csv_win, quote_files, args.flatfiles_root_win, args.flatfiles_root_ch, settings)
+    small_csv_ch = path_mapping.small_csv_ch
+    quote_files_ch = path_mapping.quote_files_ch
 
     print("=" * 96, flush=True)
     print("ClickHouse quote ingest profile", flush=True)
     print(f"clickhouse_url={args.clickhouse_url}", flush=True)
     print(f"clickhouse_user={args.user}", flush=True)
     print(f"clickhouse_password_present={bool(args.password)}", flush=True)
-    print(f"secret_status={secret_status([CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_USER_ENV, CLICKHOUSE_PASSWORD_ENV])}", flush=True)
+    print(f"secret_status={secret_status([CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_USER_ENV, CLICKHOUSE_PASSWORD_ENV, CLICKHOUSE_FILE_ROOT_ENV])}", flush=True)
     print(f"database={database}", flush=True)
+    print(f"selected_file_path_mapping={path_mapping.name} flatfiles_root_ch={path_mapping.flatfiles_root_ch}", flush=True)
     print(f"small_csv={small_csv_win} -> {small_csv_ch}", flush=True)
     for path_win, path_ch in zip(quote_files, quote_files_ch):
         print(f"quote_file={path_win} size_gb={path_win.stat().st_size / (1024 ** 3):.2f} clickhouse_path={path_ch}", flush=True)
@@ -186,7 +202,8 @@ def main() -> None:
         "clickhouse_user": args.user,
         "clickhouse_password_present": bool(args.password),
         "loaded_env_files": [str(path) for path in loaded_env_files],
-        "secret_status": secret_status([CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_USER_ENV, CLICKHOUSE_PASSWORD_ENV]),
+        "secret_status": secret_status([CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_USER_ENV, CLICKHOUSE_PASSWORD_ENV, CLICKHOUSE_FILE_ROOT_ENV]),
+        "selected_file_path_mapping": asdict(path_mapping),
         "quote_files": [{"windows_path": str(path), "clickhouse_path": path_ch, "bytes": path.stat().st_size} for path, path_ch in zip(quote_files, quote_files_ch)],
         "settings": settings,
         "total_rows": int(count_rows) if count_rows else 0,
@@ -397,6 +414,97 @@ def print_table_stats(client: ClickHouseHttpClient, database: str, label: str) -
     print(f"TABLE {label}: rows={rows} parts_stats={stats}", flush=True)
 
 
+def select_readable_path_mapping(
+    client: ClickHouseHttpClient,
+    small_csv_win: Path,
+    quote_files_win: list[Path],
+    flatfiles_root_win: str,
+    configured_flatfiles_root_ch: str,
+    settings: str,
+) -> ClickHousePathMapping:
+    candidates = build_path_mappings(small_csv_win, quote_files_win, flatfiles_root_win, configured_flatfiles_root_ch)
+    errors: list[dict[str, str]] = []
+    print("Testing ClickHouse server-side file() access with small smoke CSV.", flush=True)
+    for candidate in candidates:
+        sql = read_quotes_count_sql(candidate.small_csv_ch).rstrip(";") + settings
+        try:
+            count = client.query_tsv(sql).strip()
+            if count == "2":
+                print(f"ClickHouse file() path mapping works: {candidate.name} -> {candidate.small_csv_ch}", flush=True)
+                return candidate
+            errors.append({"name": candidate.name, "path": candidate.small_csv_ch, "error": f"unexpected_count={count}"})
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"name": candidate.name, "path": candidate.small_csv_ch, "error": repr(exc)})
+    print("ClickHouse file() path preflight failed for all candidate paths:", flush=True)
+    for item in errors:
+        print(f"  {item['name']}: {item['path']} -> {item['error'][:500]}", flush=True)
+    print_server_context(client)
+    raise RuntimeError(
+        "ClickHouse cannot read the smoke CSV through file(). "
+        "The server must see the path itself, and file() may be restricted to user_files_path. "
+        f"Either set {CLICKHOUSE_FILE_ROOT_ENV} / CLICKHOUSE_FLATFILES_ROOT to the path visible to the ClickHouse server, "
+        "or configure ClickHouse user_files_path / container volume so D:/market-data/flatfiles/us_stocks_sip is visible."
+    )
+
+
+def build_path_mappings(
+    small_csv_win: Path,
+    quote_files_win: list[Path],
+    flatfiles_root_win: str,
+    configured_flatfiles_root_ch: str,
+) -> list[ClickHousePathMapping]:
+    roots: list[tuple[str, str]] = [("configured_root", configured_flatfiles_root_ch)]
+    default_root = DEFAULT_FLATFILES_ROOT_CH
+    if configured_flatfiles_root_ch.rstrip("/") != default_root.rstrip("/"):
+        roots.append(("default_mnt_d_root", default_root))
+    mappings: list[ClickHousePathMapping] = []
+    seen: set[tuple[str, str]] = set()
+    for name, root_ch in roots:
+        mapping = ClickHousePathMapping(
+            name=name,
+            flatfiles_root_ch=root_ch,
+            small_csv_ch=windows_path_to_clickhouse_path(small_csv_win, flatfiles_root_win, root_ch),
+            quote_files_ch=[windows_path_to_clickhouse_path(path, flatfiles_root_win, root_ch) for path in quote_files_win],
+        )
+        key = (mapping.name, mapping.small_csv_ch)
+        if key not in seen:
+            seen.add(key)
+            mappings.append(mapping)
+    for name, mapper in (
+        ("windows_drive_path", windows_drive_clickhouse_path),
+        ("relative_from_drive", relative_from_drive_path),
+        ("relative_from_flatfiles_root", lambda path: relative_from_root_path(path, Path(flatfiles_root_win))),
+    ):
+        mapping = ClickHousePathMapping(
+            name=name,
+            flatfiles_root_ch="",
+            small_csv_ch=mapper(small_csv_win),
+            quote_files_ch=[mapper(path) for path in quote_files_win],
+        )
+        key = (mapping.name, mapping.small_csv_ch)
+        if key not in seen:
+            seen.add(key)
+            mappings.append(mapping)
+    return mappings
+
+
+def print_server_context(client: ClickHouseHttpClient) -> None:
+    diagnostics = {
+        "version_user": "SELECT version(), currentUser()",
+        "file_settings": (
+            "SELECT name, value FROM system.settings "
+            "WHERE name ILIKE '%file%' OR name ILIKE '%path%' "
+            "ORDER BY name LIMIT 50"
+        ),
+    }
+    for label, sql in diagnostics.items():
+        try:
+            print(f"ClickHouse diagnostic {label}:", flush=True)
+            print(client.query_tsv(sql).strip(), flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"ClickHouse diagnostic {label} failed: {exc!r}", flush=True)
+
+
 def write_small_quote_csv(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     columns = [item.split(" ", 1)[0] for item in QUOTE_SCHEMA_STRING.split(", ")]
@@ -442,6 +550,24 @@ def windows_path_to_clickhouse_path(path: Path, flatfiles_root_win: str, flatfil
         if not drive:
             return path.as_posix()
         return f"/mnt/{drive}" + path.as_posix()[2:]
+
+
+def windows_drive_clickhouse_path(path: Path) -> str:
+    return path.resolve().as_posix()
+
+
+def relative_from_drive_path(path: Path) -> str:
+    resolved = path.resolve()
+    if resolved.drive:
+        return resolved.as_posix()[3:]
+    return resolved.as_posix().lstrip("/")
+
+
+def relative_from_root_path(path: Path, root: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return relative_from_drive_path(path)
 
 
 def quote_ident(value: str) -> str:
