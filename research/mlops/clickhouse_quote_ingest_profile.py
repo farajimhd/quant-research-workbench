@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib import parse, request
+from urllib import error, parse, request
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -29,6 +29,7 @@ CLICKHOUSE_FILE_ROOT_ENV = "TD__DATABASE__CLICKHOUSE__FILE_ROOT"
 DEFAULT_FLATFILES_ROOT_WIN = Path("D:/market-data/flatfiles/us_stocks_sip")
 DEFAULT_FLATFILES_ROOT_CH = "/mnt/d/market-data/flatfiles/us_stocks_sip"
 DEFAULT_USER_FILES_RELATIVE_FLATFILES_ROOT_CH = "market-data/flatfiles/us_stocks_sip"
+USER_FILES_RELATIVE_SYMBOL_ROOT_CH = "us_stocks_sip"
 USER_FILES_RELATIVE_FLATFILES_ALIAS_CH = "flatfiles/us_stocks_sip"
 USER_FILES_RELATIVE_FLATFILE_ALIAS_CH = "flatfile/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_ingest_profile")
@@ -266,8 +267,12 @@ class ClickHouseHttpClient:
             req.add_header("X-ClickHouse-User", self.user)
         if self.password:
             req.add_header("X-ClickHouse-Key", self.password)
-        with request.urlopen(req, timeout=None) as response:
-            return response.read().decode("utf-8", errors="replace")
+        try:
+            with request.urlopen(req, timeout=None) as response:
+                return response.read().decode("utf-8", errors="replace")
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"ClickHouse HTTP {exc.code} {exc.reason}: {body}") from exc
 
     def query_tsv(self, sql: str) -> str:
         return self.execute(sql.rstrip(";") + " FORMAT TSV")
@@ -525,7 +530,15 @@ def build_path_mappings(
             lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, USER_FILES_RELATIVE_FLATFILE_ALIAS_CH),
         )
 
+    if configured_root.rstrip("/") != USER_FILES_RELATIVE_SYMBOL_ROOT_CH.rstrip("/"):
+        append_mapping(
+            "user_files_relative_symbol_root",
+            USER_FILES_RELATIVE_SYMBOL_ROOT_CH,
+            lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, USER_FILES_RELATIVE_SYMBOL_ROOT_CH),
+        )
+
     for name, root_win in (
+        ("relative_from_flatfiles_parent", Path("D:/market-data/flatfiles")),
         ("relative_from_market_data_root", Path("D:/market-data")),
         ("relative_from_drive_root", Path("D:/")),
         ("relative_from_flatfiles_root", Path(flatfiles_root_win)),
@@ -549,7 +562,6 @@ def build_path_mappings(
 def log_preflight(message: str, log_path: Path) -> None:
     line = f"{datetime.now().isoformat(timespec='seconds')} {message}"
     print(line, flush=True)
-    print(line, file=sys.stderr, flush=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(line + "\n")
