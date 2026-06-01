@@ -19,14 +19,11 @@ import {
   Minimize2,
   Move,
   Newspaper,
-  PauseCircle,
   Play,
   RefreshCw,
   Save,
   Settings,
   ShieldAlert,
-  SkipForward,
-  StepForward,
   TableProperties,
   Target,
   TrendingUp,
@@ -85,32 +82,39 @@ type ScannerSnapshotPayload = {
   snapshot: ScannerSnapshot;
 };
 
-type LivePreloadCheck = {
-  expected_sessions: number;
-  group: string;
+type RealLiveAccountType = "paper" | "cash";
+
+type RealLivePreflightCheck = {
+  details?: Record<string, unknown>;
+  id: string;
   label: string;
   message?: string;
-  missing_sessions: string[];
-  ready_sessions: number;
-  rows: number;
-  status: string;
-  timeframe: string;
+  status: "ready" | "blocked" | string;
 };
 
-type LivePreloadPayload = {
-  checks: LivePreloadCheck[];
-  progress: number;
+type RealLivePreflightPayload = {
+  account_id: string;
+  account_type: RealLiveAccountType;
+  broker?: { base_url?: string; name?: string };
+  checks: RealLivePreflightCheck[];
+  data_provider?: { base_url?: string; name?: string };
+  ready: boolean;
+};
+
+type RealLiveScannerPayload = {
+  market_time: string;
+  provider: string;
+  row_count: number;
+  rows: Record<string, unknown>[];
   session_date: string;
-  status: string;
 };
 
-type LiveNextSignalPayload = {
-  complete?: boolean;
-  found: boolean;
-  last_checked_time?: string;
-  next_start_time?: string | null;
-  snapshot: ScannerSnapshot;
-  steps: number;
+type RealLivePortfolioPayload = {
+  account_id: string;
+  account_type: RealLiveAccountType;
+  orders: Record<string, unknown>[];
+  positions: Record<string, unknown>[];
+  summary?: Record<string, unknown>;
 };
 
 type LiveNewsArticle = {
@@ -203,9 +207,15 @@ type LiveCanvasTarget = {
 type DecisionState = "approved" | "skipped" | "watching";
 
 type OrderRow = {
+  account_type?: RealLiveAccountType;
+  avg_fill_price?: number | null;
+  broker_order_id?: string;
+  filled_quantity?: number;
   id: string;
+  last_fill_price?: number | null;
   limit: number;
   quantity: number;
+  remaining_quantity?: number;
   side: "BUY" | "SELL";
   status: string;
   stop: number;
@@ -259,11 +269,10 @@ const LIVE_LAYOUT_STORAGE_KEY = "quant-research-workbench.real-live-trading.layo
 const LIVE_LAYOUT_VERSION = 4;
 const LIVE_LAYOUTS_STORAGE_KEY = "quant-research-workbench.real-live-trading.named-layouts";
 const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.real-live-trading.shared-state";
-const LIVE_SAVED_SIMULATIONS_STORAGE_KEY = "quant-research-workbench.real-live-trading.saved-simulations";
 const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.real-live-trading.scanner-queries.v2";
 const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.real-live-trading.scanner-query.v2";
 const LIVE_CHART_VISIBILITY_STORAGE_KEY = "quant-research-workbench.real-live-trading.chart-visibility.v1";
-const LIVE_SIGNAL_SEARCH_BATCH_MINUTES = 10;
+const LIVE_ACCOUNT_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-type";
 const LIVE_STARTING_CASH = 10_000;
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const LIVE_METRICS_DOCK_HEIGHT = 86;
@@ -340,6 +349,40 @@ const LIVE_MARKET_STATE_COLUMNS = [
   "last_bearish_volume_divergence_score",
 ];
 
+const REAL_LIVE_SCANNER_COLUMNS = [
+  "ticker",
+  "bar_time_market",
+  "current_open",
+  "bid",
+  "ask",
+  "spread_bps_abs",
+  "last_return_5",
+  "last_day_volume_so_far",
+  "last_day_dollar_volume_so_far",
+  "last_transactions",
+  "provider",
+  "live_priority",
+  "live_news_recency",
+  "live_news_count",
+  "live_news_latest_title",
+];
+
+const REAL_LIVE_MARKET_COLUMNS = [
+  "ticker",
+  "bar_time_market",
+  "current_open",
+  "bid",
+  "ask",
+  "spread_bps_abs",
+  "last_day_current_change_pct",
+  "last_day_volume_so_far",
+  "last_day_dollar_volume_so_far",
+  "last_transactions",
+  "provider",
+  "live_priority",
+  "live_news_recency",
+];
+
 const CORE_WINDOW_IDS: WindowId[] = ["portfolio", "scanner"];
 
 const DEFAULT_SCANNER_QUERY_GROUPS: ScannerQueryGroup[] = [
@@ -381,27 +424,26 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   const isChildCanvas = canvasId !== "main";
   const initialCanvas = useMemo(() => readStoredCanvas(canvasId, isChildCanvas), [canvasId, isChildCanvas]);
   const initialSharedState = useMemo(() => readSharedTradingState(), []);
+  const [accountType, setAccountType] = useState<RealLiveAccountType>(readStoredAccountType);
+  const [preflightStatus, setPreflightStatus] = useState<RealLivePreflightPayload | null>(null);
   const [scope, setScope] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
-  const [session, setSession] = useState<TradingSession>(() => readStoredSession() ?? { barTime: "04:00", sessionDate: "" });
+  const [session, setSession] = useState<TradingSession>(() => readStoredSession() ?? currentExchangeSession());
+  const [localClock, setLocalClock] = useState(() => formatLocalClock(new Date()));
+  const [exchangeClock, setExchangeClock] = useState(() => formatExchangeClock(new Date()));
   const [started, setStarted] = useState(isChildCanvas);
-  const [tradingStarted, setTradingStarted] = useState(false);
   const [scannerQueryGroups, setScannerQueryGroups] = useState<ScannerQueryGroup[]>(readStoredScannerQueryGroups);
   const [scannerQueryName, setScannerQueryName] = useState(() => readStoredScannerQueryName() || DEFAULT_SCANNER_QUERY_GROUPS[0]?.name || "Scanner Query");
   const [snapshot, setSnapshot] = useState<ScannerSnapshot | null>(null);
   const [marketSnapshot, setMarketSnapshot] = useState<ScannerSnapshot | null>(null);
   const [signalRows, setSignalRows] = useState<SignalRow[]>([]);
   const [scannerQuery, setScannerQuery] = useState<BackendTableQuery>(() => normalizeLiveScannerQuery(readStoredScannerQuery()) ?? DEFAULT_SCANNER_QUERY_GROUPS[0]?.query ?? emptyScannerQuery());
-  const [preloadStatus, setPreloadStatus] = useState<LivePreloadPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [liveClockMode, setLiveClockMode] = useState<LiveClockMode>("idle");
   const [liveClockMessage, setLiveClockMessage] = useState("");
-  const [simulationSaveMessage, setSimulationSaveMessage] = useState("");
-  const [secondsPerMinute, setSecondsPerMinute] = useState("10");
   const [lastActionTime, setLastActionTime] = useState("");
-  const [startPreloading, setStartPreloading] = useState(false);
   const [selectedRow, setSelectedRow] = useState<Record<string, unknown> | null>(null);
   const [mainTimeframe, setMainTimeframe] = useState("1m");
   const [mainVisibleColumns, setMainVisibleColumns] = useState<string[]>(MAIN_DISPLAY_ITEMS);
@@ -444,7 +486,6 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     api<Scope>("/api/market-data/scope").then((payload) => {
       if (!active) return;
       setScope(payload);
-      setSession((current) => ({ ...current, sessionDate: current.sessionDate || payload.end_date || payload.start_date }));
     });
     return () => {
       active = false;
@@ -457,8 +498,6 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     api<ReviewPayload>(`/api/market-data/review${query({ processed_root: scope.processed_root, start_date: scope.start_date, end_date: scope.end_date })}`).then((payload) => {
       if (!active) return;
       setReview(payload);
-      const latestSession = availableSessionDates(payload.records).at(-1);
-      setSession((current) => ({ ...current, sessionDate: current.sessionDate || latestSession || "" }));
     });
     api<CatalogPayload>(`/api/market-data/catalog${query({ processed_root: scope.processed_root })}`).then((payload) => {
       if (active) setCatalog(payload);
@@ -504,8 +543,8 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     [orders, positions, trades]
   );
   const globalMetrics = useMemo(
-    () => buildGlobalLiveMetrics({ decisions, lastActionTime, liveClockMode, preloadStatus, scannerRows: signalRows, secondsPerMinute, session, snapshot }),
-    [decisions, lastActionTime, liveClockMode, preloadStatus, secondsPerMinute, session, signalRows, snapshot]
+    () => buildGlobalLiveMetrics({ accountType, decisions, exchangeClock, lastActionTime, liveClockMode, localClock, scannerRows: signalRows, session, snapshot }),
+    [accountType, decisions, exchangeClock, lastActionTime, liveClockMode, localClock, session, signalRows, snapshot]
   );
   const liveWindowSummaries = useMemo(
     () => buildLiveWindowSummaries(openWindows, chartWindows, layouts),
@@ -614,7 +653,6 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
         setOpenWindows([]);
         setChartWindows([]);
         setStarted(false);
-        setTradingStarted(false);
       }
       if (event.key?.startsWith(`${LIVE_LAYOUT_STORAGE_KEY}.`)) {
         setCanvasTargetsVersion((version) => version + 1);
@@ -625,321 +663,169 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   }, [canvasId, isChildCanvas]);
 
   useEffect(() => {
-    if (!started || !scope || !session.sessionDate || isChildCanvas) return;
+    const updateClocks = () => {
+      const now = new Date();
+      const exchangeSession = currentExchangeSession(now);
+      setLocalClock(formatLocalClock(now));
+      setExchangeClock(formatExchangeClock(now));
+      setSession(exchangeSession);
+      window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(exchangeSession));
+    };
+    updateClocks();
+    const timer = window.setInterval(updateClocks, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(LIVE_ACCOUNT_STORAGE_KEY, accountType);
+    setPreflightStatus(null);
+  }, [accountType]);
+
+  useEffect(() => {
+    if (!started || isChildCanvas) return;
     let canceled = false;
-    const processedRoot = scope.processed_root;
-    async function loadInitialScanner() {
-      setSession((current) => ({ ...current, barTime: "04:00" }));
-      const initialScanner = await loadScannerAt("04:00", { warmCharts: false });
-      await warmChartCacheForRows(initialScanner?.snapshot.rows ?? []);
+    const refresh = async () => {
       if (canceled) return;
-      setLiveClockMode("ready");
-      setLiveClockMessage("Data is ready. Initial scanner is loaded from the first bar. Press Start Trading to begin paced simulation.");
-    }
-    async function preloadSessionData() {
-      setLoading(true);
-      setPreloadStatus(null);
-      setSnapshot(null);
-      setMarketSnapshot(null);
-      setSelectedRow(null);
-      setLastActionTime("");
-      warmedChartCacheKeysRef.current.clear();
-      setTradingStarted(false);
-      setLiveClockMode("loading_data");
-      setLiveClockMessage("Loading provider data for the selected trading day.");
-      try {
-        const payload =
-          preloadStatus?.session_date === session.sessionDate && preloadStatus.status === "ready"
-            ? preloadStatus
-            : await api<LivePreloadPayload>(`/api/live-trading/preload${query({ processed_root: processedRoot, session_date: session.sessionDate })}`);
-        if (canceled) return;
-        setPreloadStatus(payload);
-        if (payload.status === "ready") {
-          await loadInitialScanner();
-        } else {
-          setLiveClockMode("paused");
-          setLiveClockMessage("Some provider artifacts are missing. Review the preload status before starting.");
-        }
-      } catch (requestError) {
-        if (canceled) return;
-        setLiveClockMode("paused");
-        setLiveClockMessage(requestError instanceof Error ? requestError.message : "Data preload failed.");
-      } finally {
-        if (!canceled) setLoading(false);
-      }
-    }
-    void preloadSessionData();
+      await refreshLiveWorkspace({ warmCharts: false });
+    };
+    void refresh();
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 15000);
     return () => {
       canceled = true;
+      window.clearInterval(timer);
     };
-  }, [isChildCanvas, scope, started, session.sessionDate]);
+  }, [accountType, isChildCanvas, scannerQueryKey, started]);
 
-  useEffect(() => {
-    if (!started || !tradingStarted || !scope || !session.sessionDate || liveClockMode !== "running") return;
-    const seconds = Math.max(1, Number(secondsPerMinute) || 10);
-    const runId = ++paceRunRef.current;
-    const timer = window.setTimeout(() => {
-      if (paceRunRef.current !== runId || liveClockModeRef.current !== "running") return;
-      const nextTime = addClockMinutes(session.barTime, 1);
-      if (!nextTime || isAfterClock(nextTime, "20:00")) {
-        if (paceRunRef.current !== runId || liveClockModeRef.current !== "running") return;
-        setLiveClockMode("complete");
-        setLiveClockMessage("Session clock reached the end of supported trading time.");
-        return;
-      }
-      if (paceRunRef.current !== runId || liveClockModeRef.current !== "running") return;
-      setSession((current) => ({ ...current, barTime: nextTime }));
-      loadScannerAt(nextTime);
-    }, seconds * 1000);
-    return () => window.clearTimeout(timer);
-  }, [liveClockMode, scope, secondsPerMinute, session.barTime, session.sessionDate, started, tradingStarted]);
-
-  useEffect(() => {
-    if (!started || tradingStarted || !scope || !session.sessionDate || liveClockMode !== "ready") return;
-    void loadScannerAt(session.barTime || "04:00");
-  }, [scannerQueryKey]);
-
-  async function startTrading() {
-    if (!scope || startPreloading || loading) return;
-    const nextSession = { ...session, barTime: "04:00", sessionDate: session.sessionDate || sessions.at(-1) || "" };
-    if (!nextSession.sessionDate) return;
-    canvasRemovedRef.current = false;
-    setStartPreloading(true);
-    setLoading(true);
-    setPreloadStatus(null);
-    setLiveClockMode("loading_data");
-    setLiveClockMessage("Loading bars and Benzinga news before opening the workspace.");
-    try {
-      const payload = await api<LivePreloadPayload>(`/api/live-trading/preload${query({ processed_root: scope.processed_root, session_date: nextSession.sessionDate })}`);
-      setPreloadStatus(payload);
-      if (payload.status !== "ready") {
-        setLiveClockMode("paused");
-        setLiveClockMessage("Some provider artifacts are missing. Review the preload status before starting.");
-        return;
-      }
-    } catch (requestError) {
-      setLiveClockMode("paused");
-      setLiveClockMessage(requestError instanceof Error ? requestError.message : "Data preload failed.");
-      return;
-    } finally {
-      setLoading(false);
-      setStartPreloading(false);
-    }
-    window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(nextSession));
-    window.localStorage.removeItem(LIVE_SHARED_STATE_STORAGE_KEY);
-    setSession(nextSession);
-    setDecisions({});
-    setOrders([]);
-    setPositions([]);
-    setTrades([]);
-    setSignalRows([]);
-    setMarketSnapshot(null);
-    setSimulationSaveMessage("");
-    setLastActionTime("");
-    setTradingStarted(false);
-    setStarted(true);
-  }
-
-  function startTradingSimulation() {
-    if (liveClockMode !== "ready" || loading) return;
-    setTradingStarted(true);
-    beginTradingClock();
-  }
-
-  function beginTradingClock() {
-    if (liveClockMode === "loading_data" || liveClockMode === "seeking") return;
-    paceRunRef.current += 1;
-    seekCancelRef.current += 1;
-    setLiveClockMode("running");
-    setLiveClockMessage("Simulation is pacing from the current bar. Use Next Signal to fast-forward.");
-  }
-
-  function pauseTradingClock() {
-    paceRunRef.current += 1;
-    seekCancelRef.current += 1;
-    setLiveClockMode("paused");
-    setLiveClockMessage("Live clock paused.");
-  }
-
-  function refreshCurrentBar() {
-    loadScannerAt(session.barTime);
-  }
-
-  function advanceOneBar() {
-    paceRunRef.current += 1;
-    seekCancelRef.current += 1;
-    const nextTime = addClockMinutes(session.barTime, 1);
-    if (!nextTime || isAfterClock(nextTime, "20:00")) {
-      setLiveClockMode("complete");
-      setLiveClockMessage("Session clock reached the end of supported trading time.");
-      return;
-    }
-    setLiveClockMode("paused");
-    setSession((current) => ({ ...current, barTime: nextTime }));
-    loadScannerAt(nextTime);
-  }
-
-  async function seekNextSignal() {
-    if (!tradingStarted) return;
-    paceRunRef.current += 1;
-    const runId = seekCancelRef.current + 1;
-    seekCancelRef.current = runId;
-    setLiveClockMode("seeking");
-    setLiveClockMessage("Fast-forwarding to the next scanner signal.");
-    try {
-      const searchStart = lastActionTime === session.barTime ? addClockMinutes(session.barTime, 1) || session.barTime : session.barTime;
-      const found = await runUntilNextAction(searchStart, () => seekCancelRef.current !== runId);
-      if (seekCancelRef.current !== runId) return;
-      setLiveClockMode(found ? "running" : "complete");
-      setLiveClockMessage(found ? "Scanner signal found. Live clock is pacing from this timestamp." : "No scanner signal found before the session cutoff.");
-    } catch (requestError) {
-      if (seekCancelRef.current !== runId) return;
-      setLiveClockMode("paused");
-      setLiveClockMessage(requestError instanceof Error ? requestError.message : "Scanner fast-forward failed.");
-    }
-  }
-
-  function toggleLiveClock() {
-    if (!tradingStarted) {
-      startTradingSimulation();
-      return;
-    }
-    if (liveClockMode === "ready" || liveClockMode === "idle" || liveClockMode === "complete") {
-      beginTradingClock();
-      return;
-    }
-    if (liveClockMode === "running" || liveClockMode === "seeking") {
-      pauseTradingClock();
-      return;
-    }
-    beginTradingClock();
-  }
-
-  async function loadScannerAt(barTime: string, options: { warmCharts?: boolean } = {}) {
-    if (!scope || !session.sessionDate) return null;
+  async function checkConnections(selectedAccountType = accountType) {
     setLoading(true);
     setError("");
+    setLiveClockMode("loading_data");
+    setLiveClockMessage("Checking Massive data and IBKR Client Portal connectivity.");
     try {
-      const signalPayload = await api<ScannerSnapshotPayload>(
-        `/api/market-data/scanner-snapshot${query({
-          processed_root: scope.processed_root,
-          session_date: session.sessionDate,
-          timeframe: "1m",
-          bar_time: barTime,
-          feature_groups: LIVE_FEATURE_GROUPS.join(","),
-          columns: LIVE_SCANNER_COLUMNS.join(","),
-          table_query: JSON.stringify(scannerQuery),
-          row_limit: 1000,
-        })}`
-      );
-      const marketPayload = await loadMarketStateAt(barTime);
-      const newsPayload = await loadNewsAt(barTime, [
-        ...signalPayload.snapshot.rows.map((row) => stringValue(row, "ticker")),
-        ...(marketPayload?.snapshot.rows ?? []).map((row) => stringValue(row, "ticker")),
-      ]);
-      const enrichedRows = signalPayload.snapshot.rows
-        .map((row) => mergeLiveNews(row, newsPayload))
-        .map((row) => enrichLiveCandidate(row, scannerQueryName))
-        .filter((row) => rowMatchesBackendQuery(row, scannerQuery));
-      const enrichedSnapshot = {
-        ...signalPayload.snapshot,
-        columns: appendNewsColumns(signalPayload.snapshot.columns),
-        rows: enrichedRows,
-      };
-      if (marketPayload?.snapshot) {
-        setMarketSnapshot({
-          ...marketPayload.snapshot,
-          columns: appendNewsColumns(marketPayload.snapshot.columns),
-          rows: marketPayload.snapshot.rows.map((row) => mergeLiveNews(row, newsPayload)),
-        });
-      }
-      const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? null;
-      setSnapshot(enrichedSnapshot);
-      setSelectedRow(firstRow);
-      if (enrichedRows.length) appendSignalRows(enrichedRows, barTime);
-      if (options.warmCharts !== false) void warmChartCacheForRows(enrichedRows);
-      if (firstRow) setLastActionTime(barTime);
-      return { firstRow, marketSnapshot: marketPayload?.snapshot ?? null, snapshot: enrichedSnapshot };
+      const payload = await api<RealLivePreflightPayload>(`/api/real-live-trading/preflight${query({ account_type: selectedAccountType })}`);
+      setPreflightStatus(payload);
+      setLiveClockMode(payload.ready ? "ready" : "paused");
+      setLiveClockMessage(payload.ready ? "Connections are ready." : "One or more live trading connections are blocked.");
+      return payload;
     } catch (requestError) {
-      setSnapshot(null);
-      setMarketSnapshot(null);
-      setSelectedRow(null);
-      setError(requestError instanceof Error ? requestError.message : "Scanner request failed.");
+      setPreflightStatus(null);
+      setLiveClockMode("paused");
+      setLiveClockMessage(requestError instanceof Error ? requestError.message : "Connection check failed.");
       return null;
     } finally {
       setLoading(false);
     }
   }
 
-  async function runUntilNextAction(startTime: string, shouldStop: () => boolean) {
-    if (!scope || !session.sessionDate || shouldStop() || isAfterClock(startTime, "20:00")) return false;
+  async function enterLiveWorkspace() {
+    if (loading) return;
+    const payload = preflightStatus?.account_type === accountType ? preflightStatus : await checkConnections(accountType);
+    if (!payload?.ready) return;
+    canvasRemovedRef.current = false;
+    window.localStorage.removeItem(LIVE_SHARED_STATE_STORAGE_KEY);
+    setDecisions({});
+    setOrders([]);
+    setPositions([]);
+    setTrades([]);
+    setSignalRows([]);
+    setSnapshot(null);
+    setMarketSnapshot(null);
+    setSelectedRow(null);
+    setLastActionTime("");
+    setStarted(true);
+    setLiveClockMode("running");
+    setLiveClockMessage("Live workspace is connected. Scanner and portfolio refresh automatically.");
+    await refreshLiveWorkspace({ warmCharts: true });
+  }
+
+  async function refreshLiveWorkspace(options: { warmCharts?: boolean } = {}) {
+    await Promise.all([loadScannerAt(session.barTime, options), loadBrokerPortfolio()]);
+  }
+
+  function refreshCurrentBar() {
+    void refreshLiveWorkspace({ warmCharts: false });
+  }
+
+  async function loadScannerAt(barTime: string, options: { warmCharts?: boolean } = {}) {
     setLoading(true);
     setError("");
     try {
-      let searchStart = startTime;
-      let checkedMinutes = 0;
-      while (!shouldStop() && !isAfterClock(searchStart, "20:00")) {
-        const payload = await api<LiveNextSignalPayload>(
-          `/api/live-trading/next-signal${query({
-            processed_root: scope.processed_root,
-            session_date: session.sessionDate,
-            start_time: searchStart,
-            feature_groups: LIVE_FEATURE_GROUPS.join(","),
-            columns: LIVE_SCANNER_COLUMNS.join(","),
-            table_query: JSON.stringify(scannerQuery),
-            row_limit: 1000,
-            max_steps: LIVE_SIGNAL_SEARCH_BATCH_MINUTES,
-          })}`
-        );
-        if (shouldStop()) return false;
-        checkedMinutes += payload.steps || 0;
-        const checkedTime = payload.last_checked_time || payload.snapshot.bar_time || searchStart;
-        setSession((current) => ({ ...current, barTime: checkedTime }));
-        let marketPayload: ScannerSnapshotPayload | null = null;
-        try {
-          marketPayload = await loadMarketStateAt(checkedTime);
-        } catch {
-          // The signal search is still usable if the market-state snapshot fails.
-        }
-        const newsPayload = await loadNewsAt(checkedTime, [
-          ...payload.snapshot.rows.map((row) => stringValue(row, "ticker")),
-          ...(marketPayload?.snapshot.rows ?? []).map((row) => stringValue(row, "ticker")),
-        ]);
-        const enrichedRows = payload.snapshot.rows
-          .map((row) => mergeLiveNews(row, newsPayload))
-          .map((row) => enrichLiveCandidate(row, scannerQueryName))
-          .filter((row) => rowMatchesBackendQuery(row, scannerQuery));
-        setSnapshot({ ...payload.snapshot, columns: appendNewsColumns(payload.snapshot.columns), rows: enrichedRows });
-        if (marketPayload?.snapshot) {
-          setMarketSnapshot({
-            ...marketPayload.snapshot,
-            columns: appendNewsColumns(marketPayload.snapshot.columns),
-            rows: marketPayload.snapshot.rows.map((row) => mergeLiveNews(row, newsPayload)),
-          });
-        }
-        const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? enrichedRows[0] ?? null;
-        setSelectedRow(firstRow);
-        setLiveClockMessage(`Searching scanner signals at ${checkedTime} ET (${checkedMinutes} minutes checked).`);
-        await new Promise((resolve) => window.requestAnimationFrame(resolve));
-        if (payload.found && firstRow) {
-          appendSignalRows(enrichedRows, payload.snapshot.bar_time || checkedTime);
-          await warmChartCacheForRows(enrichedRows);
-          setLastActionTime(payload.snapshot.bar_time);
-          return true;
-        }
-        if (payload.complete) return false;
-        searchStart = payload.next_start_time || addClockMinutes(checkedTime, 1) || checkedTime;
-      }
-      return false;
+      const scannerPayload = await api<RealLiveScannerPayload>("/api/real-live-trading/scanner?row_limit=500");
+      const exchangeSession = { barTime: scannerPayload.market_time || barTime || session.barTime, sessionDate: scannerPayload.session_date || session.sessionDate };
+      const liveRows = scannerPayload.rows.map((row) => normalizeRealLiveScannerRow(row, exchangeSession));
+      const marketRowsPayload = liveRows.map(buildMarketStateRow);
+      const enrichedRows = liveRows
+        .map((row) => enrichLiveCandidate(row, scannerQueryName))
+        .filter((row) => rowMatchesBackendQuery(row, scannerQuery));
+      const enrichedSnapshot = {
+        bar_time: exchangeSession.barTime,
+        columns: REAL_LIVE_SCANNER_COLUMNS,
+        feature_groups: ["massive", "live"],
+        row_count: enrichedRows.length,
+        rows: enrichedRows,
+        session_date: exchangeSession.sessionDate,
+        timeframe: "live",
+      };
+      const marketStateSnapshot = {
+        bar_time: exchangeSession.barTime,
+        columns: REAL_LIVE_MARKET_COLUMNS,
+        feature_groups: ["massive", "live"],
+        row_count: marketRowsPayload.length,
+        rows: marketRowsPayload,
+        session_date: exchangeSession.sessionDate,
+        timeframe: "live",
+      };
+      const firstRow = enrichedRows.find((row) => stringValue(row, "live_setup_group")) ?? enrichedRows[0] ?? null;
+      setSession(exchangeSession);
+      setSnapshot(enrichedSnapshot);
+      setMarketSnapshot(marketStateSnapshot);
+      setSelectedRow(firstRow);
+      if (enrichedRows.length) appendSignalRows(enrichedRows, exchangeSession.barTime);
+      if (options.warmCharts !== false) void warmChartCacheForRows(enrichedRows);
+      if (firstRow) setLastActionTime(exchangeSession.barTime);
+      setLiveClockMode("running");
+      setLiveClockMessage(`Live scanner refreshed from Massive at ${exchangeSession.barTime} ET.`);
+      return { firstRow, marketSnapshot: marketStateSnapshot, snapshot: enrichedSnapshot };
     } catch (requestError) {
       setSnapshot(null);
       setMarketSnapshot(null);
       setSelectedRow(null);
-      setError(requestError instanceof Error ? requestError.message : "Scanner fast-forward failed.");
-      return false;
+      setLiveClockMode("paused");
+      setError(requestError instanceof Error ? requestError.message : "Live scanner request failed.");
+      return null;
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadBrokerPortfolio() {
+    try {
+      const payload = await api<RealLivePortfolioPayload>(`/api/real-live-trading/portfolio${query({ account_type: accountType })}`);
+      setPositions(payload.positions.map(normalizeRealLivePosition).filter((position) => position.symbol && position.quantity !== 0));
+      setOrders(payload.orders.map((order) => normalizeRealLiveOrder(order, accountType)).filter((order) => order.symbol));
+    } catch (requestError) {
+      setError((current) => current || (requestError instanceof Error ? requestError.message : "IBKR portfolio request failed."));
+    }
+  }
+
+  async function loadMarketStateAt(barTime: string) {
+    if (!snapshot) return null;
+    const marketSnapshot = {
+      bar_time: barTime,
+      columns: REAL_LIVE_MARKET_COLUMNS,
+      feature_groups: ["massive", "live"],
+      row_count: snapshot.rows.length,
+      rows: snapshot.rows.map(buildMarketStateRow),
+      session_date: session.sessionDate,
+      timeframe: "live",
+    };
+    return { snapshot: marketSnapshot };
+  }
+
+  async function loadNewsAt(_barTime: string, _tickers: string[]) {
+    return null;
   }
 
   function markDecision(state: DecisionState) {
@@ -961,11 +847,15 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     const limit = context?.limit ?? (Number.isFinite(draftLimit) && draftLimit > 0 ? draftLimit : numberValue(contextRow, "suggested_entry") || selectedOpen);
     const stop = context?.stop ?? (Number.isFinite(draftStop) && draftStop > 0 ? draftStop : numberValue(contextRow, "suggested_stop"));
     const type = context?.type ?? tradeDraft.type;
-    const mark = context?.mark ?? (selectedOpen || limit);
     const order: OrderRow = {
+      account_type: accountType,
+      avg_fill_price: null,
+      filled_quantity: 0,
       id: `${Date.now()}-${symbol}-${side}`,
+      last_fill_price: null,
       limit,
       quantity,
+      remaining_quantity: quantity,
       side,
       status,
       stop,
@@ -974,12 +864,6 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
       type,
     };
     setOrders((current) => [order, ...current]);
-    if (side === "BUY" && status !== "CANCELED") {
-      setPositions((current) => upsertPosition(current, symbol, quantity, limit, stop, mark, session.sessionDate, session.barTime));
-    } else if (side === "SELL" && status !== "CANCELED" && heldPosition) {
-      setTrades((current) => [buildClosedTrade(heldPosition, quantity, mark, session.sessionDate, session.barTime, order.id), ...current]);
-      setPositions((current) => reducePosition(current, symbol, quantity, mark));
-    }
   }
 
   function appendSignalRows(rows: Record<string, unknown>[], barTime: string) {
@@ -995,46 +879,6 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
       if (!fresh.length) return current;
       return [...fresh, ...current].slice(0, 1000);
     });
-  }
-
-  async function loadMarketStateAt(barTime: string) {
-    if (!scope || !session.sessionDate) return null;
-    const payload = await api<ScannerSnapshotPayload>(
-      `/api/market-data/scanner-snapshot${query({
-        processed_root: scope.processed_root,
-        session_date: session.sessionDate,
-        timeframe: "1m",
-        bar_time: barTime,
-        feature_groups: LIVE_FEATURE_GROUPS.join(","),
-        columns: LIVE_SCANNER_COLUMNS.join(","),
-        row_limit: 5000,
-        table_query: JSON.stringify({
-          conditions: [],
-          matchMode: "all",
-          sortColumn: "last_day_volume_so_far",
-          sortDirection: "desc",
-        }),
-      })}`
-    );
-    return payload;
-  }
-
-  async function loadNewsAt(barTime: string, tickers: string[]) {
-    if (!scope || !session.sessionDate) return null;
-    const uniqueTickers = Array.from(new Set(tickers.map((ticker) => ticker.trim().toUpperCase()).filter(Boolean))).slice(0, 5000);
-    try {
-      return await api<LiveNewsPayload>("/api/live-trading/news-at", {
-        body: JSON.stringify({
-          bar_time: barTime,
-          processed_root: scope.processed_root,
-          session_date: session.sessionDate,
-          tickers: uniqueTickers,
-        }),
-        method: "POST",
-      });
-    } catch {
-      return null;
-    }
   }
 
   const markPositionToMarket = useCallback((symbol: string, mark: number) => {
@@ -1208,34 +1052,10 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     setChartWindows(saved.chartWindows);
   }
 
-  function saveSimulation() {
-    const savedAt = new Date().toISOString();
-    const simulation = {
-      decisions,
-      id: `${session.sessionDate || "session"}-${savedAt}`,
-      lastActionTime,
-      orders,
-      positions,
-      savedAt,
-      scannerQuery,
-      scannerQueryName,
-      session,
-      snapshot,
-    };
-    try {
-      const previous = JSON.parse(window.localStorage.getItem(LIVE_SAVED_SIMULATIONS_STORAGE_KEY) || "[]") as unknown[];
-      window.localStorage.setItem(LIVE_SAVED_SIMULATIONS_STORAGE_KEY, JSON.stringify([simulation, ...previous].slice(0, 50)));
-      setSimulationSaveMessage(`Saved ${session.sessionDate || "simulation"} at ${session.barTime} ET.`);
-    } catch {
-      setSimulationSaveMessage("Could not save this simulation in browser storage.");
-    }
-  }
-
   function closeSession() {
     paceRunRef.current += 1;
     seekCancelRef.current += 1;
     setStarted(false);
-    setTradingStarted(false);
     setLiveClockMode("idle");
     setLiveClockMessage("");
     setSnapshot(null);
@@ -1261,23 +1081,17 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
 
   if (!started) {
     return (
-      <LiveTradingStart
-        loading={loading || startPreloading}
+      <RealLiveTradingGate
+        accountType={accountType}
+        loading={loading}
         message={liveClockMessage}
-        preloadStatus={preloadStatus}
-        scope={scope}
-        session={session}
-        sessions={sessions}
-        onSessionChange={setSession}
-        onStart={startTrading}
+        preflightStatus={preflightStatus}
+        onAccountTypeChange={setAccountType}
+        onCheck={() => void checkConnections()}
+        onEnter={() => void enterLiveWorkspace()}
       />
     );
   }
-
-  const liveClockControlDisabled =
-    liveClockMode === "loading_data" ||
-    (!tradingStarted && liveClockMode !== "ready") ||
-    (loading && liveClockMode !== "running" && liveClockMode !== "seeking");
 
   return (
     <>
@@ -1338,32 +1152,19 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
             </article>
           ))}
         </div>
-        <div className="live-global-status-actions" aria-label="Simulation controls">
-          <label className="live-pace-control">
-            <span>Pace</span>
-            <input min="1" step="1" type="number" value={secondsPerMinute} onChange={(event) => setSecondsPerMinute(event.target.value)} />
-          </label>
-          <button className="button secondary compact" disabled={!tradingStarted || loading} onClick={refreshCurrentBar} type="button">
+        <div className="live-global-status-actions" aria-label="Live workspace controls">
+          <button className="button secondary compact" disabled={loading} onClick={refreshCurrentBar} type="button">
             <RefreshCw size={14} /> Refresh
           </button>
-          <button className="button secondary compact" disabled={!tradingStarted || loading} onClick={advanceOneBar} type="button">
-            <StepForward size={14} /> Next Bar
-          </button>
-          <button className="button primary compact" disabled={!tradingStarted || loading || liveClockMode === "seeking"} onClick={() => void seekNextSignal()} type="button">
-            {loading || liveClockMode === "seeking" ? <span className="loading-spinner" aria-hidden="true" /> : <SkipForward size={14} />} Next Signal
-          </button>
-          <button className="button secondary compact" disabled={!started} onClick={saveSimulation} title={simulationSaveMessage || "Save this simulation when you want to keep it"} type="button">
-            <Save size={14} /> Save Simulation
-          </button>
-          <button className="button secondary compact" disabled={liveClockControlDisabled} onClick={toggleLiveClock} type="button">
-            {liveClockMode === "running" || liveClockMode === "seeking" ? <PauseCircle size={14} /> : <Play size={14} />} {!tradingStarted ? "Start Trading" : liveClockMode === "running" || liveClockMode === "seeking" ? "Pause" : "Resume"}
+          <button className="button secondary compact" disabled={loading} onClick={() => void checkConnections()} type="button">
+            <CheckCircle2 size={14} /> Check
           </button>
           <button className="button secondary compact" onClick={closeSession} type="button">
-            <X size={14} /> Close
+            <X size={14} /> Account Gate
           </button>
         </div>
       </section>
-      <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace" style={{ minHeight: workspaceMinHeight }}>
+      <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Live trading workspace" style={{ minHeight: workspaceMinHeight }}>
         <MetricsDock metrics={portfolioMetrics} />
         {!openWindows.length ? <div className="live-empty-canvas">This canvas is empty. Open scanner rows here or pop containers into this canvas from another tab.</div> : null}
         {openWindows.map((windowId) => {
@@ -1444,53 +1245,69 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   );
 }
 
-function LiveTradingStart({
+function RealLiveTradingGate({
+  accountType,
   loading,
   message,
-  onSessionChange,
-  onStart,
-  preloadStatus,
-  scope,
-  session,
-  sessions,
+  onAccountTypeChange,
+  onCheck,
+  onEnter,
+  preflightStatus,
 }: {
+  accountType: RealLiveAccountType;
   loading: boolean;
   message: string;
-  onSessionChange: (session: TradingSession) => void;
-  onStart: () => void;
-  preloadStatus: LivePreloadPayload | null;
-  scope: Scope | null;
-  session: TradingSession;
-  sessions: string[];
+  onAccountTypeChange: (accountType: RealLiveAccountType) => void;
+  onCheck: () => void;
+  onEnter: () => void;
+  preflightStatus: RealLivePreflightPayload | null;
 }) {
-  const preloadProgress = startPreloadProgress(preloadStatus);
+  const ready = Boolean(preflightStatus?.ready);
   return (
     <>
       <PageIntro
         groupLabel="Live Trading"
-        title="Start Semi-Auto Session"
-        description="Choose the trading date. The workspace opens, validates the required provider data, then waits for you to press Start."
+        title="Live Account Gate"
+        description="Choose the IBKR account, verify Massive and IBKR Client Portal, then enter the live trading workspace."
       />
       <section className="live-start-panel panel">
         <div className="live-start-copy">
-          <span>Session Setup</span>
-          <strong>{session.sessionDate || "Select a session"}</strong>
-          <p>Historical sessions run as open-by-open simulation. The same boundary can later point to live broker and data-provider connectors.</p>
+          <span>Account</span>
+          <strong>{accountType === "paper" ? "IBKR Paper" : "IBKR Cash"}</strong>
+          <p>Paper is the default while testing. Orders and portfolio reads use the account selected here.</p>
         </div>
         <div className="live-start-form">
-          <LiveSelect label="Trading date" value={session.sessionDate} values={sessions} onChange={(value) => onSessionChange({ ...session, sessionDate: value })} />
-          <div className="live-start-path">
-            <span>Processed data</span>
-            <strong>{scope?.processed_root ?? "Loading..."}</strong>
+          <div className="live-account-toggle" role="group" aria-label="Account type">
+            {(["paper", "cash"] as RealLiveAccountType[]).map((item) => (
+              <button className={accountType === item ? "button primary" : "button secondary"} key={item} onClick={() => onAccountTypeChange(item)} type="button">
+                {item === "paper" ? "Paper" : "Cash"}
+              </button>
+            ))}
           </div>
-          <div className="live-start-progress-grid" aria-label="Session preload progress">
-            <LiveStartProgress label="Bars" progress={preloadProgress.bars} status={preloadProgress.barsStatus} />
-            <LiveStartProgress label="News" progress={preloadProgress.news} status={preloadProgress.newsStatus} />
+          <div className="live-start-path">
+            <span>Connection gate</span>
+            <strong>{preflightStatus?.account_id || "Not checked"}</strong>
+          </div>
+          <div className="live-start-progress-grid" aria-label="Live connection checks">
+            {(preflightStatus?.checks ?? []).map((check) => (
+              <LiveStartProgress key={check.id} label={check.label} progress={check.status === "ready" ? 1 : 0} status={check.status} />
+            ))}
+            {!preflightStatus ? (
+              <>
+                <LiveStartProgress label="Massive data" progress={0} status="waiting" />
+                <LiveStartProgress label="IBKR broker" progress={0} status="waiting" />
+              </>
+            ) : null}
           </div>
           {message ? <div className="live-start-message">{message}</div> : null}
-          <button className="button primary" disabled={!session.sessionDate || loading} onClick={onStart} type="button">
-            {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={15} />} {loading ? "Loading..." : "Load Session"}
-          </button>
+          <div className="live-start-actions">
+            <button className="button secondary" disabled={loading} onClick={onCheck} type="button">
+              {loading ? <span className="loading-spinner" aria-hidden="true" /> : <CheckCircle2 size={15} />} Check Connections
+            </button>
+            <button className="button primary" disabled={!ready || loading} onClick={onEnter} type="button">
+              <Play size={15} /> Enter Workspace
+            </button>
+          </div>
         </div>
       </section>
     </>
@@ -1820,7 +1637,7 @@ function ScannerContainer({
         <DataTable
           columns={marketStateTableColumns(marketSnapshot?.columns ?? [])}
           defaultSort={{ column: "last_day_volume_so_far", direction: "desc" }}
-          empty={loading ? "Loading market state..." : "Market state will load at the current simulation time."}
+          empty={loading ? "Loading market state..." : "Market state will load from the live scanner."}
           isRowSelected={(row) => stringValue(row, "ticker") === selectedTicker}
           onRowClick={onRowSelect}
           preserveFiltersOnDataChange
@@ -1921,7 +1738,7 @@ function PortfolioContainer({
           {activeTab === "Open Positions" ? <DataTable rows={positions} empty="No open positions." /> : null}
           {activeTab === "P/L" ? <DataTable rows={buildProfitLossRows(positions, trades)} empty="No P/L rows." /> : null}
           {activeTab === "Trades" ? <DataTable rows={trades} empty="No completed trades yet." /> : null}
-          {activeTab === "Orders" ? <DataTable rows={orders} empty="No staged orders." /> : null}
+          {activeTab === "Orders" ? <DataTable rows={orders} empty="No live orders." /> : null}
         </>
       ) : null}
     </div>
@@ -2741,17 +2558,85 @@ function availableSessionDates(records: RecordRow[]) {
   return Array.from(new Set(records.filter((record) => record.exists && record.group === "bars" && record.timeframe === "1m").map((record) => record.session_date))).sort();
 }
 
-function startPreloadProgress(preloadStatus: LivePreloadPayload | null) {
-  if (!preloadStatus) return { bars: 0, barsStatus: "waiting", news: 0, newsStatus: "waiting" };
-  const newsCheck = preloadStatus.checks.find((check) => check.group === "news");
-  const barChecks = preloadStatus.checks.filter((check) => check.group !== "news");
-  const barsReady = barChecks.reduce((total, check) => total + check.ready_sessions, 0);
-  const barsExpected = barChecks.reduce((total, check) => total + check.expected_sessions, 0);
+function normalizeRealLiveScannerRow(row: Record<string, unknown>, session: TradingSession): Record<string, unknown> {
+  const ticker = stringValue(row, "symbol") || stringValue(row, "ticker");
+  const lastPrice = numberValue(row, "last_price") || numberValue(row, "price");
+  const bid = numberValue(row, "bid");
+  const ask = numberValue(row, "ask");
+  const dayVolume = numberValue(row, "day_volume");
+  const tradeCount = numberValue(row, "trade_count");
+  const dayChange = numberValue(row, "day_change_pct");
   return {
-    bars: barsExpected ? barsReady / barsExpected : 0,
-    barsStatus: barChecks.length && barChecks.every((check) => check.status === "ready") ? "ready" : "loading",
-    news: newsCheck?.expected_sessions ? newsCheck.ready_sessions / newsCheck.expected_sessions : 0,
-    newsStatus: newsCheck?.status ?? "waiting",
+    ...row,
+    ticker,
+    bar_time_market: `${session.sessionDate}T${session.barTime}:00-04:00`,
+    current_open: lastPrice,
+    last_close: lastPrice,
+    last_open: lastPrice,
+    last_high: lastPrice,
+    last_low: lastPrice,
+    last_return_5: dayChange,
+    last_volume: dayVolume,
+    last_recent_volume_5: dayVolume,
+    last_transactions: tradeCount,
+    last_transactions_vs_prior_3: 0,
+    last_day_open: lastPrice > 0 && dayChange > -0.99 ? lastPrice / (1 + dayChange) : lastPrice,
+    last_day_high_so_far: lastPrice,
+    last_day_low_so_far: lastPrice,
+    last_day_volume_so_far: dayVolume,
+    last_day_dollar_volume_so_far: numberValue(row, "day_notional") || dayVolume * lastPrice,
+    last_vwap: lastPrice,
+    bid,
+    ask,
+    spread_bps_abs: numberValue(row, "spread_bps"),
+    live_bias: dayChange > 0 ? "bullish" : dayChange < 0 ? "bearish" : "neutral",
+    live_news_count: 0,
+    live_news_items: [],
+    live_news_latest_time: "",
+    live_news_latest_title: "",
+    live_news_recency: "none",
+    live_news_recent: false,
+    live_setup_group: "massive-live",
+    suggested_entry: ask || lastPrice,
+    suggested_stop: bid || lastPrice * 0.97,
+  };
+}
+
+function normalizeRealLivePosition(row: Record<string, unknown>): PositionRow {
+  const symbol = stringValue(row, "symbol");
+  const quantity = numberValue(row, "quantity");
+  const avgPrice = numberValue(row, "avg_price");
+  const mark = numberValue(row, "mark_price") || avgPrice;
+  return {
+    avg_price: avgPrice,
+    mark,
+    quantity,
+    stop: 0,
+    symbol,
+    unrealized_pnl: numberValue(row, "unrealized_pnl") || (mark - avgPrice) * quantity,
+    unrealized_pnl_pct: avgPrice > 0 ? mark / avgPrice - 1 : 0,
+  };
+}
+
+function normalizeRealLiveOrder(row: Record<string, unknown>, accountType: RealLiveAccountType): OrderRow {
+  const quantity = numberValue(row, "quantity");
+  const filled = numberValue(row, "filled_quantity");
+  return {
+    account_type: accountType,
+    avg_fill_price: optionalNumber(row, "avg_fill_price"),
+    broker_order_id: stringValue(row, "broker_order_id"),
+    filled_quantity: filled,
+    id: stringValue(row, "broker_order_id") || `${Date.now()}-${stringValue(row, "symbol")}`,
+    last_fill_price: optionalNumber(row, "last_fill_price"),
+    limit: numberValue(row, "limit_price"),
+    quantity,
+    remaining_quantity: numberValue(row, "remaining_quantity") || Math.max(0, quantity - filled),
+    side: stringValue(row, "side") === "SELL" ? "SELL" : "BUY",
+    status: stringValue(row, "status") || "UNKNOWN",
+    stop: 0,
+    symbol: stringValue(row, "symbol"),
+    timestamp: stringValue(row, "submitted_at"),
+    type: stringValue(row, "order_type"),
   };
 }
 
@@ -3062,8 +2947,9 @@ function latestLiveChartRow(chart: ChartWindow, marketRows: Record<string, unkno
 }
 
 function quoteFromRow(row: Record<string, unknown>, fallbackOpen: number) {
-  const ask = fallbackOpen || numberValue(row, "current_open") || numberValue(row, "open") || numberValue(row, "last_close");
-  const bid = Math.max(0, ask - 0.01);
+  const last = fallbackOpen || numberValue(row, "current_open") || numberValue(row, "open") || numberValue(row, "last_close");
+  const ask = numberValue(row, "ask") || last;
+  const bid = numberValue(row, "bid") || Math.max(0, ask - 0.01);
   return {
     ask,
     bid,
@@ -3305,46 +3191,42 @@ function buildPortfolioMetrics({ orders, positions, trades }: { orders: OrderRow
 }
 
 function buildGlobalLiveMetrics({
+  accountType,
   decisions,
+  exchangeClock,
   lastActionTime,
   liveClockMode,
-  preloadStatus,
+  localClock,
   scannerRows,
-  secondsPerMinute,
   session,
   snapshot,
 }: {
+  accountType: RealLiveAccountType;
   decisions: Record<string, DecisionState>;
+  exchangeClock: string;
   lastActionTime: string;
   liveClockMode: LiveClockMode;
-  preloadStatus: LivePreloadPayload | null;
+  localClock: string;
   scannerRows: Record<string, unknown>[];
-  secondsPerMinute: string;
   session: TradingSession;
   snapshot: ScannerSnapshot | null;
 }) {
   const decisionsCount = Object.keys(decisions).length;
-  const preloadProgress = preloadStatus ? preloadStatus.progress : liveClockMode === "loading_data" ? 0.45 : 0;
   const modeValue = (
     <span className="live-mode-value">
       <span>{formatLiveMode(liveClockMode)}</span>
-      {liveClockMode === "loading_data" ? (
-        <span className="live-mode-progress" aria-label="Loading data">
-          <span style={{ width: `${Math.max(8, Math.round(preloadProgress * 100))}%` }} />
-        </span>
-      ) : null}
     </span>
   );
   return {
     items: [
-      { icon: <Clock3 size={14} />, label: "Date", tone: "info", value: session.sessionDate || "-" },
-      { icon: <Clock3 size={14} />, label: "Clock", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" ? "warning" : "muted", value: `${session.barTime} ET` },
-      { icon: <Activity size={14} />, label: "Mode", tone: liveClockMode === "running" ? "success" : liveClockMode === "seeking" || liveClockMode === "loading_data" ? "warning" : "muted", value: modeValue },
-      { icon: <TableProperties size={14} />, label: "Raw Scanner Rows", tone: snapshot?.row_count ? "info" : "muted", value: integer(snapshot?.row_count ?? 0) },
+      { icon: <Banknote size={14} />, label: "Account", tone: accountType === "paper" ? "info" : "warning", value: accountType === "paper" ? "Paper" : "Cash" },
+      { icon: <Clock3 size={14} />, label: "Exchange", tone: "info", value: exchangeClock || `${session.barTime} ET` },
+      { icon: <Clock3 size={14} />, label: "Local", tone: "info", value: localClock || "-" },
+      { icon: <Activity size={14} />, label: "Mode", tone: liveClockMode === "running" ? "success" : liveClockMode === "loading_data" ? "warning" : "muted", value: modeValue },
+      { icon: <TableProperties size={14} />, label: "Scanner Rows", tone: snapshot?.row_count ? "info" : "muted", value: integer(snapshot?.row_count ?? 0) },
       { icon: <TrendingUp size={14} />, label: "Signals", tone: scannerRows.length ? "success" : "muted", value: integer(scannerRows.length) },
       { icon: <Target size={14} />, label: "Decisions", tone: decisionsCount ? "info" : "muted", value: integer(decisionsCount) },
-      { icon: <SkipForward size={14} />, label: "Replay Pace", tone: "info", value: `${Math.max(1, Number(secondsPerMinute) || 10)}s / 1m` },
-      { icon: <CheckCircle2 size={14} />, label: "Last Signal", tone: lastActionTime ? "success" : "muted", value: lastActionTime || "-" },
+      { icon: <CheckCircle2 size={14} />, label: "Last Refresh", tone: lastActionTime ? "success" : "muted", value: lastActionTime || "-" },
     ],
   };
 }
@@ -3628,6 +3510,61 @@ function numberValue(row: Record<string, unknown> | null | undefined, key: strin
   const value = row?.[key];
   const numeric = typeof value === "number" ? value : Number(value);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function optionalNumber(row: Record<string, unknown> | null | undefined, key: string) {
+  const value = row?.[key];
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function readStoredAccountType(): RealLiveAccountType {
+  try {
+    return window.localStorage.getItem(LIVE_ACCOUNT_STORAGE_KEY) === "cash" ? "cash" : "paper";
+  } catch {
+    return "paper";
+  }
+}
+
+function currentExchangeSession(now = new Date()): TradingSession {
+  const parts = exchangeDateParts(now);
+  return { barTime: `${parts.hour}:${parts.minute}`, sessionDate: `${parts.year}-${parts.month}-${parts.day}` };
+}
+
+function formatExchangeClock(now = new Date()) {
+  const parts = exchangeDateParts(now);
+  return `${parts.hour}:${parts.minute}:${parts.second} ET`;
+}
+
+function formatLocalClock(now = new Date()) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(now);
+}
+
+function exchangeDateParts(now: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    month: "2-digit",
+    second: "2-digit",
+    timeZone: "America/New_York",
+    year: "numeric",
+  }).formatToParts(now);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value || "00";
+  return {
+    day: value("day"),
+    hour: value("hour") === "24" ? "00" : value("hour"),
+    minute: value("minute"),
+    month: value("month"),
+    second: value("second"),
+    year: value("year"),
+  };
 }
 
 function splitList(value: unknown) {

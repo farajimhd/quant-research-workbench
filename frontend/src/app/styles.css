@@ -9221,6 +9221,13 @@ button {
   overflow-wrap: anywhere;
 }
 
+.live-account-toggle,
+.live-start-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .live-start-progress-grid {
   display: grid;
   gap: 8px;
