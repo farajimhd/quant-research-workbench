@@ -22,7 +22,7 @@ from research.masked_event_model.v4.losses import masked_byte_bce_loss
 from research.masked_event_model.v4.masking import build_byte_masks
 from research.masked_event_model.v4.model import CompactByteMaskedAutoencoder
 from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
-from research.mlops.compact_events import CompactEventDataConfig, CompactEventIterableDataset
+from research.mlops.compact_events import CompactEventDataConfig, CompactEventIterableDataset, PrecomputedChunkDataConfig, PrecomputedV4ChunkIterableDataset
 from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
@@ -43,6 +43,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train_defaults = TrainConfig()
     parser = argparse.ArgumentParser(description="Train compact byte masked event autoencoder v4.")
     parser.add_argument("--canonical-root", default=str(data_defaults.canonical_root))
+    parser.add_argument("--precomputed-chunk-root", default="")
     parser.add_argument("--reference-dir", default=str(data_defaults.reference_dir))
     parser.add_argument("--output-root", default="")
     parser.add_argument("--run-root", default="")
@@ -230,6 +231,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
     return ExperimentConfig(
         data=DataConfig(
             canonical_root=Path(args.canonical_root),
+            precomputed_chunk_root=Path(args.precomputed_chunk_root) if args.precomputed_chunk_root else None,
             reference_dir=Path(args.reference_dir),
             train_start_date=args.train_start_date,
             train_end_date=args.train_end_date,
@@ -250,6 +252,18 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
 def make_loader(config: ExperimentConfig, split: str, seed: int) -> DataLoader:
     data = config.data
     start, end = (data.train_start_date, data.train_end_date) if split == "train" else (data.validation_start_date, data.validation_end_date)
+    if data.precomputed_chunk_root is not None:
+        dataset = PrecomputedV4ChunkIterableDataset(
+            PrecomputedChunkDataConfig(
+                chunk_root=data.precomputed_chunk_root,
+                start_date=start,
+                end_date=end,
+                batch_size=config.train.batch_size,
+                events_per_chunk=data.events_per_chunk,
+                seed=seed,
+            )
+        )
+        return DataLoader(dataset, batch_size=None, num_workers=0, pin_memory=False)
     dataset_config = CompactEventDataConfig(
         canonical_root=data.canonical_root,
         reference_dir=data.reference_dir,

@@ -15,6 +15,7 @@ DEFAULT_VALIDATION_END = "2025-12-05"
 @dataclass(slots=True)
 class DataConfig:
     canonical_root: Path = DEFAULT_CANONICAL_ROOT
+    precomputed_chunk_root: Path | None = None
     reference_dir: Path = DEFAULT_REFERENCE_DIR
     train_start_date: str = DEFAULT_TRAIN_START
     train_end_date: str = DEFAULT_TRAIN_END

@@ -92,6 +92,17 @@ class CompactEventDataConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class PrecomputedChunkDataConfig:
+    chunk_root: Path
+    start_date: str
+    end_date: str
+    batch_size: int = 256
+    events_per_chunk: int = DEFAULT_EVENTS_PER_CHUNK
+    seed: int = 17
+    shard_cache_size: int = 4
+
+
+@dataclass(frozen=True, slots=True)
 class CanonicalGroup:
     ticker: str
     year_month: str
@@ -540,6 +551,93 @@ class CompactEventIterableDataset(IterableDataset):
             timestamp = rng.randint(row.min_ts, row.max_ts)
             return row, timestamp
         return rng.choice(available), timestamp
+
+
+class PrecomputedV4ChunkIterableDataset(IterableDataset):
+    def __init__(self, config: PrecomputedChunkDataConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.shards = discover_precomputed_chunk_shards(config)
+        if not self.shards:
+            raise FileNotFoundError(f"No precomputed v4 chunk shards found under {config.chunk_root}")
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        worker = get_worker_info()
+        worker_id = worker.id if worker else 0
+        rng = random.Random(self.config.seed + worker_id)
+        cache: dict[Path, pl.DataFrame] = {}
+        order: list[Path] = []
+        while True:
+            started = time.perf_counter()
+            shard = rng.choice(self.shards)
+            frame = get_cached_chunk_shard(shard, cache, order, self.config.shard_cache_size)
+            frame = frame.filter((pl.col("origin_session_date") >= self.config.start_date) & (pl.col("origin_session_date") <= self.config.end_date))
+            if frame.height == 0:
+                continue
+            count = min(self.config.batch_size, frame.height)
+            indices = [rng.randrange(frame.height) for _ in range(count)]
+            batch = frame[indices]
+            headers = np.stack([np.frombuffer(value, dtype=np.uint8, count=HEADER_BYTES) for value in batch["header_uint8"].to_list()])
+            event_values = batch["events_uint8"].to_list()
+            events = np.stack(
+                [
+                    np.frombuffer(value, dtype=np.uint8, count=self.config.events_per_chunk * EVENT_BYTES).reshape(self.config.events_per_chunk, EVENT_BYTES)
+                    for value in event_values
+                ]
+            )
+            yield {
+                "header_uint8": torch.from_numpy(headers.copy()),
+                "events_uint8": torch.from_numpy(events.copy()),
+                "origin_timestamp_ns": torch.from_numpy(batch["origin_timestamp_ns"].to_numpy().astype(np.int64)),
+                "ticker": batch["ticker"].to_list(),
+                "session_date": batch["origin_session_date"].to_list(),
+                "batch_session_date": "precomputed",
+                "row_bytes": HEADER_BYTES + self.config.events_per_chunk * EVENT_BYTES,
+                "events_per_chunk": self.config.events_per_chunk,
+                "profile": {
+                    "data/batch_build_seconds": time.perf_counter() - started,
+                    "data/sample_select_seconds": 0.0,
+                    "data/cache_get_seconds": 0.0,
+                    "data/encode_seconds": 0.0,
+                    "data/attempts": float(count),
+                    "data/filled": float(count),
+                    "data/rejected_samples": 0.0,
+                    "data/cache_hits": 0.0,
+                    "data/cache_misses": 0.0,
+                    "data/cache_hit_pct": 100.0,
+                },
+            }
+
+
+def discover_precomputed_chunk_shards(config: PrecomputedChunkDataConfig) -> list[Path]:
+    paths: list[Path] = []
+    for path in sorted(config.chunk_root.glob("bucket=*/part-*.parquet")):
+        try:
+            stats = pl.scan_parquet(str(path)).select(
+                pl.col("origin_session_date").min().alias("min_date"),
+                pl.col("origin_session_date").max().alias("max_date"),
+            ).collect()
+        except Exception:
+            continue
+        if stats.height == 0:
+            continue
+        min_date = str(stats["min_date"][0])
+        max_date = str(stats["max_date"][0])
+        if max_date >= config.start_date and min_date <= config.end_date:
+            paths.append(path)
+    return paths
+
+
+def get_cached_chunk_shard(path: Path, cache: dict[Path, pl.DataFrame], order: list[Path], cache_size: int) -> pl.DataFrame:
+    if path in cache:
+        return cache[path]
+    frame = pl.read_parquet(path)
+    if len(cache) >= max(1, cache_size) and order:
+        oldest = order.pop(0)
+        cache.pop(oldest, None)
+    cache[path] = frame
+    order.append(path)
+    return frame
 
 
 def encode_events_chunk_from_frame(
