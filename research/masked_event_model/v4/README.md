@@ -29,22 +29,23 @@ header_bit_logits: [masked_header_bytes, 8]
 event_bit_logits:  [masked_event_bytes, 8]
 ```
 
-Default data root:
+Default precomputed chunk root:
 
 ```text
-D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_compact_v1
+D:/market-data/prepared/us_stocks_sip/v4_compact_event_chunks_v1
 ```
 
-Build canonical compact data first:
+Build precomputed v4 chunks first:
 
 ```powershell
-python -m research.mlops.run_build_compact_canonical --rebuild
+python -m research.mlops.run_build_v4_chunks --rebuild
 ```
 
-Rows dropped by canonical normalization, plus quote rows with suspicious size fields, are written to:
+The trainer accepts either the prepared root above or its `chunks` subfolder as `--precomputed-chunk-root`.
+Chunk build issues and state are written under:
 
 ```text
-D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_compact_v1_issues
+D:/market-data/prepared/us_stocks_sip/v4_compact_event_chunks_v1/issues
 ```
 
 Run training:

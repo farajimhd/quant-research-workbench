@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from research.mlops.compact_events import DEFAULT_CANONICAL_ROOT, DEFAULT_EVENTS_PER_CHUNK, DEFAULT_REFERENCE_DIR
+from research.mlops.compact_events import DEFAULT_CANONICAL_ROOT, DEFAULT_EVENTS_PER_CHUNK, DEFAULT_PRECOMPUTED_V4_CHUNK_ROOT, DEFAULT_REFERENCE_DIR
 
 
 DEFAULT_TRAIN_START = "2025-11-01"
@@ -15,7 +15,7 @@ DEFAULT_VALIDATION_END = "2025-12-05"
 @dataclass(slots=True)
 class DataConfig:
     canonical_root: Path = DEFAULT_CANONICAL_ROOT
-    precomputed_chunk_root: Path | None = None
+    precomputed_chunk_root: Path | None = DEFAULT_PRECOMPUTED_V4_CHUNK_ROOT
     reference_dir: Path = DEFAULT_REFERENCE_DIR
     train_start_date: str = DEFAULT_TRAIN_START
     train_end_date: str = DEFAULT_TRAIN_END

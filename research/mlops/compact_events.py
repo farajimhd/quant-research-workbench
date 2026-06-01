@@ -20,6 +20,7 @@ NANOSECONDS_PER_MICROSECOND = 1_000
 NANOSECONDS_PER_DAY = 24 * 60 * 60 * 1_000_000_000
 
 DEFAULT_CANONICAL_ROOT = Path("D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_compact_v1")
+DEFAULT_PRECOMPUTED_V4_CHUNK_ROOT = Path("D:/market-data/prepared/us_stocks_sip/v4_compact_event_chunks_v1")
 DEFAULT_REFERENCE_DIR = Path(__file__).resolve().parents[1] / "market_references" / "massive"
 
 HEADER_BYTES = 14
@@ -96,6 +97,7 @@ class PrecomputedChunkDataConfig:
     chunk_root: Path
     start_date: str
     end_date: str
+    tickers: tuple[str, ...] = ("ALL",)
     batch_size: int = 256
     events_per_chunk: int = DEFAULT_EVENTS_PER_CHUNK
     seed: int = 17
@@ -556,10 +558,20 @@ class CompactEventIterableDataset(IterableDataset):
 class PrecomputedV4ChunkIterableDataset(IterableDataset):
     def __init__(self, config: PrecomputedChunkDataConfig) -> None:
         super().__init__()
-        self.config = config
-        self.shards = discover_precomputed_chunk_shards(config)
+        root = resolve_precomputed_chunk_root(config.chunk_root)
+        self.config = PrecomputedChunkDataConfig(
+            chunk_root=root,
+            start_date=config.start_date,
+            end_date=config.end_date,
+            tickers=config.tickers,
+            batch_size=config.batch_size,
+            events_per_chunk=config.events_per_chunk,
+            seed=config.seed,
+            shard_cache_size=config.shard_cache_size,
+        )
+        self.shards = discover_precomputed_chunk_shards(self.config)
         if not self.shards:
-            raise FileNotFoundError(f"No precomputed v4 chunk shards found under {config.chunk_root}")
+            raise FileNotFoundError(f"No precomputed v4 chunk shards found under {self.config.chunk_root}")
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         worker = get_worker_info()
@@ -570,8 +582,7 @@ class PrecomputedV4ChunkIterableDataset(IterableDataset):
         while True:
             started = time.perf_counter()
             shard = rng.choice(self.shards)
-            frame = get_cached_chunk_shard(shard, cache, order, self.config.shard_cache_size)
-            frame = frame.filter((pl.col("origin_session_date") >= self.config.start_date) & (pl.col("origin_session_date") <= self.config.end_date))
+            frame = get_cached_chunk_shard(shard, cache, order, self.config)
             if frame.height == 0:
                 continue
             count = min(self.config.batch_size, frame.height)
@@ -610,8 +621,9 @@ class PrecomputedV4ChunkIterableDataset(IterableDataset):
 
 
 def discover_precomputed_chunk_shards(config: PrecomputedChunkDataConfig) -> list[Path]:
+    chunk_root = resolve_precomputed_chunk_root(config.chunk_root)
     paths: list[Path] = []
-    for path in sorted(config.chunk_root.glob("bucket=*/part-*.parquet")):
+    for path in sorted(chunk_root.glob("bucket=*/part-*.parquet")):
         try:
             stats = pl.scan_parquet(str(path)).select(
                 pl.col("origin_session_date").min().alias("min_date"),
@@ -628,11 +640,20 @@ def discover_precomputed_chunk_shards(config: PrecomputedChunkDataConfig) -> lis
     return paths
 
 
-def get_cached_chunk_shard(path: Path, cache: dict[Path, pl.DataFrame], order: list[Path], cache_size: int) -> pl.DataFrame:
+def resolve_precomputed_chunk_root(path: Path) -> Path:
+    if (path / "chunks").is_dir():
+        return path / "chunks"
+    return path
+
+
+def get_cached_chunk_shard(path: Path, cache: dict[Path, pl.DataFrame], order: list[Path], config: PrecomputedChunkDataConfig) -> pl.DataFrame:
     if path in cache:
         return cache[path]
-    frame = pl.read_parquet(path)
-    if len(cache) >= max(1, cache_size) and order:
+    filters = (pl.col("origin_session_date") >= config.start_date) & (pl.col("origin_session_date") <= config.end_date)
+    if config.tickers and not any(value.upper() in ALL_TICKERS for value in config.tickers):
+        filters = filters & pl.col("ticker").is_in(list(config.tickers))
+    frame = pl.scan_parquet(str(path)).filter(filters).collect()
+    if len(cache) >= max(1, config.shard_cache_size) and order:
         oldest = order.pop(0)
         cache.pop(oldest, None)
     cache[path] = frame

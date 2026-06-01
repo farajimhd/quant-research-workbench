@@ -43,7 +43,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     train_defaults = TrainConfig()
     parser = argparse.ArgumentParser(description="Train compact byte masked event autoencoder v4.")
     parser.add_argument("--canonical-root", default=str(data_defaults.canonical_root))
-    parser.add_argument("--precomputed-chunk-root", default="")
+    parser.add_argument("--precomputed-chunk-root", default=str(data_defaults.precomputed_chunk_root or ""))
     parser.add_argument("--reference-dir", default=str(data_defaults.reference_dir))
     parser.add_argument("--output-root", default="")
     parser.add_argument("--run-root", default="")
@@ -130,7 +130,11 @@ def main(argv: list[str] | None = None) -> None:
         run_name=run_name,
         args=vars(args),
         config=dataclass_tree(config),
-        data_roots={"canonical_root": str(config.data.canonical_root), "reference_dir": str(config.data.reference_dir)},
+        data_roots={
+            "canonical_root": str(config.data.canonical_root),
+            "precomputed_chunk_root": str(config.data.precomputed_chunk_root or ""),
+            "reference_dir": str(config.data.reference_dir),
+        },
         output_root=output_dir,
         wandb_info={"project": args.wandb_project, "entity": args.wandb_entity, "run_name": run_name},
     )
@@ -258,9 +262,11 @@ def make_loader(config: ExperimentConfig, split: str, seed: int) -> DataLoader:
                 chunk_root=data.precomputed_chunk_root,
                 start_date=start,
                 end_date=end,
+                tickers=data.tickers,
                 batch_size=config.train.batch_size,
                 events_per_chunk=data.events_per_chunk,
                 seed=seed,
+                shard_cache_size=data.month_cache_size,
             )
         )
         return DataLoader(dataset, batch_size=None, num_workers=0, pin_memory=False)
