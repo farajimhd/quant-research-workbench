@@ -4,10 +4,11 @@ import { Layout, type PageKey } from "./app/components/Layout";
 import { LiveTradingPage } from "./pages/LiveTradingPage";
 import { MarketDataBuildPage } from "./pages/MarketDataBuildPage";
 import { MarketDataReviewPage } from "./pages/MarketDataReviewPage";
+import { RealLiveTradingPage } from "./pages/RealLiveTradingPage";
 import { ResearchRunsPage } from "./pages/ResearchRunsPage";
 import { StrategyPage } from "./pages/StrategyPage";
 
-const validPages: PageKey[] = ["strategy", "research-runs", "build-data", "review-data", "live-trading"];
+const validPages: PageKey[] = ["strategy", "research-runs", "build-data", "review-data", "live-trading", "real-live-trading"];
 
 export function App() {
   const [page, setPage] = useState<PageKey>(() => {
@@ -41,6 +42,9 @@ export function App() {
       </div>
       <div aria-hidden={page !== "live-trading"} className={page === "live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "live-trading" || visitedPages.has("live-trading") ? <LiveTradingPage onTopbarCenterChange={setTopbarCenter} /> : null}
+      </div>
+      <div aria-hidden={page !== "real-live-trading"} className={page === "real-live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
+        {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage /> : null}
       </div>
     </Layout>
   );

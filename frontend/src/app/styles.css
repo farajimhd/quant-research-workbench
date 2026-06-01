@@ -11526,3 +11526,188 @@ button {
     grid-column: 1 / -1;
   }
 }
+
+.real-live-page {
+  display: grid;
+  gap: 12px;
+  min-height: calc(100vh - 96px);
+}
+
+.real-live-header {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.real-live-header span,
+.real-live-header-actions label span,
+.real-live-panel-title span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.real-live-header h2 {
+  color: var(--foreground);
+  font-size: 22px;
+  line-height: 1.1;
+  margin: 2px 0 0;
+}
+
+.real-live-header-actions {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: end;
+}
+
+.real-live-header-actions label,
+.real-live-ticket label {
+  display: grid;
+  gap: 5px;
+}
+
+.real-live-header-actions select,
+.real-live-ticket input,
+.real-live-ticket select {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--foreground);
+  min-height: 34px;
+  padding: 6px 9px;
+}
+
+.real-live-message {
+  background: color-mix(in oklab, var(--info) 10%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--info) 28%, var(--border));
+  border-radius: 8px;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 9px 12px;
+}
+
+.real-live-message.error {
+  background: color-mix(in oklab, var(--danger) 10%, var(--surface));
+  border-color: color-mix(in oklab, var(--danger) 34%, var(--border));
+  color: var(--danger);
+}
+
+.real-live-gate {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.real-live-check {
+  align-items: start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 10px;
+}
+
+.real-live-check[data-status="ready"] {
+  border-color: color-mix(in oklab, var(--success) 42%, var(--border));
+}
+
+.real-live-check[data-status="blocked"] {
+  border-color: color-mix(in oklab, var(--danger) 48%, var(--border));
+}
+
+.real-live-check strong {
+  color: var(--foreground);
+  display: block;
+  font-size: 13px;
+}
+
+.real-live-check span {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 12px;
+  line-height: 1.35;
+  margin-top: 2px;
+}
+
+.real-live-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+}
+
+.real-live-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.real-live-panel.scanner {
+  min-height: 560px;
+}
+
+.real-live-panel.orders {
+  grid-column: 1 / -1;
+}
+
+.real-live-panel-title {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.real-live-panel-title strong {
+  color: var(--foreground);
+}
+
+.real-live-scanner-table {
+  min-height: 480px;
+  overflow: auto;
+}
+
+.real-live-side {
+  align-content: start;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.real-live-ticket {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.real-live-ticket button {
+  min-height: 36px;
+}
+
+@media (max-width: 980px) {
+  .real-live-header {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .real-live-header-actions {
+    justify-content: start;
+  }
+
+  .real-live-grid {
+    grid-template-columns: 1fr;
+  }
+}
