@@ -95,6 +95,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-discovery-files", type=int, default=3)
     parser.add_argument("--max-memory-usage", default="0", help="Optional ClickHouse max_memory_usage setting, e.g. 64G or bytes. 0 leaves unlimited/default.")
     parser.add_argument("--max-threads", type=int, default=0, help="Optional per-query ClickHouse max_threads setting.")
+    parser.add_argument("--path-preflight-only", action="store_true", help="Only test ClickHouse file() path access and exit before creating tables.")
     return parser.parse_args()
 
 
@@ -149,6 +150,7 @@ def main() -> None:
     output_root = Path(args.output_root_win)
     output_root.mkdir(parents=True, exist_ok=True)
     report_path = output_root / f"quote_ingest_profile_{run_stamp}.json"
+    preflight_log_path = output_root / f"clickhouse_path_preflight_{run_stamp}.log"
 
     dates = parse_dates(args)
     quote_files = [quote_file_for_date(Path(args.flatfiles_root_win), date) for date in dates]
@@ -160,8 +162,22 @@ def main() -> None:
     settings = query_settings(args)
     profiles: list[QueryProfile] = []
     snapshots: list[dict[str, Any]] = []
-    path_mapping = select_readable_path_mapping(client, quote_files, args.flatfiles_root_win, args.flatfiles_root_ch, settings)
+    path_mapping = select_readable_path_mapping(
+        client,
+        quote_files,
+        args.flatfiles_root_win,
+        args.flatfiles_root_ch,
+        settings,
+        preflight_log_path,
+    )
     quote_files_ch = path_mapping.quote_files_ch
+    if args.path_preflight_only:
+        print("=" * 96, flush=True)
+        print(f"PATH PREFLIGHT OK: {path_mapping.name}", flush=True)
+        print(f"first_quote_file={quote_files_ch[0]}", flush=True)
+        print(f"preflight_log={preflight_log_path}", flush=True)
+        print("=" * 96, flush=True)
+        return
 
     print("=" * 96, flush=True)
     print("ClickHouse quote ingest profile", flush=True)
@@ -425,31 +441,39 @@ def select_readable_path_mapping(
     flatfiles_root_win: str,
     configured_flatfiles_root_ch: str,
     settings: str,
+    log_path: Path,
 ) -> ClickHousePathMapping:
     candidates = build_path_mappings(quote_files_win, flatfiles_root_win, configured_flatfiles_root_ch)
     errors: list[dict[str, str]] = []
-    print("Testing ClickHouse server-side file() access with first real quote file.", flush=True)
+    log_preflight("Testing ClickHouse server-side file() access with first real quote file.", log_path)
+    log_preflight(f"windows_first_quote_file={quote_files_win[0]}", log_path)
+    log_preflight(f"configured_flatfiles_root_ch={configured_flatfiles_root_ch}", log_path)
+    log_preflight(f"candidate_count={len(candidates)}", log_path)
     for candidate in candidates:
         probe_path = candidate.quote_files_ch[0]
         sql = read_quotes_probe_sql(probe_path).rstrip(";") + settings
-        print(f"  trying {candidate.name}: {probe_path}", flush=True)
+        log_preflight(f"trying {candidate.name}: {probe_path}", log_path)
         try:
             first_ticker = client.query_tsv(sql).strip()
             if first_ticker:
-                print(f"ClickHouse file() path mapping works: {candidate.name} -> {probe_path}", flush=True)
+                log_preflight(f"ClickHouse file() path mapping works: {candidate.name} -> {probe_path}; first_ticker={first_ticker}", log_path)
                 return candidate
             errors.append({"name": candidate.name, "path": probe_path, "error": "query_returned_no_rows"})
+            log_preflight(f"failed {candidate.name}: query_returned_no_rows", log_path)
         except Exception as exc:  # noqa: BLE001
             errors.append({"name": candidate.name, "path": probe_path, "error": repr(exc)})
-    print("ClickHouse file() path preflight failed for all candidate paths:", flush=True)
+            log_preflight(f"failed {candidate.name}: {exc!r}", log_path)
+    log_preflight("ClickHouse file() path preflight failed for all candidate paths:", log_path)
     for item in errors:
-        print(f"  {item['name']}: {item['path']} -> {item['error'][:500]}", flush=True)
+        log_preflight(f"  {item['name']}: {item['path']} -> {item['error'][:500]}", log_path)
+    log_preflight(f"preflight_log={log_path}", log_path)
     print_server_context(client)
     raise RuntimeError(
         "ClickHouse cannot read the real quote CSV through file(). "
         "The server must see the file path itself, and file() may be restricted to user_files_path. "
         f"Either set {CLICKHOUSE_FILE_ROOT_ENV} / CLICKHOUSE_FLATFILES_ROOT to the path visible to the ClickHouse server, "
-        "or configure ClickHouse user_files_path / container volume so D:/market-data/flatfiles/us_stocks_sip is visible."
+        f"or configure ClickHouse user_files_path / container volume so D:/market-data/flatfiles/us_stocks_sip is visible. "
+        f"See path preflight log: {log_path}"
     )
 
 
@@ -520,6 +544,15 @@ def build_path_mappings(
     append_mapping("relative_from_drive", "", relative_from_drive_path)
 
     return mappings
+
+
+def log_preflight(message: str, log_path: Path) -> None:
+    line = f"{datetime.now().isoformat(timespec='seconds')} {message}"
+    print(line, flush=True)
+    print(line, file=sys.stderr, flush=True)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
 
 
 def normalize_clickhouse_file_path(path: str) -> str:
