@@ -1101,7 +1101,7 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
       type,
     };
     if (isRealTrading) {
-      submitRealOrder(order);
+      setOrders((current) => [order, ...current]);
       return;
     }
     setOrders((current) => [order, ...current]);
@@ -1114,8 +1114,11 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
   }
 
   async function submitRealOrder(order: OrderRow) {
-    const pendingOrder = { ...order, status: "SENDING" };
-    setOrders((current) => [pendingOrder, ...current]);
+    setOrders((current) => {
+      const existing = current.some((item) => item.id === order.id);
+      if (existing) return current.map((item) => (item.id === order.id ? { ...item, status: "SENDING" } : item));
+      return [{ ...order, status: "SENDING" }, ...current];
+    });
     try {
       const payload = await api<RealLiveOrderPayload>("/api/live-trading/real/orders", {
         method: "POST",
@@ -1151,6 +1154,13 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
         )
       );
     }
+  }
+
+  function submitRealStagedOrder(orderId: string) {
+    if (!isRealTrading) return;
+    const order = ordersRef.current.find((item) => item.id === orderId);
+    if (!order || order.status !== "STAGED") return;
+    void submitRealOrder(order);
   }
 
   async function refreshRealPortfolio() {
@@ -1620,7 +1630,9 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
                 showDayChart={showDayChart}
                 showFiveMinuteChart={showFiveMinuteChart}
                 trades={trades}
+                realTrading={isRealTrading}
                 onDraftChange={setTradeDraft}
+                onRealOrderSubmit={submitRealStagedOrder}
                 onMainTimeframeChange={setMainTimeframe}
                 onMainVisibleColumnsChange={setMainVisibleColumns}
                 onCompactVisibleColumnsChange={setCompactVisibleColumns}
@@ -2203,11 +2215,13 @@ function LiveChartWindow({
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
   onMarkPosition,
+  onRealOrderSubmit,
   onStage,
   onToggleDayChart,
   onToggleFiveMinuteChart,
   orders,
   positions,
+  realTrading,
   scannerRows,
   scope,
   session,
@@ -2225,6 +2239,7 @@ function LiveChartWindow({
   marketRows: Record<string, unknown>[];
   orders: OrderRow[];
   positions: PositionRow[];
+  realTrading: boolean;
   scannerRows: Record<string, unknown>[];
   scope: Scope;
   session: TradingSession;
@@ -2237,6 +2252,7 @@ function LiveChartWindow({
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
   onMarkPosition: (symbol: string, mark: number) => void;
+  onRealOrderSubmit: (orderId: string) => void;
   onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
   onToggleDayChart: () => void;
   onToggleFiveMinuteChart: () => void;
@@ -2327,6 +2343,7 @@ function LiveChartWindow({
       mainVisibleColumns={mainVisibleColumns}
       position={position}
       quote={quote}
+      realTrading={realTrading}
       availableCash={availableCash}
       draft={draft}
       orders={orders}
@@ -2341,6 +2358,7 @@ function LiveChartWindow({
       onLiveEntryClose={closeLivePosition}
       onMainTimeframeChange={onMainTimeframeChange}
       onMainVisibleColumnsChange={onMainVisibleColumnsChange}
+      onRealOrderSubmit={onRealOrderSubmit}
       onStage={onStage}
       onToggleDayChart={onToggleDayChart}
       onToggleFiveMinuteChart={onToggleFiveMinuteChart}
@@ -2366,12 +2384,14 @@ function ChartsContainer({
   onLiveEntryClose,
   onMainTimeframeChange,
   onMainVisibleColumnsChange,
+  onRealOrderSubmit,
   onStage,
   onToggleDayChart,
   onToggleFiveMinuteChart,
   orders,
   position,
   quote,
+  realTrading,
   row,
   selectedTicker,
   session,
@@ -2393,6 +2413,7 @@ function ChartsContainer({
   orders: OrderRow[];
   position?: PositionRow;
   quote: ReturnType<typeof quoteFromRow>;
+  realTrading: boolean;
   row: Record<string, unknown>;
   selectedTicker: string;
   session: TradingSession;
@@ -2403,6 +2424,7 @@ function ChartsContainer({
   onLiveEntryClose: () => void;
   onMainTimeframeChange: (timeframe: string) => void;
   onMainVisibleColumnsChange: (columns: string[]) => void;
+  onRealOrderSubmit: (orderId: string) => void;
   onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
   onToggleDayChart: () => void;
   onToggleFiveMinuteChart: () => void;
@@ -2518,9 +2540,11 @@ function ChartsContainer({
         orders={orders}
         position={position}
         quote={quote}
+        realTrading={realTrading}
         row={row}
         selectedTicker={selectedTicker}
         session={session}
+        onRealOrderSubmit={onRealOrderSubmit}
         onDraftChange={onDraftChange}
         onStage={onStage}
       />
@@ -2532,10 +2556,12 @@ function ChartTradePanel({
   availableCash,
   draft,
   onDraftChange,
+  onRealOrderSubmit,
   onStage,
   orders,
   position,
   quote,
+  realTrading,
   row,
   selectedTicker,
   session,
@@ -2543,10 +2569,12 @@ function ChartTradePanel({
   availableCash: number;
   draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string };
   onDraftChange: (draft: { limit: string; quantity: string; side: "BUY" | "SELL"; stop: string; type: string }) => void;
+  onRealOrderSubmit: (orderId: string) => void;
   onStage: (side?: "BUY" | "SELL", status?: string, context?: Partial<StageOrderContext>) => void;
   orders: OrderRow[];
   position?: PositionRow;
   quote: ReturnType<typeof quoteFromRow>;
+  realTrading: boolean;
   row: Record<string, unknown>;
   selectedTicker: string;
   session: TradingSession;
@@ -2567,7 +2595,9 @@ function ChartTradePanel({
     stop: longStop,
     value: strategySettings.sizeValue,
   });
-  const openOrders = orders.filter((order) => order.symbol === selectedTicker && order.status === "STAGED").length;
+  const stagedOrders = orders.filter((order) => order.symbol === selectedTicker && order.status === "STAGED");
+  const openOrders = stagedOrders.length;
+  const transmitOrder = stagedOrders[0] ?? null;
   const spreadRatio = quote.ask > 0 ? quote.spread / quote.ask : 0;
   const spreadTone = spreadRatio >= 0.02 || quote.spread >= 0.05 ? "danger" : spreadRatio >= 0.01 || quote.spread >= 0.02 ? "warning" : "success";
   const transactionsTone = quote.transactions <= 0 ? "muted" : quote.transactions < 100 ? "warning" : quote.transactions >= 300 ? "success" : "info";
@@ -2730,6 +2760,11 @@ function ChartTradePanel({
           <div><dt>Cash</dt><dd>{money(availableCash)}</dd></div>
           <div><dt>Staged</dt><dd>{integer(openOrders)}</dd></div>
         </dl>
+        {realTrading && transmitOrder ? (
+          <button className="button primary live-transmit-order-button" onClick={() => onRealOrderSubmit(transmitOrder.id)} type="button">
+            <CircleDollarSign size={14} /> Transmit {transmitOrder.side} {integer(transmitOrder.quantity)} to IBKR
+          </button>
+        ) : null}
         {position ? (
           <div className={(quote.bid - position.avg_price) * position.quantity >= 0 ? "live-chart-position-strip positive" : "live-chart-position-strip negative"}>
             <div>
