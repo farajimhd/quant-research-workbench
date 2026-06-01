@@ -602,18 +602,15 @@ def merge_temp_group_to_canonical(
     rows = int(counts["rows"].sum()) if counts.height else 0
     output_base = config.canonical_root / kind
     output_base.mkdir(parents=True, exist_ok=True)
-    sorted_frame = frame.sort(["ticker", "sip_timestamp", "sequence_number"])
-    sorted_frame.sink_parquet(
-        pl.PartitionBy(
-            output_base,
-            key="ticker",
-            include_key=True,
-            file_path_provider=canonical_file_provider(config, kind, year_month),
-        ),
-        compression="zstd",
-        mkdir=True,
-        maintain_order=True,
-    )
+    for row in counts.sort("ticker").iter_rows(named=True):
+        ticker = str(row["ticker"])
+        output_path = canonical_ticker_path(config, kind, ticker, year_month)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        (
+            frame.filter(pl.col("ticker") == ticker)
+            .sort(["sip_timestamp", "sequence_number"])
+            .sink_parquet(output_path, compression="zstd", mkdir=True, maintain_order=True)
+        )
     return {
         "kind": kind,
         "year_month": year_month,
@@ -623,10 +620,14 @@ def merge_temp_group_to_canonical(
     }
 
 
+def canonical_ticker_path(config: CompactCanonicalConfig, kind: str, ticker: str, year_month: str) -> Path:
+    return config.canonical_root / kind / f"ticker={safe_path_part(ticker)}" / f"{year_month}.parquet"
+
+
 def canonical_file_provider(config: CompactCanonicalConfig, kind: str, year_month: str) -> Callable[[Any], Path]:
     def provider(args: Any) -> Path:
         ticker = str(args.partition_keys.get_column("ticker")[0])
-        path = config.canonical_root / kind / f"ticker={safe_path_part(ticker)}" / f"{year_month}.parquet"
+        path = canonical_ticker_path(config, kind, ticker, year_month)
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
