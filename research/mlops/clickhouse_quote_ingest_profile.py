@@ -28,8 +28,9 @@ CLICKHOUSE_USER_ENV = "TD__DATABASE__CLICKHOUSE__USER"
 CLICKHOUSE_FILE_ROOT_ENV = "TD__DATABASE__CLICKHOUSE__FILE_ROOT"
 DEFAULT_FLATFILES_ROOT_WIN = Path("D:/market-data/flatfiles/us_stocks_sip")
 DEFAULT_FLATFILES_ROOT_CH = "/mnt/d/market-data/flatfiles/us_stocks_sip"
-DEFAULT_USER_FILES_RELATIVE_FLATFILES_ROOT_CH = "flatfile/us_stocks_sip"
+DEFAULT_USER_FILES_RELATIVE_FLATFILES_ROOT_CH = "market-data/flatfiles/us_stocks_sip"
 USER_FILES_RELATIVE_FLATFILES_ALIAS_CH = "flatfiles/us_stocks_sip"
+USER_FILES_RELATIVE_FLATFILE_ALIAS_CH = "flatfile/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_ingest_profile")
 QUOTE_SCHEMA_STRING = (
     "ticker String, "
@@ -82,8 +83,8 @@ def parse_args() -> argparse.Namespace:
         default=default_clickhouse_file_root(),
         help=(
             "ClickHouse-visible flatfiles root. Use a relative path such as "
-            "'flatfile/us_stocks_sip' when ClickHouse user_files_path is D:/market-data "
-            "or '/mnt/d/market-data'. Absolute /mnt/... paths are still supported."
+            "'market-data/flatfiles/us_stocks_sip' when ClickHouse user_files_path "
+            "is D:/ or /mnt/d. Absolute /mnt/... paths are still supported."
         ),
     )
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN))
@@ -491,6 +492,13 @@ def build_path_mappings(
             "user_files_relative_flatfiles_alias",
             USER_FILES_RELATIVE_FLATFILES_ALIAS_CH,
             lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, USER_FILES_RELATIVE_FLATFILES_ALIAS_CH),
+        )
+
+    if configured_root.rstrip("/") != USER_FILES_RELATIVE_FLATFILE_ALIAS_CH.rstrip("/"):
+        append_mapping(
+            "user_files_relative_flatfile_alias",
+            USER_FILES_RELATIVE_FLATFILE_ALIAS_CH,
+            lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, USER_FILES_RELATIVE_FLATFILE_ALIAS_CH),
         )
 
     for name, root_win in (
