@@ -102,6 +102,7 @@ class PrecomputedChunkDataConfig:
     events_per_chunk: int = DEFAULT_EVENTS_PER_CHUNK
     seed: int = 17
     shard_cache_size: int = 4
+    max_shards: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,6 +569,7 @@ class PrecomputedV4ChunkIterableDataset(IterableDataset):
             events_per_chunk=config.events_per_chunk,
             seed=config.seed,
             shard_cache_size=config.shard_cache_size,
+            max_shards=config.max_shards,
         )
         self.shards = discover_precomputed_chunk_shards(self.config)
         if not self.shards:
@@ -582,42 +584,96 @@ class PrecomputedV4ChunkIterableDataset(IterableDataset):
         while True:
             started = time.perf_counter()
             shard = rng.choice(self.shards)
+            cache_started = time.perf_counter()
             frame = get_cached_chunk_shard(shard, cache, order, self.config)
+            cache_seconds = time.perf_counter() - cache_started
             if frame.height == 0:
                 continue
             count = min(self.config.batch_size, frame.height)
             indices = [rng.randrange(frame.height) for _ in range(count)]
-            batch = frame[indices]
-            headers = np.stack([np.frombuffer(value, dtype=np.uint8, count=HEADER_BYTES) for value in batch["header_uint8"].to_list()])
-            event_values = batch["events_uint8"].to_list()
-            events = np.stack(
-                [
-                    np.frombuffer(value, dtype=np.uint8, count=self.config.events_per_chunk * EVENT_BYTES).reshape(self.config.events_per_chunk, EVENT_BYTES)
-                    for value in event_values
-                ]
+            yield precomputed_batch_from_frame(
+                frame,
+                indices,
+                self.config,
+                batch_started=started,
+                shard_path=shard,
+                shard_index=-1,
+                shard_count=len(self.shards),
+                shard_step=-1,
+                shard_steps=-1,
+                epoch=-1,
+                cache_seconds=cache_seconds,
             )
-            yield {
-                "header_uint8": torch.from_numpy(headers.copy()),
-                "events_uint8": torch.from_numpy(events.copy()),
-                "origin_timestamp_ns": torch.from_numpy(batch["origin_timestamp_ns"].to_numpy().astype(np.int64)),
-                "ticker": batch["ticker"].to_list(),
-                "session_date": batch["origin_session_date"].to_list(),
-                "batch_session_date": "precomputed",
-                "row_bytes": HEADER_BYTES + self.config.events_per_chunk * EVENT_BYTES,
-                "events_per_chunk": self.config.events_per_chunk,
-                "profile": {
-                    "data/batch_build_seconds": time.perf_counter() - started,
-                    "data/sample_select_seconds": 0.0,
-                    "data/cache_get_seconds": 0.0,
-                    "data/encode_seconds": 0.0,
-                    "data/attempts": float(count),
-                    "data/filled": float(count),
-                    "data/rejected_samples": 0.0,
-                    "data/cache_hits": 0.0,
-                    "data/cache_misses": 0.0,
-                    "data/cache_hit_pct": 100.0,
-                },
-            }
+
+
+def iter_precomputed_epoch_batches(config: PrecomputedChunkDataConfig, *, epoch: int, shards: list[Path] | None = None) -> Iterator[dict[str, Any]]:
+    config = normalized_precomputed_config(config)
+    epoch_shards = list(shards) if shards is not None else discover_precomputed_chunk_shards(config)
+    if not epoch_shards:
+        raise FileNotFoundError(f"No precomputed v4 chunk shards found under {config.chunk_root}")
+    rng = random.Random(config.seed + max(0, int(epoch)) * 1_000_003)
+    rng.shuffle(epoch_shards)
+    shard_count = len(epoch_shards)
+    for shard_index, shard in enumerate(epoch_shards, start=1):
+        shard_started = time.perf_counter()
+        frame = read_precomputed_chunk_shard(shard, config)
+        shard_load_seconds = time.perf_counter() - shard_started
+        if frame.height == 0:
+            continue
+        row_indices = list(range(frame.height))
+        rng.shuffle(row_indices)
+        shard_steps = math.ceil(frame.height / max(1, config.batch_size))
+        for shard_step, offset in enumerate(range(0, frame.height, config.batch_size), start=1):
+            batch_started = time.perf_counter()
+            indices = row_indices[offset : offset + config.batch_size]
+            yield precomputed_batch_from_frame(
+                frame,
+                indices,
+                config,
+                batch_started=batch_started,
+                shard_path=shard,
+                shard_index=shard_index,
+                shard_count=shard_count,
+                shard_step=shard_step,
+                shard_steps=shard_steps,
+                epoch=epoch,
+                shard_load_seconds=shard_load_seconds if shard_step == 1 else 0.0,
+            )
+        del frame
+
+
+def build_fixed_precomputed_validation_batches(config: PrecomputedChunkDataConfig, *, batch_count: int, seed: int) -> list[dict[str, Any]]:
+    config = normalized_precomputed_config(config)
+    shards = discover_precomputed_chunk_shards(config)
+    if not shards or batch_count <= 0:
+        return []
+    rng = random.Random(seed)
+    selected = rng.sample(shards, k=min(int(batch_count), len(shards)))
+    batches: list[dict[str, Any]] = []
+    for index, shard in enumerate(selected, start=1):
+        started = time.perf_counter()
+        frame = read_precomputed_chunk_shard(shard, config)
+        if frame.height == 0:
+            continue
+        count = min(config.batch_size, frame.height)
+        indices = [rng.randrange(frame.height) for _ in range(count)]
+        batches.append(
+            precomputed_batch_from_frame(
+                frame,
+                indices,
+                config,
+                batch_started=started,
+                shard_path=shard,
+                shard_index=index,
+                shard_count=len(selected),
+                shard_step=1,
+                shard_steps=1,
+                epoch=0,
+                validation_fixed=True,
+            )
+        )
+        del frame
+    return batches
 
 
 def discover_precomputed_chunk_shards(config: PrecomputedChunkDataConfig) -> list[Path]:
@@ -637,7 +693,23 @@ def discover_precomputed_chunk_shards(config: PrecomputedChunkDataConfig) -> lis
         max_date = str(stats["max_date"][0])
         if max_date >= config.start_date and min_date <= config.end_date:
             paths.append(path)
+        if config.max_shards > 0 and len(paths) >= config.max_shards:
+            break
     return paths
+
+
+def normalized_precomputed_config(config: PrecomputedChunkDataConfig) -> PrecomputedChunkDataConfig:
+    return PrecomputedChunkDataConfig(
+        chunk_root=resolve_precomputed_chunk_root(config.chunk_root),
+        start_date=config.start_date,
+        end_date=config.end_date,
+        tickers=config.tickers,
+        batch_size=config.batch_size,
+        events_per_chunk=config.events_per_chunk,
+        seed=config.seed,
+        shard_cache_size=config.shard_cache_size,
+        max_shards=config.max_shards,
+    )
 
 
 def resolve_precomputed_chunk_root(path: Path) -> Path:
@@ -649,16 +721,83 @@ def resolve_precomputed_chunk_root(path: Path) -> Path:
 def get_cached_chunk_shard(path: Path, cache: dict[Path, pl.DataFrame], order: list[Path], config: PrecomputedChunkDataConfig) -> pl.DataFrame:
     if path in cache:
         return cache[path]
-    filters = (pl.col("origin_session_date") >= config.start_date) & (pl.col("origin_session_date") <= config.end_date)
-    if config.tickers and not any(value.upper() in ALL_TICKERS for value in config.tickers):
-        filters = filters & pl.col("ticker").is_in(list(config.tickers))
-    frame = pl.scan_parquet(str(path)).filter(filters).collect()
+    frame = read_precomputed_chunk_shard(path, config)
     if len(cache) >= max(1, config.shard_cache_size) and order:
         oldest = order.pop(0)
         cache.pop(oldest, None)
     cache[path] = frame
     order.append(path)
     return frame
+
+
+def read_precomputed_chunk_shard(path: Path, config: PrecomputedChunkDataConfig) -> pl.DataFrame:
+    filters = (pl.col("origin_session_date") >= config.start_date) & (pl.col("origin_session_date") <= config.end_date)
+    if config.tickers and not any(value.upper() in ALL_TICKERS for value in config.tickers):
+        filters = filters & pl.col("ticker").is_in(list(config.tickers))
+    return pl.scan_parquet(str(path)).filter(filters).collect()
+
+
+def precomputed_batch_from_frame(
+    frame: pl.DataFrame,
+    indices: list[int],
+    config: PrecomputedChunkDataConfig,
+    *,
+    batch_started: float,
+    shard_path: Path,
+    shard_index: int,
+    shard_count: int,
+    shard_step: int,
+    shard_steps: int,
+    epoch: int,
+    cache_seconds: float = 0.0,
+    shard_load_seconds: float = 0.0,
+    validation_fixed: bool = False,
+) -> dict[str, Any]:
+    batch = frame[indices]
+    headers = decode_fixed_binary_series(batch["header_uint8"], HEADER_BYTES).reshape(len(indices), HEADER_BYTES)
+    events = decode_fixed_binary_series(batch["events_uint8"], config.events_per_chunk * EVENT_BYTES).reshape(
+        len(indices),
+        config.events_per_chunk,
+        EVENT_BYTES,
+    )
+    return {
+        "header_uint8": torch.from_numpy(headers),
+        "events_uint8": torch.from_numpy(events),
+        "origin_timestamp_ns": torch.from_numpy(batch["origin_timestamp_ns"].to_numpy().astype(np.int64)),
+        "ticker": batch["ticker"].to_list(),
+        "session_date": batch["origin_session_date"].to_list(),
+        "batch_session_date": "precomputed",
+        "row_bytes": HEADER_BYTES + config.events_per_chunk * EVENT_BYTES,
+        "events_per_chunk": config.events_per_chunk,
+        "profile": {
+            "data/batch_build_seconds": time.perf_counter() - batch_started,
+            "data/shard_load_seconds": float(shard_load_seconds),
+            "data/cache_get_seconds": float(cache_seconds),
+            "data/attempts": float(len(indices)),
+            "data/filled": float(len(indices)),
+            "data/rejected_samples": 0.0,
+            "data/shard_rows": float(frame.height),
+            "data/shard_index": float(shard_index),
+            "data/shard_count": float(shard_count),
+            "data/shard_step": float(shard_step),
+            "data/shard_steps": float(shard_steps),
+            "data/epoch": float(epoch),
+            "data/validation_fixed": float(bool(validation_fixed)),
+        },
+        "shard_path": str(shard_path),
+        "shard_index": shard_index,
+        "shard_count": shard_count,
+        "shard_step": shard_step,
+        "shard_steps": shard_steps,
+        "epoch": epoch,
+    }
+
+
+def decode_fixed_binary_series(series: pl.Series, width: int) -> np.ndarray:
+    values = series.to_list()
+    if not values:
+        return np.empty((0, width), dtype=np.uint8)
+    return np.frombuffer(b"".join(values), dtype=np.uint8).reshape(len(values), width).copy()
 
 
 def encode_events_chunk_from_frame(

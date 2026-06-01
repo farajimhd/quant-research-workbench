@@ -22,7 +22,15 @@ from research.masked_event_model.v4.losses import masked_byte_bce_loss
 from research.masked_event_model.v4.masking import build_byte_masks
 from research.masked_event_model.v4.model import CompactByteMaskedAutoencoder
 from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
-from research.mlops.compact_events import CompactEventDataConfig, CompactEventIterableDataset, PrecomputedChunkDataConfig, PrecomputedV4ChunkIterableDataset
+from research.mlops.compact_events import (
+    CompactEventDataConfig,
+    CompactEventIterableDataset,
+    PrecomputedChunkDataConfig,
+    PrecomputedV4ChunkIterableDataset,
+    build_fixed_precomputed_validation_batches,
+    discover_precomputed_chunk_shards,
+    iter_precomputed_epoch_batches,
+)
 from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
@@ -57,6 +65,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-index-files", type=int, default=data_defaults.max_index_files)
     parser.add_argument("--batch-size", type=int, default=train_defaults.batch_size)
     parser.add_argument("--max-steps", type=int, default=train_defaults.max_steps)
+    parser.add_argument("--epochs", type=int, default=train_defaults.epochs)
     parser.add_argument("--num-workers", type=int, default=train_defaults.num_workers)
     parser.add_argument("--prefetch-factor", type=int, default=train_defaults.prefetch_factor)
     parser.add_argument("--device", default="cuda")
@@ -163,72 +172,280 @@ def main(argv: list[str] | None = None) -> None:
         metric_logger.log(val_metrics, global_step)
         print("VALIDATION " + format_metrics(global_step, val_metrics), flush=True)
 
+    if config.data.precomputed_chunk_root is not None:
+        global_step = train_precomputed_epochs(
+            model=model,
+            train_model=train_model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            config=config,
+            args=args,
+            device=device,
+            global_step=global_step,
+            validation_batches=validation_batches,
+            metric_logger=metric_logger,
+            checkpointer=checkpointer,
+        )
+    else:
+        global_step = train_streaming_loader(
+            model=model,
+            train_model=train_model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            config=config,
+            args=args,
+            device=device,
+            global_step=global_step,
+            validation_batches=validation_batches,
+            metric_logger=metric_logger,
+            checkpointer=checkpointer,
+        )
+    checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), force=True)
+    checkpointer.close()
+
+
+def train_precomputed_epochs(
+    *,
+    model: CompactByteMaskedAutoencoder,
+    train_model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    scaler: torch.amp.GradScaler,
+    config: ExperimentConfig,
+    args: argparse.Namespace,
+    device: torch.device,
+    global_step: int,
+    validation_batches: list[dict[str, Any]],
+    metric_logger: JsonlMetricLogger,
+    checkpointer: AsyncCheckpointManager,
+) -> int:
+    data_config = precomputed_data_config(config, "train", args.seed)
+    train_shards = discover_precomputed_chunk_shards(data_config)
+    shard_count = len(train_shards)
+    print(
+        f"Precomputed training shards={shard_count:,} epochs={config.train.epochs:,} "
+        f"batch_size={config.train.batch_size:,} max_steps={config.train.max_steps:,}",
+        flush=True,
+    )
+    samples_seen_total = 0
+    stop_training = False
+    for epoch in range(1, max(1, int(config.train.epochs)) + 1):
+        epoch_started = time.perf_counter()
+        epoch_steps = 0
+        epoch_samples = 0
+        epoch_loss_sum = 0.0
+        iterator = iter_precomputed_epoch_batches(data_config, epoch=epoch, shards=train_shards)
+        while True:
+            if config.train.max_steps > 0 and global_step >= config.train.max_steps:
+                stop_training = True
+                break
+            data_wait_started = time.perf_counter()
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                break
+            data_wait_seconds = time.perf_counter() - data_wait_started
+            global_step += 1
+            batch_size = int(batch["header_uint8"].shape[0])
+            samples_seen_total += batch_size
+            epoch_samples += batch_size
+            epoch_steps += 1
+            metrics = run_training_step(
+                model=model,
+                train_model=train_model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                batch=batch,
+                config=config,
+                device=device,
+                global_step=global_step,
+                data_wait_seconds=data_wait_seconds,
+            )
+            epoch_loss_sum += float(metrics.get("pretrain/loss_total", 0.0))
+            shard_index = int(batch.get("shard_index", 0) or 0)
+            shard_step = int(batch.get("shard_step", 0) or 0)
+            shard_steps = max(1, int(batch.get("shard_steps", 1) or 1))
+            metrics.update(
+                {
+                    "train/epoch": float(epoch),
+                    "train/epoch_step": float(epoch_steps),
+                    "train/epoch_progress_pct": 100.0 * ((max(0, shard_index - 1) + shard_step / shard_steps) / max(1, shard_count)),
+                    "train/shard_index": float(shard_index),
+                    "train/shards_per_epoch": float(shard_count),
+                    "train/shard_step": float(shard_step),
+                    "train/shard_steps": float(shard_steps),
+                    "train/samples_seen_epoch": float(epoch_samples),
+                    "train/samples_seen_total": float(samples_seen_total),
+                }
+            )
+            if shard_step == shard_steps:
+                metrics["train/shard_completed"] = 1.0
+            val_metrics = maybe_log_train_and_validation(
+                model=model,
+                config=config,
+                device=device,
+                args=args,
+                global_step=global_step,
+                metrics=metrics,
+                validation_batches=validation_batches,
+                metric_logger=metric_logger,
+            )
+            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), train_metrics=metrics, val_metrics=val_metrics)
+        epoch_metrics = {
+            "train/epoch": float(epoch),
+            "train/epoch_seconds": time.perf_counter() - epoch_started,
+            "train/epoch_steps": float(epoch_steps),
+            "train/epoch_samples": float(epoch_samples),
+            "train/epoch_loss_mean": epoch_loss_sum / max(1, epoch_steps),
+        }
+        metric_logger.log(epoch_metrics, global_step)
+        print("EPOCH " + format_metrics(global_step, epoch_metrics), flush=True)
+        if stop_training:
+            break
+    return global_step
+
+
+def train_streaming_loader(
+    *,
+    model: CompactByteMaskedAutoencoder,
+    train_model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    scaler: torch.amp.GradScaler,
+    config: ExperimentConfig,
+    args: argparse.Namespace,
+    device: torch.device,
+    global_step: int,
+    validation_batches: list[dict[str, Any]],
+    metric_logger: JsonlMetricLogger,
+    checkpointer: AsyncCheckpointManager,
+) -> int:
     loader = make_loader(config, "train", args.seed)
     loader_iter = iter(loader)
     while config.train.max_steps <= 0 or global_step < config.train.max_steps:
         data_wait_started = time.perf_counter()
         batch = next(loader_iter)
         data_wait_seconds = time.perf_counter() - data_wait_started
-        step_started = time.perf_counter()
         global_step += 1
-        profile_step = config.train.profile_training_every_steps > 0 and global_step % config.train.profile_training_every_steps == 0
-        transfer_started = time.perf_counter()
-        batch = move_batch(batch, device)
-        sync_if_cuda(device)
-        transfer_seconds = time.perf_counter() - transfer_started
-        mask_started = time.perf_counter()
-        masks = build_byte_masks(batch["header_uint8"], batch["events_uint8"], config.masks)
-        sync_if_cuda(device)
-        mask_seconds = time.perf_counter() - mask_started
-        forward_started = time.perf_counter()
-        include_diagnostics = config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0
-        with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
-            output = train_model(batch["header_uint8"], batch["events_uint8"], masks)
-            result = masked_byte_bce_loss(output, batch["header_uint8"], batch["events_uint8"], masks, config.losses, include_diagnostics=include_diagnostics)
-        sync_if_cuda(device)
-        forward_loss_seconds = time.perf_counter() - forward_started
-        backward_started = time.perf_counter()
-        optimizer.zero_grad(set_to_none=True)
-        scaler.scale(result.loss).backward()
-        sync_if_cuda(device)
-        backward_seconds = time.perf_counter() - backward_started
-        optimizer_started = time.perf_counter()
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
-        scaler.step(optimizer)
-        scaler.update()
-        if scheduler is not None:
-            scheduler.step(global_step)
-        sync_if_cuda(device)
-        optimizer_seconds = time.perf_counter() - optimizer_started
-        metrics = dict(result.metrics)
-        metrics.update({"train/lr": float(optimizer.param_groups[0]["lr"]), "train/step_seconds": time.perf_counter() - step_started, "profile/batch_size": float(batch["header_uint8"].shape[0])})
-        if profile_step:
-            data_profile = batch.get("profile", {})
-            metrics.update(
-                {
-                    "profile/data_wait_seconds": data_wait_seconds,
-                    "profile/transfer_seconds": transfer_seconds,
-                    "profile/mask_seconds": mask_seconds,
-                    "profile/forward_loss_seconds": forward_loss_seconds,
-                    "profile/backward_seconds": backward_seconds,
-                    "profile/optimizer_seconds": optimizer_seconds,
-                    **{f"profile/{key}": float(value) for key, value in data_profile.items()},
-                }
-            )
-        if config.train.profile_inference_every_steps > 0 and global_step % config.train.profile_inference_every_steps == 0:
-            metrics.update(profile_encode(model, batch, device))
-        if global_step % config.train.logging_steps == 0:
-            metric_logger.log(metrics, global_step)
-            print(format_metrics(global_step, metrics), flush=True)
-        val_metrics = None
-        if validation_batches and config.train.pretrain_validation_frequency > 0 and global_step % config.train.pretrain_validation_frequency == 0:
-            val_metrics = evaluate_validation(model, validation_batches, config, device, seed=args.seed + 90_000)
-            metric_logger.log(val_metrics, global_step)
-            print("VALIDATION " + format_metrics(global_step, val_metrics), flush=True)
+        metrics = run_training_step(
+            model=model,
+            train_model=train_model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            batch=batch,
+            config=config,
+            device=device,
+            global_step=global_step,
+            data_wait_seconds=data_wait_seconds,
+        )
+        val_metrics = maybe_log_train_and_validation(
+            model=model,
+            config=config,
+            device=device,
+            args=args,
+            global_step=global_step,
+            metrics=metrics,
+            validation_batches=validation_batches,
+            metric_logger=metric_logger,
+        )
         checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), train_metrics=metrics, val_metrics=val_metrics)
-    checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), force=True)
-    checkpointer.close()
+    return global_step
+
+
+def run_training_step(
+    *,
+    model: CompactByteMaskedAutoencoder,
+    train_model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    scaler: torch.amp.GradScaler,
+    batch: dict[str, Any],
+    config: ExperimentConfig,
+    device: torch.device,
+    global_step: int,
+    data_wait_seconds: float,
+) -> dict[str, float]:
+    step_started = time.perf_counter()
+    profile_step = config.train.profile_training_every_steps > 0 and global_step % config.train.profile_training_every_steps == 0
+    transfer_started = time.perf_counter()
+    batch = move_batch(batch, device)
+    sync_if_cuda(device)
+    transfer_seconds = time.perf_counter() - transfer_started
+    mask_started = time.perf_counter()
+    masks = build_byte_masks(batch["header_uint8"], batch["events_uint8"], config.masks)
+    sync_if_cuda(device)
+    mask_seconds = time.perf_counter() - mask_started
+    forward_started = time.perf_counter()
+    include_diagnostics = config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0
+    with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
+        output = train_model(batch["header_uint8"], batch["events_uint8"], masks)
+        result = masked_byte_bce_loss(output, batch["header_uint8"], batch["events_uint8"], masks, config.losses, include_diagnostics=include_diagnostics)
+    sync_if_cuda(device)
+    forward_loss_seconds = time.perf_counter() - forward_started
+    backward_started = time.perf_counter()
+    optimizer.zero_grad(set_to_none=True)
+    scaler.scale(result.loss).backward()
+    sync_if_cuda(device)
+    backward_seconds = time.perf_counter() - backward_started
+    optimizer_started = time.perf_counter()
+    scaler.unscale_(optimizer)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
+    scaler.step(optimizer)
+    scaler.update()
+    if scheduler is not None:
+        scheduler.step(global_step)
+    sync_if_cuda(device)
+    optimizer_seconds = time.perf_counter() - optimizer_started
+    metrics = dict(result.metrics)
+    metrics.update(
+        {
+            "train/lr": float(optimizer.param_groups[0]["lr"]),
+            "train/step_seconds": time.perf_counter() - step_started,
+            "profile/batch_size": float(batch["header_uint8"].shape[0]),
+        }
+    )
+    if profile_step:
+        data_profile = batch.get("profile", {})
+        metrics.update(
+            {
+                "profile/data_wait_seconds": data_wait_seconds,
+                "profile/transfer_seconds": transfer_seconds,
+                "profile/mask_seconds": mask_seconds,
+                "profile/forward_loss_seconds": forward_loss_seconds,
+                "profile/backward_seconds": backward_seconds,
+                "profile/optimizer_seconds": optimizer_seconds,
+                **{f"profile/{key}": float(value) for key, value in data_profile.items()},
+            }
+        )
+    if config.train.profile_inference_every_steps > 0 and global_step % config.train.profile_inference_every_steps == 0:
+        metrics.update(profile_encode(model, batch, device))
+    return metrics
+
+
+def maybe_log_train_and_validation(
+    *,
+    model: CompactByteMaskedAutoencoder,
+    config: ExperimentConfig,
+    device: torch.device,
+    args: argparse.Namespace,
+    global_step: int,
+    metrics: dict[str, float],
+    validation_batches: list[dict[str, Any]],
+    metric_logger: JsonlMetricLogger,
+) -> dict[str, float] | None:
+    if global_step % config.train.logging_steps == 0:
+        metric_logger.log(metrics, global_step)
+        print(format_metrics(global_step, metrics), flush=True)
+    val_metrics = None
+    if validation_batches and config.train.pretrain_validation_frequency > 0 and global_step % config.train.pretrain_validation_frequency == 0:
+        val_metrics = evaluate_validation(model, validation_batches, config, device, seed=args.seed + 90_000)
+        metric_logger.log(val_metrics, global_step)
+        print("VALIDATION " + format_metrics(global_step, val_metrics), flush=True)
+    return val_metrics
 
 
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
@@ -249,7 +466,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         masks=MaskConfig(mask_ratio=args.mask_ratio, header_mask_ratio=args.header_mask_ratio),
         model=ModelConfig(d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
         losses=LossConfig(),
-        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
+        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
 
 
@@ -257,18 +474,7 @@ def make_loader(config: ExperimentConfig, split: str, seed: int) -> DataLoader:
     data = config.data
     start, end = (data.train_start_date, data.train_end_date) if split == "train" else (data.validation_start_date, data.validation_end_date)
     if data.precomputed_chunk_root is not None:
-        dataset = PrecomputedV4ChunkIterableDataset(
-            PrecomputedChunkDataConfig(
-                chunk_root=data.precomputed_chunk_root,
-                start_date=start,
-                end_date=end,
-                tickers=data.tickers,
-                batch_size=config.train.batch_size,
-                events_per_chunk=data.events_per_chunk,
-                seed=seed,
-                shard_cache_size=data.month_cache_size,
-            )
-        )
+        dataset = PrecomputedV4ChunkIterableDataset(precomputed_data_config(config, split, seed))
         return DataLoader(dataset, batch_size=None, num_workers=0, pin_memory=False)
     dataset_config = CompactEventDataConfig(
         canonical_root=data.canonical_root,
@@ -297,6 +503,19 @@ def build_validation_cache(config: ExperimentConfig, seed: int) -> list[dict[str
     if config.train.pretrain_validation_frequency <= 0 or config.train.pretrain_validation_steps <= 0:
         return []
     print(f"Building fixed validation cache batches={config.train.pretrain_validation_steps}", flush=True)
+    if config.data.precomputed_chunk_root is not None:
+        batches = build_fixed_precomputed_validation_batches(
+            precomputed_data_config(config, "validation", seed),
+            batch_count=config.train.pretrain_validation_steps,
+            seed=seed,
+        )
+        for index, batch in enumerate(batches, start=1):
+            print(
+                f"validation cache batch {index}/{len(batches)} size={batch['header_uint8'].shape[0]} "
+                f"shard={batch.get('shard_index')}/{batch.get('shard_count')}",
+                flush=True,
+            )
+        return batches
     loader = make_loader(config, "validation", seed)
     batches: list[dict[str, Any]] = []
     iterator = iter(loader)
@@ -305,6 +524,24 @@ def build_validation_cache(config: ExperimentConfig, seed: int) -> list[dict[str
         batches.append(batch)
         print(f"validation cache batch {index + 1}/{config.train.pretrain_validation_steps} size={batch['header_uint8'].shape[0]}", flush=True)
     return batches
+
+
+def precomputed_data_config(config: ExperimentConfig, split: str, seed: int) -> PrecomputedChunkDataConfig:
+    data = config.data
+    start, end = (data.train_start_date, data.train_end_date) if split == "train" else (data.validation_start_date, data.validation_end_date)
+    if data.precomputed_chunk_root is None:
+        raise ValueError("precomputed_data_config requires data.precomputed_chunk_root")
+    return PrecomputedChunkDataConfig(
+        chunk_root=data.precomputed_chunk_root,
+        start_date=start,
+        end_date=end,
+        tickers=data.tickers,
+        batch_size=config.train.batch_size,
+        events_per_chunk=data.events_per_chunk,
+        seed=seed,
+        shard_cache_size=data.month_cache_size,
+        max_shards=data.max_index_files,
+    )
 
 
 def evaluate_validation(model: CompactByteMaskedAutoencoder, batches: list[dict[str, Any]], config: ExperimentConfig, device: torch.device, *, seed: int) -> dict[str, float]:
@@ -401,7 +638,18 @@ def default_run_name(args: argparse.Namespace) -> str:
 
 
 def format_metrics(step: int, metrics: dict[str, float]) -> str:
-    keys = ["pretrain/loss_total", "pretrain/event_bit_acc_pct", "pretrain/event_byte_exact_acc_pct", "profile/inference_encode_ms_per_sample", "train/step_seconds"]
+    keys = [
+        "pretrain/loss_total",
+        "pretrain/event_bit_acc_pct",
+        "pretrain/event_byte_exact_acc_pct",
+        "train/epoch",
+        "train/epoch_progress_pct",
+        "train/shard_index",
+        "train/shard_step",
+        "profile/inference_encode_ms_per_sample",
+        "train/step_seconds",
+        "train/epoch_loss_mean",
+    ]
     parts = [f"step={step}"]
     for key in keys:
         if key in metrics:

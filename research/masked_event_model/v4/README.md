@@ -54,6 +54,19 @@ Run training:
 python research\masked_event_model\v4\run_train.py
 ```
 
+Precomputed training uses shard epochs:
+
+```text
+step = one optimizer update on one mini-batch
+shard_step = one mini-batch inside the currently loaded shard
+epoch = one shuffled pass over all eligible train shard rows
+```
+
+The validation cache is fixed at startup: it samples `pretrain_validation_steps`
+validation shards and keeps one random batch from each for cheap repeated
+evaluation. Set `--max-steps 0 --epochs 1` to run one complete train-shard
+epoch without a step cap.
+
 Run a smoke/dry run:
 
 ```powershell

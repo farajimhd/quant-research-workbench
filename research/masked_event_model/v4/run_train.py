@@ -19,6 +19,7 @@ DEFAULTS: dict[str, Any] = {
     "events_per_chunk": 128,
     "batch_size": 4096,
     "max_steps": 10000,
+    "epochs": 1,
     "num_workers": 0,
     "device": "cuda",
     "mask_ratio": 0.70,
