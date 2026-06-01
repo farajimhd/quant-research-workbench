@@ -123,7 +123,7 @@ def main() -> None:
     output_root = Path(args.output_root_win)
     output_root.mkdir(parents=True, exist_ok=True)
     report_path = output_root / f"quote_ingest_profile_{run_stamp}.json"
-    small_csv_win = output_root / "small_quotes_smoke.csv"
+    small_csv_win = Path(args.flatfiles_root_win) / "_clickhouse_profile_smoke" / "small_quotes_smoke.csv"
     small_csv_ch = windows_path_to_clickhouse_path(small_csv_win, args.flatfiles_root_win, args.flatfiles_root_ch)
     write_small_quote_csv(small_csv_win)
 
@@ -158,6 +158,7 @@ def main() -> None:
     profiles.append(run_profiled(client, "create_table", create_table_sql(database)))
     snapshots.append({"label": "after_create", "memory": read_memory_snapshot(client)})
 
+    profiles.append(run_profiled(client, "read_small_csv", read_quotes_count_sql(small_csv_ch), settings))
     profiles.append(run_profiled(client, "insert_small_csv", insert_quotes_sql(database, small_csv_ch, "small_quotes_smoke.csv"), settings))
     print_table_stats(client, database, "after small smoke")
 
@@ -345,6 +346,13 @@ SELECT
     toUInt8OrZero(tape),
     toUInt64OrZero(trf_timestamp),
     {sql_string(source_file)}
+FROM file({sql_string(clickhouse_path)}, 'CSVWithNames', {sql_string(QUOTE_SCHEMA_STRING)})
+"""
+
+
+def read_quotes_count_sql(clickhouse_path: str) -> str:
+    return f"""
+SELECT count()
 FROM file({sql_string(clickhouse_path)}, 'CSVWithNames', {sql_string(QUOTE_SCHEMA_STRING)})
 """
 
