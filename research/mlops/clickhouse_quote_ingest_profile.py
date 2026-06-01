@@ -29,6 +29,8 @@ CLICKHOUSE_USER_ENV = "TD__DATABASE__CLICKHOUSE__USER"
 CLICKHOUSE_FILE_ROOT_ENV = "TD__DATABASE__CLICKHOUSE__FILE_ROOT"
 DEFAULT_FLATFILES_ROOT_WIN = Path("D:/market-data/flatfiles/us_stocks_sip")
 DEFAULT_FLATFILES_ROOT_CH = "/mnt/d/market-data/flatfiles/us_stocks_sip"
+DEFAULT_USER_FILES_RELATIVE_FLATFILES_ROOT_CH = "flatfiles/us_stocks_sip"
+USER_FILES_RELATIVE_FLATFILE_ALIAS_CH = "flatfile/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_ingest_profile")
 QUOTE_SCHEMA_STRING = (
     "ticker String, "
@@ -77,7 +79,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--database", default="", help="ClickHouse database name. Defaults to a unique qrw_quote_ingest_profile_<timestamp> database.")
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
-    parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
+    parser.add_argument(
+        "--flatfiles-root-ch",
+        default=default_clickhouse_file_root(),
+        help=(
+            "ClickHouse-visible flatfiles root. Use a relative path such as "
+            "'flatfiles/us_stocks_sip' when ClickHouse user_files_path is D:/market-data "
+            "or '/mnt/d/market-data'. Absolute /mnt/... paths are still supported."
+        ),
+    )
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN))
     parser.add_argument("--dates", default="", help="Comma-separated YYYY-MM-DD dates. Defaults to first three discovered 2025 quote files.")
     parser.add_argument("--start-date", default="2025-01-01")
@@ -106,7 +116,11 @@ def default_clickhouse_password() -> str:
 
 
 def default_clickhouse_file_root() -> str:
-    return os.environ.get("CLICKHOUSE_FLATFILES_ROOT") or os.environ.get(CLICKHOUSE_FILE_ROOT_ENV) or DEFAULT_FLATFILES_ROOT_CH
+    return (
+        os.environ.get("CLICKHOUSE_FLATFILES_ROOT")
+        or os.environ.get(CLICKHOUSE_FILE_ROOT_ENV)
+        or DEFAULT_USER_FILES_RELATIVE_FLATFILES_ROOT_CH
+    )
 
 
 def discover_clickhouse_env_files() -> list[Path]:
@@ -453,31 +467,13 @@ def build_path_mappings(
     flatfiles_root_win: str,
     configured_flatfiles_root_ch: str,
 ) -> list[ClickHousePathMapping]:
-    roots: list[tuple[str, str]] = [("configured_root", configured_flatfiles_root_ch)]
-    default_root = DEFAULT_FLATFILES_ROOT_CH
-    if configured_flatfiles_root_ch.rstrip("/") != default_root.rstrip("/"):
-        roots.append(("default_mnt_d_root", default_root))
     mappings: list[ClickHousePathMapping] = []
     seen: set[tuple[str, str]] = set()
-    for name, root_ch in roots:
+
+    def append_mapping(name: str, root_ch: str, mapper) -> None:
         mapping = ClickHousePathMapping(
             name=name,
             flatfiles_root_ch=root_ch,
-            small_csv_ch=windows_path_to_clickhouse_path(small_csv_win, flatfiles_root_win, root_ch),
-            quote_files_ch=[windows_path_to_clickhouse_path(path, flatfiles_root_win, root_ch) for path in quote_files_win],
-        )
-        key = (mapping.name, mapping.small_csv_ch)
-        if key not in seen:
-            seen.add(key)
-            mappings.append(mapping)
-    for name, mapper in (
-        ("windows_drive_path", windows_drive_clickhouse_path),
-        ("relative_from_drive", relative_from_drive_path),
-        ("relative_from_flatfiles_root", lambda path: relative_from_root_path(path, Path(flatfiles_root_win))),
-    ):
-        mapping = ClickHousePathMapping(
-            name=name,
-            flatfiles_root_ch="",
             small_csv_ch=mapper(small_csv_win),
             quote_files_ch=[mapper(path) for path in quote_files_win],
         )
@@ -485,7 +481,60 @@ def build_path_mappings(
         if key not in seen:
             seen.add(key)
             mappings.append(mapping)
+
+    configured_root = normalize_clickhouse_file_path(configured_flatfiles_root_ch)
+    append_mapping(
+        "configured_root",
+        configured_root,
+        lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, configured_root),
+    )
+
+    default_relative_root = DEFAULT_USER_FILES_RELATIVE_FLATFILES_ROOT_CH
+    if configured_root.rstrip("/") != default_relative_root.rstrip("/"):
+        append_mapping(
+            "default_user_files_relative_root",
+            default_relative_root,
+            lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, default_relative_root),
+        )
+
+    if configured_root.rstrip("/") != USER_FILES_RELATIVE_FLATFILE_ALIAS_CH.rstrip("/"):
+        append_mapping(
+            "user_files_relative_flatfile_alias",
+            USER_FILES_RELATIVE_FLATFILE_ALIAS_CH,
+            lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, USER_FILES_RELATIVE_FLATFILE_ALIAS_CH),
+        )
+
+    for name, root_win in (
+        ("relative_from_market_data_root", Path("D:/market-data")),
+        ("relative_from_drive_root", Path("D:/")),
+        ("relative_from_flatfiles_root", Path(flatfiles_root_win)),
+    ):
+        append_mapping(name, "", lambda path, root=root_win: relative_from_root_path(path, root))
+
+    default_absolute_root = DEFAULT_FLATFILES_ROOT_CH
+    if configured_root.rstrip("/") != default_absolute_root.rstrip("/"):
+        append_mapping(
+            "default_mnt_d_root",
+            default_absolute_root,
+            lambda path: windows_path_to_clickhouse_path(path, flatfiles_root_win, default_absolute_root),
+        )
+
+    append_mapping("windows_drive_path", "", windows_drive_clickhouse_path)
+    append_mapping("relative_from_drive", "", relative_from_drive_path)
+
     return mappings
+
+
+def normalize_clickhouse_file_path(path: str) -> str:
+    normalized = path.strip().replace("\\", "/")
+    if normalized == "/":
+        return normalized
+    return normalized.rstrip("/")
+
+
+def is_absolute_clickhouse_path(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    return normalized.startswith("/") or (len(normalized) >= 3 and normalized[1:3] == ":/")
 
 
 def print_server_context(client: ClickHouseHttpClient) -> None:
@@ -540,10 +589,13 @@ def quote_file_for_date(flatfiles_root: Path, date: str) -> Path:
 
 
 def windows_path_to_clickhouse_path(path: Path, flatfiles_root_win: str, flatfiles_root_ch: str) -> str:
+    flatfiles_root_ch = normalize_clickhouse_file_path(flatfiles_root_ch)
     path = path.resolve()
     root = Path(flatfiles_root_win).resolve()
     try:
         relative = path.relative_to(root)
+        if not flatfiles_root_ch:
+            return relative.as_posix()
         return flatfiles_root_ch.rstrip("/") + "/" + relative.as_posix()
     except ValueError:
         drive = path.drive.rstrip(":").lower()
