@@ -82,7 +82,20 @@ type ScannerSnapshotPayload = {
   snapshot: ScannerSnapshot;
 };
 
-type RealLiveAccountType = "paper" | "cash";
+type RealLiveAccountKey = string;
+
+type RealLiveAccountConfig = {
+  account_class: string;
+  account_id: string;
+  account_key: RealLiveAccountKey;
+  configured: boolean;
+  label: string;
+  trading_mode: "paper" | "live" | string;
+};
+
+type RealLiveAccountsPayload = {
+  accounts: RealLiveAccountConfig[];
+};
 
 type RealLivePreflightCheck = {
   details?: Record<string, unknown>;
@@ -94,11 +107,14 @@ type RealLivePreflightCheck = {
 
 type RealLivePreflightPayload = {
   account_id: string;
-  account_type: RealLiveAccountType;
+  account_type: string;
+  accounts: RealLiveAccountConfig[];
   broker?: { base_url?: string; name?: string };
   checks: RealLivePreflightCheck[];
   data_provider?: { base_url?: string; name?: string };
   ready: boolean;
+  selected_account_keys: string[];
+  selected_accounts: RealLiveAccountConfig[];
 };
 
 type RealLiveScannerPayload = {
@@ -111,8 +127,10 @@ type RealLiveScannerPayload = {
 
 type RealLivePortfolioPayload = {
   account_id: string;
-  account_type: RealLiveAccountType;
+  account_type: string;
+  accounts: RealLiveAccountConfig[];
   orders: Record<string, unknown>[];
+  portfolios?: Record<string, unknown>[];
   positions: Record<string, unknown>[];
   summary?: Record<string, unknown>;
 };
@@ -207,7 +225,10 @@ type LiveCanvasTarget = {
 type DecisionState = "approved" | "skipped" | "watching";
 
 type OrderRow = {
-  account_type?: RealLiveAccountType;
+  account_key?: string;
+  account_label?: string;
+  account_type?: string;
+  account_keys?: string[];
   avg_fill_price?: number | null;
   broker_order_id?: string;
   filled_quantity?: number;
@@ -272,7 +293,7 @@ const LIVE_SHARED_STATE_STORAGE_KEY = "quant-research-workbench.real-live-tradin
 const LIVE_SETUP_STORAGE_KEY = "quant-research-workbench.real-live-trading.scanner-queries.v2";
 const LIVE_SCANNER_QUERY_STORAGE_KEY = "quant-research-workbench.real-live-trading.scanner-query.v2";
 const LIVE_CHART_VISIBILITY_STORAGE_KEY = "quant-research-workbench.real-live-trading.chart-visibility.v1";
-const LIVE_ACCOUNT_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-type";
+const LIVE_ACCOUNT_KEYS_STORAGE_KEY = "quant-research-workbench.real-live-trading.account-keys";
 const LIVE_STARTING_CASH = 10_000;
 const LIVE_FEATURE_GROUPS = ["core", "session", "momentum", "volume_liquidity", "price_action", "shock", "market_structure"];
 const LIVE_METRICS_DOCK_HEIGHT = 86;
@@ -424,7 +445,8 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   const isChildCanvas = canvasId !== "main";
   const initialCanvas = useMemo(() => readStoredCanvas(canvasId, isChildCanvas), [canvasId, isChildCanvas]);
   const initialSharedState = useMemo(() => readSharedTradingState(), []);
-  const [accountType, setAccountType] = useState<RealLiveAccountType>(readStoredAccountType);
+  const [availableAccounts, setAvailableAccounts] = useState<RealLiveAccountConfig[]>(defaultRealLiveAccounts);
+  const [selectedAccountKeys, setSelectedAccountKeys] = useState<RealLiveAccountKey[]>(readStoredAccountKeys);
   const [preflightStatus, setPreflightStatus] = useState<RealLivePreflightPayload | null>(null);
   const [scope, setScope] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
@@ -493,6 +515,21 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   }, []);
 
   useEffect(() => {
+    let active = true;
+    api<RealLiveAccountsPayload>("/api/real-live-trading/accounts").then((payload) => {
+      if (!active) return;
+      const accounts = payload.accounts?.length ? payload.accounts : defaultRealLiveAccounts();
+      setAvailableAccounts(accounts);
+      setSelectedAccountKeys((current) => ensureSelectedAccountKeys(accounts, current));
+    }).catch(() => {
+      if (active) setAvailableAccounts(defaultRealLiveAccounts());
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!scope) return;
     let active = true;
     api<ReviewPayload>(`/api/market-data/review${query({ processed_root: scope.processed_root, start_date: scope.start_date, end_date: scope.end_date })}`).then((payload) => {
@@ -542,9 +579,11 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     () => buildPortfolioMetrics({ orders, positions, trades }),
     [orders, positions, trades]
   );
+  const selectedAccounts = useMemo(() => selectedAccountList(availableAccounts, selectedAccountKeys), [availableAccounts, selectedAccountKeys]);
+  const primaryAccountKey = selectedAccountKeys[0] || "paper";
   const globalMetrics = useMemo(
-    () => buildGlobalLiveMetrics({ accountType, decisions, exchangeClock, lastActionTime, liveClockMode, localClock, scannerRows: signalRows, session, snapshot }),
-    [accountType, decisions, exchangeClock, lastActionTime, liveClockMode, localClock, session, signalRows, snapshot]
+    () => buildGlobalLiveMetrics({ decisions, exchangeClock, lastActionTime, liveClockMode, localClock, scannerRows: signalRows, selectedAccounts, session, snapshot }),
+    [decisions, exchangeClock, lastActionTime, liveClockMode, localClock, selectedAccounts, session, signalRows, snapshot]
   );
   const liveWindowSummaries = useMemo(
     () => buildLiveWindowSummaries(openWindows, chartWindows, layouts),
@@ -677,9 +716,9 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem(LIVE_ACCOUNT_STORAGE_KEY, accountType);
+    window.localStorage.setItem(LIVE_ACCOUNT_KEYS_STORAGE_KEY, JSON.stringify(selectedAccountKeys));
     setPreflightStatus(null);
-  }, [accountType]);
+  }, [selectedAccountKeys]);
 
   useEffect(() => {
     if (!started || isChildCanvas) return;
@@ -696,15 +735,18 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
       canceled = true;
       window.clearInterval(timer);
     };
-  }, [accountType, isChildCanvas, scannerQueryKey, started]);
+  }, [isChildCanvas, scannerQueryKey, selectedAccountKeys, started]);
 
-  async function checkConnections(selectedAccountType = accountType) {
+  async function checkConnections(keys = selectedAccountKeys) {
+    const accountKeys = ensureSelectedAccountKeys(availableAccounts, keys);
     setLoading(true);
     setError("");
     setLiveClockMode("loading_data");
     setLiveClockMessage("Checking Massive data and IBKR Client Portal connectivity.");
     try {
-      const payload = await api<RealLivePreflightPayload>(`/api/real-live-trading/preflight${query({ account_type: selectedAccountType })}`);
+      const payload = await api<RealLivePreflightPayload>(`/api/real-live-trading/preflight${query({ account_keys: accountKeys.join(","), account_type: accountKeys[0] || "paper" })}`);
+      if (payload.accounts?.length) setAvailableAccounts(payload.accounts);
+      if (payload.selected_account_keys?.length) setSelectedAccountKeys(payload.selected_account_keys);
       setPreflightStatus(payload);
       setLiveClockMode(payload.ready ? "ready" : "paused");
       setLiveClockMessage(payload.ready ? "Connections are ready." : "One or more live trading connections are blocked.");
@@ -721,7 +763,9 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
 
   async function enterLiveWorkspace() {
     if (loading) return;
-    const payload = preflightStatus?.account_type === accountType ? preflightStatus : await checkConnections(accountType);
+    const selectedKey = selectedAccountKeys.join(",");
+    const checkedKey = preflightStatus?.selected_account_keys?.join(",") || "";
+    const payload = checkedKey === selectedKey ? preflightStatus : await checkConnections(selectedAccountKeys);
     if (!payload?.ready) return;
     canvasRemovedRef.current = false;
     window.localStorage.removeItem(LIVE_SHARED_STATE_STORAGE_KEY);
@@ -802,9 +846,10 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
 
   async function loadBrokerPortfolio() {
     try {
-      const payload = await api<RealLivePortfolioPayload>(`/api/real-live-trading/portfolio${query({ account_type: accountType })}`);
+      const accountKeys = ensureSelectedAccountKeys(availableAccounts, selectedAccountKeys);
+      const payload = await api<RealLivePortfolioPayload>(`/api/real-live-trading/portfolio${query({ account_keys: accountKeys.join(","), account_type: accountKeys[0] || "paper" })}`);
       setPositions(payload.positions.map(normalizeRealLivePosition).filter((position) => position.symbol && position.quantity !== 0));
-      setOrders(payload.orders.map((order) => normalizeRealLiveOrder(order, accountType)).filter((order) => order.symbol));
+      setOrders(payload.orders.map(normalizeRealLiveOrder).filter((order) => order.symbol));
     } catch (requestError) {
       setError((current) => current || (requestError instanceof Error ? requestError.message : "IBKR portfolio request failed."));
     }
@@ -848,7 +893,10 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     const stop = context?.stop ?? (Number.isFinite(draftStop) && draftStop > 0 ? draftStop : numberValue(contextRow, "suggested_stop"));
     const type = context?.type ?? tradeDraft.type;
     const order: OrderRow = {
-      account_type: accountType,
+      account_key: selectedAccountKeys.join(","),
+      account_keys: selectedAccountKeys,
+      account_label: selectedAccounts.map((account) => account.label).join(", "),
+      account_type: primaryAccountKey,
       avg_fill_price: null,
       filled_quantity: 0,
       id: `${Date.now()}-${symbol}-${side}`,
@@ -1082,13 +1130,14 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   if (!started) {
     return (
       <RealLiveTradingGate
-        accountType={accountType}
+        accounts={availableAccounts}
         loading={loading}
         message={liveClockMessage}
         preflightStatus={preflightStatus}
-        onAccountTypeChange={setAccountType}
+        selectedAccountKeys={selectedAccountKeys}
         onCheck={() => void checkConnections()}
         onEnter={() => void enterLiveWorkspace()}
+        onToggleAccount={(accountKey) => toggleSelectedAccount(accountKey, availableAccounts, setSelectedAccountKeys)}
       />
     );
   }
@@ -1246,56 +1295,69 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
 }
 
 function RealLiveTradingGate({
-  accountType,
+  accounts,
   loading,
   message,
-  onAccountTypeChange,
   onCheck,
   onEnter,
+  onToggleAccount,
   preflightStatus,
+  selectedAccountKeys,
 }: {
-  accountType: RealLiveAccountType;
+  accounts: RealLiveAccountConfig[];
   loading: boolean;
   message: string;
-  onAccountTypeChange: (accountType: RealLiveAccountType) => void;
   onCheck: () => void;
   onEnter: () => void;
+  onToggleAccount: (accountKey: string) => void;
   preflightStatus: RealLivePreflightPayload | null;
+  selectedAccountKeys: string[];
 }) {
   const ready = Boolean(preflightStatus?.ready);
+  const selectedAccounts = selectedAccountList(accounts, selectedAccountKeys);
+  const selectedLabel = selectedAccounts.length ? selectedAccounts.map((account) => account.label).join(", ") : "No account selected";
+  const mirrorMode = selectedAccounts.length > 1;
   return (
     <>
       <PageIntro
         groupLabel="Live Trading"
         title="Live Account Gate"
-        description="Choose the IBKR account, verify Massive and IBKR Client Portal, then enter the live trading workspace."
+        description="Choose one or more IBKR accounts, verify Massive and IBKR Client Portal, then enter the live trading workspace."
       />
       <section className="live-start-panel panel">
         <div className="live-start-copy">
-          <span>Account</span>
-          <strong>{accountType === "paper" ? "IBKR Paper" : "IBKR Cash"}</strong>
-          <p>Paper is the default while testing. Orders and portfolio reads use the account selected here.</p>
+          <span>Accounts</span>
+          <strong>{selectedLabel}</strong>
+          <p>{mirrorMode ? "Mirroring is enabled for staged live orders across the selected accounts." : "Select multiple accounts when a mirrored order workflow is intended."}</p>
         </div>
         <div className="live-start-form">
-          <div className="live-account-toggle" role="group" aria-label="Account type">
-            {(["paper", "cash"] as RealLiveAccountType[]).map((item) => (
-              <button className={accountType === item ? "button primary" : "button secondary"} key={item} onClick={() => onAccountTypeChange(item)} type="button">
-                {item === "paper" ? "Paper" : "Cash"}
+          <div className="live-account-card-grid" role="group" aria-label="Accounts">
+            {accounts.map((account) => {
+              const selected = selectedAccountKeys.includes(account.account_key);
+              return (
+              <button className={selected ? "live-account-card selected" : "live-account-card"} key={account.account_key} onClick={() => onToggleAccount(account.account_key)} type="button">
+                <span className="live-account-card-top">
+                  <strong>{account.label}</strong>
+                  <em data-mode={account.trading_mode}>{account.trading_mode === "paper" ? "Paper" : "Live"}</em>
+                </span>
+                <span>{account.account_class}</span>
+                <small>{account.account_id || (account.configured ? "Configured" : "Missing account id")}</small>
               </button>
-            ))}
+            );
+            })}
           </div>
           <div className="live-start-path">
             <span>Connection gate</span>
-            <strong>{preflightStatus?.account_id || "Not checked"}</strong>
+            <strong>{preflightStatus?.account_id || selectedLabel}</strong>
           </div>
-          <div className="live-start-progress-grid" aria-label="Live connection checks">
+          <div className="live-check-card-grid" aria-label="Live connection checks">
             {(preflightStatus?.checks ?? []).map((check) => (
-              <LiveStartProgress key={check.id} label={check.label} progress={check.status === "ready" ? 1 : 0} status={check.status} />
+              <LiveCheckCard key={check.id} check={check} />
             ))}
             {!preflightStatus ? (
               <>
-                <LiveStartProgress label="Massive data" progress={0} status="waiting" />
-                <LiveStartProgress label="IBKR broker" progress={0} status="waiting" />
+                <LiveCheckCard check={{ id: "massive-waiting", label: "Massive data", status: "waiting" }} />
+                <LiveCheckCard check={{ id: "ibkr-waiting", label: "IBKR broker", status: "waiting" }} />
               </>
             ) : null}
           </div>
@@ -1304,7 +1366,7 @@ function RealLiveTradingGate({
             <button className="button secondary" disabled={loading} onClick={onCheck} type="button">
               {loading ? <span className="loading-spinner" aria-hidden="true" /> : <CheckCircle2 size={15} />} Check Connections
             </button>
-            <button className="button primary" disabled={!ready || loading} onClick={onEnter} type="button">
+            <button className="button primary" disabled={!ready || loading || !selectedAccountKeys.length} onClick={onEnter} type="button">
               <Play size={15} /> Enter Workspace
             </button>
           </div>
@@ -1314,16 +1376,16 @@ function RealLiveTradingGate({
   );
 }
 
-function LiveStartProgress({ label, progress, status }: { label: string; progress: number; status: string }) {
-  const tone = status === "ready" ? "success" : status === "error" || status === "missing_auth" ? "danger" : status === "missing" ? "warning" : "info";
+function LiveCheckCard({ check }: { check: RealLivePreflightCheck }) {
+  const tone = check.status === "ready" ? "success" : check.status === "blocked" || check.status === "error" || check.status === "missing_auth" ? "danger" : check.status === "missing" ? "warning" : "info";
   return (
-    <div className="live-start-progress" data-tone={tone}>
+    <article className="live-check-card" data-tone={tone}>
       <div>
-        <span>{label}</span>
-        <strong>{status || "waiting"}</strong>
+        <span>{check.label}</span>
+        <strong>{check.status || "waiting"}</strong>
       </div>
-      <b><span style={{ width: `${Math.max(4, Math.round(progress * 100))}%` }} /></b>
-    </div>
+      {check.message ? <p>{check.message}</p> : null}
+    </article>
   );
 }
 
@@ -2558,6 +2620,39 @@ function availableSessionDates(records: RecordRow[]) {
   return Array.from(new Set(records.filter((record) => record.exists && record.group === "bars" && record.timeframe === "1m").map((record) => record.session_date))).sort();
 }
 
+function defaultRealLiveAccounts(): RealLiveAccountConfig[] {
+  return [
+    { account_class: "paper", account_id: "", account_key: "paper", configured: false, label: "Paper", trading_mode: "paper" },
+    { account_class: "cash", account_id: "", account_key: "cash", configured: false, label: "Cash", trading_mode: "live" },
+    { account_class: "margin", account_id: "", account_key: "margin", configured: false, label: "Margin", trading_mode: "live" },
+    { account_class: "rrsp", account_id: "", account_key: "rrsp", configured: false, label: "RRSP", trading_mode: "live" },
+  ];
+}
+
+function selectedAccountList(accounts: RealLiveAccountConfig[], selectedKeys: string[]) {
+  const selected = selectedKeys.map((key) => accounts.find((account) => account.account_key === key)).filter((account): account is RealLiveAccountConfig => Boolean(account));
+  return selected.length ? selected : accounts.filter((account) => account.account_key === "paper").slice(0, 1);
+}
+
+function ensureSelectedAccountKeys(accounts: RealLiveAccountConfig[], selectedKeys: string[]) {
+  const accountKeys = new Set(accounts.map((account) => account.account_key));
+  const selected = selectedKeys.filter((key) => accountKeys.has(key));
+  if (selected.length) return selected;
+  return accounts.some((account) => account.account_key === "paper") ? ["paper"] : accounts.slice(0, 1).map((account) => account.account_key);
+}
+
+function toggleSelectedAccount(accountKey: string, accounts: RealLiveAccountConfig[], setSelected: Dispatch<SetStateAction<string[]>>) {
+  setSelected((current) => {
+    const active = new Set(ensureSelectedAccountKeys(accounts, current));
+    if (active.has(accountKey)) {
+      active.delete(accountKey);
+    } else {
+      active.add(accountKey);
+    }
+    return ensureSelectedAccountKeys(accounts, Array.from(active));
+  });
+}
+
 function normalizeRealLiveScannerRow(row: Record<string, unknown>, session: TradingSession): Record<string, unknown> {
   const ticker = stringValue(row, "symbol") || stringValue(row, "ticker");
   const lastPrice = numberValue(row, "last_price") || numberValue(row, "price");
@@ -2618,11 +2713,13 @@ function normalizeRealLivePosition(row: Record<string, unknown>): PositionRow {
   };
 }
 
-function normalizeRealLiveOrder(row: Record<string, unknown>, accountType: RealLiveAccountType): OrderRow {
+function normalizeRealLiveOrder(row: Record<string, unknown>): OrderRow {
   const quantity = numberValue(row, "quantity");
   const filled = numberValue(row, "filled_quantity");
   return {
-    account_type: accountType,
+    account_key: stringValue(row, "account_key"),
+    account_label: stringValue(row, "account_label"),
+    account_type: stringValue(row, "account_key"),
     avg_fill_price: optionalNumber(row, "avg_fill_price"),
     broker_order_id: stringValue(row, "broker_order_id"),
     filled_quantity: filled,
@@ -3191,27 +3288,29 @@ function buildPortfolioMetrics({ orders, positions, trades }: { orders: OrderRow
 }
 
 function buildGlobalLiveMetrics({
-  accountType,
   decisions,
   exchangeClock,
   lastActionTime,
   liveClockMode,
   localClock,
   scannerRows,
+  selectedAccounts,
   session,
   snapshot,
 }: {
-  accountType: RealLiveAccountType;
   decisions: Record<string, DecisionState>;
   exchangeClock: string;
   lastActionTime: string;
   liveClockMode: LiveClockMode;
   localClock: string;
   scannerRows: Record<string, unknown>[];
+  selectedAccounts: RealLiveAccountConfig[];
   session: TradingSession;
   snapshot: ScannerSnapshot | null;
 }) {
   const decisionsCount = Object.keys(decisions).length;
+  const accountLabel = selectedAccounts.length > 1 ? `${selectedAccounts.length} mirrored` : selectedAccounts[0]?.label || "Paper";
+  const accountTone = selectedAccounts.some((account) => account.trading_mode !== "paper") ? "warning" : "info";
   const modeValue = (
     <span className="live-mode-value">
       <span>{formatLiveMode(liveClockMode)}</span>
@@ -3219,7 +3318,7 @@ function buildGlobalLiveMetrics({
   );
   return {
     items: [
-      { icon: <Banknote size={14} />, label: "Account", tone: accountType === "paper" ? "info" : "warning", value: accountType === "paper" ? "Paper" : "Cash" },
+      { icon: <Banknote size={14} />, label: "Accounts", tone: accountTone, value: accountLabel },
       { icon: <Clock3 size={14} />, label: "Exchange", tone: "info", value: exchangeClock || `${session.barTime} ET` },
       { icon: <Clock3 size={14} />, label: "Local", tone: "info", value: localClock || "-" },
       { icon: <Activity size={14} />, label: "Mode", tone: liveClockMode === "running" ? "success" : liveClockMode === "loading_data" ? "warning" : "muted", value: modeValue },
@@ -3518,11 +3617,14 @@ function optionalNumber(row: Record<string, unknown> | null | undefined, key: st
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function readStoredAccountType(): RealLiveAccountType {
+function readStoredAccountKeys(): string[] {
   try {
-    return window.localStorage.getItem(LIVE_ACCOUNT_STORAGE_KEY) === "cash" ? "cash" : "paper";
+    const parsed = JSON.parse(window.localStorage.getItem(LIVE_ACCOUNT_KEYS_STORAGE_KEY) || "null");
+    if (Array.isArray(parsed)) return parsed.map((item) => String(item)).filter(Boolean);
+    const legacy = window.localStorage.getItem("quant-research-workbench.real-live-trading.account-type");
+    return legacy ? [legacy] : ["paper"];
   } catch {
-    return "paper";
+    return ["paper"];
   }
 }
 

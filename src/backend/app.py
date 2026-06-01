@@ -60,6 +60,8 @@ from src.backend.market_data_service import (
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.progress_model import build_progress_model
 from src.backend.real_live_trading_service import (
+    configured_real_live_accounts,
+    public_account,
     real_live_portfolio,
     real_live_preflight,
     real_live_scanner_snapshot,
@@ -191,6 +193,7 @@ class LiveTradingNewsAtRequest(BaseModel):
 
 class RealLiveOrderSubmit(BaseModel):
     account_type: str = "paper"
+    account_keys: list[str] = Field(default_factory=list)
     order: dict[str, Any] = Field(default_factory=dict)
     preview: bool = False
 
@@ -1788,9 +1791,17 @@ def live_trading_warm_charts(
 
 
 @app.get("/api/real-live-trading/preflight")
-def real_live_trading_preflight(account_type: str = "paper") -> dict[str, Any]:
+def real_live_trading_preflight(account_type: str = "paper", account_keys: str = "") -> dict[str, Any]:
     try:
-        return real_live_preflight(account_type)
+        return real_live_preflight(account_type, account_keys=account_keys)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/real-live-trading/accounts")
+def real_live_trading_accounts() -> dict[str, Any]:
+    try:
+        return {"accounts": [public_account(account) for account in configured_real_live_accounts()]}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1804,9 +1815,9 @@ def real_live_trading_scanner(row_limit: int = Query(default=250, ge=1, le=1000)
 
 
 @app.get("/api/real-live-trading/portfolio")
-def real_live_trading_portfolio(account_type: str = "paper") -> dict[str, Any]:
+def real_live_trading_portfolio(account_type: str = "paper", account_keys: str = "") -> dict[str, Any]:
     try:
-        return real_live_portfolio(account_type)
+        return real_live_portfolio(account_type, account_keys=account_keys)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -1816,7 +1827,7 @@ def real_live_trading_portfolio(account_type: str = "paper") -> dict[str, Any]:
 @app.post("/api/real-live-trading/orders")
 def real_live_trading_orders(payload: RealLiveOrderSubmit) -> dict[str, Any]:
     try:
-        return submit_real_live_order(payload.account_type, payload.order, preview=payload.preview)
+        return submit_real_live_order(payload.account_type, payload.order, preview=payload.preview, account_keys=payload.account_keys)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

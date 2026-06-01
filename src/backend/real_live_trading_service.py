@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import urllib.error
 import urllib.parse
@@ -23,8 +24,15 @@ DEFAULT_MASSIVE_BASE_URL = "https://api.massive.com"
 
 @dataclass(frozen=True)
 class RealLiveAccount:
-    account_type: str
+    account_key: str
+    account_class: str
     account_id: str
+    label: str
+    trading_mode: str
+
+    @property
+    def account_type(self) -> str:
+        return self.account_key
 
 
 def load_real_live_env() -> None:
@@ -34,27 +42,124 @@ def load_real_live_env() -> None:
     load_dotenv(override=False)
 
 
-def normalize_account_type(account_type: str) -> str:
-    normalized = (account_type or "paper").strip().lower()
-    if normalized not in {"paper", "cash"}:
-        raise ValueError("account_type must be paper or cash")
+def normalize_account_key(account_key: str) -> str:
+    normalized = re.sub(r"[^a-z0-9_-]+", "-", (account_key or "").strip().lower()).strip("-")
+    if not normalized:
+        raise ValueError("account key is required")
     return normalized
 
 
-def configured_real_live_account(account_type: str) -> RealLiveAccount:
+def configured_real_live_accounts() -> list[RealLiveAccount]:
     load_real_live_env()
-    normalized = normalize_account_type(account_type)
-    env_name = "IBKR_PAPER_ACCOUNT_ID" if normalized == "paper" else "IBKR_CASH_ACCOUNT_ID"
-    return RealLiveAccount(account_type=normalized, account_id=os.environ.get(env_name, "").strip())
+    accounts: dict[str, RealLiveAccount] = {}
+
+    json_config = os.environ.get("IBKR_ACCOUNTS_JSON", "").strip()
+    if json_config:
+        parsed = json.loads(json_config)
+        if isinstance(parsed, dict):
+            items = parsed.items()
+        elif isinstance(parsed, list):
+            items = enumerate(parsed)
+        else:
+            raise ValueError("IBKR_ACCOUNTS_JSON must be a list or object")
+        for fallback_key, item in items:
+            if isinstance(item, dict):
+                account = account_from_config({"key": fallback_key, **item} if not item.get("key") else item)
+                accounts[account.account_key] = account
+
+    for name, value in os.environ.items():
+        match = re.fullmatch(r"IBKR_ACCOUNT_([A-Z0-9_]+)_ID", name)
+        if not match:
+            continue
+        key = normalize_account_key(match.group(1))
+        accounts[key] = account_from_config(
+            {
+                "account_id": value,
+                "account_class": os.environ.get(f"IBKR_ACCOUNT_{match.group(1)}_CLASS", key),
+                "key": key,
+                "label": os.environ.get(f"IBKR_ACCOUNT_{match.group(1)}_LABEL", key.replace("-", " ").title()),
+                "trading_mode": os.environ.get(f"IBKR_ACCOUNT_{match.group(1)}_MODE", "paper" if "paper" in key else "live"),
+            }
+        )
+
+    legacy_accounts = [
+        ("paper", "Paper", "paper", "paper", os.environ.get("IBKR_PAPER_ACCOUNT_ID", "")),
+        ("cash", "Cash", "cash", "live", os.environ.get("IBKR_CASH_ACCOUNT_ID", "")),
+        ("margin", "Margin", "margin", "live", os.environ.get("IBKR_MARGIN_ACCOUNT_ID", "")),
+        ("rrsp", "RRSP", "rrsp", "live", os.environ.get("IBKR_RRSP_ACCOUNT_ID", "")),
+    ]
+    for key, label, account_class, trading_mode, account_id in legacy_accounts:
+        if key not in accounts:
+            accounts[key] = RealLiveAccount(account_key=key, account_class=account_class, account_id=account_id.strip(), label=label, trading_mode=trading_mode)
+
+    return list(accounts.values())
 
 
-def real_live_preflight(account_type: str = "paper") -> dict[str, Any]:
-    account = configured_real_live_account(account_type)
-    checks = [check_massive_rest(), *check_ibkr(account)]
+def account_from_config(item: dict[str, Any]) -> RealLiveAccount:
+    key = normalize_account_key(str(item.get("key") or item.get("name") or item.get("account_key") or item.get("account_class") or item.get("type") or ""))
+    account_class = normalize_account_key(str(item.get("account_class") or item.get("type") or key))
+    trading_mode = normalize_account_key(str(item.get("trading_mode") or item.get("mode") or ("paper" if account_class == "paper" else "live")))
+    return RealLiveAccount(
+        account_key=key,
+        account_class=account_class,
+        account_id=str(item.get("account_id") or item.get("id") or item.get("account") or "").strip(),
+        label=str(item.get("label") or key.replace("-", " ").title()).strip(),
+        trading_mode="paper" if trading_mode == "paper" else "live",
+    )
+
+
+def resolve_real_live_accounts(account_keys: str | list[str] | None = None, account_type: str = "paper") -> list[RealLiveAccount]:
+    accounts = configured_real_live_accounts()
+    by_key = {account.account_key: account for account in accounts}
+    selected_keys = parse_account_keys(account_keys)
+    if not selected_keys:
+        legacy_key = normalize_account_key(account_type or "paper")
+        if legacy_key in by_key:
+            selected_keys = [legacy_key]
+        else:
+            selected_keys = [account.account_key for account in accounts if account.account_class == legacy_key or account.trading_mode == legacy_key][:1]
+    selected: list[RealLiveAccount] = []
+    missing: list[str] = []
+    for key in selected_keys:
+        account = by_key.get(key)
+        if account:
+            selected.append(account)
+        else:
+            missing.append(key)
+    if missing:
+        raise ValueError(f"Unknown configured IBKR account key(s): {', '.join(missing)}")
+    if not selected:
+        raise ValueError("Select at least one configured IBKR account.")
+    return selected
+
+
+def parse_account_keys(account_keys: str | list[str] | None) -> list[str]:
+    if isinstance(account_keys, str):
+        raw_items = re.split(r"[,|]", account_keys)
+    elif isinstance(account_keys, list):
+        raw_items = account_keys
+    else:
+        raw_items = []
+    return [normalize_account_key(str(item)) for item in raw_items if str(item).strip()]
+
+
+def configured_real_live_account(account_type: str) -> RealLiveAccount:
+    return resolve_real_live_accounts(account_type=account_type)[0]
+
+
+def real_live_preflight(account_type: str = "paper", account_keys: str | list[str] | None = None) -> dict[str, Any]:
+    accounts = configured_real_live_accounts()
+    selected_accounts = resolve_real_live_accounts(account_keys, account_type)
+    checks = [check_massive_rest()]
+    for account in selected_accounts:
+        checks.extend(check_ibkr(account))
     return {
         "ready": all(check["status"] == "ready" for check in checks),
-        "account_type": account.account_type,
-        "account_id": mask_account_id(account.account_id),
+        "account_type": selected_accounts[0].account_key,
+        "account_id": ", ".join(mask_account_id(account.account_id) for account in selected_accounts if account.account_id),
+        "accounts": [public_account(account) for account in accounts],
+        "selected_account_keys": [account.account_key for account in selected_accounts],
+        "selected_accounts": [public_account(account) for account in selected_accounts],
         "checks": checks,
         "data_provider": {"name": "massive", "base_url": massive_base_url()},
         "broker": {"name": "ibkr_client_portal", "base_url": ibkr_base_url()},
@@ -78,27 +183,56 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
     }
 
 
-def real_live_portfolio(account_type: str) -> dict[str, Any]:
-    account = configured_real_live_account(account_type)
+def real_live_portfolio(account_type: str, account_keys: str | list[str] | None = None) -> dict[str, Any]:
+    selected_accounts = resolve_real_live_accounts(account_keys, account_type)
+    portfolios = [real_live_portfolio_for_account(account) for account in selected_accounts]
+    return {
+        "account_type": selected_accounts[0].account_key,
+        "account_id": ", ".join(portfolio["account_id"] for portfolio in portfolios if portfolio.get("account_id")),
+        "accounts": [public_account(account) for account in selected_accounts],
+        "portfolios": portfolios,
+        "summary": {portfolio["account_key"]: portfolio.get("summary", {}) for portfolio in portfolios},
+        "positions": [position for portfolio in portfolios for position in portfolio.get("positions", [])],
+        "orders": [order for portfolio in portfolios for order in portfolio.get("orders", [])],
+    }
+
+
+def real_live_portfolio_for_account(account: RealLiveAccount) -> dict[str, Any]:
     if not account.account_id:
-        raise RuntimeError(f"Missing configured IBKR {account.account_type} account id.")
+        raise RuntimeError(f"Missing configured IBKR {account.label} account id.")
     account_path = urllib.parse.quote(account.account_id, safe="")
     raw_positions = ibkr_get_json(f"/portfolio/{account_path}/positions/0", timeout=8)
     raw_summary = ibkr_get_json(f"/portfolio/{account_path}/summary", timeout=8)
     raw_orders = ibkr_get_json("/iserver/account/orders", timeout=8)
     return {
-        "account_type": account.account_type,
+        "account_key": account.account_key,
+        "account_type": account.account_key,
+        "account_class": account.account_class,
         "account_id": mask_account_id(account.account_id),
+        "label": account.label,
+        "trading_mode": account.trading_mode,
         "summary": normalize_account_summary(raw_summary),
-        "positions": normalize_positions(raw_positions if isinstance(raw_positions, list) else raw_positions.get("positions", [])),
-        "orders": normalize_ibkr_orders(raw_orders),
+        "positions": normalize_positions(raw_positions if isinstance(raw_positions, list) else raw_positions.get("positions", []), account),
+        "orders": normalize_ibkr_orders(raw_orders, account),
     }
 
 
-def submit_real_live_order(account_type: str, order: dict[str, Any], *, preview: bool = False) -> dict[str, Any]:
-    account = configured_real_live_account(account_type)
+def submit_real_live_order(account_type: str, order: dict[str, Any], *, preview: bool = False, account_keys: str | list[str] | None = None) -> dict[str, Any]:
+    selected_accounts = resolve_real_live_accounts(account_keys, account_type)
+    results = [submit_real_live_order_for_account(account, order, preview=preview) for account in selected_accounts]
+    return {
+        "account_type": selected_accounts[0].account_key,
+        "account_id": ", ".join(result["account_id"] for result in results if result.get("account_id")),
+        "accounts": [public_account(account) for account in selected_accounts],
+        "preview": preview,
+        "results": results,
+        "submitted_orders": [result["submitted_order"] for result in results],
+    }
+
+
+def submit_real_live_order_for_account(account: RealLiveAccount, order: dict[str, Any], *, preview: bool = False) -> dict[str, Any]:
     if not account.account_id:
-        raise RuntimeError(f"Missing configured IBKR {account.account_type} account id.")
+        raise RuntimeError(f"Missing configured IBKR {account.label} account id.")
     ibkr_order = ibkr_order_payload(order, account.account_id)
     payload = {"orders": [ibkr_order]}
     path = f"/iserver/account/{urllib.parse.quote(account.account_id, safe='')}/orders"
@@ -106,10 +240,13 @@ def submit_real_live_order(account_type: str, order: dict[str, Any], *, preview:
         path += "/whatif"
     result = ibkr_post_json(path, payload, timeout=10)
     return {
-        "account_type": account.account_type,
+        "account_key": account.account_key,
+        "account_type": account.account_key,
+        "account_class": account.account_class,
         "account_id": mask_account_id(account.account_id),
+        "label": account.label,
         "preview": preview,
-        "submitted_order": normalize_submitted_order(order, result),
+        "submitted_order": normalize_submitted_order(order, result, account),
         "broker_response": result,
     }
 
@@ -127,25 +264,24 @@ def check_massive_rest() -> dict[str, Any]:
 
 def check_ibkr(account: RealLiveAccount) -> list[dict[str, Any]]:
     if not account.account_id:
-        env_name = "IBKR_PAPER_ACCOUNT_ID" if account.account_type == "paper" else "IBKR_CASH_ACCOUNT_ID"
-        return [{"id": "ibkr_account_env", "label": "IBKR account", "status": "blocked", "message": f"Set {env_name} in .env."}]
+        return [{"id": f"{account.account_key}_ibkr_account_env", "label": f"{account.label} account", "status": "blocked", "message": f"Set an account id for {account.account_key} in .env."}]
     checks: list[dict[str, Any]] = []
     try:
         status = ibkr_get_json("/iserver/auth/status", timeout=5)
         authenticated = bool(status.get("authenticated") or (status.get("connected") and status.get("competing") is False))
-        checks.append({"id": "ibkr_auth", "label": "IBKR session", "status": "ready" if authenticated else "blocked", "message": "Authenticated Client Portal session is available." if authenticated else "Authenticate Client Portal Gateway first."})
+        checks.append({"id": f"{account.account_key}_ibkr_auth", "label": f"{account.label} session", "status": "ready" if authenticated else "blocked", "message": "Authenticated Client Portal session is available." if authenticated else "Authenticate Client Portal Gateway first."})
     except Exception as exc:
-        return [{"id": "ibkr_gateway", "label": "IBKR gateway", "status": "blocked", "message": str(exc)}]
+        return [{"id": f"{account.account_key}_ibkr_gateway", "label": f"{account.label} gateway", "status": "blocked", "message": str(exc)}]
     try:
         accounts = ibkr_account_ids(ibkr_get_json("/iserver/accounts", timeout=6))
-        checks.append({"id": "ibkr_account", "label": "IBKR account access", "status": "ready" if account.account_id in accounts else "blocked", "message": "Configured account is available." if account.account_id in accounts else "Configured account was not returned by IBKR.", "details": {"available_accounts": [mask_account_id(item) for item in accounts]}})
+        checks.append({"id": f"{account.account_key}_ibkr_account", "label": f"{account.label} access", "status": "ready" if account.account_id in accounts else "blocked", "message": "Configured account is available." if account.account_id in accounts else "Configured account was not returned by IBKR.", "details": {"available_accounts": [mask_account_id(item) for item in accounts]}})
     except Exception as exc:
-        checks.append({"id": "ibkr_account", "label": "IBKR account access", "status": "blocked", "message": str(exc)})
+        checks.append({"id": f"{account.account_key}_ibkr_account", "label": f"{account.label} access", "status": "blocked", "message": str(exc)})
     try:
         ibkr_get_json(f"/portfolio/{urllib.parse.quote(account.account_id, safe='')}/summary", timeout=6)
-        checks.append({"id": "ibkr_portfolio", "label": "IBKR portfolio", "status": "ready", "message": "Portfolio summary is readable."})
+        checks.append({"id": f"{account.account_key}_ibkr_portfolio", "label": f"{account.label} portfolio", "status": "ready", "message": "Portfolio summary is readable."})
     except Exception as exc:
-        checks.append({"id": "ibkr_portfolio", "label": "IBKR portfolio", "status": "blocked", "message": str(exc)})
+        checks.append({"id": f"{account.account_key}_ibkr_portfolio", "label": f"{account.label} portfolio", "status": "blocked", "message": str(exc)})
     return checks
 
 
@@ -190,10 +326,12 @@ def normalize_order_type(value: str) -> str:
     return normalized
 
 
-def normalize_submitted_order(order: dict[str, Any], response: Any) -> dict[str, Any]:
+def normalize_submitted_order(order: dict[str, Any], response: Any, account: RealLiveAccount | None = None) -> dict[str, Any]:
     broker_order_id = broker_id_from_response(response)
     quantity = int(float(order.get("quantity") or 0))
     return {
+        "account_key": account.account_key if account else "",
+        "account_label": account.label if account else "",
         "client_order_id": str(order.get("client_order_id") or ""),
         "broker_order_id": broker_order_id,
         "symbol": str(order.get("symbol") or "").upper(),
@@ -213,16 +351,18 @@ def normalize_submitted_order(order: dict[str, Any], response: Any) -> dict[str,
     }
 
 
-def normalize_ibkr_orders(payload: Any) -> list[dict[str, Any]]:
+def normalize_ibkr_orders(payload: Any, account: RealLiveAccount | None = None) -> list[dict[str, Any]]:
     raw_orders = payload.get("orders", []) if isinstance(payload, dict) else payload if isinstance(payload, list) else []
-    return [normalize_ibkr_order(item) for item in raw_orders if isinstance(item, dict)]
+    return [normalize_ibkr_order(item, account) for item in raw_orders if isinstance(item, dict)]
 
 
-def normalize_ibkr_order(item: dict[str, Any]) -> dict[str, Any]:
+def normalize_ibkr_order(item: dict[str, Any], account: RealLiveAccount | None = None) -> dict[str, Any]:
     quantity = float_value(item.get("totalSize") or item.get("quantity") or item.get("size"))
     filled = float_value(item.get("filledQuantity") or item.get("filled") or 0)
     avg_price = float_value(item.get("avgPrice") or item.get("avg_fill_price") or 0)
     return {
+        "account_key": account.account_key if account else "",
+        "account_label": account.label if account else "",
         "broker_order_id": str(item.get("orderId") or item.get("order_id") or item.get("id") or ""),
         "symbol": str(item.get("ticker") or item.get("symbol") or "").upper(),
         "side": str(item.get("side") or "").upper(),
@@ -238,16 +378,18 @@ def normalize_ibkr_order(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_positions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [normalize_position(row) for row in rows if isinstance(row, dict)]
+def normalize_positions(rows: list[dict[str, Any]], account: RealLiveAccount | None = None) -> list[dict[str, Any]]:
+    return [normalize_position(row, account) for row in rows if isinstance(row, dict)]
 
 
-def normalize_position(row: dict[str, Any]) -> dict[str, Any]:
+def normalize_position(row: dict[str, Any], account: RealLiveAccount | None = None) -> dict[str, Any]:
     symbol = str(row.get("ticker") or row.get("symbol") or row.get("contractDesc") or "").split(" ")[0].upper()
     quantity = float_value(row.get("position") or row.get("quantity"))
     avg_price = float_value(row.get("avgCost") or row.get("averageCost"))
     mark = float_value(row.get("mktPrice") or row.get("marketPrice"))
     return {
+        "account_key": account.account_key if account else "",
+        "account_label": account.label if account else "",
         "symbol": symbol,
         "quantity": quantity,
         "avg_price": avg_price,
@@ -263,6 +405,17 @@ def normalize_account_summary(summary: Any) -> dict[str, Any]:
     if not isinstance(summary, dict):
         return {}
     return {str(key): value for key, value in summary.items() if any(token in str(key).lower() for token in ("netliquidation", "availablefunds", "buyingpower", "cashbalance", "totalcashvalue"))}
+
+
+def public_account(account: RealLiveAccount) -> dict[str, Any]:
+    return {
+        "account_key": account.account_key,
+        "account_class": account.account_class,
+        "account_id": mask_account_id(account.account_id),
+        "configured": bool(account.account_id),
+        "label": account.label,
+        "trading_mode": account.trading_mode,
+    }
 
 
 def normalize_massive_ticker_snapshot(item: dict[str, Any]) -> dict[str, Any]:

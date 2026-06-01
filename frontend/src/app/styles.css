@@ -9221,11 +9221,103 @@ button {
   overflow-wrap: anywhere;
 }
 
-.live-account-toggle,
 .live-start-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.live-account-card-grid,
+.live-check-card-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+.live-account-card,
+.live-check-card {
+  background: color-mix(in oklab, var(--surface) 86%, var(--surface-alt));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--foreground);
+  display: grid;
+  gap: 8px;
+  min-height: 96px;
+  padding: 12px;
+  text-align: left;
+}
+
+.live-account-card {
+  cursor: pointer;
+}
+
+.live-account-card.selected {
+  border-color: color-mix(in oklab, var(--primary) 72%, var(--border));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 46%, transparent);
+}
+
+.live-account-card-top,
+.live-check-card div {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.live-account-card strong,
+.live-check-card strong {
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.live-account-card em,
+.live-check-card strong {
+  border-radius: 999px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 950;
+  padding: 3px 7px;
+  text-transform: uppercase;
+}
+
+.live-account-card em[data-mode="paper"] {
+  background: color-mix(in oklab, var(--info) 16%, transparent);
+  color: var(--info);
+}
+
+.live-account-card em[data-mode="live"] {
+  background: color-mix(in oklab, #f97316 18%, transparent);
+  color: #f97316;
+}
+
+.live-account-card span:not(.live-account-card-top),
+.live-account-card small,
+.live-check-card span,
+.live-check-card p {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.live-check-card[data-tone="success"] strong {
+  background: color-mix(in oklab, var(--success) 18%, transparent);
+  color: var(--success);
+}
+
+.live-check-card[data-tone="warning"] strong {
+  background: color-mix(in oklab, #f97316 18%, transparent);
+  color: #f97316;
+}
+
+.live-check-card[data-tone="danger"] strong {
+  background: color-mix(in oklab, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+.live-check-card[data-tone="info"] strong {
+  background: color-mix(in oklab, var(--info) 16%, transparent);
+  color: var(--info);
 }
 
 .live-start-progress-grid {
