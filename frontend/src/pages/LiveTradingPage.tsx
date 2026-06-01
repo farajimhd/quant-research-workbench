@@ -145,38 +145,6 @@ type LiveNewsPayload = {
   session_date: string;
 };
 
-type LiveAccountType = "paper" | "cash";
-
-type RealLivePreflightCheck = {
-  details?: Record<string, unknown>;
-  id: string;
-  label: string;
-  message: string;
-  status: "ready" | "blocked" | "warning" | string;
-};
-
-type RealLivePreflightPayload = {
-  account_id: string;
-  account_type: LiveAccountType;
-  checks: RealLivePreflightCheck[];
-  ready: boolean;
-};
-
-type RealLiveOrderPayload = {
-  account_id: string;
-  account_type: LiveAccountType;
-  preview: boolean;
-  result: unknown;
-};
-
-type RealLivePortfolioPayload = {
-  account_id: string;
-  account_type: LiveAccountType;
-  orders: unknown;
-  positions: Record<string, unknown>[];
-  summary: Record<string, unknown>;
-};
-
 type TradingSession = {
   barTime: string;
   sessionDate: string;
@@ -235,9 +203,6 @@ type LiveCanvasTarget = {
 type DecisionState = "approved" | "skipped" | "watching";
 
 type OrderRow = {
-  broker_account?: string;
-  broker_message?: string;
-  broker_response?: unknown;
   id: string;
   limit: number;
   quantity: number;
@@ -411,13 +376,11 @@ function buildDefaultCanvasLayout(childCanvas: boolean): { chartWindows: ChartWi
   return { chartWindows: [], layouts, windows: childCanvas ? [] : [...CORE_WINDOW_IDS] };
 }
 
-export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: { mode?: "simulation" | "real"; onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
-  const isRealTrading = mode === "real";
-  const sharedStateStorageKey = isRealTrading ? `${LIVE_SHARED_STATE_STORAGE_KEY}.real` : LIVE_SHARED_STATE_STORAGE_KEY;
+export function LiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
   const canvasId = useMemo(() => new URLSearchParams(window.location.search).get("liveCanvas") || "main", []);
   const isChildCanvas = canvasId !== "main";
   const initialCanvas = useMemo(() => readStoredCanvas(canvasId, isChildCanvas), [canvasId, isChildCanvas]);
-  const initialSharedState = useMemo(() => readSharedTradingState(sharedStateStorageKey), [sharedStateStorageKey]);
+  const initialSharedState = useMemo(() => readSharedTradingState(), []);
   const [scope, setScope] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
@@ -431,8 +394,6 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
   const [signalRows, setSignalRows] = useState<SignalRow[]>([]);
   const [scannerQuery, setScannerQuery] = useState<BackendTableQuery>(() => normalizeLiveScannerQuery(readStoredScannerQuery()) ?? DEFAULT_SCANNER_QUERY_GROUPS[0]?.query ?? emptyScannerQuery());
   const [preloadStatus, setPreloadStatus] = useState<LivePreloadPayload | null>(null);
-  const [liveAccountType, setLiveAccountType] = useState<LiveAccountType>("paper");
-  const [realPreflight, setRealPreflight] = useState<RealLivePreflightPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [liveClockMode, setLiveClockMode] = useState<LiveClockMode>("idle");
@@ -565,9 +526,9 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
     const extraWindowCount = Math.max(0, windowNames.length - 4);
     return {
       detail: `${layoutLabel} - ${pageLabel} - ${windowLabel}${extraWindowCount ? ` +${extraWindowCount}` : ""}`,
-      title: `${isRealTrading ? `Live Trading ${liveAccountType.toUpperCase()}` : "Semi-Auto Trading"} - ${canvasLabel}`,
+      title: `Semi-Auto Trading - ${canvasLabel}`,
     };
-  }, [canvasId, canvasTargets.length, isChildCanvas, isRealTrading, layoutName, liveAccountType, liveWindowSummaries, selectedLayoutName]);
+  }, [canvasId, canvasTargets.length, isChildCanvas, layoutName, liveWindowSummaries, selectedLayoutName]);
 
   useEffect(() => {
     if (!started || !onTopbarCenterChange) {
@@ -603,8 +564,8 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
   useEffect(() => {
     if (!started) return;
     const payload = { decisions, orders, positions, trades };
-    window.localStorage.setItem(sharedStateStorageKey, JSON.stringify(payload));
-  }, [decisions, orders, positions, sharedStateStorageKey, started, trades]);
+    window.localStorage.setItem(LIVE_SHARED_STATE_STORAGE_KEY, JSON.stringify(payload));
+  }, [decisions, orders, positions, started, trades]);
 
   useEffect(() => {
     if (canvasRemovedRef.current) return;
@@ -615,7 +576,7 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
 
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
-      if (event.key === sharedStateStorageKey && event.newValue) {
+      if (event.key === LIVE_SHARED_STATE_STORAGE_KEY && event.newValue) {
         try {
           const parsed = JSON.parse(event.newValue) as { decisions?: Record<string, DecisionState>; orders?: OrderRow[]; positions?: PositionRow[]; trades?: TradeRow[] };
           const incomingOrders = parsed.orders ?? [];
@@ -661,10 +622,10 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, [canvasId, isChildCanvas, sharedStateStorageKey]);
+  }, [canvasId, isChildCanvas]);
 
   useEffect(() => {
-    if (isRealTrading || !started || !scope || !session.sessionDate || isChildCanvas) return;
+    if (!started || !scope || !session.sessionDate || isChildCanvas) return;
     let canceled = false;
     const processedRoot = scope.processed_root;
     async function loadInitialScanner() {
@@ -711,7 +672,7 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
     return () => {
       canceled = true;
     };
-  }, [isChildCanvas, isRealTrading, scope, started, session.sessionDate]);
+  }, [isChildCanvas, scope, started, session.sessionDate]);
 
   useEffect(() => {
     if (!started || !tradingStarted || !scope || !session.sessionDate || liveClockMode !== "running") return;
@@ -719,12 +680,6 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
     const runId = ++paceRunRef.current;
     const timer = window.setTimeout(() => {
       if (paceRunRef.current !== runId || liveClockModeRef.current !== "running") return;
-      if (isRealTrading) {
-        const now = currentMarketSession();
-        setSession(now);
-        loadScannerAt(now.barTime);
-        return;
-      }
       const nextTime = addClockMinutes(session.barTime, 1);
       if (!nextTime || isAfterClock(nextTime, "20:00")) {
         if (paceRunRef.current !== runId || liveClockModeRef.current !== "running") return;
@@ -737,12 +692,12 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
       loadScannerAt(nextTime);
     }, seconds * 1000);
     return () => window.clearTimeout(timer);
-  }, [isRealTrading, liveClockMode, scope, secondsPerMinute, session.barTime, session.sessionDate, started, tradingStarted]);
+  }, [liveClockMode, scope, secondsPerMinute, session.barTime, session.sessionDate, started, tradingStarted]);
 
   useEffect(() => {
-    if (isRealTrading || !started || tradingStarted || !scope || !session.sessionDate || liveClockMode !== "ready") return;
+    if (!started || tradingStarted || !scope || !session.sessionDate || liveClockMode !== "ready") return;
     void loadScannerAt(session.barTime || "04:00");
-  }, [isRealTrading, scannerQueryKey]);
+  }, [scannerQueryKey]);
 
   async function startTrading() {
     if (!scope || startPreloading || loading) return;
@@ -771,7 +726,7 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
       setStartPreloading(false);
     }
     window.localStorage.setItem(LIVE_SESSION_STORAGE_KEY, JSON.stringify(nextSession));
-    window.localStorage.removeItem(sharedStateStorageKey);
+    window.localStorage.removeItem(LIVE_SHARED_STATE_STORAGE_KEY);
     setSession(nextSession);
     setDecisions({});
     setOrders([]);
@@ -785,48 +740,6 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
     setStarted(true);
   }
 
-  async function startRealTrading() {
-    if (startPreloading || loading) return;
-    const currentSession = currentMarketSession();
-    canvasRemovedRef.current = false;
-    setStartPreloading(true);
-    setLoading(true);
-    setRealPreflight(null);
-    setLiveClockMode("loading_data");
-    setLiveClockMessage("Checking Massive market data and IBKR Client Portal before opening live trading.");
-    try {
-      const payload = await api<RealLivePreflightPayload>(`/api/live-trading/real/preflight${query({ account_type: liveAccountType })}`);
-      setRealPreflight(payload);
-      if (!payload.ready) {
-        setLiveClockMode("paused");
-        setLiveClockMessage("Live trading is blocked until every connection check is ready.");
-        return;
-      }
-      window.localStorage.removeItem(sharedStateStorageKey);
-      setSession(currentSession);
-      setDecisions({});
-      setOrders([]);
-      setPositions([]);
-      setTrades([]);
-      setSignalRows([]);
-      setMarketSnapshot(null);
-      setSimulationSaveMessage("");
-      setLastActionTime("");
-      setTradingStarted(true);
-      setStarted(true);
-      setLiveClockMode("running");
-      setLiveClockMessage(`Live ${liveAccountType} account is connected. Scanner rows are sourced from Massive; orders route to IBKR.`);
-      await refreshRealPortfolio();
-      await loadScannerAt(currentSession.barTime, { warmCharts: false });
-    } catch (requestError) {
-      setLiveClockMode("paused");
-      setLiveClockMessage(requestError instanceof Error ? requestError.message : "Live trading preflight failed.");
-    } finally {
-      setLoading(false);
-      setStartPreloading(false);
-    }
-  }
-
   function startTradingSimulation() {
     if (liveClockMode !== "ready" || loading) return;
     setTradingStarted(true);
@@ -838,7 +751,7 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
     paceRunRef.current += 1;
     seekCancelRef.current += 1;
     setLiveClockMode("running");
-    setLiveClockMessage(isRealTrading ? "Live scanner refresh is running from Massive data." : "Simulation is pacing from the current bar. Use Next Signal to fast-forward.");
+    setLiveClockMessage("Simulation is pacing from the current bar. Use Next Signal to fast-forward.");
   }
 
   function pauseTradingClock() {
@@ -849,15 +762,10 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
   }
 
   function refreshCurrentBar() {
-    if (isRealTrading) void refreshRealPortfolio();
     loadScannerAt(session.barTime);
   }
 
   function advanceOneBar() {
-    if (isRealTrading) {
-      refreshCurrentBar();
-      return;
-    }
     paceRunRef.current += 1;
     seekCancelRef.current += 1;
     const nextTime = addClockMinutes(session.barTime, 1);
@@ -873,10 +781,6 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
 
   async function seekNextSignal() {
     if (!tradingStarted) return;
-    if (isRealTrading) {
-      refreshCurrentBar();
-      return;
-    }
     paceRunRef.current += 1;
     const runId = seekCancelRef.current + 1;
     seekCancelRef.current = runId;
@@ -912,36 +816,6 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
   }
 
   async function loadScannerAt(barTime: string, options: { warmCharts?: boolean } = {}) {
-    if (isRealTrading) {
-      setLoading(true);
-      setError("");
-      try {
-        const payload = await api<ScannerSnapshotPayload>(`/api/live-trading/real/scanner-snapshot${query({ row_limit: 500 })}`);
-        const liveSession = { sessionDate: payload.snapshot.session_date || currentMarketSession().sessionDate, barTime: payload.snapshot.bar_time || barTime || currentMarketSession().barTime };
-        const enrichedRows = payload.snapshot.rows
-          .map((row) => enrichLiveCandidate(row, scannerQueryName))
-          .filter((row) => rowMatchesBackendQuery(row, scannerQuery));
-        const enrichedSnapshot = {
-          ...payload.snapshot,
-          rows: enrichedRows,
-        };
-        setSession(liveSession);
-        setSnapshot(enrichedSnapshot);
-        setMarketSnapshot(payload.snapshot);
-        setSelectedRow(enrichedRows[0] ?? null);
-        if (enrichedRows.length) appendSignalRows(enrichedRows, liveSession.barTime, liveSession.sessionDate);
-        setLastActionTime(liveSession.barTime);
-        return { firstRow: enrichedRows[0] ?? null, marketSnapshot: payload.snapshot, snapshot: enrichedSnapshot };
-      } catch (requestError) {
-        setSnapshot(null);
-        setMarketSnapshot(null);
-        setSelectedRow(null);
-        setError(requestError instanceof Error ? requestError.message : "Live Massive scanner request failed.");
-        return null;
-      } finally {
-        setLoading(false);
-      }
-    }
     if (!scope || !session.sessionDate) return null;
     setLoading(true);
     setError("");
@@ -1089,7 +963,6 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
     const type = context?.type ?? tradeDraft.type;
     const mark = context?.mark ?? (selectedOpen || limit);
     const order: OrderRow = {
-      broker_account: isRealTrading ? liveAccountType : undefined,
       id: `${Date.now()}-${symbol}-${side}`,
       limit,
       quantity,
@@ -1100,10 +973,6 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
       timestamp: `${session.sessionDate} ${session.barTime}`,
       type,
     };
-    if (isRealTrading) {
-      submitRealOrder(order);
-      return;
-    }
     setOrders((current) => [order, ...current]);
     if (side === "BUY" && status !== "CANCELED") {
       setPositions((current) => upsertPosition(current, symbol, quantity, limit, stop, mark, session.sessionDate, session.barTime));
@@ -1113,60 +982,10 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
     }
   }
 
-  async function submitRealOrder(order: OrderRow) {
-    const pendingOrder = { ...order, status: "SENDING" };
-    setOrders((current) => [pendingOrder, ...current]);
-    try {
-      const payload = await api<RealLiveOrderPayload>("/api/live-trading/real/orders", {
-        method: "POST",
-        body: JSON.stringify({
-          account_type: liveAccountType,
-          order,
-          preview: false,
-        }),
-      });
-      setOrders((current) =>
-        current.map((item) =>
-          item.id === order.id
-            ? {
-                ...item,
-                broker_account: payload.account_id,
-                broker_response: payload.result,
-                status: realOrderStatus(payload.result),
-              }
-            : item
-        )
-      );
-      void refreshRealPortfolio();
-    } catch (requestError) {
-      setOrders((current) =>
-        current.map((item) =>
-          item.id === order.id
-            ? {
-                ...item,
-                broker_message: requestError instanceof Error ? requestError.message : "IBKR order submission failed.",
-                status: "REJECTED",
-              }
-            : item
-        )
-      );
-    }
-  }
-
-  async function refreshRealPortfolio() {
-    if (!isRealTrading) return;
-    try {
-      const payload = await api<RealLivePortfolioPayload>(`/api/live-trading/real/portfolio${query({ account_type: liveAccountType })}`);
-      setPositions(ibkrPositionRows(payload.positions));
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "IBKR portfolio refresh failed.");
-    }
-  }
-
-  function appendSignalRows(rows: Record<string, unknown>[], barTime: string, sessionDate = session.sessionDate) {
+  function appendSignalRows(rows: Record<string, unknown>[], barTime: string) {
     const stampedRows = rows.map((row) => ({
       ...buildMarketStateRow(row),
-      live_signal_id: `${stringValue(row, "ticker") || "unknown"}|${rowTimestampSeconds(row, sessionDate, barTime) ?? barTime}|${scannerQueryName}`,
+      live_signal_id: `${stringValue(row, "ticker") || "unknown"}|${rowTimestampSeconds(row, session.sessionDate, barTime) ?? barTime}|${scannerQueryName}`,
       live_signal_query: scannerQueryName || "Scanner Query",
       live_signal_time: barTime,
     }));
@@ -1441,18 +1260,6 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
   }
 
   if (!started) {
-    if (isRealTrading) {
-      return (
-        <RealLiveTradingGate
-          accountType={liveAccountType}
-          loading={loading || startPreloading}
-          message={liveClockMessage}
-          preflight={realPreflight}
-          onAccountTypeChange={setLiveAccountType}
-          onStart={startRealTrading}
-        />
-      );
-    }
     return (
       <LiveTradingStart
         loading={loading || startPreloading}
@@ -1540,10 +1347,10 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
             <RefreshCw size={14} /> Refresh
           </button>
           <button className="button secondary compact" disabled={!tradingStarted || loading} onClick={advanceOneBar} type="button">
-            <StepForward size={14} /> {isRealTrading ? "Refresh" : "Next Bar"}
+            <StepForward size={14} /> Next Bar
           </button>
           <button className="button primary compact" disabled={!tradingStarted || loading || liveClockMode === "seeking"} onClick={() => void seekNextSignal()} type="button">
-            {loading || liveClockMode === "seeking" ? <span className="loading-spinner" aria-hidden="true" /> : <SkipForward size={14} />} {isRealTrading ? "Refresh Scanner" : "Next Signal"}
+            {loading || liveClockMode === "seeking" ? <span className="loading-spinner" aria-hidden="true" /> : <SkipForward size={14} />} Next Signal
           </button>
           <button className="button secondary compact" disabled={!started} onClick={saveSimulation} title={simulationSaveMessage || "Save this simulation when you want to keep it"} type="button">
             <Save size={14} /> Save Simulation
@@ -1556,7 +1363,7 @@ export function LiveTradingPage({ mode = "simulation", onTopbarCenterChange }: {
           </button>
         </div>
       </section>
-      <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label={isRealTrading ? "Live trading workspace" : "Semi-auto trading workspace"} style={{ minHeight: workspaceMinHeight }}>
+      <section className={headerCollapsed ? "live-workspace compact" : "live-workspace"} aria-label="Semi-auto trading workspace" style={{ minHeight: workspaceMinHeight }}>
         <MetricsDock metrics={portfolioMetrics} />
         {!openWindows.length ? <div className="live-empty-canvas">This canvas is empty. Open scanner rows here or pop containers into this canvas from another tab.</div> : null}
         {openWindows.map((windowId) => {
@@ -1700,75 +1507,6 @@ function LiveStartProgress({ label, progress, status }: { label: string; progres
       </div>
       <b><span style={{ width: `${Math.max(4, Math.round(progress * 100))}%` }} /></b>
     </div>
-  );
-}
-
-function RealLiveTradingGate({
-  accountType,
-  loading,
-  message,
-  onAccountTypeChange,
-  onStart,
-  preflight,
-}: {
-  accountType: LiveAccountType;
-  loading: boolean;
-  message: string;
-  onAccountTypeChange: (accountType: LiveAccountType) => void;
-  onStart: () => void;
-  preflight: RealLivePreflightPayload | null;
-}) {
-  const checks = preflight?.checks ?? [];
-  return (
-    <>
-      <PageIntro
-        groupLabel="Live Trading"
-        title="Broker Gate"
-        description="Choose the IBKR account type, verify Massive data and IBKR Client Portal connectivity, then open the live workspace."
-      />
-      <section className="live-start-panel panel">
-        <div className="live-start-copy">
-          <span>Account Mode</span>
-          <strong>{accountType === "paper" ? "Paper Trading" : "Cash Account"}</strong>
-          <p>Massive provides scanner, NBBO, trades, and tape inputs. IBKR receives orders for the selected account after this gate passes.</p>
-        </div>
-        <div className="live-start-form">
-          <LiveSelect
-            label="IBKR account"
-            value={accountType}
-            values={["paper", "cash"]}
-            onChange={(value) => onAccountTypeChange(value === "cash" ? "cash" : "paper")}
-          />
-          {preflight ? (
-            <div className="live-start-path">
-              <span>Selected account</span>
-              <strong>{preflight.account_id || "Not configured"}</strong>
-            </div>
-          ) : null}
-          <div className="live-preflight-checks" aria-label="Live trading preflight checks">
-            {checks.length ? (
-              checks.map((check) => (
-                <div className="live-preflight-check" data-status={check.status} key={check.id}>
-                  <span>{check.label}</span>
-                  <strong>{check.status}</strong>
-                  <p>{check.message}</p>
-                </div>
-              ))
-            ) : (
-              <div className="live-preflight-check" data-status="waiting">
-                <span>Preflight</span>
-                <strong>waiting</strong>
-                <p>Run the check after authenticating IBKR Client Portal Gateway.</p>
-              </div>
-            )}
-          </div>
-          {message ? <div className={preflight && !preflight.ready ? "live-start-message error" : "live-start-message"}>{message}</div> : null}
-          <button className="button primary" disabled={loading} onClick={onStart} type="button">
-            {loading ? <span className="loading-spinner" aria-hidden="true" /> : <Play size={15} />} {loading ? "Checking..." : "Check Connections"}
-          </button>
-        </div>
-      </section>
-    </>
   );
 }
 
@@ -3092,43 +2830,6 @@ function isBlankLiveValue(value: unknown) {
   return value === null || value === undefined || value === "" || (typeof value === "number" && !Number.isFinite(value));
 }
 
-function currentMarketSession(): TradingSession {
-  const now = new Date();
-  const marketDate = new Intl.DateTimeFormat("en-CA", { day: "2-digit", month: "2-digit", timeZone: "America/New_York", year: "numeric" }).format(now);
-  const marketTime = new Intl.DateTimeFormat("en-US", { hour: "2-digit", hour12: false, minute: "2-digit", timeZone: "America/New_York" }).format(now);
-  return {
-    barTime: marketTime,
-    sessionDate: marketDate,
-  };
-}
-
-function realOrderStatus(result: unknown) {
-  if (Array.isArray(result) && result.some((item) => item && typeof item === "object" && "id" in item && "message" in item)) return "NEEDS_REPLY";
-  if (Array.isArray(result) && result.length) return "SUBMITTED";
-  if (result && typeof result === "object") return "SUBMITTED";
-  return "SUBMITTED";
-}
-
-function ibkrPositionRows(rows: Record<string, unknown>[]): PositionRow[] {
-  return rows
-    .map((row) => {
-      const symbol = stringValue(row, "ticker") || stringValue(row, "symbol") || stringValue(row, "contractDesc").split(" ")[0];
-      const quantity = numberValue(row, "position") || numberValue(row, "quantity");
-      const mark = numberValue(row, "mktPrice") || numberValue(row, "marketPrice") || numberValue(row, "mark");
-      const avgPrice = numberValue(row, "avgCost") || numberValue(row, "avg_price") || numberValue(row, "averageCost");
-      return {
-        avg_price: avgPrice,
-        mark,
-        quantity,
-        stop: 0,
-        symbol,
-        unrealized_pnl: numberValue(row, "unrealizedPnl") || numberValue(row, "unrealized_pnl"),
-        unrealized_pnl_pct: avgPrice > 0 && mark > 0 ? mark / avgPrice - 1 : 0,
-      };
-    })
-    .filter((row) => row.symbol && row.quantity !== 0);
-}
-
 function buildMarketStateRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
   const marketRows = rows.map(buildMarketStateRow);
   const transactionValues = sortedPositiveValues(marketRows.map((row) => numberValue(row, "last_transactions")));
@@ -3800,9 +3501,9 @@ function readSavedCanvasLayouts(): SavedCanvasLayout[] {
   }
 }
 
-function readSharedTradingState(storageKey = LIVE_SHARED_STATE_STORAGE_KEY): { decisions: Record<string, DecisionState>; orders: OrderRow[]; positions: PositionRow[]; trades: TradeRow[] } {
+function readSharedTradingState(): { decisions: Record<string, DecisionState>; orders: OrderRow[]; positions: PositionRow[]; trades: TradeRow[] } {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || "null");
+    const parsed = JSON.parse(window.localStorage.getItem(LIVE_SHARED_STATE_STORAGE_KEY) || "null");
     return {
       decisions: parsed?.decisions ?? {},
       orders: Array.isArray(parsed?.orders) ? parsed.orders : [],
