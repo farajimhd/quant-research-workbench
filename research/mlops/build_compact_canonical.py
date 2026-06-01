@@ -203,27 +203,15 @@ def main() -> None:
         print("=" * 96, flush=True)
         return
 
-    groups = discover_temp_groups(config.temp_root)
-    print(f"Discovered {len(groups):,} temp groups for canonical merge.", flush=True)
-    merge_items = []
-    for (kind, year_month, group), paths in sorted(groups.items()):
-        item = {"kind": kind, "year_month": year_month, "paths": [str(path) for path in paths]}
-        if group.startswith("ticker="):
-            item["ticker"] = group.split("=", 1)[1]
-        else:
-            item["ticker_bucket"] = group.split("=", 1)[1]
-        merge_items.append(item)
-    failed += run_parallel(
-        label="merge",
-        items=merge_items,
-        submit=lambda executor, item: executor.submit(merge_worker, item, payload, args.polars_threads_per_process),
+    failed += run_merge_phase(
+        config=config,
+        sessions=sessions,
+        payload=payload,
+        args=args,
         manifest_path=manifest_path,
-        processes=merge_processes,
+        merge_processes=merge_processes,
+        merge_pending=merge_pending,
         started=started,
-        fail_fast=args.fail_fast,
-        heartbeat_seconds=args.heartbeat_seconds,
-        max_pending=merge_pending,
-        max_tasks_per_worker=args.max_tasks_per_worker,
     )
     if failed:
         raise SystemExit(1)
@@ -272,6 +260,62 @@ def merge_worker(item: dict[str, Any], payload: dict[str, Any], polars_threads: 
         return result_row("merge", key, "ok", result["rows"], elapsed, result)
     except BaseException:
         return failed_row("merge", key, time.time() - started)
+
+
+def run_merge_phase(
+    *,
+    config: CompactCanonicalConfig,
+    sessions: list[str],
+    payload: dict[str, Any],
+    args: argparse.Namespace,
+    manifest_path: Path,
+    merge_processes: int,
+    merge_pending: int,
+    started: float,
+) -> int:
+    failed = 0
+    months = sorted({session[:7] for session in sessions})
+    total_slices = len(months) * 2
+    slice_index = 0
+    for year_month in months:
+        for kind in ("quotes", "trades"):
+            slice_index += 1
+            groups = discover_temp_groups_for_slice(
+                config.temp_root,
+                kind=kind,
+                year_month=year_month,
+                heartbeat_seconds=max(5.0, float(args.heartbeat_seconds)),
+            )
+            print(
+                f"Discovered {len(groups):,} temp groups for canonical merge "
+                f"slice={slice_index:,}/{total_slices:,} kind={kind} year_month={year_month}.",
+                flush=True,
+            )
+            if not groups:
+                continue
+            merge_items = []
+            for group, paths in sorted(groups.items()):
+                item = {"kind": kind, "year_month": year_month, "paths": [str(path) for path in paths]}
+                if group.startswith("ticker="):
+                    item["ticker"] = group.split("=", 1)[1]
+                else:
+                    item["ticker_bucket"] = group.split("=", 1)[1]
+                merge_items.append(item)
+            failed += run_parallel(
+                label=f"merge {kind}:{year_month}",
+                items=merge_items,
+                submit=lambda executor, item: executor.submit(merge_worker, item, payload, args.polars_threads_per_process),
+                manifest_path=manifest_path,
+                processes=merge_processes,
+                started=started,
+                fail_fast=args.fail_fast,
+                heartbeat_seconds=args.heartbeat_seconds,
+                max_pending=merge_pending,
+                max_tasks_per_worker=args.max_tasks_per_worker,
+            )
+            if failed and args.fail_fast:
+                return failed
+    return failed
 
 
 def normalize_session_kind(config: CompactCanonicalConfig, session: str, kind: str) -> dict[str, Any]:
@@ -858,6 +902,64 @@ def discover_temp_groups(temp_root: Path) -> dict[tuple[str, str, str], list[Pat
         year_month = parts[-3].split("=", 1)[1]
         ticker_bucket = parts[-2].split("=", 1)[1]
         groups.setdefault((kind, year_month, f"bucket={ticker_bucket}"), []).append(path)
+    return groups
+
+
+def discover_temp_groups_for_slice(
+    temp_root: Path,
+    *,
+    kind: str,
+    year_month: str,
+    heartbeat_seconds: float,
+) -> dict[str, list[Path]]:
+    started = time.time()
+    next_heartbeat = started + max(1.0, heartbeat_seconds)
+    groups: dict[str, list[Path]] = {}
+    session_dirs = sorted((temp_root / kind).glob("session=*"))
+    scanned_sessions = 0
+    file_count = 0
+    for session_dir in session_dirs:
+        scanned_sessions += 1
+        month_dir = session_dir / f"year_month={year_month}"
+        if not month_dir.exists():
+            continue
+        for ticker_dir in month_dir.glob("ticker=*"):
+            paths = sorted(ticker_dir.glob("*.parquet"))
+            if paths:
+                file_count += len(paths)
+                groups.setdefault(ticker_dir.name, []).extend(paths)
+        if time.time() >= next_heartbeat:
+            print(
+                f"DISCOVER merge {kind}:{year_month}: sessions={scanned_sessions:,}/{len(session_dirs):,} "
+                f"groups={len(groups):,} files={file_count:,} elapsed_seconds={time.time() - started:.1f}",
+                flush=True,
+            )
+            next_heartbeat = time.time() + max(1.0, heartbeat_seconds)
+
+    if groups:
+        print(
+            f"DISCOVER merge {kind}:{year_month}: complete sessions={scanned_sessions:,}/{len(session_dirs):,} "
+            f"groups={len(groups):,} files={file_count:,} elapsed_seconds={time.time() - started:.1f}",
+            flush=True,
+        )
+        return groups
+
+    for path in (temp_root / kind).glob(f"session=*/year_month={year_month}/ticker_bucket=*/*.parquet"):
+        bucket = path.parts[-2]
+        groups.setdefault(bucket, []).append(path)
+        file_count += 1
+        if time.time() >= next_heartbeat:
+            print(
+                f"DISCOVER merge {kind}:{year_month} legacy buckets: groups={len(groups):,} "
+                f"files={file_count:,} elapsed_seconds={time.time() - started:.1f}",
+                flush=True,
+            )
+            next_heartbeat = time.time() + max(1.0, heartbeat_seconds)
+    print(
+        f"DISCOVER merge {kind}:{year_month}: complete groups={len(groups):,} "
+        f"files={file_count:,} elapsed_seconds={time.time() - started:.1f}",
+        flush=True,
+    )
     return groups
 
 
