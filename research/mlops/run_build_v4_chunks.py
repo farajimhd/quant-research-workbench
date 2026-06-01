@@ -19,7 +19,7 @@ DEFAULTS: dict[str, Any] = {
     "stride_events": 1,
     "chunk_rows_per_shard": 100000,
     "processes": 32,
-    "event_processes": 40,
+    "event_processes": 8,
     "chunk_processes": 20,
     "polars_threads_per_process": 2,
     "event_max_tasks_per_worker": 16,
