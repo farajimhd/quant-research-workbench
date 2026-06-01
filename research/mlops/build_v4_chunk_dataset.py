@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import gc
 import hashlib
 import json
 import os
@@ -108,6 +109,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--polars-threads-per-process", type=int, default=1)
     parser.add_argument("--max-pending", type=int, default=0)
     parser.add_argument("--max-tasks-per-worker", type=int, default=0)
+    parser.add_argument("--event-max-tasks-per-worker", type=int, default=0)
+    parser.add_argument("--chunk-max-tasks-per-worker", type=int, default=0)
     parser.add_argument("--session-timezone", default=defaults.session_timezone)
     parser.add_argument("--session-start-time-market", default=defaults.session_start_time_market)
     parser.add_argument("--session-end-time-market", default=defaults.session_end_time_market)
@@ -152,6 +155,8 @@ def main() -> None:
     sessions = available_sessions(config.flatfiles_root, config.start_date, config.end_date)
     event_processes = args.event_processes if args.event_processes > 0 else args.processes
     chunk_processes = args.chunk_processes if args.chunk_processes > 0 else args.processes
+    event_max_tasks = args.event_max_tasks_per_worker if args.event_max_tasks_per_worker > 0 else args.max_tasks_per_worker
+    chunk_max_tasks = args.chunk_max_tasks_per_worker if args.chunk_max_tasks_per_worker > 0 else args.max_tasks_per_worker
     manifest_path = config.output_root / args.manifest_name
     event_pending = args.max_pending if args.max_pending > 0 else event_processes * 2
     chunk_pending = args.max_pending if args.max_pending > 0 else chunk_processes * 2
@@ -166,6 +171,7 @@ def main() -> None:
     print(f"sessions={sessions[0]} -> {sessions[-1]} count={len(sessions):,}", flush=True)
     print(f"bucket_count={config.bucket_count:,} events_per_chunk={config.events_per_chunk} stride_events={config.stride_events}", flush=True)
     print(f"event_processes={event_processes} chunk_processes={chunk_processes} polars_threads_per_process={args.polars_threads_per_process}", flush=True)
+    print(f"event_max_tasks_per_worker={event_max_tasks} chunk_max_tasks_per_worker={chunk_max_tasks}", flush=True)
     print("=" * 96, flush=True)
 
     if args.dry_run:
@@ -201,7 +207,7 @@ def main() -> None:
             fail_fast=args.fail_fast,
             heartbeat_seconds=args.heartbeat_seconds,
             max_pending=event_pending,
-            max_tasks_per_worker=args.max_tasks_per_worker,
+            max_tasks_per_worker=event_max_tasks,
         )
         if failed:
             raise SystemExit(1)
@@ -218,7 +224,7 @@ def main() -> None:
             fail_fast=args.fail_fast,
             heartbeat_seconds=args.heartbeat_seconds,
             max_pending=chunk_pending,
-            max_tasks_per_worker=args.max_tasks_per_worker,
+            max_tasks_per_worker=chunk_max_tasks,
         )
         if failed:
             raise SystemExit(1)
@@ -312,6 +318,8 @@ def build_event_shards_for_session_kind(config: V4ChunkBuildConfig, *, session: 
             "file_count": len(files),
         },
     )
+    del scan, raw, normalized, event_frame
+    gc.collect()
     return {"status": "ok", "session": session, "kind": kind, "rows": rows, "files": len(files), "output_root": str(output_root)}
 
 
@@ -352,19 +360,19 @@ def build_chunks_for_bucket(config: V4ChunkBuildConfig, *, bucket_id: int, work_
     if should_skip_success(state_path, fingerprint):
         return {"status": "skipped", "bucket_id": bucket_id, "chunks": success_rows(state_path), "files": success_files(state_path)}
     output_dir = config.chunk_root / f"bucket={bucket_id:04d}"
-    index_path = config.index_root / f"bucket={bucket_id:04d}.parquet"
-    cleanup_work_outputs(output_dir, state_path, extra_paths=[index_path])
+    index_dir = config.index_root / f"bucket={bucket_id:04d}"
+    cleanup_work_outputs(output_dir, state_path, extra_paths=[index_dir])
     output_dir.mkdir(parents=True, exist_ok=True)
-    config.index_root.mkdir(parents=True, exist_ok=True)
+    index_dir.mkdir(parents=True, exist_ok=True)
     print(f"START chunk_shards bucket={bucket_id:04d} input_files={len(inputs):,}", flush=True)
     if not inputs:
         write_success(state_path, {"stage": "chunk_shards", "work_id": work_id, "fingerprint": fingerprint, "row_count": 0, "file_count": 0})
-        return {"status": "ok", "bucket_id": bucket_id, "chunks": 0, "files": 0, "index_path": ""}
+        return {"status": "ok", "bucket_id": bucket_id, "chunks": 0, "files": 0, "index_dir": ""}
 
     references = ReferenceMaps.load(config.reference_dir)
     session_files = group_event_files_by_session(inputs)
     carries: dict[str, pl.DataFrame] = {}
-    writers = ChunkShardWriter(config, output_dir=output_dir, index_path=index_path, bucket_id=bucket_id)
+    writers = ChunkShardWriter(config, output_dir=output_dir, index_dir=index_dir, bucket_id=bucket_id)
     input_rows = 0
     rejected = 0
     try:
@@ -373,6 +381,8 @@ def build_chunks_for_bucket(config: V4ChunkBuildConfig, *, bucket_id: int, work_
             frame = read_bucket_session_events(paths)
             input_rows += frame.height
             if frame.height == 0:
+                del frame
+                gc.collect()
                 continue
             tickers = frame["ticker"].unique().sort().to_list()
             session_chunks = 0
@@ -383,15 +393,20 @@ def build_chunks_for_bucket(config: V4ChunkBuildConfig, *, bucket_id: int, work_
                 result = write_chunks_for_ticker_frame(config, source, ticker, references, writers)
                 session_chunks += result["chunks"]
                 rejected += result["rejected"]
-                carries[ticker] = source.tail(config.events_per_chunk - 1)
+                carries[ticker] = source.tail(config.events_per_chunk - 1).clone()
+                del source, ticker_frame
             print(
                 f"BUCKET {bucket_id:04d} session {ordinal:,}/{len(session_files):,} {session} "
                 f"rows={frame.height:,} tickers={len(tickers):,} chunks={session_chunks:,} "
-                f"elapsed={time.time() - started:.1f}s total_chunks={writers.row_count:,}",
+                f"elapsed={time.time() - started:.1f}s total_chunks={writers.total_rows:,}",
                 flush=True,
             )
+            del frame, tickers
+            gc.collect()
     finally:
         writers.close()
+        carries.clear()
+        gc.collect()
     write_success(
         state_path,
         {
@@ -404,7 +419,7 @@ def build_chunks_for_bucket(config: V4ChunkBuildConfig, *, bucket_id: int, work_
             "file_count": writers.file_count,
             "rejected_chunks": rejected,
             "output_dir": str(output_dir),
-            "index_path": str(index_path),
+            "index_dir": str(index_dir),
         },
     )
     return {
@@ -413,7 +428,7 @@ def build_chunks_for_bucket(config: V4ChunkBuildConfig, *, bucket_id: int, work_
         "chunks": writers.row_count,
         "files": writers.file_count,
         "rejected_chunks": rejected,
-        "index_path": str(index_path),
+        "index_dir": str(index_dir),
     }
 
 
@@ -460,16 +475,20 @@ def write_chunks_for_ticker_frame(
 
 
 class ChunkShardWriter:
-    def __init__(self, config: V4ChunkBuildConfig, *, output_dir: Path, index_path: Path, bucket_id: int) -> None:
+    def __init__(self, config: V4ChunkBuildConfig, *, output_dir: Path, index_dir: Path, bucket_id: int) -> None:
         self.config = config
         self.output_dir = output_dir
-        self.index_path = index_path
+        self.index_dir = index_dir
         self.bucket_id = bucket_id
         self.rows: list[dict[str, Any]] = []
         self.index_rows: list[dict[str, Any]] = []
         self.row_count = 0
         self.file_count = 0
         self.closed = False
+
+    @property
+    def total_rows(self) -> int:
+        return self.row_count + len(self.rows)
 
     def add(
         self,
@@ -526,17 +545,19 @@ class ChunkShardWriter:
         if not self.rows:
             return
         shard_path = self.output_dir / f"part-{self.file_count:06d}.parquet"
+        index_path = self.index_dir / shard_path.name
         write_chunk_rows(shard_path, self.rows)
+        write_index_rows(index_path, self.index_rows)
         self.row_count += len(self.rows)
         self.file_count += 1
         self.rows.clear()
+        self.index_rows.clear()
+        gc.collect()
 
     def close(self) -> None:
         if self.closed:
             return
         self.flush()
-        if self.index_rows:
-            write_index_rows(self.index_path, self.index_rows)
         self.closed = True
 
 
@@ -790,7 +811,8 @@ def run_parallel(
                 continue
             for future in done:
                 completed += 1
-                item = labels[future]
+                item = labels.pop(future, "<unknown>")
+                submitted_at.pop(future, None)
                 try:
                     result = future.result()
                 except BaseException:
@@ -805,6 +827,7 @@ def run_parallel(
                 while len(pending) < pending_limit and submitted < len(items):
                     if not submit_next(executor, pending):
                         break
+                del result
             if now >= next_heartbeat and pending:
                 print_heartbeat(label, pending, labels, submitted_at, completed, len(items), started)
                 next_heartbeat = now + max(1.0, heartbeat_seconds)
