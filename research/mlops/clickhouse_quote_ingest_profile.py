@@ -403,7 +403,7 @@ LIMIT 1
 def query_settings(args: argparse.Namespace) -> str:
     settings: list[str] = [
         "input_format_csv_empty_as_default = 1",
-        "input_format_csv_skip_unknown_fields = 1",
+        "input_format_skip_unknown_fields = 1",
         "date_time_input_format = 'best_effort'",
     ]
     if args.max_threads > 0:
