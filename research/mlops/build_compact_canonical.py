@@ -671,15 +671,8 @@ def merge_temp_group_to_canonical(
     output_base.mkdir(parents=True, exist_ok=True)
 
     if ticker is not None:
-        rows = int(frame.select(pl.len().alias("rows")).collect().item())
         output_path = canonical_ticker_path(config, kind, ticker, year_month)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        frame.sort(["sip_timestamp", "sequence_number"]).sink_parquet(
-            output_path,
-            compression="zstd",
-            mkdir=True,
-            maintain_order=True,
-        )
+        rows = write_sorted_session_parts(paths, columns, output_path)
         ticker_files = 1
     else:
         counts = frame.group_by("ticker").agg(pl.len().alias("rows")).collect()
@@ -690,7 +683,6 @@ def merge_temp_group_to_canonical(
             output_path.parent.mkdir(parents=True, exist_ok=True)
             (
                 frame.filter(pl.col("ticker") == ticker_value)
-                .sort(["sip_timestamp", "sequence_number"])
                 .sink_parquet(output_path, compression="zstd", mkdir=True, maintain_order=True)
             )
         ticker_files = int(counts.height)
@@ -716,6 +708,44 @@ def canonical_file_provider(config: CompactCanonicalConfig, kind: str, year_mont
         return path
 
     return provider
+
+
+def write_sorted_session_parts(paths: list[Path], columns: list[str], output_path: Path) -> int:
+    import pyarrow.parquet as pq
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_output = output_path.with_name(output_path.name + ".tmp")
+    if temp_output.exists():
+        temp_output.unlink()
+    writer: pq.ParquetWriter | None = None
+    rows = 0
+    try:
+        for path in sorted(paths, key=temp_path_sort_key):
+            frame = (
+                pl.scan_parquet(str(path))
+                .select(columns)
+                .sort(["sip_timestamp", "sequence_number"])
+                .collect()
+            )
+            if frame.height == 0:
+                continue
+            table = frame.to_arrow()
+            if writer is None:
+                writer = pq.ParquetWriter(temp_output, table.schema, compression="zstd")
+            writer.write_table(table)
+            rows += frame.height
+        if writer is not None:
+            writer.close()
+            writer = None
+            os.replace(temp_output, output_path)
+        else:
+            pl.DataFrame(schema={column: pl.Null for column in columns}).write_parquet(output_path)
+    finally:
+        if writer is not None:
+            writer.close()
+        if temp_output.exists():
+            temp_output.unlink()
+    return rows
 
 
 def raw_columns(kind: str) -> set[str]:
@@ -942,7 +972,7 @@ def discover_temp_groups_for_slice(
             f"groups={len(groups):,} files={file_count:,} elapsed_seconds={time.time() - started:.1f}",
             flush=True,
         )
-        return groups
+        return sort_temp_groups_by_session(groups)
 
     for path in (temp_root / kind).glob(f"session=*/year_month={year_month}/ticker_bucket=*/*.parquet"):
         bucket = path.parts[-2]
@@ -960,7 +990,24 @@ def discover_temp_groups_for_slice(
         f"files={file_count:,} elapsed_seconds={time.time() - started:.1f}",
         flush=True,
     )
-    return groups
+    return sort_temp_groups_by_session(groups)
+
+
+def sort_temp_groups_by_session(groups: dict[str, list[Path]]) -> dict[str, list[Path]]:
+    return {
+        group: sorted(paths, key=temp_path_sort_key)
+        for group, paths in groups.items()
+    }
+
+
+def temp_path_sort_key(path: Path) -> tuple[str, str]:
+    session = ""
+    name = path.name
+    for part in path.parts:
+        if part.startswith("session="):
+            session = part.split("=", 1)[1]
+            break
+    return session, name
 
 
 def run_parallel(
