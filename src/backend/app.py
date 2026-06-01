@@ -58,6 +58,12 @@ from src.backend.market_data_service import (
     source_scan,
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
+from src.backend.live_trading_service import (
+    ibkr_portfolio,
+    live_massive_scanner_snapshot,
+    live_trading_preflight,
+    submit_ibkr_order,
+)
 from src.backend.progress_model import build_progress_model
 from src.data_provider.calendar import market_sessions, scan_market_source
 from src.data_provider.catalog import provider_catalog, save_presentation_override
@@ -181,6 +187,12 @@ class LiveTradingNewsAtRequest(BaseModel):
     session_date: date
     bar_time: str = "04:00"
     tickers: list[str] = Field(default_factory=list)
+
+
+class RealLiveTradingOrderRequest(BaseModel):
+    account_type: str = "paper"
+    order: dict[str, Any] = Field(default_factory=dict)
+    preview: bool = False
 
 
 def parse_date_param(value: date | None, fallback: str) -> date:
@@ -1773,6 +1785,42 @@ def live_trading_warm_charts(
             except Exception:
                 continue
     return {"warmed": warmed, "tickers": ticker_list, "cache": cached_chart_payload.cache_info()._asdict()}
+
+
+@app.get("/api/live-trading/real/preflight")
+def real_live_trading_preflight(account_type: str = "paper") -> dict[str, Any]:
+    try:
+        return live_trading_preflight(account_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/live-trading/real/scanner-snapshot")
+def real_live_trading_scanner_snapshot(row_limit: int = Query(default=250, ge=1, le=1000)) -> dict[str, Any]:
+    try:
+        return live_massive_scanner_snapshot(row_limit=row_limit)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/live-trading/real/portfolio")
+def real_live_trading_portfolio(account_type: str = "paper") -> dict[str, Any]:
+    try:
+        return ibkr_portfolio(account_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/live-trading/real/orders")
+def real_live_trading_submit_order(payload: RealLiveTradingOrderRequest) -> dict[str, Any]:
+    try:
+        return submit_ibkr_order(payload.account_type, payload.order, preview=payload.preview)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/market-data/chart/default-ticker")
