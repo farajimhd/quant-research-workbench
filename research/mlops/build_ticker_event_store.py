@@ -350,16 +350,20 @@ def derive_session_kind(config: TickerEventStoreConfig, *, session: str, kind: s
     compact = compact_quote_frame(normalized, config, references) if kind == "quotes" else compact_trade_frame(normalized, config, references)
     compact = compact.with_columns(fragment_bucket_expr(config).alias("fragment_bucket_id")).select(COMPACT_EVENT_COLUMNS)
     rows = 0
-    for batch_index, batch in enumerate(compact.collect_batches(chunk_size=config.derive_batch_rows, maintain_order=False), start=1):
-        if batch.is_empty():
-            continue
-        batch_files, batch_rows = write_derive_batch(batch, output_root, batch_index)
-        rows += batch_rows
-        print(
-            f"DERIVE batch {kind}:{session} batch={batch_index:,} rows={batch_rows:,} "
-            f"files={batch_files:,} total_rows={rows:,}",
-            flush=True,
-        )
+    writer = DeriveFragmentWriter(output_root)
+    try:
+        for batch_index, batch in enumerate(compact.collect_batches(chunk_size=config.derive_batch_rows, maintain_order=False), start=1):
+            if batch.is_empty():
+                continue
+            batch_files, batch_rows = writer.write_batch(batch)
+            rows += batch_rows
+            print(
+                f"DERIVE batch {kind}:{session} batch={batch_index:,} rows={batch_rows:,} "
+                f"fragments={batch_files:,} open_writers={writer.open_count:,} total_rows={rows:,}",
+                flush=True,
+            )
+    finally:
+        writer.close()
     files = list(output_root.rglob("*.parquet"))
     write_success(
         state_path,
@@ -376,18 +380,52 @@ def derive_session_kind(config: TickerEventStoreConfig, *, session: str, kind: s
     return {"status": "ok", "session": session, "kind": kind, "rows": rows, "files": len(files), "output_root": str(output_root)}
 
 
-def write_derive_batch(batch: pl.DataFrame, output_root: Path, batch_index: int) -> tuple[int, int]:
-    files = 0
-    rows = 0
-    for key, part in batch.partition_by(["year_month", "fragment_bucket_id"], include_key=True, as_dict=True, maintain_order=False).items():
-        year_month, fragment_bucket_id = key
-        fragment_id = int(fragment_bucket_id)
-        output_path = output_root / f"year_month={year_month}" / f"fragment_bucket_id={fragment_id:04d}" / f"batch_{batch_index:08d}.parquet"
+class DeriveFragmentWriter:
+    def __init__(self, output_root: Path) -> None:
+        self.output_root = output_root
+        self._writers: dict[tuple[str, int], Any] = {}
+
+    @property
+    def open_count(self) -> int:
+        return len(self._writers)
+
+    def write_batch(self, batch: pl.DataFrame) -> tuple[int, int]:
+        partitions = batch.partition_by(["year_month", "fragment_bucket_id"], include_key=True, as_dict=True, maintain_order=False)
+        rows = 0
+        for key, part in partitions.items():
+            year_month, fragment_bucket_id = key
+            self._write_part(str(year_month), int(fragment_bucket_id), part.select(COMPACT_EVENT_COLUMNS))
+            rows += part.height
+        return len(partitions), rows
+
+    def _write_part(self, year_month: str, fragment_bucket_id: int, part: pl.DataFrame) -> None:
+        import pyarrow.parquet as pq
+
+        output_path = (
+            self.output_root
+            / f"year_month={year_month}"
+            / f"fragment_bucket_id={fragment_bucket_id:04d}"
+            / "fragment.parquet"
+        )
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        part.write_parquet(output_path, compression="zstd")
-        files += 1
-        rows += part.height
-    return files, rows
+        table = part.to_arrow()
+        key = (year_month, fragment_bucket_id)
+        writer = self._writers.get(key)
+        if writer is None:
+            writer = pq.ParquetWriter(output_path, table.schema, compression="zstd")
+            self._writers[key] = writer
+        writer.write_table(table)
+
+    def close(self) -> None:
+        errors = []
+        for writer in self._writers.values():
+            try:
+                writer.close()
+            except BaseException as exc:
+                errors.append(exc)
+        self._writers.clear()
+        if errors:
+            raise errors[0]
 
 
 def compact_quote_frame(frame: pl.LazyFrame, config: TickerEventStoreConfig, references: dict[str, dict[int, int]]) -> pl.LazyFrame:

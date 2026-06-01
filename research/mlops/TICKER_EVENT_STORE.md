@@ -59,7 +59,7 @@ fragment_bucket_id
 
 ## Stages
 
-`derive` reads raw daily CSV files, validates/filter invalid rows through the existing canonical rules, computes compact columns, and collects bounded output batches controlled by `derive_batch_rows`. Each bounded batch is then split into temporary month/fragment files. This keeps memory tied to the configured batch size instead of the full raw file size.
+`derive` reads raw daily CSV files, validates/filter invalid rows through the existing canonical rules, computes compact columns, and collects bounded output batches controlled by `derive_batch_rows`. Those bounded batches are appended into one temporary `fragment.parquet` per `(session, kind, year_month, fragment_bucket_id)`. This keeps memory tied to the configured batch size and avoids creating thousands of batch parquet files per session.
 
 `compact` reads fragments for each `(year_month, fragment_bucket_id)` and writes final bucket partitions atomically. It processes one `bucket_id` at a time, sorting only that bucket by ticker/time, so compact memory is bounded by one final bucket rather than a whole month/fragment. `fragment_bucket_id` is only a coarse compaction partition; `bucket_id` remains the stable ticker hash bucket used by loaders.
 
