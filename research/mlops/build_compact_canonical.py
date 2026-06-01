@@ -205,10 +205,14 @@ def main() -> None:
 
     groups = discover_temp_groups(config.temp_root)
     print(f"Discovered {len(groups):,} temp groups for canonical merge.", flush=True)
-    merge_items = [
-        {"kind": kind, "year_month": year_month, "ticker_bucket": ticker_bucket, "paths": [str(path) for path in paths]}
-        for (kind, year_month, ticker_bucket), paths in sorted(groups.items())
-    ]
+    merge_items = []
+    for (kind, year_month, group), paths in sorted(groups.items()):
+        item = {"kind": kind, "year_month": year_month, "paths": [str(path) for path in paths]}
+        if group.startswith("ticker="):
+            item["ticker"] = group.split("=", 1)[1]
+        else:
+            item["ticker_bucket"] = group.split("=", 1)[1]
+        merge_items.append(item)
     failed += run_parallel(
         label="merge",
         items=merge_items,
@@ -252,7 +256,8 @@ def merge_worker(item: dict[str, Any], payload: dict[str, Any], polars_threads: 
     os.environ["POLARS_MAX_THREADS"] = str(max(1, polars_threads))
     started = time.time()
     config = config_from_payload(payload)
-    key = f"{item['kind']}:bucket={item['ticker_bucket']}:{item['year_month']}"
+    group_name = item.get("ticker") or f"bucket={item['ticker_bucket']}"
+    key = f"{item['kind']}:{group_name}:{item['year_month']}"
     try:
         print(f"START merge {key} parts={len(item['paths'])}", flush=True)
         result = merge_temp_group_to_canonical(
@@ -260,6 +265,7 @@ def merge_worker(item: dict[str, Any], payload: dict[str, Any], polars_threads: 
             kind=item["kind"],
             year_month=item["year_month"],
             paths=[Path(path) for path in item["paths"]],
+            ticker=item.get("ticker"),
         )
         elapsed = time.time() - started
         print(f"FINISH merge {key} tickers={result['ticker_files']} rows={result['rows']:,} elapsed={elapsed:.1f}s", flush=True)
@@ -291,10 +297,10 @@ def normalize_session_kind(config: CompactCanonicalConfig, session: str, kind: s
     normalized = normalize_quote_frame(frame, names, config, session) if kind == "quotes" else normalize_trade_frame(frame, names, config, session)
     if not uses_all_tickers(config.tickers):
         normalized = normalized.filter(pl.col("ticker").is_in(list(config.tickers)))
-    normalized = normalized.select(["ticker_bucket", *canonical_columns(kind)])
+    normalized = normalized.select(canonical_columns(kind))
     partition = pl.PartitionBy(
         output_root,
-        key=["year_month", "ticker_bucket"],
+        key=["year_month", "ticker"],
         include_key=True,
         max_rows_per_file=config.max_rows_per_temp_file,
     )
@@ -613,27 +619,43 @@ def merge_temp_group_to_canonical(
     kind: str,
     year_month: str,
     paths: list[Path],
+    ticker: str | None = None,
 ) -> dict[str, Any]:
     columns = canonical_columns(kind)
     frame = scan_parquet_paths(paths).select(columns)
-    counts = frame.group_by("ticker").agg(pl.len().alias("rows")).collect()
-    rows = int(counts["rows"].sum()) if counts.height else 0
     output_base = config.canonical_root / kind
     output_base.mkdir(parents=True, exist_ok=True)
-    for row in counts.sort("ticker").iter_rows(named=True):
-        ticker = str(row["ticker"])
+
+    if ticker is not None:
+        rows = int(frame.select(pl.len().alias("rows")).collect().item())
         output_path = canonical_ticker_path(config, kind, ticker, year_month)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        (
-            frame.filter(pl.col("ticker") == ticker)
-            .sort(["sip_timestamp", "sequence_number"])
-            .sink_parquet(output_path, compression="zstd", mkdir=True, maintain_order=True)
+        frame.sort(["sip_timestamp", "sequence_number"]).sink_parquet(
+            output_path,
+            compression="zstd",
+            mkdir=True,
+            maintain_order=True,
         )
+        ticker_files = 1
+    else:
+        counts = frame.group_by("ticker").agg(pl.len().alias("rows")).collect()
+        rows = int(counts["rows"].sum()) if counts.height else 0
+        for row in counts.sort("ticker").iter_rows(named=True):
+            ticker_value = str(row["ticker"])
+            output_path = canonical_ticker_path(config, kind, ticker_value, year_month)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            (
+                frame.filter(pl.col("ticker") == ticker_value)
+                .sort(["sip_timestamp", "sequence_number"])
+                .sink_parquet(output_path, compression="zstd", mkdir=True, maintain_order=True)
+            )
+        ticker_files = int(counts.height)
+
     return {
         "kind": kind,
         "year_month": year_month,
         "rows": rows,
-        "ticker_files": int(counts.height),
+        "ticker_files": ticker_files,
         "output_root": str(output_base),
     }
 
@@ -822,12 +844,20 @@ def scan_parquet_paths(paths: Iterable[Path]) -> pl.LazyFrame:
 
 def discover_temp_groups(temp_root: Path) -> dict[tuple[str, str, str], list[Path]]:
     groups: dict[tuple[str, str, str], list[Path]] = {}
+    for path in temp_root.glob("*/session=*/year_month=*/ticker=*/*.parquet"):
+        parts = path.parts
+        kind = parts[-5]
+        year_month = parts[-3].split("=", 1)[1]
+        ticker = parts[-2].split("=", 1)[1]
+        groups.setdefault((kind, year_month, f"ticker={ticker}"), []).append(path)
+    if groups:
+        return groups
     for path in temp_root.glob("*/session=*/year_month=*/ticker_bucket=*/*.parquet"):
         parts = path.parts
         kind = parts[-5]
         year_month = parts[-3].split("=", 1)[1]
         ticker_bucket = parts[-2].split("=", 1)[1]
-        groups.setdefault((kind, year_month, ticker_bucket), []).append(path)
+        groups.setdefault((kind, year_month, f"bucket={ticker_bucket}"), []).append(path)
     return groups
 
 
@@ -916,6 +946,8 @@ def item_label(item: Any) -> str:
     if isinstance(item, dict):
         if "session" in item and "kind" in item:
             return f"{item['kind']}:{item['session']}"
+        if "kind" in item and "ticker" in item:
+            return f"{item['kind']}:{item['ticker']}:{item['year_month']}"
         if "kind" in item and "ticker_bucket" in item:
             return f"{item['kind']}:bucket={item['ticker_bucket']}:{item['year_month']}"
     return str(item)
