@@ -28,11 +28,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Launch compact canonical preprocessing with editable defaults.")
     parser.add_argument("--print-only", action="store_true")
     parser.add_argument("--rebuild", action="store_true")
+    parser.add_argument("--merge-only", action="store_true")
+    parser.add_argument("--normalize-only", action="store_true")
     known, extra = parser.parse_known_args()
     defaults = dict(DEFAULTS)
     if known.rebuild:
         defaults["rebuild"] = True
     argv = build_argv(defaults)
+    if known.merge_only:
+        argv.append("--merge-only")
+    if known.normalize_only:
+        argv.append("--normalize-only")
     argv.extend(extra)
     print("Equivalent command:", flush=True)
     print(" ".join(argv), flush=True)

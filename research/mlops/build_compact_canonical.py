@@ -108,6 +108,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quote-size-lot-multiplier-before-2025-11-03", type=int, default=100)
     parser.add_argument("--max-rows-per-temp-file", type=int, default=defaults.max_rows_per_temp_file)
     parser.add_argument("--rebuild", action="store_true")
+    parser.add_argument("--merge-only", action="store_true")
+    parser.add_argument("--normalize-only", action="store_true")
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--heartbeat-seconds", type=float, default=30.0)
@@ -160,7 +162,11 @@ def main() -> None:
         return
 
     started = time.time()
-    if config.rebuild:
+    if args.merge_only and args.normalize_only:
+        raise SystemExit("--merge-only and --normalize-only cannot be used together.")
+    if args.merge_only and config.rebuild:
+        remove_path(config.canonical_root)
+    elif config.rebuild:
         remove_path(config.temp_root)
         remove_path(config.canonical_root)
         remove_path(config.issue_root)
@@ -169,21 +175,33 @@ def main() -> None:
     config.issue_root.mkdir(parents=True, exist_ok=True)
 
     payload = config_to_payload(config)
-    normalize_items = [{"session": session, "kind": kind} for session in sessions for kind in ("quotes", "trades")]
-    failed = run_parallel(
-        label="normalize",
-        items=normalize_items,
-        submit=lambda executor, item: executor.submit(normalize_worker, item, payload, args.polars_threads_per_process),
-        manifest_path=manifest_path,
-        processes=normalize_processes,
-        started=started,
-        fail_fast=args.fail_fast,
-        heartbeat_seconds=args.heartbeat_seconds,
-        max_pending=normalize_pending,
-        max_tasks_per_worker=args.max_tasks_per_worker,
-    )
-    if failed:
-        raise SystemExit(1)
+    failed = 0
+    if not args.merge_only:
+        normalize_items = [{"session": session, "kind": kind} for session in sessions for kind in ("quotes", "trades")]
+        failed = run_parallel(
+            label="normalize",
+            items=normalize_items,
+            submit=lambda executor, item: executor.submit(normalize_worker, item, payload, args.polars_threads_per_process),
+            manifest_path=manifest_path,
+            processes=normalize_processes,
+            started=started,
+            fail_fast=args.fail_fast,
+            heartbeat_seconds=args.heartbeat_seconds,
+            max_pending=normalize_pending,
+            max_tasks_per_worker=args.max_tasks_per_worker,
+        )
+        if failed:
+            raise SystemExit(1)
+    else:
+        print("Skipping normalize phase because --merge-only was set.", flush=True)
+
+    if args.normalize_only:
+        print("Skipping merge phase because --normalize-only was set.", flush=True)
+        print("=" * 96, flush=True)
+        print(f"Compact canonical normalization complete in {(time.time() - started) / 60.0:.1f} minutes.", flush=True)
+        print(f"Manifest: {manifest_path}", flush=True)
+        print("=" * 96, flush=True)
+        return
 
     groups = discover_temp_groups(config.temp_root)
     print(f"Discovered {len(groups):,} temp groups for canonical merge.", flush=True)
