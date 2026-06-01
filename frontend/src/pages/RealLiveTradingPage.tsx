@@ -726,7 +726,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
 
   useEffect(() => {
     window.localStorage.setItem(LIVE_ACCOUNT_KEYS_STORAGE_KEY, JSON.stringify(selectedAccountKeys));
-    setPreflightStatus(null);
+    setPreflightStatus((current) => (current && sameAccountKeySet(current.selected_account_keys, selectedAccountKeys) ? current : null));
   }, [selectedAccountKeys]);
 
   useEffect(() => {
@@ -772,9 +772,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
 
   async function enterLiveWorkspace() {
     if (loading) return;
-    const selectedKey = selectedAccountKeys.join(",");
-    const checkedKey = preflightStatus?.selected_account_keys?.join(",") || "";
-    const payload = checkedKey === selectedKey ? preflightStatus : await checkConnections(selectedAccountKeys);
+    const payload = preflightStatus && sameAccountKeySet(preflightStatus.selected_account_keys, selectedAccountKeys) ? preflightStatus : await checkConnections(selectedAccountKeys);
     if (!payload?.ready) return;
     canvasRemovedRef.current = false;
     window.localStorage.removeItem(LIVE_SHARED_STATE_STORAGE_KEY);
@@ -2664,6 +2662,12 @@ function ensureSelectedAccountKeys(accounts: RealLiveAccountConfig[], selectedKe
   const selected = selectedKeys.filter((key) => accountKeys.has(key));
   if (selected.length) return selected;
   return accounts.some((account) => account.account_key === "paper") ? ["paper"] : accounts.slice(0, 1).map((account) => account.account_key);
+}
+
+function sameAccountKeySet(left: string[] = [], right: string[] = []) {
+  const normalizedLeft = [...new Set(left.filter(Boolean))].sort();
+  const normalizedRight = [...new Set(right.filter(Boolean))].sort();
+  return normalizedLeft.length === normalizedRight.length && normalizedLeft.every((key, index) => key === normalizedRight[index]);
 }
 
 function toggleSelectedAccount(accountKey: string, accounts: RealLiveAccountConfig[], setSelected: Dispatch<SetStateAction<string[]>>) {
