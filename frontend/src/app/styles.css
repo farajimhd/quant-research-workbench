@@ -9706,14 +9706,14 @@ button {
   background-size: 24px 24px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  min-height: 900px;
+  min-height: 100vh;
   margin-top: 0;
   overflow: hidden;
   position: relative;
 }
 
 .live-workspace.compact {
-  min-height: 960px;
+  min-height: 100vh;
 }
 
 .live-metrics-dock {

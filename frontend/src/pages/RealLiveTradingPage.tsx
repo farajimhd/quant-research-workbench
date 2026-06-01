@@ -3354,8 +3354,7 @@ function buildLiveWindowSummaries(openWindows: WindowId[], chartWindows: ChartWi
 
 function liveWorkspaceMinHeight(openWindows: WindowId[], layouts: Record<WindowId, WindowLayout>, compact: boolean) {
   const viewportHeight = typeof window === "undefined" ? 1024 : window.innerHeight;
-  const viewportBase = viewportHeight - (compact ? 76 : 156);
-  const baseHeight = Math.max(compact ? 960 : 900, viewportBase);
+  const baseHeight = Math.max(viewportHeight, compact ? 960 : 900);
   return openWindows.reduce((height, id) => {
     const layout = layouts[id];
     if (!layout || layout.fullscreen) return height;
