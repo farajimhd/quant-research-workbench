@@ -72,6 +72,7 @@ class CompactCanonicalConfig:
     flatfiles_root: Path = Path("D:/market-data/flatfiles/us_stocks_sip")
     canonical_root: Path = Path("D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_compact_v1")
     temp_root: Path = Path("D:/market-data/flatfiles/us_stocks_sip/derived/_tmp_compact_canonical_parts")
+    issue_root: Path = Path("D:/market-data/flatfiles/us_stocks_sip/derived/canonical_events_compact_v1_issues")
     start_date: str = "2025-11-01"
     end_date: str = "2025-12-05"
     tickers: tuple[str, ...] = (ALL_TICKERS_SENTINEL,)
@@ -91,6 +92,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--flatfiles-root", default=str(defaults.flatfiles_root))
     parser.add_argument("--canonical-root", default=str(defaults.canonical_root))
     parser.add_argument("--temp-root", default=str(defaults.temp_root))
+    parser.add_argument("--issue-root", default=str(defaults.issue_root))
     parser.add_argument("--start-date", default=defaults.start_date)
     parser.add_argument("--end-date", default=defaults.end_date)
     parser.add_argument("--tickers", default="ALL")
@@ -121,6 +123,7 @@ def main() -> None:
         flatfiles_root=Path(args.flatfiles_root),
         canonical_root=Path(args.canonical_root),
         temp_root=Path(args.temp_root),
+        issue_root=Path(args.issue_root),
         start_date=args.start_date,
         end_date=args.end_date,
         tickers=parse_ticker_list(args.tickers),
@@ -143,6 +146,7 @@ def main() -> None:
     print(f"flatfiles_root={config.flatfiles_root}", flush=True)
     print(f"canonical_root={config.canonical_root}", flush=True)
     print(f"temp_root={config.temp_root}", flush=True)
+    print(f"issue_root={config.issue_root}", flush=True)
     print(f"sessions={sessions[0]} -> {sessions[-1]} count={len(sessions):,}", flush=True)
     print(f"tickers={','.join(config.tickers)}", flush=True)
     print(f"normalize_processes={normalize_processes} merge_processes={merge_processes}", flush=True)
@@ -159,8 +163,10 @@ def main() -> None:
     if config.rebuild:
         remove_path(config.temp_root)
         remove_path(config.canonical_root)
+        remove_path(config.issue_root)
     config.temp_root.mkdir(parents=True, exist_ok=True)
     config.canonical_root.mkdir(parents=True, exist_ok=True)
+    config.issue_root.mkdir(parents=True, exist_ok=True)
 
     payload = config_to_payload(config)
     normalize_items = [{"session": session, "kind": kind} for session in sessions for kind in ("quotes", "trades")]
@@ -218,7 +224,7 @@ def normalize_worker(item: dict[str, str], payload: dict[str, Any], polars_threa
         print(f"START normalize {key}", flush=True)
         result = normalize_session_kind(config, session, kind)
         elapsed = time.time() - started
-        print(f"FINISH normalize {key} files={result['files']} elapsed={elapsed:.1f}s", flush=True)
+        print(f"FINISH normalize {key} files={result['files']} issues={result['issue_rows']} elapsed={elapsed:.1f}s", flush=True)
         return result_row("normalize", key, "ok", result["rows"], elapsed, result)
     except BaseException:
         return failed_row("normalize", key, time.time() - started)
@@ -259,9 +265,11 @@ def normalize_session_kind(config: CompactCanonicalConfig, session: str, kind: s
     if missing:
         raise ValueError(f"{path} is missing required columns: {missing}")
 
-    scan = pl.scan_csv(str(path), infer_schema_length=0, ignore_errors=True)
+    scan = pl.scan_csv(str(path), infer_schema_length=0, ignore_errors=True).with_row_index("raw_row_number", offset=2)
     selected = sorted((raw_columns(kind) & names) | required)
-    frame = scan.select([pl.col(column) for column in selected])
+    frame = scan.select([pl.col("raw_row_number"), *[pl.col(column) for column in selected]])
+    issue_frame = build_issue_frame(frame, names, config, session, kind, path)
+    issue_result = write_issue_csv(issue_frame, config, session, kind)
     normalized = normalize_quote_frame(frame, names, config, session) if kind == "quotes" else normalize_trade_frame(frame, names, config, session)
     if not uses_all_tickers(config.tickers):
         normalized = normalized.filter(pl.col("ticker").is_in(list(config.tickers)))
@@ -281,17 +289,28 @@ def normalize_session_kind(config: CompactCanonicalConfig, session: str, kind: s
         "output_root": str(output_root),
         "files": len(files),
         "rows": -1,
+        **issue_result,
     }
 
 
 def normalize_quote_frame(frame: pl.LazyFrame, names: set[str], config: CompactCanonicalConfig, session: str) -> pl.LazyFrame:
+    return prepare_quote_frame(frame, names, config, session).filter(quote_canonical_valid_expr())
+
+
+def prepare_quote_frame(frame: pl.LazyFrame, names: set[str], config: CompactCanonicalConfig, session: str) -> pl.LazyFrame:
     multiplier = config.quote_size_lot_multiplier_before_2025_11_03 if session < QUOTE_SIZE_UNIT_SWITCH_DATE else 1
     return (
-        frame.filter(session_timestamp_filter_expr(config, session))
-        .with_columns(
+        frame.with_columns(
             normalized_ticker_expr(),
             pl.lit(session).alias("session_date"),
             pl.lit(session[:7]).alias("year_month"),
+            pl.col("ticker").cast(pl.String).alias("raw_ticker"),
+            pl.col("sip_timestamp").cast(pl.String).alias("raw_sip_timestamp"),
+            pl.col("sequence_number").cast(pl.String).alias("raw_sequence_number"),
+            pl.col("bid_price").cast(pl.String).alias("raw_bid_price"),
+            pl.col("ask_price").cast(pl.String).alias("raw_ask_price"),
+            pl.col("bid_size").cast(pl.String).alias("raw_bid_size"),
+            pl.col("ask_size").cast(pl.String).alias("raw_ask_size"),
             pl.col("sip_timestamp").cast(pl.Int64, strict=False),
             pl.col("sequence_number").cast(pl.Int64, strict=False).fill_null(0),
             pl.col("bid_price").cast(pl.Float64, strict=False),
@@ -303,18 +322,26 @@ def normalize_quote_frame(frame: pl.LazyFrame, names: set[str], config: CompactC
             optional_int_expr("tape", names, dtype=pl.Int32),
             *condition_slot_exprs("conditions", names),
         )
+        .with_columns(session_timestamp_filter_expr(config, session).alias("is_in_session"))
         .with_columns(ticker_bucket_expr())
-        .filter((pl.col("ticker") != "") & (pl.col("bid_price") > 0.0) & (pl.col("ask_price") > 0.0) & (pl.col("ask_price") >= pl.col("bid_price")))
     )
 
 
 def normalize_trade_frame(frame: pl.LazyFrame, names: set[str], config: CompactCanonicalConfig, session: str) -> pl.LazyFrame:
+    return prepare_trade_frame(frame, names, config, session).filter(trade_canonical_valid_expr())
+
+
+def prepare_trade_frame(frame: pl.LazyFrame, names: set[str], config: CompactCanonicalConfig, session: str) -> pl.LazyFrame:
     return (
-        frame.filter(session_timestamp_filter_expr(config, session))
-        .with_columns(
+        frame.with_columns(
             normalized_ticker_expr(),
             pl.lit(session).alias("session_date"),
             pl.lit(session[:7]).alias("year_month"),
+            pl.col("ticker").cast(pl.String).alias("raw_ticker"),
+            pl.col("sip_timestamp").cast(pl.String).alias("raw_sip_timestamp"),
+            pl.col("sequence_number").cast(pl.String).alias("raw_sequence_number"),
+            pl.col("price").cast(pl.String).alias("raw_price"),
+            pl.col("size").cast(pl.String).alias("raw_size"),
             pl.col("sip_timestamp").cast(pl.Int64, strict=False),
             pl.col("sequence_number").cast(pl.Int64, strict=False).fill_null(0),
             pl.col("price").cast(pl.Float64, strict=False),
@@ -324,9 +351,199 @@ def normalize_trade_frame(frame: pl.LazyFrame, names: set[str], config: CompactC
             optional_int_expr("correction", names, dtype=pl.Int32),
             *condition_slot_exprs("conditions", names),
         )
+        .with_columns(session_timestamp_filter_expr(config, session).alias("is_in_session"))
         .with_columns(ticker_bucket_expr())
-        .filter((pl.col("ticker") != "") & (pl.col("price") > 0.0) & (pl.col("size") > 0.0))
     )
+
+
+def build_issue_frame(frame: pl.LazyFrame, names: set[str], config: CompactCanonicalConfig, session: str, kind: str, source: Path) -> pl.LazyFrame:
+    if kind == "quotes":
+        prepared = prepare_quote_frame(frame, names, config, session)
+        return build_quote_issue_frame(prepared, source)
+    prepared = prepare_trade_frame(frame, names, config, session)
+    return build_trade_issue_frame(prepared, source)
+
+
+def build_quote_issue_frame(prepared: pl.LazyFrame, source: Path) -> pl.LazyFrame:
+    issue_filter = (
+        pl.col("sip_timestamp").is_null()
+        | (pl.col("is_in_session") & (~quote_canonical_valid_expr() | quote_size_issue_expr()))
+    )
+    return (
+        prepared.with_columns(
+            pl.lit("quotes").alias("kind"),
+            pl.lit(str(source)).alias("source_path"),
+            quote_issue_reason_expr(),
+            (~quote_canonical_valid_expr()).fill_null(True).alias("dropped_by_canonical"),
+        )
+        .filter(issue_filter)
+        .select(
+            [
+                "kind",
+                "session_date",
+                "source_path",
+                "raw_row_number",
+                "dropped_by_canonical",
+                "issue_reason",
+                "raw_ticker",
+                "ticker",
+                "raw_sip_timestamp",
+                "sip_timestamp",
+                "is_in_session",
+                "raw_sequence_number",
+                "sequence_number",
+                "raw_bid_price",
+                "bid_price",
+                "raw_ask_price",
+                "ask_price",
+                "raw_bid_size",
+                "bid_size",
+                "raw_ask_size",
+                "ask_size",
+                "bid_exchange",
+                "ask_exchange",
+                "tape",
+                "condition_count",
+                "condition_1",
+                "condition_2",
+                "condition_3",
+                "condition_4",
+            ]
+        )
+    )
+
+
+def build_trade_issue_frame(prepared: pl.LazyFrame, source: Path) -> pl.LazyFrame:
+    issue_filter = pl.col("sip_timestamp").is_null() | (pl.col("is_in_session") & ~trade_canonical_valid_expr())
+    return (
+        prepared.with_columns(
+            pl.lit("trades").alias("kind"),
+            pl.lit(str(source)).alias("source_path"),
+            trade_issue_reason_expr(),
+            (~trade_canonical_valid_expr()).fill_null(True).alias("dropped_by_canonical"),
+        )
+        .filter(issue_filter)
+        .select(
+            [
+                "kind",
+                "session_date",
+                "source_path",
+                "raw_row_number",
+                "dropped_by_canonical",
+                "issue_reason",
+                "raw_ticker",
+                "ticker",
+                "raw_sip_timestamp",
+                "sip_timestamp",
+                "is_in_session",
+                "raw_sequence_number",
+                "sequence_number",
+                "raw_price",
+                "price",
+                "raw_size",
+                "size",
+                "exchange",
+                "tape",
+                "condition_count",
+                "condition_1",
+                "condition_2",
+                "condition_3",
+                "condition_4",
+                "correction",
+            ]
+        )
+    )
+
+
+def write_issue_csv(frame: pl.LazyFrame, config: CompactCanonicalConfig, session: str, kind: str) -> dict[str, Any]:
+    output_path = config.issue_root / kind / f"session={session}" / "issues.csv"
+    if config.rebuild:
+        remove_path(output_path.parent)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frame.sink_csv(output_path, mkdir=True, maintain_order=True)
+    issue_count = count_csv_data_rows(output_path)
+    if issue_count <= 0:
+        remove_path(output_path)
+        return {"issue_rows": 0, "issue_path": ""}
+    return {"issue_rows": issue_count, "issue_path": str(output_path)}
+
+
+def count_csv_data_rows(path: Path) -> int:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return max(0, sum(1 for _ in handle) - 1)
+
+
+def quote_canonical_valid_expr() -> pl.Expr:
+    return (
+        pl.col("is_in_session")
+        & (pl.col("ticker") != "")
+        & (pl.col("bid_price") > 0.0)
+        & (pl.col("ask_price") > 0.0)
+        & (pl.col("ask_price") >= pl.col("bid_price"))
+    )
+
+
+def trade_canonical_valid_expr() -> pl.Expr:
+    return (
+        pl.col("is_in_session")
+        & (pl.col("ticker") != "")
+        & (pl.col("price") > 0.0)
+        & (pl.col("size") > 0.0)
+    )
+
+
+def quote_size_issue_expr() -> pl.Expr:
+    bid_size_raw = pl.col("raw_bid_size").cast(pl.Float64, strict=False)
+    ask_size_raw = pl.col("raw_ask_size").cast(pl.Float64, strict=False)
+    return bid_size_raw.is_null() | ask_size_raw.is_null() | (bid_size_raw <= 0.0) | (ask_size_raw <= 0.0)
+
+
+def quote_issue_reason_expr() -> pl.Expr:
+    bid_size_raw = pl.col("raw_bid_size").cast(pl.Float64, strict=False)
+    ask_size_raw = pl.col("raw_ask_size").cast(pl.Float64, strict=False)
+    return reason_expr(
+        [
+            (pl.col("sip_timestamp").is_null(), "invalid_sip_timestamp"),
+            (pl.col("is_in_session") & (pl.col("ticker") == ""), "invalid_ticker"),
+            (pl.col("is_in_session") & pl.col("bid_price").is_null(), "missing_or_invalid_bid_price"),
+            (pl.col("is_in_session") & pl.col("ask_price").is_null(), "missing_or_invalid_ask_price"),
+            (pl.col("is_in_session") & (pl.col("bid_price") <= 0.0), "non_positive_bid_price"),
+            (pl.col("is_in_session") & (pl.col("ask_price") <= 0.0), "non_positive_ask_price"),
+            (
+                pl.col("is_in_session")
+                & pl.col("bid_price").is_not_null()
+                & pl.col("ask_price").is_not_null()
+                & (pl.col("ask_price") < pl.col("bid_price")),
+                "ask_below_bid",
+            ),
+            (pl.col("is_in_session") & bid_size_raw.is_null(), "missing_or_invalid_bid_size"),
+            (pl.col("is_in_session") & ask_size_raw.is_null(), "missing_or_invalid_ask_size"),
+            (pl.col("is_in_session") & (bid_size_raw <= 0.0), "non_positive_bid_size"),
+            (pl.col("is_in_session") & (ask_size_raw <= 0.0), "non_positive_ask_size"),
+        ]
+    )
+
+
+def trade_issue_reason_expr() -> pl.Expr:
+    return reason_expr(
+        [
+            (pl.col("sip_timestamp").is_null(), "invalid_sip_timestamp"),
+            (pl.col("is_in_session") & (pl.col("ticker") == ""), "invalid_ticker"),
+            (pl.col("is_in_session") & pl.col("price").is_null(), "missing_or_invalid_price"),
+            (pl.col("is_in_session") & (pl.col("price") <= 0.0), "non_positive_price"),
+            (pl.col("is_in_session") & pl.col("size").is_null(), "missing_or_invalid_size"),
+            (pl.col("is_in_session") & (pl.col("size") <= 0.0), "non_positive_size"),
+        ]
+    )
+
+
+def reason_expr(reason_pairs: list[tuple[pl.Expr, str]]) -> pl.Expr:
+    return pl.concat_str(
+        [
+            pl.when(condition).then(pl.lit(reason + "|")).otherwise(pl.lit(""))
+            for condition, reason in reason_pairs
+        ]
+    ).str.strip_chars_end("|").alias("issue_reason")
 
 
 def merge_temp_group_to_canonical(
@@ -693,14 +910,14 @@ def format_progress(result: dict[str, Any], completed: int, total: int, elapsed:
 
 def config_to_payload(config: CompactCanonicalConfig) -> dict[str, Any]:
     payload = asdict(config)
-    for key in ("flatfiles_root", "canonical_root", "temp_root"):
+    for key in ("flatfiles_root", "canonical_root", "temp_root", "issue_root"):
         payload[key] = str(payload[key])
     return payload
 
 
 def config_from_payload(payload: dict[str, Any]) -> CompactCanonicalConfig:
     values = dict(payload)
-    for key in ("flatfiles_root", "canonical_root", "temp_root"):
+    for key in ("flatfiles_root", "canonical_root", "temp_root", "issue_root"):
         values[key] = Path(values[key])
     values["tickers"] = tuple(values["tickers"])
     return CompactCanonicalConfig(**values)
