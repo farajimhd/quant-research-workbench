@@ -118,11 +118,15 @@ type RealLivePreflightPayload = {
 };
 
 type RealLiveScannerPayload = {
+  gateway_error?: string;
+  market_row_count?: number;
+  market_rows?: Record<string, unknown>[];
   market_time: string;
   provider: string;
   row_count: number;
   rows: Record<string, unknown>[];
   session_date: string;
+  status?: Record<string, unknown>;
 };
 
 type RealLivePortfolioPayload = {
@@ -406,6 +410,14 @@ const REAL_LIVE_SCANNER_COLUMNS = [
   "bid",
   "ask",
   "spread_bps_abs",
+  "scanner_score",
+  "signal_type",
+  "market_state",
+  "short_setup",
+  "float_profile",
+  "trade_rate_10s",
+  "trade_accel_10s_60s",
+  "tape_imbalance",
   "last_return_5",
   "last_day_volume_so_far",
   "last_day_dollar_volume_so_far",
@@ -424,6 +436,23 @@ const REAL_LIVE_MARKET_COLUMNS = [
   "bid",
   "ask",
   "spread_bps_abs",
+  "scanner_score",
+  "market_state",
+  "short_setup",
+  "float_profile",
+  "float_rotation",
+  "trade_count_10s",
+  "trade_count_60s",
+  "trade_rate_10s",
+  "trade_rate_60s",
+  "trade_accel_10s_60s",
+  "volume_rate_10s",
+  "notional_rate_10s",
+  "buy_pressure",
+  "sell_pressure",
+  "tape_imbalance",
+  "quote_pressure",
+  "price_vs_vwap_pct",
   "last_day_current_change_pct",
   "last_day_volume_so_far",
   "last_day_dollar_volume_so_far",
@@ -789,6 +818,9 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     setStarted(true);
     setLiveClockMode("running");
     setLiveClockMessage("Live workspace is connected. Scanner and portfolio refresh automatically.");
+    await api<Record<string, unknown>>("/api/real-live-trading/market-gateway/start", { method: "POST" }).catch((requestError) => {
+      setLiveClockMessage(requestError instanceof Error ? `Market gateway start failed; REST fallback remains available. ${requestError.message}` : "Market gateway start failed; REST fallback remains available.");
+    });
     await refreshLiveWorkspace({ warmCharts: true });
   }
 
@@ -807,7 +839,8 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
       const scannerPayload = await api<RealLiveScannerPayload>("/api/real-live-trading/scanner?row_limit=500");
       const exchangeSession = { barTime: scannerPayload.market_time || barTime || session.barTime, sessionDate: scannerPayload.session_date || session.sessionDate };
       const liveRows = scannerPayload.rows.map((row) => normalizeRealLiveScannerRow(row, exchangeSession));
-      const marketRowsPayload = liveRows.map(buildMarketStateRow);
+      const rawMarketRows = scannerPayload.market_rows?.length ? scannerPayload.market_rows : scannerPayload.rows;
+      const marketRowsPayload = rawMarketRows.map((row) => buildMarketStateRow(normalizeRealLiveScannerRow(row, exchangeSession)));
       const enrichedRows = liveRows
         .map((row) => enrichLiveCandidate(row, scannerQueryName))
         .filter((row) => rowMatchesBackendQuery(row, scannerQuery));
@@ -838,7 +871,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
       if (options.warmCharts !== false) void warmChartCacheForRows(enrichedRows);
       if (firstRow) setLastActionTime(exchangeSession.barTime);
       setLiveClockMode("running");
-      setLiveClockMessage(`Live scanner refreshed from Massive at ${exchangeSession.barTime} ET.`);
+      setLiveClockMessage(scannerPayload.gateway_error ? `Live scanner used REST fallback at ${exchangeSession.barTime} ET. ${scannerPayload.gateway_error}` : `Live scanner refreshed from ${scannerPayload.provider} at ${exchangeSession.barTime} ET.`);
       return { firstRow, marketSnapshot: marketStateSnapshot, snapshot: enrichedSnapshot };
     } catch (requestError) {
       setSnapshot(null);
@@ -2649,16 +2682,18 @@ function toggleSelectedAccount(accountKey: string, accounts: RealLiveAccountConf
 
 function normalizeRealLiveScannerRow(row: Record<string, unknown>, session: TradingSession): Record<string, unknown> {
   const ticker = stringValue(row, "symbol") || stringValue(row, "ticker");
-  const lastPrice = numberValue(row, "last_price") || numberValue(row, "price");
+  const lastPrice = numberValue(row, "current_open") || numberValue(row, "last_price") || numberValue(row, "price");
   const bid = numberValue(row, "bid");
   const ask = numberValue(row, "ask");
-  const dayVolume = numberValue(row, "day_volume");
-  const tradeCount = numberValue(row, "trade_count");
-  const dayChange = numberValue(row, "day_change_pct");
+  const dayVolume = numberValue(row, "last_day_volume_so_far") || numberValue(row, "day_volume");
+  const tradeCount = numberValue(row, "last_transactions") || numberValue(row, "trade_count");
+  const dayChange = numberValue(row, "last_day_current_change_pct") || numberValue(row, "day_change_pct");
+  const dayNotional = numberValue(row, "last_day_dollar_volume_so_far") || numberValue(row, "day_notional") || dayVolume * lastPrice;
+  const vwap = numberValue(row, "last_vwap") || lastPrice;
   return {
     ...row,
     ticker,
-    bar_time_market: `${session.sessionDate}T${session.barTime}:00-04:00`,
+    bar_time_market: stringValue(row, "bar_time_market") || `${session.sessionDate}T${session.barTime}:00-04:00`,
     current_open: lastPrice,
     last_close: lastPrice,
     last_open: lastPrice,
@@ -2673,19 +2708,19 @@ function normalizeRealLiveScannerRow(row: Record<string, unknown>, session: Trad
     last_day_high_so_far: lastPrice,
     last_day_low_so_far: lastPrice,
     last_day_volume_so_far: dayVolume,
-    last_day_dollar_volume_so_far: numberValue(row, "day_notional") || dayVolume * lastPrice,
-    last_vwap: lastPrice,
+    last_day_dollar_volume_so_far: dayNotional,
+    last_vwap: vwap,
     bid,
     ask,
-    spread_bps_abs: numberValue(row, "spread_bps"),
-    live_bias: dayChange > 0 ? "bullish" : dayChange < 0 ? "bearish" : "neutral",
+    spread_bps_abs: numberValue(row, "spread_bps_abs") || numberValue(row, "spread_bps"),
+    live_bias: stringValue(row, "market_state") || (dayChange > 0 ? "bullish" : dayChange < 0 ? "bearish" : "neutral"),
     live_news_count: 0,
     live_news_items: [],
     live_news_latest_time: "",
     live_news_latest_title: "",
     live_news_recency: "none",
     live_news_recent: false,
-    live_setup_group: "massive-live",
+    live_setup_group: stringValue(row, "signal_type") || stringValue(row, "market_state") || "massive-live",
     suggested_entry: ask || lastPrice,
     suggested_stop: bid || lastPrice * 0.97,
   };

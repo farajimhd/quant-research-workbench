@@ -67,6 +67,13 @@ from src.backend.real_live_trading_service import (
     real_live_scanner_snapshot,
     submit_real_live_order,
 )
+from src.backend.real_live_market_data import (
+    market_gateway_bars,
+    market_gateway_snapshot,
+    market_gateway_start,
+    market_gateway_status,
+    market_gateway_stop,
+)
 from src.data_provider.calendar import market_sessions, scan_market_source
 from src.data_provider.catalog import provider_catalog, save_presentation_override
 from src.data_provider.config import (
@@ -1809,7 +1816,42 @@ def real_live_trading_accounts() -> dict[str, Any]:
 @app.get("/api/real-live-trading/scanner")
 def real_live_trading_scanner(row_limit: int = Query(default=250, ge=1, le=1000)) -> dict[str, Any]:
     try:
-        return real_live_scanner_snapshot(row_limit=row_limit)
+        return market_gateway_snapshot(row_limit=row_limit)
+    except Exception as exc:
+        try:
+            payload = real_live_scanner_snapshot(row_limit=row_limit)
+            payload["gateway_error"] = str(exc)
+            payload["market_rows"] = payload.get("rows", [])
+            return payload
+        except Exception as fallback_exc:
+            raise HTTPException(status_code=502, detail=f"{exc}; fallback failed: {fallback_exc}") from fallback_exc
+
+
+@app.get("/api/real-live-trading/market-gateway/status")
+def real_live_market_gateway_status() -> dict[str, Any]:
+    return market_gateway_status()
+
+
+@app.get("/api/real-live-trading/market-gateway/bars")
+def real_live_market_gateway_bars(symbol: str = "", row_limit: int = Query(default=500, ge=1, le=5000)) -> dict[str, Any]:
+    try:
+        return market_gateway_bars(symbol=symbol or None, row_limit=row_limit)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/real-live-trading/market-gateway/start")
+async def real_live_market_gateway_start() -> dict[str, Any]:
+    try:
+        return await market_gateway_start()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/real-live-trading/market-gateway/stop")
+async def real_live_market_gateway_stop() -> dict[str, Any]:
+    try:
+        return await market_gateway_stop()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
