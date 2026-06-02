@@ -26,6 +26,7 @@ CLICKHOUSE_ENDPOINT_ENV = "TD__DATABASE__CLICKHOUSE__ENDPOINT_URL"
 CLICKHOUSE_PASSWORD_ENV = "TD__DATABASE__CLICKHOUSE__PASSWORD"
 CLICKHOUSE_USER_ENV = "TD__DATABASE__CLICKHOUSE__USER"
 CLICKHOUSE_FILE_ROOT_ENV = "TD__DATABASE__CLICKHOUSE__FILE_ROOT"
+CLICKHOUSE_STORAGE_POLICY_ENV = "TD__DATABASE__CLICKHOUSE__STORAGE_POLICY"
 DEFAULT_FLATFILES_ROOT_WIN = Path("D:/market-data/flatfiles/us_stocks_sip")
 DEFAULT_FLATFILES_ROOT_CH = "market-data/flatfiles/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_sip_ingest")
@@ -106,6 +107,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kinds", default="quotes,trades", help="Comma-separated subset of quotes,trades.")
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--max-threads", type=int, default=32)
+    parser.add_argument("--storage-policy", default=default_storage_policy(), help="Optional MergeTree storage_policy for newly created tables, e.g. ssd_policy.")
     parser.add_argument("--limit-files", type=int, default=0, help="Debug limit after discovery. 0 means all files.")
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--retry-started", action="store_true", help="Retry files whose latest manifest status is started.")
@@ -128,6 +130,10 @@ def default_clickhouse_password() -> str:
 
 def default_clickhouse_file_root() -> str:
     return os.environ.get("CLICKHOUSE_FLATFILES_ROOT") or os.environ.get(CLICKHOUSE_FILE_ROOT_ENV) or DEFAULT_FLATFILES_ROOT_CH
+
+
+def default_storage_policy() -> str:
+    return os.environ.get("CLICKHOUSE_STORAGE_POLICY") or os.environ.get(CLICKHOUSE_STORAGE_POLICY_ENV) or ""
 
 
 def discover_clickhouse_env_files() -> list[Path]:
@@ -171,6 +177,7 @@ def main() -> None:
     print(f"flatfiles_root_win={flatfiles_root_win}", flush=True)
     print(f"flatfiles_root_ch={flatfiles_root_ch}", flush=True)
     print(f"settings={settings.strip()}", flush=True)
+    print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
     print(f"dry_run={args.dry_run} retry_failed={args.retry_failed} retry_started={args.retry_started}", flush=True)
     print(f"output_report={run_report_path}", flush=True)
     print(f"secret_status={secret_status([CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_USER_ENV, CLICKHOUSE_PASSWORD_ENV, CLICKHOUSE_FILE_ROOT_ENV])}", flush=True)
@@ -189,7 +196,7 @@ def main() -> None:
     if args.dry_run:
         return
 
-    create_database_and_tables(client, database)
+    create_database_and_tables(client, database, args.storage_policy)
     completed = 0
     skipped = 0
     failed = 0
@@ -200,6 +207,11 @@ def main() -> None:
         if should_skip(latest_status, args):
             skipped += 1
             print(f"[{index:,}/{len(source_files):,}] SKIP {source.kind}:{source.date} status={latest_status}", flush=True)
+            continue
+        if latest_status in {"failed", "started"} and source_rows_present(client, database, source):
+            insert_manifest(client, database, source, status="ok", run_id=run_id, exception=f"Recovered from existing {latest_status} manifest; rows already present in raw table.")
+            skipped += 1
+            print(f"[{index:,}/{len(source_files):,}] RECOVER-SKIP {source.kind}:{source.date} previous_status={latest_status} rows already present", flush=True)
             continue
 
         print("=" * 96, flush=True)
@@ -295,14 +307,14 @@ def discover_source_files(root_win: Path, root_ch: str, kinds: list[str], start_
     return sorted(files, key=lambda item: (item.date, item.kind, str(item.windows_path)))
 
 
-def create_database_and_tables(client: ClickHouseHttpClient, database: str) -> None:
+def create_database_and_tables(client: ClickHouseHttpClient, database: str, storage_policy: str) -> None:
     client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}")
-    client.execute(create_quotes_table_sql(database))
-    client.execute(create_trades_table_sql(database))
-    client.execute(create_manifest_table_sql(database))
+    client.execute(create_quotes_table_sql(database, storage_policy))
+    client.execute(create_trades_table_sql(database, storage_policy))
+    client.execute(create_manifest_table_sql(database, storage_policy))
 
 
-def create_quotes_table_sql(database: str) -> str:
+def create_quotes_table_sql(database: str, storage_policy: str) -> str:
     db = quote_ident(database)
     return f"""
 CREATE TABLE IF NOT EXISTS {db}.quotes_raw
@@ -330,11 +342,11 @@ CREATE TABLE IF NOT EXISTS {db}.quotes_raw
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(event_date)
 ORDER BY (ticker, sip_timestamp, sequence_number)
-SETTINGS index_granularity = 8192
+{mergetree_settings_sql(storage_policy)}
 """
 
 
-def create_trades_table_sql(database: str) -> str:
+def create_trades_table_sql(database: str, storage_policy: str) -> str:
     db = quote_ident(database)
     return f"""
 CREATE TABLE IF NOT EXISTS {db}.trades_raw
@@ -361,11 +373,11 @@ CREATE TABLE IF NOT EXISTS {db}.trades_raw
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(event_date)
 ORDER BY (ticker, sip_timestamp, sequence_number)
-SETTINGS index_granularity = 8192
+{mergetree_settings_sql(storage_policy)}
 """
 
 
-def create_manifest_table_sql(database: str) -> str:
+def create_manifest_table_sql(database: str, storage_policy: str) -> str:
     db = quote_ident(database)
     return f"""
 CREATE TABLE IF NOT EXISTS {db}.ingest_manifest
@@ -390,7 +402,7 @@ CREATE TABLE IF NOT EXISTS {db}.ingest_manifest
 )
 ENGINE = MergeTree
 ORDER BY (kind, source_date, source_file, updated_at)
-SETTINGS index_granularity = 8192
+{mergetree_settings_sql(storage_policy)}
 """
 
 
@@ -556,6 +568,20 @@ def should_skip(status: str, args: argparse.Namespace) -> bool:
     return False
 
 
+def source_rows_present(client: ClickHouseHttpClient, database: str, source: SourceFile) -> bool:
+    table = "quotes_raw" if source.kind == "quotes" else "trades_raw"
+    try:
+        rows = client.query_tsv(
+            "SELECT count() FROM "
+            f"{quote_ident(database)}.{quote_ident(table)} "
+            f"WHERE source_date = toDate({sql_string(source.date)}) "
+            f"AND source_file = {sql_string(source.windows_path.name)}"
+        ).strip()
+    except Exception:
+        return False
+    return int(rows or "0") > 0
+
+
 def insert_manifest(
     client: ClickHouseHttpClient,
     database: str,
@@ -655,6 +681,14 @@ def query_settings(args: argparse.Namespace) -> str:
     if str(args.max_memory_usage) != "0":
         settings.append(f"max_memory_usage = {parse_size_bytes(str(args.max_memory_usage))}")
     return "\nSETTINGS " + ", ".join(settings)
+
+
+def mergetree_settings_sql(storage_policy: str) -> str:
+    settings = ["index_granularity = 8192"]
+    policy = storage_policy.strip()
+    if policy:
+        settings.append(f"storage_policy = {sql_string(policy)}")
+    return "SETTINGS " + ", ".join(settings)
 
 
 def windows_path_to_clickhouse_path(path: Path, flatfiles_root_win: Path, flatfiles_root_ch: str) -> str:
