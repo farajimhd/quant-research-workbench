@@ -28,8 +28,8 @@ class ClickHouseHttpClient:
         rows = self.query_json(sql)
         return pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
 
-    def execute(self, sql: str) -> None:
-        self.query_text(sql)
+    def execute(self, sql: str, *, use_database: bool = True) -> None:
+        self.query_text(sql, use_database=use_database)
 
     def insert_json_each_row(self, table: str, rows: list[dict[str, Any]]) -> None:
         if not rows:
@@ -37,9 +37,9 @@ class ClickHouseHttpClient:
         body = "\n".join(json.dumps(row, separators=(",", ":"), default=str) for row in rows)
         self.query_text(f"INSERT INTO {table} FORMAT JSONEachRow", body=body.encode("utf-8"))
 
-    def query_text(self, sql: str, body: bytes | None = None) -> str:
-        params = urllib.parse.urlencode({"database": self.config.database})
-        url = f"{self.config.endpoint_url}/?{params}"
+    def query_text(self, sql: str, body: bytes | None = None, *, use_database: bool = True) -> str:
+        params = urllib.parse.urlencode({"database": self.config.database}) if use_database and self.config.database else ""
+        url = f"{self.config.endpoint_url}/?{params}" if params else f"{self.config.endpoint_url}/"
         request_body = sql.encode("utf-8") if body is None else sql.encode("utf-8") + b"\n" + body
         request = urllib.request.Request(url, data=request_body, method="POST")
         request.add_header("Content-Type", "text/plain; charset=utf-8")
@@ -57,6 +57,9 @@ class ClickHouseHttpClient:
 
 
 def ensure_replay_tables(client: ClickHouseHttpClient) -> None:
+    if not client.config.database.strip():
+        raise RuntimeError("ClickHouse write database is required for replay persistence.")
+    client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_identifier(client.config.database)}", use_database=False)
     client.execute(
         """
         CREATE TABLE IF NOT EXISTS live_massive_trades
@@ -131,3 +134,7 @@ def ensure_replay_tables(client: ClickHouseHttpClient) -> None:
         ORDER BY (session_date, timeframe, sym, bar_start)
         """
     )
+
+
+def quote_identifier(value: str) -> str:
+    return f"`{value.replace('`', '``')}`"

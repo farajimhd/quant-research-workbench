@@ -20,27 +20,29 @@ from src.backend.real_live_market_data.universe import load_universe_frame, univ
 @dataclass
 class MarketGateway:
     config: MarketGatewayConfig = field(default_factory=market_gateway_config)
-    client: ClickHouseHttpClient | None = None
     last_error: str = ""
     last_status_message: str = ""
     market_rows: list[dict[str, Any]] = field(default_factory=list)
+    read_client: ClickHouseHttpClient | None = None
     running: bool = False
     signal_rows: list[dict[str, Any]] = field(default_factory=list)
     states: dict[str, SymbolState] = field(default_factory=dict)
     task: asyncio.Task | None = None
     universe: dict[str, UniverseRecord] = field(default_factory=dict)
     universe_frame: pl.DataFrame = field(default_factory=pl.DataFrame)
+    write_client: ClickHouseHttpClient | None = None
     writer: ClickHouseReplayWriter | None = None
     ws: MassiveStocksWebSocket | None = None
 
     def load_universe(self) -> None:
-        self.client = ClickHouseHttpClient(self.config.clickhouse)
-        self.universe_frame = load_universe_frame(self.client, self.config)
+        self.read_client = ClickHouseHttpClient(self.config.read_clickhouse)
+        self.write_client = ClickHouseHttpClient(self.config.write_clickhouse)
+        self.universe_frame = load_universe_frame(self.read_client, self.config)
         self.universe = universe_records(self.universe_frame)
         self.states = {ticker: self.states.get(ticker, SymbolState()) for ticker in self.universe}
-        self.writer = ClickHouseReplayWriter(self.client, self.config.enable_clickhouse_writes)
+        self.writer = ClickHouseReplayWriter(self.write_client, self.config.enable_clickhouse_writes)
         self.writer.initialize()
-        self.last_status_message = f"Loaded {len(self.universe)} tradable symbols from ClickHouse."
+        self.last_status_message = f"Loaded {len(self.universe)} tradable symbols from ClickHouse read database."
 
     async def start(self) -> dict[str, Any]:
         if self.running:
@@ -131,8 +133,8 @@ class MarketGateway:
 
     def status(self) -> dict[str, Any]:
         return {
-            "clickhouse_database": self.config.clickhouse.database,
-            "clickhouse_url": self.config.clickhouse.endpoint_url,
+            "clickhouse_database": self.config.read_clickhouse.database,
+            "clickhouse_url": self.config.read_clickhouse.endpoint_url,
             "clickhouse_writes": self.config.enable_clickhouse_writes,
             "last_error": self.last_error,
             "message": self.last_status_message,
@@ -141,6 +143,8 @@ class MarketGateway:
             "subscribe_trades": self.config.subscribe_trades,
             "universe_loaded": bool(self.universe),
             "universe_symbols": len(self.universe),
+            "write_clickhouse_database": self.config.write_clickhouse.database,
+            "write_clickhouse_url": self.config.write_clickhouse.endpoint_url,
             "websocket_enabled": self.config.websocket_enabled,
             "websocket_url": self.config.massive.url,
         }
