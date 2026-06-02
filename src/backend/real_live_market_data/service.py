@@ -27,6 +27,10 @@ def market_gateway_status() -> dict[str, Any]:
     return get_market_gateway().status()
 
 
+def market_gateway_universe_preview(row_limit: int = 50) -> dict[str, Any]:
+    return get_market_gateway().universe_preview(row_limit=row_limit)
+
+
 def market_gateway_snapshot(row_limit: int = 500) -> dict[str, Any]:
     return get_market_gateway().snapshot(row_limit=row_limit)
 

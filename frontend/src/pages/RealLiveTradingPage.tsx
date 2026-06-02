@@ -129,6 +129,22 @@ type RealLiveScannerPayload = {
   status?: Record<string, unknown>;
 };
 
+type RealLiveUniversePreviewPayload = {
+  can_query_universe: boolean;
+  columns: Record<string, unknown>[];
+  errors: Record<string, unknown>[];
+  filters: Record<string, unknown>;
+  preview_columns: string[];
+  read_database: string;
+  read_url: string;
+  row_count: number;
+  rows: Record<string, unknown>[];
+  tables: Record<string, unknown>[];
+  universe_query: string;
+  write_database: string;
+  write_url: string;
+};
+
 type RealLivePortfolioPayload = {
   as_of?: string;
   account_id: string;
@@ -506,6 +522,8 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   const [availableAccounts, setAvailableAccounts] = useState<RealLiveAccountConfig[]>(defaultRealLiveAccounts);
   const [selectedAccountKeys, setSelectedAccountKeys] = useState<RealLiveAccountKey[]>(readStoredAccountKeys);
   const [preflightStatus, setPreflightStatus] = useState<RealLivePreflightPayload | null>(null);
+  const [universePreview, setUniversePreview] = useState<RealLiveUniversePreviewPayload | null>(null);
+  const [universePreviewLoading, setUniversePreviewLoading] = useState(false);
   const [scope, setScope] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
@@ -585,6 +603,37 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
       active = false;
     };
   }, []);
+
+  const loadUniversePreview = useCallback(async () => {
+    setUniversePreviewLoading(true);
+    try {
+      const payload = await api<RealLiveUniversePreviewPayload>("/api/real-live-trading/market-gateway/universe-preview?row_limit=50");
+      setUniversePreview(payload);
+    } catch (requestError) {
+      setUniversePreview({
+        can_query_universe: false,
+        columns: [],
+        errors: [{ message: requestError instanceof Error ? requestError.message : "Universe preview request failed.", scope: "request" }],
+        filters: {},
+        preview_columns: [],
+        read_database: "",
+        read_url: "",
+        row_count: 0,
+        rows: [],
+        tables: [],
+        universe_query: "",
+        write_database: "",
+        write_url: "",
+      });
+    } finally {
+      setUniversePreviewLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (started || isChildCanvas) return;
+    void loadUniversePreview();
+  }, [isChildCanvas, loadUniversePreview, started]);
 
   useEffect(() => {
     if (!scope) return;
@@ -1154,8 +1203,11 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
         message={liveClockMessage}
         preflightStatus={preflightStatus}
         selectedAccountKeys={selectedAccountKeys}
+        universePreview={universePreview}
+        universePreviewLoading={universePreviewLoading}
         onCheck={() => void checkConnections()}
         onEnter={() => void enterLiveWorkspace()}
+        onRefreshUniverse={() => void loadUniversePreview()}
         onToggleAccount={(accountKey) => toggleSelectedAccount(accountKey, availableAccounts, setSelectedAccountKeys)}
       />
     );
@@ -1320,18 +1372,24 @@ function RealLiveTradingGate({
   message,
   onCheck,
   onEnter,
+  onRefreshUniverse,
   onToggleAccount,
   preflightStatus,
   selectedAccountKeys,
+  universePreview,
+  universePreviewLoading,
 }: {
   accounts: RealLiveAccountConfig[];
   loading: boolean;
   message: string;
   onCheck: () => void;
   onEnter: () => void;
+  onRefreshUniverse: () => void;
   onToggleAccount: (accountKey: string) => void;
   preflightStatus: RealLivePreflightPayload | null;
   selectedAccountKeys: string[];
+  universePreview: RealLiveUniversePreviewPayload | null;
+  universePreviewLoading: boolean;
 }) {
   const ready = Boolean(preflightStatus?.ready);
   const selectedAccounts = selectedAccountList(accounts, selectedAccountKeys);
@@ -1392,7 +1450,85 @@ function RealLiveTradingGate({
           </div>
         </div>
       </section>
+      <LiveUniversePreviewPanel loading={universePreviewLoading} onRefresh={onRefreshUniverse} preview={universePreview} />
     </>
+  );
+}
+
+function LiveUniversePreviewPanel({ loading, onRefresh, preview }: { loading: boolean; onRefresh: () => void; preview: RealLiveUniversePreviewPayload | null }) {
+  const errors = preview?.errors ?? [];
+  const tableRows = preview?.tables ?? [];
+  const columnRows = preview?.columns ?? [];
+  const previewRows = preview?.rows ?? [];
+  const previewColumns = preview?.preview_columns?.length ? preview.preview_columns : Object.keys(previewRows[0] ?? {}).length ? Object.keys(previewRows[0] ?? {}) : ["ticker", "conid", "primary_exchange", "last_price", "avg_daily_volume", "float", "short_interest", "short_volume"];
+  return (
+    <section className="live-universe-preview panel" aria-label="Initial database universe preview">
+      <div className="live-universe-preview-header">
+        <div>
+          <span>Initial Database Pull</span>
+          <strong>{preview?.can_query_universe ? `${integer(preview.row_count)} symbols loaded` : "Waiting for ClickHouse universe"}</strong>
+        </div>
+        <button className="button secondary" disabled={loading} onClick={onRefresh} type="button">
+          {loading ? <span className="loading-spinner" aria-hidden="true" /> : <RefreshCw size={15} />} Refresh
+        </button>
+      </div>
+      <div className="live-universe-summary-grid">
+        <LiveUniverseMetric label="Read URL" value={preview?.read_url || "not loaded"} />
+        <LiveUniverseMetric label="Read DB" value={preview?.read_database || "not loaded"} />
+        <LiveUniverseMetric label="Write DB" value={preview?.write_database || "not loaded"} />
+        <LiveUniverseMetric label="Tables" value={integer(tableRows.length)} />
+        <LiveUniverseMetric label="Columns" value={integer(columnRows.length)} />
+        <LiveUniverseMetric label="Errors" value={integer(errors.length)} tone={errors.length ? "danger" : "success"} />
+      </div>
+      {errors.length ? (
+        <div className="live-universe-errors">
+          {errors.map((error, index) => (
+            <div key={`${stringValue(error, "scope")}-${index}`}>
+              <strong>{stringValue(error, "scope") || "error"}</strong>
+              <span>{stringValue(error, "message") || "Unknown database error."}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="live-universe-query">
+        <span>Universe Query</span>
+        <pre>{preview?.universe_query || "The query will appear after the gateway reads the configured ClickHouse source."}</pre>
+      </div>
+      <div className="live-universe-preview-grid">
+        <div className="live-universe-preview-table">
+          <div className="live-universe-subtitle">
+            <strong>Universe Rows</strong>
+            <span>{integer(previewRows.length)} shown</span>
+          </div>
+          <DataTable columns={previewColumns} empty={loading ? "Loading universe rows..." : "No universe rows loaded."} fitToContent rows={previewRows} />
+        </div>
+        <div className="live-universe-preview-side">
+          <div className="live-universe-preview-table compact">
+            <div className="live-universe-subtitle">
+              <strong>Tables</strong>
+              <span>{integer(tableRows.length)}</span>
+            </div>
+            <DataTable columns={["name", "engine", "total_rows", "total_bytes"]} empty="No tables returned." fitToContent rows={tableRows} />
+          </div>
+          <div className="live-universe-preview-table compact">
+            <div className="live-universe-subtitle">
+              <strong>Columns</strong>
+              <span>{integer(columnRows.length)}</span>
+            </div>
+            <DataTable columns={["table", "name", "type", "position"]} empty="No columns returned." fitToContent rows={columnRows} />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LiveUniverseMetric({ label, tone = "info", value }: { label: string; tone?: "danger" | "info" | "success"; value: string }) {
+  return (
+    <article className="live-universe-metric" data-tone={tone}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </article>
   );
 }
 

@@ -12,9 +12,9 @@ from src.backend.real_live_market_data.models import UniverseRecord
 REQUIRED_UNIVERSE_COLUMNS = {"ticker", "conid"}
 
 
-def load_universe_frame(client: ClickHouseHttpClient, config: MarketGatewayConfig) -> pl.DataFrame:
+def load_universe_frame(client: ClickHouseHttpClient, config: MarketGatewayConfig, *, timeout: int = 20) -> pl.DataFrame:
     sql = config.universe_sql or default_universe_sql(config)
-    frame = client.query_frame(sql)
+    frame = client.query_frame(sql, timeout=timeout)
     if frame.is_empty():
         return frame
     frame = normalize_universe_frame(frame)

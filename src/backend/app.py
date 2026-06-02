@@ -73,6 +73,7 @@ from src.backend.real_live_market_data import (
     market_gateway_start,
     market_gateway_status,
     market_gateway_stop,
+    market_gateway_universe_preview,
 )
 from src.data_provider.calendar import market_sessions, scan_market_source
 from src.data_provider.catalog import provider_catalog, save_presentation_override
@@ -1830,6 +1831,11 @@ def real_live_trading_scanner(row_limit: int = Query(default=250, ge=1, le=1000)
 @app.get("/api/real-live-trading/market-gateway/status")
 def real_live_market_gateway_status() -> dict[str, Any]:
     return market_gateway_status()
+
+
+@app.get("/api/real-live-trading/market-gateway/universe-preview")
+def real_live_market_gateway_universe_preview(row_limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
+    return market_gateway_universe_preview(row_limit=row_limit)
 
 
 @app.get("/api/real-live-trading/market-gateway/bars")

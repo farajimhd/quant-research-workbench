@@ -16,16 +16,16 @@ from src.backend.real_live_market_data.config import ClickHouseConfig
 class ClickHouseHttpClient:
     config: ClickHouseConfig
 
-    def query_json(self, sql: str) -> list[dict[str, Any]]:
-        text = self.query_text(sql.rstrip().removesuffix(";") + " FORMAT JSONEachRow")
+    def query_json(self, sql: str, *, timeout: int = 20) -> list[dict[str, Any]]:
+        text = self.query_text(sql.rstrip().removesuffix(";") + " FORMAT JSONEachRow", timeout=timeout)
         rows: list[dict[str, Any]] = []
         for line in text.splitlines():
             if line.strip():
                 rows.append(json.loads(line))
         return rows
 
-    def query_frame(self, sql: str) -> pl.DataFrame:
-        rows = self.query_json(sql)
+    def query_frame(self, sql: str, *, timeout: int = 20) -> pl.DataFrame:
+        rows = self.query_json(sql, timeout=timeout)
         return pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
 
     def execute(self, sql: str, *, use_database: bool = True) -> None:
@@ -37,7 +37,7 @@ class ClickHouseHttpClient:
         body = "\n".join(json.dumps(row, separators=(",", ":"), default=str) for row in rows)
         self.query_text(f"INSERT INTO {table} FORMAT JSONEachRow", body=body.encode("utf-8"))
 
-    def query_text(self, sql: str, body: bytes | None = None, *, use_database: bool = True) -> str:
+    def query_text(self, sql: str, body: bytes | None = None, *, timeout: int = 20, use_database: bool = True) -> str:
         params = urllib.parse.urlencode({"database": self.config.database}) if use_database and self.config.database else ""
         url = f"{self.config.endpoint_url}/?{params}" if params else f"{self.config.endpoint_url}/"
         request_body = sql.encode("utf-8") if body is None else sql.encode("utf-8") + b"\n" + body
@@ -47,7 +47,7 @@ class ClickHouseHttpClient:
         if self.config.password:
             request.add_header("X-ClickHouse-Key", self.config.password)
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             text = exc.read().decode("utf-8", errors="replace")

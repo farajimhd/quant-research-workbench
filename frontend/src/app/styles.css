@@ -9320,6 +9320,156 @@ button {
   color: var(--info);
 }
 
+.live-universe-preview {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.live-universe-preview-header,
+.live-universe-subtitle {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.live-universe-preview-header > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.live-universe-preview-header span,
+.live-universe-query span,
+.live-universe-subtitle span,
+.live-universe-metric span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.live-universe-preview-header strong {
+  color: var(--foreground);
+  font-size: 22px;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.live-universe-summary-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.live-universe-metric {
+  background: color-mix(in oklab, var(--surface) 86%, var(--surface-alt));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  min-height: 76px;
+  padding: 10px;
+}
+
+.live-universe-metric strong {
+  color: var(--foreground);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.live-universe-metric[data-tone="success"] strong {
+  color: var(--success);
+}
+
+.live-universe-metric[data-tone="danger"] strong {
+  color: var(--danger);
+}
+
+.live-universe-errors {
+  display: grid;
+  gap: 8px;
+}
+
+.live-universe-errors div {
+  background: color-mix(in oklab, var(--danger) 8%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--danger) 30%, var(--border));
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.live-universe-errors strong {
+  color: var(--danger);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.live-universe-errors span {
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.live-universe-query {
+  background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.live-universe-query pre {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.live-universe-preview-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.8fr);
+}
+
+.live-universe-preview-side {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.live-universe-preview-table {
+  background: color-mix(in oklab, var(--surface) 88%, var(--surface-alt));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.live-universe-preview-table .data-table-wrap {
+  max-height: 420px;
+}
+
+.live-universe-preview-table.compact .data-table-wrap {
+  max-height: 210px;
+}
+
+.live-universe-subtitle strong {
+  color: var(--foreground);
+  font-size: 13px;
+}
+
 .live-start-progress-grid {
   display: grid;
   gap: 8px;
@@ -11580,9 +11730,14 @@ button {
   }
 
   .live-start-panel,
+  .live-universe-preview-grid,
   .live-chart-trade-layout,
   .live-lower-chart-grid {
     grid-template-columns: 1fr;
+  }
+
+  .live-universe-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .live-chart-trade-layout {
@@ -11614,6 +11769,16 @@ button {
 
   .live-global-status-cells {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .live-universe-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .live-universe-preview-header,
+  .live-universe-subtitle {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .live-global-status-actions {

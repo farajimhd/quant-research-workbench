@@ -14,7 +14,7 @@ from src.backend.real_live_market_data.features import apply_quote, apply_trade,
 from src.backend.real_live_market_data.massive_ws import MassiveStocksWebSocket
 from src.backend.real_live_market_data.models import QuoteEvent, SymbolState, TradeEvent, UniverseRecord, utc_now
 from src.backend.real_live_market_data.persistence import ClickHouseReplayWriter
-from src.backend.real_live_market_data.universe import load_universe_frame, universe_records
+from src.backend.real_live_market_data.universe import default_universe_sql, load_universe_frame, universe_records
 
 
 @dataclass
@@ -169,6 +169,98 @@ class MarketGateway:
             "rows": rows,
             "row_count": len(rows),
             "status": self.status(),
+        }
+
+    def universe_preview(self, row_limit: int = 50) -> dict[str, Any]:
+        client = ClickHouseHttpClient(self.config.read_clickhouse)
+        errors: list[dict[str, Any]] = []
+        tables: list[dict[str, Any]] = []
+        columns: list[dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
+        preview_columns: list[str] = []
+        row_count = 0
+        universe_query = (self.config.universe_sql or default_universe_sql(self.config)).strip()
+        try:
+            client.query_text("SELECT 1", timeout=3)
+        except Exception as exc:
+            return {
+                "can_query_universe": False,
+                "columns": columns,
+                "errors": [{"scope": "connection", "message": str(exc)}],
+                "filters": {
+                    "max_universe_symbols": self.config.max_universe_symbols,
+                    "min_avg_daily_volume": self.config.min_avg_daily_volume,
+                    "min_price": self.config.min_price,
+                },
+                "preview_columns": preview_columns,
+                "read_database": self.config.read_clickhouse.database,
+                "read_url": self.config.read_clickhouse.endpoint_url,
+                "row_count": row_count,
+                "rows": rows,
+                "tables": tables,
+                "universe_query": universe_query,
+                "write_database": self.config.write_clickhouse.database,
+                "write_url": self.config.write_clickhouse.endpoint_url,
+            }
+        try:
+            tables = client.query_json(
+                """
+                SELECT
+                    database,
+                    name,
+                    engine,
+                    total_rows,
+                    total_bytes
+                FROM system.tables
+                WHERE database = currentDatabase()
+                ORDER BY name
+                """,
+                timeout=8,
+            )
+        except Exception as exc:
+            errors.append({"scope": "tables", "message": str(exc)})
+        try:
+            columns = client.query_json(
+                """
+                SELECT
+                    table,
+                    name,
+                    type,
+                    position
+                FROM system.columns
+                WHERE database = currentDatabase()
+                ORDER BY table, position
+                """,
+                timeout=8,
+            )
+        except Exception as exc:
+            errors.append({"scope": "columns", "message": str(exc)})
+        try:
+            frame = load_universe_frame(client, self.config, timeout=8)
+            row_count = frame.height
+            preview = frame.head(max(1, min(row_limit, 200)))
+            preview_columns = preview.columns
+            rows = preview.to_dicts()
+        except Exception as exc:
+            errors.append({"scope": "universe_query", "message": str(exc)})
+        return {
+            "can_query_universe": not any(error["scope"] == "universe_query" for error in errors),
+            "columns": columns,
+            "errors": errors,
+            "filters": {
+                "max_universe_symbols": self.config.max_universe_symbols,
+                "min_avg_daily_volume": self.config.min_avg_daily_volume,
+                "min_price": self.config.min_price,
+            },
+            "preview_columns": preview_columns,
+            "read_database": self.config.read_clickhouse.database,
+            "read_url": self.config.read_clickhouse.endpoint_url,
+            "row_count": row_count,
+            "rows": rows,
+            "tables": tables,
+            "universe_query": universe_query,
+            "write_database": self.config.write_clickhouse.database,
+            "write_url": self.config.write_clickhouse.endpoint_url,
         }
 
     def snapshot_time(self) -> datetime:
