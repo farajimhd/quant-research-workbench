@@ -535,12 +535,11 @@ def enrich_profile_from_query_log(client: ClickHouseHttpClient, profile: QueryPr
 def latest_manifest_status(client: ClickHouseHttpClient, database: str, source: SourceFile) -> str:
     try:
         rows = client.query_tsv(
-            "SELECT status FROM "
+            "SELECT if(countIf(status = 'ok') > 0, 'ok', argMax(status, updated_at)) FROM "
             f"{quote_ident(database)}.ingest_manifest "
             f"WHERE kind = {sql_string(source.kind)} "
             f"AND source_date = toDate({sql_string(source.date)}) "
-            f"AND source_file = {sql_string(source.windows_path.name)} "
-            "ORDER BY updated_at DESC LIMIT 1"
+            f"AND source_file = {sql_string(source.windows_path.name)}"
         ).strip().splitlines()
     except Exception:
         return ""
@@ -610,9 +609,13 @@ def print_profile_summary(profile: QueryProfile) -> None:
         f"{profile.label} wall_seconds={profile.wall_seconds:.2f} query_ms={profile.query_duration_ms} "
         f"memory_gib={None if memory_gib is None else round(memory_gib, 3)} "
         f"read_rows={profile.read_rows} written_rows={profile.written_rows} "
-        f"rows_per_sec={None if rows_per_second is None else round(rows_per_second):,}",
+        f"rows_per_sec={format_optional_int(None if rows_per_second is None else round(rows_per_second))}",
         flush=True,
     )
+
+
+def format_optional_int(value: int | None) -> str:
+    return "unknown" if value is None else f"{value:,}"
 
 
 def print_table_stats(client: ClickHouseHttpClient, database: str) -> None:
