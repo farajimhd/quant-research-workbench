@@ -10181,18 +10181,33 @@ button {
   overflow-wrap: anywhere;
 }
 
-.live-universe-preview-grid {
+.live-universe-tab-group {
   display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
 }
 
-.live-universe-preview-side {
-  display: grid;
-  gap: 10px;
-  grid-column: 1 / -1;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.live-universe-tabs-header {
+  align-items: end;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
   min-width: 0;
+}
+
+.live-universe-tabs-header .tabs {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.live-universe-tabs-header > span {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 620;
+  padding-bottom: 10px;
+  text-transform: uppercase;
 }
 
 .live-universe-preview-table {
@@ -10206,11 +10221,7 @@ button {
 }
 
 .live-universe-preview-table .data-table-wrap {
-  max-height: 420px;
-}
-
-.live-universe-preview-table.compact .data-table-wrap {
-  max-height: 210px;
+  max-height: 520px;
 }
 
 .live-universe-subtitle strong {
@@ -12528,7 +12539,6 @@ button {
   .live-start-panel,
   .live-gate-header,
   .live-gate-layout,
-  .live-universe-preview-grid,
   .live-chart-trade-layout,
   .live-lower-chart-grid {
     grid-template-columns: 1fr;
@@ -12593,9 +12603,14 @@ button {
   }
 
   .live-universe-preview-header,
+  .live-universe-tabs-header,
   .live-universe-subtitle {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .live-universe-tabs-header > span {
+    padding-bottom: 0;
   }
 
   .live-global-status-actions {

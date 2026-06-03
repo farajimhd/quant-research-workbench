@@ -1625,6 +1625,7 @@ function RealLiveTradingGate({
 }
 
 function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, preview }: { loading: boolean; onRefresh: () => void; onRefreshEnrichment: () => void; preview: RealLiveUniversePreviewPayload | null }) {
+  const [activePreviewTab, setActivePreviewTab] = useState("Scanner Initial Data");
   const errors = preview?.errors ?? [];
   const tableRows = preview?.tables ?? [];
   const columnRows = preview?.columns ?? [];
@@ -1671,36 +1672,53 @@ function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, pre
           ))}
         </div>
       ) : null}
-      <div className="live-universe-preview-grid">
-        <div className="live-universe-preview-table">
-          <div className="live-universe-subtitle">
-            <strong>Reference Pull</strong>
-            <span>{integer(referenceRows.length)} shown</span>
-          </div>
-          <DataTable columns={referenceColumns} empty={loading ? "Loading reference rows..." : "No reference rows loaded."} fitToContent rows={referenceRows} title="Live Startup Reference Pull" />
+      <div className="live-universe-tab-group">
+        <div className="live-universe-tabs-header">
+          <Tabs active={activePreviewTab} onChange={setActivePreviewTab} tabs={["Scanner Initial Data", "Reference Pull", "Tables", "Columns"]} />
+          <span>
+            {activePreviewTab === "Scanner Initial Data"
+              ? `${integer(snapshotRows.length)} joined rows shown`
+              : activePreviewTab === "Reference Pull"
+                ? `${integer(referenceRows.length)} reference rows shown`
+                : activePreviewTab === "Tables"
+                  ? `${integer(tableRows.length)} tables`
+                  : `${integer(columnRows.length)} columns`}
+          </span>
         </div>
         <div className="live-universe-preview-table">
-          <div className="live-universe-subtitle">
-            <strong>Massive Snapshot Join</strong>
-            <span>{integer(snapshotRows.length)} shown</span>
-          </div>
-          <DataTable columns={snapshotColumns} empty={loading ? "Loading Massive snapshot rows..." : "No joined snapshot rows loaded."} fitToContent rows={snapshotRows} title="Live Startup Massive Snapshot Join" />
-        </div>
-        <div className="live-universe-preview-side">
-          <div className="live-universe-preview-table compact">
-            <div className="live-universe-subtitle">
-              <strong>Tables</strong>
-              <span>{integer(tableRows.length)}</span>
-            </div>
-            <DataTable columns={["name", "engine", "total_rows", "total_bytes"]} empty="No tables returned." fitToContent rows={tableRows} />
-          </div>
-          <div className="live-universe-preview-table compact">
-            <div className="live-universe-subtitle">
-              <strong>Columns</strong>
-              <span>{integer(columnRows.length)}</span>
-            </div>
-            <DataTable columns={["table", "name", "type", "position"]} empty="No columns returned." fitToContent rows={columnRows} />
-          </div>
+          {activePreviewTab === "Scanner Initial Data" ? (
+            <>
+              <div className="live-universe-subtitle">
+                <strong>Scanner Initial Data</strong>
+                <span>Massive snapshot joined to the tradable reference universe</span>
+              </div>
+              <DataTable columns={snapshotColumns} empty={loading ? "Loading Massive snapshot rows..." : "No joined snapshot rows loaded."} fitToContent rows={snapshotRows} title="Live Startup Massive Snapshot Join" />
+            </>
+          ) : activePreviewTab === "Reference Pull" ? (
+            <>
+              <div className="live-universe-subtitle">
+                <strong>Reference Pull</strong>
+                <span>ClickHouse reference universe with IBKR conids and logos</span>
+              </div>
+              <DataTable columns={referenceColumns} empty={loading ? "Loading reference rows..." : "No reference rows loaded."} fitToContent rows={referenceRows} title="Live Startup Reference Pull" />
+            </>
+          ) : activePreviewTab === "Tables" ? (
+            <>
+              <div className="live-universe-subtitle">
+                <strong>Tables</strong>
+                <span>ClickHouse source metadata</span>
+              </div>
+              <DataTable columns={["name", "engine", "total_rows", "total_bytes"]} empty="No tables returned." fitToContent rows={tableRows} title="ClickHouse Tables" />
+            </>
+          ) : (
+            <>
+              <div className="live-universe-subtitle">
+                <strong>Columns</strong>
+                <span>ClickHouse source schema metadata</span>
+              </div>
+              <DataTable columns={["table", "name", "type", "position"]} empty="No columns returned." fitToContent rows={columnRows} title="ClickHouse Columns" />
+            </>
+          )}
         </div>
       </div>
     </section>
