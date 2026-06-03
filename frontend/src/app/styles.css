@@ -9438,6 +9438,285 @@ button {
   overflow-wrap: anywhere;
 }
 
+.live-gate-console {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.live-gate-toolbar {
+  align-items: center;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(360px, 1fr) auto;
+  padding: 13px 16px;
+}
+
+.live-gate-console .live-gate-title {
+  gap: 3px;
+}
+
+.live-gate-console .live-gate-title span,
+.live-gate-console .live-gate-section-heading span,
+.live-gate-status-strip span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.live-gate-console .live-gate-title strong {
+  color: var(--foreground);
+  font-size: 20px;
+  font-weight: 620;
+  line-height: 1.1;
+}
+
+.live-gate-console .live-gate-title p {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.live-gate-status-strip {
+  background: color-mix(in oklab, var(--surface-alt) 32%, var(--surface));
+  border-block: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.live-gate-status-strip > div {
+  border-right: 1px solid var(--border);
+  display: grid;
+  gap: 3px;
+  min-height: 52px;
+  padding: 8px 12px;
+}
+
+.live-gate-status-strip > div:last-child {
+  border-right: 0;
+}
+
+.live-gate-status-strip strong {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 560;
+  overflow-wrap: anywhere;
+}
+
+.live-gate-console[data-tone="success"] .live-gate-status-strip > div:first-child strong {
+  color: var(--success);
+}
+
+.live-gate-console[data-tone="warning"] .live-gate-status-strip > div:first-child strong {
+  color: #c05621;
+}
+
+.live-gate-console[data-tone="danger"] .live-gate-status-strip > div:first-child strong {
+  color: var(--danger);
+}
+
+.live-gate-setup-grid {
+  align-items: stretch;
+  display: grid;
+  grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.82fr);
+  min-height: 0;
+}
+
+.live-gate-control-stack {
+  border-right: 1px solid var(--border);
+  display: grid;
+  grid-template-rows: auto auto;
+  min-width: 0;
+}
+
+.live-gate-section {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 12px 14px;
+}
+
+.live-gate-section + .live-gate-section {
+  border-top: 1px solid var(--border);
+}
+
+.live-gate-section .live-gate-section-heading {
+  border: 0;
+  gap: 2px;
+  padding: 0;
+}
+
+.live-gate-section .live-gate-section-heading strong,
+.live-gate-progress .live-gate-section-heading strong {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.live-gate-section .live-gate-section-heading small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.live-gate-console .live-start-actions {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.live-gate-console .live-start-actions .button {
+  min-height: 34px;
+  padding-inline: 10px;
+}
+
+.live-gate-console .live-account-card-grid.compact,
+.live-gate-console .live-check-card-grid {
+  gap: 8px;
+}
+
+.live-gate-console .live-account-card-grid.compact {
+  align-items: start;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.live-gate-console .live-account-card,
+.live-gate-console .live-check-card {
+  background: var(--surface);
+  gap: 3px;
+  line-height: 1.15;
+  min-height: 0;
+  padding: 8px 9px;
+}
+
+.live-gate-console .live-account-card-grid.compact .live-account-card {
+  align-content: start;
+  display: grid;
+  min-height: 48px;
+}
+
+.live-gate-console .live-check-card {
+  align-items: center;
+  display: grid;
+  min-height: 42px;
+  padding-block: 7px;
+}
+
+.live-gate-console .live-check-card-grid {
+  align-items: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.live-gate-console .live-check-card div {
+  align-items: center;
+  gap: 8px;
+}
+
+.live-gate-console .live-account-card strong,
+.live-gate-console .live-check-card strong {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.live-gate-console .live-account-card em,
+.live-gate-console .live-check-card strong {
+  font-size: 10px;
+  font-weight: 560;
+  padding: 1px 5px;
+}
+
+.live-gate-console .live-account-card span:not(.live-account-card-top),
+.live-gate-console .live-account-card small,
+.live-gate-console .live-check-card span,
+.live-gate-console .live-check-card p {
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.15;
+}
+
+.live-gate-console .live-account-card.selected {
+  background: color-mix(in oklab, var(--info) 4%, var(--surface));
+  border-color: color-mix(in oklab, var(--info) 48%, var(--border));
+  box-shadow: inset 2px 0 0 color-mix(in oklab, var(--info) 70%, transparent);
+}
+
+.live-gate-console .live-gate-progress {
+  border: 0;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 14px;
+  position: static;
+}
+
+.live-gate-console .live-gate-progress-list {
+  border: 0;
+  border-radius: 0;
+  display: grid;
+  gap: 0;
+  overflow: visible;
+}
+
+.live-gate-console .live-gate-progress-step {
+  background: transparent;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  min-height: 38px;
+  padding: 6px 0;
+}
+
+.live-gate-console .live-gate-progress-step::before {
+  display: none;
+}
+
+.live-gate-console .live-gate-progress-index {
+  background: color-mix(in oklab, var(--surface-alt) 52%, var(--surface));
+  border: 0;
+  font-size: 10px;
+  height: 18px;
+  width: 18px;
+}
+
+.live-gate-console .live-gate-progress-body {
+  align-items: baseline;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(150px, 0.62fr) minmax(0, 1fr) auto;
+}
+
+.live-gate-console .live-gate-progress-body > div {
+  align-items: baseline;
+  display: grid;
+  gap: 2px;
+  justify-content: stretch;
+}
+
+.live-gate-console .live-gate-progress-body strong {
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.live-gate-console .live-gate-progress-body span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.live-gate-console .live-gate-progress-body p {
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.live-gate-console .live-gate-progress-body small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .live-start-panel {
   display: grid;
   gap: 24px;

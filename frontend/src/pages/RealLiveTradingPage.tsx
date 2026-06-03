@@ -1503,19 +1503,15 @@ function RealLiveTradingGate({
   const blockedSteps = progressSteps.filter((step) => step.tone === "danger").length;
   const activeSteps = progressSteps.filter((step) => step.tone === "warning").length;
   const readinessTone = ready && universePreview?.can_query_universe ? "success" : blockedSteps ? "danger" : activeSteps ? "warning" : "muted";
+  const readinessLabel = ready && universePreview?.can_query_universe ? "Ready" : blockedSteps ? "Blocked" : activeSteps ? "Checking" : "Waiting";
   return (
     <section className="live-gate-shell" aria-label="Live trading gate">
-      <div className="live-gate-header panel">
-        <div className="live-gate-title">
-          <span>Live Trading</span>
-          <strong>Session Gate</strong>
-          <p>Verify accounts, broker connectivity, and market-data readiness before creating a live trading session.</p>
-        </div>
-        <div className="live-gate-command">
-          <div className="live-gate-readiness" data-tone={readinessTone}>
-            <span>Readiness</span>
-            <strong>{ready && universePreview?.can_query_universe ? "Ready to enter" : blockedSteps ? "Blocked" : activeSteps ? "Checking" : "Waiting"}</strong>
-            <small>{completedSteps} of {progressSteps.length} steps complete</small>
+      <div className="live-gate-console panel" data-tone={readinessTone}>
+        <div className="live-gate-toolbar">
+          <div className="live-gate-title">
+            <span>Live Trading Setup</span>
+            <strong>Session Gate</strong>
+            <p>Choose accounts, verify broker and data access, then create the live trading session.</p>
           </div>
           <div className="live-start-actions">
             <button className="button secondary" disabled={loading} onClick={onCheck} type="button">
@@ -1529,17 +1525,31 @@ function RealLiveTradingGate({
             </button>
           </div>
         </div>
-      </div>
-      <div className="live-gate-layout">
-        <aside className="live-gate-progress panel" aria-label="Initial page progress report">
-          <div className="live-gate-section-heading">
-            <span>Progress Report</span>
-            <strong>{activeSteps ? "Running checks" : blockedSteps ? "Needs attention" : "Validation path"}</strong>
+        <div className="live-gate-status-strip" aria-label="Gate status summary">
+          <div>
+            <span>State</span>
+            <strong>{readinessLabel}</strong>
           </div>
-          <LiveGateProgressList steps={progressSteps} />
-        </aside>
-        <div className="live-gate-stack">
-          <section className="live-gate-card panel" aria-label="Account selection">
+          <div>
+            <span>Progress</span>
+            <strong>{completedSteps}/{progressSteps.length}</strong>
+          </div>
+          <div>
+            <span>Accounts</span>
+            <strong>{selectedAccounts.length ? selectedAccounts.length : "-"}</strong>
+          </div>
+          <div>
+            <span>Joined Universe</span>
+            <strong>{integer(universePreview?.joined_snapshot_row_count ?? 0)}</strong>
+          </div>
+          <div>
+            <span>Preview Policy</span>
+            <strong>Read-only</strong>
+          </div>
+        </div>
+        <div className="live-gate-setup-grid">
+          <div className="live-gate-control-stack">
+            <section className="live-gate-section" aria-label="Account selection">
             <div className="live-gate-section-heading">
               <span>Accounts</span>
               <strong>{selectedLabel}</strong>
@@ -1560,8 +1570,8 @@ function RealLiveTradingGate({
                 );
               })}
             </div>
-          </section>
-          <section className="live-gate-card panel" aria-label="Connection checks">
+            </section>
+            <section className="live-gate-section" aria-label="Connection checks">
             <div className="live-gate-section-heading">
               <span>Connections</span>
               <strong>{preflightStatus?.account_id || "Massive and IBKR"}</strong>
@@ -1578,7 +1588,15 @@ function RealLiveTradingGate({
                 </>
               ) : null}
             </div>
-          </section>
+            </section>
+          </div>
+          <aside className="live-gate-progress" aria-label="Initial page progress report">
+            <div className="live-gate-section-heading">
+              <span>Progress Report</span>
+              <strong>{activeSteps ? "Running checks" : blockedSteps ? "Needs attention" : "Validation path"}</strong>
+            </div>
+            <LiveGateProgressList steps={progressSteps} />
+          </aside>
         </div>
       </div>
       <LiveUniversePreviewPanel loading={universePreviewLoading} onRefresh={onRefreshUniverse} preview={universePreview} />
