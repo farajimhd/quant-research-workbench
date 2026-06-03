@@ -156,6 +156,27 @@ type RealLiveUniversePreviewPayload = {
   write_url: string;
 };
 
+type RealLiveSessionBaselineStatus = {
+  enabled?: boolean;
+  error?: string;
+  errors?: Record<string, unknown>[];
+  joined_snapshot_row_count?: number;
+  massive_snapshot_row_count?: number;
+  pulled_at_utc?: string;
+  reference_row_count?: number;
+  scanner_row_count?: number;
+  scanner_rows_written?: number;
+  started_at_utc?: string;
+  status?: string;
+  trading_session_id?: string;
+};
+
+type RealLiveGatewayStatusPayload = {
+  session_baseline?: RealLiveSessionBaselineStatus;
+  trading_session_id?: string;
+  [key: string]: unknown;
+};
+
 type RealLivePortfolioPayload = {
   as_of?: string;
   account_id: string;
@@ -535,6 +556,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   const [preflightStatus, setPreflightStatus] = useState<RealLivePreflightPayload | null>(null);
   const [universePreview, setUniversePreview] = useState<RealLiveUniversePreviewPayload | null>(null);
   const [universePreviewLoading, setUniversePreviewLoading] = useState(false);
+  const [sessionBaseline, setSessionBaseline] = useState<RealLiveSessionBaselineStatus>({ status: "not_started" });
   const [scope, setScope] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
@@ -652,6 +674,12 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     }
   }, []);
 
+  const loadGatewayStatus = useCallback(async () => {
+    const payload = await api<RealLiveGatewayStatusPayload>("/api/real-live-trading/market-gateway/status");
+    if (payload.session_baseline) setSessionBaseline(payload.session_baseline);
+    return payload;
+  }, []);
+
   useEffect(() => {
     if (started || isChildCanvas) return;
     void loadUniversePreview();
@@ -711,8 +739,8 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   const selectedAccounts = useMemo(() => selectedAccountList(availableAccounts, selectedAccountKeys), [availableAccounts, selectedAccountKeys]);
   const primaryAccountKey = selectedAccountKeys[0] || "paper";
   const globalMetrics = useMemo(
-    () => buildGlobalLiveMetrics({ decisions, exchangeClock, lastActionTime, liveClockMode, localClock, scannerRows: signalRows, selectedAccounts, session, snapshot }),
-    [decisions, exchangeClock, lastActionTime, liveClockMode, localClock, selectedAccounts, session, signalRows, snapshot]
+    () => buildGlobalLiveMetrics({ decisions, exchangeClock, lastActionTime, liveClockMode, localClock, scannerRows: signalRows, selectedAccounts, session, sessionBaseline, snapshot }),
+    [decisions, exchangeClock, lastActionTime, liveClockMode, localClock, selectedAccounts, session, sessionBaseline, signalRows, snapshot]
   );
   const liveWindowSummaries = useMemo(
     () => buildLiveWindowSummaries(openWindows, chartWindows, layouts),
@@ -846,6 +874,30 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     };
   }, [isChildCanvas, scannerQueryKey, selectedAccountKeys, started]);
 
+  useEffect(() => {
+    if (!started || isChildCanvas) return;
+    let canceled = false;
+    const poll = async () => {
+      try {
+        const payload = await loadGatewayStatus();
+        const status = payload.session_baseline?.status || "";
+        if (!canceled && ["written", "written_with_errors", "failed", "disabled", "cancelled"].includes(status)) {
+          window.clearInterval(timer);
+        }
+      } catch {
+        if (!canceled) setSessionBaseline((current) => ({ ...current, status: current.status || "unknown" }));
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 5000);
+    return () => {
+      canceled = true;
+      window.clearInterval(timer);
+    };
+  }, [isChildCanvas, loadGatewayStatus, started]);
+
   async function checkConnections(keys = selectedAccountKeys) {
     const accountKeys = ensureSelectedAccountKeys(availableAccounts, keys);
     setLoading(true);
@@ -886,10 +938,14 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     setMarketSnapshot(null);
     setSelectedRow(null);
     setLastActionTime("");
+    setSessionBaseline({ status: "pending" });
     setStarted(true);
     setLiveClockMode("running");
     setLiveClockMessage("Live workspace is connected. Scanner and portfolio refresh automatically.");
-    await api<Record<string, unknown>>("/api/real-live-trading/market-gateway/start", { method: "POST" }).catch((requestError) => {
+    await api<RealLiveGatewayStatusPayload>("/api/real-live-trading/market-gateway/start", { method: "POST" }).then((gatewayPayload) => {
+      if (gatewayPayload.session_baseline) setSessionBaseline(gatewayPayload.session_baseline);
+    }).catch((requestError) => {
+      setSessionBaseline({ status: "failed", error: requestError instanceof Error ? requestError.message : "Market gateway start failed." });
       setLiveClockMessage(requestError instanceof Error ? `Market gateway start failed; REST fallback remains available. ${requestError.message}` : "Market gateway start failed; REST fallback remains available.");
     });
     await refreshLiveWorkspace({ warmCharts: true });
@@ -1504,7 +1560,7 @@ function LiveUniversePreviewPanel({ loading, onRefresh, preview }: { loading: bo
         <LiveUniverseMetric label="Reference Rows" value={integer(preview?.reference_row_count ?? preview?.row_count ?? 0)} />
         <LiveUniverseMetric label="Massive Rows" value={integer(preview?.massive_snapshot_row_count ?? 0)} />
         <LiveUniverseMetric label="Joined Rows" value={integer(preview?.joined_snapshot_row_count ?? 0)} />
-        <LiveUniverseMetric label="Replay Run" value={stringValue(persistence, "run_id") || preview?.run_id || "not written"} tone={stringValue(persistence, "status") === "written" ? "success" : "info"} />
+        <LiveUniverseMetric label="Preview Mode" value={stringValue(persistence, "status") || "read_only_preview"} tone="info" />
         <LiveUniverseMetric label="Pulled At" value={preview?.pulled_at_utc ? preview.pulled_at_utc.slice(0, 19) : "not loaded"} />
         <LiveUniverseMetric label="Errors" value={integer(errors.length)} tone={errors.length ? "danger" : "success"} />
       </div>
@@ -3560,6 +3616,7 @@ function buildGlobalLiveMetrics({
   scannerRows,
   selectedAccounts,
   session,
+  sessionBaseline,
   snapshot,
 }: {
   decisions: Record<string, DecisionState>;
@@ -3570,11 +3627,17 @@ function buildGlobalLiveMetrics({
   scannerRows: Record<string, unknown>[];
   selectedAccounts: RealLiveAccountConfig[];
   session: TradingSession;
+  sessionBaseline: RealLiveSessionBaselineStatus;
   snapshot: ScannerSnapshot | null;
 }) {
   const decisionsCount = Object.keys(decisions).length;
   const accountLabel = selectedAccounts.length > 1 ? `${selectedAccounts.length} mirrored` : selectedAccounts[0]?.label || "Paper";
   const accountTone = selectedAccounts.some((account) => account.trading_mode !== "paper") ? "warning" : "info";
+  const baselineStatus = sessionBaseline.status || "not_started";
+  const baselineTone = baselineStatus === "written" || baselineStatus === "written_with_errors" ? "success" : baselineStatus === "pending" ? "warning" : baselineStatus === "failed" ? "danger" : "muted";
+  const baselineValue = baselineStatus === "written" || baselineStatus === "written_with_errors"
+    ? `${integer(sessionBaseline.scanner_rows_written ?? sessionBaseline.scanner_row_count ?? 0)} rows`
+    : baselineStatus;
   const modeValue = (
     <span className="live-mode-value">
       <span>{formatLiveMode(liveClockMode)}</span>
@@ -3588,6 +3651,7 @@ function buildGlobalLiveMetrics({
       { icon: <Activity size={14} />, label: "Mode", tone: liveClockMode === "running" ? "success" : liveClockMode === "loading_data" ? "warning" : "muted", value: modeValue },
       { icon: <TableProperties size={14} />, label: "Scanner Rows", tone: snapshot?.row_count ? "info" : "muted", value: integer(snapshot?.row_count ?? 0) },
       { icon: <TrendingUp size={14} />, label: "Signals", tone: scannerRows.length ? "success" : "muted", value: integer(scannerRows.length) },
+      { icon: <Save size={14} />, label: "Baseline", tone: baselineTone, value: baselineValue },
       { icon: <Target size={14} />, label: "Decisions", tone: decisionsCount ? "info" : "muted", value: integer(decisionsCount) },
       { icon: <CheckCircle2 size={14} />, label: "Last Refresh", tone: lastActionTime ? "success" : "muted", value: lastActionTime || "-" },
     ],

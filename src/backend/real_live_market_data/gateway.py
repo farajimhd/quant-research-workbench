@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 import polars as pl
 
@@ -14,8 +15,8 @@ from src.backend.real_live_market_data.features import apply_quote, apply_trade,
 from src.backend.real_live_market_data.massive_ws import MassiveStocksWebSocket
 from src.backend.real_live_market_data.models import QuoteEvent, SymbolState, TradeEvent, UniverseRecord, utc_now
 from src.backend.real_live_market_data.persistence import ClickHouseReplayWriter
-from src.backend.real_live_market_data.startup import build_startup_universe_preview
-from src.backend.real_live_market_data.universe import default_universe_sql, load_universe_frame, universe_records
+from src.backend.real_live_market_data.startup import build_startup_universe_preview, build_trading_session_baseline
+from src.backend.real_live_market_data.universe import default_universe_sql, load_universe_frame, normalize_universe_frame, universe_records
 
 
 @dataclass
@@ -26,9 +27,13 @@ class MarketGateway:
     market_rows: list[dict[str, Any]] = field(default_factory=list)
     read_client: ClickHouseHttpClient | None = None
     running: bool = False
+    session_baseline_status: dict[str, Any] = field(default_factory=lambda: {"status": "not_started"})
+    session_started_at: datetime | None = None
     signal_rows: list[dict[str, Any]] = field(default_factory=list)
     states: dict[str, SymbolState] = field(default_factory=dict)
+    baseline_task: asyncio.Task | None = None
     task: asyncio.Task | None = None
+    trading_session_id: str = ""
     universe: dict[str, UniverseRecord] = field(default_factory=dict)
     universe_frame: pl.DataFrame = field(default_factory=pl.DataFrame)
     write_client: ClickHouseHttpClient | None = None
@@ -54,6 +59,7 @@ class MarketGateway:
             raise RuntimeError("MASSIVE_API_KEY is required for Massive websocket streaming.")
         if not self.config.websocket_enabled:
             self.last_status_message = "Market gateway websocket is disabled by REAL_LIVE_MARKET_WEBSOCKET_ENABLED."
+            self.start_session_baseline_recording()
             return self.status()
         symbols = sorted(self.universe)
         self.ws = MassiveStocksWebSocket(
@@ -66,6 +72,7 @@ class MarketGateway:
         )
         self.running = True
         self.task = asyncio.create_task(self._run_ws())
+        self.start_session_baseline_recording()
         return self.status()
 
     async def stop(self) -> dict[str, Any]:
@@ -84,6 +91,66 @@ class MarketGateway:
         self.ws = None
         self.last_status_message = "Market gateway stopped."
         return self.status()
+
+    def start_session_baseline_recording(self) -> None:
+        self.session_started_at = datetime.now(timezone.utc)
+        self.trading_session_id = f"live-{self.session_started_at.astimezone(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}"
+        self.session_baseline_status = {
+            "enabled": self.config.enable_clickhouse_writes,
+            "scanner_rows_written": 0,
+            "started_at_utc": self.session_started_at.isoformat(),
+            "status": "pending" if self.config.enable_clickhouse_writes else "disabled",
+            "trading_session_id": self.trading_session_id,
+        }
+        if self.baseline_task and not self.baseline_task.done():
+            self.baseline_task.cancel()
+        if self.config.enable_clickhouse_writes:
+            self.baseline_task = asyncio.create_task(self._record_session_baseline(self.trading_session_id, self.session_started_at))
+
+    async def _record_session_baseline(self, trading_session_id: str, started_at: datetime) -> None:
+        try:
+            payload, scanner_frame = await asyncio.to_thread(
+                build_trading_session_baseline,
+                ClickHouseHttpClient(self.config.read_clickhouse),
+                ClickHouseHttpClient(self.config.write_clickhouse),
+                self.config,
+                trading_session_id=trading_session_id,
+                started_at=started_at,
+                row_limit=50,
+            )
+            persistence = payload.get("persistence", {})
+            self.session_baseline_status = {
+                **persistence,
+                "errors": payload.get("errors", []),
+                "joined_snapshot_row_count": payload.get("joined_snapshot_row_count", 0),
+                "massive_snapshot_row_count": payload.get("massive_snapshot_row_count", 0),
+                "pulled_at_utc": payload.get("pulled_at_utc", ""),
+                "reference_row_count": payload.get("reference_row_count", 0),
+                "scanner_row_count": payload.get("scanner_row_count", scanner_frame.height),
+                "started_at_utc": started_at.isoformat(),
+                "trading_session_id": trading_session_id,
+            }
+            if not scanner_frame.is_empty():
+                normalized = normalize_universe_frame(scanner_frame)
+                enriched_universe = universe_records(normalized)
+                if enriched_universe:
+                    self.universe_frame = normalized
+                    self.universe.update(enriched_universe)
+                    self.last_status_message = f"Session baseline recorded with {scanner_frame.height} scanner rows."
+        except asyncio.CancelledError:
+            self.session_baseline_status = {
+                **self.session_baseline_status,
+                "status": "cancelled",
+                "trading_session_id": trading_session_id,
+            }
+            raise
+        except Exception as exc:
+            self.session_baseline_status = {
+                **self.session_baseline_status,
+                "error": str(exc),
+                "status": "failed",
+                "trading_session_id": trading_session_id,
+            }
 
     async def _run_ws(self) -> None:
         if not self.ws:
@@ -140,8 +207,11 @@ class MarketGateway:
             "last_error": self.last_error,
             "message": self.last_status_message,
             "running": self.running,
+            "session_baseline": self.session_baseline_status,
+            "started_at_utc": self.session_started_at.isoformat() if self.session_started_at else "",
             "subscribe_quotes": self.config.subscribe_quotes,
             "subscribe_trades": self.config.subscribe_trades,
+            "trading_session_id": self.trading_session_id,
             "universe_loaded": bool(self.universe),
             "universe_symbols": len(self.universe),
             "write_clickhouse_database": self.config.write_clickhouse.database,
@@ -174,7 +244,6 @@ class MarketGateway:
 
     def universe_preview(self, row_limit: int = 50) -> dict[str, Any]:
         client = ClickHouseHttpClient(self.config.read_clickhouse)
-        write_client = ClickHouseHttpClient(self.config.write_clickhouse)
         errors: list[dict[str, Any]] = []
         tables: list[dict[str, Any]] = []
         columns: list[dict[str, Any]] = []
@@ -193,7 +262,7 @@ class MarketGateway:
                 },
                 "joined_snapshot_row_count": 0,
                 "massive_snapshot_row_count": 0,
-                "persistence": {"enabled": self.config.enable_clickhouse_writes, "status": "not_started"},
+                "persistence": {"enabled": False, "status": "read_only_preview"},
                 "preview_columns": [],
                 "read_database": self.config.read_clickhouse.database,
                 "read_url": self.config.read_clickhouse.endpoint_url,
@@ -245,7 +314,6 @@ class MarketGateway:
         try:
             startup_preview = build_startup_universe_preview(
                 client,
-                write_client,
                 self.config,
                 row_limit=max(1, min(row_limit, 200)),
             )
@@ -255,7 +323,7 @@ class MarketGateway:
                 "errors": [],
                 "joined_snapshot_row_count": 0,
                 "massive_snapshot_row_count": 0,
-                "persistence": {"enabled": self.config.enable_clickhouse_writes, "status": "failed"},
+                "persistence": {"enabled": False, "status": "failed"},
                 "preview_columns": [],
                 "reference_columns": [],
                 "reference_row_count": 0,

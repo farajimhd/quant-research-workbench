@@ -110,7 +110,13 @@ def normalize_universe_frame(frame: pl.DataFrame) -> pl.DataFrame:
         "ib_conid": "conid",
         "float_shares": "float",
         "latest_price": "last_price",
+        "massive_float": "float",
+        "massive_short_interest": "short_interest",
+        "massive_short_interest_date": "short_interest_date",
+        "massive_short_volume": "short_volume",
+        "massive_short_volume_date": "short_volume_date",
         "security_product_type": "sec_type",
+        "snapshot_last_price": "last_price",
     }
     frame = frame.rename({old: new for old, new in rename_map.items() if old in frame.columns and new not in frame.columns})
     missing = REQUIRED_UNIVERSE_COLUMNS - set(frame.columns)

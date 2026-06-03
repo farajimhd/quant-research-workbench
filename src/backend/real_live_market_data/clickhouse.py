@@ -136,28 +136,31 @@ def ensure_replay_tables(client: ClickHouseHttpClient) -> None:
     )
     client.execute(
         """
-        CREATE TABLE IF NOT EXISTS live_startup_universe_runs
+        CREATE TABLE IF NOT EXISTS live_trading_sessions
         (
-            run_id String,
+            trading_session_id String,
             session_date Date,
-            pulled_at_utc DateTime64(3, 'UTC'),
+            started_at_utc DateTime64(3, 'UTC'),
+            baseline_pulled_at_utc Nullable(DateTime64(3, 'UTC')),
+            baseline_status LowCardinality(String),
             reference_row_count UInt32,
             massive_snapshot_row_count UInt32,
             joined_snapshot_row_count UInt32,
+            scanner_row_count UInt32,
             read_database LowCardinality(String),
             write_database LowCardinality(String),
             errors String
         )
         ENGINE = ReplacingMergeTree
         PARTITION BY session_date
-        ORDER BY (session_date, run_id)
+        ORDER BY (session_date, trading_session_id)
         """
     )
     client.execute(
         """
-        CREATE TABLE IF NOT EXISTS live_startup_reference_universe
+        CREATE TABLE IF NOT EXISTS live_trading_session_reference_universe
         (
-            run_id String,
+            trading_session_id String,
             session_date Date,
             pulled_at_utc DateTime64(3, 'UTC'),
             row_index UInt32,
@@ -177,14 +180,14 @@ def ensure_replay_tables(client: ClickHouseHttpClient) -> None:
         )
         ENGINE = ReplacingMergeTree
         PARTITION BY session_date
-        ORDER BY (session_date, candidate_massive_ticker, ibkr_conid, run_id)
+        ORDER BY (session_date, trading_session_id, candidate_massive_ticker, ibkr_conid)
         """
     )
     client.execute(
         """
-        CREATE TABLE IF NOT EXISTS live_startup_snapshot_universe
+        CREATE TABLE IF NOT EXISTS live_trading_session_scanner_universe
         (
-            run_id String,
+            trading_session_id String,
             session_date Date,
             pulled_at_utc DateTime64(3, 'UTC'),
             row_index UInt32,
@@ -212,12 +215,25 @@ def ensure_replay_tables(client: ClickHouseHttpClient) -> None:
             snapshot_spread_bps Nullable(Float64),
             snapshot_todays_change Nullable(Float64),
             snapshot_todays_change_pct Nullable(Float64),
+            massive_float Nullable(Float64),
+            massive_float_percent Nullable(Float64),
+            massive_float_date Nullable(String),
+            massive_short_interest Nullable(Float64),
+            massive_short_interest_date Nullable(String),
+            massive_days_to_cover Nullable(Float64),
+            massive_short_volume Nullable(Float64),
+            massive_short_volume_date Nullable(String),
+            massive_short_volume_ratio Nullable(Float64),
+            massive_short_volume_total_volume Nullable(Float64),
+            float_profile LowCardinality(String),
+            short_setup LowCardinality(String),
             raw_reference String,
-            raw_snapshot String
+            raw_snapshot String,
+            raw_enrichment String
         )
         ENGINE = ReplacingMergeTree
         PARTITION BY session_date
-        ORDER BY (session_date, candidate_massive_ticker, ibkr_conid, run_id)
+        ORDER BY (session_date, trading_session_id, candidate_massive_ticker, ibkr_conid)
         """
     )
 

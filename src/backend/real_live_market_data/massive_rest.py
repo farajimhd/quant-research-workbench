@@ -22,11 +22,127 @@ def fetch_massive_stock_snapshot_frame(config: MarketGatewayConfig, *, timeout: 
     return pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
 
 
-def massive_get_json(config: MarketGatewayConfig, path: str, params: dict[str, str], *, timeout: int) -> dict[str, Any]:
+def fetch_massive_scanner_enrichment_frame(
+    config: MarketGatewayConfig,
+    tickers: list[str],
+    *,
+    timeout: int = 45,
+) -> pl.DataFrame:
+    ticker_set = {ticker.upper() for ticker in tickers if ticker}
+    if not ticker_set:
+        return pl.DataFrame()
+    float_rows = latest_by_ticker(
+        fetch_massive_paginated_results(
+            config,
+            env_first("REAL_LIVE_MASSIVE_FLOAT_PATH", default="/stocks/vX/float"),
+            {"limit": "5000", "sort": "ticker.asc"},
+            timeout=timeout,
+            max_pages=10,
+        ),
+        ticker_set,
+        date_key="effective_date",
+    )
+    short_interest_rows = latest_by_ticker(
+        fetch_massive_paginated_results(
+            config,
+            "/stocks/v1/short-interest",
+            {"limit": "50000", "sort": "settlement_date.desc"},
+            timeout=timeout,
+            max_pages=5,
+        ),
+        ticker_set,
+        date_key="settlement_date",
+    )
+    short_volume_rows = latest_by_ticker(
+        fetch_massive_paginated_results(
+            config,
+            "/stocks/v1/short-volume",
+            {"limit": "50000", "sort": "date.desc"},
+            timeout=timeout,
+            max_pages=5,
+        ),
+        ticker_set,
+        date_key="date",
+    )
+    rows = []
+    for ticker in sorted(ticker_set):
+        float_row = float_rows.get(ticker, {})
+        short_interest_row = short_interest_rows.get(ticker, {})
+        short_volume_row = short_volume_rows.get(ticker, {})
+        rows.append(
+            {
+                "candidate_massive_ticker": ticker,
+                "massive_float": optional_float(float_row.get("free_float")),
+                "massive_float_percent": optional_float(float_row.get("free_float_percent")),
+                "massive_float_date": float_row.get("effective_date") or "",
+                "massive_short_interest": optional_float(short_interest_row.get("short_interest")),
+                "massive_short_interest_date": short_interest_row.get("settlement_date") or "",
+                "massive_days_to_cover": optional_float(short_interest_row.get("days_to_cover")),
+                "massive_short_interest_avg_daily_volume": optional_float(short_interest_row.get("avg_daily_volume")),
+                "massive_short_volume": optional_float(short_volume_row.get("short_volume")),
+                "massive_short_volume_date": short_volume_row.get("date") or "",
+                "massive_short_volume_ratio": optional_float(short_volume_row.get("short_volume_ratio")),
+                "massive_short_volume_total_volume": optional_float(short_volume_row.get("total_volume")),
+                "massive_float_raw": json.dumps(float_row, separators=(",", ":"), default=str) if float_row else "",
+                "massive_short_interest_raw": json.dumps(short_interest_row, separators=(",", ":"), default=str) if short_interest_row else "",
+                "massive_short_volume_raw": json.dumps(short_volume_row, separators=(",", ":"), default=str) if short_volume_row else "",
+            }
+        )
+    return pl.DataFrame(rows, infer_schema_length=None)
+
+
+def fetch_massive_paginated_results(
+    config: MarketGatewayConfig,
+    path: str,
+    params: dict[str, str],
+    *,
+    timeout: int,
+    max_pages: int,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    next_url = ""
+    for _ in range(max(1, max_pages)):
+        payload = massive_get_json(config, path, params, timeout=timeout, absolute_url=next_url or None)
+        page = payload.get("results") or payload.get("tickers") or []
+        results.extend(item for item in page if isinstance(item, dict))
+        next_url = str(payload.get("next_url") or "")
+        if not next_url:
+            break
+    return results
+
+
+def latest_by_ticker(rows: list[dict[str, Any]], tickers: set[str], *, date_key: str) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        ticker = str(row.get("ticker") or "").upper()
+        if ticker not in tickers:
+            continue
+        current = latest.get(ticker)
+        if current is None or str(row.get(date_key) or "") >= str(current.get(date_key) or ""):
+            latest[ticker] = row
+    return latest
+
+
+def massive_get_json(
+    config: MarketGatewayConfig,
+    path: str,
+    params: dict[str, str],
+    *,
+    timeout: int,
+    absolute_url: str | None = None,
+) -> dict[str, Any]:
     if not config.massive.api_key:
-        raise RuntimeError("MASSIVE_API_KEY is required for Massive REST snapshots.")
-    query = {**params, "apiKey": config.massive.api_key}
-    url = f"{massive_rest_base_url()}{path}?{urllib.parse.urlencode(query)}"
+        raise RuntimeError("MASSIVE_API_KEY is required for Massive REST requests.")
+    if absolute_url:
+        separator = "&" if "?" in absolute_url else "?"
+        url = absolute_url if "apiKey=" in absolute_url else f"{absolute_url}{separator}{urllib.parse.urlencode({'apiKey': config.massive.api_key})}"
+    else:
+        query = {**params, "apiKey": config.massive.api_key}
+        url = f"{massive_rest_base_url()}{path}?{urllib.parse.urlencode(query)}"
+    return massive_get_url(url, timeout=timeout)
+
+
+def massive_get_url(url: str, *, timeout: int) -> dict[str, Any]:
     request = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
     context = ssl.create_default_context()
     with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
