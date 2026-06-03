@@ -1169,38 +1169,42 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
                   Boolean(activeValueFiltersByColumn[column]?.length) || Boolean(manualFiltersByColumn[column]);
 
                 return (
-                  <th key={column}>
+                  <th className={isLogoColumn(column) ? "data-table-logo-column" : undefined} key={column}>
                     <div className="data-table-header-cell">
-                      <button className="data-table-header-sort" onClick={() => toggleSort(column)} type="button">
-                        <span title={displayName(column)}>{columnHeaderLabel(column, densityMode)}</span>
-                        {sortIcon}
-                      </button>
-                      <div className="data-table-header-actions">
-                        {profile.kind !== "text" ? (
-                          <button
-                            className="table-icon-button"
-                            data-table-popover-trigger="true"
-                            onClick={(event: MouseEvent<HTMLButtonElement>) =>
-                              toggleHeaderPopover("stats", column, event.currentTarget)
-                            }
-                            title={`Stats for ${displayName(column)}`}
-                            type="button"
-                          >
-                            <BarChart3 size={13} />
+                      {isLogoColumn(column) ? null : (
+                        <>
+                          <button className="data-table-header-sort" onClick={() => toggleSort(column)} type="button">
+                            <span title={displayName(column)}>{columnHeaderLabel(column, densityMode)}</span>
+                            {sortIcon}
                           </button>
-                        ) : null}
-                        <button
-                          className={filterActive ? "table-icon-button active" : "table-icon-button"}
-                          data-table-popover-trigger="true"
-                          onClick={(event: MouseEvent<HTMLButtonElement>) =>
-                            toggleHeaderPopover("filter", column, event.currentTarget)
-                          }
-                          title={`Filter ${displayName(column)}`}
-                          type="button"
-                        >
-                          <Filter size={13} />
-                        </button>
-                      </div>
+                          <div className="data-table-header-actions">
+                            {profile.kind !== "text" ? (
+                              <button
+                                className="table-icon-button"
+                                data-table-popover-trigger="true"
+                                onClick={(event: MouseEvent<HTMLButtonElement>) =>
+                                  toggleHeaderPopover("stats", column, event.currentTarget)
+                                }
+                                title={`Stats for ${displayName(column)}`}
+                                type="button"
+                              >
+                                <BarChart3 size={13} />
+                              </button>
+                            ) : null}
+                            <button
+                              className={filterActive ? "table-icon-button active" : "table-icon-button"}
+                              data-table-popover-trigger="true"
+                              onClick={(event: MouseEvent<HTMLButtonElement>) =>
+                                toggleHeaderPopover("filter", column, event.currentTarget)
+                              }
+                              title={`Filter ${displayName(column)}`}
+                              type="button"
+                            >
+                              <Filter size={13} />
+                            </button>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </th>
                 );
@@ -1952,6 +1956,7 @@ function buildColumnWidthsByName({
 }
 
 function estimateHeaderColumnWidth(column: string, densityMode: TableDensityMode) {
+  if (isLogoColumn(column)) return 62;
   const label = columnHeaderLabel(column, densityMode);
   const chromeWidth = densityMode === "compact" ? 42 : 74;
   const minWidth = densityMode === "compact" ? 72 : 108;
@@ -1960,6 +1965,7 @@ function estimateHeaderColumnWidth(column: string, densityMode: TableDensityMode
 }
 
 function estimateDataColumnWidth(column: string, rows: DataRow[], densityMode: TableDensityMode) {
+  if (isLogoColumn(column)) return 62;
   const sampledRows = rows.slice(0, 80);
   const maxTextWidth = sampledRows.reduce((currentMax, row) => {
     return Math.max(currentMax, estimateTextWidth(formatCell(column, row[column])));
@@ -2732,6 +2738,7 @@ function normalizedNewsRecency(value: unknown) {
 
 function cellClassName(value: unknown, column: string) {
   const normalized = column.toLowerCase();
+  if (normalized === "logo") return "data-table-cell data-table-logo-column";
   if (normalized === "live_news_recency") {
     const recency = String(value ?? "none").toLowerCase();
     return `data-table-cell live-news-recency ${["hot", "warm", "recent", "cold"].includes(recency) ? recency : "none"}`;

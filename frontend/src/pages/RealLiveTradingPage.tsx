@@ -172,7 +172,10 @@ type GateProgressStep = {
   duration?: string;
   id: string;
   label: string;
+  message: string;
+  progress?: number;
   status: string;
+  statusLabel: string;
   tone: "danger" | "info" | "muted" | "success" | "warning";
 };
 
@@ -1516,6 +1519,7 @@ function RealLiveTradingGate({
   const completedSteps = progressSteps.filter((step) => step.tone === "success").length;
   const blockedSteps = progressSteps.filter((step) => step.tone === "danger").length;
   const activeSteps = progressSteps.filter((step) => step.tone === "warning").length;
+  const workflowPercent = Math.round((completedSteps / Math.max(progressSteps.length, 1)) * 100);
   const readinessTone = ready && universePreview?.can_query_universe ? "success" : blockedSteps ? "danger" : activeSteps ? "warning" : "muted";
   const readinessLabel = ready && universePreview?.can_query_universe ? "Ready" : blockedSteps ? "Blocked" : activeSteps ? "Checking" : "Waiting";
   return (
@@ -1590,16 +1594,26 @@ function RealLiveTradingGate({
               <strong>Running checks</strong>
               <small>{message || "Massive and IBKR checks run automatically when this page loads."}</small>
             </div>
-            <div className="live-check-card-grid final" aria-label="Live connection checks">
-              {(preflightStatus?.checks ?? []).map((check) => (
-                <LiveCheckCard key={check.id} check={check} />
-              ))}
-              {!preflightStatus ? (
-                <>
-                  <LiveCheckCard check={{ id: "massive-waiting", label: "Massive data", status: "waiting" }} />
-                  <LiveCheckCard check={{ id: "ibkr-waiting", label: "IBKR broker", status: "waiting" }} />
-                </>
-              ) : null}
+            <div className="live-gate-progress-summary" data-tone={readinessTone}>
+              <div>
+                <span>Overall</span>
+                <strong>{workflowPercent}%</strong>
+              </div>
+              <div>
+                <span>Done</span>
+                <strong>{completedSteps}/{progressSteps.length}</strong>
+              </div>
+              <div>
+                <span>Active</span>
+                <strong>{activeSteps}</strong>
+              </div>
+              <div>
+                <span>Blocked</span>
+                <strong>{blockedSteps}</strong>
+              </div>
+              <div className="live-gate-progress-summary-bar" aria-hidden="true">
+                <span style={{ width: `${workflowPercent}%` }} />
+              </div>
             </div>
             <LiveGateProgressList steps={progressSteps} />
           </aside>
@@ -1700,12 +1714,21 @@ function LiveGateProgressList({ steps }: { steps: GateProgressStep[] }) {
         <article className="live-gate-progress-step" data-tone={step.tone} key={step.id}>
           <div className="live-gate-progress-index">{index + 1}</div>
           <div className="live-gate-progress-body">
-            <div>
-              <strong>{step.label}</strong>
-              <span>{formatGateStepStatus(step.status)}</span>
+            <div className="live-gate-progress-main">
+              <div>
+                <strong>{step.label}</strong>
+                <span>{step.detail}</span>
+              </div>
+              <em>{step.statusLabel}</em>
             </div>
-            <p>{step.detail}</p>
-            {step.duration ? <small>{step.duration}</small> : null}
+            <div className="live-gate-progress-meter" data-mode={step.tone === "warning" && step.progress === undefined ? "indeterminate" : "determinate"}>
+              {step.tone === "warning" && step.progress === undefined ? <span className="loading-spinner" aria-hidden="true" /> : null}
+              <div aria-hidden="true">
+                <span style={{ width: `${step.progress ?? 42}%` }} />
+              </div>
+            </div>
+            <p>{step.message}</p>
+            <small>{step.duration || "pending"}</small>
           </div>
         </article>
       ))}
@@ -3793,60 +3816,118 @@ function buildGateProgressSteps({
   universePreviewLoading: boolean;
 }): GateProgressStep[] {
   const errors = universePreview?.errors ?? [];
-  const backendSteps = universePreview?.progress_steps ?? [];
+  const backendStepsById = new Map((universePreview?.progress_steps ?? []).map((step) => [step.id, step]));
+  const preflightChecks = preflightStatus?.checks ?? [];
+  const massiveCheck = preflightChecks.find((check) => check.id === "massive_rest" || check.id === "massive_api_key");
+  const ibkrChecks = preflightChecks.filter((check) => check.id.includes("ibkr") || check.id.includes("account_env"));
   const requestError = errors.find((error) => ["request", "connection"].includes(stringValue(error, "scope")));
   const metadataError = errors.find((error) => ["tables", "columns"].includes(stringValue(error, "scope")));
   const persistenceStatus = stringValue(universePreview?.persistence, "status") || "read_only_preview";
+  const enrichmentStatus = stringValue(universePreview?.startup_enrichment, "status");
+  const metadataDetail = requestError ? stringValue(requestError, "message") : metadataError ? stringValue(metadataError, "message") : universePreview ? `${integer(universePreview.tables.length)} tables, ${integer(universePreview.columns.length)} columns inspected` : "Waiting for ClickHouse metadata.";
+  const metadataStatus = universePreviewLoading && !universePreview ? "running" : requestError || metadataError ? "error" : universePreview ? "complete" : "waiting";
+  const backendStep = (id: string, label: string, waitingMessage: string) => {
+    const step = backendStepsById.get(id);
+    if (step) return progressStepFromBackend(step, label);
+    return makeGateProgressStep({
+      detail: universePreviewLoading ? "Queued" : "Waiting",
+      id,
+      label,
+      message: universePreviewLoading ? waitingMessage : "Waiting for the startup preview request.",
+      status: "waiting",
+    });
+  };
   return [
-    {
+    makeGateProgressStep({
       detail: selectedAccountKeys.length ? `${selectedAccountKeys.length} account${selectedAccountKeys.length > 1 ? "s" : ""} selected` : "Select at least one account before entering the workspace.",
       id: "account_selection",
       label: "Account selection",
+      message: selectedAccountKeys.length ? "Order routing will use the selected account set." : "At least one account is required.",
       status: selectedAccountKeys.length ? "complete" : "waiting",
-      tone: selectedAccountKeys.length ? "success" : "muted",
-    },
-    {
-      detail: preflightStatus?.checks?.length ? `${preflightStatus.checks.filter((check) => check.status === "ready").length} of ${preflightStatus.checks.length} checks ready` : "Massive and IBKR checks have not been run yet.",
-      id: "connection_check",
-      label: "Connection checks",
-      status: loading ? "running" : preflightStatus?.ready ? "complete" : preflightStatus ? "blocked" : "waiting",
-      tone: loading ? "warning" : preflightStatus?.ready ? "success" : preflightStatus ? "danger" : "muted",
-    },
-    {
-      detail: requestError ? stringValue(requestError, "message") : metadataError ? stringValue(metadataError, "message") : universePreview ? `${integer(universePreview.tables.length)} tables, ${integer(universePreview.columns.length)} columns inspected` : "Waiting for ClickHouse metadata.",
+    }),
+    makeGateProgressStep({
+      detail: "Provider",
+      id: "massive_rest",
+      label: "Massive REST",
+      message: massiveCheck?.message || (loading ? "Validating Massive REST credentials and reference access." : "Connection check starts automatically on page load."),
+      status: loading && !massiveCheck ? "running" : massiveCheck?.status === "ready" ? "complete" : massiveCheck ? "blocked" : "waiting",
+    }),
+    makeGateProgressStep({
+      detail: ibkrChecks.length ? `${ibkrChecks.filter((check) => check.status === "ready").length}/${ibkrChecks.length}` : "Gateway",
+      id: "ibkr_client_portal",
+      label: "IBKR Client Portal",
+      message: firstBlockedMessage(ibkrChecks) || (ibkrChecks.length ? "Selected account gateway, auth, account, and portfolio checks completed." : loading ? "Checking Client Portal auth and selected account access." : "Connection check starts automatically on page load."),
+      status: loading && !ibkrChecks.length ? "running" : ibkrChecks.length && ibkrChecks.every((check) => check.status === "ready") ? "complete" : ibkrChecks.length ? "blocked" : "waiting",
+    }),
+    makeGateProgressStep({
+      detail: "Metadata",
       id: "metadata",
       label: "ClickHouse metadata",
-      status: universePreviewLoading ? "running" : requestError || metadataError ? "error" : universePreview ? "complete" : "waiting",
-      tone: universePreviewLoading ? "warning" : requestError || metadataError ? "danger" : universePreview ? "success" : "muted",
-    },
-    ...backendSteps.map((step) => progressStepFromBackend(step, universePreviewLoading)),
-    {
-      detail: persistenceStatus === "read_only_preview" ? "Initial page validation does not create a trading session or write replay rows." : requestError ? "Read-only preview could not be confirmed because the API request failed." : `Preview returned persistence status: ${persistenceStatus}`,
+      message: metadataDetail,
+      status: metadataStatus,
+    }),
+    backendStep("reference_query", "Reference universe", "Reading ticker, conid, issuer, exchange, and logo references from ClickHouse."),
+    backendStep("massive_snapshot", "Massive snapshot", "Pulling the latest full-market Massive snapshot."),
+    backendStep("snapshot_join", "Snapshot join", "Joining the ClickHouse reference universe to the Massive snapshot."),
+    backendStep("scanner_enrichment", "Float and short data", "Loading daily cached Massive float, short-interest, and short-volume enrichment."),
+    makeGateProgressStep({
+      detail: persistenceStatus === "read_only_preview" ? "Read-only" : formatGateStepStatus(persistenceStatus),
       id: "read_only_preview",
       label: "Preview persistence policy",
+      message: persistenceStatus === "read_only_preview" ? `Startup preview is read-only. Float/short cache: ${enrichmentStatus || "not_started"}.` : requestError ? "Read-only preview could not be confirmed because the API request failed." : `Preview returned persistence status: ${persistenceStatus}`,
       status: persistenceStatus,
-      tone: persistenceStatus === "read_only_preview" ? "success" : persistenceStatus === "failed" ? "danger" : "warning",
-    },
-    {
-      detail: preflightStatus?.ready && universePreview?.can_query_universe ? "Entering the workspace will create trading_session_id and start async baseline recording." : "Requires ready connections and a valid read-only universe preview.",
+    }),
+    makeGateProgressStep({
+      detail: preflightStatus?.ready && universePreview?.can_query_universe ? "Ready" : "Waiting",
       id: "session_entry",
       label: "Session entry",
+      message: preflightStatus?.ready && universePreview?.can_query_universe ? "Enter Workspace can create a trading_session_id and start async baseline recording." : "Requires ready connections and a valid read-only universe preview.",
       status: preflightStatus?.ready && universePreview?.can_query_universe ? "ready" : "waiting",
-      tone: preflightStatus?.ready && universePreview?.can_query_universe ? "success" : "muted",
-    },
+    }),
   ];
 }
 
-function progressStepFromBackend(step: RealLiveProgressStep, loading: boolean): GateProgressStep {
-  const status = step.status || (loading ? "running" : "waiting");
-  return {
-    detail: step.detail || "No detail returned.",
+function progressStepFromBackend(step: RealLiveProgressStep, label = step.label): GateProgressStep {
+  return makeGateProgressStep({
+    detail: step.duration_ms === null || step.duration_ms === undefined ? formatGateStepStatus(step.status || "waiting") : "Timed",
     duration: typeof step.duration_ms === "number" ? `${Math.round(step.duration_ms)} ms` : "",
     id: step.id,
-    label: step.label,
+    label,
+    message: step.detail || "No detail returned.",
+    status: step.status || "waiting",
+  });
+}
+
+function makeGateProgressStep({ detail, duration = "", id, label, message, progress, status }: { detail: string; duration?: string; id: string; label: string; message: string; progress?: number; status: string }): GateProgressStep {
+  return {
+    detail,
+    duration: duration || defaultGateDuration(status),
+    id,
+    label,
+    message,
+    progress: progress ?? progressForGateStatus(status),
     status,
+    statusLabel: formatGateStepStatus(status),
     tone: gateToneFromStatus(status),
   };
+}
+
+function defaultGateDuration(status: string) {
+  if (["success", "complete", "ready", "read_only_preview"].includes(status)) return "done";
+  if (["failed", "error", "blocked"].includes(status)) return "blocked";
+  if (["running", "pending", "deferred"].includes(status)) return "running";
+  return "pending";
+}
+
+function firstBlockedMessage(checks: RealLivePreflightCheck[]) {
+  return checks.find((check) => check.status !== "ready")?.message || "";
+}
+
+function progressForGateStatus(status: string) {
+  if (["success", "complete", "ready", "read_only_preview"].includes(status)) return 100;
+  if (["failed", "error", "blocked"].includes(status)) return 100;
+  if (["waiting", "not_started"].includes(status)) return 0;
+  return undefined;
 }
 
 function gateToneFromStatus(status: string): GateProgressStep["tone"] {
