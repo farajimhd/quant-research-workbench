@@ -134,11 +134,22 @@ type RealLiveUniversePreviewPayload = {
   columns: Record<string, unknown>[];
   errors: Record<string, unknown>[];
   filters: Record<string, unknown>;
+  joined_snapshot_row_count?: number;
+  massive_snapshot_row_count?: number;
+  persistence?: Record<string, unknown>;
   preview_columns: string[];
+  pulled_at_utc?: string;
   read_database: string;
   read_url: string;
+  reference_columns?: string[];
+  reference_row_count?: number;
+  reference_rows?: Record<string, unknown>[];
   row_count: number;
   rows: Record<string, unknown>[];
+  run_id?: string;
+  session_date?: string;
+  snapshot_columns?: string[];
+  snapshot_rows?: Record<string, unknown>[];
   tables: Record<string, unknown>[];
   universe_query: string;
   write_database: string;
@@ -615,11 +626,22 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
         columns: [],
         errors: [{ message: requestError instanceof Error ? requestError.message : "Universe preview request failed.", scope: "request" }],
         filters: {},
+        joined_snapshot_row_count: 0,
+        massive_snapshot_row_count: 0,
+        persistence: { status: "failed" },
         preview_columns: [],
+        pulled_at_utc: "",
         read_database: "",
         read_url: "",
+        reference_columns: [],
+        reference_row_count: 0,
+        reference_rows: [],
         row_count: 0,
         rows: [],
+        run_id: "",
+        session_date: "",
+        snapshot_columns: [],
+        snapshot_rows: [],
         tables: [],
         universe_query: "",
         write_database: "",
@@ -1459,14 +1481,17 @@ function LiveUniversePreviewPanel({ loading, onRefresh, preview }: { loading: bo
   const errors = preview?.errors ?? [];
   const tableRows = preview?.tables ?? [];
   const columnRows = preview?.columns ?? [];
-  const previewRows = preview?.rows ?? [];
-  const previewColumns = preview?.preview_columns?.length ? preview.preview_columns : Object.keys(previewRows[0] ?? {}).length ? Object.keys(previewRows[0] ?? {}) : ["ticker", "conid", "primary_exchange", "last_price", "avg_daily_volume", "float", "short_interest", "short_volume"];
+  const referenceRows = preview?.reference_rows?.length ? preview.reference_rows : preview?.rows ?? [];
+  const snapshotRows = preview?.snapshot_rows ?? [];
+  const referenceColumns = preview?.reference_columns?.length ? preview.reference_columns : preview?.preview_columns?.length ? preview.preview_columns : Object.keys(referenceRows[0] ?? {}).length ? Object.keys(referenceRows[0] ?? {}) : ["candidate_massive_ticker", "ibkr_conid", "exchange_code", "currency_code", "issuer_name", "logo_relative_path"];
+  const snapshotColumns = preview?.snapshot_columns?.length ? preview.snapshot_columns : Object.keys(snapshotRows[0] ?? {}).length ? Object.keys(snapshotRows[0] ?? {}) : ["candidate_massive_ticker", "ibkr_conid", "snapshot_last_price", "snapshot_day_volume", "snapshot_bid", "snapshot_ask", "snapshot_spread_bps"];
+  const persistence = preview?.persistence ?? {};
   return (
     <section className="live-universe-preview panel" aria-label="Initial database universe preview">
       <div className="live-universe-preview-header">
         <div>
           <span>Initial Database Pull</span>
-          <strong>{preview?.can_query_universe ? `${integer(preview.row_count)} symbols loaded` : "Waiting for ClickHouse universe"}</strong>
+          <strong>{preview?.can_query_universe ? `${integer(preview.reference_row_count ?? preview.row_count)} reference rows loaded` : "Waiting for ClickHouse universe"}</strong>
         </div>
         <button className="button secondary" disabled={loading} onClick={onRefresh} type="button">
           {loading ? <span className="loading-spinner" aria-hidden="true" /> : <RefreshCw size={15} />} Refresh
@@ -1476,8 +1501,11 @@ function LiveUniversePreviewPanel({ loading, onRefresh, preview }: { loading: bo
         <LiveUniverseMetric label="Read URL" value={preview?.read_url || "not loaded"} />
         <LiveUniverseMetric label="Read DB" value={preview?.read_database || "not loaded"} />
         <LiveUniverseMetric label="Write DB" value={preview?.write_database || "not loaded"} />
-        <LiveUniverseMetric label="Tables" value={integer(tableRows.length)} />
-        <LiveUniverseMetric label="Columns" value={integer(columnRows.length)} />
+        <LiveUniverseMetric label="Reference Rows" value={integer(preview?.reference_row_count ?? preview?.row_count ?? 0)} />
+        <LiveUniverseMetric label="Massive Rows" value={integer(preview?.massive_snapshot_row_count ?? 0)} />
+        <LiveUniverseMetric label="Joined Rows" value={integer(preview?.joined_snapshot_row_count ?? 0)} />
+        <LiveUniverseMetric label="Replay Run" value={stringValue(persistence, "run_id") || preview?.run_id || "not written"} tone={stringValue(persistence, "status") === "written" ? "success" : "info"} />
+        <LiveUniverseMetric label="Pulled At" value={preview?.pulled_at_utc ? preview.pulled_at_utc.slice(0, 19) : "not loaded"} />
         <LiveUniverseMetric label="Errors" value={integer(errors.length)} tone={errors.length ? "danger" : "success"} />
       </div>
       {errors.length ? (
@@ -1497,10 +1525,17 @@ function LiveUniversePreviewPanel({ loading, onRefresh, preview }: { loading: bo
       <div className="live-universe-preview-grid">
         <div className="live-universe-preview-table">
           <div className="live-universe-subtitle">
-            <strong>Universe Rows</strong>
-            <span>{integer(previewRows.length)} shown</span>
+            <strong>Reference Pull</strong>
+            <span>{integer(referenceRows.length)} shown</span>
           </div>
-          <DataTable columns={previewColumns} empty={loading ? "Loading universe rows..." : "No universe rows loaded."} fitToContent rows={previewRows} />
+          <DataTable columns={referenceColumns} empty={loading ? "Loading reference rows..." : "No reference rows loaded."} fitToContent rows={referenceRows} title="Live Startup Reference Pull" />
+        </div>
+        <div className="live-universe-preview-table">
+          <div className="live-universe-subtitle">
+            <strong>Massive Snapshot Join</strong>
+            <span>{integer(snapshotRows.length)} shown</span>
+          </div>
+          <DataTable columns={snapshotColumns} empty={loading ? "Loading Massive snapshot rows..." : "No joined snapshot rows loaded."} fitToContent rows={snapshotRows} title="Live Startup Massive Snapshot Join" />
         </div>
         <div className="live-universe-preview-side">
           <div className="live-universe-preview-table compact">

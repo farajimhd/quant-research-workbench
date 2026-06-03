@@ -134,6 +134,92 @@ def ensure_replay_tables(client: ClickHouseHttpClient) -> None:
         ORDER BY (session_date, timeframe, sym, bar_start)
         """
     )
+    client.execute(
+        """
+        CREATE TABLE IF NOT EXISTS live_startup_universe_runs
+        (
+            run_id String,
+            session_date Date,
+            pulled_at_utc DateTime64(3, 'UTC'),
+            reference_row_count UInt32,
+            massive_snapshot_row_count UInt32,
+            joined_snapshot_row_count UInt32,
+            read_database LowCardinality(String),
+            write_database LowCardinality(String),
+            errors String
+        )
+        ENGINE = ReplacingMergeTree
+        PARTITION BY session_date
+        ORDER BY (session_date, run_id)
+        """
+    )
+    client.execute(
+        """
+        CREATE TABLE IF NOT EXISTS live_startup_reference_universe
+        (
+            run_id String,
+            session_date Date,
+            pulled_at_utc DateTime64(3, 'UTC'),
+            row_index UInt32,
+            candidate_massive_ticker LowCardinality(String),
+            symbol_id String,
+            listing_id String,
+            ibkr_conid UInt64,
+            exchange_code LowCardinality(String),
+            currency_code LowCardinality(String),
+            security_product_type LowCardinality(String),
+            security_type LowCardinality(String),
+            issuer_id String,
+            issuer_name String,
+            logo_asset_id Nullable(String),
+            logo_relative_path Nullable(String),
+            raw String
+        )
+        ENGINE = ReplacingMergeTree
+        PARTITION BY session_date
+        ORDER BY (session_date, candidate_massive_ticker, ibkr_conid, run_id)
+        """
+    )
+    client.execute(
+        """
+        CREATE TABLE IF NOT EXISTS live_startup_snapshot_universe
+        (
+            run_id String,
+            session_date Date,
+            pulled_at_utc DateTime64(3, 'UTC'),
+            row_index UInt32,
+            candidate_massive_ticker LowCardinality(String),
+            symbol_id String,
+            listing_id String,
+            ibkr_conid UInt64,
+            exchange_code LowCardinality(String),
+            currency_code LowCardinality(String),
+            security_product_type LowCardinality(String),
+            security_type LowCardinality(String),
+            issuer_id String,
+            issuer_name String,
+            logo_asset_id Nullable(String),
+            logo_relative_path Nullable(String),
+            snapshot_last_price Nullable(Float64),
+            snapshot_day_open Nullable(Float64),
+            snapshot_day_high Nullable(Float64),
+            snapshot_day_low Nullable(Float64),
+            snapshot_day_close Nullable(Float64),
+            snapshot_day_volume Nullable(Float64),
+            snapshot_trade_count Nullable(Float64),
+            snapshot_bid Nullable(Float64),
+            snapshot_ask Nullable(Float64),
+            snapshot_spread_bps Nullable(Float64),
+            snapshot_todays_change Nullable(Float64),
+            snapshot_todays_change_pct Nullable(Float64),
+            raw_reference String,
+            raw_snapshot String
+        )
+        ENGINE = ReplacingMergeTree
+        PARTITION BY session_date
+        ORDER BY (session_date, candidate_massive_ticker, ibkr_conid, run_id)
+        """
+    )
 
 
 def quote_identifier(value: str) -> str:

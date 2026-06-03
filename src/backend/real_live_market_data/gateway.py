@@ -14,6 +14,7 @@ from src.backend.real_live_market_data.features import apply_quote, apply_trade,
 from src.backend.real_live_market_data.massive_ws import MassiveStocksWebSocket
 from src.backend.real_live_market_data.models import QuoteEvent, SymbolState, TradeEvent, UniverseRecord, utc_now
 from src.backend.real_live_market_data.persistence import ClickHouseReplayWriter
+from src.backend.real_live_market_data.startup import build_startup_universe_preview
 from src.backend.real_live_market_data.universe import default_universe_sql, load_universe_frame, universe_records
 
 
@@ -173,12 +174,10 @@ class MarketGateway:
 
     def universe_preview(self, row_limit: int = 50) -> dict[str, Any]:
         client = ClickHouseHttpClient(self.config.read_clickhouse)
+        write_client = ClickHouseHttpClient(self.config.write_clickhouse)
         errors: list[dict[str, Any]] = []
         tables: list[dict[str, Any]] = []
         columns: list[dict[str, Any]] = []
-        rows: list[dict[str, Any]] = []
-        preview_columns: list[str] = []
-        row_count = 0
         universe_query = (self.config.universe_sql or default_universe_sql(self.config)).strip()
         try:
             client.query_text("SELECT 1", timeout=3)
@@ -192,11 +191,19 @@ class MarketGateway:
                     "min_avg_daily_volume": self.config.min_avg_daily_volume,
                     "min_price": self.config.min_price,
                 },
-                "preview_columns": preview_columns,
+                "joined_snapshot_row_count": 0,
+                "massive_snapshot_row_count": 0,
+                "persistence": {"enabled": self.config.enable_clickhouse_writes, "status": "not_started"},
+                "preview_columns": [],
                 "read_database": self.config.read_clickhouse.database,
                 "read_url": self.config.read_clickhouse.endpoint_url,
-                "row_count": row_count,
-                "rows": rows,
+                "reference_columns": [],
+                "reference_row_count": 0,
+                "reference_rows": [],
+                "row_count": 0,
+                "rows": [],
+                "snapshot_columns": [],
+                "snapshot_rows": [],
                 "tables": tables,
                 "universe_query": universe_query,
                 "write_database": self.config.write_clickhouse.database,
@@ -236,15 +243,33 @@ class MarketGateway:
         except Exception as exc:
             errors.append({"scope": "columns", "message": str(exc)})
         try:
-            frame = load_universe_frame(client, self.config, timeout=8)
-            row_count = frame.height
-            preview = frame.head(max(1, min(row_limit, 200)))
-            preview_columns = preview.columns
-            rows = preview.to_dicts()
+            startup_preview = build_startup_universe_preview(
+                client,
+                write_client,
+                self.config,
+                row_limit=max(1, min(row_limit, 200)),
+            )
         except Exception as exc:
+            startup_preview = {
+                "can_query_universe": False,
+                "errors": [],
+                "joined_snapshot_row_count": 0,
+                "massive_snapshot_row_count": 0,
+                "persistence": {"enabled": self.config.enable_clickhouse_writes, "status": "failed"},
+                "preview_columns": [],
+                "reference_columns": [],
+                "reference_row_count": 0,
+                "reference_rows": [],
+                "row_count": 0,
+                "rows": [],
+                "snapshot_columns": [],
+                "snapshot_rows": [],
+                "universe_query": universe_query,
+            }
             errors.append({"scope": "universe_query", "message": str(exc)})
+        errors.extend(startup_preview.get("errors", []))
         return {
-            "can_query_universe": not any(error["scope"] == "universe_query" for error in errors),
+            "can_query_universe": bool(startup_preview.get("can_query_universe")) and not any(error["scope"] == "universe_query" for error in errors),
             "columns": columns,
             "errors": errors,
             "filters": {
@@ -252,13 +277,24 @@ class MarketGateway:
                 "min_avg_daily_volume": self.config.min_avg_daily_volume,
                 "min_price": self.config.min_price,
             },
-            "preview_columns": preview_columns,
+            "joined_snapshot_row_count": startup_preview.get("joined_snapshot_row_count", 0),
+            "massive_snapshot_row_count": startup_preview.get("massive_snapshot_row_count", 0),
+            "persistence": startup_preview.get("persistence", {}),
+            "preview_columns": startup_preview.get("preview_columns", []),
+            "pulled_at_utc": startup_preview.get("pulled_at_utc", ""),
             "read_database": self.config.read_clickhouse.database,
             "read_url": self.config.read_clickhouse.endpoint_url,
-            "row_count": row_count,
-            "rows": rows,
+            "reference_columns": startup_preview.get("reference_columns", []),
+            "reference_row_count": startup_preview.get("reference_row_count", 0),
+            "reference_rows": startup_preview.get("reference_rows", []),
+            "row_count": startup_preview.get("row_count", 0),
+            "rows": startup_preview.get("rows", []),
+            "run_id": startup_preview.get("run_id", ""),
+            "session_date": startup_preview.get("session_date", ""),
+            "snapshot_columns": startup_preview.get("snapshot_columns", []),
+            "snapshot_rows": startup_preview.get("snapshot_rows", []),
             "tables": tables,
-            "universe_query": universe_query,
+            "universe_query": startup_preview.get("universe_query", universe_query),
             "write_database": self.config.write_clickhouse.database,
             "write_url": self.config.write_clickhouse.endpoint_url,
         }
