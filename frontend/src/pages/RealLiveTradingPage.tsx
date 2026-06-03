@@ -1676,7 +1676,7 @@ function LiveGateProgressList({ steps }: { steps: GateProgressStep[] }) {
           <div className="live-gate-progress-body">
             <div>
               <strong>{step.label}</strong>
-              <span>{step.status}</span>
+              <span>{formatGateStepStatus(step.status)}</span>
             </div>
             <p>{step.detail}</p>
             {step.duration ? <small>{step.duration}</small> : null}
@@ -1685,6 +1685,23 @@ function LiveGateProgressList({ steps }: { steps: GateProgressStep[] }) {
       ))}
     </div>
   );
+}
+
+function formatGateStepStatus(status: string) {
+  const labels: Record<string, string> = {
+    blocked: "Blocked",
+    complete: "Done",
+    deferred: "Later",
+    error: "Error",
+    failed: "Failed",
+    pending: "Pending",
+    read_only_preview: "Read-only",
+    ready: "Ready",
+    running: "Running",
+    success: "Done",
+    waiting: "Waiting",
+  };
+  return labels[status] ?? status.replace(/_/g, " ");
 }
 
 function LiveUniverseMetric({ label, tone = "info", value }: { label: string; tone?: "danger" | "info" | "success"; value: string }) {
