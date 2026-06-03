@@ -75,6 +75,7 @@ from src.backend.real_live_market_data import (
     market_gateway_stop,
     market_gateway_universe_preview,
 )
+from src.backend.real_live_market_data.config import market_gateway_config
 from src.data_provider.calendar import market_sessions, scan_market_source
 from src.data_provider.catalog import provider_catalog, save_presentation_override
 from src.data_provider.config import (
@@ -1834,8 +1835,22 @@ def real_live_market_gateway_status() -> dict[str, Any]:
 
 
 @app.get("/api/real-live-trading/market-gateway/universe-preview")
-def real_live_market_gateway_universe_preview(row_limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
-    return market_gateway_universe_preview(row_limit=row_limit)
+def real_live_market_gateway_universe_preview(row_limit: int = Query(default=50, ge=1, le=200), refresh_enrichment: bool = False) -> dict[str, Any]:
+    return market_gateway_universe_preview(row_limit=row_limit, refresh_enrichment=refresh_enrichment)
+
+
+@app.get("/api/real-live-trading/logo")
+def real_live_trading_logo(path: str = Query(default="")) -> FileResponse:
+    root = Path(market_gateway_config().logo_artifact_root)
+    relative = path.replace("\\", "/").lstrip("/")
+    target = (root / relative).resolve()
+    try:
+        target.relative_to(root.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Logo path is outside the configured artifact root.") from exc
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Logo asset not found.")
+    return FileResponse(target)
 
 
 @app.get("/api/real-live-trading/market-gateway/bars")

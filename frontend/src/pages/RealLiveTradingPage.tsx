@@ -148,9 +148,11 @@ type RealLiveUniversePreviewPayload = {
   row_count: number;
   rows: Record<string, unknown>[];
   run_id?: string;
+  scanner_row_count?: number;
   session_date?: string;
   snapshot_columns?: string[];
   snapshot_rows?: Record<string, unknown>[];
+  startup_enrichment?: Record<string, unknown>;
   tables: Record<string, unknown>[];
   universe_query: string;
   write_database: string;
@@ -618,6 +620,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   const [canvasTargetsVersion, setCanvasTargetsVersion] = useState(0);
   const canvasRemovedRef = useRef(false);
   const positionsRef = useRef(positions);
+  const autoPreflightRequestedRef = useRef(false);
   const seekCancelRef = useRef(0);
   const paceRunRef = useRef(0);
   const liveClockModeRef = useRef<LiveClockMode>("idle");
@@ -655,10 +658,10 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     };
   }, []);
 
-  const loadUniversePreview = useCallback(async () => {
+  const loadUniversePreview = useCallback(async (options?: { refreshEnrichment?: boolean }) => {
     setUniversePreviewLoading(true);
     try {
-      const payload = await api<RealLiveUniversePreviewPayload>("/api/real-live-trading/market-gateway/universe-preview?row_limit=50");
+      const payload = await api<RealLiveUniversePreviewPayload>(`/api/real-live-trading/market-gateway/universe-preview${query({ refresh_enrichment: options?.refreshEnrichment ? "1" : "0", row_limit: 50 })}`);
       setUniversePreview(payload);
     } catch (requestError) {
       setUniversePreview({
@@ -680,9 +683,11 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
         row_count: 0,
         rows: [],
         run_id: "",
+        scanner_row_count: 0,
         session_date: "",
         snapshot_columns: [],
         snapshot_rows: [],
+        startup_enrichment: { status: "failed", message: requestError instanceof Error ? requestError.message : "Universe preview request failed." },
         tables: [],
         universe_query: "",
         write_database: "",
@@ -703,6 +708,12 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
     if (started || isChildCanvas) return;
     void loadUniversePreview();
   }, [isChildCanvas, loadUniversePreview, started]);
+
+  useEffect(() => {
+    if (started || isChildCanvas || autoPreflightRequestedRef.current || !availableAccounts.length) return;
+    autoPreflightRequestedRef.current = true;
+    void checkConnections(ensureSelectedAccountKeys(availableAccounts, selectedAccountKeys));
+  }, [availableAccounts, isChildCanvas, selectedAccountKeys, started]);
 
   useEffect(() => {
     if (!scope) return;
@@ -1304,6 +1315,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
         universePreviewLoading={universePreviewLoading}
         onCheck={() => void checkConnections()}
         onEnter={() => void enterLiveWorkspace()}
+        onRefreshEnrichment={() => void loadUniversePreview({ refreshEnrichment: true })}
         onRefreshUniverse={() => void loadUniversePreview()}
         onToggleAccount={(accountKey) => toggleSelectedAccount(accountKey, availableAccounts, setSelectedAccountKeys)}
       />
@@ -1469,6 +1481,7 @@ function RealLiveTradingGate({
   message,
   onCheck,
   onEnter,
+  onRefreshEnrichment,
   onRefreshUniverse,
   onToggleAccount,
   preflightStatus,
@@ -1481,6 +1494,7 @@ function RealLiveTradingGate({
   message: string;
   onCheck: () => void;
   onEnter: () => void;
+  onRefreshEnrichment: () => void;
   onRefreshUniverse: () => void;
   onToggleAccount: (accountKey: string) => void;
   preflightStatus: RealLivePreflightPayload | null;
@@ -1548,8 +1562,7 @@ function RealLiveTradingGate({
           </div>
         </div>
         <div className="live-gate-setup-grid">
-          <div className="live-gate-control-stack">
-            <section className="live-gate-section" aria-label="Account selection">
+          <section className="live-gate-section live-gate-account-section" aria-label="Account selection">
             <div className="live-gate-section-heading">
               <span>Accounts</span>
               <strong>{selectedLabel}</strong>
@@ -1570,14 +1583,14 @@ function RealLiveTradingGate({
                 );
               })}
             </div>
-            </section>
-            <section className="live-gate-section" aria-label="Connection checks">
+          </section>
+          <aside className="live-gate-progress live-gate-workflow" aria-label="Initial page progress report">
             <div className="live-gate-section-heading">
-              <span>Connections</span>
-              <strong>{preflightStatus?.account_id || "Massive and IBKR"}</strong>
-              <small>{message || "Run connection checks before entering the workspace."}</small>
+              <span>Connections and Startup</span>
+              <strong>Running checks</strong>
+              <small>{message || "Massive and IBKR checks run automatically when this page loads."}</small>
             </div>
-            <div className="live-check-card-grid" aria-label="Live connection checks">
+            <div className="live-check-card-grid final" aria-label="Live connection checks">
               {(preflightStatus?.checks ?? []).map((check) => (
                 <LiveCheckCard key={check.id} check={check} />
               ))}
@@ -1588,23 +1601,16 @@ function RealLiveTradingGate({
                 </>
               ) : null}
             </div>
-            </section>
-          </div>
-          <aside className="live-gate-progress" aria-label="Initial page progress report">
-            <div className="live-gate-section-heading">
-              <span>Progress Report</span>
-              <strong>{activeSteps ? "Running checks" : blockedSteps ? "Needs attention" : "Validation path"}</strong>
-            </div>
             <LiveGateProgressList steps={progressSteps} />
           </aside>
         </div>
       </div>
-      <LiveUniversePreviewPanel loading={universePreviewLoading} onRefresh={onRefreshUniverse} preview={universePreview} />
+      <LiveUniversePreviewPanel loading={universePreviewLoading} onRefresh={onRefreshUniverse} onRefreshEnrichment={onRefreshEnrichment} preview={universePreview} />
     </section>
   );
 }
 
-function LiveUniversePreviewPanel({ loading, onRefresh, preview }: { loading: boolean; onRefresh: () => void; preview: RealLiveUniversePreviewPayload | null }) {
+function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, preview }: { loading: boolean; onRefresh: () => void; onRefreshEnrichment: () => void; preview: RealLiveUniversePreviewPayload | null }) {
   const errors = preview?.errors ?? [];
   const tableRows = preview?.tables ?? [];
   const columnRows = preview?.columns ?? [];
@@ -1613,6 +1619,7 @@ function LiveUniversePreviewPanel({ loading, onRefresh, preview }: { loading: bo
   const referenceColumns = preview?.reference_columns?.length ? preview.reference_columns : preview?.preview_columns?.length ? preview.preview_columns : Object.keys(referenceRows[0] ?? {}).length ? Object.keys(referenceRows[0] ?? {}) : ["candidate_massive_ticker", "ibkr_conid", "exchange_code", "currency_code", "issuer_name", "logo_relative_path"];
   const snapshotColumns = preview?.snapshot_columns?.length ? preview.snapshot_columns : Object.keys(snapshotRows[0] ?? {}).length ? Object.keys(snapshotRows[0] ?? {}) : ["candidate_massive_ticker", "ibkr_conid", "snapshot_last_price", "snapshot_day_volume", "snapshot_bid", "snapshot_ask", "snapshot_spread_bps"];
   const persistence = preview?.persistence ?? {};
+  const enrichment = preview?.startup_enrichment ?? {};
   return (
     <section className="live-universe-preview panel" aria-label="Initial database universe preview">
       <div className="live-universe-preview-header">
@@ -1623,6 +1630,9 @@ function LiveUniversePreviewPanel({ loading, onRefresh, preview }: { loading: bo
         <button className="button secondary" disabled={loading} onClick={onRefresh} type="button">
           {loading ? <span className="loading-spinner" aria-hidden="true" /> : <RefreshCw size={15} />} Refresh
         </button>
+        <button className="button secondary" disabled={loading} onClick={onRefreshEnrichment} type="button">
+          {loading ? <span className="loading-spinner" aria-hidden="true" /> : <RefreshCw size={15} />} Refresh Float/Short
+        </button>
       </div>
       <div className="live-universe-summary-grid">
         <LiveUniverseMetric label="Read URL" value={preview?.read_url || "not loaded"} />
@@ -1631,6 +1641,8 @@ function LiveUniversePreviewPanel({ loading, onRefresh, preview }: { loading: bo
         <LiveUniverseMetric label="Reference Rows" value={integer(preview?.reference_row_count ?? preview?.row_count ?? 0)} />
         <LiveUniverseMetric label="Massive Rows" value={integer(preview?.massive_snapshot_row_count ?? 0)} />
         <LiveUniverseMetric label="Joined Rows" value={integer(preview?.joined_snapshot_row_count ?? 0)} />
+        <LiveUniverseMetric label="Scanner Rows" value={integer(preview?.scanner_row_count ?? 0)} />
+        <LiveUniverseMetric label="Float/Short" value={stringValue(enrichment, "status") || "not_started"} tone={stringValue(enrichment, "status") === "ready" ? "success" : stringValue(enrichment, "status") === "failed" ? "danger" : "info"} />
         <LiveUniverseMetric label="Preview Mode" value={stringValue(persistence, "status") || "read_only_preview"} tone="info" />
         <LiveUniverseMetric label="Pulled At" value={preview?.pulled_at_utc ? preview.pulled_at_utc.slice(0, 19) : "not loaded"} />
         <LiveUniverseMetric label="Errors" value={integer(errors.length)} tone={errors.length ? "danger" : "success"} />
@@ -1645,10 +1657,6 @@ function LiveUniversePreviewPanel({ loading, onRefresh, preview }: { loading: bo
           ))}
         </div>
       ) : null}
-      <div className="live-universe-query">
-        <span>Universe Query</span>
-        <pre>{preview?.universe_query || "The query will appear after the gateway reads the configured ClickHouse source."}</pre>
-      </div>
       <div className="live-universe-preview-grid">
         <div className="live-universe-preview-table">
           <div className="live-universe-subtitle">

@@ -2672,6 +2672,7 @@ function formatDateValue(value: Date) {
 }
 
 function renderCell(row: DataRow, column: string) {
+  if (isLogoColumn(column)) return renderLogoCell(row, column);
   if (column.toLowerCase() !== "ticker") return formatCell(column, row[column]);
   const value = formatCell(column, row[column]);
   const newsCount = coerceNumber(row.live_news_count);
@@ -2686,6 +2687,22 @@ function renderCell(row: DataRow, column: string) {
     <span className="data-table-ticker-with-news" title={title}>
       <NewsIcon className={`data-table-news-icon ${indicator.className}`} size={14} aria-label={`${recency} news`} />
       <span>{value}</span>
+    </span>
+  );
+}
+
+function isLogoColumn(column: string) {
+  return column.toLowerCase() === "logo";
+}
+
+function renderLogoCell(row: DataRow, column: string) {
+  const logoUrl = stringValue(row.logo_url);
+  const title = stringValue(row.candidate_massive_ticker) || stringValue(row.ticker) || formatCell(column, row[column]);
+  const fallback = (title || "?").slice(0, 1).toUpperCase();
+  return (
+    <span className="data-table-logo-cell" title={title || "No logo"}>
+      <span className="data-table-logo-fallback">{fallback}</span>
+      {logoUrl ? <img alt="" loading="lazy" src={logoUrl} /> : null}
     </span>
   );
 }

@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import polars as pl
@@ -21,9 +22,18 @@ def build_startup_universe_preview(
     read_client: ClickHouseHttpClient,
     config: MarketGatewayConfig,
     *,
+    enrichment_frame: pl.DataFrame | None = None,
+    enrichment_status: dict[str, Any] | None = None,
     row_limit: int = 50,
 ) -> dict[str, Any]:
-    payload, _frames = build_universe_snapshot_payload(read_client, config, row_limit=row_limit, enrich_scanner=False)
+    payload, _frames = build_universe_snapshot_payload(
+        read_client,
+        config,
+        enrichment_frame=enrichment_frame,
+        enrichment_status=enrichment_status,
+        enrich_scanner=enrichment_frame is not None,
+        row_limit=row_limit,
+    )
     payload["persistence"] = {"enabled": False, "status": "read_only_preview"}
     return payload
 
@@ -73,6 +83,8 @@ def build_universe_snapshot_payload(
     read_client: ClickHouseHttpClient,
     config: MarketGatewayConfig,
     *,
+    enrichment_frame: pl.DataFrame | None = None,
+    enrichment_status: dict[str, Any] | None = None,
     row_limit: int,
     enrich_scanner: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -93,6 +105,7 @@ def build_universe_snapshot_payload(
             reference_frame = reference_frame.with_columns(
                 pl.col("candidate_massive_ticker").cast(pl.Utf8).str.to_uppercase().alias("candidate_massive_ticker")
             )
+            reference_frame = add_logo_columns(reference_frame)
         progress_steps.append(progress_step("reference_query", "ClickHouse reference universe", "success", started, f"{reference_frame.height:,} rows"))
     except Exception as exc:
         errors.append({"scope": "reference_query", "message": str(exc)})
@@ -117,10 +130,17 @@ def build_universe_snapshot_payload(
     if enrich_scanner and not joined_frame.is_empty():
         try:
             started = perf_counter()
-            tickers = [str(row["candidate_massive_ticker"]) for row in joined_frame.select("candidate_massive_ticker").to_dicts()]
-            enrichment_frame = fetch_massive_scanner_enrichment_frame(config, tickers, timeout=45)
+            used_cached_enrichment = enrichment_frame is not None
+            if enrichment_frame is None:
+                tickers = [str(row["candidate_massive_ticker"]) for row in joined_frame.select("candidate_massive_ticker").to_dicts()]
+                enrichment_frame = fetch_massive_scanner_enrichment_frame(config, tickers, timeout=45)
+                detail = f"{enrichment_frame.height:,} remote enrichment rows"
+            else:
+                detail = string_value(enrichment_status, "message") or f"{enrichment_frame.height:,} cached enrichment rows"
             scanner_frame = join_scanner_enrichment(joined_frame, enrichment_frame)
-            progress_steps.append(progress_step("scanner_enrichment", "Massive float and short data", "success", started, f"{scanner_frame.height:,} scanner rows"))
+            if not used_cached_enrichment:
+                detail = f"{scanner_frame.height:,} scanner rows"
+            progress_steps.append(progress_step("scanner_enrichment", "Massive float and short data", "success", started, detail))
         except Exception as exc:
             errors.append({"scope": "massive_scanner_enrichment", "message": str(exc)})
             scanner_frame = add_scanner_labels(joined_frame)
@@ -140,23 +160,25 @@ def build_universe_snapshot_payload(
         "massive_snapshot_row_count": massive_snapshot_frame.height,
         "persistence": {"enabled": False, "status": "not_requested"},
         "pulled_at_utc": pulled_at.isoformat(),
-        "reference_columns": reference_frame.columns,
+        "reference_columns": visible_reference_columns(reference_frame),
         "reference_row_count": reference_frame.height,
         "reference_rows": reference_rows,
         "run_id": "",
         "session_date": session_date,
         "snapshot_columns": visible_snapshot_columns(scanner_frame),
         "snapshot_rows": snapshot_rows,
-        "preview_columns": reference_frame.columns,
+        "preview_columns": visible_reference_columns(reference_frame),
         "progress_steps": progress_steps,
         "row_count": reference_frame.height,
         "rows": reference_rows,
         "scanner_row_count": scanner_frame.height,
+        "startup_enrichment": enrichment_status or {"status": "not_requested"},
         "universe_query": universe_query,
     }
     return payload, {
         "joined_frame": joined_frame,
         "massive_snapshot_frame": massive_snapshot_frame,
+        "enrichment_frame": enrichment_frame if enrichment_frame is not None else pl.DataFrame(),
         "pulled_at": pulled_at,
         "reference_frame": reference_frame,
         "scanner_frame": scanner_frame,
@@ -175,6 +197,25 @@ def join_reference_with_snapshot(reference_frame: pl.DataFrame, snapshot_frame: 
         .drop("_snapshot_join_ticker")
         .sort("candidate_massive_ticker")
     )
+
+
+def add_logo_columns(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    rows: list[dict[str, Any]] = []
+    for row in frame.to_dicts():
+        relative_path = text_value(row.get("logo_relative_path"))
+        row["logo"] = relative_path
+        row["logo_url"] = logo_asset_url(relative_path)
+        rows.append(row)
+    return pl.DataFrame(rows, infer_schema_length=None)
+
+
+def logo_asset_url(relative_path: str) -> str:
+    path = relative_path.strip().replace("\\", "/")
+    if not path:
+        return ""
+    return f"/api/real-live-trading/logo?path={quote(path, safe='')}"
 
 
 def progress_step(step_id: str, label: str, status: str, started: float | None, detail: str) -> dict[str, Any]:
@@ -346,6 +387,7 @@ def visible_snapshot_columns(frame: pl.DataFrame) -> list[str]:
         return []
     hidden = {"snapshot_raw", "massive_float_raw", "massive_short_interest_raw", "massive_short_volume_raw"}
     preferred = [
+        "logo",
         "candidate_massive_ticker",
         "ibkr_conid",
         "exchange_code",
@@ -382,6 +424,27 @@ def visible_snapshot_columns(frame: pl.DataFrame) -> list[str]:
     return columns
 
 
+def visible_reference_columns(frame: pl.DataFrame) -> list[str]:
+    if frame.is_empty():
+        return []
+    hidden = {"logo_relative_path", "logo_url"}
+    preferred = [
+        "logo",
+        "candidate_massive_ticker",
+        "ibkr_conid",
+        "exchange_code",
+        "currency_code",
+        "issuer_name",
+        "ticker_type_provider_code",
+        "security_product_type",
+        "security_type",
+        "listing_id",
+    ]
+    columns = [column for column in preferred if column in frame.columns]
+    columns.extend(column for column in frame.columns if column not in hidden and column not in columns)
+    return columns
+
+
 def float_profile_label(float_shares: float) -> str:
     if float_shares <= 0:
         return "unknown"
@@ -410,6 +473,12 @@ def short_setup_label(float_shares: float, short_interest: float, short_volume_r
 def optional_text(value: Any) -> str | None:
     text = text_value(value)
     return text or None
+
+
+def string_value(row: dict[str, Any] | None, key: str) -> str:
+    if not row:
+        return ""
+    return text_value(row.get(key))
 
 
 def text_value(value: Any) -> str:

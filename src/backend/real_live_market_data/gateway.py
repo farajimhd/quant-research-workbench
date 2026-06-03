@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
@@ -15,7 +16,7 @@ from src.backend.real_live_market_data.features import apply_quote, apply_trade,
 from src.backend.real_live_market_data.massive_ws import MassiveStocksWebSocket
 from src.backend.real_live_market_data.models import QuoteEvent, SymbolState, TradeEvent, UniverseRecord, utc_now
 from src.backend.real_live_market_data.persistence import ClickHouseReplayWriter
-from src.backend.real_live_market_data.startup import build_startup_universe_preview, build_trading_session_baseline
+from src.backend.real_live_market_data.startup import build_trading_session_baseline, build_universe_snapshot_payload
 from src.backend.real_live_market_data.universe import default_universe_sql, load_universe_frame, normalize_universe_frame, universe_records
 
 
@@ -31,6 +32,9 @@ class MarketGateway:
     session_started_at: datetime | None = None
     signal_rows: list[dict[str, Any]] = field(default_factory=list)
     states: dict[str, SymbolState] = field(default_factory=dict)
+    startup_enrichment_date: str = ""
+    startup_enrichment_frame: pl.DataFrame = field(default_factory=pl.DataFrame)
+    startup_enrichment_status: dict[str, Any] = field(default_factory=lambda: {"status": "not_started"})
     baseline_task: asyncio.Task | None = None
     task: asyncio.Task | None = None
     trading_session_id: str = ""
@@ -242,12 +246,20 @@ class MarketGateway:
             "status": self.status(),
         }
 
-    def universe_preview(self, row_limit: int = 50) -> dict[str, Any]:
+    def universe_preview(self, row_limit: int = 50, *, refresh_enrichment: bool = False) -> dict[str, Any]:
         client = ClickHouseHttpClient(self.config.read_clickhouse)
         errors: list[dict[str, Any]] = []
         tables: list[dict[str, Any]] = []
         columns: list[dict[str, Any]] = []
         universe_query = (self.config.universe_sql or default_universe_sql(self.config)).strip()
+        now = datetime.now(timezone.utc)
+        session_date = now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+        enrichment_current = (
+            not self.startup_enrichment_frame.is_empty()
+            and self.startup_enrichment_date == session_date
+            and str(self.startup_enrichment_status.get("status") or "") == "ready"
+        )
+        should_refresh_enrichment = refresh_enrichment or not enrichment_current
         try:
             client.query_text("SELECT 1", timeout=3)
         except Exception as exc:
@@ -274,6 +286,7 @@ class MarketGateway:
                 "rows": [],
                 "snapshot_columns": [],
                 "snapshot_rows": [],
+                "startup_enrichment": {"status": "failed", "message": "ClickHouse connection failed before enrichment."},
                 "tables": tables,
                 "universe_query": universe_query,
                 "write_database": self.config.write_clickhouse.database,
@@ -313,11 +326,40 @@ class MarketGateway:
         except Exception as exc:
             errors.append({"scope": "columns", "message": str(exc)})
         try:
-            startup_preview = build_startup_universe_preview(
+            enrichment_frame = None if should_refresh_enrichment else self.startup_enrichment_frame
+            enrichment_status = None if should_refresh_enrichment else self.startup_enrichment_status
+            startup_preview, startup_frames = build_universe_snapshot_payload(
                 client,
                 self.config,
+                enrichment_frame=enrichment_frame,
+                enrichment_status=enrichment_status,
+                enrich_scanner=True,
                 row_limit=max(1, min(row_limit, 200)),
             )
+            startup_preview["persistence"] = {"enabled": False, "status": "read_only_preview"}
+            if should_refresh_enrichment:
+                fetched_frame = startup_frames.get("enrichment_frame")
+                if isinstance(fetched_frame, pl.DataFrame) and not fetched_frame.is_empty():
+                    self.startup_enrichment_frame = fetched_frame
+                    self.startup_enrichment_date = str(startup_preview.get("session_date") or session_date)
+                    self.startup_enrichment_status = {
+                        "message": f"{fetched_frame.height:,} float/short rows loaded from Massive.",
+                        "pulled_at_utc": startup_preview.get("pulled_at_utc", ""),
+                        "row_count": fetched_frame.height,
+                        "session_date": self.startup_enrichment_date,
+                        "source": "massive_rest",
+                        "status": "ready",
+                    }
+                else:
+                    self.startup_enrichment_status = {
+                        "message": "Massive float/short enrichment returned no rows.",
+                        "pulled_at_utc": startup_preview.get("pulled_at_utc", ""),
+                        "row_count": 0,
+                        "session_date": str(startup_preview.get("session_date") or session_date),
+                        "source": "massive_rest",
+                        "status": "failed",
+                    }
+            startup_preview["startup_enrichment"] = self.startup_enrichment_status
         except Exception as exc:
             startup_preview = {
                 "can_query_universe": False,
@@ -334,6 +376,7 @@ class MarketGateway:
                 "rows": [],
                 "snapshot_columns": [],
                 "snapshot_rows": [],
+                "startup_enrichment": self.startup_enrichment_status,
                 "universe_query": universe_query,
             }
             errors.append({"scope": "universe_query", "message": str(exc)})
@@ -364,6 +407,7 @@ class MarketGateway:
             "session_date": startup_preview.get("session_date", ""),
             "snapshot_columns": startup_preview.get("snapshot_columns", []),
             "snapshot_rows": startup_preview.get("snapshot_rows", []),
+            "startup_enrichment": startup_preview.get("startup_enrichment", self.startup_enrichment_status),
             "tables": tables,
             "universe_query": startup_preview.get("universe_query", universe_query),
             "write_database": self.config.write_clickhouse.database,

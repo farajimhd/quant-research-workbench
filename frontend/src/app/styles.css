@@ -9521,18 +9521,12 @@ button {
 .live-gate-setup-grid {
   align-items: stretch;
   display: grid;
-  grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.82fr);
+  grid-template-columns: minmax(280px, 0.6fr) minmax(520px, 1.4fr);
   min-height: 0;
 }
 
-.live-gate-control-stack {
-  border-right: 1px solid var(--border);
-  display: grid;
-  grid-template-rows: auto auto;
-  min-width: 0;
-}
-
 .live-gate-section {
+  border-right: 1px solid var(--border);
   display: grid;
   gap: 9px;
   min-width: 0;
@@ -9554,6 +9548,19 @@ button {
   color: var(--foreground);
   font-size: 13px;
   font-weight: 600;
+}
+
+.live-gate-console .live-gate-account-section .live-gate-section-heading strong {
+  font-size: 19px;
+  font-weight: 650;
+  line-height: 1.05;
+}
+
+.live-gate-console .live-gate-workflow .live-gate-section-heading strong {
+  font-size: 20px;
+  font-weight: 680;
+  letter-spacing: 0;
+  line-height: 1.05;
 }
 
 .live-gate-section .live-gate-section-heading small {
@@ -9579,7 +9586,7 @@ button {
 
 .live-gate-console .live-account-card-grid.compact {
   align-items: start;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .live-gate-console .live-account-card,
@@ -9594,19 +9601,19 @@ button {
 .live-gate-console .live-account-card-grid.compact .live-account-card {
   align-content: start;
   display: grid;
-  min-height: 48px;
+  min-height: 70px;
 }
 
 .live-gate-console .live-check-card {
-  align-items: center;
+  align-content: center;
   display: grid;
-  min-height: 42px;
-  padding-block: 7px;
+  min-height: 58px;
+  padding: 9px 10px;
 }
 
 .live-gate-console .live-check-card-grid {
   align-items: start;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
 .live-gate-console .live-check-card div {
@@ -9614,7 +9621,11 @@ button {
   gap: 8px;
 }
 
-.live-gate-console .live-account-card strong,
+.live-gate-console .live-account-card strong {
+  font-size: 16px;
+  font-weight: 660;
+}
+
 .live-gate-console .live-check-card strong {
   font-size: 11px;
   font-weight: 600;
@@ -9636,6 +9647,15 @@ button {
   line-height: 1.15;
 }
 
+.live-gate-console .live-check-card p {
+  display: -webkit-box;
+  line-height: 1.25;
+  max-height: 26px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .live-gate-console .live-account-card.selected {
   background: color-mix(in oklab, var(--info) 4%, var(--surface));
   border-color: color-mix(in oklab, var(--info) 48%, var(--border));
@@ -9645,27 +9665,32 @@ button {
 .live-gate-console .live-gate-progress {
   border: 0;
   display: grid;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
   padding: 12px 14px;
   position: static;
+}
+
+.live-gate-console .live-gate-workflow {
+  background: color-mix(in oklab, var(--surface-alt) 28%, var(--surface));
 }
 
 .live-gate-console .live-gate-progress-list {
   border: 0;
   border-radius: 0;
   display: grid;
-  gap: 0;
+  gap: 7px;
   overflow: visible;
 }
 
 .live-gate-console .live-gate-progress-step {
-  background: transparent;
-  border-bottom: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  min-height: 38px;
-  padding: 6px 0;
+  grid-template-columns: 24px minmax(0, 1fr);
+  min-height: 44px;
+  padding: 7px 9px;
 }
 
 .live-gate-console .live-gate-progress-step::before {
@@ -9676,15 +9701,15 @@ button {
   background: color-mix(in oklab, var(--surface-alt) 52%, var(--surface));
   border: 0;
   font-size: 10px;
-  height: 18px;
-  width: 18px;
+  height: 20px;
+  width: 20px;
 }
 
 .live-gate-console .live-gate-progress-body {
   align-items: baseline;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(150px, 0.62fr) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(170px, 0.44fr) minmax(0, 1fr) auto;
 }
 
 .live-gate-console .live-gate-progress-body > div {
@@ -9695,8 +9720,8 @@ button {
 }
 
 .live-gate-console .live-gate-progress-body strong {
-  font-size: 11px;
-  font-weight: 560;
+  font-size: 12px;
+  font-weight: 640;
 }
 
 .live-gate-console .live-gate-progress-body span {
@@ -9706,7 +9731,7 @@ button {
 }
 
 .live-gate-console .live-gate-progress-body p {
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.25;
 }
 
@@ -9902,9 +9927,9 @@ button {
 
 .live-universe-preview {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   margin-top: 2px;
-  padding: 12px;
+  padding: 14px;
 }
 
 .live-universe-preview-header,
@@ -9918,7 +9943,7 @@ button {
 
 .live-universe-preview-header > div {
   display: grid;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
 }
 
@@ -9934,7 +9959,7 @@ button {
 
 .live-universe-preview-header strong {
   color: var(--foreground);
-  font-size: 17px;
+  font-size: 20px;
   font-weight: 650;
   line-height: 1.1;
   overflow-wrap: anywhere;
@@ -9942,24 +9967,25 @@ button {
 
 .live-universe-summary-grid {
   display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+  grid-template-columns: repeat(11, minmax(96px, 1fr));
+  overflow-x: auto;
 }
 
 .live-universe-metric {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  background: color-mix(in oklab, var(--surface-alt) 30%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  border-radius: 6px;
   display: grid;
-  gap: 5px;
-  min-height: 54px;
-  padding: 8px 9px;
+  gap: 3px;
+  min-height: 46px;
+  padding: 7px 8px;
 }
 
 .live-universe-metric strong {
   color: var(--foreground);
-  font-size: 12px;
-  font-weight: 550;
+  font-size: 11px;
+  font-weight: 560;
   overflow-wrap: anywhere;
 }
 
@@ -9998,26 +10024,6 @@ button {
   overflow-wrap: anywhere;
 }
 
-.live-universe-query {
-  background: color-mix(in oklab, var(--surface-alt) 36%, var(--surface));
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  display: grid;
-  gap: 6px;
-  padding: 8px;
-}
-
-.live-universe-query pre {
-  color: var(--foreground);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.45;
-  margin: 0;
-  max-height: 180px;
-  overflow: auto;
-  white-space: pre-wrap;
-}
-
 .live-universe-preview-grid {
   display: grid;
   gap: 10px;
@@ -10054,6 +10060,41 @@ button {
   color: var(--foreground);
   font-size: 12px;
   font-weight: 650;
+}
+
+.data-table-logo-cell {
+  align-items: center;
+  display: inline-grid;
+  height: 26px;
+  justify-items: center;
+  position: relative;
+  width: 26px;
+}
+
+.data-table-logo-cell img,
+.data-table-logo-fallback {
+  border-radius: 50%;
+  height: 24px;
+  width: 24px;
+}
+
+.data-table-logo-cell img {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  object-fit: contain;
+  padding: 2px;
+  position: absolute;
+}
+
+.data-table-logo-fallback {
+  align-items: center;
+  background: color-mix(in oklab, var(--foreground) 9%, var(--surface-alt));
+  border: 1px solid color-mix(in oklab, var(--foreground) 14%, var(--border));
+  color: var(--muted-foreground);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 700;
+  justify-content: center;
 }
 
 .live-start-progress-grid {
@@ -12329,7 +12370,7 @@ button {
   }
 
   .live-universe-summary-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(11, minmax(96px, 1fr));
   }
 
   .live-chart-trade-layout {
@@ -12353,6 +12394,7 @@ button {
 @media (max-width: 760px) {
   .live-control-grid,
   .live-gate-command,
+  .live-gate-setup-grid,
   .live-ticket-grid,
   .live-reason-columns,
   .live-trade-form,

@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CLICKHOUSE_URL = "http://localhost:8123"
 DEFAULT_WRITE_DATABASE = "quant_research_workbench"
 DEFAULT_MASSIVE_WS_URL = "wss://socket.massive.com/stocks"
+DEFAULT_LOGO_ARTIFACT_ROOT = r"\\DESKTOP-SAAI85T\Workstation-G\market-data\trading-dashboard\artifacts"
 
 
 def load_real_live_market_env() -> None:
@@ -38,6 +39,7 @@ class MassiveWebSocketConfig:
 @dataclass(frozen=True)
 class MarketGatewayConfig:
     enable_clickhouse_writes: bool
+    logo_artifact_root: str
     massive: MassiveWebSocketConfig
     max_universe_symbols: int
     min_avg_daily_volume: float
@@ -77,6 +79,7 @@ def market_gateway_config() -> MarketGatewayConfig:
     )
     return MarketGatewayConfig(
         enable_clickhouse_writes=bool_env("REAL_LIVE_CLICKHOUSE_WRITES", True),
+        logo_artifact_root=env_first("REAL_LIVE_LOGO_ARTIFACT_ROOT", "TRADING_DASHBOARD_ARTIFACT_ROOT", default=DEFAULT_LOGO_ARTIFACT_ROOT),
         massive=massive,
         max_universe_symbols=positive_int_env("REAL_LIVE_MAX_UNIVERSE_SYMBOLS", 6000),
         min_avg_daily_volume=float_env("REAL_LIVE_MIN_AVG_DAILY_VOLUME", 100_000),
