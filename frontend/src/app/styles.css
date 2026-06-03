@@ -4293,18 +4293,15 @@ button {
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12px;
+  table-layout: fixed;
 }
 
 .data-table.fit-content-width {
   min-width: 0;
 }
 
-.data-table.fit-header {
-  table-layout: fixed;
-}
-
-.data-table.fit-header th,
-.data-table.fit-header td {
+.data-table th,
+.data-table td {
   overflow: hidden;
   text-overflow: ellipsis;
 }

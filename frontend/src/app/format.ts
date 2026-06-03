@@ -113,6 +113,9 @@ export function formatCell(key: string, value: unknown): string {
   if (value === null || value === undefined || value === "") return "-";
   const lower = key.toLowerCase();
   if (lower.includes("bytes")) return formatBytes(value);
+  if (isDateLikeColumn(lower)) return formatDateCell(value);
+  if (isProviderPercentColumn(lower) && isNumericLike(value)) return formatProviderPercent(value);
+  if (isCompactCountColumn(lower) && isNumericLike(value)) return formatCompactNumber(value);
   if ((lower === "gap_pct" || lower === "last_gap_pct") && isNumericLike(value)) return formatSignedPct(value);
   if (lower === "live_news_recency") return String(value).toUpperCase();
   if (lower.includes("pct") || lower.includes("rate") || lower.includes("return")) return formatPct(value);
@@ -120,6 +123,42 @@ export function formatCell(key: string, value: unknown): string {
   if (typeof value === "number" && Math.abs(value) >= 10000) return formatNumber(value);
   if (typeof value === "number" && !Number.isInteger(value)) return formatNumber(value, 3);
   return String(value);
+}
+
+function isProviderPercentColumn(lowerKey: string) {
+  return lowerKey === "snapshot_todays_change_pct" || lowerKey === "massive_float_percent" || lowerKey === "massive_short_volume_ratio";
+}
+
+function formatProviderPercent(value: unknown) {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) return "-";
+  const prefix = numeric > 0 ? "+" : "";
+  return `${prefix}${formatNumber(numeric, Math.abs(numeric) >= 100 ? 1 : 2)}%`;
+}
+
+function isDateLikeColumn(lowerKey: string) {
+  return lowerKey.endsWith("_date") || lowerKey.endsWith("_time") || lowerKey.endsWith("_at") || lowerKey.includes("pulled_at");
+}
+
+function formatDateCell(value: unknown) {
+  if (typeof value !== "string") return String(value ?? "-");
+  const text = value.trim();
+  if (!text) return "-";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const parsed = Date.parse(text);
+  if (!Number.isFinite(parsed)) return text;
+  return new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(parsed));
+}
+
+function isCompactCountColumn(lowerKey: string) {
+  if (lowerKey.includes("conid") || lowerKey.endsWith("_id") || lowerKey.includes("position")) return false;
+  return lowerKey.includes("volume") || lowerKey.includes("float") || lowerKey.includes("interest") || lowerKey.includes("count") || lowerKey.includes("trades") || lowerKey.includes("transactions");
 }
 
 function isMoneyColumn(lowerKey: string) {

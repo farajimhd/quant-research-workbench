@@ -1958,9 +1958,9 @@ function buildColumnWidthsByName({
 function estimateHeaderColumnWidth(column: string, densityMode: TableDensityMode) {
   if (isLogoColumn(column)) return 62;
   const label = columnHeaderLabel(column, densityMode);
-  const chromeWidth = densityMode === "compact" ? 42 : 74;
-  const minWidth = densityMode === "compact" ? 72 : 108;
-  const maxWidth = densityMode === "compact" ? 180 : 260;
+  const chromeWidth = densityMode === "compact" ? 34 : 74;
+  const minWidth = densityMode === "compact" ? 54 : 108;
+  const maxWidth = densityMode === "compact" ? 150 : 260;
   return clamp(estimateTextWidth(label) + chromeWidth, minWidth, maxWidth);
 }
 
@@ -1970,9 +1970,9 @@ function estimateDataColumnWidth(column: string, rows: DataRow[], densityMode: T
   const maxTextWidth = sampledRows.reduce((currentMax, row) => {
     return Math.max(currentMax, estimateTextWidth(formatCell(column, row[column])));
   }, 0);
-  const padding = densityMode === "compact" ? 18 : 28;
-  const minWidth = densityMode === "compact" ? 64 : 108;
-  const maxWidth = densityMode === "compact" ? 360 : 460;
+  const padding = densityMode === "compact" ? 14 : 28;
+  const minWidth = densityMode === "compact" ? 54 : 108;
+  const maxWidth = densityMode === "compact" ? 180 : 460;
   return clamp(maxTextWidth + padding, minWidth, maxWidth);
 }
 
@@ -1996,6 +1996,41 @@ function columnHeaderLabel(column: string, densityMode: TableDensityMode) {
 }
 
 const COMPACT_COLUMN_LABELS: Record<string, string> = {
+  candidate_massive_ticker: "Ticker",
+  currency_code: "Ccy",
+  exchange_code: "Exch",
+  float_profile: "Float",
+  ibkr_conid: "Conid",
+  issuer_name: "Issuer",
+  listing_id: "Listing ID",
+  listing_status: "Listing",
+  massive_days_to_cover: "DTC",
+  massive_float: "Float Sh",
+  massive_float_date: "Float Dt",
+  massive_float_percent: "Float %",
+  massive_short_interest: "Short Int",
+  massive_short_interest_date: "SI Dt",
+  massive_short_volume: "Short Vol",
+  massive_short_volume_date: "SV Dt",
+  massive_short_volume_ratio: "SV %",
+  security_product_type: "Product",
+  security_type: "Sec Type",
+  short_setup: "Short",
+  snapshot_ask: "Ask",
+  snapshot_bid: "Bid",
+  snapshot_day_close: "Close",
+  snapshot_day_high: "High",
+  snapshot_day_low: "Low",
+  snapshot_day_open: "Open",
+  snapshot_day_volume: "Vol",
+  snapshot_last_price: "Last",
+  snapshot_spread_bps: "Spread",
+  snapshot_todays_change: "Chg",
+  snapshot_todays_change_pct: "Chg %",
+  snapshot_trade_count: "Trades",
+  symbol_id: "Symbol ID",
+  symbol_status: "Symbol",
+  ticker_type_provider_code: "Type",
   current_open: "Open",
   last_bearish_volume_divergence_score: "BVD",
   last_close: "Close",

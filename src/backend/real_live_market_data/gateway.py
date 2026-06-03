@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -293,49 +294,26 @@ class MarketGateway:
                 "write_url": self.config.write_clickhouse.endpoint_url,
             }
         try:
-            tables = client.query_json(
-                """
-                SELECT
-                    database,
-                    name,
-                    engine,
-                    total_rows,
-                    total_bytes
-                FROM system.tables
-                WHERE database = currentDatabase()
-                ORDER BY name
-                """,
-                timeout=8,
-            )
-        except Exception as exc:
-            errors.append({"scope": "tables", "message": str(exc)})
-        try:
-            columns = client.query_json(
-                """
-                SELECT
-                    table,
-                    name,
-                    type,
-                    position
-                FROM system.columns
-                WHERE database = currentDatabase()
-                ORDER BY table, position
-                """,
-                timeout=8,
-            )
-        except Exception as exc:
-            errors.append({"scope": "columns", "message": str(exc)})
-        try:
             enrichment_frame = None if should_refresh_enrichment else self.startup_enrichment_frame
             enrichment_status = None if should_refresh_enrichment else self.startup_enrichment_status
-            startup_preview, startup_frames = build_universe_snapshot_payload(
-                client,
-                self.config,
-                enrichment_frame=enrichment_frame,
-                enrichment_status=enrichment_status,
-                enrich_scanner=True,
-                row_limit=max(1, min(row_limit, 200)),
-            )
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                tables_future = executor.submit(query_universe_preview_tables, client)
+                columns_future = executor.submit(query_universe_preview_columns, client)
+                startup_future = executor.submit(
+                    build_universe_snapshot_payload,
+                    client,
+                    self.config,
+                    enrichment_frame=enrichment_frame,
+                    enrichment_status=enrichment_status,
+                    enrich_scanner=True,
+                    row_limit=max(1, min(row_limit, 200)),
+                )
+                tables, tables_error = resolve_preview_metadata(tables_future, "tables")
+                columns, columns_error = resolve_preview_metadata(columns_future, "columns")
+                for item in (tables_error, columns_error):
+                    if item:
+                        errors.append(item)
+                startup_preview, startup_frames = startup_future.result()
             startup_preview["persistence"] = {"enabled": False, "status": "read_only_preview"}
             if should_refresh_enrichment:
                 fetched_frame = startup_frames.get("enrichment_frame")
@@ -435,3 +413,43 @@ def dedupe_signal_rows(rows: list[dict[str, Any]], limit: int) -> list[dict[str,
         if len(deduped) >= limit:
             break
     return deduped
+
+
+def query_universe_preview_tables(client: ClickHouseHttpClient) -> list[dict[str, Any]]:
+    return client.query_json(
+        """
+        SELECT
+            database,
+            name,
+            engine,
+            total_rows,
+            total_bytes
+        FROM system.tables
+        WHERE database = currentDatabase()
+        ORDER BY name
+        """,
+        timeout=8,
+    )
+
+
+def query_universe_preview_columns(client: ClickHouseHttpClient) -> list[dict[str, Any]]:
+    return client.query_json(
+        """
+        SELECT
+            table,
+            name,
+            type,
+            position
+        FROM system.columns
+        WHERE database = currentDatabase()
+        ORDER BY table, position
+        """,
+        timeout=8,
+    )
+
+
+def resolve_preview_metadata(future: Any, scope: str) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
+    try:
+        return future.result(), None
+    except Exception as exc:
+        return [], {"scope": scope, "message": str(exc)}

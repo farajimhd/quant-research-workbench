@@ -4,6 +4,7 @@ import json
 import ssl
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import polars as pl
@@ -31,39 +32,34 @@ def fetch_massive_scanner_enrichment_frame(
     ticker_set = {ticker.upper() for ticker in tickers if ticker}
     if not ticker_set:
         return pl.DataFrame()
-    float_rows = latest_by_ticker(
-        fetch_massive_paginated_results(
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        float_future = executor.submit(
+            fetch_massive_paginated_results,
             config,
             env_first("REAL_LIVE_MASSIVE_FLOAT_PATH", default="/stocks/vX/float"),
             {"limit": "5000", "sort": "ticker.asc"},
             timeout=timeout,
             max_pages=10,
-        ),
-        ticker_set,
-        date_key="effective_date",
-    )
-    short_interest_rows = latest_by_ticker(
-        fetch_massive_paginated_results(
+        )
+        short_interest_future = executor.submit(
+            fetch_massive_paginated_results,
             config,
             "/stocks/v1/short-interest",
             {"limit": "50000", "sort": "settlement_date.desc"},
             timeout=timeout,
             max_pages=5,
-        ),
-        ticker_set,
-        date_key="settlement_date",
-    )
-    short_volume_rows = latest_by_ticker(
-        fetch_massive_paginated_results(
+        )
+        short_volume_future = executor.submit(
+            fetch_massive_paginated_results,
             config,
             "/stocks/v1/short-volume",
             {"limit": "50000", "sort": "date.desc"},
             timeout=timeout,
             max_pages=5,
-        ),
-        ticker_set,
-        date_key="date",
-    )
+        )
+        float_rows = latest_by_ticker(float_future.result(), ticker_set, date_key="effective_date")
+        short_interest_rows = latest_by_ticker(short_interest_future.result(), ticker_set, date_key="settlement_date")
+        short_volume_rows = latest_by_ticker(short_volume_future.result(), ticker_set, date_key="date")
     rows = []
     for ticker in sorted(ticker_set):
         float_row = float_rows.get(ticker, {})

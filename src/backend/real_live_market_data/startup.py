@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
@@ -98,26 +99,17 @@ def build_universe_snapshot_payload(
     joined_frame = pl.DataFrame()
     scanner_frame = pl.DataFrame()
 
-    try:
-        started = perf_counter()
-        reference_frame = read_client.query_frame(universe_query, timeout=30)
-        if not reference_frame.is_empty():
-            reference_frame = reference_frame.with_columns(
-                pl.col("candidate_massive_ticker").cast(pl.Utf8).str.to_uppercase().alias("candidate_massive_ticker")
-            )
-            reference_frame = add_logo_columns(reference_frame)
-        progress_steps.append(progress_step("reference_query", "ClickHouse reference universe", "success", started, f"{reference_frame.height:,} rows"))
-    except Exception as exc:
-        errors.append({"scope": "reference_query", "message": str(exc)})
-        progress_steps.append(progress_step("reference_query", "ClickHouse reference universe", "failed", started, str(exc)))
-
-    try:
-        started = perf_counter()
-        massive_snapshot_frame = fetch_massive_stock_snapshot_frame(config, timeout=35)
-        progress_steps.append(progress_step("massive_snapshot", "Massive full-market snapshot", "success", started, f"{massive_snapshot_frame.height:,} rows"))
-    except Exception as exc:
-        errors.append({"scope": "massive_snapshot", "message": str(exc)})
-        progress_steps.append(progress_step("massive_snapshot", "Massive full-market snapshot", "failed", started, str(exc)))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        reference_started = perf_counter()
+        reference_future = executor.submit(load_reference_frame, read_client, universe_query)
+        massive_started = perf_counter()
+        massive_snapshot_future = executor.submit(fetch_massive_stock_snapshot_frame, config, timeout=35)
+        reference_frame, reference_step, reference_error = resolve_frame_future(reference_future, reference_started, "reference_query", "ClickHouse reference universe", lambda frame: f"{frame.height:,} rows")
+        massive_snapshot_frame, massive_step, massive_error = resolve_frame_future(massive_snapshot_future, massive_started, "massive_snapshot", "Massive full-market snapshot", lambda frame: f"{frame.height:,} rows")
+    progress_steps.extend([reference_step, massive_step])
+    if not reference_frame.is_empty():
+        reference_frame = add_logo_columns(reference_frame)
+    errors.extend(item for item in (reference_error, massive_error) if item)
 
     if not reference_frame.is_empty() and not massive_snapshot_frame.is_empty():
         started = perf_counter()
@@ -183,6 +175,25 @@ def build_universe_snapshot_payload(
         "reference_frame": reference_frame,
         "scanner_frame": scanner_frame,
     }
+
+
+def load_reference_frame(read_client: ClickHouseHttpClient, universe_query: str) -> pl.DataFrame:
+    frame = read_client.query_frame(universe_query, timeout=30)
+    if frame.is_empty():
+        return frame
+    return frame.with_columns(
+        pl.col("candidate_massive_ticker").cast(pl.Utf8).str.to_uppercase().alias("candidate_massive_ticker")
+    )
+
+
+def resolve_frame_future(future: Any, started: float, step_id: str, label: str, detail_factory: Any) -> tuple[pl.DataFrame, dict[str, Any], dict[str, str] | None]:
+    try:
+        frame = future.result()
+        if not isinstance(frame, pl.DataFrame):
+            frame = pl.DataFrame()
+        return frame, progress_step(step_id, label, "success", started, detail_factory(frame)), None
+    except Exception as exc:
+        return pl.DataFrame(), progress_step(step_id, label, "failed", started, str(exc)), {"scope": step_id, "message": str(exc)}
 
 
 def join_reference_with_snapshot(reference_frame: pl.DataFrame, snapshot_frame: pl.DataFrame) -> pl.DataFrame:
@@ -385,39 +396,38 @@ def frame_preview_rows(frame: pl.DataFrame, row_limit: int) -> list[dict[str, An
 def visible_snapshot_columns(frame: pl.DataFrame) -> list[str]:
     if frame.is_empty():
         return []
-    hidden = {"snapshot_raw", "massive_float_raw", "massive_short_interest_raw", "massive_short_volume_raw"}
+    hidden = {"logo_relative_path", "logo_url", "snapshot_raw", "massive_float_raw", "massive_short_interest_raw", "massive_short_volume_raw"}
     preferred = [
         "logo",
         "candidate_massive_ticker",
-        "ibkr_conid",
-        "exchange_code",
-        "currency_code",
         "issuer_name",
-        "security_product_type",
         "snapshot_last_price",
+        "snapshot_todays_change_pct",
+        "snapshot_todays_change",
+        "snapshot_day_volume",
+        "snapshot_trade_count",
         "snapshot_day_open",
         "snapshot_day_high",
         "snapshot_day_low",
         "snapshot_day_close",
-        "snapshot_day_volume",
-        "snapshot_trade_count",
         "snapshot_bid",
         "snapshot_ask",
         "snapshot_spread_bps",
-        "snapshot_todays_change",
-        "snapshot_todays_change_pct",
-        "massive_float",
-        "massive_float_percent",
-        "massive_float_date",
-        "massive_short_interest",
-        "massive_short_interest_date",
-        "massive_days_to_cover",
-        "massive_short_volume",
-        "massive_short_volume_date",
-        "massive_short_volume_ratio",
         "float_profile",
         "short_setup",
-        "logo_relative_path",
+        "massive_short_interest",
+        "massive_days_to_cover",
+        "massive_short_volume_ratio",
+        "massive_float",
+        "massive_float_percent",
+        "massive_short_volume",
+        "ibkr_conid",
+        "exchange_code",
+        "currency_code",
+        "security_product_type",
+        "massive_float_date",
+        "massive_short_interest_date",
+        "massive_short_volume_date",
     ]
     columns = [column for column in preferred if column in frame.columns]
     columns.extend(column for column in frame.columns if column not in hidden and column not in columns)
@@ -431,14 +441,17 @@ def visible_reference_columns(frame: pl.DataFrame) -> list[str]:
     preferred = [
         "logo",
         "candidate_massive_ticker",
-        "ibkr_conid",
+        "issuer_name",
         "exchange_code",
         "currency_code",
-        "issuer_name",
-        "ticker_type_provider_code",
+        "ibkr_conid",
         "security_product_type",
         "security_type",
+        "ticker_type_provider_code",
+        "symbol_status",
+        "listing_status",
         "listing_id",
+        "symbol_id",
     ]
     columns = [column for column in preferred if column in frame.columns]
     columns.extend(column for column in frame.columns if column not in hidden and column not in columns)
