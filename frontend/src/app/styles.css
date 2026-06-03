@@ -9163,6 +9163,231 @@ button {
   min-height: 620px;
 }
 
+.live-gate-shell {
+  display: grid;
+  gap: 12px;
+  min-height: calc(100vh - 120px);
+}
+
+.live-gate-header {
+  align-items: stretch;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(360px, 1fr) minmax(420px, 0.95fr);
+}
+
+.live-gate-title,
+.live-gate-command,
+.live-gate-section-heading {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.live-gate-title span,
+.live-gate-section-heading span,
+.live-gate-readiness span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.live-gate-title strong {
+  color: var(--foreground);
+  font-size: 30px;
+  line-height: 1.05;
+}
+
+.live-gate-title p,
+.live-gate-section-heading small {
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.live-gate-command {
+  align-content: start;
+  grid-template-columns: minmax(180px, 0.75fr) minmax(260px, 1fr);
+}
+
+.live-gate-readiness {
+  background: color-mix(in oklab, var(--surface-alt) 54%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  min-height: 88px;
+  padding: 12px;
+}
+
+.live-gate-readiness strong {
+  color: var(--foreground);
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.live-gate-readiness small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.live-gate-readiness[data-tone="success"] {
+  background: color-mix(in oklab, var(--success) 9%, var(--surface));
+  border-color: color-mix(in oklab, var(--success) 42%, var(--border));
+}
+
+.live-gate-readiness[data-tone="warning"] {
+  background: color-mix(in oklab, #f97316 8%, var(--surface));
+  border-color: color-mix(in oklab, #f97316 38%, var(--border));
+}
+
+.live-gate-readiness[data-tone="danger"] {
+  background: color-mix(in oklab, var(--danger) 8%, var(--surface));
+  border-color: color-mix(in oklab, var(--danger) 40%, var(--border));
+}
+
+.live-gate-layout {
+  align-items: start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(300px, 0.58fr) minmax(520px, 1fr);
+}
+
+.live-gate-progress,
+.live-gate-stack,
+.live-gate-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.live-gate-progress {
+  position: sticky;
+  top: 12px;
+}
+
+.live-gate-section-heading strong {
+  color: var(--foreground);
+  font-size: 16px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.live-gate-progress-list {
+  display: grid;
+  gap: 8px;
+}
+
+.live-gate-progress-step {
+  align-items: start;
+  background: color-mix(in oklab, var(--surface) 88%, var(--surface-alt));
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  padding: 10px;
+}
+
+.live-gate-progress-step[data-tone="success"] {
+  border-left-color: var(--success);
+}
+
+.live-gate-progress-step[data-tone="warning"] {
+  border-left-color: #f97316;
+}
+
+.live-gate-progress-step[data-tone="danger"] {
+  border-left-color: var(--danger);
+}
+
+.live-gate-progress-step[data-tone="info"] {
+  border-left-color: var(--info);
+}
+
+.live-gate-progress-step[data-tone="muted"] {
+  border-left-color: color-mix(in oklab, var(--muted-foreground) 34%, var(--border));
+}
+
+.live-gate-progress-index {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 78%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--foreground);
+  display: grid;
+  font-size: 11px;
+  font-weight: 950;
+  height: 26px;
+  justify-items: center;
+  width: 26px;
+}
+
+.live-gate-progress-body {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.live-gate-progress-body > div {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.live-gate-progress-body strong {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 950;
+  overflow-wrap: anywhere;
+}
+
+.live-gate-progress-body span {
+  background: color-mix(in oklab, var(--surface-alt) 86%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 950;
+  padding: 3px 7px;
+  text-transform: uppercase;
+}
+
+.live-gate-progress-step[data-tone="success"] .live-gate-progress-body span {
+  background: color-mix(in oklab, var(--success) 14%, var(--surface));
+  border-color: color-mix(in oklab, var(--success) 30%, var(--border));
+  color: var(--success);
+}
+
+.live-gate-progress-step[data-tone="warning"] .live-gate-progress-body span {
+  background: color-mix(in oklab, #f97316 12%, var(--surface));
+  border-color: color-mix(in oklab, #f97316 30%, var(--border));
+  color: #f97316;
+}
+
+.live-gate-progress-step[data-tone="danger"] .live-gate-progress-body span {
+  background: color-mix(in oklab, var(--danger) 12%, var(--surface));
+  border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
+  color: var(--danger);
+}
+
+.live-gate-progress-body p,
+.live-gate-progress-body small {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .live-start-panel {
   display: grid;
   gap: 24px;
@@ -9234,6 +9459,10 @@ button {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
+.live-account-card-grid.compact {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
 .live-account-card,
 .live-check-card {
   background: color-mix(in oklab, var(--surface) 86%, var(--surface-alt));
@@ -9247,13 +9476,24 @@ button {
   text-align: left;
 }
 
+.live-account-card-grid.compact .live-account-card,
+.live-check-card {
+  min-height: 88px;
+}
+
 .live-account-card {
   cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.live-account-card:hover {
+  border-color: color-mix(in oklab, var(--primary) 38%, var(--border));
+  transform: translateY(-1px);
 }
 
 .live-account-card.selected {
   border-color: color-mix(in oklab, var(--primary) 72%, var(--border));
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 46%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 46%, transparent), 0 10px 24px color-mix(in oklab, var(--primary) 10%, transparent);
 }
 
 .live-account-card-top,
@@ -11732,10 +11972,16 @@ button {
   }
 
   .live-start-panel,
+  .live-gate-header,
+  .live-gate-layout,
   .live-universe-preview-grid,
   .live-chart-trade-layout,
   .live-lower-chart-grid {
     grid-template-columns: 1fr;
+  }
+
+  .live-gate-progress {
+    position: static;
   }
 
   .live-universe-summary-grid {
@@ -11762,6 +12008,7 @@ button {
 
 @media (max-width: 760px) {
   .live-control-grid,
+  .live-gate-command,
   .live-ticket-grid,
   .live-reason-columns,
   .live-trade-form,
@@ -11771,6 +12018,15 @@ button {
 
   .live-global-status-cells {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .live-gate-title strong {
+    font-size: 24px;
+  }
+
+  .live-gate-progress-body > div {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .live-universe-summary-grid {

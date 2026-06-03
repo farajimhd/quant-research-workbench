@@ -138,6 +138,7 @@ type RealLiveUniversePreviewPayload = {
   massive_snapshot_row_count?: number;
   persistence?: Record<string, unknown>;
   preview_columns: string[];
+  progress_steps?: RealLiveProgressStep[];
   pulled_at_utc?: string;
   read_database: string;
   read_url: string;
@@ -154,6 +155,23 @@ type RealLiveUniversePreviewPayload = {
   universe_query: string;
   write_database: string;
   write_url: string;
+};
+
+type RealLiveProgressStep = {
+  detail?: string;
+  duration_ms?: number | null;
+  id: string;
+  label: string;
+  status: string;
+};
+
+type GateProgressStep = {
+  detail: string;
+  duration?: string;
+  id: string;
+  label: string;
+  status: string;
+  tone: "danger" | "info" | "muted" | "success" | "warning";
 };
 
 type RealLiveSessionBaselineStatus = {
@@ -652,6 +670,7 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
         massive_snapshot_row_count: 0,
         persistence: { status: "failed" },
         preview_columns: [],
+        progress_steps: [],
         pulled_at_utc: "",
         read_database: "",
         read_url: "",
@@ -1473,63 +1492,97 @@ function RealLiveTradingGate({
   const selectedAccounts = selectedAccountList(accounts, selectedAccountKeys);
   const selectedLabel = selectedAccounts.length ? selectedAccounts.map((account) => account.label).join(", ") : "No account selected";
   const mirrorMode = selectedAccounts.length > 1;
+  const progressSteps = buildGateProgressSteps({
+    loading,
+    preflightStatus,
+    selectedAccountKeys,
+    universePreview,
+    universePreviewLoading,
+  });
+  const completedSteps = progressSteps.filter((step) => step.tone === "success").length;
+  const blockedSteps = progressSteps.filter((step) => step.tone === "danger").length;
+  const activeSteps = progressSteps.filter((step) => step.tone === "warning").length;
+  const readinessTone = ready && universePreview?.can_query_universe ? "success" : blockedSteps ? "danger" : activeSteps ? "warning" : "muted";
   return (
-    <>
-      <PageIntro
-        groupLabel="Live Trading"
-        title="Live Account Gate"
-        description="Choose one or more IBKR accounts, verify Massive and IBKR Client Portal, then enter the live trading workspace."
-      />
-      <section className="live-start-panel panel">
-        <div className="live-start-copy">
-          <span>Accounts</span>
-          <strong>{selectedLabel}</strong>
-          <p>{mirrorMode ? "Mirroring is enabled for staged live orders across the selected accounts." : "Select multiple accounts when a mirrored order workflow is intended."}</p>
+    <section className="live-gate-shell" aria-label="Live trading gate">
+      <div className="live-gate-header panel">
+        <div className="live-gate-title">
+          <span>Live Trading</span>
+          <strong>Session Gate</strong>
+          <p>Verify accounts, broker connectivity, and market-data readiness before creating a live trading session.</p>
         </div>
-        <div className="live-start-form">
-          <div className="live-account-card-grid" role="group" aria-label="Accounts">
-            {accounts.map((account) => {
-              const selected = selectedAccountKeys.includes(account.account_key);
-              return (
-              <button className={selected ? "live-account-card selected" : "live-account-card"} key={account.account_key} onClick={() => onToggleAccount(account.account_key)} type="button">
-                <span className="live-account-card-top">
-                  <strong>{account.label}</strong>
-                  <em data-mode={account.trading_mode}>{account.trading_mode === "paper" ? "Paper" : "Live"}</em>
-                </span>
-                <span>{account.account_class}</span>
-                <small>{account.account_id || (account.configured ? "Configured" : "Missing account id")}</small>
-              </button>
-            );
-            })}
+        <div className="live-gate-command">
+          <div className="live-gate-readiness" data-tone={readinessTone}>
+            <span>Readiness</span>
+            <strong>{ready && universePreview?.can_query_universe ? "Ready to enter" : blockedSteps ? "Blocked" : activeSteps ? "Checking" : "Waiting"}</strong>
+            <small>{completedSteps} of {progressSteps.length} steps complete</small>
           </div>
-          <div className="live-start-path">
-            <span>Connection gate</span>
-            <strong>{preflightStatus?.account_id || selectedLabel}</strong>
-          </div>
-          <div className="live-check-card-grid" aria-label="Live connection checks">
-            {(preflightStatus?.checks ?? []).map((check) => (
-              <LiveCheckCard key={check.id} check={check} />
-            ))}
-            {!preflightStatus ? (
-              <>
-                <LiveCheckCard check={{ id: "massive-waiting", label: "Massive data", status: "waiting" }} />
-                <LiveCheckCard check={{ id: "ibkr-waiting", label: "IBKR broker", status: "waiting" }} />
-              </>
-            ) : null}
-          </div>
-          {message ? <div className="live-start-message">{message}</div> : null}
           <div className="live-start-actions">
             <button className="button secondary" disabled={loading} onClick={onCheck} type="button">
               {loading ? <span className="loading-spinner" aria-hidden="true" /> : <CheckCircle2 size={15} />} Check Connections
+            </button>
+            <button className="button secondary" disabled={universePreviewLoading} onClick={onRefreshUniverse} type="button">
+              {universePreviewLoading ? <span className="loading-spinner" aria-hidden="true" /> : <RefreshCw size={15} />} Refresh Data
             </button>
             <button className="button primary" disabled={!ready || loading || !selectedAccountKeys.length} onClick={onEnter} type="button">
               <Play size={15} /> Enter Workspace
             </button>
           </div>
         </div>
-      </section>
+      </div>
+      <div className="live-gate-layout">
+        <aside className="live-gate-progress panel" aria-label="Initial page progress report">
+          <div className="live-gate-section-heading">
+            <span>Progress Report</span>
+            <strong>{activeSteps ? "Running checks" : blockedSteps ? "Needs attention" : "Validation path"}</strong>
+          </div>
+          <LiveGateProgressList steps={progressSteps} />
+        </aside>
+        <div className="live-gate-stack">
+          <section className="live-gate-card panel" aria-label="Account selection">
+            <div className="live-gate-section-heading">
+              <span>Accounts</span>
+              <strong>{selectedLabel}</strong>
+              <small>{mirrorMode ? "Mirrored orders will be sent to each selected account." : "Default is paper. Select more accounts only when mirroring is intended."}</small>
+            </div>
+            <div className="live-account-card-grid compact" role="group" aria-label="Accounts">
+              {accounts.map((account) => {
+                const selected = selectedAccountKeys.includes(account.account_key);
+                return (
+                  <button className={selected ? "live-account-card selected" : "live-account-card"} key={account.account_key} onClick={() => onToggleAccount(account.account_key)} type="button">
+                    <span className="live-account-card-top">
+                      <strong>{account.label}</strong>
+                      <em data-mode={account.trading_mode}>{account.trading_mode === "paper" ? "Paper" : "Live"}</em>
+                    </span>
+                    <span>{account.account_class}</span>
+                    <small>{account.account_id || (account.configured ? "Configured" : "Missing account id")}</small>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+          <section className="live-gate-card panel" aria-label="Connection checks">
+            <div className="live-gate-section-heading">
+              <span>Connections</span>
+              <strong>{preflightStatus?.account_id || "Massive and IBKR"}</strong>
+              <small>{message || "Run connection checks before entering the workspace."}</small>
+            </div>
+            <div className="live-check-card-grid" aria-label="Live connection checks">
+              {(preflightStatus?.checks ?? []).map((check) => (
+                <LiveCheckCard key={check.id} check={check} />
+              ))}
+              {!preflightStatus ? (
+                <>
+                  <LiveCheckCard check={{ id: "massive-waiting", label: "Massive data", status: "waiting" }} />
+                  <LiveCheckCard check={{ id: "ibkr-waiting", label: "IBKR broker", status: "waiting" }} />
+                </>
+              ) : null}
+            </div>
+          </section>
+        </div>
+      </div>
       <LiveUniversePreviewPanel loading={universePreviewLoading} onRefresh={onRefreshUniverse} preview={universePreview} />
-    </>
+    </section>
   );
 }
 
@@ -1611,6 +1664,26 @@ function LiveUniversePreviewPanel({ loading, onRefresh, preview }: { loading: bo
         </div>
       </div>
     </section>
+  );
+}
+
+function LiveGateProgressList({ steps }: { steps: GateProgressStep[] }) {
+  return (
+    <div className="live-gate-progress-list">
+      {steps.map((step, index) => (
+        <article className="live-gate-progress-step" data-tone={step.tone} key={step.id}>
+          <div className="live-gate-progress-index">{index + 1}</div>
+          <div className="live-gate-progress-body">
+            <div>
+              <strong>{step.label}</strong>
+              <span>{step.status}</span>
+            </div>
+            <p>{step.detail}</p>
+            {step.duration ? <small>{step.duration}</small> : null}
+          </div>
+        </article>
+      ))}
+    </div>
   );
 }
 
@@ -3661,6 +3734,84 @@ function buildGlobalLiveMetrics({
 function formatLiveMode(mode: LiveClockMode) {
   if (mode === "loading_data") return "loading data";
   return mode;
+}
+
+function buildGateProgressSteps({
+  loading,
+  preflightStatus,
+  selectedAccountKeys,
+  universePreview,
+  universePreviewLoading,
+}: {
+  loading: boolean;
+  preflightStatus: RealLivePreflightPayload | null;
+  selectedAccountKeys: string[];
+  universePreview: RealLiveUniversePreviewPayload | null;
+  universePreviewLoading: boolean;
+}): GateProgressStep[] {
+  const errors = universePreview?.errors ?? [];
+  const backendSteps = universePreview?.progress_steps ?? [];
+  const requestError = errors.find((error) => ["request", "connection"].includes(stringValue(error, "scope")));
+  const metadataError = errors.find((error) => ["tables", "columns"].includes(stringValue(error, "scope")));
+  const persistenceStatus = stringValue(universePreview?.persistence, "status") || "read_only_preview";
+  return [
+    {
+      detail: selectedAccountKeys.length ? `${selectedAccountKeys.length} account${selectedAccountKeys.length > 1 ? "s" : ""} selected` : "Select at least one account before entering the workspace.",
+      id: "account_selection",
+      label: "Account selection",
+      status: selectedAccountKeys.length ? "complete" : "waiting",
+      tone: selectedAccountKeys.length ? "success" : "muted",
+    },
+    {
+      detail: preflightStatus?.checks?.length ? `${preflightStatus.checks.filter((check) => check.status === "ready").length} of ${preflightStatus.checks.length} checks ready` : "Massive and IBKR checks have not been run yet.",
+      id: "connection_check",
+      label: "Connection checks",
+      status: loading ? "running" : preflightStatus?.ready ? "complete" : preflightStatus ? "blocked" : "waiting",
+      tone: loading ? "warning" : preflightStatus?.ready ? "success" : preflightStatus ? "danger" : "muted",
+    },
+    {
+      detail: requestError ? stringValue(requestError, "message") : metadataError ? stringValue(metadataError, "message") : universePreview ? `${integer(universePreview.tables.length)} tables, ${integer(universePreview.columns.length)} columns inspected` : "Waiting for ClickHouse metadata.",
+      id: "metadata",
+      label: "ClickHouse metadata",
+      status: universePreviewLoading ? "running" : requestError || metadataError ? "error" : universePreview ? "complete" : "waiting",
+      tone: universePreviewLoading ? "warning" : requestError || metadataError ? "danger" : universePreview ? "success" : "muted",
+    },
+    ...backendSteps.map((step) => progressStepFromBackend(step, universePreviewLoading)),
+    {
+      detail: persistenceStatus === "read_only_preview" ? "Initial page validation does not create a trading session or write replay rows." : requestError ? "Read-only preview could not be confirmed because the API request failed." : `Preview returned persistence status: ${persistenceStatus}`,
+      id: "read_only_preview",
+      label: "Preview persistence policy",
+      status: persistenceStatus,
+      tone: persistenceStatus === "read_only_preview" ? "success" : persistenceStatus === "failed" ? "danger" : "warning",
+    },
+    {
+      detail: preflightStatus?.ready && universePreview?.can_query_universe ? "Entering the workspace will create trading_session_id and start async baseline recording." : "Requires ready connections and a valid read-only universe preview.",
+      id: "session_entry",
+      label: "Session entry",
+      status: preflightStatus?.ready && universePreview?.can_query_universe ? "ready" : "waiting",
+      tone: preflightStatus?.ready && universePreview?.can_query_universe ? "success" : "muted",
+    },
+  ];
+}
+
+function progressStepFromBackend(step: RealLiveProgressStep, loading: boolean): GateProgressStep {
+  const status = step.status || (loading ? "running" : "waiting");
+  return {
+    detail: step.detail || "No detail returned.",
+    duration: typeof step.duration_ms === "number" ? `${Math.round(step.duration_ms)} ms` : "",
+    id: step.id,
+    label: step.label,
+    status,
+    tone: gateToneFromStatus(status),
+  };
+}
+
+function gateToneFromStatus(status: string): GateProgressStep["tone"] {
+  if (["success", "complete", "ready", "read_only_preview"].includes(status)) return "success";
+  if (["failed", "error", "blocked"].includes(status)) return "danger";
+  if (["running", "pending", "deferred"].includes(status)) return "warning";
+  if (["waiting", "not_started"].includes(status)) return "muted";
+  return "info";
 }
 
 function buildLiveWindowSummaries(openWindows: WindowId[], chartWindows: ChartWindow[], layouts: Record<WindowId, WindowLayout>): LiveWindowSummary[] {

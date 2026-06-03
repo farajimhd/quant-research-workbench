@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -78,6 +79,7 @@ def build_universe_snapshot_payload(
     pulled_at = datetime.now(timezone.utc)
     session_date = pulled_at.astimezone(EASTERN).date().isoformat()
     errors: list[dict[str, Any]] = []
+    progress_steps: list[dict[str, Any]] = []
     universe_query = (config.universe_sql or default_universe_sql(config)).strip()
     reference_frame = pl.DataFrame()
     massive_snapshot_frame = pl.DataFrame()
@@ -85,33 +87,49 @@ def build_universe_snapshot_payload(
     scanner_frame = pl.DataFrame()
 
     try:
+        started = perf_counter()
         reference_frame = read_client.query_frame(universe_query, timeout=30)
         if not reference_frame.is_empty():
             reference_frame = reference_frame.with_columns(
                 pl.col("candidate_massive_ticker").cast(pl.Utf8).str.to_uppercase().alias("candidate_massive_ticker")
             )
+        progress_steps.append(progress_step("reference_query", "ClickHouse reference universe", "success", started, f"{reference_frame.height:,} rows"))
     except Exception as exc:
         errors.append({"scope": "reference_query", "message": str(exc)})
+        progress_steps.append(progress_step("reference_query", "ClickHouse reference universe", "failed", started, str(exc)))
 
     try:
+        started = perf_counter()
         massive_snapshot_frame = fetch_massive_stock_snapshot_frame(config, timeout=35)
+        progress_steps.append(progress_step("massive_snapshot", "Massive full-market snapshot", "success", started, f"{massive_snapshot_frame.height:,} rows"))
     except Exception as exc:
         errors.append({"scope": "massive_snapshot", "message": str(exc)})
+        progress_steps.append(progress_step("massive_snapshot", "Massive full-market snapshot", "failed", started, str(exc)))
 
     if not reference_frame.is_empty() and not massive_snapshot_frame.is_empty():
+        started = perf_counter()
         joined_frame = join_reference_with_snapshot(reference_frame, massive_snapshot_frame)
         scanner_frame = joined_frame
+        progress_steps.append(progress_step("snapshot_join", "Reference and snapshot join", "success", started, f"{joined_frame.height:,} rows"))
+    else:
+        progress_steps.append(progress_step("snapshot_join", "Reference and snapshot join", "waiting", None, "Waiting for reference and snapshot rows"))
 
     if enrich_scanner and not joined_frame.is_empty():
         try:
+            started = perf_counter()
             tickers = [str(row["candidate_massive_ticker"]) for row in joined_frame.select("candidate_massive_ticker").to_dicts()]
             enrichment_frame = fetch_massive_scanner_enrichment_frame(config, tickers, timeout=45)
             scanner_frame = join_scanner_enrichment(joined_frame, enrichment_frame)
+            progress_steps.append(progress_step("scanner_enrichment", "Massive float and short data", "success", started, f"{scanner_frame.height:,} scanner rows"))
         except Exception as exc:
             errors.append({"scope": "massive_scanner_enrichment", "message": str(exc)})
             scanner_frame = add_scanner_labels(joined_frame)
+            progress_steps.append(progress_step("scanner_enrichment", "Massive float and short data", "failed", started, str(exc)))
     elif not scanner_frame.is_empty():
         scanner_frame = add_scanner_labels(scanner_frame)
+        progress_steps.append(progress_step("scanner_enrichment", "Massive float and short data", "deferred", None, "Runs after live session start"))
+    else:
+        progress_steps.append(progress_step("scanner_enrichment", "Massive float and short data", "waiting", None, "Waiting for joined snapshot rows"))
 
     reference_rows = frame_preview_rows(reference_frame, row_limit)
     snapshot_rows = frame_preview_rows(scanner_frame, row_limit)
@@ -130,6 +148,7 @@ def build_universe_snapshot_payload(
         "snapshot_columns": visible_snapshot_columns(scanner_frame),
         "snapshot_rows": snapshot_rows,
         "preview_columns": reference_frame.columns,
+        "progress_steps": progress_steps,
         "row_count": reference_frame.height,
         "rows": reference_rows,
         "scanner_row_count": scanner_frame.height,
@@ -156,6 +175,16 @@ def join_reference_with_snapshot(reference_frame: pl.DataFrame, snapshot_frame: 
         .drop("_snapshot_join_ticker")
         .sort("candidate_massive_ticker")
     )
+
+
+def progress_step(step_id: str, label: str, status: str, started: float | None, detail: str) -> dict[str, Any]:
+    return {
+        "detail": detail,
+        "duration_ms": round((perf_counter() - started) * 1000, 1) if started is not None else None,
+        "id": step_id,
+        "label": label,
+        "status": status,
+    }
 
 
 def join_scanner_enrichment(joined_frame: pl.DataFrame, enrichment_frame: pl.DataFrame) -> pl.DataFrame:
