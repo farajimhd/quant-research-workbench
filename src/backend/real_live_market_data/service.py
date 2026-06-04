@@ -27,8 +27,21 @@ def market_gateway_status() -> dict[str, Any]:
     return get_market_gateway().status()
 
 
-def market_gateway_universe_preview(row_limit: int = 0, *, refresh_enrichment: bool = False) -> dict[str, Any]:
-    return get_market_gateway().universe_preview(row_limit=row_limit, refresh_enrichment=refresh_enrichment)
+def market_gateway_universe_preview(
+    row_limit: int = 0,
+    *,
+    refresh_enrichment: bool = False,
+    snapshot_row_limit: int = 0,
+    snapshot_sort_column: str = "",
+    snapshot_sort_direction: str = "desc",
+) -> dict[str, Any]:
+    return get_market_gateway().universe_preview(
+        row_limit=row_limit,
+        refresh_enrichment=refresh_enrichment,
+        snapshot_row_limit=snapshot_row_limit,
+        snapshot_sort_column=snapshot_sort_column,
+        snapshot_sort_direction=snapshot_sort_direction,
+    )
 
 
 def market_gateway_snapshot(row_limit: int = 500) -> dict[str, Any]:

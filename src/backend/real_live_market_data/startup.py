@@ -26,6 +26,9 @@ def build_startup_universe_preview(
     enrichment_frame: pl.DataFrame | None = None,
     enrichment_status: dict[str, Any] | None = None,
     row_limit: int = 0,
+    snapshot_row_limit: int = 0,
+    snapshot_sort_column: str = "",
+    snapshot_sort_direction: str = "desc",
 ) -> dict[str, Any]:
     payload, _frames = build_universe_snapshot_payload(
         read_client,
@@ -34,6 +37,9 @@ def build_startup_universe_preview(
         enrichment_status=enrichment_status,
         enrich_scanner=enrichment_frame is not None,
         row_limit=row_limit,
+        snapshot_row_limit=snapshot_row_limit,
+        snapshot_sort_column=snapshot_sort_column,
+        snapshot_sort_direction=snapshot_sort_direction,
     )
     payload["persistence"] = {"enabled": False, "status": "read_only_preview"}
     return payload
@@ -88,6 +94,9 @@ def build_universe_snapshot_payload(
     enrichment_status: dict[str, Any] | None = None,
     row_limit: int,
     enrich_scanner: bool,
+    snapshot_row_limit: int = 0,
+    snapshot_sort_column: str = "",
+    snapshot_sort_direction: str = "desc",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     pulled_at = datetime.now(timezone.utc)
     session_date = pulled_at.astimezone(EASTERN).date().isoformat()
@@ -156,7 +165,12 @@ def build_universe_snapshot_payload(
         progress_steps.append(progress_step("scanner_enrichment", "Massive float and short data", "waiting", None, "Waiting for joined snapshot rows"))
 
     reference_rows = frame_preview_rows(reference_frame, row_limit)
-    snapshot_rows = frame_preview_rows(scanner_frame, row_limit)
+    snapshot_rows = sorted_frame_preview_rows(
+        scanner_frame,
+        snapshot_row_limit if snapshot_row_limit > 0 else row_limit,
+        snapshot_sort_column,
+        snapshot_sort_direction,
+    )
     payload = {
         "can_query_universe": not any(error["scope"] == "reference_query" for error in errors),
         "errors": errors,
@@ -405,6 +419,17 @@ def frame_preview_rows(frame: pl.DataFrame, row_limit: int) -> list[dict[str, An
     if row_limit <= 0:
         return frame.to_dicts()
     return frame.head(max(1, row_limit)).to_dicts()
+
+
+def sorted_frame_preview_rows(frame: pl.DataFrame, row_limit: int, sort_column: str, sort_direction: str) -> list[dict[str, Any]]:
+    if frame.is_empty():
+        return []
+    column = (sort_column or "").strip()
+    sorted_frame = frame
+    if column in frame.columns:
+        descending = sort_direction.strip().lower() != "asc"
+        sorted_frame = frame.sort(column, descending=descending, nulls_last=True)
+    return frame_preview_rows(sorted_frame, row_limit)
 
 
 def visible_snapshot_columns(frame: pl.DataFrame) -> list[str]:

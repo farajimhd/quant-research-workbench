@@ -1835,8 +1835,20 @@ def real_live_market_gateway_status() -> dict[str, Any]:
 
 
 @app.get("/api/real-live-trading/market-gateway/universe-preview")
-def real_live_market_gateway_universe_preview(row_limit: int = Query(default=0, ge=0, le=100000), refresh_enrichment: bool = False) -> dict[str, Any]:
-    return market_gateway_universe_preview(row_limit=row_limit, refresh_enrichment=refresh_enrichment)
+def real_live_market_gateway_universe_preview(
+    row_limit: int = Query(default=0, ge=0, le=100000),
+    refresh_enrichment: bool = False,
+    snapshot_row_limit: int = Query(default=0, ge=0, le=100000),
+    snapshot_sort_column: str = "",
+    snapshot_sort_direction: str = "desc",
+) -> dict[str, Any]:
+    return market_gateway_universe_preview(
+        row_limit=row_limit,
+        refresh_enrichment=refresh_enrichment,
+        snapshot_row_limit=snapshot_row_limit,
+        snapshot_sort_column=snapshot_sort_column,
+        snapshot_sort_direction=snapshot_sort_direction,
+    )
 
 
 @app.get("/api/real-live-trading/logo")

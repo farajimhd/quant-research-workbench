@@ -581,6 +581,8 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
   const [preflightStatus, setPreflightStatus] = useState<RealLivePreflightPayload | null>(null);
   const [universePreview, setUniversePreview] = useState<RealLiveUniversePreviewPayload | null>(null);
   const [universePreviewLoading, setUniversePreviewLoading] = useState(false);
+  const [scannerSetupPresetId, setScannerSetupPresetId] = useState("top_gainers_pct");
+  const [scannerSetupRowLimit, setScannerSetupRowLimit] = useState(200);
   const [sessionBaseline, setSessionBaseline] = useState<RealLiveSessionBaselineStatus>({ status: "not_started" });
   const [scope, setScope] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
@@ -632,6 +634,10 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
   const warmedChartCacheKeysRef = useRef(new Set<string>());
   const lastChartOpenRef = useRef<{ id: string; openedAt: number } | null>(null);
   const scannerQueryKey = useMemo(() => JSON.stringify(scannerQuery), [scannerQuery]);
+  const scannerSetupPreset = useMemo(
+    () => SCANNER_SETUP_PRESETS.find((preset) => preset.id === scannerSetupPresetId) ?? SCANNER_SETUP_PRESETS[0],
+    [scannerSetupPresetId],
+  );
 
   useEffect(() => {
     liveClockModeRef.current = liveClockMode;
@@ -670,7 +676,13 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
   const loadUniversePreview = useCallback(async (options?: { refreshEnrichment?: boolean }) => {
     setUniversePreviewLoading(true);
     try {
-      const payload = await api<RealLiveUniversePreviewPayload>(`/api/real-live-trading/market-gateway/universe-preview${query({ refresh_enrichment: options?.refreshEnrichment ? "1" : "0", row_limit: 0 })}`);
+      const payload = await api<RealLiveUniversePreviewPayload>(`/api/real-live-trading/market-gateway/universe-preview${query({
+        refresh_enrichment: options?.refreshEnrichment ? "1" : "0",
+        row_limit: 0,
+        snapshot_row_limit: scannerSetupRowLimit,
+        snapshot_sort_column: scannerSetupPreset.column,
+        snapshot_sort_direction: scannerSetupPreset.direction,
+      })}`);
       setUniversePreview(payload);
     } catch (requestError) {
       setUniversePreview({
@@ -705,7 +717,7 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
     } finally {
       setUniversePreviewLoading(false);
     }
-  }, []);
+  }, [scannerSetupPreset, scannerSetupRowLimit]);
 
   const loadGatewayStatus = useCallback(async () => {
     const payload = await api<RealLiveGatewayStatusPayload>("/api/real-live-trading/market-gateway/status");
@@ -1319,7 +1331,12 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
         loading={loading}
         message={liveClockMessage}
         preflightStatus={preflightStatus}
+        scannerSetupPreset={scannerSetupPreset}
+        scannerSetupPresetId={scannerSetupPresetId}
+        scannerSetupRowLimit={scannerSetupRowLimit}
         selectedAccountKeys={selectedAccountKeys}
+        setScannerSetupPresetId={setScannerSetupPresetId}
+        setScannerSetupRowLimit={setScannerSetupRowLimit}
         universePreview={universePreview}
         universePreviewLoading={universePreviewLoading}
         onCheck={() => void checkConnections()}
@@ -1494,7 +1511,12 @@ function RealLiveTradingGate({
   onRefreshUniverse,
   onToggleAccount,
   preflightStatus,
+  scannerSetupPreset,
+  scannerSetupPresetId,
+  scannerSetupRowLimit,
   selectedAccountKeys,
+  setScannerSetupPresetId,
+  setScannerSetupRowLimit,
   universePreview,
   universePreviewLoading,
 }: {
@@ -1507,7 +1529,12 @@ function RealLiveTradingGate({
   onRefreshUniverse: () => void;
   onToggleAccount: (accountKey: string) => void;
   preflightStatus: RealLivePreflightPayload | null;
+  scannerSetupPreset: ScannerSetupPreset;
+  scannerSetupPresetId: string;
+  scannerSetupRowLimit: number;
   selectedAccountKeys: string[];
+  setScannerSetupPresetId: Dispatch<SetStateAction<string>>;
+  setScannerSetupRowLimit: Dispatch<SetStateAction<number>>;
   universePreview: RealLiveUniversePreviewPayload | null;
   universePreviewLoading: boolean;
 }) {
@@ -1625,7 +1652,17 @@ function RealLiveTradingGate({
           </aside>
         </div>
       </div>
-      <LiveUniversePreviewPanel loading={universePreviewLoading} onRefresh={onRefreshUniverse} onRefreshEnrichment={onRefreshEnrichment} preview={universePreview} />
+      <LiveUniversePreviewPanel
+        loading={universePreviewLoading}
+        onRefresh={onRefreshUniverse}
+        onRefreshEnrichment={onRefreshEnrichment}
+        preview={universePreview}
+        scannerSetupPreset={scannerSetupPreset}
+        scannerSetupPresetId={scannerSetupPresetId}
+        scannerSetupRowLimit={scannerSetupRowLimit}
+        setScannerSetupPresetId={setScannerSetupPresetId}
+        setScannerSetupRowLimit={setScannerSetupRowLimit}
+      />
     </section>
   );
 }
@@ -1633,7 +1670,8 @@ function RealLiveTradingGate({
 const SCANNER_SETUP_TAB = "Scanner Setup";
 const SCANNER_SETUP_ROW_LIMITS = [50, 100, 200, 500, 1000];
 const SCANNER_SETUP_PRESETS = [
-  { column: "snapshot_todays_change_pct", direction: "desc", id: "top_gainers", label: "Top Gainers" },
+  { column: "snapshot_todays_change_pct", direction: "desc", id: "top_gainers_pct", label: "Top Gainers %" },
+  { column: "snapshot_todays_change", direction: "desc", id: "top_gainers_dollars", label: "Top Gainers $" },
   { column: "snapshot_day_volume", direction: "desc", id: "top_volume", label: "Top Volume" },
   { column: "snapshot_trade_count", direction: "desc", id: "most_trades", label: "Most Trades" },
   { column: "snapshot_spread_bps", direction: "asc", id: "tight_spread", label: "Tight Spread" },
@@ -1643,10 +1681,28 @@ const SCANNER_SETUP_PRESETS = [
 
 type ScannerSetupPreset = (typeof SCANNER_SETUP_PRESETS)[number];
 
-function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, preview }: { loading: boolean; onRefresh: () => void; onRefreshEnrichment: () => void; preview: RealLiveUniversePreviewPayload | null }) {
+function LiveUniversePreviewPanel({
+  loading,
+  onRefresh,
+  onRefreshEnrichment,
+  preview,
+  scannerSetupPreset,
+  scannerSetupPresetId,
+  scannerSetupRowLimit,
+  setScannerSetupPresetId,
+  setScannerSetupRowLimit,
+}: {
+  loading: boolean;
+  onRefresh: () => void;
+  onRefreshEnrichment: () => void;
+  preview: RealLiveUniversePreviewPayload | null;
+  scannerSetupPreset: ScannerSetupPreset;
+  scannerSetupPresetId: string;
+  scannerSetupRowLimit: number;
+  setScannerSetupPresetId: Dispatch<SetStateAction<string>>;
+  setScannerSetupRowLimit: Dispatch<SetStateAction<number>>;
+}) {
   const [activePreviewTab, setActivePreviewTab] = useState(SCANNER_SETUP_TAB);
-  const [scannerSetupPresetId, setScannerSetupPresetId] = useState("top_gainers");
-  const [scannerSetupRowLimit, setScannerSetupRowLimit] = useState(200);
   const errors = preview?.errors ?? [];
   const tableRows = preview?.tables ?? [];
   const columnRows = preview?.columns ?? [];
@@ -1656,11 +1712,7 @@ function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, pre
   const snapshotColumns = preview?.snapshot_columns?.length ? preview.snapshot_columns : Object.keys(snapshotRows[0] ?? {}).length ? Object.keys(snapshotRows[0] ?? {}) : ["candidate_massive_ticker", "ibkr_conid", "snapshot_last_price", "snapshot_day_volume", "snapshot_bid", "snapshot_ask", "snapshot_spread_bps"];
   const persistence = preview?.persistence ?? {};
   const enrichment = preview?.startup_enrichment ?? {};
-  const scannerSetupPreset = SCANNER_SETUP_PRESETS.find((preset) => preset.id === scannerSetupPresetId) ?? SCANNER_SETUP_PRESETS[0];
-  const scannerSetupRows = useMemo(
-    () => sortedScannerSetupRows(snapshotRows, scannerSetupPreset, scannerSetupRowLimit),
-    [scannerSetupPreset, scannerSetupRowLimit, snapshotRows],
-  );
+  const scannerSetupRows = snapshotRows;
   return (
     <section className="live-universe-preview panel" aria-label="Initial database universe preview">
       <div className="live-universe-preview-header">
@@ -1754,7 +1806,7 @@ function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, pre
                 </button>
                 <strong>{integer(scannerSetupRows.length)} returned</strong>
               </div>
-              <DataTable columns={snapshotColumns} empty={loading ? "Loading Massive snapshot rows..." : "No joined snapshot rows loaded."} fitToContent rows={scannerSetupRows} title="Scanner Setup" />
+              <DataTable columns={snapshotColumns} defaultSort={{ column: scannerSetupPreset.column, direction: scannerSetupPreset.direction }} empty={loading ? "Loading Massive snapshot rows..." : "No joined snapshot rows loaded."} fitToContent rows={scannerSetupRows} title="Scanner Setup" />
             </>
           ) : activePreviewTab === "Reference Pull" ? (
             <>
@@ -4300,21 +4352,6 @@ function numberValue(row: Record<string, unknown> | null | undefined, key: strin
   const value = row?.[key];
   const numeric = typeof value === "number" ? value : Number(value);
   return Number.isFinite(numeric) ? numeric : 0;
-}
-
-function sortedScannerSetupRows(rows: Array<Record<string, unknown>>, preset: ScannerSetupPreset, limit: number) {
-  const direction = preset.direction === "asc" ? 1 : -1;
-  return rows
-    .map((row, index) => ({ index, row, value: optionalNumber(row, preset.column) }))
-    .sort((left, right) => {
-      if (left.value === null && right.value === null) return left.index - right.index;
-      if (left.value === null) return 1;
-      if (right.value === null) return -1;
-      const delta = left.value - right.value;
-      return delta === 0 ? left.index - right.index : delta * direction;
-    })
-    .slice(0, Math.max(1, limit))
-    .map((item) => item.row);
 }
 
 function optionalNumber(row: Record<string, unknown> | null | undefined, key: string) {
