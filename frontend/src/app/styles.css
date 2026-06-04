@@ -4948,21 +4948,16 @@ button {
 .data-table-cell.numeric {
   color: color-mix(in oklab, var(--foreground) 88%, transparent);
   font-family: "Roboto Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-  font-size: 12px;
+  font-size: 12.5px;
   font-optical-sizing: auto;
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: 460;
   text-align: right;
 }
 
 .data-table-cell.price {
   color: color-mix(in oklab, var(--foreground) 94%, transparent);
-  font-weight: 500;
-}
-
-.data-table-cell.price.positive,
-.data-table-cell.price.negative {
-  font-weight: 620;
+  font-weight: 460;
 }
 
 .data-table-cell.categorical {
@@ -10275,7 +10270,7 @@ button {
   border-radius: 8px;
   display: grid;
   gap: 6px;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
   padding: 8px;
@@ -10290,6 +10285,74 @@ button {
   color: var(--foreground);
   font-size: 12px;
   font-weight: 650;
+}
+
+.live-scanner-setup-bar {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 40%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--border) 82%, transparent);
+  border-radius: 7px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 7px 8px;
+}
+
+.live-scanner-setup-presets {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 5px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.live-scanner-setup-presets button {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 6px;
+  color: color-mix(in oklab, var(--foreground) 84%, transparent);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 560;
+  height: 28px;
+  padding: 0 9px;
+}
+
+.live-scanner-setup-presets button:hover,
+.live-scanner-setup-presets button.active {
+  background: color-mix(in oklab, var(--primary) 8%, var(--surface));
+  border-color: color-mix(in oklab, var(--primary) 35%, var(--border));
+  color: var(--foreground);
+}
+
+.live-scanner-setup-select {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.live-scanner-setup-select span,
+.live-scanner-setup-bar > strong {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 620;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.live-scanner-setup-select select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--foreground);
+  font: inherit;
+  height: 28px;
+  padding: 0 8px;
 }
 
 .data-table-logo-cell {

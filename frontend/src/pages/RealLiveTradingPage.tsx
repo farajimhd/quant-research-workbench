@@ -1629,8 +1629,23 @@ function RealLiveTradingGate({
   );
 }
 
+const SCANNER_SETUP_TAB = "Scanner Setup";
+const SCANNER_SETUP_ROW_LIMITS = [50, 100, 200, 500, 1000];
+const SCANNER_SETUP_PRESETS = [
+  { column: "snapshot_todays_change_pct", direction: "desc", id: "top_gainers", label: "Top Gainers" },
+  { column: "snapshot_day_volume", direction: "desc", id: "top_volume", label: "Top Volume" },
+  { column: "snapshot_trade_count", direction: "desc", id: "most_trades", label: "Most Trades" },
+  { column: "snapshot_spread_bps", direction: "asc", id: "tight_spread", label: "Tight Spread" },
+  { column: "massive_float", direction: "asc", id: "low_float", label: "Low Float" },
+  { column: "massive_short_interest", direction: "desc", id: "short_interest", label: "Short Interest" },
+] as const;
+
+type ScannerSetupPreset = (typeof SCANNER_SETUP_PRESETS)[number];
+
 function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, preview }: { loading: boolean; onRefresh: () => void; onRefreshEnrichment: () => void; preview: RealLiveUniversePreviewPayload | null }) {
-  const [activePreviewTab, setActivePreviewTab] = useState("Scanner Initial Data");
+  const [activePreviewTab, setActivePreviewTab] = useState(SCANNER_SETUP_TAB);
+  const [scannerSetupPresetId, setScannerSetupPresetId] = useState("top_gainers");
+  const [scannerSetupRowLimit, setScannerSetupRowLimit] = useState(200);
   const errors = preview?.errors ?? [];
   const tableRows = preview?.tables ?? [];
   const columnRows = preview?.columns ?? [];
@@ -1640,6 +1655,11 @@ function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, pre
   const snapshotColumns = preview?.snapshot_columns?.length ? preview.snapshot_columns : Object.keys(snapshotRows[0] ?? {}).length ? Object.keys(snapshotRows[0] ?? {}) : ["candidate_massive_ticker", "ibkr_conid", "snapshot_last_price", "snapshot_day_volume", "snapshot_bid", "snapshot_ask", "snapshot_spread_bps"];
   const persistence = preview?.persistence ?? {};
   const enrichment = preview?.startup_enrichment ?? {};
+  const scannerSetupPreset = SCANNER_SETUP_PRESETS.find((preset) => preset.id === scannerSetupPresetId) ?? SCANNER_SETUP_PRESETS[0];
+  const scannerSetupRows = useMemo(
+    () => sortedScannerSetupRows(snapshotRows, scannerSetupPreset, scannerSetupRowLimit),
+    [scannerSetupPreset, scannerSetupRowLimit, snapshotRows],
+  );
   return (
     <section className="live-universe-preview panel" aria-label="Initial database universe preview">
       <div className="live-universe-preview-header">
@@ -1681,10 +1701,10 @@ function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, pre
       ) : null}
       <div className="live-universe-tab-group">
         <div className="live-universe-tabs-header">
-          <Tabs active={activePreviewTab} onChange={setActivePreviewTab} tabs={["Scanner Initial Data", "Reference Pull", "Tables", "Columns"]} />
+          <Tabs active={activePreviewTab} onChange={setActivePreviewTab} tabs={[SCANNER_SETUP_TAB, "Reference Pull", "Tables", "Columns"]} />
           <span>
-            {activePreviewTab === "Scanner Initial Data"
-              ? `${integer(snapshotRows.length)} joined rows shown`
+            {activePreviewTab === SCANNER_SETUP_TAB
+              ? `${integer(scannerSetupRows.length)} of ${integer(snapshotRows.length)} rows`
               : activePreviewTab === "Reference Pull"
                 ? `${integer(referenceRows.length)} reference rows shown`
                 : activePreviewTab === "Tables"
@@ -1693,13 +1713,40 @@ function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, pre
           </span>
         </div>
         <div className="live-universe-preview-table">
-          {activePreviewTab === "Scanner Initial Data" ? (
+          {activePreviewTab === SCANNER_SETUP_TAB ? (
             <>
               <div className="live-universe-subtitle">
-                <strong>Scanner Initial Data</strong>
+                <strong>Scanner Setup</strong>
                 <span>Massive snapshot joined to the tradable reference universe</span>
               </div>
-              <DataTable columns={snapshotColumns} empty={loading ? "Loading Massive snapshot rows..." : "No joined snapshot rows loaded."} fitToContent rows={snapshotRows} title="Live Startup Massive Snapshot Join" />
+              <div className="live-scanner-setup-bar" aria-label="Scanner setup controls">
+                <div className="live-scanner-setup-presets" role="group" aria-label="Scanner sort preset">
+                  {SCANNER_SETUP_PRESETS.map((preset) => (
+                    <button
+                      aria-pressed={scannerSetupPreset.id === preset.id}
+                      className={scannerSetupPreset.id === preset.id ? "active" : undefined}
+                      key={preset.id}
+                      onClick={() => setScannerSetupPresetId(preset.id)}
+                      title={`Sort by ${preset.column}`}
+                      type="button"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+                <label className="live-scanner-setup-select">
+                  <span>Rows</span>
+                  <select onChange={(event) => setScannerSetupRowLimit(Number(event.target.value))} value={scannerSetupRowLimit}>
+                    {SCANNER_SETUP_ROW_LIMITS.map((limit) => (
+                      <option key={limit} value={limit}>
+                        {integer(limit)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <strong>{integer(scannerSetupRows.length)} returned</strong>
+              </div>
+              <DataTable columns={snapshotColumns} empty={loading ? "Loading Massive snapshot rows..." : "No joined snapshot rows loaded."} fitToContent rows={scannerSetupRows} title="Scanner Setup" />
             </>
           ) : activePreviewTab === "Reference Pull" ? (
             <>
@@ -4245,6 +4292,21 @@ function numberValue(row: Record<string, unknown> | null | undefined, key: strin
   const value = row?.[key];
   const numeric = typeof value === "number" ? value : Number(value);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function sortedScannerSetupRows(rows: Array<Record<string, unknown>>, preset: ScannerSetupPreset, limit: number) {
+  const direction = preset.direction === "asc" ? 1 : -1;
+  return rows
+    .map((row, index) => ({ index, row, value: optionalNumber(row, preset.column) }))
+    .sort((left, right) => {
+      if (left.value === null && right.value === null) return left.index - right.index;
+      if (left.value === null) return 1;
+      if (right.value === null) return -1;
+      const delta = left.value - right.value;
+      return delta === 0 ? left.index - right.index : delta * direction;
+    })
+    .slice(0, Math.max(1, limit))
+    .map((item) => item.row);
 }
 
 function optionalNumber(row: Record<string, unknown> | null | undefined, key: string) {
