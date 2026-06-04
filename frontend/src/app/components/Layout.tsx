@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, BarChart3, Check, ChevronLeft, ChevronRight, GitCompareArrows, Hammer, LineChart, Palette, RadioTower, Wifi } from "lucide-react";
+import { Activity, Check, ChevronLeft, ChevronRight, Palette, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "strategy" | "research-runs" | "build-data" | "review-data" | "live-trading" | "real-live-trading";
+export type PageKey = "real-live-trading";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
@@ -18,23 +18,8 @@ type LayoutProps = {
 
 const navGroups = [
   {
-    label: "Research",
-    items: [
-      { key: "strategy" as PageKey, label: "Backtest", icon: BarChart3 },
-      { key: "research-runs" as PageKey, label: "Run Comparison", icon: GitCompareArrows }
-    ]
-  },
-  {
-    label: "Market Data",
-    items: [
-      { key: "build-data" as PageKey, label: "Build Data", icon: Hammer },
-      { key: "review-data" as PageKey, label: "Review Data", icon: LineChart }
-    ]
-  },
-  {
     label: "Live Trading",
     items: [
-      { key: "live-trading" as PageKey, label: "Semi-Auto", icon: RadioTower },
       { key: "real-live-trading" as PageKey, label: "Live", icon: Wifi }
     ]
   }
@@ -88,7 +73,7 @@ export function Layout({
   }, [uiScale]);
 
   useEffect(() => {
-    if (page === "live-trading" || page === "real-live-trading") setCollapsed(true);
+    if (page === "real-live-trading") setCollapsed(true);
   }, [page]);
 
   function selectTheme(nextThemeId: AppThemeId) {

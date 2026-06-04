@@ -47,11 +47,17 @@ class MassiveStocksWebSocket:
 
     async def _subscribe(self, websocket: Any) -> None:
         channels: list[str] = []
-        for symbol in self.symbols:
+        if self.config.subscribe_all_symbols:
             if self.subscribe_trades:
-                channels.append(f"T.{symbol}")
+                channels.append("T.*")
             if self.subscribe_quotes:
-                channels.append(f"Q.{symbol}")
+                channels.append("Q.*")
+        else:
+            for symbol in self.symbols:
+                if self.subscribe_trades:
+                    channels.append(f"T.{symbol}")
+                if self.subscribe_quotes:
+                    channels.append(f"Q.{symbol}")
         batch_size = max(1, self.config.subscribe_batch_size)
         for index in range(0, len(channels), batch_size):
             params = ",".join(channels[index : index + batch_size])

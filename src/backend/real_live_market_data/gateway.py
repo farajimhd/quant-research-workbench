@@ -169,7 +169,14 @@ class MarketGateway:
         self.last_status_message = str(item.get("message") or item.get("status") or item)
 
     async def handle_event(self, event: TradeEvent | QuoteEvent) -> None:
-        if not event.sym or event.sym not in self.universe:
+        if not event.sym:
+            return
+        if self.writer:
+            if isinstance(event, TradeEvent):
+                self.writer.add_trade(event)
+            else:
+                self.writer.add_quote(event)
+        if event.sym not in self.universe:
             return
         state = self.states.setdefault(event.sym, SymbolState())
         if isinstance(event, TradeEvent):
@@ -177,11 +184,8 @@ class MarketGateway:
             apply_trade(state, event)
             if self.writer:
                 self.writer.add_bar(finalized_bar)
-                self.writer.add_trade(event)
         else:
             apply_quote(state, event)
-            if self.writer:
-                self.writer.add_quote(event)
 
     def snapshot(self, row_limit: int | None = None) -> dict[str, Any]:
         if not self.universe:
@@ -211,10 +215,12 @@ class MarketGateway:
             "clickhouse_writes": self.config.enable_clickhouse_writes,
             "last_error": self.last_error,
             "message": self.last_status_message,
+            "raw_event_persistence_scope": "all_massive_events" if self.config.massive.subscribe_all_symbols else "reference_universe_events",
             "running": self.running,
             "session_baseline": self.session_baseline_status,
             "started_at_utc": self.session_started_at.isoformat() if self.session_started_at else "",
             "subscribe_quotes": self.config.subscribe_quotes,
+            "subscribe_scope": "all_symbols" if self.config.massive.subscribe_all_symbols else "reference_universe",
             "subscribe_trades": self.config.subscribe_trades,
             "trading_session_id": self.trading_session_id,
             "universe_loaded": bool(self.universe),

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CLICKHOUSE_URL = "http://localhost:8123"
-DEFAULT_WRITE_DATABASE = "quant_research_workbench"
+DEFAULT_WRITE_DATABASE = "q_live"
 DEFAULT_MASSIVE_WS_URL = "wss://socket.massive.com/stocks"
 DEFAULT_LOGO_ARTIFACT_ROOT = r"\\DESKTOP-SAAI85T\Workstation-G\market-data\trading-dashboard\artifacts"
 
@@ -33,6 +33,7 @@ class ClickHouseConfig:
 class MassiveWebSocketConfig:
     api_key: str
     subscribe_batch_size: int
+    subscribe_all_symbols: bool
     url: str
 
 
@@ -75,6 +76,7 @@ def market_gateway_config() -> MarketGatewayConfig:
     massive = MassiveWebSocketConfig(
         api_key=env_first("MASSIVE_API_KEY", "MASSIVE_STOCK_API_KEY", "POLYGON_API_KEY", default=""),
         subscribe_batch_size=positive_int_env("REAL_LIVE_MASSIVE_SUBSCRIBE_BATCH_SIZE", 400),
+        subscribe_all_symbols=bool_env("REAL_LIVE_MASSIVE_SUBSCRIBE_ALL_SYMBOLS", True),
         url=env_first("REAL_LIVE_MASSIVE_WS_URL", "MASSIVE_WS_URL", default=DEFAULT_MASSIVE_WS_URL).rstrip("/"),
     )
     return MarketGatewayConfig(

@@ -1,18 +1,25 @@
-# Real Live Market Data Gateway
+# Real-Live Market Data Gateway
 
 This package is intentionally separate from backtest and semi-auto trading code. It owns the live market-data path for the real live trading page:
 
 - ClickHouse-backed tradable universe with `ticker` and IBKR `conid`
-- Massive stock websocket subscriptions using targeted `T.{ticker}` and `Q.{ticker}` channels
+- Massive stock websocket subscriptions, defaulting to full-tape `T.*` and `Q.*`
 - in-memory quote/trade state and Polars universe frame
 - backend market-status rows, signal rows, and 1-minute bar state
-- optional ClickHouse replay persistence for trades, quotes, and bars in a separate app-owned database
+- optional ClickHouse replay persistence for raw trades, raw quotes, and derived bars in a separate app-owned database
 
 Massive websocket protocol used here:
 
 - connect to `wss://socket.massive.com/stocks`
 - auth message: `{"action":"auth","params":"<api key>"}`
-- subscribe message: `{"action":"subscribe","params":"T.AAPL,Q.AAPL"}`
+- default subscribe message: `{"action":"subscribe","params":"T.*,Q.*"}`
+- targeted fallback message: `{"action":"subscribe","params":"T.AAPL,Q.AAPL"}`
+
+Raw trade and quote events are persisted to the app-owned ClickHouse write
+database, default `q_live`, before the scanner state filters to the reference
+universe. This lets replay/backtest data capture include every received Massive
+event while order-routing/scanner state still uses the ClickHouse reference
+universe for conid and metadata.
 
 Primary environment variables:
 
@@ -30,6 +37,7 @@ Primary environment variables:
 - `REAL_LIVE_MIN_PRICE`
 - `REAL_LIVE_MIN_AVG_DAILY_VOLUME`
 - `REAL_LIVE_CLICKHOUSE_WRITES`
+- `REAL_LIVE_MASSIVE_SUBSCRIBE_ALL_SYMBOLS`, default `true`
 
 `REAL_LIVE_UNIVERSE_SQL` should return at least:
 
