@@ -2,16 +2,19 @@
 
 Standalone Rust market-data gateway for the quote/trade regime.
 
-Current responsibilities defined by this service boundary:
+The gateway runs as one OS process. Inside that process, Tokio runs async tasks
+for websocket ingest, ClickHouse persistence, and local API/WebSocket serving.
+
+Current responsibilities:
 
 - subscribe to Massive stock websocket channels
 - default subscription scope is full tape: `T.*` and `Q.*`
-- normalize quote/trade events into app contracts
+- normalize quote/trade events
 - maintain in-memory live market state
-- publish compact local streams/snapshots to the quant app
+- publish compact local snapshots/streams to the quant app
 - batch-write raw events to the app-owned ClickHouse database
 
-The gateway must keep two paths separate:
+The gateway keeps two paths separate:
 
 ```text
 fast path: Massive -> memory -> local app stream
@@ -32,15 +35,63 @@ Environment variables:
 - `QMD_SUBSCRIBE_QUOTES`, default `true`
 - `QMD_CLICKHOUSE_URL`
 - `QMD_CLICKHOUSE_DATABASE`, default `q_live`
+- `QMD_CLICKHOUSE_USER`, default `default`
+- `QMD_CLICKHOUSE_PASSWORD`
+- `QMD_CLICKHOUSE_MAX_BATCH`, default `10000`
+- `QMD_CLICKHOUSE_FLUSH_INTERVAL_MS`, default `1000`
+- `QMD_EVENT_CHANNEL_CAPACITY`, default `250000`
+- `QMD_SCANNER_BROADCAST_MS`, default `1000`
+- `QMD_TICKER_BROADCAST_MS`, default `250`
+
+The service writes to:
+
+- `live_massive_trades`
+- `live_massive_quotes`
+
+## Install Rust On Windows
+
+From the repo root:
+
+```powershell
+.\scripts\install_rust_windows.ps1
+```
+
+Then open a new PowerShell window and verify:
+
+```powershell
+rustc --version
+cargo --version
+```
 
 ## Run
 
 ```powershell
-cargo run --manifest-path services/qmd-gateway/Cargo.toml
+.\scripts\run_qmd_gateway.ps1
+```
+
+Check only:
+
+```powershell
+.\scripts\run_qmd_gateway.ps1 -CheckOnly
 ```
 
 Health endpoint:
 
 ```text
 GET http://127.0.0.1:8795/health
+```
+
+Snapshot endpoints:
+
+```text
+GET http://127.0.0.1:8795/snapshot/scanner?limit=250
+GET http://127.0.0.1:8795/snapshot/ticker/AAPL
+```
+
+Local websocket endpoints:
+
+```text
+ws://127.0.0.1:8795/stream/scanner
+ws://127.0.0.1:8795/stream/ticker/AAPL
+ws://127.0.0.1:8795/stream/events
 ```

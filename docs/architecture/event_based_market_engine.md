@@ -46,9 +46,9 @@ subscriptions through config.
 
 ```text
 Massive websocket
-  -> normalize event
-  -> update gateway memory
-  -> publish compact scanner/chart state to app
+  -> Rust qmd-gateway normalize event
+  -> update qmd-gateway memory
+  -> publish compact scanner/chart state to app over local HTTP/WebSocket
 ```
 
 This path must not wait for ClickHouse.
@@ -63,6 +63,21 @@ Massive websocket
 ```
 
 ClickHouse may lag under load without slowing live trading decisions.
+
+## QMD Gateway Process Model
+
+`services/qmd-gateway` is one OS process. It does not create multiple worker
+processes in the first implementation. It uses Tokio async tasks inside that
+single process:
+
+- Massive websocket ingest task
+- ClickHouse writer task
+- local HTTP/WebSocket API server
+- in-memory market-state updates
+
+This keeps deployment simple while allowing high concurrency. If throughput
+requires more parallelism later, ticker-sharded worker tasks can be added inside
+the same process before moving to multiple OS processes.
 
 ### Historical Path
 
