@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
@@ -104,12 +104,24 @@ def build_universe_snapshot_payload(
         reference_future = executor.submit(load_reference_frame, read_client, universe_query)
         massive_started = perf_counter()
         massive_snapshot_future = executor.submit(fetch_massive_stock_snapshot_frame, config, timeout=35)
-        reference_frame, reference_step, reference_error = resolve_frame_future(reference_future, reference_started, "reference_query", "ClickHouse reference universe", lambda frame: f"{frame.height:,} rows")
-        massive_snapshot_frame, massive_step, massive_error = resolve_frame_future(massive_snapshot_future, massive_started, "massive_snapshot", "Massive full-market snapshot", lambda frame: f"{frame.height:,} rows")
-    progress_steps.extend([reference_step, massive_step])
+        futures = {
+            reference_future: ("reference_query", "ClickHouse reference universe", reference_started, lambda frame: f"{frame.height:,} rows"),
+            massive_snapshot_future: ("massive_snapshot", "Massive full-market snapshot", massive_started, lambda frame: f"{frame.height:,} rows"),
+        }
+        resolved_steps: dict[str, dict[str, Any]] = {}
+        for future in as_completed(futures):
+            step_id, label, started, detail_factory = futures[future]
+            frame, step, error = resolve_frame_future(future, started, step_id, label, detail_factory)
+            if step_id == "reference_query":
+                reference_frame = frame
+            elif step_id == "massive_snapshot":
+                massive_snapshot_frame = frame
+            resolved_steps[step_id] = step
+            if error:
+                errors.append(error)
+    progress_steps.extend(step for step in (resolved_steps.get("reference_query"), resolved_steps.get("massive_snapshot")) if step)
     if not reference_frame.is_empty():
         reference_frame = add_logo_columns(reference_frame)
-    errors.extend(item for item in (reference_error, massive_error) if item)
 
     if not reference_frame.is_empty() and not massive_snapshot_frame.is_empty():
         started = perf_counter()

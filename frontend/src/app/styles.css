@@ -4293,15 +4293,18 @@ button {
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12px;
-  table-layout: fixed;
 }
 
 .data-table.fit-content-width {
   min-width: 0;
 }
 
-.data-table th,
-.data-table td {
+.data-table.fit-header {
+  table-layout: fixed;
+}
+
+.data-table.fit-header th,
+.data-table.fit-header td {
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -4922,6 +4925,35 @@ button {
 
 .data-table-cell {
   font-variant-numeric: tabular-nums;
+}
+
+.data-table-cell.ticker {
+  color: var(--foreground);
+  font-family: "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.data-table-cell.numeric {
+  color: color-mix(in oklab, var(--foreground) 88%, transparent);
+  font-family: "Cascadia Code", "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  text-align: right;
+}
+
+.data-table-cell.price {
+  color: color-mix(in oklab, var(--foreground) 94%, transparent);
+  font-weight: 720;
+}
+
+.data-table-cell.categorical {
+  color: color-mix(in oklab, var(--foreground) 82%, transparent);
+  font-size: 11px;
+  font-weight: 680;
+  text-transform: uppercase;
 }
 
 .data-table-cell.positive {

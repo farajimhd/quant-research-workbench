@@ -209,7 +209,7 @@ export function DataTable({ backendQuery, columns, defaultFilterPreset, defaultS
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
   const [densityMode, setDensityMode] = useState<TableDensityMode>("compact");
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
-  const [layoutMode, setLayoutMode] = useState<TableLayoutMode>("fit_data");
+  const [layoutMode, setLayoutMode] = useState<TableLayoutMode>("fit_header");
   const resolvedColumns = useMemo(() => applyColumnOrder(baseColumns, columnOrder), [baseColumns, columnOrder]);
   const [manualFiltersByColumn, setManualFiltersByColumn] = useState<Record<string, ColumnManualFilterState>>(
     () => filterPresetForColumns(defaultFilterPreset, resolvedColumns)
@@ -1958,9 +1958,9 @@ function buildColumnWidthsByName({
 function estimateHeaderColumnWidth(column: string, densityMode: TableDensityMode) {
   if (isLogoColumn(column)) return 62;
   const label = columnHeaderLabel(column, densityMode);
-  const chromeWidth = densityMode === "compact" ? 34 : 74;
-  const minWidth = densityMode === "compact" ? 54 : 108;
-  const maxWidth = densityMode === "compact" ? 150 : 260;
+  const chromeWidth = densityMode === "compact" ? 48 : 74;
+  const minWidth = densityMode === "compact" ? 76 : 108;
+  const maxWidth = densityMode === "compact" ? 168 : 260;
   return clamp(estimateTextWidth(label) + chromeWidth, minWidth, maxWidth);
 }
 
@@ -1971,8 +1971,8 @@ function estimateDataColumnWidth(column: string, rows: DataRow[], densityMode: T
     return Math.max(currentMax, estimateTextWidth(formatCell(column, row[column])));
   }, 0);
   const padding = densityMode === "compact" ? 14 : 28;
-  const minWidth = densityMode === "compact" ? 54 : 108;
-  const maxWidth = densityMode === "compact" ? 180 : 460;
+  const minWidth = densityMode === "compact" ? 72 : 108;
+  const maxWidth = densityMode === "compact" ? 220 : 460;
   return clamp(maxTextWidth + padding, minWidth, maxWidth);
 }
 
@@ -2032,6 +2032,12 @@ const COMPACT_COLUMN_LABELS: Record<string, string> = {
   symbol_status: "Symbol",
   ticker_type_provider_code: "Type",
   current_open: "Open",
+  ask: "Ask",
+  bar_time_market: "Time",
+  bid: "Bid",
+  buy_pressure: "Buy",
+  float_rotation: "Rot",
+  last_recent_volume_5: "5m Vol",
   last_bearish_volume_divergence_score: "BVD",
   last_close: "Close",
   last_day_current_change_pct: "Cur Chg",
@@ -2056,8 +2062,23 @@ const COMPACT_COLUMN_LABELS: Record<string, string> = {
   live_news_recency: "News",
   live_signal_query: "Query",
   live_signal_time: "Signal",
+  market_state: "State",
+  notional_rate_10s: "$/10s",
   open_vs_vwap_pct: "Open/VWAP",
+  price_vs_vwap_pct: "Px/VWAP",
+  provider: "Src",
+  quote_pressure: "Quote",
+  scanner_score: "Score",
+  sell_pressure: "Sell",
+  signal_type: "Signal",
   spread_bps_abs: "Spread",
+  tape_imbalance: "Tape",
+  trade_accel_10s_60s: "Accel",
+  trade_count_10s: "Trd 10s",
+  trade_count_60s: "Trd 60s",
+  trade_rate_10s: "Trd/s",
+  trade_rate_60s: "Trd/s 60",
+  volume_rate_10s: "Vol/s",
 };
 
 function estimateTextWidth(value: string) {
@@ -2714,8 +2735,9 @@ function formatDateValue(value: Date) {
 
 function renderCell(row: DataRow, column: string) {
   if (isLogoColumn(column)) return renderLogoCell(row, column);
-  if (column.toLowerCase() !== "ticker") return formatCell(column, row[column]);
+  if (!isTickerColumn(column)) return formatCell(column, row[column]);
   const value = formatCell(column, row[column]);
+  if (column.toLowerCase() !== "ticker") return value;
   const newsCount = coerceNumber(row.live_news_count);
   if (!Number.isFinite(newsCount) || newsCount <= 0) return value;
   const recency = normalizedNewsRecency(row.live_news_recency);
@@ -2734,6 +2756,11 @@ function renderCell(row: DataRow, column: string) {
 
 function isLogoColumn(column: string) {
   return column.toLowerCase() === "logo";
+}
+
+function isTickerColumn(column: string) {
+  const normalized = column.toLowerCase();
+  return normalized === "ticker" || normalized === "candidate_massive_ticker";
 }
 
 function renderLogoCell(row: DataRow, column: string) {
@@ -2774,15 +2801,27 @@ function normalizedNewsRecency(value: unknown) {
 function cellClassName(value: unknown, column: string) {
   const normalized = column.toLowerCase();
   if (normalized === "logo") return "data-table-cell data-table-logo-column";
+  if (isTickerColumn(column)) return "data-table-cell ticker";
   if (normalized === "live_news_recency") {
     const recency = String(value ?? "none").toLowerCase();
     return `data-table-cell live-news-recency ${["hot", "warm", "recent", "cold"].includes(recency) ? recency : "none"}`;
   }
+  if (isPriceColumn(normalized)) return "data-table-cell numeric price";
+  if (isCategoricalColumn(normalized)) return "data-table-cell categorical";
   const numeric = coerceNumber(value);
   if (!Number.isFinite(numeric)) return "data-table-cell";
   if (normalized.includes("pnl") || normalized.includes("return") || normalized.includes("change") || normalized.includes("pct")) {
-    if (numeric > 0) return "data-table-cell positive";
-    if (numeric < 0) return "data-table-cell negative";
+    if (numeric > 0) return "data-table-cell numeric positive";
+    if (numeric < 0) return "data-table-cell numeric negative";
   }
-  return "data-table-cell";
+  return "data-table-cell numeric";
+}
+
+function isPriceColumn(normalizedColumn: string) {
+  if (normalizedColumn.includes("pct") || normalizedColumn.includes("bps") || normalizedColumn.includes("volume")) return false;
+  return ["ask", "bid", "close", "current_open", "entry", "exit", "high", "last_close", "last_high", "last_low", "last_open", "low", "open", "price", "snapshot_ask", "snapshot_bid", "snapshot_day_close", "snapshot_day_high", "snapshot_day_low", "snapshot_day_open", "snapshot_last_price", "stop", "vwap"].some((part) => normalizedColumn === part || normalizedColumn.endsWith(`_${part}`));
+}
+
+function isCategoricalColumn(normalizedColumn: string) {
+  return normalizedColumn.includes("state") || normalizedColumn.includes("setup") || normalizedColumn.includes("profile") || normalizedColumn.includes("provider") || normalizedColumn.includes("source") || normalizedColumn.includes("type") || normalizedColumn.includes("status") || normalizedColumn.includes("recency");
 }

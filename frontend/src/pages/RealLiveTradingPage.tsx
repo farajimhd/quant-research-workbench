@@ -35,6 +35,7 @@ import type { Time } from "lightweight-charts";
 import { api, query } from "../api/client";
 import { ChartPanel, type ChartCatalogItem, type ChartDisplayItem, type ChartPayload, type LiveEntryLine } from "../app/components/ChartPanel";
 import { DataTable, type BackendQueryPreset, type BackendTableQuery } from "../app/components/DataTable";
+import type { UiScale } from "../app/components/Layout";
 import { PageIntro } from "../app/components/PageIntro";
 import { Tabs } from "../app/components/Tabs";
 
@@ -569,7 +570,7 @@ function buildDefaultCanvasLayout(childCanvas: boolean): { chartWindows: ChartWi
   return { chartWindows: [], layouts, windows: childCanvas ? [] : [...CORE_WINDOW_IDS] };
 }
 
-export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
+export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterChange }: { onScalePreferenceChange?: Dispatch<SetStateAction<UiScale | undefined>>; onTopbarCenterChange?: Dispatch<SetStateAction<ReactNode>> }) {
   const canvasId = useMemo(() => new URLSearchParams(window.location.search).get("liveCanvas") || "main", []);
   const isChildCanvas = canvasId !== "main";
   const initialCanvas = useMemo(() => readStoredCanvas(canvasId, isChildCanvas), [canvasId, isChildCanvas]);
@@ -634,6 +635,10 @@ export function RealLiveTradingPage({ onTopbarCenterChange }: { onTopbarCenterCh
   useEffect(() => {
     liveClockModeRef.current = liveClockMode;
   }, [liveClockMode]);
+
+  useEffect(() => {
+    onScalePreferenceChange?.(started ? 0.8 : 1);
+  }, [onScalePreferenceChange, started]);
 
   useEffect(() => {
     let active = true;
@@ -3847,8 +3852,17 @@ function buildGateProgressSteps({
   const backendStep = (id: string, label: string, waitingMessage: string) => {
     const step = backendStepsById.get(id);
     if (step) return progressStepFromBackend(step, label);
+    if (universePreviewLoading && ["reference_query", "massive_snapshot"].includes(id)) {
+      return makeGateProgressStep({
+        detail: "Parallel",
+        id,
+        label,
+        message: waitingMessage,
+        status: "running",
+      });
+    }
     return makeGateProgressStep({
-      detail: universePreviewLoading ? "Queued" : "Waiting",
+      detail: universePreviewLoading ? "Waiting inputs" : "Waiting",
       id,
       label,
       message: universePreviewLoading ? waitingMessage : "Waiting for the startup preview request.",

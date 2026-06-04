@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 
-import { Layout, type PageKey } from "./app/components/Layout";
+import { Layout, type PageKey, type UiScale } from "./app/components/Layout";
 import { LiveTradingPage } from "./pages/LiveTradingPage";
 import { MarketDataBuildPage } from "./pages/MarketDataBuildPage";
 import { MarketDataReviewPage } from "./pages/MarketDataReviewPage";
@@ -17,6 +17,7 @@ export function App() {
   });
   const [visitedPages, setVisitedPages] = useState<Set<PageKey>>(() => new Set([page]));
   const [topbarCenter, setTopbarCenter] = useState<ReactNode>(null);
+  const [realLiveScale, setRealLiveScale] = useState<UiScale | undefined>(undefined);
 
   useEffect(() => {
     window.location.hash = page;
@@ -27,7 +28,7 @@ export function App() {
   }, [page]);
 
   return (
-    <Layout page={page} onPageChange={setPage} topbarCenter={page === "live-trading" || page === "real-live-trading" ? topbarCenter : null}>
+    <Layout page={page} onPageChange={setPage} scaleOverride={page === "real-live-trading" ? realLiveScale : undefined} topbarCenter={page === "live-trading" || page === "real-live-trading" ? topbarCenter : null}>
       <div aria-hidden={page !== "strategy"} className={page === "strategy" ? "page-cache-panel active" : "page-cache-panel"}>
         {page === "strategy" || visitedPages.has("strategy") ? <StrategyPage /> : null}
       </div>
@@ -44,7 +45,7 @@ export function App() {
         {page === "live-trading" || visitedPages.has("live-trading") ? <LiveTradingPage onTopbarCenterChange={page === "live-trading" ? setTopbarCenter : undefined} /> : null}
       </div>
       <div aria-hidden={page !== "real-live-trading"} className={page === "real-live-trading" ? "page-cache-panel active" : "page-cache-panel"}>
-        {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
+        {page === "real-live-trading" || visitedPages.has("real-live-trading") ? <RealLiveTradingPage onScalePreferenceChange={page === "real-live-trading" ? setRealLiveScale : undefined} onTopbarCenterChange={page === "real-live-trading" ? setTopbarCenter : undefined} /> : null}
       </div>
     </Layout>
   );

@@ -6,11 +6,13 @@ import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from 
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
 export type PageKey = "strategy" | "research-runs" | "build-data" | "review-data" | "live-trading" | "real-live-trading";
+export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
   page: PageKey;
   onPageChange: (page: PageKey) => void;
   children: ReactNode;
+  scaleOverride?: UiScale;
   topbarCenter?: ReactNode;
 };
 
@@ -40,12 +42,13 @@ const navGroups = [
 
 const THEME_STORAGE_KEY = "quant-research-workbench.theme";
 const UI_SCALE_STORAGE_KEY = "quant-research-workbench.ui-scale";
-const UI_SCALE_OPTIONS = [0.8, 0.9, 1, 1.1, 1.25] as const;
+const UI_SCALE_OPTIONS = [0.8, 0.9, 1, 1.1, 1.25] as const satisfies readonly UiScale[];
 
 export function Layout({
   children,
   onPageChange,
   page,
+  scaleOverride,
   topbarCenter
 }: LayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
@@ -62,6 +65,11 @@ export function Layout({
     applyThemeDefinition(document.documentElement, themeId);
     window.localStorage.setItem(THEME_STORAGE_KEY, themeId);
   }, [themeId]);
+
+  useEffect(() => {
+    if (scaleOverride === undefined || Math.abs(scaleOverride - uiScale) < 0.001) return;
+    setUiScale(scaleOverride);
+  }, [scaleOverride, uiScale]);
 
   useEffect(() => {
     document.documentElement.style.setProperty("--app-zoom", String(uiScale));
