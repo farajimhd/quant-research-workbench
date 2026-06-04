@@ -11,14 +11,16 @@ Current responsibilities:
 - default subscription scope is full tape: `T.*` and `Q.*`
 - normalize quote/trade events
 - maintain in-memory live market state
+- build live quote/trade bars for `1s`, `10s`, `30s`, `1m`, `5m`, and `1h`
 - publish compact local snapshots/streams to the quant app
 - batch-write raw events to the app-owned ClickHouse database
+- batch-write closed bars to the app-owned ClickHouse database
 
 The gateway keeps two paths separate:
 
 ```text
-fast path: Massive -> memory -> local app stream
-persistence path: Massive -> queue -> ClickHouse batch insert
+fast path: Massive -> memory/scanner/bars -> local app stream
+persistence path: Massive -> queues -> ClickHouse batch inserts
 ```
 
 ClickHouse writes must never block the live trading decision path.
@@ -40,6 +42,9 @@ Environment variables:
 - `QMD_CLICKHOUSE_MAX_BATCH`, default `10000`
 - `QMD_CLICKHOUSE_FLUSH_INTERVAL_MS`, default `1000`
 - `QMD_EVENT_CHANNEL_CAPACITY`, default `250000`
+- `QMD_BAR_CHANNEL_CAPACITY`, default `250000`
+- `QMD_BAR_HISTORY_LIMIT`, default `1000`
+- `QMD_BAR_TIMEFRAMES`, default `1s,10s,30s,1m,5m,1h`
 - `QMD_SCANNER_BROADCAST_MS`, default `1000`
 - `QMD_TICKER_BROADCAST_MS`, default `250`
 - `QMD_GAP_FILL_ENABLED`, default `true`
@@ -53,7 +58,35 @@ The service writes to:
 
 - `live_massive_trades`
 - `live_massive_quotes`
+- `live_market_bars`
 - `qmd_gap_fill_runs`
+
+## Live Bars
+
+Bars are built asynchronously from normalized Massive quotes and trades. The
+websocket ingest task pushes events into a bar queue with `try_send`, so bar
+math and ClickHouse writes do not block the live ingest loop.
+
+Supported default timeframes:
+
+- `1s`
+- `10s`
+- `30s`
+- `1m`
+- `5m`
+- `1h`
+
+Each bar is aligned to the top of its timeframe using UTC event time. For
+example, `1h` bars start exactly at the top of the hour, and `5m` bars start at
+`:00`, `:05`, `:10`, and so on. The current open bar is kept in memory and
+updated until it closes. Closed bars are emitted to the bar writer and persisted
+to `live_market_bars` in batches.
+
+The bar abstraction includes trade OHLCV, VWAP, quote mid/spread measures,
+quote/trade rates, buy/sell tape imbalance proxies, liquidity/friction proxies,
+momentum/acceleration fields, and volatility/noise fields. Metrics that require
+future quote matching are currently recorded as close/VWAP or spread proxies,
+so the schema is stable while delayed post-trade refinement can be added later.
 
 ## Session Lifecycle
 
@@ -114,6 +147,7 @@ Snapshot endpoints:
 ```text
 GET http://127.0.0.1:8795/snapshot/scanner?limit=250
 GET http://127.0.0.1:8795/snapshot/ticker/AAPL
+GET http://127.0.0.1:8795/snapshot/bars/AAPL?timeframe=1m&limit=500
 ```
 
 Local websocket endpoints:
@@ -121,5 +155,6 @@ Local websocket endpoints:
 ```text
 ws://127.0.0.1:8795/stream/scanner
 ws://127.0.0.1:8795/stream/ticker/AAPL
+ws://127.0.0.1:8795/stream/bars/AAPL?timeframe=1m&limit=500
 ws://127.0.0.1:8795/stream/events
 ```

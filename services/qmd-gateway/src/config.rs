@@ -4,6 +4,9 @@ use std::env;
 #[derive(Clone, Debug, Serialize)]
 pub struct GatewayConfig {
     pub api_key_present: bool,
+    pub bar_channel_capacity: usize,
+    pub bar_history_limit: usize,
+    pub bar_timeframes: Vec<String>,
     pub bind: String,
     pub clickhouse_database: String,
     pub clickhouse_password_present: bool,
@@ -34,6 +37,9 @@ impl GatewayConfig {
         let clickhouse_password = env_string("QMD_CLICKHOUSE_PASSWORD", "");
         Self {
             api_key_present: !massive_api_key.is_empty(),
+            bar_channel_capacity: env_usize("QMD_BAR_CHANNEL_CAPACITY", 250_000),
+            bar_history_limit: env_usize("QMD_BAR_HISTORY_LIMIT", 1_000),
+            bar_timeframes: env_list_with_default("QMD_BAR_TIMEFRAMES", &["1s", "10s", "30s", "1m", "5m", "1h"]),
             bind: env_string("QMD_GATEWAY_BIND", "127.0.0.1:8795"),
             clickhouse_database: env_string("QMD_CLICKHOUSE_DATABASE", "q_live"),
             clickhouse_password_present: !clickhouse_password.is_empty(),
@@ -125,4 +131,13 @@ fn env_list(name: &str) -> Vec<String> {
         .map(|value| value.trim().to_ascii_uppercase())
         .filter(|value| !value.is_empty())
         .collect()
+}
+
+fn env_list_with_default(name: &str, default: &[&str]) -> Vec<String> {
+    let values = env_list(name);
+    if values.is_empty() {
+        default.iter().map(|value| value.to_string()).collect()
+    } else {
+        values.into_iter().map(|value| value.to_ascii_lowercase()).collect()
+    }
 }
