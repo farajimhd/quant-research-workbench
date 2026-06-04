@@ -23,6 +23,8 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 DEFAULT_DATABASE = "market_sip_raw"
 DEFAULT_CLICKHOUSE_URL = "http://localhost:8123"
 CLICKHOUSE_URL_ENV = "CLICKHOUSE_URL"
+CLICKHOUSE_WORKSTATION_PASSWORD_ENV = "CLICKHOUSE_WORKSTATION_PASSWORD"
+CLICKHOUSE_WORKSTATION_USER_ENV = "CLICKHOUSE_WORKSTATION_USER"
 CLICKHOUSE_PASSWORD_SIMPLE_ENV = "CLICKHOUSE_PASSWORD"
 CLICKHOUSE_USER_SIMPLE_ENV = "CLICKHOUSE_USER"
 CLICKHOUSE_ENDPOINT_ENV = "TD__DATABASE__CLICKHOUSE__ENDPOINT_URL"
@@ -134,11 +136,11 @@ def default_clickhouse_url() -> str:
 
 
 def default_clickhouse_user() -> str:
-    return os.environ.get(CLICKHOUSE_USER_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_USER_ENV) or "default"
+    return os.environ.get(CLICKHOUSE_WORKSTATION_USER_ENV) or os.environ.get(CLICKHOUSE_USER_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_USER_ENV) or "default"
 
 
 def default_clickhouse_password() -> str:
-    return os.environ.get(CLICKHOUSE_PASSWORD_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_PASSWORD_ENV) or ""
+    return os.environ.get(CLICKHOUSE_WORKSTATION_PASSWORD_ENV) or os.environ.get(CLICKHOUSE_PASSWORD_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_PASSWORD_ENV) or ""
 
 
 def default_database() -> str:
@@ -156,6 +158,8 @@ def default_storage_policy() -> str:
 def clickhouse_env_status_keys() -> list[str]:
     return [
         CLICKHOUSE_URL_ENV,
+        CLICKHOUSE_WORKSTATION_USER_ENV,
+        CLICKHOUSE_WORKSTATION_PASSWORD_ENV,
         CLICKHOUSE_USER_SIMPLE_ENV,
         CLICKHOUSE_PASSWORD_SIMPLE_ENV,
         HISTORICAL_CLICKHOUSE_DATABASE_ENV,
