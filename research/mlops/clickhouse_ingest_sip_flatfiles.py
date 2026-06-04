@@ -47,7 +47,7 @@ CLICKHOUSE_FILE_ROOT_PREFIXES = (
 DEFAULT_FLATFILES_ROOT_CH = "/mnt/d/market-data/flatfiles/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_sip_ingest")
 DEFAULT_PREFLIGHT_PROCESSES = 4
-DEFAULT_MANIFEST_TABLE = "ingest_manifest_v2"
+DEFAULT_MANIFEST_TABLE = "ingest_manifest"
 
 QUOTE_SCHEMA_STRING = (
     "ticker String, "
@@ -131,7 +131,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user", default=default_clickhouse_user())
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--database", default=default_database())
-    parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE, help="Manifest bookkeeping table. Defaults to ingest_manifest_v2; the legacy ingest_manifest table is left untouched.")
+    parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE, help="Manifest bookkeeping table. Defaults to ingest_manifest.")
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
     parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN))
