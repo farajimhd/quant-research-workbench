@@ -144,6 +144,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--retry-started", action="store_true", help="Retry files whose latest manifest status is started.")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--rebuild-manifest-only", action="store_true", help="Rediscover source files, recompute source/raw stats, append fresh manifest statuses, and exit without ingesting.")
     parser.add_argument("--optimize-final", action="store_true", help="Run OPTIMIZE FINAL on raw tables after ingest. Usually leave off for full-year ingest.")
     return parser.parse_args()
 
@@ -235,7 +236,7 @@ def main() -> None:
     print(f"settings={settings.strip()}", flush=True)
     print(f"preflight_processes={args.preflight_processes}", flush=True)
     print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
-    print(f"dry_run={args.dry_run} retry_failed={args.retry_failed} retry_started={args.retry_started}", flush=True)
+    print(f"dry_run={args.dry_run} rebuild_manifest_only={args.rebuild_manifest_only} retry_failed={args.retry_failed} retry_started={args.retry_started}", flush=True)
     print(f"output_report={run_report_path}", flush=True)
     print(f"secret_status={secret_status(clickhouse_env_status_keys())}", flush=True)
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
@@ -255,6 +256,11 @@ def main() -> None:
 
     create_database_and_tables(client, database, args.storage_policy)
     source_preflight = preflight_source_files(source_files, args.preflight_processes)
+    if args.rebuild_manifest_only:
+        rebuild_manifest_from_raw(client, database, source_files, source_preflight, run_id, run_report_path)
+        print_table_stats(client, database)
+        return
+
     for source in source_files:
         insert_manifest(client, database, source, status="discovered", run_id=run_id, expected_stats=source_preflight[source_identity(source)].stats)
 
@@ -480,6 +486,69 @@ def print_preflight_progress(index: int, total: int, result: SourcePreflight, st
         f"file_seconds={result.wall_seconds:.1f} elapsed_min={elapsed / 60:.1f} eta_min={eta_seconds / 60:.1f}",
         flush=True,
     )
+
+
+def rebuild_manifest_from_raw(
+    client: ClickHouseHttpClient,
+    database: str,
+    source_files: list[SourceFile],
+    source_preflight: dict[str, SourcePreflight],
+    run_id: str,
+    run_report_path: Path,
+) -> None:
+    print("=" * 96, flush=True)
+    print(f"START manifest rebuild files={len(source_files):,}", flush=True)
+    started_at = time.perf_counter()
+    status_counts: dict[str, int] = {}
+    for index, source in enumerate(source_files, start=1):
+        expected_stats = source_preflight[source_identity(source)].stats
+        actual_stats = query_raw_stats(client, database, source)
+        if row_stats_match(expected_stats, actual_stats):
+            status = "ok"
+            exception = ""
+        elif actual_stats.rows == 0:
+            status = "missing"
+            exception = "No rows currently exist in raw table for this source file."
+        else:
+            status = "mismatch"
+            exception = "Raw table stats do not match source preflight stats."
+        status_counts[status] = status_counts.get(status, 0) + 1
+        insert_manifest(
+            client,
+            database,
+            source,
+            status=status,
+            run_id=run_id,
+            profile=QueryProfile(label="manifest_rebuild", query_id="", wall_seconds=0.0, written_rows=actual_stats.rows),
+            expected_stats=expected_stats,
+            actual_stats=actual_stats,
+            exception=exception,
+        )
+        append_jsonl(
+            run_report_path,
+            {
+                "source": source_to_json(source),
+                "status": status,
+                "expected_stats": asdict(expected_stats),
+                "actual_stats": asdict(actual_stats),
+            },
+        )
+        elapsed = time.perf_counter() - started_at
+        rate = index / elapsed if elapsed > 0 else 0.0
+        remaining = len(source_files) - index
+        eta_seconds = remaining / rate if rate > 0 else 0.0
+        print(
+            f"MANIFEST-REBUILD [{index:,}/{len(source_files):,}] {source.kind}:{source.date} status={status} "
+            f"expected_rows={expected_stats.rows:,} actual_rows={actual_stats.rows:,} "
+            f"expected_min={expected_stats.min_sip_timestamp} actual_min={actual_stats.min_sip_timestamp} "
+            f"expected_max={expected_stats.max_sip_timestamp} actual_max={actual_stats.max_sip_timestamp} "
+            f"elapsed_min={elapsed / 60:.1f} eta_min={eta_seconds / 60:.1f}",
+            flush=True,
+        )
+    elapsed = time.perf_counter() - started_at
+    print(f"DONE manifest rebuild elapsed_seconds={elapsed:.1f} status_counts={status_counts}", flush=True)
+    print(f"report={run_report_path}", flush=True)
+    print("=" * 96, flush=True)
 
 
 def create_database_and_tables(client: ClickHouseHttpClient, database: str, storage_policy: str) -> None:
@@ -744,11 +813,15 @@ def enrich_profile_from_query_log(client: ClickHouseHttpClient, profile: QueryPr
 def latest_manifest_status(client: ClickHouseHttpClient, database: str, source: SourceFile) -> str:
     try:
         rows = client.query_tsv(
-            "SELECT if(countIf(status = 'ok') > 0, 'ok', argMax(status, updated_at)) FROM "
+            "SELECT status FROM "
             f"{quote_ident(database)}.ingest_manifest "
             f"WHERE kind = {sql_string(source.kind)} "
             f"AND source_date = toDate({sql_string(source.date)}) "
-            f"AND source_file = {sql_string(source.windows_path.name)}"
+            f"AND source_file = {sql_string(source.windows_path.name)} "
+            "ORDER BY updated_at DESC, "
+            "multiIf(status = 'failed', 90, status = 'mismatch', 80, status = 'missing', 70, "
+            "status = 'ok', 60, status = 'started', 50, status = 'discovered', 40, 0) DESC "
+            "LIMIT 1"
         ).strip().splitlines()
     except Exception:
         return ""
