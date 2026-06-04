@@ -47,6 +47,7 @@ CLICKHOUSE_FILE_ROOT_PREFIXES = (
 DEFAULT_FLATFILES_ROOT_CH = "/mnt/d/market-data/flatfiles/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_sip_ingest")
 DEFAULT_PREFLIGHT_PROCESSES = 4
+DEFAULT_MANIFEST_TABLE = "ingest_manifest_v2"
 
 QUOTE_SCHEMA_STRING = (
     "ticker String, "
@@ -130,6 +131,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user", default=default_clickhouse_user())
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--database", default=default_database())
+    parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE, help="Manifest bookkeeping table. Defaults to ingest_manifest_v2; the legacy ingest_manifest table is left untouched.")
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
     parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN))
@@ -224,12 +226,14 @@ def main() -> None:
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     settings = query_settings(args)
     database = args.database.strip()
+    manifest_table = args.manifest_table.strip()
     flatfiles_root_win = Path(args.flatfiles_root_win)
     flatfiles_root_ch = normalize_clickhouse_file_path(args.flatfiles_root_ch)
 
     print("=" * 96, flush=True)
     print("Production ClickHouse SIP flatfile ingest", flush=True)
     print(f"database={database}", flush=True)
+    print(f"manifest_table={manifest_table}", flush=True)
     print(f"kinds={','.join(kinds)} start_date={args.start_date} end_date={args.end_date}", flush=True)
     print(f"flatfiles_root_win={flatfiles_root_win}", flush=True)
     print(f"flatfiles_root_ch={flatfiles_root_ch}", flush=True)
@@ -254,15 +258,15 @@ def main() -> None:
     if args.dry_run:
         return
 
-    create_database_and_tables(client, database, args.storage_policy)
+    create_database_and_tables(client, database, manifest_table, args.storage_policy)
     source_preflight = preflight_source_files(source_files, args.preflight_processes)
     if args.rebuild_manifest_only:
-        rebuild_manifest_from_raw(client, database, source_files, source_preflight, run_id, run_report_path)
+        rebuild_manifest_from_raw(client, database, manifest_table, source_files, source_preflight, run_id, run_report_path)
         print_table_stats(client, database)
         return
 
     for source in source_files:
-        insert_manifest(client, database, source, status="discovered", run_id=run_id, expected_stats=source_preflight[source_identity(source)].stats)
+        insert_manifest(client, database, manifest_table, source, status="discovered", run_id=run_id, expected_stats=source_preflight[source_identity(source)].stats)
 
     completed = 0
     skipped = 0
@@ -271,7 +275,7 @@ def main() -> None:
 
     for index, source in enumerate(source_files, start=1):
         expected_stats = source_preflight[source_identity(source)].stats
-        latest_status = latest_manifest_status(client, database, source)
+        latest_status = latest_manifest_status(client, database, manifest_table, source)
         actual_stats = query_raw_stats(client, database, source)
         if latest_status or actual_stats.rows:
             print(
@@ -289,6 +293,7 @@ def main() -> None:
                 insert_manifest(
                     client,
                     database,
+                    manifest_table,
                     source,
                     status="ok",
                     run_id=run_id,
@@ -312,25 +317,25 @@ def main() -> None:
 
         print("=" * 96, flush=True)
         print(f"[{index:,}/{len(source_files):,}] START {source.kind}:{source.date} file={source.windows_path.name} size_gib={source.bytes / (1024 ** 3):.2f} expected_rows={expected_stats.rows:,}", flush=True)
-        insert_manifest(client, database, source, status="started", run_id=run_id, expected_stats=expected_stats)
+        insert_manifest(client, database, manifest_table, source, status="started", run_id=run_id, expected_stats=expected_stats)
         try:
             profile = ingest_one_file(client, database, source, settings)
             actual_stats = query_raw_stats(client, database, source)
             profile.written_rows = actual_stats.rows
             if not row_stats_match(expected_stats, actual_stats):
-                insert_manifest(client, database, source, status="failed", run_id=run_id, profile=profile, expected_stats=expected_stats, actual_stats=actual_stats, exception="Post-insert raw stats do not match source preflight stats.")
+                insert_manifest(client, database, manifest_table, source, status="failed", run_id=run_id, profile=profile, expected_stats=expected_stats, actual_stats=actual_stats, exception="Post-insert raw stats do not match source preflight stats.")
                 raise RuntimeError(
                     f"Post-insert validation failed for {source.kind}:{source.date}: "
                     f"expected={expected_stats} actual={actual_stats}"
                 )
-            insert_manifest(client, database, source, status="ok", run_id=run_id, profile=profile, expected_stats=expected_stats, actual_stats=actual_stats)
+            insert_manifest(client, database, manifest_table, source, status="ok", run_id=run_id, profile=profile, expected_stats=expected_stats, actual_stats=actual_stats)
             append_jsonl(run_report_path, {"source": source_to_json(source), "profile": asdict(profile), "status": "ok"})
             completed += 1
             print_profile_summary(profile)
         except Exception as exc:  # noqa: BLE001
             failed += 1
             actual_stats = safe_query_raw_stats(client, database, source)
-            insert_manifest(client, database, source, status="failed", run_id=run_id, expected_stats=expected_stats, actual_stats=actual_stats, exception=repr(exc))
+            insert_manifest(client, database, manifest_table, source, status="failed", run_id=run_id, expected_stats=expected_stats, actual_stats=actual_stats, exception=repr(exc))
             append_jsonl(run_report_path, {"source": source_to_json(source), "status": "failed", "exception": repr(exc)})
             print(f"FAILED {source.kind}:{source.date}: {exc!r}", flush=True)
             raise
@@ -491,6 +496,7 @@ def print_preflight_progress(index: int, total: int, result: SourcePreflight, st
 def rebuild_manifest_from_raw(
     client: ClickHouseHttpClient,
     database: str,
+    manifest_table: str,
     source_files: list[SourceFile],
     source_preflight: dict[str, SourcePreflight],
     run_id: str,
@@ -516,6 +522,7 @@ def rebuild_manifest_from_raw(
         insert_manifest(
             client,
             database,
+            manifest_table,
             source,
             status=status,
             run_id=run_id,
@@ -551,12 +558,12 @@ def rebuild_manifest_from_raw(
     print("=" * 96, flush=True)
 
 
-def create_database_and_tables(client: ClickHouseHttpClient, database: str, storage_policy: str) -> None:
+def create_database_and_tables(client: ClickHouseHttpClient, database: str, manifest_table: str, storage_policy: str) -> None:
     client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}")
     client.execute(create_quotes_table_sql(database, storage_policy))
     client.execute(create_trades_table_sql(database, storage_policy))
-    client.execute(create_manifest_table_sql(database, storage_policy))
-    ensure_manifest_columns(client, database)
+    client.execute(create_manifest_table_sql(database, manifest_table, storage_policy))
+    ensure_manifest_columns(client, database, manifest_table)
 
 
 def create_quotes_table_sql(database: str, storage_policy: str) -> str:
@@ -622,10 +629,11 @@ ORDER BY (ticker, sip_timestamp, sequence_number)
 """
 
 
-def create_manifest_table_sql(database: str, storage_policy: str) -> str:
+def create_manifest_table_sql(database: str, manifest_table: str, storage_policy: str) -> str:
     db = quote_ident(database)
+    table = quote_ident(manifest_table)
     return f"""
-CREATE TABLE IF NOT EXISTS {db}.ingest_manifest
+CREATE TABLE IF NOT EXISTS {db}.{table}
 (
     kind LowCardinality(String),
     source_date Date,
@@ -657,9 +665,9 @@ ORDER BY (kind, source_date, source_file, updated_at)
 """
 
 
-def ensure_manifest_columns(client: ClickHouseHttpClient, database: str) -> None:
+def ensure_manifest_columns(client: ClickHouseHttpClient, database: str, manifest_table: str) -> None:
     db = quote_ident(database)
-    table = f"{db}.ingest_manifest"
+    table = f"{db}.{quote_ident(manifest_table)}"
     columns = [
         ("expected_rows", "UInt64"),
         ("expected_min_sip_timestamp", "UInt64"),
@@ -810,11 +818,11 @@ def enrich_profile_from_query_log(client: ClickHouseHttpClient, profile: QueryPr
         print(f"WARN query_log profile unavailable for {profile.label}: {exc!r}", flush=True)
 
 
-def latest_manifest_status(client: ClickHouseHttpClient, database: str, source: SourceFile) -> str:
+def latest_manifest_status(client: ClickHouseHttpClient, database: str, manifest_table: str, source: SourceFile) -> str:
     try:
         rows = client.query_tsv(
             "SELECT status FROM "
-            f"{quote_ident(database)}.ingest_manifest "
+            f"{quote_ident(database)}.{quote_ident(manifest_table)} "
             f"WHERE kind = {sql_string(source.kind)} "
             f"AND source_date = toDate({sql_string(source.date)}) "
             f"AND source_file = {sql_string(source.windows_path.name)} "
@@ -875,6 +883,7 @@ def delete_raw_rows(client: ClickHouseHttpClient, database: str, source: SourceF
 def insert_manifest(
     client: ClickHouseHttpClient,
     database: str,
+    manifest_table: str,
     source: SourceFile,
     *,
     status: str,
@@ -888,9 +897,10 @@ def insert_manifest(
     expected_stats = expected_stats or RowStats(rows=0, min_sip_timestamp=0, max_sip_timestamp=0)
     actual_stats = actual_stats or RowStats(rows=0, min_sip_timestamp=0, max_sip_timestamp=0)
     db = quote_ident(database)
+    table = quote_ident(manifest_table)
     client.execute(
         f"""
-INSERT INTO {db}.ingest_manifest
+INSERT INTO {db}.{table}
 (
     kind, source_date, source_file, source_path_ch, file_bytes,
     expected_rows, expected_min_sip_timestamp, expected_max_sip_timestamp,
