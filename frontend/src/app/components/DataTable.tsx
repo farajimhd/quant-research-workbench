@@ -1956,7 +1956,7 @@ function buildColumnWidthsByName({
 }
 
 function estimateHeaderColumnWidth(column: string, densityMode: TableDensityMode) {
-  if (isLogoColumn(column)) return 62;
+  if (isLogoColumn(column)) return 48;
   const label = columnHeaderLabel(column, densityMode);
   const chromeWidth = densityMode === "compact" ? 92 : 104;
   const minWidth = densityMode === "compact" ? 82 : 112;
@@ -1965,7 +1965,7 @@ function estimateHeaderColumnWidth(column: string, densityMode: TableDensityMode
 }
 
 function estimateDataColumnWidth(column: string, rows: DataRow[], densityMode: TableDensityMode) {
-  if (isLogoColumn(column)) return 62;
+  if (isLogoColumn(column)) return 48;
   const sampledRows = rows.slice(0, 80);
   const maxTextWidth = sampledRows.reduce((currentMax, row) => {
     return Math.max(currentMax, estimateTextWidth(formatCell(column, row[column])));
@@ -2789,6 +2789,7 @@ function formatDateValue(value: Date) {
 
 function renderCell(row: DataRow, column: string) {
   if (isLogoColumn(column)) return renderLogoCell(row, column);
+  if (isBadgeCategoryColumn(column.toLowerCase())) return renderCategoricalCell(row[column], column);
   if (!isTickerColumn(column)) return formatCell(column, row[column]);
   const value = formatCell(column, row[column]);
   if (column.toLowerCase() !== "ticker") return value;
@@ -2806,6 +2807,45 @@ function renderCell(row: DataRow, column: string) {
       <span>{value}</span>
     </span>
   );
+}
+
+function renderCategoricalCell(value: unknown, column: string) {
+  const label = formatCell(column, value);
+  if (label === "-") return label;
+  return (
+    <span className={`data-table-category-badge ${categoryBadgeTone(column, label)}`} title={categoryTitle(column, label)}>
+      {categoryLabel(label)}
+    </span>
+  );
+}
+
+function categoryLabel(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+function categoryTitle(column: string, value: string) {
+  const normalized = column.toLowerCase();
+  const label = categoryLabel(value);
+  if (normalized === "float_profile") return `Float profile: ${label}`;
+  if (normalized === "short_setup") return `Short setup: ${label}`;
+  return label;
+}
+
+function categoryBadgeTone(column: string, value: string) {
+  const normalized = column.toLowerCase();
+  const label = value.toLowerCase();
+  if (normalized === "float_profile") {
+    if (label.includes("micro")) return "danger";
+    if (label.includes("low")) return "warning";
+    if (label.includes("mid")) return "info";
+    if (label.includes("large")) return "neutral";
+  }
+  if (normalized === "short_setup") {
+    if (label.includes("squeeze")) return "danger";
+    if (label.includes("crowded")) return "warning";
+    if (label.includes("pressure")) return "info";
+  }
+  return "neutral";
 }
 
 function isLogoColumn(column: string) {
@@ -2861,7 +2901,7 @@ function cellClassName(value: unknown, column: string) {
     return `data-table-cell live-news-recency ${["hot", "warm", "recent", "cold"].includes(recency) ? recency : "none"}`;
   }
   if (isPriceColumn(normalized)) return "data-table-cell numeric price";
-  if (isCategoricalColumn(normalized)) return "data-table-cell categorical";
+  if (isBadgeCategoryColumn(normalized)) return "data-table-cell categorical";
   const numeric = coerceNumber(value);
   if (!Number.isFinite(numeric)) return "data-table-cell";
   if (normalized.includes("pnl") || normalized.includes("return") || normalized.includes("change") || normalized.includes("pct")) {
@@ -2878,4 +2918,8 @@ function isPriceColumn(normalizedColumn: string) {
 
 function isCategoricalColumn(normalizedColumn: string) {
   return normalizedColumn.includes("state") || normalizedColumn.includes("setup") || normalizedColumn.includes("profile") || normalizedColumn.includes("provider") || normalizedColumn.includes("source") || normalizedColumn.includes("type") || normalizedColumn.includes("status") || normalizedColumn.includes("recency");
+}
+
+function isBadgeCategoryColumn(normalizedColumn: string) {
+  return normalizedColumn === "float_profile" || normalizedColumn === "short_setup" || normalizedColumn === "market_state" || normalizedColumn === "signal_type";
 }

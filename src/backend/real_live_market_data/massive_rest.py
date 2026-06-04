@@ -154,6 +154,7 @@ def massive_rest_base_url() -> str:
 
 def normalize_massive_snapshot_row(item: dict[str, Any]) -> dict[str, Any]:
     day = item.get("day") or {}
+    minute = item.get("min") or item.get("minute") or {}
     prev_day = item.get("prevDay") or item.get("prev_day") or {}
     trade = item.get("lastTrade") or item.get("last_trade") or {}
     quote = item.get("lastQuote") or item.get("last_quote") or {}
@@ -170,7 +171,7 @@ def normalize_massive_snapshot_row(item: dict[str, Any]) -> dict[str, Any]:
         "snapshot_day_low": optional_float(day.get("l")),
         "snapshot_day_close": optional_float(day.get("c")),
         "snapshot_day_volume": optional_float(day.get("v")),
-        "snapshot_trade_count": optional_float(day.get("n")),
+        "snapshot_trade_count": optional_float(day.get("n") or minute.get("n") or item.get("trade_count")),
         "snapshot_prev_day_close": optional_float(prev_day.get("c")),
         "snapshot_prev_day_volume": optional_float(prev_day.get("v")),
         "snapshot_bid": bid,

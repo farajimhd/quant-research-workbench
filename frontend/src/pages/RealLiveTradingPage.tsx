@@ -13,6 +13,7 @@ import {
   ExternalLink,
   Flame,
   FolderOpen,
+  Info,
   LayoutGrid,
   Maximize2,
   Megaphone,
@@ -1712,7 +1713,7 @@ function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, pre
                   : `${integer(columnRows.length)} columns`}
           </span>
         </div>
-        <div className="live-universe-preview-table">
+        <div className={activePreviewTab === SCANNER_SETUP_TAB ? "live-universe-preview-table scanner-setup" : "live-universe-preview-table"}>
           {activePreviewTab === SCANNER_SETUP_TAB ? (
             <>
               <div className="live-universe-subtitle">
@@ -1744,6 +1745,13 @@ function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, pre
                     ))}
                   </select>
                 </label>
+                <button
+                  className="live-scanner-setup-help"
+                  title="Float: micro/low floats can move faster; large floats usually need more volume. Short: squeeze watch and crowded short mark higher short-squeeze potential; short-sale pressure marks active short-side volume."
+                  type="button"
+                >
+                  <Info size={15} />
+                </button>
                 <strong>{integer(scannerSetupRows.length)} returned</strong>
               </div>
               <DataTable columns={snapshotColumns} empty={loading ? "Loading Massive snapshot rows..." : "No joined snapshot rows loaded."} fitToContent rows={scannerSetupRows} title="Scanner Setup" />
