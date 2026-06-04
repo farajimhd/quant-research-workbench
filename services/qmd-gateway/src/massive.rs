@@ -1,6 +1,7 @@
 use crate::bars::BarEventRouter;
 use crate::config::GatewayConfig;
 use crate::event::{massive_status_message, parse_massive_payload, MarketEvent};
+use crate::indicators::IndicatorEventRouter;
 use crate::state::SharedMarketState;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -13,6 +14,7 @@ pub async fn run_massive_ingest(
     state: SharedMarketState,
     writer_sender: mpsc::Sender<MarketEvent>,
     bar_router: BarEventRouter,
+    indicator_router: IndicatorEventRouter,
     event_sender: broadcast::Sender<MarketEvent>,
 ) {
     if config.massive_api_key.is_empty() {
@@ -52,6 +54,9 @@ pub async fn run_massive_ingest(
                                         let _ = event_sender.send(event.clone());
                                         if bar_router.try_send(event.clone()).is_err() {
                                             eprintln!("Bar engine shard queue is full; dropped one aggregation event.");
+                                        }
+                                        if indicator_router.try_send_event(event.clone()).is_err() {
+                                            eprintln!("Indicator shard queue is full; dropped one indicator event.");
                                         }
                                         if writer_sender.try_send(event).is_err() {
                                             eprintln!("ClickHouse writer queue is full; dropped one persistence event.");

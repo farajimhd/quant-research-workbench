@@ -4,6 +4,7 @@ mod clickhouse;
 mod config;
 mod event;
 mod gapfill;
+mod indicators;
 mod massive;
 mod session;
 mod state;
@@ -14,6 +15,7 @@ use crate::clickhouse::ClickHouseWriter;
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::gapfill::run_gap_fill_service;
+use crate::indicators::{spawn_indicator_engines, IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore};
 use crate::massive::run_massive_ingest;
 use crate::state::SharedMarketState;
 use std::net::SocketAddr;
@@ -29,17 +31,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.bar_history_limit,
         config.bar_shard_count,
     );
+    let indicators = SharedIndicatorStore::new(config.indicator_history_limit, config.indicator_shard_count);
     let (writer_sender, writer_receiver) = mpsc::channel::<MarketEvent>(config.event_channel_capacity);
     let (bar_writer_sender, bar_writer_receiver) = mpsc::channel::<BarRow>(config.bar_channel_capacity);
+    let (indicator_writer_sender, indicator_writer_receiver) =
+        mpsc::channel::<IndicatorRow>(config.indicator_channel_capacity);
     let (event_sender, _event_receiver) = broadcast::channel::<MarketEvent>(10_000);
 
     let writer = ClickHouseWriter::new(config.clone());
     tokio::spawn(writer.run(writer_receiver));
     let bar_writer = BarClickHouseWriter::new(config.clone());
     tokio::spawn(bar_writer.run(bar_writer_receiver));
+    let indicator_writer = IndicatorClickHouseWriter::new(config.clone());
+    tokio::spawn(indicator_writer.run(indicator_writer_receiver));
+    let indicator_router = spawn_indicator_engines(
+        indicators.clone(),
+        config.indicator_channel_capacity,
+        config.indicator_bar_channel_capacity,
+        indicator_writer_sender,
+    );
     let bar_router = spawn_bar_engines(
         bars.clone(),
         config.bar_channel_capacity,
+        Some(indicator_router.bar_sender()),
         bar_writer_sender,
     );
 
@@ -48,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         market.clone(),
         writer_sender,
         bar_router,
+        indicator_router,
         event_sender.clone(),
     ));
     tokio::spawn(run_gap_fill_service(config.clone()));
@@ -56,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         bars,
         config,
         events: event_sender,
+        indicators,
         market,
     });
 

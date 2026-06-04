@@ -1,6 +1,7 @@
 use crate::bars::{BarSnapshot, SharedBarStore};
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
+use crate::indicators::{IndicatorSnapshot, SharedIndicatorStore};
 use crate::session::session_phase;
 use crate::state::{ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -19,6 +20,7 @@ pub struct AppState {
     pub bars: SharedBarStore,
     pub config: GatewayConfig,
     pub events: broadcast::Sender<MarketEvent>,
+    pub indicators: SharedIndicatorStore,
     pub market: SharedMarketState,
 }
 
@@ -50,10 +52,12 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/scanner", get(scanner_snapshot))
         .route("/snapshot/ticker/{ticker}", get(ticker_snapshot))
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
+        .route("/snapshot/indicators/{ticker}", get(indicator_snapshot))
         .route("/stream/events", get(event_stream))
         .route("/stream/scanner", get(scanner_stream))
         .route("/stream/ticker/{ticker}", get(ticker_stream))
         .route("/stream/bars/{ticker}", get(bar_stream))
+        .route("/stream/indicators/{ticker}", get(indicator_stream))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
 }
@@ -108,6 +112,26 @@ async fn bar_snapshot(
     )
 }
 
+async fn indicator_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<BarsQuery>,
+) -> Json<IndicatorSnapshot> {
+    Json(
+        state
+            .indicators
+            .snapshot(
+                &ticker,
+                query.timeframe.as_deref().unwrap_or("1m"),
+                query
+                    .limit
+                    .unwrap_or(500)
+                    .min(state.config.indicator_history_limit),
+            )
+            .await,
+    )
+}
+
 async fn scanner_stream(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
         stream_scanner(socket, state).await;
@@ -132,6 +156,24 @@ async fn bar_stream(
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
         stream_bars(
+            socket,
+            state,
+            ticker.to_ascii_uppercase(),
+            query.timeframe.unwrap_or_else(|| "1m".to_string()),
+            query.limit.unwrap_or(500),
+        )
+        .await;
+    })
+}
+
+async fn indicator_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<BarsQuery>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        stream_indicators(
             socket,
             state,
             ticker.to_ascii_uppercase(),
@@ -219,6 +261,36 @@ async fn stream_bars(
         let snapshot = state
             .bars
             .snapshot(&ticker, &timeframe, limit.min(state.config.bar_history_limit))
+            .await;
+        match serde_json::to_string(&snapshot) {
+            Ok(text) if socket.send(Message::Text(text.into())).await.is_err() => break,
+            Ok(_) => {}
+            Err(error) => {
+                if socket.send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+async fn stream_indicators(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    ticker: String,
+    timeframe: String,
+    limit: usize,
+) {
+    let mut timer = interval(Duration::from_millis(state.config.ticker_broadcast_ms));
+    loop {
+        timer.tick().await;
+        let snapshot = state
+            .indicators
+            .snapshot(
+                &ticker,
+                &timeframe,
+                limit.min(state.config.indicator_history_limit),
+            )
             .await;
         match serde_json::to_string(&snapshot) {
             Ok(text) if socket.send(Message::Text(text.into())).await.is_err() => break,

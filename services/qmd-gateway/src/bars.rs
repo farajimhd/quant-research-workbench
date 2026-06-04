@@ -857,6 +857,7 @@ impl MutableBar {
 pub fn spawn_bar_engines(
     bars: SharedBarStore,
     channel_capacity: usize,
+    indicator_sender: Option<mpsc::Sender<BarRow>>,
     writer_sender: mpsc::Sender<BarRow>,
 ) -> BarEventRouter {
     let shard_count = bars.shard_count();
@@ -869,6 +870,7 @@ pub fn spawn_bar_engines(
             shard_id,
             bars.shard(shard_id),
             receiver,
+            indicator_sender.clone(),
             writer_sender.clone(),
         ));
     }
@@ -881,6 +883,7 @@ async fn run_bar_engine(
     shard_id: usize,
     shard: BarShardStore,
     mut receiver: mpsc::Receiver<MarketEvent>,
+    indicator_sender: Option<mpsc::Sender<BarRow>>,
     writer_sender: mpsc::Sender<BarRow>,
 ) {
     let mut heartbeat = interval(Duration::from_millis(250));
@@ -890,25 +893,35 @@ async fn run_bar_engine(
                 match event {
                     Some(event) => {
                         let finalized = shard.apply_event(&event).await;
-                        send_finalized_bars(shard_id, &writer_sender, finalized);
+                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), finalized);
                     }
                     None => {
                         let finalized = shard.finalize_due(Utc::now()).await;
-                        send_finalized_bars(shard_id, &writer_sender, finalized);
+                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), finalized);
                         return;
                     }
                 }
             }
             _ = heartbeat.tick() => {
                 let finalized = shard.finalize_due(Utc::now()).await;
-                send_finalized_bars(shard_id, &writer_sender, finalized);
+                send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), finalized);
             }
         }
     }
 }
 
-fn send_finalized_bars(shard_id: usize, writer_sender: &mpsc::Sender<BarRow>, rows: Vec<BarRow>) {
+fn send_finalized_bars(
+    shard_id: usize,
+    writer_sender: &mpsc::Sender<BarRow>,
+    indicator_sender: Option<&mpsc::Sender<BarRow>>,
+    rows: Vec<BarRow>,
+) {
     for row in rows {
+        if let Some(sender) = indicator_sender {
+            if sender.try_send(row.clone()).is_err() {
+                eprintln!("Indicator bar queue is full; shard {shard_id} dropped one finalized bar.");
+            }
+        }
         if writer_sender.try_send(row).is_err() {
             eprintln!("Bar writer queue is full; shard {shard_id} dropped one finalized bar.");
         }

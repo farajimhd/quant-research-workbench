@@ -12,9 +12,11 @@ Current responsibilities:
 - normalize quote/trade events
 - maintain in-memory live market state
 - build sharded live quote/trade bars for `1s`, `10s`, `30s`, `1m`, `5m`, and `1h`
+- build sharded streaming tick and bar-level indicators
 - publish compact local snapshots/streams to the quant app
 - batch-write raw events to the app-owned ClickHouse database
 - batch-write closed bars to the app-owned ClickHouse database
+- batch-write closed indicator rows to the app-owned ClickHouse database
 
 The gateway keeps two paths separate:
 
@@ -54,12 +56,17 @@ Environment variables:
 - `QMD_GAP_FILL_MIN_GAP_SECONDS`, default `60`
 - `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL`, default `5`
 - `QMD_GAP_FILL_SYMBOLS`, optional comma-separated priority symbols
+- `QMD_INDICATOR_CHANNEL_CAPACITY`, default `250000`
+- `QMD_INDICATOR_BAR_CHANNEL_CAPACITY`, default `250000`
+- `QMD_INDICATOR_HISTORY_LIMIT`, default `1000`
+- `QMD_INDICATOR_SHARD_COUNT`, default `8`
 
 The service writes to:
 
 - `live_massive_trades`
 - `live_massive_quotes`
 - `live_market_bars`
+- `live_market_indicators`
 - `qmd_gap_fill_runs`
 
 ## Live Bars
@@ -95,6 +102,35 @@ quote/trade rates, buy/sell tape imbalance proxies, liquidity/friction proxies,
 momentum/acceleration fields, and volatility/noise fields. Metrics that require
 future quote matching are currently recorded as close/VWAP or spread proxies,
 so the schema is stable while delayed post-trade refinement can be added later.
+
+## Live Indicators
+
+Indicators are also built as streaming state, not by rescanning stored rows.
+The indicator layer has its own ticker-hash shards and receives two inputs:
+
+- raw Massive quote/trade events for tick-level indicators
+- closed bars from the bar engine for bar-level indicators
+
+Tick-level indicators keep only recent 60-second windows in memory and expose:
+
+- `trade_rate_10s`, `trade_rate_60s`
+- `quote_rate_10s`, `quote_rate_60s`
+- `rolling_vwap_60s`
+- `tape_imbalance_60s`
+- `buy_pressure_60s`, `sell_pressure_60s`
+- `spread_bps`, `quote_pressure`
+
+Bar-level indicators are updated when each timeframe bar closes and include:
+
+- `ema_9`, `ema_20`, `ema_50`
+- `rsi_14`
+- `atr_14`
+- `macd_line`, `macd_signal`, `macd_histogram`
+- `bollinger_mid_20`, `bollinger_upper_20`, `bollinger_lower_20`, `bollinger_std_20`
+- `close_sma_20`, `volume_sma_20`
+- `return_1_bar`, `price_vs_ema20_pct`, `price_vs_vwap_pct`, `trend_score`
+
+Closed indicator rows are persisted to `live_market_indicators` in batches.
 
 ## Session Lifecycle
 
@@ -156,6 +192,7 @@ Snapshot endpoints:
 GET http://127.0.0.1:8795/snapshot/scanner?limit=250
 GET http://127.0.0.1:8795/snapshot/ticker/AAPL
 GET http://127.0.0.1:8795/snapshot/bars/AAPL?timeframe=1m&limit=500
+GET http://127.0.0.1:8795/snapshot/indicators/AAPL?timeframe=1m&limit=500
 ```
 
 Local websocket endpoints:
@@ -164,5 +201,6 @@ Local websocket endpoints:
 ws://127.0.0.1:8795/stream/scanner
 ws://127.0.0.1:8795/stream/ticker/AAPL
 ws://127.0.0.1:8795/stream/bars/AAPL?timeframe=1m&limit=500
+ws://127.0.0.1:8795/stream/indicators/AAPL?timeframe=1m&limit=500
 ws://127.0.0.1:8795/stream/events
 ```
