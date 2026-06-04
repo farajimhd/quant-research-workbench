@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Activity, BarChart3, Check, ChevronLeft, ChevronRight, GitCompareArrows, Hammer, LineChart, Palette, RadioTower, Wifi } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
@@ -53,6 +53,7 @@ export function Layout({
 }: LayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const lastAppliedScaleOverrideRef = useRef<UiScale | undefined>(undefined);
   const [themeId, setThemeId] = useState<AppThemeId>(() => {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
     return stored && isAppThemeId(stored) ? stored : DEFAULT_THEME_ID;
@@ -67,12 +68,20 @@ export function Layout({
   }, [themeId]);
 
   useEffect(() => {
-    if (scaleOverride === undefined || Math.abs(scaleOverride - uiScale) < 0.001) return;
+    if (scaleOverride === undefined) {
+      lastAppliedScaleOverrideRef.current = undefined;
+      return;
+    }
+    if (scaleOverride === lastAppliedScaleOverrideRef.current) return;
+    lastAppliedScaleOverrideRef.current = scaleOverride;
     setUiScale(scaleOverride);
-  }, [scaleOverride, uiScale]);
+  }, [scaleOverride]);
 
   useEffect(() => {
     document.documentElement.style.setProperty("--app-zoom", String(uiScale));
+    document.documentElement.style.setProperty("--app-zoom-inverse", String(1 / uiScale));
+    document.documentElement.style.setProperty("--app-zoomed-viewport-height", `${100 / uiScale}vh`);
+    document.documentElement.style.setProperty("--app-zoomed-viewport-width", `${100 / uiScale}vw`);
     document.documentElement.style.setProperty("--app-readable-scale", String(uiScale < 1 ? 1 / uiScale : 1));
     window.localStorage.setItem(UI_SCALE_STORAGE_KEY, String(uiScale));
     window.setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
