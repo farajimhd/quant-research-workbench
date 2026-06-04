@@ -22,11 +22,16 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 
 DEFAULT_DATABASE = "market_sip_raw"
 DEFAULT_CLICKHOUSE_URL = "http://localhost:8123"
+CLICKHOUSE_URL_ENV = "CLICKHOUSE_URL"
+CLICKHOUSE_PASSWORD_SIMPLE_ENV = "CLICKHOUSE_PASSWORD"
+CLICKHOUSE_USER_SIMPLE_ENV = "CLICKHOUSE_USER"
 CLICKHOUSE_ENDPOINT_ENV = "TD__DATABASE__CLICKHOUSE__ENDPOINT_URL"
 CLICKHOUSE_PASSWORD_ENV = "TD__DATABASE__CLICKHOUSE__PASSWORD"
 CLICKHOUSE_USER_ENV = "TD__DATABASE__CLICKHOUSE__USER"
 CLICKHOUSE_FILE_ROOT_ENV = "TD__DATABASE__CLICKHOUSE__FILE_ROOT"
+CLICKHOUSE_STORAGE_POLICY_SIMPLE_ENV = "CLICKHOUSE_STORAGE_POLICY"
 CLICKHOUSE_STORAGE_POLICY_ENV = "TD__DATABASE__CLICKHOUSE__STORAGE_POLICY"
+HISTORICAL_CLICKHOUSE_DATABASE_ENV = "HISTORICAL_CLICKHOUSE_DATABASE_HDD_STORAGE_POLICY"
 DEFAULT_FLATFILES_ROOT_WIN = Path("D:/market-data/flatfiles/us_stocks_sip")
 CLICKHOUSE_FILE_ROOT_PREFIXES = (
     "/mnt/d/market-data/",
@@ -106,7 +111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url())
     parser.add_argument("--user", default=default_clickhouse_user())
     parser.add_argument("--password", default=default_clickhouse_password())
-    parser.add_argument("--database", default=DEFAULT_DATABASE)
+    parser.add_argument("--database", default=default_database())
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
     parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN))
@@ -125,15 +130,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def default_clickhouse_url() -> str:
-    return os.environ.get("CLICKHOUSE_URL") or os.environ.get(CLICKHOUSE_ENDPOINT_ENV) or DEFAULT_CLICKHOUSE_URL
+    return os.environ.get(CLICKHOUSE_URL_ENV) or os.environ.get(CLICKHOUSE_ENDPOINT_ENV) or DEFAULT_CLICKHOUSE_URL
 
 
 def default_clickhouse_user() -> str:
-    return os.environ.get("CLICKHOUSE_USER") or os.environ.get(CLICKHOUSE_USER_ENV) or "default"
+    return os.environ.get(CLICKHOUSE_USER_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_USER_ENV) or "default"
 
 
 def default_clickhouse_password() -> str:
-    return os.environ.get("CLICKHOUSE_PASSWORD") or os.environ.get(CLICKHOUSE_PASSWORD_ENV) or ""
+    return os.environ.get(CLICKHOUSE_PASSWORD_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_PASSWORD_ENV) or ""
+
+
+def default_database() -> str:
+    return os.environ.get(HISTORICAL_CLICKHOUSE_DATABASE_ENV) or DEFAULT_DATABASE
 
 
 def default_clickhouse_file_root() -> str:
@@ -141,7 +150,21 @@ def default_clickhouse_file_root() -> str:
 
 
 def default_storage_policy() -> str:
-    return os.environ.get("CLICKHOUSE_STORAGE_POLICY") or os.environ.get(CLICKHOUSE_STORAGE_POLICY_ENV) or ""
+    return os.environ.get(CLICKHOUSE_STORAGE_POLICY_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_STORAGE_POLICY_ENV) or ""
+
+
+def clickhouse_env_status_keys() -> list[str]:
+    return [
+        CLICKHOUSE_URL_ENV,
+        CLICKHOUSE_USER_SIMPLE_ENV,
+        CLICKHOUSE_PASSWORD_SIMPLE_ENV,
+        HISTORICAL_CLICKHOUSE_DATABASE_ENV,
+        CLICKHOUSE_STORAGE_POLICY_SIMPLE_ENV,
+        CLICKHOUSE_ENDPOINT_ENV,
+        CLICKHOUSE_USER_ENV,
+        CLICKHOUSE_PASSWORD_ENV,
+        CLICKHOUSE_FILE_ROOT_ENV,
+    ]
 
 
 def discover_clickhouse_env_files() -> list[Path]:
@@ -188,7 +211,7 @@ def main() -> None:
     print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
     print(f"dry_run={args.dry_run} retry_failed={args.retry_failed} retry_started={args.retry_started}", flush=True)
     print(f"output_report={run_report_path}", flush=True)
-    print(f"secret_status={secret_status([CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_USER_ENV, CLICKHOUSE_PASSWORD_ENV, CLICKHOUSE_FILE_ROOT_ENV])}", flush=True)
+    print(f"secret_status={secret_status(clickhouse_env_status_keys())}", flush=True)
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
     print("=" * 96, flush=True)
 

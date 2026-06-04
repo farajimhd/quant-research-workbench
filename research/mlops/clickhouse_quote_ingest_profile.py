@@ -22,6 +22,9 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 
 DEFAULT_DATABASE_PREFIX = "qrw_quote_ingest_profile"
 DEFAULT_CLICKHOUSE_URL = "http://localhost:8123"
+CLICKHOUSE_URL_ENV = "CLICKHOUSE_URL"
+CLICKHOUSE_PASSWORD_SIMPLE_ENV = "CLICKHOUSE_PASSWORD"
+CLICKHOUSE_USER_SIMPLE_ENV = "CLICKHOUSE_USER"
 CLICKHOUSE_ENDPOINT_ENV = "TD__DATABASE__CLICKHOUSE__ENDPOINT_URL"
 CLICKHOUSE_PASSWORD_ENV = "TD__DATABASE__CLICKHOUSE__PASSWORD"
 CLICKHOUSE_USER_ENV = "TD__DATABASE__CLICKHOUSE__USER"
@@ -104,18 +107,18 @@ def parse_args() -> argparse.Namespace:
 
 def default_clickhouse_url() -> str:
     return (
-        os.environ.get("CLICKHOUSE_URL")
+        os.environ.get(CLICKHOUSE_URL_ENV)
         or os.environ.get(CLICKHOUSE_ENDPOINT_ENV)
         or DEFAULT_CLICKHOUSE_URL
     )
 
 
 def default_clickhouse_user() -> str:
-    return os.environ.get("CLICKHOUSE_USER") or os.environ.get(CLICKHOUSE_USER_ENV) or "default"
+    return os.environ.get(CLICKHOUSE_USER_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_USER_ENV) or "default"
 
 
 def default_clickhouse_password() -> str:
-    return os.environ.get("CLICKHOUSE_PASSWORD") or os.environ.get(CLICKHOUSE_PASSWORD_ENV) or ""
+    return os.environ.get(CLICKHOUSE_PASSWORD_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_PASSWORD_ENV) or ""
 
 
 def default_clickhouse_file_root() -> str:
@@ -124,6 +127,18 @@ def default_clickhouse_file_root() -> str:
         or os.environ.get(CLICKHOUSE_FILE_ROOT_ENV)
         or DEFAULT_USER_FILES_RELATIVE_FLATFILES_ROOT_CH
     )
+
+
+def clickhouse_env_status_keys() -> list[str]:
+    return [
+        CLICKHOUSE_URL_ENV,
+        CLICKHOUSE_USER_SIMPLE_ENV,
+        CLICKHOUSE_PASSWORD_SIMPLE_ENV,
+        CLICKHOUSE_ENDPOINT_ENV,
+        CLICKHOUSE_USER_ENV,
+        CLICKHOUSE_PASSWORD_ENV,
+        CLICKHOUSE_FILE_ROOT_ENV,
+    ]
 
 
 def discover_clickhouse_env_files() -> list[Path]:
@@ -187,7 +202,7 @@ def main() -> None:
     print(f"clickhouse_url={args.clickhouse_url}", flush=True)
     print(f"clickhouse_user={args.user}", flush=True)
     print(f"clickhouse_password_present={bool(args.password)}", flush=True)
-    print(f"secret_status={secret_status([CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_USER_ENV, CLICKHOUSE_PASSWORD_ENV, CLICKHOUSE_FILE_ROOT_ENV])}", flush=True)
+    print(f"secret_status={secret_status(clickhouse_env_status_keys())}", flush=True)
     print(f"database={database}", flush=True)
     print(f"selected_file_path_mapping={path_mapping.name} flatfiles_root_ch={path_mapping.flatfiles_root_ch}", flush=True)
     for path_win, path_ch in zip(quote_files, quote_files_ch):
@@ -225,7 +240,7 @@ def main() -> None:
         "clickhouse_user": args.user,
         "clickhouse_password_present": bool(args.password),
         "loaded_env_files": [str(path) for path in loaded_env_files],
-        "secret_status": secret_status([CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_USER_ENV, CLICKHOUSE_PASSWORD_ENV, CLICKHOUSE_FILE_ROOT_ENV]),
+        "secret_status": secret_status(clickhouse_env_status_keys()),
         "selected_file_path_mapping": asdict(path_mapping),
         "quote_files": [{"windows_path": str(path), "clickhouse_path": path_ch, "bytes": path.stat().st_size} for path, path_ch in zip(quote_files, quote_files_ch)],
         "settings": settings,
