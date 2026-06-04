@@ -72,6 +72,7 @@
   --badge-neutral-fg: #344054;
   color: var(--foreground);
   font-family: var(--font-body);
+  font-optical-sizing: auto;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -4945,8 +4946,9 @@ button {
 
 .data-table-cell.numeric {
   color: color-mix(in oklab, var(--foreground) 88%, transparent);
-  font-family: "Cascadia Code", "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+  font-family: "Roboto Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
+  font-optical-sizing: auto;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   text-align: right;
