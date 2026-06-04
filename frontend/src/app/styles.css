@@ -4957,7 +4957,12 @@ button {
 
 .data-table-cell.price {
   color: color-mix(in oklab, var(--foreground) 94%, transparent);
-  font-weight: 720;
+  font-weight: 500;
+}
+
+.data-table-cell.price.positive,
+.data-table-cell.price.negative {
+  font-weight: 620;
 }
 
 .data-table-cell.categorical {

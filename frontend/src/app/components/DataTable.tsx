@@ -1958,8 +1958,8 @@ function buildColumnWidthsByName({
 function estimateHeaderColumnWidth(column: string, densityMode: TableDensityMode) {
   if (isLogoColumn(column)) return 62;
   const label = columnHeaderLabel(column, densityMode);
-  const chromeWidth = densityMode === "compact" ? 48 : 74;
-  const minWidth = densityMode === "compact" ? 76 : 108;
+  const chromeWidth = densityMode === "compact" ? 92 : 104;
+  const minWidth = densityMode === "compact" ? 82 : 112;
   const maxWidth = densityMode === "compact" ? 168 : 260;
   return clamp(estimateTextWidth(label) + chromeWidth, minWidth, maxWidth);
 }
@@ -1977,6 +1977,8 @@ function estimateDataColumnWidth(column: string, rows: DataRow[], densityMode: T
 }
 
 function columnHeaderLabel(column: string, densityMode: TableDensityMode) {
+  const concise = CONCISE_COLUMN_LABELS[column];
+  if (concise) return concise;
   const fullName = displayName(column);
   if (densityMode !== "compact") return fullName;
   const direct = COMPACT_COLUMN_LABELS[column];
@@ -1994,6 +1996,58 @@ function columnHeaderLabel(column: string, densityMode: TableDensityMode) {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+const CONCISE_COLUMN_LABELS: Record<string, string> = {
+  candidate_massive_ticker: "Ticker",
+  currency_code: "Ccy",
+  exchange_code: "Exch",
+  float_profile: "Float",
+  ibkr_conid: "Conid",
+  issuer_id: "Issuer ID",
+  issuer_name: "Issuer",
+  listing_id: "Listing ID",
+  listing_status: "Listing",
+  logo_asset_id: "Logo ID",
+  logo_mime_type: "Logo MIME",
+  logo_source_reference: "Logo Src",
+  massive_days_to_cover: "DTC",
+  massive_float: "Float Sh",
+  massive_float_date: "Float Dt",
+  massive_float_percent: "Float %",
+  massive_short_interest: "Short Int",
+  massive_short_interest_date: "SI Dt",
+  massive_short_volume: "Short Vol",
+  massive_short_volume_date: "SV Dt",
+  massive_short_volume_ratio: "Short %",
+  primary_symbol_flag: "Primary",
+  security_asset_class: "Asset",
+  security_instrument_type: "Instr",
+  security_product_type: "Product",
+  security_type: "Sec Type",
+  short_setup: "Short",
+  snapshot_ask: "Ask",
+  snapshot_bid: "Bid",
+  snapshot_day_close: "Close",
+  snapshot_day_high: "High",
+  snapshot_day_low: "Low",
+  snapshot_day_open: "Open",
+  snapshot_day_volume: "Vol",
+  snapshot_last_price: "Last",
+  snapshot_prev_day_close: "Prev Close",
+  snapshot_prev_day_volume: "Prev Vol",
+  snapshot_spread_bps: "Spread",
+  snapshot_ticker: "Snap Ticker",
+  snapshot_todays_change: "Chg",
+  snapshot_todays_change_pct: "Chg %",
+  snapshot_trade_count: "Trades",
+  snapshot_updated: "Updated",
+  symbol_id: "Symbol ID",
+  symbol_status: "Symbol",
+  ticker_type_description: "Type Desc",
+  ticker_type_id: "Type ID",
+  ticker_type_name: "Type",
+  ticker_type_provider_code: "Type Code",
+};
 
 const COMPACT_COLUMN_LABELS: Record<string, string> = {
   candidate_massive_ticker: "Ticker",
