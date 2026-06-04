@@ -19,93 +19,181 @@ pub struct BarSnapshot {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct BarRow {
+    /// UTC calendar date from `bar_start`; used for ClickHouse partitioning.
     pub session_date: String,
+    /// Canonical bar length label, for example `1s`, `10s`, `30s`, `1m`, `5m`, or `1h`.
     pub timeframe: String,
+    /// Uppercase Massive ticker symbol.
     pub sym: String,
+    /// Bar bucket start, aligned by flooring event timestamp to the timeframe boundary.
     pub bar_start: DateTime<Utc>,
+    /// Bar bucket end, calculated as `bar_start + timeframe_seconds`.
     pub bar_end: DateTime<Utc>,
+    /// True once the timeframe has elapsed and the bar has been emitted for persistence.
     pub is_closed: bool,
+    /// Timestamp of the first quote or trade observed inside this bar.
     pub first_event_ts: Option<DateTime<Utc>>,
+    /// Timestamp of the latest quote or trade observed inside this bar.
     pub last_event_ts: Option<DateTime<Utc>>,
+    /// First valid trade price observed in the bar.
     pub open: f64,
+    /// Highest valid trade price observed in the bar.
     pub high: f64,
+    /// Lowest valid trade price observed in the bar.
     pub low: f64,
+    /// Latest valid trade price observed in the bar.
     pub close: f64,
+    /// Sum of trade sizes in shares.
     pub volume: f64,
+    /// Sum of `trade_price * trade_size`.
     pub dollar_volume: f64,
+    /// Count of valid trade events.
     pub trade_count: u64,
+    /// Volume-weighted average trade price, `dollar_volume / volume`.
     pub vwap: f64,
+    /// Average shares per trade, `volume / trade_count`.
     pub avg_trade_size: f64,
+    /// Median of a bounded sample of trade sizes; approximate for very active bars.
     pub median_trade_size: f64,
+    /// Largest trade size observed in shares.
     pub max_trade_size: f64,
+    /// Count of trades with `size >= 10_000` or notional value `>= 100_000`.
     pub large_trade_count: u64,
+    /// Sum of sizes for large trades.
     pub large_trade_volume: f64,
+    /// Trades per second, `trade_count / timeframe_seconds`.
     pub trade_rate: f64,
+    /// Shares per second, `volume / timeframe_seconds`.
     pub volume_rate: f64,
+    /// Notional dollars per second, `dollar_volume / timeframe_seconds`.
     pub dollar_volume_rate: f64,
+    /// Trade close minus trade open.
     pub price_change: f64,
+    /// Percent change from trade open to close, `(close - open) / open * 100`.
     pub price_change_pct: f64,
+    /// Trade high minus trade low.
     pub high_low_range: f64,
+    /// Trade range as percent of open, `(high - low) / open * 100`.
     pub high_low_range_pct: f64,
+    /// First valid quote bid price observed in the bar.
     pub bid_open: f64,
+    /// Highest valid quote bid price observed in the bar.
     pub bid_high: f64,
+    /// Lowest valid quote bid price observed in the bar.
     pub bid_low: f64,
+    /// Latest valid quote bid price observed in the bar.
     pub bid_close: f64,
+    /// First valid quote ask price observed in the bar.
     pub ask_open: f64,
+    /// Highest valid quote ask price observed in the bar.
     pub ask_high: f64,
+    /// Lowest valid quote ask price observed in the bar.
     pub ask_low: f64,
+    /// Latest valid quote ask price observed in the bar.
     pub ask_close: f64,
+    /// First valid quote midpoint, `(bid + ask) / 2`.
     pub mid_open: f64,
+    /// Highest valid quote midpoint.
     pub mid_high: f64,
+    /// Lowest valid quote midpoint.
     pub mid_low: f64,
+    /// Latest valid quote midpoint.
     pub mid_close: f64,
+    /// First valid quoted spread, `ask - bid`.
     pub spread_open: f64,
+    /// Highest valid quoted spread.
     pub spread_high: f64,
+    /// Lowest valid quoted spread.
     pub spread_low: f64,
+    /// Latest valid quoted spread.
     pub spread_close: f64,
+    /// Average quoted spread, `sum(ask - bid) / quote_count`.
     pub spread_mean: f64,
+    /// Average quoted spread in basis points, `mean((ask - bid) / mid * 10_000)`.
     pub spread_bps_mean: f64,
+    /// Closing spread in basis points, `spread_close / mid_close * 10_000`.
     pub spread_bps_close: f64,
+    /// Average displayed bid size from quote events.
     pub quoted_bid_size_mean: f64,
+    /// Average displayed ask size from quote events.
     pub quoted_ask_size_mean: f64,
+    /// Count of valid quote events.
     pub quote_count: u64,
+    /// Quotes per second, `quote_count / timeframe_seconds`.
     pub quote_rate: f64,
+    /// Quote-to-trade update intensity, `quote_count / max(trade_count, 1)`.
     pub quote_update_intensity: f64,
+    /// Count of quotes where `bid >= ask`.
     pub locked_crossed_quote_count: u64,
+    /// Count of trades classified as buyer-initiated by quote test.
     pub buy_trade_count: u64,
+    /// Count of trades classified as seller-initiated by quote test.
     pub sell_trade_count: u64,
+    /// Shares from buyer-initiated trades.
     pub buy_volume: f64,
+    /// Shares from seller-initiated trades.
     pub sell_volume: f64,
+    /// Notional dollars from buyer-initiated trades.
     pub buy_dollar_volume: f64,
+    /// Notional dollars from seller-initiated trades.
     pub sell_dollar_volume: f64,
+    /// Signed volume imbalance, `(buy_volume - sell_volume) / volume`.
     pub tape_imbalance: f64,
+    /// Buyer-initiated share ratio, `buy_volume / volume`.
     pub aggressive_buy_ratio: f64,
+    /// Seller-initiated share ratio, `sell_volume / volume`.
     pub aggressive_sell_ratio: f64,
+    /// Signed share delta, `buy_volume - sell_volume`.
     pub buy_sell_volume_delta: f64,
+    /// Current bar cumulative delta; same as `buy_sell_volume_delta` until session-level carry is added.
     pub cumulative_delta: f64,
+    /// Mean effective spread proxy, `mean(2 * abs(trade_price - last_mid) / last_mid * 10_000)`.
     pub effective_spread_mean: f64,
+    /// Realized spread placeholder using `effective_spread_mean` until delayed post-trade matching is added.
     pub realized_spread_proxy: f64,
+    /// Short-horizon impact proxy currently set to close-vs-VWAP percent distance.
     pub price_impact_1s: f64,
+    /// Longer-horizon impact proxy currently set to close-vs-VWAP percent distance.
     pub price_impact_5s: f64,
+    /// Slippage proxy in basis points, `max(effective_spread_mean, spread_bps_close)`.
     pub slippage_proxy_bps: f64,
+    /// Displayed depth imbalance proxy, `(mean_bid_size - mean_ask_size) / (mean_bid_size + mean_ask_size)`.
     pub depth_imbalance_proxy: f64,
+    /// Liquidity score proxy, `dollar_volume / max(spread_bps_mean, 1)`.
     pub liquidity_score: f64,
+    /// Spread per notional liquidity proxy, `spread_bps_mean / dollar_volume`.
     pub spread_volume_ratio: f64,
+    /// Percent return versus the previous closed bar in the same ticker/timeframe.
     pub return_1_bar: f64,
+    /// Percent return versus the third previous closed bar in the same ticker/timeframe.
     pub return_3_bar: f64,
+    /// Percent return versus the fifth previous closed bar in the same ticker/timeframe.
     pub return_5_bar: f64,
+    /// Current volume minus previous closed bar volume.
     pub volume_accel: f64,
+    /// Current trade count minus previous closed bar trade count.
     pub trade_count_accel: f64,
+    /// Current dollar volume minus previous closed bar dollar volume.
     pub dollar_volume_accel: f64,
+    /// Current quote rate minus previous closed bar quote rate.
     pub quote_rate_accel: f64,
+    /// Current tape imbalance minus previous closed bar tape imbalance.
     pub tape_imbalance_accel: f64,
+    /// Percent distance from trade close to VWAP, `(close - vwap) / vwap * 100`.
     pub vwap_distance_pct: f64,
+    /// Percent distance from quote mid close to VWAP, `(mid_close - vwap) / vwap * 100`.
     pub mid_vwap_distance_pct: f64,
+    /// Square root of mean squared sequential trade returns inside the bar.
     pub realized_volatility: f64,
+    /// Micro-price volatility placeholder using midpoint volatility until NBBO-weighted micro-price is added.
     pub micro_price_volatility: f64,
+    /// Square root of mean squared sequential quote-midpoint returns inside the bar.
     pub mid_price_volatility: f64,
+    /// Mean absolute sequential trade return inside the bar.
     pub mean_abs_trade_return: f64,
+    /// Count of sign changes in sequential trade returns.
     pub direction_change_count: u64,
+    /// Noise proxy, accumulated absolute trade return scaled by close and divided by high-low range.
     pub chop_score: f64,
 }
 
