@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import sys
@@ -45,6 +46,7 @@ CLICKHOUSE_FILE_ROOT_PREFIXES = (
 )
 DEFAULT_FLATFILES_ROOT_CH = "/mnt/d/market-data/flatfiles/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_sip_ingest")
+DEFAULT_PREFLIGHT_PROCESSES = 4
 
 QUOTE_SCHEMA_STRING = (
     "ticker String, "
@@ -108,6 +110,20 @@ class QueryProfile:
     exception: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class RowStats:
+    rows: int
+    min_sip_timestamp: int
+    max_sip_timestamp: int
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePreflight:
+    source_key: str
+    stats: RowStats
+    wall_seconds: float
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Production ClickHouse ingest for Massive SIP quote/trade flatfiles.")
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url())
@@ -122,6 +138,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kinds", default="quotes,trades", help="Comma-separated subset of quotes,trades.")
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--max-threads", type=int, default=32)
+    parser.add_argument("--preflight-processes", type=int, default=default_preflight_processes(), help="Worker processes for Polars source row/min/max preflight. Use 1 for serial.")
     parser.add_argument("--storage-policy", default=default_storage_policy(), help="Optional MergeTree storage_policy for newly created tables, e.g. ssd_policy.")
     parser.add_argument("--limit-files", type=int, default=0, help="Debug limit after discovery. 0 means all files.")
     parser.add_argument("--retry-failed", action="store_true")
@@ -153,6 +170,10 @@ def default_clickhouse_file_root() -> str:
 
 def default_storage_policy() -> str:
     return os.environ.get(CLICKHOUSE_STORAGE_POLICY_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_STORAGE_POLICY_ENV) or ""
+
+
+def default_preflight_processes() -> int:
+    return int(os.environ.get("SIP_INGEST_PREFLIGHT_PROCESSES") or DEFAULT_PREFLIGHT_PROCESSES)
 
 
 def clickhouse_env_status_keys() -> list[str]:
@@ -212,6 +233,7 @@ def main() -> None:
     print(f"flatfiles_root_win={flatfiles_root_win}", flush=True)
     print(f"flatfiles_root_ch={flatfiles_root_ch}", flush=True)
     print(f"settings={settings.strip()}", flush=True)
+    print(f"preflight_processes={args.preflight_processes}", flush=True)
     print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
     print(f"dry_run={args.dry_run} retry_failed={args.retry_failed} retry_started={args.retry_started}", flush=True)
     print(f"output_report={run_report_path}", flush=True)
@@ -232,25 +254,31 @@ def main() -> None:
         return
 
     create_database_and_tables(client, database, args.storage_policy)
+    source_preflight = preflight_source_files(source_files, args.preflight_processes)
+    for source in source_files:
+        insert_manifest(client, database, source, status="discovered", run_id=run_id, expected_stats=source_preflight[source_identity(source)].stats)
+
     completed = 0
     skipped = 0
     failed = 0
     started_at = time.perf_counter()
 
     for index, source in enumerate(source_files, start=1):
+        expected_stats = source_preflight[source_identity(source)].stats
         latest_status = latest_manifest_status(client, database, source)
-        raw_rows = count_raw_rows(client, database, source)
-        if latest_status or raw_rows:
-            source_rows = count_source_file_rows(client, source, settings)
+        actual_stats = query_raw_stats(client, database, source)
+        if latest_status or actual_stats.rows:
             print(
                 f"[{index:,}/{len(source_files):,}] ROW-CHECK {source.kind}:{source.date} "
-                f"status={latest_status or '<none>'} file_rows={source_rows:,} raw_rows={raw_rows:,}",
+                f"status={latest_status or '<none>'} expected_rows={expected_stats.rows:,} actual_rows={actual_stats.rows:,} "
+                f"expected_min={expected_stats.min_sip_timestamp} actual_min={actual_stats.min_sip_timestamp} "
+                f"expected_max={expected_stats.max_sip_timestamp} actual_max={actual_stats.max_sip_timestamp}",
                 flush=True,
             )
-            if raw_rows == source_rows:
+            if row_stats_match(expected_stats, actual_stats):
                 if latest_status == "ok":
                     skipped += 1
-                    print(f"[{index:,}/{len(source_files):,}] SKIP {source.kind}:{source.date} status=ok row_count_match", flush=True)
+                    print(f"[{index:,}/{len(source_files):,}] SKIP {source.kind}:{source.date} status=ok source_stats_match", flush=True)
                     continue
                 insert_manifest(
                     client,
@@ -258,35 +286,45 @@ def main() -> None:
                     source,
                     status="ok",
                     run_id=run_id,
-                    profile=QueryProfile(label="row_count_recovery", query_id="", wall_seconds=0.0, written_rows=raw_rows),
-                    exception=f"Recovered from {latest_status or 'missing'} manifest; raw row count matches source file.",
+                    profile=QueryProfile(label="source_stats_recovery", query_id="", wall_seconds=0.0, written_rows=actual_stats.rows),
+                    expected_stats=expected_stats,
+                    actual_stats=actual_stats,
+                    exception=f"Recovered from {latest_status or 'missing'} manifest; raw stats match source file.",
                 )
                 skipped += 1
-                print(f"[{index:,}/{len(source_files):,}] RECOVER-SKIP {source.kind}:{source.date} row_count_match", flush=True)
+                print(f"[{index:,}/{len(source_files):,}] RECOVER-SKIP {source.kind}:{source.date} source_stats_match", flush=True)
                 continue
             print(
                 f"[{index:,}/{len(source_files):,}] ROW-MISMATCH {source.kind}:{source.date} "
-                f"status={latest_status or '<none>'} file_rows={source_rows:,} raw_rows={raw_rows:,}; reinserting",
+                f"status={latest_status or '<none>'}; deleting old rows and reinserting",
                 flush=True,
             )
-            if raw_rows:
+            if actual_stats.rows:
                 delete_profile = delete_raw_rows(client, database, source)
                 append_jsonl(run_report_path, {"source": source_to_json(source), "profile": asdict(delete_profile), "status": "deleted_mismatched_rows"})
                 print_profile_summary(delete_profile)
 
         print("=" * 96, flush=True)
-        print(f"[{index:,}/{len(source_files):,}] START {source.kind}:{source.date} file={source.windows_path.name} size_gib={source.bytes / (1024 ** 3):.2f}", flush=True)
-        insert_manifest(client, database, source, status="started", run_id=run_id)
+        print(f"[{index:,}/{len(source_files):,}] START {source.kind}:{source.date} file={source.windows_path.name} size_gib={source.bytes / (1024 ** 3):.2f} expected_rows={expected_stats.rows:,}", flush=True)
+        insert_manifest(client, database, source, status="started", run_id=run_id, expected_stats=expected_stats)
         try:
             profile = ingest_one_file(client, database, source, settings)
-            profile.written_rows = count_raw_rows(client, database, source)
-            insert_manifest(client, database, source, status="ok", run_id=run_id, profile=profile)
+            actual_stats = query_raw_stats(client, database, source)
+            profile.written_rows = actual_stats.rows
+            if not row_stats_match(expected_stats, actual_stats):
+                insert_manifest(client, database, source, status="failed", run_id=run_id, profile=profile, expected_stats=expected_stats, actual_stats=actual_stats, exception="Post-insert raw stats do not match source preflight stats.")
+                raise RuntimeError(
+                    f"Post-insert validation failed for {source.kind}:{source.date}: "
+                    f"expected={expected_stats} actual={actual_stats}"
+                )
+            insert_manifest(client, database, source, status="ok", run_id=run_id, profile=profile, expected_stats=expected_stats, actual_stats=actual_stats)
             append_jsonl(run_report_path, {"source": source_to_json(source), "profile": asdict(profile), "status": "ok"})
             completed += 1
             print_profile_summary(profile)
         except Exception as exc:  # noqa: BLE001
             failed += 1
-            insert_manifest(client, database, source, status="failed", run_id=run_id, exception=repr(exc))
+            actual_stats = safe_query_raw_stats(client, database, source)
+            insert_manifest(client, database, source, status="failed", run_id=run_id, expected_stats=expected_stats, actual_stats=actual_stats, exception=repr(exc))
             append_jsonl(run_report_path, {"source": source_to_json(source), "status": "failed", "exception": repr(exc)})
             print(f"FAILED {source.kind}:{source.date}: {exc!r}", flush=True)
             raise
@@ -368,11 +406,88 @@ def discover_source_files(root_win: Path, root_ch: str, kinds: list[str], start_
     return sorted(files, key=lambda item: (item.date, item.kind, str(item.windows_path)))
 
 
+def source_identity(source: SourceFile) -> str:
+    return f"{source.kind}|{source.date}|{source.windows_path.name}"
+
+
+def preflight_source_files(source_files: list[SourceFile], processes: int) -> dict[str, SourcePreflight]:
+    print("=" * 96, flush=True)
+    print(f"START source preflight files={len(source_files):,} processes={processes}", flush=True)
+    started_at = time.perf_counter()
+    payloads = [(source_identity(source), str(source.windows_path)) for source in source_files]
+    results: dict[str, SourcePreflight] = {}
+    if processes <= 1:
+        for index, payload in enumerate(payloads, start=1):
+            result = preflight_source_worker(payload)
+            results[result.source_key] = result
+            print_preflight_progress(index, len(payloads), result, started_at)
+    else:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=processes) as executor:
+            future_to_payload = {executor.submit(preflight_source_worker, payload): payload for payload in payloads}
+            for index, future in enumerate(concurrent.futures.as_completed(future_to_payload), start=1):
+                result = future.result()
+                results[result.source_key] = result
+                print_preflight_progress(index, len(payloads), result, started_at)
+    elapsed = time.perf_counter() - started_at
+    print(f"DONE source preflight files={len(results):,} elapsed_seconds={elapsed:.1f}", flush=True)
+    print("=" * 96, flush=True)
+    return results
+
+
+def preflight_source_worker(payload: tuple[str, str]) -> SourcePreflight:
+    source_key, path_text = payload
+    started_at = time.perf_counter()
+    import polars as pl
+
+    lazy = pl.scan_csv(
+        path_text,
+        has_header=True,
+        schema_overrides={"sip_timestamp": pl.UInt64},
+        ignore_errors=True,
+    ).select(
+        pl.len().alias("rows"),
+        pl.col("sip_timestamp").cast(pl.UInt64, strict=False).min().fill_null(0).alias("min_sip_timestamp"),
+        pl.col("sip_timestamp").cast(pl.UInt64, strict=False).max().fill_null(0).alias("max_sip_timestamp"),
+    )
+    frame = collect_polars_lazy(lazy)
+    row = frame.row(0, named=True)
+    return SourcePreflight(
+        source_key=source_key,
+        stats=RowStats(
+            rows=int(row["rows"] or 0),
+            min_sip_timestamp=int(row["min_sip_timestamp"] or 0),
+            max_sip_timestamp=int(row["max_sip_timestamp"] or 0),
+        ),
+        wall_seconds=time.perf_counter() - started_at,
+    )
+
+
+def collect_polars_lazy(lazy: Any) -> Any:
+    try:
+        return lazy.collect(engine="streaming")
+    except (TypeError, ValueError):
+        return lazy.collect(streaming=True)
+
+
+def print_preflight_progress(index: int, total: int, result: SourcePreflight, started_at: float) -> None:
+    elapsed = time.perf_counter() - started_at
+    rate = index / elapsed if elapsed > 0 else 0.0
+    remaining = total - index
+    eta_seconds = remaining / rate if rate > 0 else 0.0
+    print(
+        f"PREFLIGHT [{index:,}/{total:,}] {result.source_key} rows={result.stats.rows:,} "
+        f"min={result.stats.min_sip_timestamp} max={result.stats.max_sip_timestamp} "
+        f"file_seconds={result.wall_seconds:.1f} elapsed_min={elapsed / 60:.1f} eta_min={eta_seconds / 60:.1f}",
+        flush=True,
+    )
+
+
 def create_database_and_tables(client: ClickHouseHttpClient, database: str, storage_policy: str) -> None:
     client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}")
     client.execute(create_quotes_table_sql(database, storage_policy))
     client.execute(create_trades_table_sql(database, storage_policy))
     client.execute(create_manifest_table_sql(database, storage_policy))
+    ensure_manifest_columns(client, database)
 
 
 def create_quotes_table_sql(database: str, storage_policy: str) -> str:
@@ -448,6 +563,12 @@ CREATE TABLE IF NOT EXISTS {db}.ingest_manifest
     source_file String,
     source_path_ch String,
     file_bytes UInt64,
+    expected_rows UInt64,
+    expected_min_sip_timestamp UInt64,
+    expected_max_sip_timestamp UInt64,
+    actual_rows UInt64,
+    actual_min_sip_timestamp UInt64,
+    actual_max_sip_timestamp UInt64,
     status LowCardinality(String),
     run_id String,
     query_id String,
@@ -465,6 +586,21 @@ ENGINE = MergeTree
 ORDER BY (kind, source_date, source_file, updated_at)
 {mergetree_settings_sql(storage_policy)}
 """
+
+
+def ensure_manifest_columns(client: ClickHouseHttpClient, database: str) -> None:
+    db = quote_ident(database)
+    table = f"{db}.ingest_manifest"
+    columns = [
+        ("expected_rows", "UInt64"),
+        ("expected_min_sip_timestamp", "UInt64"),
+        ("expected_max_sip_timestamp", "UInt64"),
+        ("actual_rows", "UInt64"),
+        ("actual_min_sip_timestamp", "UInt64"),
+        ("actual_max_sip_timestamp", "UInt64"),
+    ]
+    for name, dtype in columns:
+        client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {quote_ident(name)} {dtype}")
 
 
 def ingest_one_file(client: ClickHouseHttpClient, database: str, source: SourceFile, settings: str) -> QueryProfile:
@@ -619,35 +755,37 @@ def latest_manifest_status(client: ClickHouseHttpClient, database: str, source: 
     return rows[0] if rows else ""
 
 
-def should_skip(status: str, args: argparse.Namespace) -> bool:
-    if status == "ok":
-        return True
-    if status == "failed" and not args.retry_failed:
-        return True
-    if status == "started" and not args.retry_started:
-        return True
-    return False
-
-
-def count_raw_rows(client: ClickHouseHttpClient, database: str, source: SourceFile) -> int:
+def query_raw_stats(client: ClickHouseHttpClient, database: str, source: SourceFile) -> RowStats:
     table = "quotes_raw" if source.kind == "quotes" else "trades_raw"
     rows = client.query_tsv(
-        "SELECT count() FROM "
+        "SELECT count(), if(count() = 0, 0, min(sip_timestamp)), if(count() = 0, 0, max(sip_timestamp)) FROM "
         f"{quote_ident(database)}.{quote_ident(table)} "
         f"WHERE source_date = toDate({sql_string(source.date)}) "
         f"AND source_file = {sql_string(source.windows_path.name)}"
-    ).strip()
-    return int(rows or "0")
+    ).strip().splitlines()
+    if not rows:
+        return RowStats(rows=0, min_sip_timestamp=0, max_sip_timestamp=0)
+    values = rows[0].split("\t")
+    return RowStats(
+        rows=int(values[0] or "0"),
+        min_sip_timestamp=int(values[1] or "0"),
+        max_sip_timestamp=int(values[2] or "0"),
+    )
 
 
-def count_source_file_rows(client: ClickHouseHttpClient, source: SourceFile, settings: str) -> int:
-    schema = QUOTE_SCHEMA_STRING if source.kind == "quotes" else TRADE_SCHEMA_STRING
-    rows = client.query_tsv(
-        "SELECT count() "
-        f"FROM file({sql_string(source.clickhouse_path)}, 'CSVWithNames', {sql_string(schema)})"
-        f"{settings}"
-    ).strip()
-    return int(rows or "0")
+def safe_query_raw_stats(client: ClickHouseHttpClient, database: str, source: SourceFile) -> RowStats:
+    try:
+        return query_raw_stats(client, database, source)
+    except Exception:
+        return RowStats(rows=0, min_sip_timestamp=0, max_sip_timestamp=0)
+
+
+def row_stats_match(expected: RowStats, actual: RowStats) -> bool:
+    return (
+        expected.rows == actual.rows
+        and expected.min_sip_timestamp == actual.min_sip_timestamp
+        and expected.max_sip_timestamp == actual.max_sip_timestamp
+    )
 
 
 def delete_raw_rows(client: ClickHouseHttpClient, database: str, source: SourceFile) -> QueryProfile:
@@ -669,15 +807,22 @@ def insert_manifest(
     status: str,
     run_id: str,
     profile: QueryProfile | None = None,
+    expected_stats: RowStats | None = None,
+    actual_stats: RowStats | None = None,
     exception: str = "",
 ) -> None:
     profile = profile or QueryProfile(label="", query_id="", wall_seconds=0.0)
+    expected_stats = expected_stats or RowStats(rows=0, min_sip_timestamp=0, max_sip_timestamp=0)
+    actual_stats = actual_stats or RowStats(rows=0, min_sip_timestamp=0, max_sip_timestamp=0)
     db = quote_ident(database)
     client.execute(
         f"""
 INSERT INTO {db}.ingest_manifest
 (
-    kind, source_date, source_file, source_path_ch, file_bytes, status, run_id, query_id,
+    kind, source_date, source_file, source_path_ch, file_bytes,
+    expected_rows, expected_min_sip_timestamp, expected_max_sip_timestamp,
+    actual_rows, actual_min_sip_timestamp, actual_max_sip_timestamp,
+    status, run_id, query_id,
     wall_seconds, query_duration_ms, memory_usage_bytes, read_rows, read_bytes,
     written_rows, written_bytes, exception
 )
@@ -688,6 +833,12 @@ VALUES
     {sql_string(source.windows_path.name)},
     {sql_string(source.clickhouse_path)},
     {int(source.bytes)},
+    {int(expected_stats.rows)},
+    {int(expected_stats.min_sip_timestamp)},
+    {int(expected_stats.max_sip_timestamp)},
+    {int(actual_stats.rows)},
+    {int(actual_stats.min_sip_timestamp)},
+    {int(actual_stats.max_sip_timestamp)},
     {sql_string(status)},
     {sql_string(run_id)},
     {sql_string(profile.query_id)},
