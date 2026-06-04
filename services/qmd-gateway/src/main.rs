@@ -2,13 +2,16 @@ mod api;
 mod clickhouse;
 mod config;
 mod event;
+mod gapfill;
 mod massive;
+mod session;
 mod state;
 
 use crate::api::{app, AppState};
 use crate::clickhouse::ClickHouseWriter;
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
+use crate::gapfill::run_gap_fill_service;
 use crate::massive::run_massive_ingest;
 use crate::state::SharedMarketState;
 use std::net::SocketAddr;
@@ -31,6 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         writer_sender,
         event_sender.clone(),
     ));
+    tokio::spawn(run_gap_fill_service(config.clone()));
 
     let app = app(AppState {
         config,

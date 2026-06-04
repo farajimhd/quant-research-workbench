@@ -11,6 +11,12 @@ pub struct GatewayConfig {
     pub clickhouse_user: String,
     pub event_channel_capacity: usize,
     pub flush_interval_ms: u64,
+    pub gap_fill_enabled: bool,
+    pub gap_fill_interval_ms: u64,
+    pub gap_fill_lookback_minutes: i64,
+    pub gap_fill_max_pages_per_symbol: usize,
+    pub gap_fill_min_gap_seconds: i64,
+    pub gap_fill_symbols: Vec<String>,
     pub max_clickhouse_batch: usize,
     #[serde(skip_serializing)]
     pub massive_api_key: String,
@@ -35,6 +41,12 @@ impl GatewayConfig {
             clickhouse_user: env_string("QMD_CLICKHOUSE_USER", "default"),
             event_channel_capacity: env_usize("QMD_EVENT_CHANNEL_CAPACITY", 250_000),
             flush_interval_ms: env_u64("QMD_CLICKHOUSE_FLUSH_INTERVAL_MS", 1_000),
+            gap_fill_enabled: env_bool("QMD_GAP_FILL_ENABLED", true),
+            gap_fill_interval_ms: env_u64("QMD_GAP_FILL_INTERVAL_MS", 300_000),
+            gap_fill_lookback_minutes: env_i64("QMD_GAP_FILL_LOOKBACK_MINUTES", 120),
+            gap_fill_max_pages_per_symbol: env_usize("QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL", 5),
+            gap_fill_min_gap_seconds: env_i64("QMD_GAP_FILL_MIN_GAP_SECONDS", 60),
+            gap_fill_symbols: env_list("QMD_GAP_FILL_SYMBOLS"),
             max_clickhouse_batch: env_usize("QMD_CLICKHOUSE_MAX_BATCH", 10_000),
             massive_api_key,
             massive_ws_url: env_string("QMD_MASSIVE_WS_URL", "wss://socket.massive.com/stocks"),
@@ -95,4 +107,22 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+fn env_i64(name: &str, default: i64) -> i64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn env_list(name: &str) -> Vec<String> {
+    env::var(name)
+        .ok()
+        .unwrap_or_default()
+        .split(',')
+        .map(|value| value.trim().to_ascii_uppercase())
+        .filter(|value| !value.is_empty())
+        .collect()
 }

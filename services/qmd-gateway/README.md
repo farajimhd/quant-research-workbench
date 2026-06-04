@@ -42,11 +42,39 @@ Environment variables:
 - `QMD_EVENT_CHANNEL_CAPACITY`, default `250000`
 - `QMD_SCANNER_BROADCAST_MS`, default `1000`
 - `QMD_TICKER_BROADCAST_MS`, default `250`
+- `QMD_GAP_FILL_ENABLED`, default `true`
+- `QMD_GAP_FILL_INTERVAL_MS`, default `300000`
+- `QMD_GAP_FILL_LOOKBACK_MINUTES`, default `120`
+- `QMD_GAP_FILL_MIN_GAP_SECONDS`, default `60`
+- `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL`, default `5`
+- `QMD_GAP_FILL_SYMBOLS`, optional comma-separated priority symbols
 
 The service writes to:
 
 - `live_massive_trades`
 - `live_massive_quotes`
+- `qmd_gap_fill_runs`
+
+## Session Lifecycle
+
+The gateway keeps the Massive websocket ingest task running for live capture.
+It treats 04:00-20:00 New York time on weekdays as the active streaming window:
+
+- 04:00-09:29 ET: premarket
+- 09:30-15:59 ET: regular
+- 16:00-19:59 ET: aftermarket
+
+Outside that window, the maintenance worker runs gap-fill cycles. Gap fill uses
+Massive REST historical trades and quotes:
+
+- `/v3/trades/{stockTicker}`
+- `/v3/quotes/{stockTicker}`
+
+If `QMD_GAP_FILL_SYMBOLS` is set, only those symbols are checked. Otherwise the
+worker discovers symbols already present in `live_massive_trades` and
+`live_massive_quotes` for the current date, then fills from each symbol's latest
+stored timestamp to now. This is meant for crash/restart recovery without
+blocking the live ingest fast path.
 
 ## Install Rust On Windows
 

@@ -72,12 +72,29 @@ single process:
 
 - Massive websocket ingest task
 - ClickHouse writer task
+- maintenance/gap-fill task
 - local HTTP/WebSocket API server
 - in-memory market-state updates
 
 This keeps deployment simple while allowing high concurrency. If throughput
 requires more parallelism later, ticker-sharded worker tasks can be added inside
 the same process before moving to multiple OS processes.
+
+## Gap Fill And Maintenance
+
+The gateway treats 04:00-20:00 New York time on weekdays as the active extended
+trading window. During that window, live websocket ingest is the priority. The
+maintenance worker waits.
+
+Outside the active window, the maintenance worker can:
+
+- detect symbols captured in the app-owned live tables
+- compare their latest persisted quote/trade timestamps with the current time
+- call Massive REST historical trades and quotes for missing windows
+- insert recovered rows into the same `q_live` raw tables
+- record each cycle in `qmd_gap_fill_runs`
+
+This keeps crash recovery and rest-data backfill out of the live decision path.
 
 ### Historical Path
 

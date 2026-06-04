@@ -1,5 +1,6 @@
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
+use crate::session::session_phase;
 use crate::state::{ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -29,6 +30,7 @@ struct HealthPayload {
     config: GatewayConfig,
     metrics: StatusMetrics,
     running: bool,
+    session_phase: String,
     status: String,
     subscriptions: Vec<String>,
 }
@@ -51,6 +53,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<HealthPayload> {
         config: state.config.clone(),
         metrics: state.market.metrics().await,
         running: state.config.api_key_present,
+        session_phase: format!("{:?}", session_phase(chrono::Utc::now())),
         status: if state.config.api_key_present {
             "running".to_string()
         } else {
