@@ -277,7 +277,7 @@ def main() -> None:
         expected_stats = source_preflight[source_identity(source)].stats
         latest_status = latest_manifest_status(client, database, manifest_table, source)
         actual_stats = query_raw_stats(client, database, source)
-        if latest_status or actual_stats.rows:
+        if actual_stats.rows:
             print(
                 f"[{index:,}/{len(source_files):,}] ROW-CHECK {source.kind}:{source.date} "
                 f"status={latest_status or '<none>'} expected_rows={expected_stats.rows:,} actual_rows={actual_stats.rows:,} "
@@ -314,6 +314,12 @@ def main() -> None:
                 delete_profile = delete_raw_rows(client, database, source)
                 append_jsonl(run_report_path, {"source": source_to_json(source), "profile": asdict(delete_profile), "status": "deleted_mismatched_rows"})
                 print_profile_summary(delete_profile)
+        elif latest_status and latest_status != "discovered":
+            print(
+                f"[{index:,}/{len(source_files):,}] RAW-MISSING {source.kind}:{source.date} "
+                f"status={latest_status} expected_rows={expected_stats.rows:,} actual_rows=0; inserting without delete",
+                flush=True,
+            )
 
         print("=" * 96, flush=True)
         print(f"[{index:,}/{len(source_files):,}] START {source.kind}:{source.date} file={source.windows_path.name} size_gib={source.bytes / (1024 ** 3):.2f} expected_rows={expected_stats.rows:,}", flush=True)
