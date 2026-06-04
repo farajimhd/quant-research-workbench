@@ -239,27 +239,47 @@ def main() -> None:
 
     for index, source in enumerate(source_files, start=1):
         latest_status = latest_manifest_status(client, database, source)
-        if latest_status == "ok":
-            skipped += 1
-            print(f"[{index:,}/{len(source_files):,}] SKIP {source.kind}:{source.date} status={latest_status}", flush=True)
-            continue
-        if latest_status in {"failed", "started"} and source_rows_present(client, database, source):
-            insert_manifest(client, database, source, status="ok", run_id=run_id, exception=f"Recovered from existing {latest_status} manifest; rows already present in raw table.")
-            skipped += 1
-            print(f"[{index:,}/{len(source_files):,}] RECOVER-SKIP {source.kind}:{source.date} previous_status={latest_status} rows already present", flush=True)
-            continue
-        if latest_status in {"failed", "started"}:
-            print(f"[{index:,}/{len(source_files):,}] RETRY {source.kind}:{source.date} previous_status={latest_status} no existing rows found", flush=True)
-        elif should_skip(latest_status, args):
-            skipped += 1
-            print(f"[{index:,}/{len(source_files):,}] SKIP {source.kind}:{source.date} status={latest_status}", flush=True)
-            continue
+        raw_rows = count_raw_rows(client, database, source)
+        if latest_status or raw_rows:
+            source_rows = count_source_file_rows(client, source, settings)
+            print(
+                f"[{index:,}/{len(source_files):,}] ROW-CHECK {source.kind}:{source.date} "
+                f"status={latest_status or '<none>'} file_rows={source_rows:,} raw_rows={raw_rows:,}",
+                flush=True,
+            )
+            if raw_rows == source_rows:
+                if latest_status == "ok":
+                    skipped += 1
+                    print(f"[{index:,}/{len(source_files):,}] SKIP {source.kind}:{source.date} status=ok row_count_match", flush=True)
+                    continue
+                insert_manifest(
+                    client,
+                    database,
+                    source,
+                    status="ok",
+                    run_id=run_id,
+                    profile=QueryProfile(label="row_count_recovery", query_id="", wall_seconds=0.0, written_rows=raw_rows),
+                    exception=f"Recovered from {latest_status or 'missing'} manifest; raw row count matches source file.",
+                )
+                skipped += 1
+                print(f"[{index:,}/{len(source_files):,}] RECOVER-SKIP {source.kind}:{source.date} row_count_match", flush=True)
+                continue
+            print(
+                f"[{index:,}/{len(source_files):,}] ROW-MISMATCH {source.kind}:{source.date} "
+                f"status={latest_status or '<none>'} file_rows={source_rows:,} raw_rows={raw_rows:,}; reinserting",
+                flush=True,
+            )
+            if raw_rows:
+                delete_profile = delete_raw_rows(client, database, source)
+                append_jsonl(run_report_path, {"source": source_to_json(source), "profile": asdict(delete_profile), "status": "deleted_mismatched_rows"})
+                print_profile_summary(delete_profile)
 
         print("=" * 96, flush=True)
         print(f"[{index:,}/{len(source_files):,}] START {source.kind}:{source.date} file={source.windows_path.name} size_gib={source.bytes / (1024 ** 3):.2f}", flush=True)
         insert_manifest(client, database, source, status="started", run_id=run_id)
         try:
             profile = ingest_one_file(client, database, source, settings)
+            profile.written_rows = count_raw_rows(client, database, source)
             insert_manifest(client, database, source, status="ok", run_id=run_id, profile=profile)
             append_jsonl(run_report_path, {"source": source_to_json(source), "profile": asdict(profile), "status": "ok"})
             completed += 1
@@ -609,18 +629,36 @@ def should_skip(status: str, args: argparse.Namespace) -> bool:
     return False
 
 
-def source_rows_present(client: ClickHouseHttpClient, database: str, source: SourceFile) -> bool:
+def count_raw_rows(client: ClickHouseHttpClient, database: str, source: SourceFile) -> int:
     table = "quotes_raw" if source.kind == "quotes" else "trades_raw"
-    try:
-        rows = client.query_tsv(
-            "SELECT count() FROM "
-            f"{quote_ident(database)}.{quote_ident(table)} "
-            f"WHERE source_date = toDate({sql_string(source.date)}) "
-            f"AND source_file = {sql_string(source.windows_path.name)}"
-        ).strip()
-    except Exception:
-        return False
-    return int(rows or "0") > 0
+    rows = client.query_tsv(
+        "SELECT count() FROM "
+        f"{quote_ident(database)}.{quote_ident(table)} "
+        f"WHERE source_date = toDate({sql_string(source.date)}) "
+        f"AND source_file = {sql_string(source.windows_path.name)}"
+    ).strip()
+    return int(rows or "0")
+
+
+def count_source_file_rows(client: ClickHouseHttpClient, source: SourceFile, settings: str) -> int:
+    schema = QUOTE_SCHEMA_STRING if source.kind == "quotes" else TRADE_SCHEMA_STRING
+    rows = client.query_tsv(
+        "SELECT count() "
+        f"FROM file({sql_string(source.clickhouse_path)}, 'CSVWithNames', {sql_string(schema)})"
+        f"{settings}"
+    ).strip()
+    return int(rows or "0")
+
+
+def delete_raw_rows(client: ClickHouseHttpClient, database: str, source: SourceFile) -> QueryProfile:
+    table = "quotes_raw" if source.kind == "quotes" else "trades_raw"
+    sql = (
+        f"ALTER TABLE {quote_ident(database)}.{quote_ident(table)} DELETE "
+        f"WHERE source_date = toDate({sql_string(source.date)}) "
+        f"AND source_file = {sql_string(source.windows_path.name)} "
+        "SETTINGS mutations_sync = 1"
+    )
+    return run_profiled(client, f"delete_{source.kind}_{source.date}", sql)
 
 
 def insert_manifest(
