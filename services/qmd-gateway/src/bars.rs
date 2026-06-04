@@ -211,6 +211,16 @@ struct BarFrame {
 
 #[derive(Clone)]
 pub struct SharedBarStore {
+    shards: Arc<Vec<BarShardStore>>,
+}
+
+#[derive(Clone)]
+pub struct BarEventRouter {
+    senders: Arc<Vec<mpsc::Sender<MarketEvent>>>,
+}
+
+#[derive(Clone)]
+pub struct BarShardStore {
     inner: Arc<Mutex<BarStore>>,
 }
 
@@ -285,11 +295,50 @@ struct MutableBar {
 }
 
 impl SharedBarStore {
-    pub fn new(timeframes: Vec<String>, history_limit: usize) -> Self {
+    pub fn new(timeframes: Vec<String>, history_limit: usize, shard_count: usize) -> Self {
         let frames = timeframes
             .into_iter()
             .filter_map(|label| parse_timeframe(&label))
             .collect::<Vec<_>>();
+        let shard_count = shard_count.max(1);
+        let shards = (0..shard_count)
+            .map(|_| BarShardStore::new(frames.clone(), history_limit))
+            .collect::<Vec<_>>();
+        Self {
+            shards: Arc::new(shards),
+        }
+    }
+
+    pub fn shard_count(&self) -> usize {
+        self.shards.len()
+    }
+
+    pub fn shard(&self, index: usize) -> BarShardStore {
+        self.shards[index % self.shards.len()].clone()
+    }
+
+    pub async fn snapshot(&self, ticker: &str, timeframe: &str, limit: usize) -> BarSnapshot {
+        let ticker = ticker.to_ascii_uppercase();
+        let timeframe = canonical_timeframe(timeframe);
+        self.shard_for_ticker(&ticker)
+            .snapshot(&ticker, &timeframe, limit)
+            .await
+    }
+
+    fn shard_for_ticker(&self, ticker: &str) -> BarShardStore {
+        self.shard(shard_index(ticker, self.shards.len()))
+    }
+}
+
+impl BarEventRouter {
+    pub fn try_send(&self, event: MarketEvent) -> Result<(), mpsc::error::TrySendError<MarketEvent>> {
+        let index = shard_index(event.ticker(), self.senders.len());
+        self.senders[index].try_send(event)
+    }
+}
+
+impl BarShardStore {
+    fn new(frames: Vec<BarFrame>, history_limit: usize) -> Self {
         Self {
             inner: Arc::new(Mutex::new(BarStore {
                 frames,
@@ -310,12 +359,10 @@ impl SharedBarStore {
         store.finalize_due(now)
     }
 
-    pub async fn snapshot(&self, ticker: &str, timeframe: &str, limit: usize) -> BarSnapshot {
-        let ticker = ticker.to_ascii_uppercase();
-        let timeframe = canonical_timeframe(timeframe);
+    async fn snapshot(&self, ticker: &str, timeframe: &str, limit: usize) -> BarSnapshot {
         let key = BarKey {
-            sym: ticker.clone(),
-            timeframe: timeframe.clone(),
+            sym: ticker.to_string(),
+            timeframe: timeframe.to_string(),
         };
         let store = self.inner.lock().await;
         let current = store
@@ -339,8 +386,8 @@ impl SharedBarStore {
         BarSnapshot {
             current,
             history,
-            ticker,
-            timeframe,
+            ticker: ticker.to_string(),
+            timeframe: timeframe.to_string(),
         }
     }
 }
@@ -807,8 +854,32 @@ impl MutableBar {
     }
 }
 
-pub async fn run_bar_engine(
+pub fn spawn_bar_engines(
     bars: SharedBarStore,
+    channel_capacity: usize,
+    writer_sender: mpsc::Sender<BarRow>,
+) -> BarEventRouter {
+    let shard_count = bars.shard_count();
+    let per_shard_capacity = (channel_capacity / shard_count).max(1);
+    let mut senders = Vec::with_capacity(shard_count);
+    for shard_id in 0..shard_count {
+        let (sender, receiver) = mpsc::channel::<MarketEvent>(per_shard_capacity);
+        senders.push(sender);
+        tokio::spawn(run_bar_engine(
+            shard_id,
+            bars.shard(shard_id),
+            receiver,
+            writer_sender.clone(),
+        ));
+    }
+    BarEventRouter {
+        senders: Arc::new(senders),
+    }
+}
+
+async fn run_bar_engine(
+    shard_id: usize,
+    shard: BarShardStore,
     mut receiver: mpsc::Receiver<MarketEvent>,
     writer_sender: mpsc::Sender<BarRow>,
 ) {
@@ -818,28 +889,28 @@ pub async fn run_bar_engine(
             event = receiver.recv() => {
                 match event {
                     Some(event) => {
-                        let finalized = bars.apply_event(&event).await;
-                        send_finalized_bars(&writer_sender, finalized);
+                        let finalized = shard.apply_event(&event).await;
+                        send_finalized_bars(shard_id, &writer_sender, finalized);
                     }
                     None => {
-                        let finalized = bars.finalize_due(Utc::now()).await;
-                        send_finalized_bars(&writer_sender, finalized);
+                        let finalized = shard.finalize_due(Utc::now()).await;
+                        send_finalized_bars(shard_id, &writer_sender, finalized);
                         return;
                     }
                 }
             }
             _ = heartbeat.tick() => {
-                let finalized = bars.finalize_due(Utc::now()).await;
-                send_finalized_bars(&writer_sender, finalized);
+                let finalized = shard.finalize_due(Utc::now()).await;
+                send_finalized_bars(shard_id, &writer_sender, finalized);
             }
         }
     }
 }
 
-fn send_finalized_bars(writer_sender: &mpsc::Sender<BarRow>, rows: Vec<BarRow>) {
+fn send_finalized_bars(shard_id: usize, writer_sender: &mpsc::Sender<BarRow>, rows: Vec<BarRow>) {
     for row in rows {
         if writer_sender.try_send(row).is_err() {
-            eprintln!("Bar writer queue is full; dropped one finalized bar.");
+            eprintln!("Bar writer queue is full; shard {shard_id} dropped one finalized bar.");
         }
     }
 }
@@ -1165,6 +1236,15 @@ fn aligned_start(ts: DateTime<Utc>, seconds: i64) -> DateTime<Utc> {
     let bucket_millis = seconds * 1_000;
     let start_millis = millis.div_euclid(bucket_millis) * bucket_millis;
     Utc.timestamp_millis_opt(start_millis).single().unwrap_or(ts)
+}
+
+fn shard_index(ticker: &str, shard_count: usize) -> usize {
+    let mut hash = 14_695_981_039_346_656_037_u64;
+    for byte in ticker.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(1_099_511_628_211);
+    }
+    (hash as usize) % shard_count.max(1)
 }
 
 fn update_ohlc(price: f64, open: &mut f64, high: &mut f64, low: &mut f64, close: &mut f64) {

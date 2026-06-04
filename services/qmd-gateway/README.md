@@ -11,7 +11,7 @@ Current responsibilities:
 - default subscription scope is full tape: `T.*` and `Q.*`
 - normalize quote/trade events
 - maintain in-memory live market state
-- build live quote/trade bars for `1s`, `10s`, `30s`, `1m`, `5m`, and `1h`
+- build sharded live quote/trade bars for `1s`, `10s`, `30s`, `1m`, `5m`, and `1h`
 - publish compact local snapshots/streams to the quant app
 - batch-write raw events to the app-owned ClickHouse database
 - batch-write closed bars to the app-owned ClickHouse database
@@ -44,6 +44,7 @@ Environment variables:
 - `QMD_EVENT_CHANNEL_CAPACITY`, default `250000`
 - `QMD_BAR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_BAR_HISTORY_LIMIT`, default `1000`
+- `QMD_BAR_SHARD_COUNT`, default `8`
 - `QMD_BAR_TIMEFRAMES`, default `1s,10s,30s,1m,5m,1h`
 - `QMD_SCANNER_BROADCAST_MS`, default `1000`
 - `QMD_TICKER_BROADCAST_MS`, default `250`
@@ -64,8 +65,9 @@ The service writes to:
 ## Live Bars
 
 Bars are built asynchronously from normalized Massive quotes and trades. The
-websocket ingest task pushes events into a bar queue with `try_send`, so bar
-math and ClickHouse writes do not block the live ingest loop.
+websocket ingest task hashes each ticker into one of the configured bar shards
+and pushes events into that shard queue with `try_send`, so bar math and
+ClickHouse writes do not block the live ingest loop.
 
 Supported default timeframes:
 
@@ -81,6 +83,12 @@ example, `1h` bars start exactly at the top of the hour, and `5m` bars start at
 `:00`, `:05`, `:10`, and so on. The current open bar is kept in memory and
 updated until it closes. Closed bars are emitted to the bar writer and persisted
 to `live_market_bars` in batches.
+
+The in-memory bar store is also sharded by ticker. Each shard has its own async
+worker and mutex-protected store, so full-market `T.*` and `Q.*` processing does
+not contend on one global bar lock. API bar snapshots use the same deterministic
+ticker hash as ingest, so a request for `AAPL` reads only the shard that owns
+`AAPL`.
 
 The bar abstraction includes trade OHLCV, VWAP, quote mid/spread measures,
 quote/trade rates, buy/sell tape imbalance proxies, liquidity/friction proxies,
