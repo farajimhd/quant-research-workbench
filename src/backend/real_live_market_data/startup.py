@@ -25,7 +25,7 @@ def build_startup_universe_preview(
     *,
     enrichment_frame: pl.DataFrame | None = None,
     enrichment_status: dict[str, Any] | None = None,
-    row_limit: int = 50,
+    row_limit: int = 0,
 ) -> dict[str, Any]:
     payload, _frames = build_universe_snapshot_payload(
         read_client,
@@ -46,7 +46,7 @@ def build_trading_session_baseline(
     *,
     trading_session_id: str,
     started_at: datetime,
-    row_limit: int = 50,
+    row_limit: int = 0,
 ) -> tuple[dict[str, Any], pl.DataFrame]:
     payload, frames = build_universe_snapshot_payload(read_client, config, row_limit=row_limit, enrich_scanner=True)
     persistence = {
@@ -402,6 +402,8 @@ def session_scanner_row(trading_session_id: str, session_date: str, pulled_at: d
 def frame_preview_rows(frame: pl.DataFrame, row_limit: int) -> list[dict[str, Any]]:
     if frame.is_empty():
         return []
+    if row_limit <= 0:
+        return frame.to_dicts()
     return frame.head(max(1, row_limit)).to_dicts()
 
 

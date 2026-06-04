@@ -669,7 +669,7 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
   const loadUniversePreview = useCallback(async (options?: { refreshEnrichment?: boolean }) => {
     setUniversePreviewLoading(true);
     try {
-      const payload = await api<RealLiveUniversePreviewPayload>(`/api/real-live-trading/market-gateway/universe-preview${query({ refresh_enrichment: options?.refreshEnrichment ? "1" : "0", row_limit: 50 })}`);
+      const payload = await api<RealLiveUniversePreviewPayload>(`/api/real-live-trading/market-gateway/universe-preview${query({ refresh_enrichment: options?.refreshEnrichment ? "1" : "0", row_limit: 0 })}`);
       setUniversePreview(payload);
     } catch (requestError) {
       setUniversePreview({

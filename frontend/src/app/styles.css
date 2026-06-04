@@ -10128,7 +10128,9 @@ button {
 .live-universe-preview {
   display: grid;
   gap: 12px;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   margin-top: 2px;
+  min-height: max(620px, calc(var(--app-zoomed-viewport-height) - 340px));
   padding: 14px;
 }
 
@@ -10234,6 +10236,8 @@ button {
 .live-universe-tab-group {
   display: grid;
   gap: 8px;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
   min-width: 0;
 }
 
@@ -10266,12 +10270,15 @@ button {
   border-radius: 8px;
   display: grid;
   gap: 6px;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
   min-width: 0;
   padding: 8px;
 }
 
-.live-universe-preview-table .data-table-wrap {
-  max-height: 520px;
+.live-universe-preview-table .data-table-shell {
+  height: 100%;
+  min-height: 420px;
 }
 
 .live-universe-subtitle strong {

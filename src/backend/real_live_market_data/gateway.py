@@ -121,7 +121,7 @@ class MarketGateway:
                 self.config,
                 trading_session_id=trading_session_id,
                 started_at=started_at,
-                row_limit=50,
+                row_limit=0,
             )
             persistence = payload.get("persistence", {})
             self.session_baseline_status = {
@@ -247,7 +247,7 @@ class MarketGateway:
             "status": self.status(),
         }
 
-    def universe_preview(self, row_limit: int = 50, *, refresh_enrichment: bool = False) -> dict[str, Any]:
+    def universe_preview(self, row_limit: int = 0, *, refresh_enrichment: bool = False) -> dict[str, Any]:
         client = ClickHouseHttpClient(self.config.read_clickhouse)
         errors: list[dict[str, Any]] = []
         tables: list[dict[str, Any]] = []
@@ -306,7 +306,7 @@ class MarketGateway:
                     enrichment_frame=enrichment_frame,
                     enrichment_status=enrichment_status,
                     enrich_scanner=True,
-                    row_limit=max(1, min(row_limit, 200)),
+                    row_limit=max(0, row_limit),
                 )
                 tables, tables_error = resolve_preview_metadata(tables_future, "tables")
                 columns, columns_error = resolve_preview_metadata(columns_future, "columns")
