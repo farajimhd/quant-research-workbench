@@ -28,8 +28,14 @@ CLICKHOUSE_USER_ENV = "TD__DATABASE__CLICKHOUSE__USER"
 CLICKHOUSE_FILE_ROOT_ENV = "TD__DATABASE__CLICKHOUSE__FILE_ROOT"
 CLICKHOUSE_STORAGE_POLICY_ENV = "TD__DATABASE__CLICKHOUSE__STORAGE_POLICY"
 DEFAULT_FLATFILES_ROOT_WIN = Path("D:/market-data/flatfiles/us_stocks_sip")
-DEFAULT_CLICKHOUSE_USER_FILES_ROOT = "/mnt/d/market-data"
-OLD_CLICKHOUSE_FILE_ROOT_PREFIX = "market-data/"
+CLICKHOUSE_FILE_ROOT_PREFIXES = (
+    "/mnt/d/market-data/",
+    "/mnt/g/market-data/workstation-d/",
+    "/mnt/g/market-data/",
+    "market-data/workstation-d/",
+    "market-data/",
+    "workstation-d/",
+)
 DEFAULT_FLATFILES_ROOT_CH = "flatfiles/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_sip_ingest")
 
@@ -701,11 +707,12 @@ def windows_path_to_clickhouse_path(path: Path, flatfiles_root_win: Path, flatfi
 
 def normalize_clickhouse_file_path(path: str) -> str:
     normalized = path.strip().replace("\\", "/")
-    user_files_root = DEFAULT_CLICKHOUSE_USER_FILES_ROOT.rstrip("/") + "/"
-    if normalized.startswith(user_files_root):
-        normalized = normalized[len(user_files_root) :]
-    if normalized.startswith(OLD_CLICKHOUSE_FILE_ROOT_PREFIX):
-        normalized = normalized[len(OLD_CLICKHOUSE_FILE_ROOT_PREFIX) :]
+    if normalized.startswith("/"):
+        normalized = "/" + normalized.lstrip("/")
+    for prefix in CLICKHOUSE_FILE_ROOT_PREFIXES:
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :]
+            break
     if normalized.startswith("/"):
         normalized = normalized.lstrip("/")
     return normalized.rstrip("/")
