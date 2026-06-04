@@ -35,15 +35,15 @@ CLICKHOUSE_STORAGE_POLICY_SIMPLE_ENV = "CLICKHOUSE_STORAGE_POLICY"
 CLICKHOUSE_STORAGE_POLICY_ENV = "TD__DATABASE__CLICKHOUSE__STORAGE_POLICY"
 HISTORICAL_CLICKHOUSE_DATABASE_ENV = "HISTORICAL_CLICKHOUSE_DATABASE_HDD_STORAGE_POLICY"
 DEFAULT_FLATFILES_ROOT_WIN = Path("D:/market-data/flatfiles/us_stocks_sip")
+DEFAULT_CLICKHOUSE_FILE_ROOT = "/mnt/d/market-data"
 CLICKHOUSE_FILE_ROOT_PREFIXES = (
-    "/mnt/d/market-data/",
     "/mnt/g/market-data/workstation-d/",
     "/mnt/g/market-data/",
     "market-data/workstation-d/",
     "market-data/",
     "workstation-d/",
 )
-DEFAULT_FLATFILES_ROOT_CH = "flatfiles/us_stocks_sip"
+DEFAULT_FLATFILES_ROOT_CH = "/mnt/d/market-data/flatfiles/us_stocks_sip"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/clickhouse_sip_ingest")
 
 QUOTE_SCHEMA_STRING = (
@@ -239,7 +239,7 @@ def main() -> None:
 
     for index, source in enumerate(source_files, start=1):
         latest_status = latest_manifest_status(client, database, source)
-        if should_skip(latest_status, args):
+        if latest_status == "ok":
             skipped += 1
             print(f"[{index:,}/{len(source_files):,}] SKIP {source.kind}:{source.date} status={latest_status}", flush=True)
             continue
@@ -247,6 +247,12 @@ def main() -> None:
             insert_manifest(client, database, source, status="ok", run_id=run_id, exception=f"Recovered from existing {latest_status} manifest; rows already present in raw table.")
             skipped += 1
             print(f"[{index:,}/{len(source_files):,}] RECOVER-SKIP {source.kind}:{source.date} previous_status={latest_status} rows already present", flush=True)
+            continue
+        if latest_status in {"failed", "started"}:
+            print(f"[{index:,}/{len(source_files):,}] RETRY {source.kind}:{source.date} previous_status={latest_status} no existing rows found", flush=True)
+        elif should_skip(latest_status, args):
+            skipped += 1
+            print(f"[{index:,}/{len(source_files):,}] SKIP {source.kind}:{source.date} status={latest_status}", flush=True)
             continue
 
         print("=" * 96, flush=True)
@@ -734,15 +740,15 @@ def windows_path_to_clickhouse_path(path: Path, flatfiles_root_win: Path, flatfi
 
 def normalize_clickhouse_file_path(path: str) -> str:
     normalized = path.strip().replace("\\", "/")
-    if normalized.startswith("/"):
-        normalized = "/" + normalized.lstrip("/")
+    if normalized.startswith(DEFAULT_CLICKHOUSE_FILE_ROOT.rstrip("/") + "/"):
+        return normalized.rstrip("/")
     for prefix in CLICKHOUSE_FILE_ROOT_PREFIXES:
         if normalized.startswith(prefix):
             normalized = normalized[len(prefix) :]
             break
     if normalized.startswith("/"):
-        normalized = normalized.lstrip("/")
-    return normalized.rstrip("/")
+        return normalized.rstrip("/")
+    return DEFAULT_CLICKHOUSE_FILE_ROOT.rstrip("/") + "/" + normalized.rstrip("/")
 
 
 def quote_ident(value: str) -> str:
