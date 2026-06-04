@@ -4938,8 +4938,9 @@ button {
 
 .data-table-cell.ticker {
   color: var(--foreground);
-  font-family: "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+  font-family: "Sora", "Inter", sans-serif;
   font-size: 13px;
+  font-optical-sizing: auto;
   font-weight: 800;
   letter-spacing: 0;
 }
