@@ -10136,6 +10136,13 @@ button {
   min-width: 0;
 }
 
+.live-universe-preview-header .live-universe-preview-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .live-universe-preview-header span,
 .live-universe-query span,
 .live-universe-subtitle span,
@@ -12643,6 +12650,11 @@ button {
 
   .live-universe-tabs-header > span {
     padding-bottom: 0;
+  }
+
+  .live-universe-preview-header .live-universe-preview-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
   }
 
   .live-global-status-actions {

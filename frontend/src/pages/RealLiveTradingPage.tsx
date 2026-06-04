@@ -1647,12 +1647,14 @@ function LiveUniversePreviewPanel({ loading, onRefresh, onRefreshEnrichment, pre
           <span>Initial Database Pull</span>
           <strong>{preview?.can_query_universe ? `${integer(preview.reference_row_count ?? preview.row_count)} reference rows loaded` : "Waiting for ClickHouse universe"}</strong>
         </div>
-        <button className="button secondary" disabled={loading} onClick={onRefresh} type="button">
-          {loading ? <span className="loading-spinner" aria-hidden="true" /> : <RefreshCw size={15} />} Refresh
-        </button>
-        <button className="button secondary" disabled={loading} onClick={onRefreshEnrichment} type="button">
-          {loading ? <span className="loading-spinner" aria-hidden="true" /> : <RefreshCw size={15} />} Refresh Float/Short
-        </button>
+        <div className="live-universe-preview-actions">
+          <button className="button secondary" disabled={loading} onClick={onRefresh} type="button">
+            {loading ? <span className="loading-spinner" aria-hidden="true" /> : <RefreshCw size={15} />} Refresh
+          </button>
+          <button className="button secondary" disabled={loading} onClick={onRefreshEnrichment} type="button">
+            {loading ? <span className="loading-spinner" aria-hidden="true" /> : <RefreshCw size={15} />} Refresh Float/Short
+          </button>
+        </div>
       </div>
       <div className="live-universe-summary-grid">
         <LiveUniverseMetric label="Read URL" value={preview?.read_url || "not loaded"} />
