@@ -69,6 +69,33 @@ python services\news-intelligence\scripts\download_models.py --include-large
 python services\news-intelligence\scripts\download_models.py --include-gated
 ```
 
+To download only OpenAI `gpt-oss-20b` for offline/vLLM testing:
+
+```powershell
+python services\news-intelligence\scripts\download_models.py --only openai-gpt-oss-20b --include-large
+```
+
+## Serving Local LLMs
+
+The intelligence service expects an OpenAI-compatible local LLM endpoint when
+`NEWS_INTELLIGENCE_ENABLE_LLM=true`. For `gpt-oss-20b`, the recommended path is
+vLLM on compatible GPU hardware:
+
+```powershell
+.\scripts\run_news_llm_vllm.ps1 -ModelKey openai-gpt-oss-20b
+```
+
+Then point the intelligence service at it:
+
+```powershell
+$env:NEWS_INTELLIGENCE_ENABLE_LLM = "true"
+$env:NEWS_INTELLIGENCE_LLM_BASE_URL = "http://127.0.0.1:8000/v1"
+$env:NEWS_INTELLIGENCE_LLM_MODEL = "openai/gpt-oss-20b"
+```
+
+`gpt-oss-20b` is intended for self-managed serving. It is not available through
+the OpenAI API or ChatGPT.
+
 ## API
 
 ```text

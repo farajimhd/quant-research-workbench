@@ -55,6 +55,7 @@ class IntelligenceResponse(BaseModel):
     taxonomy_version: str
     prompt_version: str
     model_stack: list[str] = Field(default_factory=list)
+    summary: str = ""
     sentiment_label: str = "neutral"
     sentiment_score: float = 0.0
     sentiment_confidence: float = 0.0
@@ -65,8 +66,9 @@ class IntelligenceResponse(BaseModel):
     urgency_score: float = 0.0
     time_horizon: str = "unknown"
     affected_tickers: list[TickerImpact] = Field(default_factory=list)
+    content_completeness: str = "unknown"
+    evidence_basis: str = "unknown"
     labels: list[str] = Field(default_factory=list)
     rationale: str = ""
     raw_outputs: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
-

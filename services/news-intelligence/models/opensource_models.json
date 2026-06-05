@@ -122,6 +122,21 @@
       "gated": false
     },
     {
+      "key": "openai-gpt-oss-20b",
+      "repo_id": "openai/gpt-oss-20b",
+      "task": "instruction_llm",
+      "tier": "offline_research_llm",
+      "license_note": "Apache-2.0 open-weight model. OpenAI does not serve this model through the OpenAI API or ChatGPT; run it on self-managed infrastructure.",
+      "download_by_default": false,
+      "large": true,
+      "gated": false,
+      "serving": {
+        "recommended_runtime": "vllm",
+        "served_model_name": "openai/gpt-oss-20b",
+        "notes": "Use vLLM on a compatible GPU for practical latency. The model is MXFP4 quantized by default; bfloat16 requires substantially more memory."
+      }
+    },
+    {
       "key": "phi-4-mini-instruct",
       "repo_id": "microsoft/Phi-4-mini-instruct",
       "task": "instruction_llm",

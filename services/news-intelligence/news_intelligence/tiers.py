@@ -111,9 +111,9 @@ class LlmTier:
                     "role": "system",
                     "content": (
                         "You classify financial news for a trading scanner. "
-                        "Return strict JSON only with keys: event_type, event_subtype, "
+                        "Return strict JSON only with keys: summary, event_type, event_subtype, "
                         "materiality_score, novelty_score, urgency_score, time_horizon, "
-                        "affected_tickers, labels, rationale."
+                        "affected_tickers, content_completeness, evidence_basis, labels, rationale."
                     ),
                 },
                 {
@@ -166,6 +166,7 @@ class IntelligenceEngine:
             taxonomy_version=self.config.taxonomy_version,
             prompt_version=self.config.prompt_version,
             model_stack=[sentiment["model"], event["model"]],
+            summary=article.title[:280],
             sentiment_label=sentiment["label"],
             sentiment_score=sentiment["score"],
             sentiment_confidence=sentiment["confidence"],
@@ -176,6 +177,8 @@ class IntelligenceEngine:
             urgency_score=event["urgency_score"],
             time_horizon=event["time_horizon"],
             affected_tickers=ticker_impacts(article, sentiment["label"], sentiment["score"], sentiment["confidence"]),
+            content_completeness=infer_content_completeness(article),
+            evidence_basis=infer_evidence_basis(article),
             labels=event["labels"],
             rationale="fast classifier plus deterministic event rules",
             raw_outputs={"sentiment": sentiment["raw"], "event": event["raw"]},
@@ -220,22 +223,28 @@ def time_horizon(event_type: str, urgency: float) -> str:
 
 def extract_json(text: str) -> str:
     stripped = text.strip()
-    if stripped.startswith("{") and stripped.endswith("}"):
-        return stripped
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start >= 0 and end > start:
-        return stripped[start : end + 1]
-    return stripped
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(stripped):
+        if char != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(stripped[index:])
+        except json.JSONDecodeError:
+            continue
+        return json.dumps(value)
+    return "{}"
 
 
 def apply_llm_output(response: IntelligenceResponse, parsed: dict[str, Any]) -> None:
+    response.summary = str(parsed.get("summary") or response.summary)
     response.event_type = str(parsed.get("event_type") or response.event_type)
     response.event_subtype = str(parsed.get("event_subtype") or response.event_subtype)
     response.materiality_score = bounded_float(parsed.get("materiality_score"), response.materiality_score)
     response.novelty_score = bounded_float(parsed.get("novelty_score"), response.novelty_score)
     response.urgency_score = bounded_float(parsed.get("urgency_score"), response.urgency_score)
     response.time_horizon = str(parsed.get("time_horizon") or response.time_horizon)
+    response.content_completeness = str(parsed.get("content_completeness") or response.content_completeness)
+    response.evidence_basis = str(parsed.get("evidence_basis") or response.evidence_basis)
     response.labels = sorted(set(response.labels + [str(item) for item in parsed.get("labels", []) if item]))
     response.rationale = str(parsed.get("rationale") or response.rationale)
     impacts = []
@@ -267,3 +276,25 @@ def response_to_dict(response: IntelligenceResponse) -> dict[str, Any]:
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return response.dict()
+
+
+def infer_content_completeness(article: NewsArticleForClassification) -> str:
+    if article.extracted_text and len(article.extracted_text.strip()) > 300:
+        return "url_enriched"
+    if article.body_text and len(article.body_text.strip()) > 300:
+        return "full_text"
+    if article.body_text or article.teaser:
+        return "short_body"
+    return "title_only"
+
+
+def infer_evidence_basis(article: NewsArticleForClassification) -> str:
+    if article.extracted_text and len(article.extracted_text.strip()) > 300:
+        return "title_url_extract"
+    if article.body_text:
+        return "title_body"
+    if article.teaser:
+        return "title_teaser"
+    if article.insight_tickers or article.insight_sentiments:
+        return "provider_insights"
+    return "title_only"

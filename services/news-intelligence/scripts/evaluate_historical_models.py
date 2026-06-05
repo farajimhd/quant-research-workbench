@@ -60,6 +60,7 @@ Use the article text and known tickers. Do not invent tickers.
 
 JSON schema:
 {
+  "summary": short factual one-sentence summary for display,
   "event_type": one of ["earnings","analyst_rating","capital_markets","merger_acquisition","fda_biotech","legal_regulatory","macro_geopolitical","product_contract","insider_ownership","crypto","other"],
   "event_subtype": short string,
   "sentiment_overall": one of ["positive","negative","neutral","mixed"],
@@ -67,6 +68,8 @@ JSON schema:
   "urgency_score": number from 0 to 1, where 1 means the market may react immediately,
   "time_horizon": one of ["intraday","session_to_multi_day","longer_term","contextual","unknown"],
   "affected_tickers": [{"ticker": "AAPL", "sentiment": "positive|negative|neutral|mixed", "direction_score": -1 to 1, "confidence": 0 to 1}],
+  "content_completeness": one of ["full_text","short_body","title_only","pdf_enriched","url_enriched"],
+  "evidence_basis": one of ["title_only","title_teaser","title_body","title_url_extract","title_pdf_extract","provider_insights"],
   "labels": short array of useful tags,
   "rationale": one concise sentence
 }"""
@@ -348,9 +351,17 @@ def build_runner(evaluation: ModelEval, args: argparse.Namespace):
         )
 
         def run(article: Article, max_chars: int) -> dict[str, Any]:
-            prompt = build_llm_prompt(article, max_chars)
-            output = generator(prompt, max_new_tokens=320, do_sample=False, temperature=None, return_full_text=False)
-            text = output[0].get("generated_text", "") if output else ""
+            if evaluation.repo_id.startswith("openai/gpt-oss"):
+                messages = [
+                    {"role": "system", "content": LLM_SYSTEM_PROMPT},
+                    {"role": "user", "content": build_llm_user_prompt(article, max_chars)},
+                ]
+                prompt = json.dumps(messages, ensure_ascii=False)
+                output = generator(messages, max_new_tokens=320, do_sample=False, temperature=None, return_full_text=False)
+            else:
+                prompt = build_llm_prompt(article, max_chars)
+                output = generator(prompt, max_new_tokens=320, do_sample=False, temperature=None, return_full_text=False)
+            text = extract_generated_text(output)
             return {"prompt": prompt, "raw_text": text, "parsed_json": parse_json_object(text)}
 
         return run
@@ -383,10 +394,45 @@ def build_runner(evaluation: ModelEval, args: argparse.Namespace):
 def build_llm_prompt(article: Article, max_chars: int) -> str:
     return (
         f"{LLM_SYSTEM_PROMPT}\n\n"
-        "Article:\n"
-        f"{article.formatted_for_models(max_chars)}\n\n"
+        f"{build_llm_user_prompt(article, max_chars)}\n\n"
         "Return JSON now:"
     )
+
+
+def build_llm_user_prompt(article: Article, max_chars: int) -> str:
+    text = article.formatted_for_models(max_chars)
+    completeness = "title_only" if not article.text or article.text.strip() == article.title.strip() else "full_text"
+    evidence_basis = "title_only" if completeness == "title_only" else "title_body"
+    if completeness == "title_only":
+        instruction = (
+            "The article has no body text. Classify only from title, tickers, and provider metadata. "
+            "Do not infer details that are not present; lower confidence unless the title is explicit."
+        )
+    else:
+        instruction = "Classify from the title, known tickers, and available article text."
+    return (
+        f"{instruction}\n"
+        f"content_completeness_hint: {completeness}\n"
+        f"evidence_basis_hint: {evidence_basis}\n\n"
+        "Article:\n"
+        f"{text}\n\n"
+        "Return JSON now."
+    )
+
+
+def extract_generated_text(output: Any) -> str:
+    if not output:
+        return ""
+    item = output[0] if isinstance(output, list) else output
+    if not isinstance(item, dict):
+        return str(item)
+    generated = item.get("generated_text", "")
+    if isinstance(generated, list) and generated:
+        last = generated[-1]
+        if isinstance(last, dict):
+            return str(last.get("content", ""))
+        return str(last)
+    return str(generated)
 
 
 def top_labels(output: dict[str, Any], n: int = 5) -> list[dict[str, Any]]:
