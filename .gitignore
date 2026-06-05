@@ -229,3 +229,5 @@ research/chronos2/reports/
 
 # Local model evaluation outputs
 services/news-intelligence/evaluation_runs/
+services/news-intelligence/codex_suppervision/
+services/news-intelligence/pipeline_evaluation_runs/

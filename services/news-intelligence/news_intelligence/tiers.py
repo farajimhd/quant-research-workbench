@@ -59,9 +59,30 @@ class FastClassifierTier:
             self._load_error = f"model_not_downloaded: {local_path}"
             return None
         try:
-            from transformers import pipeline
+            import torch
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-            self._pipeline = pipeline("text-classification", model=str(local_path), tokenizer=str(local_path))
+            tokenizer = AutoTokenizer.from_pretrained(str(local_path))
+            model = AutoModelForSequenceClassification.from_pretrained(str(local_path))
+            model.eval()
+            id2label = getattr(model.config, "id2label", {}) or {}
+
+            def classify(text: str, truncation: bool = True) -> list[dict[str, Any]]:
+                encoded = tokenizer(
+                    text,
+                    truncation=truncation,
+                    max_length=512,
+                    return_tensors="pt",
+                    return_token_type_ids=False,
+                )
+                with torch.no_grad():
+                    logits = model(**encoded).logits[0]
+                    probabilities = torch.softmax(logits, dim=-1)
+                index = int(torch.argmax(probabilities).item())
+                label = str(id2label.get(index, f"label_{index}"))
+                return [{"label": label, "score": float(probabilities[index].item())}]
+
+            self._pipeline = classify
         except Exception as error:  # pragma: no cover - depends on optional packages/models
             self._load_error = f"load_failed: {error}"
             self._pipeline = None
