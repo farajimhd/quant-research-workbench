@@ -2,6 +2,8 @@
 
 Standalone Rust market-data gateway for the quote/trade regime.
 
+Review documentation lives in [docs/README.md](docs/README.md). Start there for the architecture, configuration, data contracts, scanner/signal contracts, and operations guide.
+
 The gateway runs as one OS process. Inside that process, Tokio runs async tasks
 for websocket ingest, ClickHouse persistence, and local API/WebSocket serving.
 
