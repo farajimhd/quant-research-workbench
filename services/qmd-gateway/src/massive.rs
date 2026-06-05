@@ -2,6 +2,7 @@ use crate::bars::BarEventRouter;
 use crate::config::GatewayConfig;
 use crate::event::{massive_status_message, parse_massive_payload, MarketEvent};
 use crate::indicators::IndicatorEventRouter;
+use crate::metrics::SharedMetrics;
 use crate::state::SharedMarketState;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -16,6 +17,7 @@ pub async fn run_massive_ingest(
     bar_router: BarEventRouter,
     indicator_router: IndicatorEventRouter,
     event_sender: broadcast::Sender<MarketEvent>,
+    metrics: SharedMetrics,
 ) {
     if config.massive_api_key.is_empty() {
         eprintln!("MASSIVE_API_KEY is not configured; qmd-gateway API is running without live ingest.");
@@ -50,20 +52,33 @@ pub async fn run_massive_ingest(
                             match parse_massive_payload(&text) {
                                 Ok(events) => {
                                     for event in events {
+                                        let kind = match &event {
+                                            MarketEvent::Trade(_) => "trade",
+                                            MarketEvent::Quote(_) => "quote",
+                                        };
+                                        metrics.observe_event(kind, event.ts());
                                         state.apply_event(&event).await;
-                                        let _ = event_sender.send(event.clone());
+                                        if event_sender.send(event.clone()).is_err() {
+                                            metrics.inc_event_broadcast_dropped();
+                                        }
                                         if bar_router.try_send(event.clone()).is_err() {
+                                            metrics.inc_bar_event_dropped();
                                             eprintln!("Bar engine shard queue is full; dropped one aggregation event.");
                                         }
                                         if indicator_router.try_send_event(event.clone()).is_err() {
+                                            metrics.inc_indicator_event_dropped();
                                             eprintln!("Indicator shard queue is full; dropped one indicator event.");
                                         }
                                         if writer_sender.try_send(event).is_err() {
+                                            metrics.inc_clickhouse_event_dropped();
                                             eprintln!("ClickHouse writer queue is full; dropped one persistence event.");
                                         }
                                     }
                                 }
-                                Err(error) => eprintln!("Massive parse failed: {error}"),
+                                Err(error) => {
+                                    metrics.inc_parse_failure();
+                                    eprintln!("Massive parse failed: {error}");
+                                }
                             }
                         }
                         Ok(Message::Binary(_)) => {}
@@ -71,18 +86,23 @@ pub async fn run_massive_ingest(
                             let _ = websocket.send(Message::Pong(payload)).await;
                         }
                         Ok(Message::Close(frame)) => {
+                            metrics.inc_massive_disconnect();
                             eprintln!("Massive websocket closed: {frame:?}");
                             break;
                         }
                         Ok(_) => {}
                         Err(error) => {
+                            metrics.inc_massive_disconnect();
                             eprintln!("Massive websocket error: {error}");
                             break;
                         }
                     }
                 }
             }
-            Err(error) => eprintln!("Massive websocket connect failed: {error}"),
+            Err(error) => {
+                metrics.inc_massive_connect_failure();
+                eprintln!("Massive websocket connect failed: {error}");
+            }
         }
         sleep(Duration::from_secs(3)).await;
     }

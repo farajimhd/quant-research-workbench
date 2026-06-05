@@ -1,22 +1,34 @@
 use crate::config::GatewayConfig;
+use crate::clickhouse::RAW_EVENT_SCHEMA_VERSION;
+use crate::metrics::{SharedMetrics, TimingTarget};
 use crate::session::{is_streaming_phase, session_phase};
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, Utc};
 use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::time::{interval, Duration};
 
-pub async fn run_gap_fill_service(config: GatewayConfig) {
+pub async fn run_gap_fill_service(config: GatewayConfig, metrics: SharedMetrics) {
     if !config.gap_fill_enabled {
         return;
     }
-    let filler = GapFillService::new(config);
+    let filler = GapFillService::new(config, metrics);
+    if is_streaming_phase(Utc::now()) && matches!(filler.config.gap_fill_mode.as_str(), "auto" | "session" | "session_catch_up") {
+        if let Err(error) = filler.run_once("session_catch_up").await {
+            filler.metrics.inc_gap_fill_failure();
+            eprintln!("Session catch-up gap fill failed: {error}");
+        }
+    }
     let mut timer = interval(Duration::from_millis(filler.config.gap_fill_interval_ms));
     loop {
         timer.tick().await;
         if is_streaming_phase(Utc::now()) {
             continue;
         }
-        if let Err(error) = filler.run_once().await {
+        if !matches!(filler.config.gap_fill_mode.as_str(), "auto" | "after_hours" | "repair") {
+            continue;
+        }
+        if let Err(error) = filler.run_once("after_hours_repair").await {
+            filler.metrics.inc_gap_fill_failure();
             eprintln!("Gap fill cycle failed: {error}");
         }
     }
@@ -26,27 +38,31 @@ pub async fn run_gap_fill_service(config: GatewayConfig) {
 struct GapFillService {
     client: Client,
     config: GatewayConfig,
+    metrics: SharedMetrics,
 }
 
 impl GapFillService {
-    fn new(config: GatewayConfig) -> Self {
+    fn new(config: GatewayConfig, metrics: SharedMetrics) -> Self {
         Self {
             client: Client::new(),
             config,
+            metrics,
         }
     }
 
-    async fn run_once(&self) -> Result<(), String> {
+    async fn run_once(&self, mode: &str) -> Result<(), String> {
+        let _timing = self.metrics.timing(TimingTarget::GapFillRun);
+        self.metrics.inc_gap_fill_run();
         self.initialize_tables().await?;
         let started_at = Utc::now();
         let phase = format!("{:?}", session_phase(started_at));
         if self.config.massive_api_key.is_empty() {
-            self.record_run(started_at, &phase, "", "skipped", 0, "MASSIVE_API_KEY is not configured").await?;
+            self.record_run(started_at, mode, &phase, "", "skipped", 0, "MASSIVE_API_KEY is not configured").await?;
             return Ok(());
         }
         let symbols = self.gap_fill_symbols().await?;
         if symbols.is_empty() {
-            self.record_run(started_at, &phase, "", "skipped", 0, "No gap-fill symbols were configured or discovered").await?;
+            self.record_run(started_at, mode, &phase, "", "skipped", 0, "No gap-fill symbols were configured or discovered").await?;
             return Ok(());
         }
         for symbol in symbols {
@@ -58,7 +74,9 @@ impl GapFillService {
                 eprintln!("Quote gap fill failed for {symbol}: {error}");
                 0
             });
-            self.record_run(started_at, &phase, &symbol, "completed", trade_rows + quote_rows, "").await?;
+            let rows = trade_rows + quote_rows;
+            self.metrics.inc_gap_fill_rows(rows);
+            self.record_run(started_at, mode, &phase, &symbol, "completed", rows, "").await?;
         }
         Ok(())
     }
@@ -163,6 +181,7 @@ impl GapFillService {
                 let ts = ns_to_rfc3339(row.get("sip_timestamp").and_then(Value::as_i64).unwrap_or_default());
                 json!({
                     "session_date": ts.get(0..10).unwrap_or("1970-01-01"),
+                    "schema_version": RAW_EVENT_SCHEMA_VERSION,
                     "ts": ts,
                     "participant_ts": optional_ns_to_rfc3339(row.get("participant_timestamp").and_then(Value::as_i64)),
                     "trf_ts": optional_ns_to_rfc3339(row.get("trf_timestamp").and_then(Value::as_i64)),
@@ -192,6 +211,7 @@ impl GapFillService {
                 let ts = ns_to_rfc3339(row.get("sip_timestamp").and_then(Value::as_i64).unwrap_or_default());
                 json!({
                     "session_date": ts.get(0..10).unwrap_or("1970-01-01"),
+                    "schema_version": RAW_EVENT_SCHEMA_VERSION,
                     "ts": ts,
                     "ingest_ts": Utc::now().to_rfc3339(),
                     "sym": symbol,
@@ -218,10 +238,25 @@ impl GapFillService {
         self.query(&format!("CREATE DATABASE IF NOT EXISTS `{}`", self.config.clickhouse_database), false)
             .await?;
         self.query(
+            "ALTER TABLE live_massive_trades ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
+            true,
+        )
+        .await
+        .map(|_| ())
+        .unwrap_or(());
+        self.query(
+            "ALTER TABLE live_massive_quotes ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
+            true,
+        )
+        .await
+        .map(|_| ())
+        .unwrap_or(());
+        self.query(
             r#"
             CREATE TABLE IF NOT EXISTS qmd_gap_fill_runs
             (
                 started_at DateTime64(3, 'UTC'),
+                mode LowCardinality(String),
                 phase LowCardinality(String),
                 symbol LowCardinality(String),
                 status LowCardinality(String),
@@ -234,12 +269,19 @@ impl GapFillService {
             true,
         )
         .await
+        .map(|_| ())?;
+        self.query(
+            "ALTER TABLE qmd_gap_fill_runs ADD COLUMN IF NOT EXISTS mode LowCardinality(String) AFTER started_at",
+            true,
+        )
+        .await
         .map(|_| ())
     }
 
-    async fn record_run(&self, started_at: DateTime<Utc>, phase: &str, symbol: &str, status: &str, rows_written: u64, message: &str) -> Result<(), String> {
+    async fn record_run(&self, started_at: DateTime<Utc>, mode: &str, phase: &str, symbol: &str, status: &str, rows_written: u64, message: &str) -> Result<(), String> {
         let row = json!({
             "started_at": started_at.to_rfc3339(),
+            "mode": mode,
             "phase": phase,
             "symbol": symbol,
             "status": status,

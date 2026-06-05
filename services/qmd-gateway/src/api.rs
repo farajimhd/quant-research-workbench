@@ -3,6 +3,8 @@ use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_catalog, IndicatorCatalogEntry};
 use crate::indicators::{IndicatorSnapshot, SharedIndicatorStore};
+use crate::metrics::{MetricsSnapshot, SharedMetrics};
+use crate::scanner::{ScannerPrimitive, ScannerPrimitiveSnapshot, SharedScannerStore};
 use crate::session::session_phase;
 use crate::signal_catalog::{signal_catalog, SignalMethodEntry};
 use crate::state::{ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot};
@@ -24,6 +26,9 @@ pub struct AppState {
     pub events: broadcast::Sender<MarketEvent>,
     pub indicators: SharedIndicatorStore,
     pub market: SharedMarketState,
+    pub metrics: SharedMetrics,
+    pub scanner: SharedScannerStore,
+    pub scanner_events: broadcast::Sender<ScannerPrimitive>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,14 +56,17 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/config", get(config))
+        .route("/metrics", get(metrics_snapshot))
         .route("/indicator-catalog", get(indicator_catalog_snapshot))
         .route("/signal-catalog", get(signal_catalog_snapshot))
         .route("/snapshot/scanner", get(scanner_snapshot))
+        .route("/snapshot/scanner-primitives", get(scanner_primitive_snapshot))
         .route("/snapshot/ticker/{ticker}", get(ticker_snapshot))
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
         .route("/snapshot/indicators/{ticker}", get(indicator_snapshot))
         .route("/stream/events", get(event_stream))
         .route("/stream/scanner", get(scanner_stream))
+        .route("/stream/scanner-primitives", get(scanner_primitive_stream))
         .route("/stream/ticker/{ticker}", get(ticker_stream))
         .route("/stream/bars/{ticker}", get(bar_stream))
         .route("/stream/indicators/{ticker}", get(indicator_stream))
@@ -85,6 +93,10 @@ async fn config(State(state): State<Arc<AppState>>) -> Json<GatewayConfig> {
     Json(state.config.clone())
 }
 
+async fn metrics_snapshot(State(state): State<Arc<AppState>>) -> Json<MetricsSnapshot> {
+    Json(state.metrics.snapshot())
+}
+
 async fn indicator_catalog_snapshot() -> Json<&'static [IndicatorCatalogEntry]> {
     Json(indicator_catalog())
 }
@@ -98,6 +110,13 @@ async fn scanner_snapshot(
     Query(query): Query<LimitQuery>,
 ) -> Json<ScannerSnapshot> {
     Json(state.market.scanner_snapshot(query.limit.unwrap_or(250).min(5_000)).await)
+}
+
+async fn scanner_primitive_snapshot(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<LimitQuery>,
+) -> Json<ScannerPrimitiveSnapshot> {
+    Json(state.scanner.snapshot(query.limit.unwrap_or(250).min(5_000)).await)
 }
 
 async fn ticker_snapshot(
@@ -147,6 +166,12 @@ async fn indicator_snapshot(
 async fn scanner_stream(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
         stream_scanner(socket, state).await;
+    })
+}
+
+async fn scanner_primitive_stream(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        stream_scanner_primitives(socket, state).await;
     })
 }
 
@@ -239,6 +264,30 @@ async fn stream_scanner(mut socket: WebSocket, state: Arc<AppState>) {
                     break;
                 }
             }
+        }
+    }
+}
+
+async fn stream_scanner_primitives(mut socket: WebSocket, state: Arc<AppState>) {
+    let mut receiver = state.scanner_events.subscribe();
+    loop {
+        match receiver.recv().await {
+            Ok(event) => match serde_json::to_string(&event) {
+                Ok(text) if socket.send(Message::Text(text.into())).await.is_err() => break,
+                Ok(_) => {}
+                Err(error) => {
+                    if socket.send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into())).await.is_err() {
+                        break;
+                    }
+                }
+            },
+            Err(broadcast::error::RecvError::Lagged(count)) => {
+                let warning = format!(r#"{{"warning":"scanner_primitive_stream_lagged","skipped":{count}}}"#);
+                if socket.send(Message::Text(warning.into())).await.is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
         }
     }
 }

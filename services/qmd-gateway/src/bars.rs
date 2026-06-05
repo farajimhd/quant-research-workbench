@@ -1,5 +1,7 @@
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::metrics::SharedMetrics;
+use crate::scanner::ScannerPrimitiveRouter;
 use chrono::{DateTime, TimeZone, Utc};
 use reqwest::Client;
 use serde::Serialize;
@@ -8,6 +10,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration};
+
+pub const BAR_SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct BarSnapshot {
@@ -19,6 +23,8 @@ pub struct BarSnapshot {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct BarRow {
+    /// Schema version for durable bar rows and replay compatibility.
+    pub schema_version: u16,
     /// UTC calendar date from `bar_start`; used for ClickHouse partitioning.
     pub session_date: String,
     /// Canonical bar length label, for example `1s`, `10s`, `30s`, `1m`, `5m`, or `1h`.
@@ -540,6 +546,7 @@ impl BarStore {
         };
 
         BarRow {
+            schema_version: BAR_SCHEMA_VERSION,
             session_date: bar.bar_start.date_naive().to_string(),
             timeframe: bar.timeframe.clone(),
             sym: bar.sym.clone(),
@@ -864,7 +871,9 @@ pub fn spawn_bar_engines(
     bars: SharedBarStore,
     channel_capacity: usize,
     indicator_sender: Option<mpsc::Sender<BarRow>>,
+    scanner_sender: Option<ScannerPrimitiveRouter>,
     writer_sender: mpsc::Sender<BarRow>,
+    metrics: SharedMetrics,
 ) -> BarEventRouter {
     let shard_count = bars.shard_count();
     let per_shard_capacity = (channel_capacity / shard_count).max(1);
@@ -877,7 +886,9 @@ pub fn spawn_bar_engines(
             bars.shard(shard_id),
             receiver,
             indicator_sender.clone(),
+            scanner_sender.clone(),
             writer_sender.clone(),
+            metrics.clone(),
         ));
     }
     BarEventRouter {
@@ -890,7 +901,9 @@ async fn run_bar_engine(
     shard: BarShardStore,
     mut receiver: mpsc::Receiver<MarketEvent>,
     indicator_sender: Option<mpsc::Sender<BarRow>>,
+    scanner_sender: Option<ScannerPrimitiveRouter>,
     writer_sender: mpsc::Sender<BarRow>,
+    metrics: SharedMetrics,
 ) {
     let mut heartbeat = interval(Duration::from_millis(250));
     loop {
@@ -899,18 +912,18 @@ async fn run_bar_engine(
                 match event {
                     Some(event) => {
                         let finalized = shard.apply_event(&event).await;
-                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), finalized);
+                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized);
                     }
                     None => {
                         let finalized = shard.finalize_due(Utc::now()).await;
-                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), finalized);
+                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized);
                         return;
                     }
                 }
             }
             _ = heartbeat.tick() => {
                 let finalized = shard.finalize_due(Utc::now()).await;
-                send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), finalized);
+                send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized);
             }
         }
     }
@@ -920,16 +933,29 @@ fn send_finalized_bars(
     shard_id: usize,
     writer_sender: &mpsc::Sender<BarRow>,
     indicator_sender: Option<&mpsc::Sender<BarRow>>,
+    scanner_sender: Option<&ScannerPrimitiveRouter>,
+    metrics: &SharedMetrics,
     rows: Vec<BarRow>,
 ) {
+    metrics.inc_bar_emitted(rows.len() as u64);
     for row in rows {
         if let Some(sender) = indicator_sender {
             if sender.try_send(row.clone()).is_err() {
+                metrics.inc_bar_indicator_dropped();
                 eprintln!("Indicator bar queue is full; shard {shard_id} dropped one finalized bar.");
             }
         }
+        if let Some(sender) = scanner_sender {
+            if sender.try_send_bar(row.clone()).is_err() {
+                metrics.inc_bar_scanner_dropped();
+                eprintln!("Scanner primitive queue is full; shard {shard_id} dropped one finalized bar.");
+            }
+        }
         if writer_sender.try_send(row).is_err() {
+            metrics.inc_bar_writer_dropped();
             eprintln!("Bar writer queue is full; shard {shard_id} dropped one finalized bar.");
+        } else {
+            metrics.inc_bar_persist_queued();
         }
     }
 }
@@ -956,6 +982,7 @@ impl BarClickHouseWriter {
             CREATE TABLE IF NOT EXISTS live_market_bars
             (
                 session_date Date,
+                schema_version UInt16,
                 timeframe LowCardinality(String),
                 sym LowCardinality(String),
                 bar_start DateTime64(3, 'UTC'),
@@ -1049,6 +1076,11 @@ impl BarClickHouseWriter {
             PARTITION BY session_date
             ORDER BY (session_date, timeframe, sym, bar_start)
             "#,
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
             true,
         )
         .await?;
@@ -1148,6 +1180,7 @@ impl BarClickHouseWriter {
 fn bar_insert_row(row: &BarRow) -> serde_json::Value {
     json!({
         "session_date": &row.session_date,
+        "schema_version": row.schema_version,
         "timeframe": &row.timeframe,
         "sym": &row.sym,
         "bar_start": row.bar_start.to_rfc3339(),

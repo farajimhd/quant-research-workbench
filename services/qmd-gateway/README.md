@@ -13,6 +13,7 @@ Current responsibilities:
 - maintain in-memory live market state
 - build sharded live quote/trade bars for `1s`, `10s`, `30s`, `1m`, `5m`, and `1h`
 - build sharded streaming tick and bar-level indicators
+- build Massive-only scanner primitive candidates from live bars
 - publish compact local snapshots/streams to the quant app
 - batch-write raw events to the app-owned ClickHouse database
 - batch-write closed bars to the app-owned ClickHouse database
@@ -53,6 +54,7 @@ Environment variables:
 - `QMD_SCANNER_BROADCAST_MS`, default `1000`
 - `QMD_TICKER_BROADCAST_MS`, default `250`
 - `QMD_GAP_FILL_ENABLED`, default `true`
+- `QMD_GAP_FILL_MODE`, default `auto`; allowed values are `auto`, `session_catch_up`, `after_hours`, `repair`, or `session`
 - `QMD_GAP_FILL_INTERVAL_MS`, default `300000`
 - `QMD_GAP_FILL_LOOKBACK_MINUTES`, default `120`
 - `QMD_GAP_FILL_MIN_GAP_SECONDS`, default `60`
@@ -65,6 +67,12 @@ Environment variables:
 - `QMD_INDICATOR_SHARD_COUNT`, default `8`
 - `QMD_TICK_INDICATOR_WINDOW_SECONDS`, default `300`
 - `QMD_PERSIST_INDICATORS`, default `false`
+- `QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY`, default `250000`
+- `QMD_SCANNER_PRIMITIVE_HISTORY_LIMIT`, default `10000`
+- `QMD_REPLAY_ENABLED`, default `false`
+- `QMD_REPLAY_DATE`, optional `YYYY-MM-DD`
+- `QMD_REPLAY_SYMBOLS`, optional comma-separated tickers
+- `QMD_REPLAY_MAX_ROWS`, default `1000000`
 
 The service writes to:
 
@@ -201,6 +209,47 @@ arrive before a clean multi-minute pattern. Slower methods such as opening range
 trend continuation, and mean reversion run on closed bars and use higher
 timeframe confirmation where appropriate.
 
+## Scanner Primitives
+
+The gateway emits Massive-only scanner primitives from closed live bars. These
+are not final trading signals and do not use broker state, `conid`, float, short
+interest, fundamentals, logos, portfolio state, or account state.
+
+Current primitive families include:
+
+- tape acceleration
+- volume shock
+- liquidity recovery
+- VWAP reclaim
+- high-momentum bar
+
+Scanner primitive endpoints:
+
+```text
+GET http://127.0.0.1:8795/snapshot/scanner-primitives?limit=250
+ws://127.0.0.1:8795/stream/scanner-primitives
+```
+
+Each primitive row includes `schema_version`, ticker, timeframe, primitive key,
+side bias, score, trigger reason, reject reason, and Massive-derived evidence
+fields.
+
+## Metrics And Backpressure
+
+The `/metrics` endpoint exposes operational counters for:
+
+- Massive ingest event counts and last event lag
+- parse/connect/disconnect failures
+- dropped event counters for broadcast, ClickHouse, bar, indicator, and scanner queues
+- emitted bar rows
+- scanner primitive counts
+- gap-fill runs, failures, and written rows
+- process uptime
+
+All hot-path queue sends use non-blocking `try_send`. If a queue is full, the
+gateway drops that downstream item, increments the relevant counter, and keeps
+the Massive ingest loop moving.
+
 ## Session Lifecycle
 
 The gateway keeps the Massive websocket ingest task running for live capture.
@@ -210,8 +259,11 @@ It treats 04:00-20:00 New York time on weekdays as the active streaming window:
 - 09:30-15:59 ET: regular
 - 16:00-19:59 ET: aftermarket
 
-Outside that window, the maintenance worker runs gap-fill cycles. Gap fill uses
-Massive REST historical trades and quotes:
+Gap fill has two modes. If the gateway starts during premarket, regular market,
+or aftermarket and `QMD_GAP_FILL_MODE` is `auto`, `session`, or
+`session_catch_up`, it immediately runs a high-priority session catch-up pass.
+Outside streaming hours, `auto`, `after_hours`, and `repair` run lower-priority
+database repair cycles. Gap fill uses Massive REST historical trades and quotes:
 
 - `/v3/trades/{stockTicker}`
 - `/v3/quotes/{stockTicker}`
@@ -221,6 +273,15 @@ worker discovers symbols already present in `live_massive_trades` and
 `live_massive_quotes` for the current date, then fills from each symbol's latest
 stored timestamp to now. This is meant for crash/restart recovery without
 blocking the live ingest fast path.
+
+## Replay Mode
+
+Replay mode is disabled by default. When `QMD_REPLAY_ENABLED=true`, the gateway
+reads raw Massive rows from ClickHouse for `QMD_REPLAY_DATE` and optional
+`QMD_REPLAY_SYMBOLS`, then feeds them through the same in-memory market, bar,
+indicator, and scanner primitive pipeline. Replay does not re-persist raw events.
+
+This is intended for deterministic validation and later backtest integration.
 
 ## Install Rust On Windows
 
@@ -253,12 +314,14 @@ Health endpoint:
 
 ```text
 GET http://127.0.0.1:8795/health
+GET http://127.0.0.1:8795/metrics
 ```
 
 Snapshot endpoints:
 
 ```text
 GET http://127.0.0.1:8795/snapshot/scanner?limit=250
+GET http://127.0.0.1:8795/snapshot/scanner-primitives?limit=250
 GET http://127.0.0.1:8795/snapshot/ticker/AAPL
 GET http://127.0.0.1:8795/snapshot/bars/AAPL?timeframe=1m&limit=500
 GET http://127.0.0.1:8795/snapshot/indicators/AAPL?timeframe=1m&limit=500
@@ -270,6 +333,7 @@ Local websocket endpoints:
 
 ```text
 ws://127.0.0.1:8795/stream/scanner
+ws://127.0.0.1:8795/stream/scanner-primitives
 ws://127.0.0.1:8795/stream/ticker/AAPL
 ws://127.0.0.1:8795/stream/bars/AAPL?timeframe=1m&limit=500
 ws://127.0.0.1:8795/stream/indicators/AAPL?timeframe=1m&limit=500

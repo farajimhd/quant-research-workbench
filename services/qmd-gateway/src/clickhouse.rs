@@ -5,6 +5,8 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 
+pub const RAW_EVENT_SCHEMA_VERSION: u16 = 1;
+
 #[derive(Clone)]
 pub struct ClickHouseWriter {
     client: Client,
@@ -27,6 +29,7 @@ impl ClickHouseWriter {
             CREATE TABLE IF NOT EXISTS live_massive_trades
             (
                 session_date Date,
+                schema_version UInt16,
                 ts DateTime64(3, 'UTC'),
                 participant_ts Nullable(DateTime64(3, 'UTC')),
                 trf_ts Nullable(DateTime64(3, 'UTC')),
@@ -54,6 +57,7 @@ impl ClickHouseWriter {
             CREATE TABLE IF NOT EXISTS live_massive_quotes
             (
                 session_date Date,
+                schema_version UInt16,
                 ts DateTime64(3, 'UTC'),
                 ingest_ts DateTime64(3, 'UTC'),
                 sym LowCardinality(String),
@@ -73,6 +77,16 @@ impl ClickHouseWriter {
             PARTITION BY session_date
             ORDER BY (session_date, sym, ts, seq)
             "#,
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_massive_trades ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_massive_quotes ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
             true,
         )
         .await?;
@@ -129,6 +143,7 @@ impl ClickHouseWriter {
             .map(|event| {
                 json!({
                     "session_date": event.ts.date_naive().to_string(),
+                    "schema_version": RAW_EVENT_SCHEMA_VERSION,
                     "ts": event.ts.to_rfc3339(),
                     "participant_ts": event.participant_ts.as_ref().map(|value| value.to_rfc3339()),
                     "trf_ts": event.trf_ts.as_ref().map(|value| value.to_rfc3339()),
@@ -157,6 +172,7 @@ impl ClickHouseWriter {
             .map(|event| {
                 json!({
                     "session_date": event.ts.date_naive().to_string(),
+                    "schema_version": RAW_EVENT_SCHEMA_VERSION,
                     "ts": event.ts.to_rfc3339(),
                     "ingest_ts": event.ingest_ts.to_rfc3339(),
                     "sym": &event.ticker,

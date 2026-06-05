@@ -10,6 +10,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration};
 
+pub const INDICATOR_SCHEMA_VERSION: u16 = 1;
+
 #[derive(Clone, Debug, Serialize)]
 pub struct IndicatorSnapshot {
     pub ticker: String,
@@ -41,6 +43,7 @@ pub struct TickIndicatorRow {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IndicatorRow {
+    pub schema_version: u16,
     pub session_date: String,
     pub timeframe: String,
     pub sym: String,
@@ -543,6 +546,7 @@ impl BarIndicatorState {
         self.last_close = bar.close;
 
         IndicatorRow {
+            schema_version: INDICATOR_SCHEMA_VERSION,
             session_date: bar.session_date.clone(),
             timeframe: bar.timeframe.clone(),
             sym: bar.sym.clone(),
@@ -793,6 +797,7 @@ impl IndicatorClickHouseWriter {
             CREATE TABLE IF NOT EXISTS live_market_indicators
             (
                 session_date Date,
+                schema_version UInt16,
                 timeframe LowCardinality(String),
                 sym LowCardinality(String),
                 bar_start DateTime64(3, 'UTC'),
@@ -823,6 +828,11 @@ impl IndicatorClickHouseWriter {
             PARTITION BY session_date
             ORDER BY (session_date, timeframe, sym, bar_start)
             "#,
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_market_indicators ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
             true,
         )
         .await?;
@@ -921,6 +931,7 @@ impl IndicatorClickHouseWriter {
 fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
     json!({
         "session_date": &row.session_date,
+        "schema_version": row.schema_version,
         "timeframe": &row.timeframe,
         "sym": &row.sym,
         "bar_start": row.bar_start.to_rfc3339(),
