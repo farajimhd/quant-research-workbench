@@ -7,6 +7,7 @@ mod gapfill;
 mod indicator_catalog;
 mod indicators;
 mod massive;
+mod signal_catalog;
 mod session;
 mod state;
 

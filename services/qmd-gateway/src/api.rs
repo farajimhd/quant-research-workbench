@@ -4,6 +4,7 @@ use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_catalog, IndicatorCatalogEntry};
 use crate::indicators::{IndicatorSnapshot, SharedIndicatorStore};
 use crate::session::session_phase;
+use crate::signal_catalog::{signal_catalog, SignalMethodEntry};
 use crate::state::{ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -51,6 +52,7 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/config", get(config))
         .route("/indicator-catalog", get(indicator_catalog_snapshot))
+        .route("/signal-catalog", get(signal_catalog_snapshot))
         .route("/snapshot/scanner", get(scanner_snapshot))
         .route("/snapshot/ticker/{ticker}", get(ticker_snapshot))
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
@@ -85,6 +87,10 @@ async fn config(State(state): State<Arc<AppState>>) -> Json<GatewayConfig> {
 
 async fn indicator_catalog_snapshot() -> Json<&'static [IndicatorCatalogEntry]> {
     Json(indicator_catalog())
+}
+
+async fn signal_catalog_snapshot() -> Json<&'static [SignalMethodEntry]> {
+    Json(signal_catalog())
 }
 
 async fn scanner_snapshot(

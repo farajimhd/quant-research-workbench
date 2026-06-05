@@ -18,6 +18,7 @@ Current responsibilities:
 - batch-write closed bars to the app-owned ClickHouse database
 - batch-write closed indicator rows to the app-owned ClickHouse database
 - expose a documented indicator catalog for live/offline compute policy
+- expose a documented signal-method catalog with explicit working and confirmation timeframes
 
 The gateway keeps two paths separate:
 
@@ -104,7 +105,7 @@ momentum/acceleration fields, and volatility/noise fields. Metrics that require
 future quote matching are currently recorded as close/VWAP or spread proxies,
 so the schema is stable while delayed post-trade refinement can be added later.
 
-## Live Indicators
+## Live Indicators And Signals
 
 Indicators are also built as streaming state, not by rescanning stored rows.
 The indicator layer has its own ticker-hash shards and receives two inputs:
@@ -131,7 +132,8 @@ Bar-level indicators are updated when each timeframe bar closes and include:
 - `close_sma_20`, `volume_sma_20`
 - `return_1_bar`, `price_vs_ema20_pct`, `price_vs_vwap_pct`, `trend_score`
 
-Closed indicator rows are persisted to `live_market_indicators` in batches.
+Closed indicator rows are persisted to `live_market_indicators` in batches when
+their persistence policy requires durable rows.
 
 The indicator catalog is exposed at `/indicator-catalog`. It documents each
 indicator family with:
@@ -145,6 +147,32 @@ indicator family with:
 
 This catalog is the contract for deciding which features belong in the live
 Rust hot path and which should stay as offline/vectorized Polars features.
+
+The default persistence stance is intentionally conservative:
+
+- raw quotes and trades are durable replay sources
+- enriched bars are durable publication sources
+- tick-level scanner features are memory-first
+- signal methods persist decision snapshots, not every intermediate tick metric
+- a persisted indicator field should be treated as immutable once production
+  writes begin; change definitions through new versioned fields or tables
+
+The signal-method catalog is exposed at `/signal-catalog`. A signal method is
+not an enabled trading rule by itself; it is the contract a detector must follow.
+Each row declares:
+
+- the working timeframe, such as `1s`, `10s`, `30s`, `1m`, or `5m`
+- optional confirmation timeframes, such as `1m`, `5m`, or `1h`
+- required bar fields, indicator fields, and reference fields
+- trigger rules, confirmation rules, and rejection rules
+- emitted fields for scanner/order-routing decisions
+- snapshot fields that should be written when a signal is emitted or rejected
+
+Most live scanner methods are tick-first or hybrid tick/bar methods because
+trade acceleration, quote-rate acceleration, tape imbalance, and spread recovery
+arrive before a clean multi-minute pattern. Slower methods such as opening range,
+trend continuation, and mean reversion run on closed bars and use higher
+timeframe confirmation where appropriate.
 
 ## Session Lifecycle
 
@@ -208,6 +236,7 @@ GET http://127.0.0.1:8795/snapshot/ticker/AAPL
 GET http://127.0.0.1:8795/snapshot/bars/AAPL?timeframe=1m&limit=500
 GET http://127.0.0.1:8795/snapshot/indicators/AAPL?timeframe=1m&limit=500
 GET http://127.0.0.1:8795/indicator-catalog
+GET http://127.0.0.1:8795/signal-catalog
 ```
 
 Local websocket endpoints:

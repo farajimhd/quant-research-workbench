@@ -59,13 +59,22 @@ pub enum ComputeMode {
 }
 
 /// Persistence policy separates replay-critical data from derived convenience.
+///
+/// A field family promoted to durable persistence is treated as immutable for
+/// schema-contract purposes. Do not remove it after production writes begin;
+/// replace it with a new versioned field or table if the definition changes.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistPolicy {
+    /// Persist by default because the data is replay-critical or expensive to rebuild.
     Always,
+    /// Persist only when a versioned signal contract explicitly depends on it.
     IfSignalUses,
+    /// Keep in memory and write the values only with emitted/rejected signal decisions.
     SignalSnapshotOnly,
+    /// Persist as a session/date reference snapshot, not as a tick/bar stream.
     ReferenceSnapshot,
+    /// Do not persist by default; compute on demand in research/backtest code.
     NoDefault,
 }
 
@@ -180,7 +189,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         category: IndicatorCategory::Session,
         priority: IndicatorPriority::P0,
         compute_mode: ComputeMode::RealtimeBarClose,
-        persist_policy: PersistPolicy::Always,
+        persist_policy: PersistPolicy::IfSignalUses,
         status: ImplementationStatus::PlannedRealtime,
         inputs: &["bars", "session_clock", "previous_day_context"],
         fields: &[
@@ -196,8 +205,8 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "gap_from_previous_close_pct",
         ],
         typical_timeframes: SESSION_TFS,
-        storage_target: "live_market_indicators",
-        rationale: "Scanner rules need to distinguish open, premarket, regular session, and late-session behavior.",
+        storage_target: "live_market_indicators_if_enabled,scanner_signal_snapshots",
+        rationale: "Scanner rules need session awareness, but durable writes should happen only when a signal contract requires it.",
     },
     IndicatorCatalogEntry {
         key: "opening_range",
@@ -228,7 +237,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         category: IndicatorCategory::TapeMicrostructure,
         priority: IndicatorPriority::P0,
         compute_mode: ComputeMode::RealtimeTick,
-        persist_policy: PersistPolicy::Always,
+        persist_policy: PersistPolicy::SignalSnapshotOnly,
         status: ImplementationStatus::Implemented,
         inputs: &["trades", "quotes"],
         fields: &[
@@ -240,8 +249,8 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "quote_accel_10s_60s",
         ],
         typical_timeframes: SHORT_TFS,
-        storage_target: "live_market_indicators",
-        rationale: "Early movement often shows up as event-rate acceleration before a clean bar pattern exists.",
+        storage_target: "live_memory,scanner_signal_snapshots",
+        rationale: "Early movement often shows up as event-rate acceleration, but raw ticks and bar summaries are already durable.",
     },
     IndicatorCatalogEntry {
         key: "tape_pressure",
@@ -249,7 +258,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         category: IndicatorCategory::TapeMicrostructure,
         priority: IndicatorPriority::P0,
         compute_mode: ComputeMode::RealtimeTick,
-        persist_policy: PersistPolicy::Always,
+        persist_policy: PersistPolicy::SignalSnapshotOnly,
         status: ImplementationStatus::Implemented,
         inputs: &["trades", "quotes"],
         fields: &[
@@ -263,8 +272,8 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "cumulative_delta",
         ],
         typical_timeframes: SHORT_TFS,
-        storage_target: "live_market_bars,live_market_indicators",
-        rationale: "Core order-flow proxy available from tape and NBBO without claiming L2 depth.",
+        storage_target: "live_market_bars,scanner_signal_snapshots",
+        rationale: "Core order-flow proxy available from tape and NBBO; persist bar summaries and signal-time snapshots, not duplicate tick streams.",
     },
     IndicatorCatalogEntry {
         key: "large_trade_activity",
@@ -293,7 +302,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         category: IndicatorCategory::NbboLiquidity,
         priority: IndicatorPriority::P0,
         compute_mode: ComputeMode::RealtimeTick,
-        persist_policy: PersistPolicy::Always,
+        persist_policy: PersistPolicy::SignalSnapshotOnly,
         status: ImplementationStatus::Implemented,
         inputs: &["quotes", "trades"],
         fields: &[
@@ -309,8 +318,8 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "liquidity_score",
         ],
         typical_timeframes: ALL_LIVE_TFS,
-        storage_target: "live_market_bars,live_market_indicators",
-        rationale: "Filters bad fills and provides a practical substitute for L2 when only NBBO is available.",
+        storage_target: "live_market_bars,scanner_signal_snapshots",
+        rationale: "Filters bad fills and provides an NBBO substitute for L2; durable bars keep the history while signal snapshots keep decisions auditable.",
     },
     IndicatorCatalogEntry {
         key: "volume_relative",
@@ -541,7 +550,7 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
         category: IndicatorCategory::Shock,
         priority: IndicatorPriority::P0,
         compute_mode: ComputeMode::RealtimeBarClose,
-        persist_policy: PersistPolicy::IfSignalUses,
+        persist_policy: PersistPolicy::SignalSnapshotOnly,
         status: ImplementationStatus::PlannedRealtime,
         inputs: &["bars", "tick_indicators", "rolling_baselines"],
         fields: &[
@@ -557,8 +566,8 @@ const INDICATOR_CATALOG: &[IndicatorCatalogEntry] = &[
             "price_volume_shock",
         ],
         typical_timeframes: SHORT_TFS,
-        storage_target: "live_market_indicators",
-        rationale: "High-priority scanner family for detecting early unusual activity.",
+        storage_target: "scanner_signal_snapshots,live_market_indicators_if_enabled",
+        rationale: "High-priority scanner family for early unusual activity; store the decision context, not every transient z-score.",
     },
     IndicatorCatalogEntry {
         key: "cross_timeframe_confirmation",
