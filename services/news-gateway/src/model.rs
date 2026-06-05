@@ -205,7 +205,7 @@ pub fn parse_benzinga(value: &Value) -> Result<NormalizedNewsInput, String> {
     })
 }
 
-pub fn parse_general(value: &Value) -> Result<NormalizedNewsInput, String> {
+pub fn parse_massive_news(value: &Value) -> Result<NormalizedNewsInput, String> {
     let published_raw = string_field(value, "published_utc");
     let published_at = parse_dt(&published_raw)?;
     let publisher = value.get("publisher").cloned().unwrap_or(Value::Null);
@@ -235,7 +235,7 @@ pub fn parse_general(value: &Value) -> Result<NormalizedNewsInput, String> {
         publisher_name: string_field(&publisher, "name"),
         publisher_raw: publisher.to_string(),
         raw_json: value.to_string(),
-        source: "massive_general".to_string(),
+        source: "massive_news".to_string(),
         source_endpoint: "/v2/reference/news".to_string(),
         tags: Vec::new(),
         teaser: string_field(value, "description"),

@@ -5,7 +5,7 @@ Standalone Rust gateway for Massive REST news.
 The service polls:
 
 - Massive Benzinga news: `/benzinga/v2/news`
-- Massive general stock news: `/v2/reference/news`
+- Massive news: `/v2/reference/news`
 
 It writes every valid article to one ClickHouse table, `live_news_articles`, and classifies rows for live scanner and research use. It does not drop crypto, macro, politics, war, ETF, no-ticker, or title-only rows. Those are persisted and labeled because they can matter for model training and broad market context.
 
@@ -14,7 +14,7 @@ It writes every valid article to one ClickHouse table, `live_news_articles`, and
 - Poll Massive REST endpoints incrementally.
 - Save provider timestamps with high precision.
 - Save `gateway_seen_at` so provider delay can be measured live.
-- Normalize Benzinga and Massive general news into one schema.
+- Normalize Benzinga news and Massive news into one schema.
 - Persist raw JSON, publisher fields, article text, tickers, channels, tags, keywords, and Massive sentiment insights.
 - Clean HTML into text.
 - Optionally fetch article URLs when body text is short.
@@ -36,9 +36,9 @@ Common settings:
 
 - `NEWS_GATEWAY_BIND`, default `127.0.0.1:8796`
 - `NEWS_BENZINGA_ENABLED`, default `true`
-- `NEWS_GENERAL_ENABLED`, default `true`
+- `NEWS_MASSIVE_ENABLED`, default `true`
 - `NEWS_BENZINGA_POLL_INTERVAL_MS`, default `5000`
-- `NEWS_GENERAL_POLL_INTERVAL_MS`, default `30000`
+- `NEWS_MASSIVE_POLL_INTERVAL_MS`, default `30000`
 - `NEWS_POLL_LIMIT`, default `1000`
 - `NEWS_MAX_PAGES_PER_POLL`, default `5`
 - `NEWS_LIVE_LOOKBACK_MINUTES`, default `30`

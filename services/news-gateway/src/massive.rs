@@ -4,7 +4,7 @@ use crate::config::NewsGatewayConfig;
 use crate::extract::{extract_content, stable_hash, url_domain};
 use crate::metrics::SharedMetrics;
 use crate::model::{
-    parse_benzinga, parse_dt_opt, parse_general, NewsArticle, NormalizedNewsInput, PollResponse, NEWS_SCHEMA_VERSION,
+    parse_benzinga, parse_dt_opt, parse_massive_news, NewsArticle, NormalizedNewsInput, PollResponse, NEWS_SCHEMA_VERSION,
 };
 use crate::state::SharedNewsState;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -34,9 +34,9 @@ pub async fn run_news_pollers(
             metrics.clone(),
         ));
     }
-    if config.general_enabled {
+    if config.massive_news_enabled {
         tokio::spawn(run_source_poller(
-            SourceSpec::general(config.clone()),
+            SourceSpec::massive_news(config.clone()),
             config,
             state,
             writer_sender,
@@ -66,13 +66,13 @@ impl SourceSpec {
         }
     }
 
-    fn general(config: NewsGatewayConfig) -> Self {
+    fn massive_news(config: NewsGatewayConfig) -> Self {
         Self {
-            interval_ms: config.general_poll_interval_ms,
+            interval_ms: config.massive_news_poll_interval_ms,
             published_filter: "published_utc.gte",
             sort_params: vec![("sort", "published_utc"), ("order", "asc")],
-            source: "massive_general",
-            url: config.general_url,
+            source: "massive_news",
+            url: config.massive_news_url,
         }
     }
 }
@@ -191,7 +191,7 @@ async fn normalize_article(
     let input = if source == "massive_benzinga" {
         parse_benzinga(&value)?
     } else {
-        parse_general(&value)?
+        parse_massive_news(&value)?
     };
     build_article(client, config, input).await
 }
