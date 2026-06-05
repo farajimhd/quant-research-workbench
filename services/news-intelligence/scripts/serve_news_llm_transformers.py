@@ -41,6 +41,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8010)
     parser.add_argument("--served-model-name", default="")
     parser.add_argument("--max-new-tokens", type=int, default=512)
+    parser.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    parser.add_argument("--dtype", default="auto", choices=["auto", "float32", "float16", "bfloat16"])
     return parser.parse_args()
 
 
@@ -55,18 +57,36 @@ def main() -> int:
     registry = ModelRegistry(config)
     model_info = registry.model_info(args.model_key)
     model_path = registry.path_for(args.model_key)
+    device = resolve_device(torch, args.device)
+    dtype = resolve_dtype(torch, args.dtype, device)
     served_model_name = args.served_model_name or model_info.get("serving", {}).get("served_model_name") or model_info.get("repo_id") or args.model_key
     if not model_path.exists():
         raise FileNotFoundError(f"Model path does not exist: {model_path}")
 
-    print(json.dumps({"event": "loading_model", "model_key": args.model_key, "model_path": str(model_path), "served_model_name": served_model_name}), flush=True)
-    tokenizer = AutoTokenizer.from_pretrained(str(model_path), trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        str(model_path),
-        trust_remote_code=True,
-        dtype=torch.float32,
-        low_cpu_mem_usage=True,
+    print(
+        json.dumps(
+            {
+                "event": "loading_model",
+                "model_key": args.model_key,
+                "model_path": str(model_path),
+                "served_model_name": served_model_name,
+                "device": device,
+                "dtype": str(dtype).replace("torch.", ""),
+            }
+        ),
+        flush=True,
     )
+    tokenizer = AutoTokenizer.from_pretrained(str(model_path), trust_remote_code=True)
+    load_kwargs: dict[str, Any] = {
+        "trust_remote_code": True,
+        "dtype": dtype,
+        "low_cpu_mem_usage": True,
+    }
+    if device == "cuda":
+        load_kwargs["device_map"] = "auto"
+    model = AutoModelForCausalLM.from_pretrained(str(model_path), **load_kwargs)
+    if device == "cpu":
+        model.to(device)
     model.eval()
     lock = threading.Lock()
     app = FastAPI()
@@ -84,6 +104,8 @@ def main() -> int:
         try:
             with lock:
                 encoded = tokenizer(prompt, return_tensors="pt", return_token_type_ids=False)
+                if device == "cuda":
+                    encoded = {key: value.to("cuda") for key, value in encoded.items()}
                 with torch.no_grad():
                     generated = model.generate(
                         **encoded,
@@ -117,6 +139,22 @@ def build_prompt(tokenizer: Any, messages: list[ChatMessage]) -> str:
     if getattr(tokenizer, "chat_template", None):
         return tokenizer.apply_chat_template(rows, tokenize=False, add_generation_prompt=True, enable_thinking=False)
     return "\n\n".join(f"{message.role.upper()}:\n{message.content}" for message in messages) + "\n\nASSISTANT:\n"
+
+
+def resolve_device(torch_module: Any, requested: str) -> str:
+    if requested != "auto":
+        return requested
+    return "cuda" if torch_module.cuda.is_available() else "cpu"
+
+
+def resolve_dtype(torch_module: Any, requested: str, device: str) -> Any:
+    if requested == "float32":
+        return torch_module.float32
+    if requested == "float16":
+        return torch_module.float16
+    if requested == "bfloat16":
+        return torch_module.bfloat16
+    return torch_module.bfloat16 if device == "cuda" else torch_module.float32
 
 
 if __name__ == "__main__":

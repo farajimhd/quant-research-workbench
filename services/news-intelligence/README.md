@@ -22,6 +22,7 @@ returns labels that the gateway can persist and broadcast with the article.
 - `NEWS_INTELLIGENCE_BIND`, default `127.0.0.1:8797`
 - `NEWS_INTELLIGENCE_MODEL_ROOT`, default `D:\models_artifacts\opensource`
 - `NEWS_INTELLIGENCE_MODEL_MANIFEST`, default `models\opensource_models.json`
+- `NEWS_INTELLIGENCE_MODEL_DEVICE`, default `auto`; use `cuda` or `cpu` to force model device.
 - `NEWS_INTELLIGENCE_STACK_VERSION`, default `news-intelligence-v1`
 - `NEWS_INTELLIGENCE_TAXONOMY_VERSION`, default `news-taxonomy-v1`
 - `NEWS_INTELLIGENCE_PROMPT_VERSION`, default `news-llm-prompt-v1`

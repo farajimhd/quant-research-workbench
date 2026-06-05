@@ -64,6 +64,8 @@ class FastClassifierTier:
 
             tokenizer = AutoTokenizer.from_pretrained(str(local_path))
             model = AutoModelForSequenceClassification.from_pretrained(str(local_path))
+            device = resolve_torch_device(torch, self.config.model_device)
+            model.to(device)
             model.eval()
             id2label = getattr(model.config, "id2label", {}) or {}
 
@@ -75,6 +77,7 @@ class FastClassifierTier:
                     return_tensors="pt",
                     return_token_type_ids=False,
                 )
+                encoded = {key: value.to(device) for key, value in encoded.items()}
                 with torch.no_grad():
                     logits = model(**encoded).logits[0]
                     probabilities = torch.softmax(logits, dim=-1)
@@ -291,6 +294,12 @@ def bounded_float(value: Any, default: float, low: float = 0.0, high: float = 1.
     except (TypeError, ValueError):
         return default
     return max(low, min(high, parsed))
+
+
+def resolve_torch_device(torch_module: Any, requested: str) -> str:
+    if requested and requested != "auto":
+        return requested
+    return "cuda" if torch_module.cuda.is_available() else "cpu"
 
 
 def response_to_dict(response: IntelligenceResponse) -> dict[str, Any]:

@@ -19,6 +19,7 @@ class IntelligenceConfig:
     llm_timeout_ms: int
     manifest_path: Path
     max_text_chars: int
+    model_device: str
     model_root: Path
     prompt_version: str
     active_ner_model: str
@@ -45,6 +46,7 @@ class IntelligenceConfig:
                 )
             ),
             max_text_chars=env_int("NEWS_INTELLIGENCE_MAX_TEXT_CHARS", 6000),
+            model_device=env_string("NEWS_INTELLIGENCE_MODEL_DEVICE", "auto").lower(),
             model_root=Path(env_string("NEWS_INTELLIGENCE_MODEL_ROOT", r"D:\models_artifacts\opensource")),
             prompt_version=env_string("NEWS_INTELLIGENCE_PROMPT_VERSION", "news-llm-prompt-v1"),
             active_ner_model=env_string("NEWS_INTELLIGENCE_ACTIVE_NER_MODEL", "quantbridge-energy-intelligence"),
@@ -92,4 +94,3 @@ def env_float(name: str, default: float) -> float:
         return float(os.environ.get(name, "").strip() or default)
     except ValueError:
         return default
-
