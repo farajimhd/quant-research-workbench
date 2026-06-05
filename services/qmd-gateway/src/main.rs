@@ -4,6 +4,7 @@ mod clickhouse;
 mod config;
 mod event;
 mod gapfill;
+mod indicator_catalog;
 mod indicators;
 mod massive;
 mod session;

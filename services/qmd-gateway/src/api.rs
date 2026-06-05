@@ -1,6 +1,7 @@
 use crate::bars::{BarSnapshot, SharedBarStore};
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
+use crate::indicator_catalog::{indicator_catalog, IndicatorCatalogEntry};
 use crate::indicators::{IndicatorSnapshot, SharedIndicatorStore};
 use crate::session::session_phase;
 use crate::state::{ScannerSnapshot, SharedMarketState, StatusMetrics, SymbolSnapshot};
@@ -49,6 +50,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/config", get(config))
+        .route("/indicator-catalog", get(indicator_catalog_snapshot))
         .route("/snapshot/scanner", get(scanner_snapshot))
         .route("/snapshot/ticker/{ticker}", get(ticker_snapshot))
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
@@ -79,6 +81,10 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<HealthPayload> {
 
 async fn config(State(state): State<Arc<AppState>>) -> Json<GatewayConfig> {
     Json(state.config.clone())
+}
+
+async fn indicator_catalog_snapshot() -> Json<&'static [IndicatorCatalogEntry]> {
+    Json(indicator_catalog())
 }
 
 async fn scanner_snapshot(

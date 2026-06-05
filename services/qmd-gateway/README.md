@@ -17,6 +17,7 @@ Current responsibilities:
 - batch-write raw events to the app-owned ClickHouse database
 - batch-write closed bars to the app-owned ClickHouse database
 - batch-write closed indicator rows to the app-owned ClickHouse database
+- expose a documented indicator catalog for live/offline compute policy
 
 The gateway keeps two paths separate:
 
@@ -132,6 +133,19 @@ Bar-level indicators are updated when each timeframe bar closes and include:
 
 Closed indicator rows are persisted to `live_market_indicators` in batches.
 
+The indicator catalog is exposed at `/indicator-catalog`. It documents each
+indicator family with:
+
+- feature category, such as `momentum`, `volume_liquidity`, or `tape_microstructure`
+- priority from `P0` to `P3`
+- intended compute mode, such as realtime tick, realtime bar-close, or Polars on demand
+- persistence policy
+- implementation status
+- concrete output fields
+
+This catalog is the contract for deciding which features belong in the live
+Rust hot path and which should stay as offline/vectorized Polars features.
+
 ## Session Lifecycle
 
 The gateway keeps the Massive websocket ingest task running for live capture.
@@ -193,6 +207,7 @@ GET http://127.0.0.1:8795/snapshot/scanner?limit=250
 GET http://127.0.0.1:8795/snapshot/ticker/AAPL
 GET http://127.0.0.1:8795/snapshot/bars/AAPL?timeframe=1m&limit=500
 GET http://127.0.0.1:8795/snapshot/indicators/AAPL?timeframe=1m&limit=500
+GET http://127.0.0.1:8795/indicator-catalog
 ```
 
 Local websocket endpoints:
