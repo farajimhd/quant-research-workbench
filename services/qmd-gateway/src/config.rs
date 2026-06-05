@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashMap;
 use std::env;
 
 #[derive(Clone, Debug, Serialize)]
@@ -23,6 +24,7 @@ pub struct GatewayConfig {
     pub gap_fill_symbols: Vec<String>,
     pub indicator_bar_channel_capacity: usize,
     pub indicator_channel_capacity: usize,
+    pub indicator_history_by_timeframe: HashMap<String, usize>,
     pub indicator_history_limit: usize,
     pub persist_indicators: bool,
     pub indicator_shard_count: usize,
@@ -35,6 +37,7 @@ pub struct GatewayConfig {
     pub subscribe_quotes: bool,
     pub subscribe_trades: bool,
     pub ticker_broadcast_ms: u64,
+    pub tick_indicator_window_seconds: i64,
 }
 
 impl GatewayConfig {
@@ -62,6 +65,17 @@ impl GatewayConfig {
             gap_fill_symbols: env_list("QMD_GAP_FILL_SYMBOLS"),
             indicator_bar_channel_capacity: env_usize("QMD_INDICATOR_BAR_CHANNEL_CAPACITY", 250_000),
             indicator_channel_capacity: env_usize("QMD_INDICATOR_CHANNEL_CAPACITY", 250_000),
+            indicator_history_by_timeframe: env_timeframe_limit_map(
+                "QMD_INDICATOR_HISTORY_BY_TIMEFRAME",
+                &[
+                    ("1s", 900),
+                    ("10s", 360),
+                    ("30s", 480),
+                    ("1m", 960),
+                    ("5m", 192),
+                    ("1h", 32),
+                ],
+            ),
             indicator_history_limit: env_usize("QMD_INDICATOR_HISTORY_LIMIT", 1_000),
             persist_indicators: env_bool("QMD_PERSIST_INDICATORS", false),
             indicator_shard_count: env_usize("QMD_INDICATOR_SHARD_COUNT", 8),
@@ -73,6 +87,7 @@ impl GatewayConfig {
             subscribe_quotes: env_bool("QMD_SUBSCRIBE_QUOTES", true),
             subscribe_trades: env_bool("QMD_SUBSCRIBE_TRADES", true),
             ticker_broadcast_ms: env_u64("QMD_TICKER_BROADCAST_MS", 250),
+            tick_indicator_window_seconds: env_i64("QMD_TICK_INDICATOR_WINDOW_SECONDS", 300),
         }
     }
 
@@ -152,4 +167,28 @@ fn env_list_with_default(name: &str, default: &[&str]) -> Vec<String> {
     } else {
         values.into_iter().map(|value| value.to_ascii_lowercase()).collect()
     }
+}
+
+fn env_timeframe_limit_map(name: &str, default: &[(&str, usize)]) -> HashMap<String, usize> {
+    let mut values = default
+        .iter()
+        .map(|(timeframe, limit)| ((*timeframe).to_string(), *limit))
+        .collect::<HashMap<_, _>>();
+    if let Ok(raw) = env::var(name) {
+        for item in raw.split(',') {
+            let Some((timeframe, limit)) = item.split_once(':') else {
+                continue;
+            };
+            let timeframe = timeframe.trim().to_ascii_lowercase();
+            if timeframe.is_empty() {
+                continue;
+            }
+            if let Ok(limit) = limit.trim().parse::<usize>() {
+                if limit > 0 {
+                    values.insert(timeframe, limit);
+                }
+            }
+        }
+    }
+    values
 }

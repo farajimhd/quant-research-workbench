@@ -33,7 +33,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.bar_history_limit,
         config.bar_shard_count,
     );
-    let indicators = SharedIndicatorStore::new(config.indicator_history_limit, config.indicator_shard_count);
+    let indicators = SharedIndicatorStore::new(
+        config.indicator_history_limit,
+        config.indicator_history_by_timeframe.clone(),
+        config.tick_indicator_window_seconds,
+        config.indicator_shard_count,
+    );
     let (writer_sender, writer_receiver) = mpsc::channel::<MarketEvent>(config.event_channel_capacity);
     let (bar_writer_sender, bar_writer_receiver) = mpsc::channel::<BarRow>(config.bar_channel_capacity);
     let (indicator_writer_sender, indicator_writer_receiver) =

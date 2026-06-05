@@ -94,11 +94,12 @@ struct IndicatorShardStore {
 struct IndicatorStore {
     bars: HashMap<IndicatorKey, BarIndicatorState>,
     history: HashMap<IndicatorKey, VecDeque<IndicatorRow>>,
+    history_limits: HashMap<String, usize>,
     history_limit: usize,
+    tick_window_seconds: i64,
     ticks: HashMap<String, TickState>,
 }
 
-#[derive(Default)]
 struct TickState {
     last_ask: f64,
     last_bid: f64,
@@ -108,6 +109,7 @@ struct TickState {
     recent_quotes: VecDeque<QuoteSample>,
     recent_trades: VecDeque<TradeSample>,
     spread_bps: f64,
+    window_seconds: i64,
 }
 
 #[derive(Clone)]
@@ -169,10 +171,15 @@ struct RollingStats {
 }
 
 impl SharedIndicatorStore {
-    pub fn new(history_limit: usize, shard_count: usize) -> Self {
+    pub fn new(
+        history_limit: usize,
+        history_limits: HashMap<String, usize>,
+        tick_window_seconds: i64,
+        shard_count: usize,
+    ) -> Self {
         let shard_count = shard_count.max(1);
         let shards = (0..shard_count)
-            .map(|_| IndicatorShardStore::new(history_limit))
+            .map(|_| IndicatorShardStore::new(history_limit, history_limits.clone(), tick_window_seconds))
             .collect::<Vec<_>>();
         Self {
             shards: Arc::new(shards),
@@ -212,12 +219,14 @@ impl IndicatorEventRouter {
 }
 
 impl IndicatorShardStore {
-    fn new(history_limit: usize) -> Self {
+    fn new(history_limit: usize, history_limits: HashMap<String, usize>, tick_window_seconds: i64) -> Self {
         Self {
             inner: Arc::new(Mutex::new(IndicatorStore {
                 bars: HashMap::new(),
                 history: HashMap::new(),
+                history_limits,
                 history_limit,
+                tick_window_seconds: tick_window_seconds.max(60),
                 ticks: HashMap::new(),
             })),
         }
@@ -241,13 +250,14 @@ impl IndicatorShardStore {
         let store = self.inner.lock().await;
         let tick = store.ticks.get(ticker).map(|state| state.snapshot(ticker));
         let current = store.history.get(&key).and_then(|rows| rows.back()).cloned();
+        let history_limit = store.history_limit_for(&timeframe);
         let history = store
             .history
             .get(&key)
             .map(|rows| {
                 rows.iter()
                     .rev()
-                    .take(limit.min(store.history_limit))
+                    .take(limit.min(history_limit))
                     .cloned()
                     .collect::<Vec<_>>()
                     .into_iter()
@@ -268,7 +278,11 @@ impl IndicatorShardStore {
 impl IndicatorStore {
     fn apply_event(&mut self, event: &MarketEvent) {
         let ticker = event.ticker().to_ascii_uppercase();
-        let tick = self.ticks.entry(ticker).or_default();
+        let tick_window_seconds = self.tick_window_seconds;
+        let tick = self
+            .ticks
+            .entry(ticker)
+            .or_insert_with(|| TickState::new(tick_window_seconds));
         match event {
             MarketEvent::Trade(trade) => tick.apply_trade(trade),
             MarketEvent::Quote(quote) => tick.apply_quote(quote),
@@ -285,16 +299,38 @@ impl IndicatorStore {
             .entry(key.clone())
             .or_insert_with(BarIndicatorState::new);
         let row = state.apply_bar(&bar);
+        let history_limit = self.history_limit_for(&bar.timeframe);
         let history = self.history.entry(key).or_insert_with(VecDeque::new);
         history.push_back(row.clone());
-        while history.len() > self.history_limit {
+        while history.len() > history_limit {
             history.pop_front();
         }
         row
     }
+
+    fn history_limit_for(&self, timeframe: &str) -> usize {
+        self.history_limits
+            .get(&canonical_timeframe(timeframe))
+            .copied()
+            .unwrap_or(self.history_limit)
+    }
 }
 
 impl TickState {
+    fn new(window_seconds: i64) -> Self {
+        Self {
+            last_ask: 0.0,
+            last_bid: 0.0,
+            last_mid: 0.0,
+            last_price: 0.0,
+            last_ts: None,
+            recent_quotes: VecDeque::new(),
+            recent_trades: VecDeque::new(),
+            spread_bps: 0.0,
+            window_seconds: window_seconds.max(60),
+        }
+    }
+
     fn apply_trade(&mut self, trade: &TradeEvent) {
         if trade.price <= 0.0 || trade.size <= 0.0 {
             return;
@@ -341,29 +377,52 @@ impl TickState {
             .iter()
             .filter(|sample| seconds_between(sample.ts.clone(), last_ts.clone()) <= 10)
             .count() as f64;
-        let volume_60s = self.recent_trades.iter().map(|sample| sample.volume).sum::<f64>();
+        let trade_count_60s = self
+            .recent_trades
+            .iter()
+            .filter(|sample| seconds_between(sample.ts.clone(), last_ts.clone()) <= 60)
+            .count() as f64;
+        let quote_count_60s = self
+            .recent_quotes
+            .iter()
+            .filter(|sample| seconds_between(sample.ts.clone(), last_ts.clone()) <= 60)
+            .count() as f64;
+        let volume_60s = self
+            .recent_trades
+            .iter()
+            .filter(|sample| seconds_between(sample.ts.clone(), last_ts.clone()) <= 60)
+            .map(|sample| sample.volume)
+            .sum::<f64>();
         let signed_volume_60s = self
             .recent_trades
             .iter()
+            .filter(|sample| seconds_between(sample.ts.clone(), last_ts.clone()) <= 60)
             .map(|sample| sample.signed_volume)
             .sum::<f64>();
         let buy_volume_60s = self
             .recent_trades
             .iter()
+            .filter(|sample| seconds_between(sample.ts.clone(), last_ts.clone()) <= 60)
             .filter(|sample| sample.signed_volume > 0.0)
             .map(|sample| sample.volume)
             .sum::<f64>();
         let sell_volume_60s = self
             .recent_trades
             .iter()
+            .filter(|sample| seconds_between(sample.ts.clone(), last_ts.clone()) <= 60)
             .filter(|sample| sample.signed_volume < 0.0)
             .map(|sample| sample.volume)
             .sum::<f64>();
-        let notional_60s = self.recent_trades.iter().map(|sample| sample.notional).sum::<f64>();
+        let notional_60s = self
+            .recent_trades
+            .iter()
+            .filter(|sample| seconds_between(sample.ts.clone(), last_ts.clone()) <= 60)
+            .map(|sample| sample.notional)
+            .sum::<f64>();
         let trade_rate_10s = trade_count_10s / 10.0;
-        let trade_rate_60s = self.recent_trades.len() as f64 / 60.0;
+        let trade_rate_60s = trade_count_60s / 60.0;
         let quote_rate_10s = quote_count_10s / 10.0;
-        let quote_rate_60s = self.recent_quotes.len() as f64 / 60.0;
+        let quote_rate_60s = quote_count_60s / 60.0;
 
         TickIndicatorRow {
             sym: ticker.to_string(),
@@ -371,7 +430,7 @@ impl TickState {
             last_price: self.last_price,
             last_mid: self.last_mid,
             spread_bps: self.spread_bps,
-            quote_pressure: self.quote_pressure(),
+            quote_pressure: self.quote_pressure(last_ts, 60),
             trade_rate_10s,
             trade_rate_60s,
             trade_accel_10s_60s: trade_rate_10s - trade_rate_60s,
@@ -405,7 +464,7 @@ impl TickState {
         while self
             .recent_trades
             .front()
-            .map(|sample| seconds_between(sample.ts.clone(), now.clone()) > 60)
+            .map(|sample| seconds_between(sample.ts.clone(), now.clone()) > self.window_seconds)
             .unwrap_or(false)
         {
             self.recent_trades.pop_front();
@@ -413,16 +472,26 @@ impl TickState {
         while self
             .recent_quotes
             .front()
-            .map(|sample| seconds_between(sample.ts.clone(), now.clone()) > 60)
+            .map(|sample| seconds_between(sample.ts.clone(), now.clone()) > self.window_seconds)
             .unwrap_or(false)
         {
             self.recent_quotes.pop_front();
         }
     }
 
-    fn quote_pressure(&self) -> f64 {
-        let bid_size = self.recent_quotes.iter().map(|sample| sample.bid_size).sum::<f64>();
-        let ask_size = self.recent_quotes.iter().map(|sample| sample.ask_size).sum::<f64>();
+    fn quote_pressure(&self, now: DateTime<Utc>, window_seconds: i64) -> f64 {
+        let bid_size = self
+            .recent_quotes
+            .iter()
+            .filter(|sample| seconds_between(sample.ts.clone(), now.clone()) <= window_seconds)
+            .map(|sample| sample.bid_size)
+            .sum::<f64>();
+        let ask_size = self
+            .recent_quotes
+            .iter()
+            .filter(|sample| seconds_between(sample.ts.clone(), now.clone()) <= window_seconds)
+            .map(|sample| sample.ask_size)
+            .sum::<f64>();
         safe_div(bid_size - ask_size, bid_size + ask_size)
     }
 }

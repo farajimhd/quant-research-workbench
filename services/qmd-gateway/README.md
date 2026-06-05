@@ -61,7 +61,9 @@ Environment variables:
 - `QMD_INDICATOR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_INDICATOR_BAR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_INDICATOR_HISTORY_LIMIT`, default `1000`
+- `QMD_INDICATOR_HISTORY_BY_TIMEFRAME`, default `1s:900,10s:360,30s:480,1m:960,5m:192,1h:32`
 - `QMD_INDICATOR_SHARD_COUNT`, default `8`
+- `QMD_TICK_INDICATOR_WINDOW_SECONDS`, default `300`
 - `QMD_PERSIST_INDICATORS`, default `false`
 
 The service writes to:
@@ -114,10 +116,18 @@ The indicator layer has its own ticker-hash shards and receives two inputs:
 - raw Massive quote/trade events for tick-level indicators
 - closed bars from the bar engine for bar-level indicators
 
-Tick-level indicators keep only recent 60-second windows in memory and expose:
+Tick-level indicators keep a configurable rolling sample window in memory.
+`QMD_TICK_INDICATOR_WINDOW_SECONDS` defaults to `300`, so the scanner has five
+minutes of recent quote/trade samples for fast calculations. Fields with a
+specific horizon in their name, such as `trade_rate_60s`, are still calculated
+from that exact horizon inside the retained window.
+
+Tick-level indicators expose:
 
 - `trade_rate_10s`, `trade_rate_60s`
+- `trade_accel_10s_60s`
 - `quote_rate_10s`, `quote_rate_60s`
+- `quote_accel_10s_60s`
 - `rolling_vwap_60s`
 - `tape_imbalance_60s`
 - `buy_pressure_60s`, `sell_pressure_60s`
@@ -132,6 +142,20 @@ Bar-level indicators are updated when each timeframe bar closes and include:
 - `bollinger_mid_20`, `bollinger_upper_20`, `bollinger_lower_20`, `bollinger_std_20`
 - `close_sma_20`, `volume_sma_20`
 - `return_1_bar`, `price_vs_ema20_pct`, `price_vs_vwap_pct`, `trend_score`
+
+Bar-level indicator history is retained per timeframe using
+`QMD_INDICATOR_HISTORY_BY_TIMEFRAME`. The default scanner/chart compromise is:
+
+- `1s:900`
+- `10s:360`
+- `30s:480`
+- `1m:960`
+- `5m:192`
+- `1h:32`
+
+If a timeframe is not listed, `QMD_INDICATOR_HISTORY_LIMIT` is used as the
+fallback. Deeper chart history should be loaded from ClickHouse, then joined
+with the live in-memory tail.
 
 Closed indicator rows are kept in memory by default. They are persisted to
 `live_market_indicators` in batches only when `QMD_PERSIST_INDICATORS=true`,
