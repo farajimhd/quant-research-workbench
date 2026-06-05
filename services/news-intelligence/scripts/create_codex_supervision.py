@@ -12,7 +12,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from news_intelligence.historical import article_key, load_historical_articles, sample_articles, write_jsonl
+from news_intelligence.historical import article_key, load_articles_jsonl, load_historical_articles, sample_articles, write_jsonl
 from news_intelligence.supervision import CodexSilverSupervisor, SUPERVISOR_VERSION, response_to_jsonable
 
 
@@ -21,6 +21,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-root", default=r"D:\TradingData\stock-news-analysis\news_discovery_v5\raw")
     parser.add_argument("--output-root", default=PACKAGE_ROOT / "codex_suppervision")
     parser.add_argument("--sample-size", type=int, default=1000)
+    parser.add_argument("--base-run", default="", help="Optional existing codex_suppervision run to keep and re-label.")
+    parser.add_argument("--additional-sample-size", type=int, default=0, help="Additional non-overlapping rows to add when --base-run is used.")
     parser.add_argument("--seed", type=int, default=20260605)
     parser.add_argument("--start-date", default="", help="Optional inclusive YYYY-MM-DD filter.")
     parser.add_argument("--end-date", default="", help="Optional inclusive YYYY-MM-DD filter.")
@@ -38,7 +40,7 @@ def main() -> int:
         start_date=parse_date(args.start_date),
         end_date=parse_date(args.end_date),
     )
-    selected = sample_articles(articles, args.sample_size, args.seed)
+    selected = select_articles(args, articles)
     supervisor = CodexSilverSupervisor()
     rows = []
     for index, article in enumerate(selected, start=1):
@@ -75,6 +77,20 @@ def parse_date(value: str):
     return datetime.fromisoformat(value).date()
 
 
+def select_articles(args: argparse.Namespace, articles: list[Any]) -> list[Any]:
+    if not args.base_run:
+        return sample_articles(articles, args.sample_size, args.seed)
+    base_run = Path(args.base_run)
+    base_articles = load_articles_jsonl(base_run / "selected_articles.jsonl")
+    base_keys = {article_key(article) for article in base_articles}
+    remaining = [article for article in articles if article_key(article) not in base_keys]
+    additional_count = args.additional_sample_size or max(0, args.sample_size - len(base_articles))
+    additional = sample_articles(remaining, additional_count, args.seed)
+    combined = base_articles + additional
+    combined.sort(key=lambda article: (article.published_at, article.article_id, article.source_path))
+    return combined
+
+
 def build_summary(args: argparse.Namespace, articles: list[Any], selected: list[Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
     event_counter = Counter(row["output_contract"]["event_type"] for row in rows)
     sentiment_counter = Counter(row["output_contract"]["sentiment_label"] for row in rows)
@@ -87,6 +103,8 @@ def build_summary(args: argparse.Namespace, articles: list[Any], selected: list[
         "supervision_kind": "deterministic_silver_labels",
         "supervisor_version": SUPERVISOR_VERSION,
         "seed": args.seed,
+        "base_run": str(args.base_run),
+        "additional_sample_size": int(args.additional_sample_size),
         "available_articles": len(articles),
         "selected_articles": len(selected),
         "event_distribution": dict(event_counter),

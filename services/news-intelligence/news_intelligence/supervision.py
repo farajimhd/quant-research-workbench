@@ -50,7 +50,7 @@ class CodexSilverSupervisor:
     """Deterministic silver labeler for offline experiments, not a human-label source."""
 
     def classify(self, article: NewsArticleForClassification) -> IntelligenceResponse:
-        text = article.classification_text(8000)
+        text = full_classification_text(article)
         rule = match_event_rule(text)
         sentiment_label, sentiment_score, sentiment_confidence = infer_sentiment(text, rule)
         materiality = adjust_materiality(rule.base_materiality, article, text) if rule else fallback_materiality(article, text)
@@ -80,6 +80,16 @@ class CodexSilverSupervisor:
             rationale=build_rationale(rule, article, text),
             raw_outputs={"supervisor": {"version": SUPERVISOR_VERSION, "matched_rule": rule.event_subtype if rule else ""}},
         )
+
+
+def full_classification_text(article: NewsArticleForClassification) -> str:
+    parts = [
+        article.title.strip(),
+        article.teaser.strip(),
+        article.body_text.strip(),
+        article.extracted_text.strip(),
+    ]
+    return "\n\n".join(part for part in parts if part)
 
 
 def match_event_rule(text: str) -> EventRule | None:
