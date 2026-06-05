@@ -226,3 +226,6 @@ backtest_results/
 
 # Local research experiment outputs
 research/chronos2/reports/
+
+# Local model evaluation outputs
+services/news-intelligence/evaluation_runs/
