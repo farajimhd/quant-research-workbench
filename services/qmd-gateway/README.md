@@ -16,7 +16,7 @@ Current responsibilities:
 - publish compact local snapshots/streams to the quant app
 - batch-write raw events to the app-owned ClickHouse database
 - batch-write closed bars to the app-owned ClickHouse database
-- batch-write closed indicator rows to the app-owned ClickHouse database
+- optionally batch-write closed indicator rows to the app-owned ClickHouse database
 - expose a documented indicator catalog for live/offline compute policy
 - expose a documented signal-method catalog with explicit working and confirmation timeframes
 
@@ -62,13 +62,14 @@ Environment variables:
 - `QMD_INDICATOR_BAR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_INDICATOR_HISTORY_LIMIT`, default `1000`
 - `QMD_INDICATOR_SHARD_COUNT`, default `8`
+- `QMD_PERSIST_INDICATORS`, default `false`
 
 The service writes to:
 
 - `live_massive_trades`
 - `live_massive_quotes`
 - `live_market_bars`
-- `live_market_indicators`
+- `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`
 - `qmd_gap_fill_runs`
 
 ## Live Bars
@@ -132,8 +133,10 @@ Bar-level indicators are updated when each timeframe bar closes and include:
 - `close_sma_20`, `volume_sma_20`
 - `return_1_bar`, `price_vs_ema20_pct`, `price_vs_vwap_pct`, `trend_score`
 
-Closed indicator rows are persisted to `live_market_indicators` in batches when
-their persistence policy requires durable rows.
+Closed indicator rows are kept in memory by default. They are persisted to
+`live_market_indicators` in batches only when `QMD_PERSIST_INDICATORS=true`,
+which should be enabled only for the versioned indicator set that has been
+promoted to durable storage.
 
 The indicator catalog is exposed at `/indicator-catalog`. It documents each
 indicator family with:

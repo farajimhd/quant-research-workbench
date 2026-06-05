@@ -61,6 +61,8 @@ pub struct BarRow {
     pub large_trade_count: u64,
     /// Sum of sizes for large trades.
     pub large_trade_volume: f64,
+    /// Sum of notional dollars for large trades.
+    pub large_trade_notional: f64,
     /// Trades per second, `trade_count / timeframe_seconds`.
     pub trade_rate: f64,
     /// Shares per second, `volume / timeframe_seconds`.
@@ -251,6 +253,7 @@ struct MutableBar {
     max_trade_size: f64,
     large_trade_count: u64,
     large_trade_volume: f64,
+    large_trade_notional: f64,
     last_trade_price: f64,
     prev_trade_return_sign: i8,
     trade_return_sum_sq: f64,
@@ -558,6 +561,7 @@ impl BarStore {
             max_trade_size: bar.max_trade_size,
             large_trade_count: bar.large_trade_count,
             large_trade_volume: bar.large_trade_volume,
+            large_trade_notional: bar.large_trade_notional,
             trade_rate: safe_div(bar.trade_count as f64, bar.seconds),
             volume_rate: safe_div(bar.volume, bar.seconds),
             dollar_volume_rate: safe_div(bar.dollar_volume, bar.seconds),
@@ -665,6 +669,7 @@ impl MutableBar {
             max_trade_size: 0.0,
             large_trade_count: 0,
             large_trade_volume: 0.0,
+            large_trade_notional: 0.0,
             last_trade_price: 0.0,
             prev_trade_return_sign: 0,
             trade_return_sum_sq: 0.0,
@@ -730,6 +735,7 @@ impl MutableBar {
         if trade.size >= 10_000.0 || trade.price * trade.size >= 100_000.0 {
             self.large_trade_count += 1;
             self.large_trade_volume += trade.size;
+            self.large_trade_notional += trade.price * trade.size;
         }
         self.push_trade_size_sample(trade.size);
         self.observe_trade_return(trade.price);
@@ -970,6 +976,7 @@ impl BarClickHouseWriter {
                 max_trade_size Float64,
                 large_trade_count UInt64,
                 large_trade_volume Float64,
+                large_trade_notional Float64,
                 trade_rate Float64,
                 volume_rate Float64,
                 dollar_volume_rate Float64,
@@ -1042,6 +1049,11 @@ impl BarClickHouseWriter {
             PARTITION BY session_date
             ORDER BY (session_date, timeframe, sym, bar_start)
             "#,
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS large_trade_notional Float64 AFTER large_trade_volume",
             true,
         )
         .await?;
@@ -1156,6 +1168,7 @@ fn bar_insert_row(row: &BarRow) -> serde_json::Value {
         "max_trade_size": row.max_trade_size,
         "large_trade_count": row.large_trade_count,
         "large_trade_volume": row.large_trade_volume,
+        "large_trade_notional": row.large_trade_notional,
         "trade_rate": row.trade_rate,
         "volume_rate": row.volume_rate,
         "dollar_volume_rate": row.dollar_volume_rate,

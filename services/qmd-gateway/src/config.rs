@@ -24,6 +24,7 @@ pub struct GatewayConfig {
     pub indicator_bar_channel_capacity: usize,
     pub indicator_channel_capacity: usize,
     pub indicator_history_limit: usize,
+    pub persist_indicators: bool,
     pub indicator_shard_count: usize,
     pub max_clickhouse_batch: usize,
     #[serde(skip_serializing)]
@@ -62,6 +63,7 @@ impl GatewayConfig {
             indicator_bar_channel_capacity: env_usize("QMD_INDICATOR_BAR_CHANNEL_CAPACITY", 250_000),
             indicator_channel_capacity: env_usize("QMD_INDICATOR_CHANNEL_CAPACITY", 250_000),
             indicator_history_limit: env_usize("QMD_INDICATOR_HISTORY_LIMIT", 1_000),
+            persist_indicators: env_bool("QMD_PERSIST_INDICATORS", false),
             indicator_shard_count: env_usize("QMD_INDICATOR_SHARD_COUNT", 8),
             max_clickhouse_batch: env_usize("QMD_CLICKHOUSE_MAX_BATCH", 10_000),
             massive_api_key,

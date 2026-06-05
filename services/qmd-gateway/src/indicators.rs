@@ -29,8 +29,10 @@ pub struct TickIndicatorRow {
     pub quote_pressure: f64,
     pub trade_rate_10s: f64,
     pub trade_rate_60s: f64,
+    pub trade_accel_10s_60s: f64,
     pub quote_rate_10s: f64,
     pub quote_rate_60s: f64,
+    pub quote_accel_10s_60s: f64,
     pub rolling_vwap_60s: f64,
     pub tape_imbalance_60s: f64,
     pub buy_pressure_60s: f64,
@@ -358,6 +360,10 @@ impl TickState {
             .map(|sample| sample.volume)
             .sum::<f64>();
         let notional_60s = self.recent_trades.iter().map(|sample| sample.notional).sum::<f64>();
+        let trade_rate_10s = trade_count_10s / 10.0;
+        let trade_rate_60s = self.recent_trades.len() as f64 / 60.0;
+        let quote_rate_10s = quote_count_10s / 10.0;
+        let quote_rate_60s = self.recent_quotes.len() as f64 / 60.0;
 
         TickIndicatorRow {
             sym: ticker.to_string(),
@@ -366,10 +372,12 @@ impl TickState {
             last_mid: self.last_mid,
             spread_bps: self.spread_bps,
             quote_pressure: self.quote_pressure(),
-            trade_rate_10s: trade_count_10s / 10.0,
-            trade_rate_60s: self.recent_trades.len() as f64 / 60.0,
-            quote_rate_10s: quote_count_10s / 10.0,
-            quote_rate_60s: self.recent_quotes.len() as f64 / 60.0,
+            trade_rate_10s,
+            trade_rate_60s,
+            trade_accel_10s_60s: trade_rate_10s - trade_rate_60s,
+            quote_rate_10s,
+            quote_rate_60s,
+            quote_accel_10s_60s: quote_rate_10s - quote_rate_60s,
             rolling_vwap_60s: safe_div(notional_60s, volume_60s),
             tape_imbalance_60s: safe_div(signed_volume_60s, volume_60s),
             buy_pressure_60s: safe_div(buy_volume_60s, volume_60s),
@@ -753,6 +761,10 @@ impl IndicatorClickHouseWriter {
     }
 
     pub async fn run(self, mut receiver: mpsc::Receiver<IndicatorRow>) {
+        if !self.config.persist_indicators {
+            while receiver.recv().await.is_some() {}
+            return;
+        }
         if let Err(error) = self.initialize().await {
             eprintln!("ClickHouse indicator initialization failed: {error}");
         }
