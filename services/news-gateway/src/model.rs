@@ -55,6 +55,29 @@ pub struct NewsArticle {
     pub content_completeness: String,
     pub quality_outcome: String,
     pub catalyst_labels: Vec<String>,
+    pub intelligence_status: String,
+    pub intelligence_version: String,
+    pub intelligence_model_stack: Vec<String>,
+    pub intelligence_processed_at: Option<DateTime<Utc>>,
+    pub intelligence_taxonomy_version: String,
+    pub intelligence_prompt_version: String,
+    pub sentiment_label: String,
+    pub sentiment_score: f32,
+    pub sentiment_confidence: f32,
+    pub event_type: String,
+    pub event_subtype: String,
+    pub materiality_score: f32,
+    pub novelty_score: f32,
+    pub urgency_score: f32,
+    pub time_horizon: String,
+    pub affected_tickers: Vec<String>,
+    pub ticker_sentiment_labels: Vec<String>,
+    pub ticker_direction_scores: Vec<f32>,
+    pub ticker_confidences: Vec<f32>,
+    pub intelligence_labels: Vec<String>,
+    pub intelligence_rationale: String,
+    pub intelligence_raw_json: String,
+    pub intelligence_error: String,
     pub reject_reason: String,
     pub content_hash: String,
     pub raw_json: String,
@@ -81,6 +104,17 @@ pub struct NewsArticleSummary {
     pub content_completeness: String,
     pub quality_outcome: String,
     pub catalyst_labels: Vec<String>,
+    pub intelligence_status: String,
+    pub intelligence_version: String,
+    pub sentiment_label: String,
+    pub sentiment_score: f32,
+    pub sentiment_confidence: f32,
+    pub event_type: String,
+    pub materiality_score: f32,
+    pub urgency_score: f32,
+    pub time_horizon: String,
+    pub affected_tickers: Vec<String>,
+    pub intelligence_labels: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -163,7 +197,92 @@ impl NewsArticle {
             content_completeness: self.content_completeness.clone(),
             quality_outcome: self.quality_outcome.clone(),
             catalyst_labels: self.catalyst_labels.clone(),
+            intelligence_status: self.intelligence_status.clone(),
+            intelligence_version: self.intelligence_version.clone(),
+            sentiment_label: self.sentiment_label.clone(),
+            sentiment_score: self.sentiment_score,
+            sentiment_confidence: self.sentiment_confidence,
+            event_type: self.event_type.clone(),
+            materiality_score: self.materiality_score,
+            urgency_score: self.urgency_score,
+            time_horizon: self.time_horizon.clone(),
+            affected_tickers: self.affected_tickers.clone(),
+            intelligence_labels: self.intelligence_labels.clone(),
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct IntelligenceTickerImpact {
+    pub ticker: String,
+    pub sentiment_label: String,
+    pub direction_score: f32,
+    pub confidence: f32,
+    pub rationale: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct IntelligenceResponse {
+    pub status: String,
+    pub processed_at: String,
+    pub stack_version: String,
+    pub taxonomy_version: String,
+    pub prompt_version: String,
+    pub model_stack: Vec<String>,
+    pub sentiment_label: String,
+    pub sentiment_score: f32,
+    pub sentiment_confidence: f32,
+    pub event_type: String,
+    pub event_subtype: String,
+    pub materiality_score: f32,
+    pub novelty_score: f32,
+    pub urgency_score: f32,
+    pub time_horizon: String,
+    pub affected_tickers: Vec<IntelligenceTickerImpact>,
+    pub labels: Vec<String>,
+    pub rationale: String,
+    pub raw_outputs: Value,
+    pub error: String,
+}
+
+impl NewsArticle {
+    pub fn mark_intelligence_disabled(&mut self) {
+        self.intelligence_status = "disabled".to_string();
+    }
+
+    pub fn mark_intelligence_failed(&mut self, error: String) {
+        self.intelligence_status = "failed".to_string();
+        self.intelligence_error = error;
+    }
+
+    pub fn apply_intelligence(&mut self, response: IntelligenceResponse) {
+        self.intelligence_status = response.status;
+        self.intelligence_version = response.stack_version;
+        self.intelligence_model_stack = response.model_stack;
+        self.intelligence_processed_at = parse_dt_opt(&response.processed_at);
+        self.intelligence_taxonomy_version = response.taxonomy_version;
+        self.intelligence_prompt_version = response.prompt_version;
+        self.sentiment_label = response.sentiment_label;
+        self.sentiment_score = response.sentiment_score;
+        self.sentiment_confidence = response.sentiment_confidence;
+        self.event_type = response.event_type;
+        self.event_subtype = response.event_subtype;
+        self.materiality_score = response.materiality_score;
+        self.novelty_score = response.novelty_score;
+        self.urgency_score = response.urgency_score;
+        self.time_horizon = response.time_horizon;
+        self.affected_tickers = response.affected_tickers.iter().map(|item| item.ticker.clone()).collect();
+        self.ticker_sentiment_labels = response
+            .affected_tickers
+            .iter()
+            .map(|item| item.sentiment_label.clone())
+            .collect();
+        self.ticker_direction_scores = response.affected_tickers.iter().map(|item| item.direction_score).collect();
+        self.ticker_confidences = response.affected_tickers.iter().map(|item| item.confidence).collect();
+        self.intelligence_labels = response.labels;
+        self.intelligence_rationale = response.rationale;
+        self.intelligence_raw_json = response.raw_outputs.to_string();
+        self.intelligence_error = response.error;
     }
 }
 

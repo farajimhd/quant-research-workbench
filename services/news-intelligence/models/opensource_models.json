@@ -1,0 +1,165 @@
+{
+  "artifact_root": "D:\\models_artifacts\\opensource",
+  "models": [
+    {
+      "key": "prosusai-finbert",
+      "repo_id": "ProsusAI/finbert",
+      "task": "financial_sentiment",
+      "tier": "fast_classifier",
+      "license_note": "Model card does not provide a clear SPDX license; verify before redistribution.",
+      "download_by_default": true,
+      "large": false,
+      "gated": false
+    },
+    {
+      "key": "finbert-tone",
+      "repo_id": "yiyanghkust/finbert-tone",
+      "task": "financial_sentiment",
+      "tier": "fast_classifier",
+      "license_note": "Model card does not provide a clear SPDX license; verify before redistribution.",
+      "download_by_default": true,
+      "large": false,
+      "gated": false
+    },
+    {
+      "key": "distilroberta-financial-news",
+      "repo_id": "mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis",
+      "task": "financial_sentiment",
+      "tier": "fast_classifier",
+      "license_note": "Apache-2.0 according to the model card.",
+      "download_by_default": true,
+      "large": false,
+      "gated": false
+    },
+    {
+      "key": "finsentiment-distilbert",
+      "repo_id": "iPwnds/finsentiment-distilbert",
+      "task": "financial_sentiment",
+      "tier": "fast_classifier",
+      "license_note": "Apache-2.0 according to the model card.",
+      "download_by_default": true,
+      "large": false,
+      "gated": false
+    },
+    {
+      "key": "roberta-large-financial-news",
+      "repo_id": "Jean-Baptiste/roberta-large-financial-news-sentiment-en",
+      "task": "financial_sentiment",
+      "tier": "fast_classifier",
+      "license_note": "MIT according to the model card.",
+      "download_by_default": true,
+      "large": true,
+      "gated": false
+    },
+    {
+      "key": "finscience-distilroberta",
+      "repo_id": "FinScience/FS-distilroberta-fine-tuned",
+      "task": "financial_sentiment",
+      "tier": "fast_classifier",
+      "license_note": "Verify model card before redistribution.",
+      "download_by_default": true,
+      "large": false,
+      "gated": false
+    },
+    {
+      "key": "financial-news-topic-sentiment-mtl",
+      "repo_id": "farhanage/MTL-FinancialNews-Topic-Sentiment",
+      "task": "topic_sentiment",
+      "tier": "fast_classifier",
+      "license_note": "MIT according to the model card.",
+      "download_by_default": true,
+      "large": false,
+      "gated": false
+    },
+    {
+      "key": "quantbridge-energy-intelligence",
+      "repo_id": "QuantBridge/distilbert-energy-intelligence-multitask-v2",
+      "task": "token_classification",
+      "tier": "entity_event",
+      "license_note": "Apache-2.0 according to the model card.",
+      "download_by_default": true,
+      "large": false,
+      "gated": false
+    },
+    {
+      "key": "gliner-small-v2",
+      "repo_id": "urchade/gliner_small-v2",
+      "task": "zero_shot_ner",
+      "tier": "entity_event",
+      "license_note": "Apache-2.0 according to the model card.",
+      "download_by_default": true,
+      "large": false,
+      "gated": false
+    },
+    {
+      "key": "deberta-small-long-nli",
+      "repo_id": "tasksource/deberta-small-long-nli",
+      "task": "zero_shot_classification",
+      "tier": "entity_event",
+      "license_note": "Verify model card before redistribution.",
+      "download_by_default": true,
+      "large": false,
+      "gated": false
+    },
+    {
+      "key": "qwen3-0.6b",
+      "repo_id": "Qwen/Qwen3-0.6B",
+      "task": "instruction_llm",
+      "tier": "small_llm",
+      "license_note": "Apache-2.0 according to the model card.",
+      "download_by_default": true,
+      "large": true,
+      "gated": false
+    },
+    {
+      "key": "qwen3-1.7b",
+      "repo_id": "Qwen/Qwen3-1.7B",
+      "task": "instruction_llm",
+      "tier": "small_llm",
+      "license_note": "Apache-2.0 according to the model card.",
+      "download_by_default": true,
+      "large": true,
+      "gated": false
+    },
+    {
+      "key": "phi-4-mini-instruct",
+      "repo_id": "microsoft/Phi-4-mini-instruct",
+      "task": "instruction_llm",
+      "tier": "small_llm",
+      "license_note": "MIT according to the model card.",
+      "download_by_default": true,
+      "large": true,
+      "gated": false
+    },
+    {
+      "key": "finma-7b-nlp",
+      "repo_id": "ChanceFocus/finma-7b-nlp",
+      "task": "financial_llm",
+      "tier": "offline_research_llm",
+      "license_note": "MIT according to the model card; large model, not intended for hot path.",
+      "download_by_default": false,
+      "large": true,
+      "gated": false
+    },
+    {
+      "key": "fingpt-sentiment-llama2-13b-lora",
+      "repo_id": "FinGPT/fingpt-sentiment_llama2-13b_lora",
+      "task": "financial_llm_lora",
+      "tier": "offline_research_llm",
+      "license_note": "LoRA adapter depends on a Llama 2 base model license/access.",
+      "download_by_default": false,
+      "large": true,
+      "gated": true
+    },
+    {
+      "key": "llama-3.2-1b-instruct",
+      "repo_id": "meta-llama/Llama-3.2-1B-Instruct",
+      "task": "instruction_llm",
+      "tier": "small_llm",
+      "license_note": "Meta Llama license and gated Hugging Face access.",
+      "download_by_default": false,
+      "large": true,
+      "gated": true
+    }
+  ]
+}

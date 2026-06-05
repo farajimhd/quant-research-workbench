@@ -52,6 +52,9 @@ Common settings:
 - `NEWS_CLICKHOUSE_FLUSH_INTERVAL_MS`, default `1000`
 - `NEWS_WRITER_CHANNEL_CAPACITY`, default `100000`
 - `NEWS_RECENT_HISTORY_LIMIT`, default `5000`
+- `NEWS_INTELLIGENCE_ENABLED`, default `true`
+- `NEWS_INTELLIGENCE_URL`, default `http://127.0.0.1:8797`
+- `NEWS_INTELLIGENCE_TIMEOUT_MS`, default `1500`
 
 PDF text extraction uses the external `pdftotext` command. If it is not installed, PDF rows are still persisted with metadata and `extraction_error`.
 
@@ -82,7 +85,10 @@ WS /stream/news/scanner
 WS /stream/news/ticker/AAPL
 ```
 
-The snapshot and websocket payloads are compact summaries. Full text and raw JSON are in ClickHouse.
+The snapshot and websocket payloads are compact summaries. When the optional
+news-intelligence service is reachable, those summaries also include sentiment,
+event, materiality, urgency, ticker-impact, and model-version labels. Full text,
+raw JSON, and full intelligence outputs are in ClickHouse.
 
 ## Persistence Rule
 

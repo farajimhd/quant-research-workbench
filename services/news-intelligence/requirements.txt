@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+huggingface_hub
+transformers
+torch
+onnxruntime
+optimum[onnxruntime]
+gliner

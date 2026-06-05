@@ -3,6 +3,7 @@ mod classify;
 mod clickhouse;
 mod config;
 mod extract;
+mod intelligence;
 mod massive;
 mod metrics;
 mod model;

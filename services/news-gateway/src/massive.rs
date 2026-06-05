@@ -2,6 +2,7 @@ use crate::classify::{classify_news, filter_version};
 use crate::clickhouse::NewsClickHouse;
 use crate::config::NewsGatewayConfig;
 use crate::extract::{extract_content, stable_hash, url_domain};
+use crate::intelligence::NewsIntelligenceClient;
 use crate::metrics::SharedMetrics;
 use crate::model::{
     parse_benzinga, parse_dt_opt, parse_massive_news, NewsArticle, NormalizedNewsInput, PollResponse, NEWS_SCHEMA_VERSION,
@@ -86,6 +87,7 @@ async fn run_source_poller(
     metrics: SharedMetrics,
 ) {
     let client = Client::new();
+    let intelligence = NewsIntelligenceClient::new(config.clone());
     let clickhouse = NewsClickHouse::new(config.clone());
     let mut cursor = initial_cursor(&clickhouse, &config, spec.source).await;
     let mut timer = interval(Duration::from_millis(spec.interval_ms));
@@ -94,6 +96,7 @@ async fn run_source_poller(
         metrics.inc_poll_run();
         match poll_once(
             &client,
+            &intelligence,
             &spec,
             &config,
             cursor,
@@ -125,6 +128,7 @@ async fn initial_cursor(clickhouse: &NewsClickHouse, config: &NewsGatewayConfig,
 
 async fn poll_once(
     client: &Client,
+    intelligence: &NewsIntelligenceClient,
     spec: &SourceSpec,
     config: &NewsGatewayConfig,
     cursor: DateTime<Utc>,
@@ -152,7 +156,8 @@ async fn poll_once(
         metrics.inc_provider_rows(results.len() as u64);
         for item in results {
             match normalize_article(client, config, spec.source, item).await {
-                Ok(article) => {
+                Ok(mut article) => {
+                    intelligence.enrich(&mut article).await;
                     let article_published_at = article.published_at.clone();
                     max_published = Some(
                         max_published
@@ -286,6 +291,29 @@ async fn build_article(
         content_completeness: classification.content_completeness,
         quality_outcome: classification.quality_outcome,
         catalyst_labels: classification.catalyst_labels,
+        intelligence_status: "pending".to_string(),
+        intelligence_version: String::new(),
+        intelligence_model_stack: Vec::new(),
+        intelligence_processed_at: None,
+        intelligence_taxonomy_version: String::new(),
+        intelligence_prompt_version: String::new(),
+        sentiment_label: String::new(),
+        sentiment_score: 0.0,
+        sentiment_confidence: 0.0,
+        event_type: String::new(),
+        event_subtype: String::new(),
+        materiality_score: 0.0,
+        novelty_score: 0.0,
+        urgency_score: 0.0,
+        time_horizon: String::new(),
+        affected_tickers: Vec::new(),
+        ticker_sentiment_labels: Vec::new(),
+        ticker_direction_scores: Vec::new(),
+        ticker_confidences: Vec::new(),
+        intelligence_labels: Vec::new(),
+        intelligence_rationale: String::new(),
+        intelligence_raw_json: String::new(),
+        intelligence_error: String::new(),
         reject_reason: String::new(),
         content_hash,
         raw_json: input.raw_json,
