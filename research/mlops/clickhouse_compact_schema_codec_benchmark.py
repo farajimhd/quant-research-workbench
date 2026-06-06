@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -73,6 +75,25 @@ class BenchmarkSource:
     bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class InsertJob:
+    database: str
+    table: BenchmarkTable
+    source: BenchmarkSource
+    sql: str
+    settings: str
+    clickhouse_url: str
+    user: str
+    password: str
+
+
+@dataclass(frozen=True, slots=True)
+class InsertResult:
+    table: BenchmarkTable
+    source: BenchmarkSource
+    profile: QueryProfile
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -91,6 +112,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quote-date", default="", help="Backward-compatible single quote date. Overrides --start-date/--end-date for quotes when set.")
     parser.add_argument("--trade-date", default="", help="Backward-compatible single trade date. Overrides --start-date/--end-date for trades when set.")
     parser.add_argument("--max-files-per-kind", type=int, default=DEFAULT_MAX_FILES_PER_KIND, help="Maximum quote files and maximum trade files to insert. 0 means all discovered files.")
+    parser.add_argument("--insert-concurrency", type=int, default=1, help="Concurrent file inserts per benchmark table. Variants still run sequentially for fair comparison.")
     parser.add_argument("--storage-policy", default=default_storage_policy())
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--max-threads", type=int, default=32)
@@ -362,6 +384,12 @@ def run_query_timed(client: ClickHouseHttpClient, label: str, sql: str, settings
     return run_profiled(client, label, sql, settings)
 
 
+def run_insert_job(job: InsertJob) -> InsertResult:
+    client = ClickHouseHttpClient(job.clickhouse_url, job.user, job.password)
+    profile = run_query_timed(client, f"insert_{job.table.table}_{job.source.date}", job.sql, job.settings)
+    return InsertResult(table=job.table, source=job.source, profile=profile)
+
+
 def parse_json_each_row(text: str) -> dict[str, object]:
     rows = [json.loads(line) for line in text.splitlines() if line.strip()]
     return rows[0] if rows else {}
@@ -451,6 +479,7 @@ def main() -> None:
     print(f"flatfiles_root_ch={flatfiles_root_ch}", flush=True)
     print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
     print(f"settings={settings.strip()}", flush=True)
+    print(f"insert_concurrency={max(1, int(args.insert_concurrency))}", flush=True)
     print(f"report={report_path}", flush=True)
     print(f"secret_status={secret_status(env_status_keys())}", flush=True)
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
@@ -487,6 +516,7 @@ def main() -> None:
                     "trade_sources": source_summary(trade_sources),
                     "storage_policy": args.storage_policy,
                     "settings": settings.strip(),
+                    "insert_concurrency": max(1, int(args.insert_concurrency)),
                 },
                 sort_keys=True,
             )
@@ -501,45 +531,82 @@ def main() -> None:
             for table in tables:
                 print("-" * 96, flush=True)
                 table_sources = sources_by_kind[table.kind]
-                print(f"INSERT {table.kind}:{table.variant} table={table.table} files={len(table_sources)}", flush=True)
+                insert_concurrency = max(1, int(args.insert_concurrency))
+                print(
+                    f"INSERT {table.kind}:{table.variant} table={table.table} "
+                    f"files={len(table_sources)} insert_concurrency={insert_concurrency}",
+                    flush=True,
+                )
                 aggregate_rows = 0
-                aggregate_seconds = 0.0
-                for source_index, source in enumerate(table_sources, start=1):
-                    print(
-                        f"INSERT-FILE [{source_index:,}/{len(table_sources):,}] {table.table} "
-                        f"{source.date} size_gib={source.bytes / (1024**3):.2f}",
-                        flush=True,
-                    )
+                aggregate_query_seconds = 0.0
+                insert_started = time.perf_counter()
+                jobs: list[InsertJob] = []
+                for source in table_sources:
                     sql = (
                         insert_quote_sql(database, table.table, source.source_path)
                         if table.kind == "quotes"
                         else insert_trade_sql(database, table.table, source.source_path)
                     )
-                    profile = run_query_timed(client, f"insert_{table.table}_{source.date}", sql, settings)
-                    print_profile(profile)
-                    aggregate_rows += int(profile.written_rows or 0)
-                    aggregate_seconds += profile.wall_seconds
-                    report.write(
-                        json.dumps(
-                            {
-                                "type": "insert_profile",
-                                "table": asdict(table),
-                                "source": asdict(source),
-                                "profile": asdict(profile),
-                            },
-                            sort_keys=True,
+                    jobs.append(
+                        InsertJob(
+                            database=database,
+                            table=table,
+                            source=source,
+                            sql=sql,
+                            settings=settings,
+                            clickhouse_url=args.clickhouse_url,
+                            user=args.user,
+                            password=args.password,
                         )
-                        + "\n"
                     )
-                rows_per_second = round(aggregate_rows / aggregate_seconds) if aggregate_seconds > 0 else 0
+                for source_index, source in enumerate(table_sources, start=1):
+                    print(
+                        f"INSERT-QUEUE [{source_index:,}/{len(table_sources):,}] {table.table} "
+                        f"{source.date} size_gib={source.bytes / (1024**3):.2f}",
+                        flush=True,
+                    )
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(insert_concurrency, len(jobs))) as executor:
+                    future_to_job = {executor.submit(run_insert_job, job): job for job in jobs}
+                    completed = 0
+                    for future in concurrent.futures.as_completed(future_to_job):
+                        job = future_to_job[future]
+                        result = future.result()
+                        completed += 1
+                        print(
+                            f"INSERT-DONE [{completed:,}/{len(jobs):,}] {table.table} {job.source.date}",
+                            flush=True,
+                        )
+                        print_profile(result.profile)
+                        aggregate_rows += int(result.profile.written_rows or 0)
+                        aggregate_query_seconds += result.profile.wall_seconds
+                        report.write(
+                            json.dumps(
+                                {
+                                    "type": "insert_profile",
+                                    "table": asdict(result.table),
+                                    "source": asdict(result.source),
+                                    "profile": asdict(result.profile),
+                                },
+                                sort_keys=True,
+                            )
+                            + "\n"
+                        )
+                        report.flush()
+                elapsed_wall_seconds = time.perf_counter() - insert_started
+                rows_per_second_query_sum = round(aggregate_rows / aggregate_query_seconds) if aggregate_query_seconds > 0 else 0
+                rows_per_second_elapsed = round(aggregate_rows / elapsed_wall_seconds) if elapsed_wall_seconds > 0 else 0
                 aggregate = {
                     "files": len(table_sources),
-                    "wall_seconds_sum": aggregate_seconds,
+                    "insert_concurrency": insert_concurrency,
+                    "query_wall_seconds_sum": aggregate_query_seconds,
+                    "elapsed_wall_seconds": elapsed_wall_seconds,
                     "written_rows_sum": aggregate_rows,
-                    "rows_per_second": rows_per_second,
+                    "rows_per_second_query_sum": rows_per_second_query_sum,
+                    "rows_per_second_elapsed": rows_per_second_elapsed,
                 }
                 print(f"INSERT-SUMMARY {table.table}: {aggregate}", flush=True)
                 report.write(json.dumps({"type": "insert_summary", "table": asdict(table), "aggregate": aggregate}, sort_keys=True) + "\n")
+                report.flush()
 
         if args.optimize_final:
             for table in tables:
