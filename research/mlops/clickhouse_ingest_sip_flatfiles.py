@@ -32,6 +32,7 @@ CLICKHOUSE_ENDPOINT_ENV = "TD__DATABASE__CLICKHOUSE__ENDPOINT_URL"
 CLICKHOUSE_PASSWORD_ENV = "TD__DATABASE__CLICKHOUSE__PASSWORD"
 CLICKHOUSE_USER_ENV = "TD__DATABASE__CLICKHOUSE__USER"
 CLICKHOUSE_FILE_ROOT_ENV = "TD__DATABASE__CLICKHOUSE__FILE_ROOT"
+CLICKHOUSE_HISTORICAL_STORAGE_POLICY_ENV = "CLICKHOUSE_HISTORICAL_STORAGE_POLICY"
 CLICKHOUSE_STORAGE_POLICY_SIMPLE_ENV = "CLICKHOUSE_STORAGE_POLICY"
 CLICKHOUSE_STORAGE_POLICY_ENV = "TD__DATABASE__CLICKHOUSE__STORAGE_POLICY"
 HISTORICAL_CLICKHOUSE_DATABASE_ENV = "HISTORICAL_CLICKHOUSE_DATABASE_HDD_STORAGE_POLICY"
@@ -136,12 +137,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN))
     parser.add_argument("--start-date", default="2025-01-01")
-    parser.add_argument("--end-date", default="2026-12-31")
+    parser.add_argument("--end-date", default="2026-05-14")
     parser.add_argument("--kinds", default="quotes,trades", help="Comma-separated subset of quotes,trades.")
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--max-threads", type=int, default=32)
     parser.add_argument("--preflight-processes", type=int, default=default_preflight_processes(), help="Worker processes for Polars source row/min/max preflight. Use 1 for serial.")
-    parser.add_argument("--storage-policy", default=default_storage_policy(), help="Optional MergeTree storage_policy for newly created tables, e.g. ssd_policy.")
+    parser.add_argument("--storage-policy", default=default_storage_policy(), help="Optional MergeTree storage_policy for raw and manifest tables. Defaults to CLICKHOUSE_HISTORICAL_STORAGE_POLICY when set.")
     parser.add_argument("--limit-files", type=int, default=0, help="Debug limit after discovery. 0 means all files.")
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--retry-started", action="store_true", help="Retry files whose latest manifest status is started.")
@@ -172,7 +173,12 @@ def default_clickhouse_file_root() -> str:
 
 
 def default_storage_policy() -> str:
-    return os.environ.get(CLICKHOUSE_STORAGE_POLICY_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_STORAGE_POLICY_ENV) or ""
+    return (
+        os.environ.get(CLICKHOUSE_HISTORICAL_STORAGE_POLICY_ENV)
+        or os.environ.get(CLICKHOUSE_STORAGE_POLICY_SIMPLE_ENV)
+        or os.environ.get(CLICKHOUSE_STORAGE_POLICY_ENV)
+        or ""
+    )
 
 
 def default_preflight_processes() -> int:
@@ -187,6 +193,7 @@ def clickhouse_env_status_keys() -> list[str]:
         CLICKHOUSE_USER_SIMPLE_ENV,
         CLICKHOUSE_PASSWORD_SIMPLE_ENV,
         HISTORICAL_CLICKHOUSE_DATABASE_ENV,
+        CLICKHOUSE_HISTORICAL_STORAGE_POLICY_ENV,
         CLICKHOUSE_STORAGE_POLICY_SIMPLE_ENV,
         CLICKHOUSE_ENDPOINT_ENV,
         CLICKHOUSE_USER_ENV,
@@ -570,6 +577,7 @@ def create_database_and_tables(client: ClickHouseHttpClient, database: str, mani
     client.execute(create_trades_table_sql(database, storage_policy))
     client.execute(create_manifest_table_sql(database, manifest_table, storage_policy))
     ensure_manifest_columns(client, database, manifest_table)
+    ensure_table_storage_policy(client, database, ("quotes_raw", "trades_raw", manifest_table), storage_policy)
 
 
 def create_quotes_table_sql(database: str, storage_policy: str) -> str:
@@ -684,6 +692,18 @@ def ensure_manifest_columns(client: ClickHouseHttpClient, database: str, manifes
     ]
     for name, dtype in columns:
         client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {quote_ident(name)} {dtype}")
+
+
+def ensure_table_storage_policy(client: ClickHouseHttpClient, database: str, tables: tuple[str, ...], storage_policy: str) -> None:
+    policy = storage_policy.strip()
+    if not policy:
+        return
+    for table in tables:
+        print(f"ENSURE storage_policy table={database}.{table} policy={policy}", flush=True)
+        client.execute(
+            f"ALTER TABLE {quote_ident(database)}.{quote_ident(table)} "
+            f"MODIFY SETTING storage_policy = {sql_string(policy)}"
+        )
 
 
 def ingest_one_file(client: ClickHouseHttpClient, database: str, source: SourceFile, settings: str) -> QueryProfile:
