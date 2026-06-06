@@ -188,7 +188,7 @@ class RecommendedNewsPipeline:
         if "error" in output:
             response.error = f"llm_failed: {output['error']}"
             return StageResult("llm", "failed", seconds, {"model": output["model"]}, output["error"])
-        apply_llm_output(response, output.get("parsed", {}))
+        apply_llm_output(response, output.get("parsed", {}), self.config.llm_merge_mode)
         return StageResult("llm", "completed", seconds, {"model": output["model"]})
 
 

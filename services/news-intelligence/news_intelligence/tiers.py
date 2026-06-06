@@ -134,10 +134,15 @@ class LlmTier:
                 {
                     "role": "system",
                     "content": (
+                        f"{reasoning_instruction(self.config)}"
                         "You classify financial news for a trading scanner. "
-                        "Return strict JSON only with keys: summary, event_type, event_subtype, "
-                        "materiality_score, novelty_score, urgency_score, time_horizon, "
-                        "affected_tickers, content_completeness, evidence_basis, labels, rationale."
+                        "Return only the final JSON object. No markdown. "
+                        "Use this exact contract: summary string; event_type string; event_subtype string; "
+                        "materiality_score number 0 to 1; novelty_score number 0 to 1; urgency_score number 0 to 1; "
+                        "time_horizon one of intraday, session_to_multi_day, longer_term, contextual, unknown; "
+                        "affected_tickers array of objects with ticker, sentiment_label, direction_score, confidence, rationale; "
+                        "content_completeness string; evidence_basis string; labels array of strings; rationale string. "
+                        "Do not invent tickers not provided in the user payload."
                     ),
                 },
                 {
@@ -155,8 +160,12 @@ class LlmTier:
                 },
             ],
             "temperature": 0,
-            "max_tokens": 600,
+            "max_tokens": self.config.llm_max_tokens,
         }
+        if self.config.llm_reasoning_effort:
+            payload["reasoning_effort"] = self.config.llm_reasoning_effort
+        if self.config.llm_response_format:
+            payload["response_format"] = {"type": self.config.llm_response_format}
         request = urllib.request.Request(
             f"{self.config.llm_base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -166,10 +175,12 @@ class LlmTier:
         try:
             with urllib.request.urlopen(request, timeout=self.config.llm_timeout_ms / 1000) as response:
                 data = json.loads(response.read().decode("utf-8"))
-            content = data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"].get("content")
+            if not content:
+                return {"model": self.config.llm_model, "error": "empty_llm_content", "raw": data}
             parsed = json.loads(extract_json(content))
             return {"model": self.config.llm_model, "parsed": parsed, "raw": data}
-        except (OSError, urllib.error.HTTPError, KeyError, json.JSONDecodeError) as error:
+        except (OSError, urllib.error.HTTPError, KeyError, TypeError, json.JSONDecodeError) as error:
             return {"model": self.config.llm_model, "error": str(error), "raw": {}}
 
 
@@ -214,7 +225,7 @@ class IntelligenceEngine:
             if "error" in llm_output:
                 response.error = f"llm_failed: {llm_output['error']}"
                 return response
-            apply_llm_output(response, llm_output.get("parsed", {}))
+            apply_llm_output(response, llm_output.get("parsed", {}), self.config.llm_merge_mode)
         return response
 
 
@@ -225,6 +236,12 @@ def normalize_sentiment_label(label: str) -> str:
     if "negative" in lower or lower in {"bearish", "neg", "label_0"}:
         return "negative"
     return "neutral"
+
+
+def reasoning_instruction(config: IntelligenceConfig) -> str:
+    if not config.llm_reasoning_effort:
+        return ""
+    return f"Reasoning effort: {config.llm_reasoning_effort}. "
 
 
 def sentiment_direction(label: str, confidence: float) -> float:
@@ -259,18 +276,20 @@ def extract_json(text: str) -> str:
     return "{}"
 
 
-def apply_llm_output(response: IntelligenceResponse, parsed: dict[str, Any]) -> None:
+def apply_llm_output(response: IntelligenceResponse, parsed: dict[str, Any], merge_mode: str = "summary_only") -> None:
     response.summary = str(parsed.get("summary") or response.summary)
+    response.rationale = str(parsed.get("rationale") or response.rationale)
+    response.novelty_score = bounded_float(parsed.get("novelty_score"), response.novelty_score)
+    if merge_mode != "override":
+        return
     response.event_type = str(parsed.get("event_type") or response.event_type)
     response.event_subtype = str(parsed.get("event_subtype") or response.event_subtype)
     response.materiality_score = bounded_float(parsed.get("materiality_score"), response.materiality_score)
-    response.novelty_score = bounded_float(parsed.get("novelty_score"), response.novelty_score)
     response.urgency_score = bounded_float(parsed.get("urgency_score"), response.urgency_score)
     response.time_horizon = str(parsed.get("time_horizon") or response.time_horizon)
     response.content_completeness = str(parsed.get("content_completeness") or response.content_completeness)
     response.evidence_basis = str(parsed.get("evidence_basis") or response.evidence_basis)
     response.labels = sorted(set(response.labels + [str(item) for item in parsed.get("labels", []) if item]))
-    response.rationale = str(parsed.get("rationale") or response.rationale)
     impacts = []
     for item in parsed.get("affected_tickers", []):
         if not isinstance(item, dict) or not item.get("ticker"):

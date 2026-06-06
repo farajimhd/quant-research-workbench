@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import os
 import statistics
 import sys
 import time
@@ -53,11 +54,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--article-limit", type=int, default=0, help="Optional limit from the supervision set. 0 means all.")
     parser.add_argument("--enable-llm", action="store_true", help="Call the configured OpenAI-compatible local LLM endpoint.")
     parser.add_argument("--disable-models", action="store_true", help="Disable transformer sentiment models and use deterministic fallback.")
+    parser.add_argument("--llm-max-tokens", type=int, default=0, help="Override NEWS_INTELLIGENCE_LLM_MAX_TOKENS for this run.")
+    parser.add_argument("--llm-reasoning-effort", default="", help="Override NEWS_INTELLIGENCE_LLM_REASONING_EFFORT for this run.")
+    parser.add_argument("--llm-response-format", default="", help="Override NEWS_INTELLIGENCE_LLM_RESPONSE_FORMAT for this run.")
+    parser.add_argument("--llm-merge-mode", default="", help="Override NEWS_INTELLIGENCE_LLM_MERGE_MODE: summary_only or override.")
+    parser.add_argument("--llm-min-materiality", type=float, default=None, help="Override NEWS_INTELLIGENCE_LLM_MIN_MATERIALITY.")
+    parser.add_argument("--llm-min-text-chars", type=int, default=None, help="Override NEWS_INTELLIGENCE_LLM_MIN_TEXT_CHARS.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    apply_config_overrides(args)
     supervision_run = Path(args.supervision_run) if args.supervision_run else latest_run(Path(args.supervision_root))
     run_dir = Path(args.output_root) / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -120,6 +128,21 @@ def main() -> int:
     (run_dir / "experiment_analysis.md").write_text(render_analysis(final_summary), encoding="utf-8")
     print(json.dumps({"run_dir": str(run_dir), "summary": final_summary}, indent=2, ensure_ascii=False))
     return 0
+
+
+def apply_config_overrides(args: argparse.Namespace) -> None:
+    if args.llm_max_tokens:
+        os.environ["NEWS_INTELLIGENCE_LLM_MAX_TOKENS"] = str(args.llm_max_tokens)
+    if args.llm_reasoning_effort:
+        os.environ["NEWS_INTELLIGENCE_LLM_REASONING_EFFORT"] = args.llm_reasoning_effort
+    if args.llm_response_format:
+        os.environ["NEWS_INTELLIGENCE_LLM_RESPONSE_FORMAT"] = args.llm_response_format
+    if args.llm_merge_mode:
+        os.environ["NEWS_INTELLIGENCE_LLM_MERGE_MODE"] = args.llm_merge_mode
+    if args.llm_min_materiality is not None:
+        os.environ["NEWS_INTELLIGENCE_LLM_MIN_MATERIALITY"] = str(args.llm_min_materiality)
+    if args.llm_min_text_chars is not None:
+        os.environ["NEWS_INTELLIGENCE_LLM_MIN_TEXT_CHARS"] = str(args.llm_min_text_chars)
 
 
 def latest_run(root: Path) -> Path:
@@ -297,13 +320,20 @@ def render_analysis(summary: dict[str, Any]) -> str:
         f"- Fastest measured sentiment stage: `{best.get('fastest_model', '')}`.",
         f"- Best balanced hot-path choice in this run: `{best.get('best_balanced_model', '')}`.",
         "- Event, ticker, evidence, and content-completeness scores are high because those stages are deterministic and intentionally close to the silver-label supervisor rules. They verify consistency and timing, not human-level semantic accuracy.",
-        "- The LLM tier was not benchmarked here because no warm local OpenAI-compatible endpoint was requested for this run. In production it should stay optional and threshold-gated until it is measured under a running vLLM endpoint.",
-        "",
-        "## Model Summary",
-        "",
-        "| Model | Articles | Sentiment Acc | Event Acc | Ticker F1 | Label Jaccard | Throughput / s | Sentiment Median s | Total Elapsed s |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
+    if summary.get("enable_llm"):
+        lines.append("- The LLM tier was benchmarked through the configured local OpenAI-compatible endpoint. Inspect the `llm` stage status distribution and p95 latency before enabling it in a synchronous path.")
+    else:
+        lines.append("- The LLM tier was not benchmarked here. In production it should stay optional and threshold-gated until it is measured under a running local endpoint.")
+    lines.extend(
+        [
+            "",
+            "## Model Summary",
+            "",
+            "| Model | Articles | Sentiment Acc | Event Acc | Ticker F1 | Label Jaccard | Throughput / s | Sentiment Median s | Total Elapsed s |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
     for model in summary["models"]:
         sentiment_timing = model["stage_timings"].get("fast_sentiment", {})
         lines.append(
@@ -374,7 +404,10 @@ def render_analysis(summary: dict[str, Any]) -> str:
             lines.append(f"- Fallback-only runs excluded from model ranking: `{', '.join(recs['excluded_fallback_only_models'])}`.")
     lines.append("- For the hot path, use deterministic preprocessing/event/ticker/evidence stages plus the selected fast sentiment model. Persist the full contract and model/taxonomy versions with every row.")
     lines.append("- For uncommon behavior, route high-materiality or low-confidence articles to the optional LLM tier asynchronously; do not block news persistence on that result.")
-    lines.append("- Keep the LLM stage out of the hot path unless a local endpoint is already warm and measured; this run records it as skipped unless `--enable-llm` is used.")
+    if summary.get("enable_llm"):
+        lines.append("- Keep LLM-enriched summaries asynchronous or run them in `summary_only` merge mode unless a future benchmark proves that overriding structured labels improves accuracy.")
+    else:
+        lines.append("- Keep the LLM stage out of the hot path unless a local endpoint is already warm and measured; this run records it as skipped unless `--enable-llm` is used.")
     lines.append("- Before using this as a production benchmark, review a small random sample manually because silver labels can encode rule bias.")
     return "\n".join(lines) + "\n"
 

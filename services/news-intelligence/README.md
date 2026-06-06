@@ -30,6 +30,10 @@ returns labels that the gateway can persist and broadcast with the article.
 - `NEWS_INTELLIGENCE_ENABLE_LLM`, default `false`
 - `NEWS_INTELLIGENCE_LLM_BASE_URL`, default `http://127.0.0.1:8000/v1`
 - `NEWS_INTELLIGENCE_LLM_MODEL`, default `Qwen/Qwen3-1.7B`
+- `NEWS_INTELLIGENCE_LLM_MAX_TOKENS`, default `512`
+- `NEWS_INTELLIGENCE_LLM_MERGE_MODE`, default `summary_only`; use `override` only when you want the LLM to replace structured scanner labels.
+- `NEWS_INTELLIGENCE_LLM_REASONING_EFFORT`, default `low` for `gpt-oss`, otherwise empty.
+- `NEWS_INTELLIGENCE_LLM_RESPONSE_FORMAT`, default `json_object` for `gpt-oss`, otherwise empty.
 - `NEWS_INTELLIGENCE_ACTIVE_SENTIMENT_MODEL`, default `distilroberta-financial-news`
 - `NEWS_INTELLIGENCE_ACTIVE_NER_MODEL`, default `quantbridge-energy-intelligence`
 - `NEWS_INTELLIGENCE_MAX_TEXT_CHARS`, default `6000`

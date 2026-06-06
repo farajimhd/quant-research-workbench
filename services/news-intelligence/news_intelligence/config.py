@@ -16,6 +16,10 @@ class IntelligenceConfig:
     llm_min_materiality: float
     llm_min_text_chars: int
     llm_model: str
+    llm_max_tokens: int
+    llm_merge_mode: str
+    llm_reasoning_effort: str
+    llm_response_format: str
     llm_timeout_ms: int
     manifest_path: Path
     max_text_chars: int
@@ -29,7 +33,10 @@ class IntelligenceConfig:
 
     @classmethod
     def from_env(cls) -> "IntelligenceConfig":
+        load_repo_dotenv()
         base_dir = Path(__file__).resolve().parents[1]
+        llm_model = env_string("NEWS_INTELLIGENCE_LLM_MODEL", "Qwen/Qwen3-1.7B")
+        gpt_oss_default = "gpt-oss" in llm_model.lower()
         return cls(
             bind=env_string("NEWS_INTELLIGENCE_BIND", "127.0.0.1:8797"),
             enable_llm=env_bool("NEWS_INTELLIGENCE_ENABLE_LLM", False),
@@ -37,7 +44,11 @@ class IntelligenceConfig:
             llm_base_url=env_string("NEWS_INTELLIGENCE_LLM_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/"),
             llm_min_materiality=env_float("NEWS_INTELLIGENCE_LLM_MIN_MATERIALITY", 0.65),
             llm_min_text_chars=env_int("NEWS_INTELLIGENCE_LLM_MIN_TEXT_CHARS", 80),
-            llm_model=env_string("NEWS_INTELLIGENCE_LLM_MODEL", "Qwen/Qwen3-1.7B"),
+            llm_model=llm_model,
+            llm_max_tokens=env_int("NEWS_INTELLIGENCE_LLM_MAX_TOKENS", 512),
+            llm_merge_mode=env_string("NEWS_INTELLIGENCE_LLM_MERGE_MODE", "summary_only").lower(),
+            llm_reasoning_effort=env_string("NEWS_INTELLIGENCE_LLM_REASONING_EFFORT", "low" if gpt_oss_default else ""),
+            llm_response_format=env_string("NEWS_INTELLIGENCE_LLM_RESPONSE_FORMAT", "json_object" if gpt_oss_default else ""),
             llm_timeout_ms=env_int("NEWS_INTELLIGENCE_LLM_TIMEOUT_MS", 3500),
             manifest_path=Path(
                 env_string(
@@ -62,6 +73,38 @@ class IntelligenceConfig:
 def load_manifest(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def load_repo_dotenv() -> None:
+    for path in dotenv_candidates():
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text or text.startswith("#") or "=" not in text:
+                continue
+            key, value = text.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            os.environ[key] = strip_env_value(value)
+        return
+
+
+def dotenv_candidates() -> list[Path]:
+    here = Path(__file__).resolve()
+    return [
+        here.parents[2] / ".env",
+        here.parents[3] / ".env",
+        Path.cwd() / ".env",
+    ]
+
+
+def strip_env_value(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1]
+    return stripped
 
 
 def model_path(config: IntelligenceConfig, key: str) -> Path:
