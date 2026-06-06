@@ -107,6 +107,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN / "compact_codec_ingest"))
     parser.add_argument("--limit-files", type=int, default=0)
+    parser.add_argument(
+        "--max-files-per-kind",
+        type=int,
+        default=0,
+        help="Maximum files to ingest per source kind after date filtering. 0 means all.",
+    )
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--retry-started", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -271,6 +277,16 @@ def build_jobs(args: argparse.Namespace, settings: str) -> list[CompactIngestJob
     root_win = Path(args.flatfiles_root_win)
     root_ch = normalize_clickhouse_file_path(args.flatfiles_root_ch)
     sources = discover_source_files(root_win, root_ch, kinds, args.start_date, args.end_date)
+    if args.max_files_per_kind > 0:
+        limited_sources = []
+        counts_by_kind: dict[str, int] = {}
+        for source in sources:
+            count = counts_by_kind.get(source.kind, 0)
+            if count >= args.max_files_per_kind:
+                continue
+            limited_sources.append(source)
+            counts_by_kind[source.kind] = count + 1
+        sources = limited_sources
     if args.limit_files > 0:
         sources = sources[: args.limit_files]
     jobs: list[CompactIngestJob] = []
@@ -333,6 +349,7 @@ def main() -> None:
     print(f"tables={args.quote_table},{args.trade_table}", flush=True)
     print(f"manifest_table={args.manifest_table}", flush=True)
     print(f"kinds={args.kinds} start_date={args.start_date} end_date={args.end_date}", flush=True)
+    print(f"limit_files={args.limit_files} max_files_per_kind={args.max_files_per_kind}", flush=True)
     print(f"flatfiles_root_win={args.flatfiles_root_win}", flush=True)
     print(f"flatfiles_root_ch={args.flatfiles_root_ch}", flush=True)
     print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
@@ -390,6 +407,8 @@ def main() -> None:
             "manifest_table": args.manifest_table,
             "start_date": args.start_date,
             "end_date": args.end_date,
+            "limit_files": args.limit_files,
+            "max_files_per_kind": args.max_files_per_kind,
             "insert_concurrency": insert_concurrency,
             "settings": settings.strip(),
         },

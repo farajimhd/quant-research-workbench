@@ -98,6 +98,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--database", default=DEFAULT_DATABASE)
     parser.add_argument("--run-id", default=DEFAULT_RUN_ID)
+    parser.add_argument("--quote-table", default="")
+    parser.add_argument("--trade-table", default="")
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
     parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
     parser.add_argument("--quote-date", default=DEFAULT_QUOTE_DATE)
@@ -411,15 +413,14 @@ def validate_kind(
     kind: str,
     date: str,
     path: Path,
+    table: str,
     sample_size: int,
     seed: int,
 ) -> dict[str, Any]:
     if kind == "quotes":
-        table = f"quotes_codec_{run_id}"
         columns = QUOTE_COLUMNS
         transform = quote_expected
     elif kind == "trades":
-        table = f"trades_codec_{run_id}"
         columns = TRADE_COLUMNS
         transform = trade_expected
     else:
@@ -447,12 +448,15 @@ def main() -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     output_path = output_root / f"compact_schema_codec_validation_{args.run_id}_{args.seed}.json"
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    quote_table = args.quote_table.strip() or f"quotes_codec_{args.run_id}"
+    trade_table = args.trade_table.strip() or f"trades_codec_{args.run_id}"
 
     quote_path = discover_one_source(root_win, root_ch, "quotes", args.quote_date)
     trade_path = discover_one_source(root_win, root_ch, "trades", args.trade_date)
     print("=" * 96, flush=True)
     print("Compact codec validation against raw flatfiles", flush=True)
     print(f"database={args.database} run_id={args.run_id} sample_size={args.sample_size} seed={args.seed}", flush=True)
+    print(f"tables={quote_table},{trade_table}", flush=True)
     print(f"quote_source={quote_path}", flush=True)
     print(f"trade_source={trade_path}", flush=True)
     print(f"output={output_path}", flush=True)
@@ -467,6 +471,7 @@ def main() -> None:
         kind="quotes",
         date=args.quote_date,
         path=quote_path,
+        table=quote_table,
         sample_size=args.sample_size,
         seed=args.seed,
     )
@@ -478,6 +483,7 @@ def main() -> None:
         kind="trades",
         date=args.trade_date,
         path=trade_path,
+        table=trade_table,
         sample_size=args.sample_size,
         seed=args.seed + 1,
     )
@@ -486,6 +492,8 @@ def main() -> None:
         "config": {
             "database": args.database,
             "run_id": args.run_id,
+            "quote_table": quote_table,
+            "trade_table": trade_table,
             "quote_date": args.quote_date,
             "trade_date": args.trade_date,
             "sample_size": args.sample_size,
