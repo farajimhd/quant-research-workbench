@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-import time
-import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -29,12 +26,9 @@ from research.mlops.clickhouse_ingest_sip_flatfiles import (  # noqa: E402
     CLICKHOUSE_USER_SIMPLE_ENV,
     CLICKHOUSE_WORKSTATION_PASSWORD_ENV,
     CLICKHOUSE_WORKSTATION_USER_ENV,
-    DEFAULT_CLICKHOUSE_URL,
-    DEFAULT_FLATFILES_ROOT_CH,
     DEFAULT_FLATFILES_ROOT_WIN,
     DEFAULT_OUTPUT_ROOT_WIN,
     HISTORICAL_CLICKHOUSE_DATABASE_ENV,
-    KIND_ROOTS,
     QUOTE_SCHEMA_STRING,
     TRADE_SCHEMA_STRING,
     ClickHouseHttpClient,
@@ -90,6 +84,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN / "compact_schema_codec_benchmark"))
     parser.add_argument("--run-id", default=datetime.now().strftime("%Y%m%d_%H%M%S"))
     parser.add_argument("--cleanup-before", action="store_true", help="Drop benchmark tables for this run id before creating them.")
+    parser.add_argument("--skip-insert", action="store_true", help="Skip inserts and run only optimize/storage/retrieval against existing benchmark tables for --run-id.")
     parser.add_argument("--optimize-final", action="store_true", help="Run OPTIMIZE FINAL before retrieval/storage metrics.")
     return parser.parse_args()
 
@@ -331,17 +326,21 @@ def retrieval_queries(database: str, table: str, kind: str) -> list[tuple[str, s
 
 def table_storage_query(database: str, table: str) -> str:
     return (
+        "SELECT rows, "
+        "bytes_on_disk, formatReadableSize(bytes_on_disk) AS bytes_on_disk_readable, "
+        "compressed_bytes, formatReadableSize(compressed_bytes) AS compressed_readable, "
+        "uncompressed_bytes, formatReadableSize(uncompressed_bytes) AS uncompressed_readable, "
+        "active_parts "
+        "FROM ("
         "SELECT "
         "sum(rows) AS rows, "
         "sum(bytes_on_disk) AS bytes_on_disk, "
-        "formatReadableSize(sum(bytes_on_disk)) AS bytes_on_disk_readable, "
         "sum(data_compressed_bytes) AS compressed_bytes, "
-        "formatReadableSize(sum(data_compressed_bytes)) AS compressed_readable, "
         "sum(data_uncompressed_bytes) AS uncompressed_bytes, "
-        "formatReadableSize(sum(data_uncompressed_bytes)) AS uncompressed_readable, "
         "count() AS active_parts "
         "FROM system.parts "
-        f"WHERE database = {sql_string(database)} AND table = {sql_string(table)} AND active "
+        f"WHERE database = {sql_string(database)} AND table = {sql_string(table)} AND active"
+        ") "
         "FORMAT JSONEachRow"
     )
 
@@ -353,6 +352,14 @@ def run_query_timed(client: ClickHouseHttpClient, label: str, sql: str, settings
 def parse_json_each_row(text: str) -> dict[str, object]:
     rows = [json.loads(line) for line in text.splitlines() if line.strip()]
     return rows[0] if rows else {}
+
+
+def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:
+    rows = client.query_tsv(
+        "SELECT count() FROM system.tables "
+        f"WHERE database = {sql_string(database)} AND name = {sql_string(table)}"
+    ).strip()
+    return bool(rows and int(rows) > 0)
 
 
 def find_one_source(root_win: Path, root_ch: str, kind: str, date: str):
@@ -389,6 +396,8 @@ def main() -> None:
     settings = query_settings(args)
     database = args.database.strip()
     run_suffix = "".join(ch if ch.isalnum() else "_" for ch in args.run_id.lower())
+    if args.skip_insert and args.cleanup_before:
+        raise ValueError("--skip-insert cannot be combined with --cleanup-before because it would drop the tables you want to reuse.")
 
     quote_source = find_one_source(flatfiles_root_win, flatfiles_root_ch, "quotes", args.quote_date)
     trade_source = find_one_source(flatfiles_root_win, flatfiles_root_ch, "trades", args.trade_date)
@@ -414,16 +423,25 @@ def main() -> None:
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
     print("=" * 96, flush=True)
 
-    client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}")
-    for table in tables:
-        if args.cleanup_before:
-            client.execute(f"DROP TABLE IF EXISTS {quote_ident(database)}.{quote_ident(table.table)}")
-        create_sql = (
-            quote_table_sql(database, table.table, codecs=table.variant == "codec", storage_policy=args.storage_policy)
-            if table.kind == "quotes"
-            else trade_table_sql(database, table.table, codecs=table.variant == "codec", storage_policy=args.storage_policy)
-        )
-        client.execute(create_sql)
+    if args.skip_insert:
+        missing_tables = [table.table for table in tables if not table_exists(client, database, table.table)]
+        if missing_tables:
+            raise RuntimeError(
+                "Cannot use --skip-insert because these benchmark tables do not exist: "
+                + ", ".join(missing_tables)
+                + ". Pass the original --run-id from the insert run."
+            )
+    else:
+        client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}")
+        for table in tables:
+            if args.cleanup_before:
+                client.execute(f"DROP TABLE IF EXISTS {quote_ident(database)}.{quote_ident(table.table)}")
+            create_sql = (
+                quote_table_sql(database, table.table, codecs=table.variant == "codec", storage_policy=args.storage_policy)
+                if table.kind == "quotes"
+                else trade_table_sql(database, table.table, codecs=table.variant == "codec", storage_policy=args.storage_policy)
+            )
+            client.execute(create_sql)
 
     with report_path.open("a", encoding="utf-8") as report:
         report.write(
@@ -442,17 +460,22 @@ def main() -> None:
             + "\n"
         )
 
-        for table in tables:
+        if args.skip_insert:
             print("-" * 96, flush=True)
-            print(f"INSERT {table.kind}:{table.variant} table={table.table}", flush=True)
-            sql = (
-                insert_quote_sql(database, table.table, table.source_path)
-                if table.kind == "quotes"
-                else insert_trade_sql(database, table.table, table.source_path)
-            )
-            profile = run_query_timed(client, f"insert_{table.table}", sql, settings)
-            print_profile(profile)
-            report.write(json.dumps({"type": "insert_profile", "table": asdict(table), "profile": asdict(profile)}, sort_keys=True) + "\n")
+            print("SKIP INSERT requested; running optimize/storage/retrieval against existing tables.", flush=True)
+            report.write(json.dumps({"type": "skip_insert", "tables": [asdict(table) for table in tables]}, sort_keys=True) + "\n")
+        else:
+            for table in tables:
+                print("-" * 96, flush=True)
+                print(f"INSERT {table.kind}:{table.variant} table={table.table}", flush=True)
+                sql = (
+                    insert_quote_sql(database, table.table, table.source_path)
+                    if table.kind == "quotes"
+                    else insert_trade_sql(database, table.table, table.source_path)
+                )
+                profile = run_query_timed(client, f"insert_{table.table}", sql, settings)
+                print_profile(profile)
+                report.write(json.dumps({"type": "insert_profile", "table": asdict(table), "profile": asdict(profile)}, sort_keys=True) + "\n")
 
         if args.optimize_final:
             for table in tables:
