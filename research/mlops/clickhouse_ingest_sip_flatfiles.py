@@ -577,7 +577,6 @@ def create_database_and_tables(client: ClickHouseHttpClient, database: str, mani
     client.execute(create_trades_table_sql(database, storage_policy))
     client.execute(create_manifest_table_sql(database, manifest_table, storage_policy))
     ensure_manifest_columns(client, database, manifest_table)
-    ensure_table_storage_policy(client, database, ("quotes_raw", "trades_raw", manifest_table), storage_policy)
 
 
 def create_quotes_table_sql(database: str, storage_policy: str) -> str:
@@ -692,18 +691,6 @@ def ensure_manifest_columns(client: ClickHouseHttpClient, database: str, manifes
     ]
     for name, dtype in columns:
         client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {quote_ident(name)} {dtype}")
-
-
-def ensure_table_storage_policy(client: ClickHouseHttpClient, database: str, tables: tuple[str, ...], storage_policy: str) -> None:
-    policy = storage_policy.strip()
-    if not policy:
-        return
-    for table in tables:
-        print(f"ENSURE storage_policy table={database}.{table} policy={policy}", flush=True)
-        client.execute(
-            f"ALTER TABLE {quote_ident(database)}.{quote_ident(table)} "
-            f"MODIFY SETTING storage_policy = {sql_string(policy)}"
-        )
 
 
 def ingest_one_file(client: ClickHouseHttpClient, database: str, source: SourceFile, settings: str) -> QueryProfile:
