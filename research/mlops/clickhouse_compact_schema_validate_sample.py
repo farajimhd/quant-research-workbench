@@ -165,7 +165,7 @@ def random_raw_rows(path: Path, columns: list[str], sample_size: int, seed: int)
     rng = random.Random(seed)
     indices = sorted(rng.sample(range(total_rows), sample_count))
     schema_overrides = {column: pl.Utf8 for column in columns}
-    scan = pl.scan_csv(str(path), columns=columns, schema_overrides=schema_overrides, infer_schema_length=0)
+    scan = pl.scan_csv(str(path), schema_overrides=schema_overrides, infer_schema_length=0).select(columns)
     try:
         scan = scan.with_row_index("__row_nr")
     except AttributeError:
