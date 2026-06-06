@@ -6,7 +6,7 @@ import random
 import sys
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_EVEN, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -224,7 +224,7 @@ def scale_code(price: Decimal) -> int:
 
 def price_int(price: Decimal) -> int:
     scale = Decimal("10000") if scale_code(price) else Decimal("100")
-    return int((price * scale).to_integral_value(rounding=ROUND_HALF_UP))
+    return int((price * scale).to_integral_value(rounding=ROUND_HALF_EVEN))
 
 
 def tape_code(raw_tape: Any) -> int:
@@ -239,7 +239,7 @@ def participant_delta_us(row: dict[str, Any]) -> tuple[int, int]:
 
 def quantized_price(price: Decimal) -> Decimal:
     decimals = Decimal("0.0001") if scale_code(price) else Decimal("0.01")
-    return price.quantize(decimals, rounding=ROUND_HALF_UP)
+    return price.quantize(decimals, rounding=ROUND_HALF_EVEN)
 
 
 def quote_expected(row: dict[str, Any]) -> dict[str, Any]:
@@ -275,7 +275,7 @@ def quote_expected(row: dict[str, Any]) -> dict[str, Any]:
 def trade_expected(row: dict[str, Any]) -> dict[str, Any]:
     price = to_decimal_or_zero(row.get("price"))
     delta_us, clipped_delta_us = participant_delta_us(row)
-    size = uint32_from_decimal_string(row.get("size"))
+    size = to_decimal_or_zero(row.get("size"))
     correction_code = max(0, min(15, to_int_or_zero(row.get("correction"))))
     issue_flags = (
         (1 if price <= 0 else 0)
@@ -287,7 +287,7 @@ def trade_expected(row: dict[str, Any]) -> dict[str, Any]:
         "sip_timestamp_us": to_int_or_zero(row.get("sip_timestamp")) // 1000,
         "sequence_number": to_int_or_zero(row.get("sequence_number")),
         "price": format(quantized_price(price), "f"),
-        "size": size,
+        "size": format(size, "f"),
         "exchange": to_int_or_zero(row.get("exchange")),
         "tape": tape_code(row.get("tape")) + 1,
         "correction": correction_code,
@@ -378,10 +378,11 @@ def compare_rows(expected_rows: list[dict[str, Any]], actual_by_key: dict[tuple[
         row_mismatches = {}
         for field, expected_value in expected.items():
             actual_value = actual.get(field)
-            if field in {"bid_price", "ask_price", "price"}:
+            if field in {"bid_price", "ask_price", "price", "size"} and isinstance(expected_value, str):
                 actual_decimal = Decimal(str(actual_value))
                 expected_decimal = Decimal(str(expected_value))
-                field_matches = abs(actual_decimal - expected_decimal) <= Decimal("0.0000001")
+                tolerance = Decimal("0.00001") if field == "size" else Decimal("0.0000001")
+                field_matches = abs(actual_decimal - expected_decimal) <= tolerance
             else:
                 field_matches = actual_value == expected_value
             if not field_matches:
