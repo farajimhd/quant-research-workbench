@@ -53,6 +53,9 @@ from research.mlops.clickhouse_ingest_sip_flatfiles import (  # noqa: E402
 DEFAULT_DATABASE = "market_sip_compact_benchmark"
 DEFAULT_QUOTE_DATE = "2026-05-15"
 DEFAULT_TRADE_DATE = "2026-05-15"
+DEFAULT_START_DATE = "2026-05-15"
+DEFAULT_END_DATE = "2026-06-03"
+DEFAULT_MAX_FILES_PER_KIND = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +63,14 @@ class BenchmarkTable:
     kind: str
     variant: str
     table: str
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkSource:
+    kind: str
+    date: str
     source_path: str
+    bytes: int
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,8 +86,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database", default=DEFAULT_DATABASE)
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
     parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
-    parser.add_argument("--quote-date", default=DEFAULT_QUOTE_DATE)
-    parser.add_argument("--trade-date", default=DEFAULT_TRADE_DATE)
+    parser.add_argument("--start-date", default=DEFAULT_START_DATE)
+    parser.add_argument("--end-date", default=DEFAULT_END_DATE)
+    parser.add_argument("--quote-date", default="", help="Backward-compatible single quote date. Overrides --start-date/--end-date for quotes when set.")
+    parser.add_argument("--trade-date", default="", help="Backward-compatible single trade date. Overrides --start-date/--end-date for trades when set.")
+    parser.add_argument("--max-files-per-kind", type=int, default=DEFAULT_MAX_FILES_PER_KIND, help="Maximum quote files and maximum trade files to insert. 0 means all discovered files.")
     parser.add_argument("--storage-policy", default=default_storage_policy())
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--max-threads", type=int, default=32)
@@ -362,11 +375,26 @@ def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> boo
     return bool(rows and int(rows) > 0)
 
 
-def find_one_source(root_win: Path, root_ch: str, kind: str, date: str):
-    sources = discover_source_files(root_win, root_ch, [kind], date, date)
+def find_sources(root_win: Path, root_ch: str, kind: str, start_date: str, end_date: str, max_files: int) -> list[BenchmarkSource]:
+    sources = discover_source_files(root_win, root_ch, [kind], start_date, end_date)
     if not sources:
-        raise RuntimeError(f"No {kind} flatfile found for date={date} under {root_win}")
-    return sources[0]
+        raise RuntimeError(f"No {kind} flatfiles found for date range {start_date}..{end_date} under {root_win}")
+    if max_files > 0:
+        sources = sources[:max_files]
+    return [
+        BenchmarkSource(kind=source.kind, date=source.date, source_path=source.clickhouse_path, bytes=source.bytes)
+        for source in sources
+    ]
+
+
+def source_summary(sources: list[BenchmarkSource]) -> dict[str, object]:
+    return {
+        "count": len(sources),
+        "start_date": min((source.date for source in sources), default=""),
+        "end_date": max((source.date for source in sources), default=""),
+        "total_gib": round(sum(source.bytes for source in sources) / (1024**3), 3),
+        "sources": [asdict(source) for source in sources],
+    }
 
 
 def print_profile(profile: QueryProfile) -> None:
@@ -399,21 +427,26 @@ def main() -> None:
     if args.skip_insert and args.cleanup_before:
         raise ValueError("--skip-insert cannot be combined with --cleanup-before because it would drop the tables you want to reuse.")
 
-    quote_source = find_one_source(flatfiles_root_win, flatfiles_root_ch, "quotes", args.quote_date)
-    trade_source = find_one_source(flatfiles_root_win, flatfiles_root_ch, "trades", args.trade_date)
+    quote_start = args.quote_date or args.start_date
+    quote_end = args.quote_date or args.end_date
+    trade_start = args.trade_date or args.start_date
+    trade_end = args.trade_date or args.end_date
+    quote_sources = find_sources(flatfiles_root_win, flatfiles_root_ch, "quotes", quote_start, quote_end, args.max_files_per_kind)
+    trade_sources = find_sources(flatfiles_root_win, flatfiles_root_ch, "trades", trade_start, trade_end, args.max_files_per_kind)
 
     tables = [
-        BenchmarkTable("quotes", "plain", f"quotes_plain_{run_suffix}", quote_source.clickhouse_path),
-        BenchmarkTable("quotes", "codec", f"quotes_codec_{run_suffix}", quote_source.clickhouse_path),
-        BenchmarkTable("trades", "plain", f"trades_plain_{run_suffix}", trade_source.clickhouse_path),
-        BenchmarkTable("trades", "codec", f"trades_codec_{run_suffix}", trade_source.clickhouse_path),
+        BenchmarkTable("quotes", "plain", f"quotes_plain_{run_suffix}"),
+        BenchmarkTable("quotes", "codec", f"quotes_codec_{run_suffix}"),
+        BenchmarkTable("trades", "plain", f"trades_plain_{run_suffix}"),
+        BenchmarkTable("trades", "codec", f"trades_codec_{run_suffix}"),
     ]
+    sources_by_kind = {"quotes": quote_sources, "trades": trade_sources}
 
     print("=" * 96, flush=True)
     print("Compact SIP canonical schema codec benchmark", flush=True)
     print(f"database={database}", flush=True)
-    print(f"quote_date={args.quote_date} source={quote_source.clickhouse_path} size_gib={quote_source.bytes / (1024**3):.2f}", flush=True)
-    print(f"trade_date={args.trade_date} source={trade_source.clickhouse_path} size_gib={trade_source.bytes / (1024**3):.2f}", flush=True)
+    print(f"quote_sources={source_summary(quote_sources)}", flush=True)
+    print(f"trade_sources={source_summary(trade_sources)}", flush=True)
     print(f"flatfiles_root_win={flatfiles_root_win}", flush=True)
     print(f"flatfiles_root_ch={flatfiles_root_ch}", flush=True)
     print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
@@ -450,8 +483,8 @@ def main() -> None:
                     "type": "config",
                     "run_id": args.run_id,
                     "database": database,
-                    "quote_source": quote_source.clickhouse_path,
-                    "trade_source": trade_source.clickhouse_path,
+                    "quote_sources": source_summary(quote_sources),
+                    "trade_sources": source_summary(trade_sources),
                     "storage_policy": args.storage_policy,
                     "settings": settings.strip(),
                 },
@@ -467,15 +500,46 @@ def main() -> None:
         else:
             for table in tables:
                 print("-" * 96, flush=True)
-                print(f"INSERT {table.kind}:{table.variant} table={table.table}", flush=True)
-                sql = (
-                    insert_quote_sql(database, table.table, table.source_path)
-                    if table.kind == "quotes"
-                    else insert_trade_sql(database, table.table, table.source_path)
-                )
-                profile = run_query_timed(client, f"insert_{table.table}", sql, settings)
-                print_profile(profile)
-                report.write(json.dumps({"type": "insert_profile", "table": asdict(table), "profile": asdict(profile)}, sort_keys=True) + "\n")
+                table_sources = sources_by_kind[table.kind]
+                print(f"INSERT {table.kind}:{table.variant} table={table.table} files={len(table_sources)}", flush=True)
+                aggregate_rows = 0
+                aggregate_seconds = 0.0
+                for source_index, source in enumerate(table_sources, start=1):
+                    print(
+                        f"INSERT-FILE [{source_index:,}/{len(table_sources):,}] {table.table} "
+                        f"{source.date} size_gib={source.bytes / (1024**3):.2f}",
+                        flush=True,
+                    )
+                    sql = (
+                        insert_quote_sql(database, table.table, source.source_path)
+                        if table.kind == "quotes"
+                        else insert_trade_sql(database, table.table, source.source_path)
+                    )
+                    profile = run_query_timed(client, f"insert_{table.table}_{source.date}", sql, settings)
+                    print_profile(profile)
+                    aggregate_rows += int(profile.written_rows or 0)
+                    aggregate_seconds += profile.wall_seconds
+                    report.write(
+                        json.dumps(
+                            {
+                                "type": "insert_profile",
+                                "table": asdict(table),
+                                "source": asdict(source),
+                                "profile": asdict(profile),
+                            },
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    )
+                rows_per_second = round(aggregate_rows / aggregate_seconds) if aggregate_seconds > 0 else 0
+                aggregate = {
+                    "files": len(table_sources),
+                    "wall_seconds_sum": aggregate_seconds,
+                    "written_rows_sum": aggregate_rows,
+                    "rows_per_second": rows_per_second,
+                }
+                print(f"INSERT-SUMMARY {table.table}: {aggregate}", flush=True)
+                report.write(json.dumps({"type": "insert_summary", "table": asdict(table), "aggregate": aggregate}, sort_keys=True) + "\n")
 
         if args.optimize_final:
             for table in tables:
