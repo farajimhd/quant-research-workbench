@@ -1,0 +1,1527 @@
+{
+  "generated_at_utc": "2026-06-06T16:30:34.868200+00:00",
+  "notes": [
+    "Extracted from Massive glossary page because quote and trade condition tables are separate.",
+    "dense_combo_id_bits_with_unknown is for encoding one complete condition row/table entry plus ID 0 for missing or unknown."
+  ],
+  "provider": "massive",
+  "source_url": "https://massive.com/glossary/conditions-indicators",
+  "tables": {
+    "quote_conditions": {
+      "columns": [
+        "modifier",
+        "condition"
+      ],
+      "heading": "Quote Conditions",
+      "metadata": {
+        "dense_combo_id_bits_with_unknown": 8,
+        "dense_combo_id_capacity": 256,
+        "modifier_max": 908,
+        "modifier_min": -1,
+        "modifier_signed_bits": 11,
+        "rows": 193
+      },
+      "rows": [
+        {
+          "condition": "Invalid",
+          "modifier": "-1",
+          "modifier_int": -1
+        },
+        {
+          "condition": "Regular",
+          "modifier": "0",
+          "modifier_int": 0
+        },
+        {
+          "condition": "RegularTwoSidedOpen",
+          "modifier": "1",
+          "modifier_int": 1
+        },
+        {
+          "condition": "RegularOneSidedOpen",
+          "modifier": "2",
+          "modifier_int": 2
+        },
+        {
+          "condition": "SlowAsk",
+          "modifier": "3",
+          "modifier_int": 3
+        },
+        {
+          "condition": "SlowBid",
+          "modifier": "4",
+          "modifier_int": 4
+        },
+        {
+          "condition": "SlowBidAsk",
+          "modifier": "5",
+          "modifier_int": 5
+        },
+        {
+          "condition": "SlowDueLRPBid",
+          "modifier": "6",
+          "modifier_int": 6
+        },
+        {
+          "condition": "SlowDueLRPAsk",
+          "modifier": "7",
+          "modifier_int": 7
+        },
+        {
+          "condition": "SlowDueNYSELRP",
+          "modifier": "8",
+          "modifier_int": 8
+        },
+        {
+          "condition": "SlowDueSetSlowListBidAsk",
+          "modifier": "9",
+          "modifier_int": 9
+        },
+        {
+          "condition": "ManualAskAutomatedBid",
+          "modifier": "10",
+          "modifier_int": 10
+        },
+        {
+          "condition": "ManualBidAutomatedAsk",
+          "modifier": "11",
+          "modifier_int": 11
+        },
+        {
+          "condition": "ManualBidAndAsk",
+          "modifier": "12",
+          "modifier_int": 12
+        },
+        {
+          "condition": "Opening",
+          "modifier": "13",
+          "modifier_int": 13
+        },
+        {
+          "condition": "Closing",
+          "modifier": "14",
+          "modifier_int": 14
+        },
+        {
+          "condition": "Closed",
+          "modifier": "15",
+          "modifier_int": 15
+        },
+        {
+          "condition": "Resume",
+          "modifier": "16",
+          "modifier_int": 16
+        },
+        {
+          "condition": "FastTrading",
+          "modifier": "17",
+          "modifier_int": 17
+        },
+        {
+          "condition": "TradingRangeIndication",
+          "modifier": "18",
+          "modifier_int": 18
+        },
+        {
+          "condition": "MarketMakerQuotesClosed",
+          "modifier": "19",
+          "modifier_int": 19
+        },
+        {
+          "condition": "NonFirm",
+          "modifier": "20",
+          "modifier_int": 20
+        },
+        {
+          "condition": "NewsDissemination",
+          "modifier": "21",
+          "modifier_int": 21
+        },
+        {
+          "condition": "OrderInflux",
+          "modifier": "22",
+          "modifier_int": 22
+        },
+        {
+          "condition": "OrderImbalance",
+          "modifier": "23",
+          "modifier_int": 23
+        },
+        {
+          "condition": "DueToRelatedSecurityNewsDissemination",
+          "modifier": "23",
+          "modifier_int": 23
+        },
+        {
+          "condition": "DueToRelatedSecurityNewsPending",
+          "modifier": "25",
+          "modifier_int": 25
+        },
+        {
+          "condition": "AdditionalInformation",
+          "modifier": "26",
+          "modifier_int": 26
+        },
+        {
+          "condition": "NewsPending",
+          "modifier": "27",
+          "modifier_int": 27
+        },
+        {
+          "condition": "AdditionalInformationDueToRelatedSecurity",
+          "modifier": "28",
+          "modifier_int": 28
+        },
+        {
+          "condition": "DueToRelatedSecurity",
+          "modifier": "29",
+          "modifier_int": 29
+        },
+        {
+          "condition": "InViewOfCommon",
+          "modifier": "30",
+          "modifier_int": 30
+        },
+        {
+          "condition": "EquipmentChangeover",
+          "modifier": "31",
+          "modifier_int": 31
+        },
+        {
+          "condition": "NoOpenNoResponse",
+          "modifier": "32",
+          "modifier_int": 32
+        },
+        {
+          "condition": "SubPennyTrading",
+          "modifier": "33",
+          "modifier_int": 33
+        },
+        {
+          "condition": "AutomatedBidNoOfferNoBid",
+          "modifier": "34",
+          "modifier_int": 34
+        },
+        {
+          "condition": "LULDPriceBand",
+          "modifier": "35",
+          "modifier_int": 35
+        },
+        {
+          "condition": "MarketWideCircuitBreakerLevel1",
+          "modifier": "36",
+          "modifier_int": 36
+        },
+        {
+          "condition": "MarketWideCircuitBreakerLevel2",
+          "modifier": "37",
+          "modifier_int": 37
+        },
+        {
+          "condition": "MarketWideCircuitBreakerLevel3",
+          "modifier": "38",
+          "modifier_int": 38
+        },
+        {
+          "condition": "RepublishedLULDPriceBand",
+          "modifier": "39",
+          "modifier_int": 39
+        },
+        {
+          "condition": "OnDemandAuction",
+          "modifier": "40",
+          "modifier_int": 40
+        },
+        {
+          "condition": "CashOnlySettlement",
+          "modifier": "41",
+          "modifier_int": 41
+        },
+        {
+          "condition": "NextDaySettlement",
+          "modifier": "42",
+          "modifier_int": 42
+        },
+        {
+          "condition": "LULDTradingPause",
+          "modifier": "43",
+          "modifier_int": 43
+        },
+        {
+          "condition": "SLowDuelRPBidAsk",
+          "modifier": "71",
+          "modifier_int": 71
+        },
+        {
+          "condition": "Cancel",
+          "modifier": "80",
+          "modifier_int": 80
+        },
+        {
+          "condition": "Corrected_Price",
+          "modifier": "81",
+          "modifier_int": 81
+        },
+        {
+          "condition": "SIPGenerated",
+          "modifier": "82",
+          "modifier_int": 82
+        },
+        {
+          "condition": "Unknown",
+          "modifier": "83",
+          "modifier_int": 83
+        },
+        {
+          "condition": "Crossed_Market",
+          "modifier": "84",
+          "modifier_int": 84
+        },
+        {
+          "condition": "Locked_Market",
+          "modifier": "85",
+          "modifier_int": 85
+        },
+        {
+          "condition": "Depth_On_Offer_Side",
+          "modifier": "86",
+          "modifier_int": 86
+        },
+        {
+          "condition": "Depth_On_Bid_Side",
+          "modifier": "87",
+          "modifier_int": 87
+        },
+        {
+          "condition": "Depth_On_Bid_And_Offer",
+          "modifier": "88",
+          "modifier_int": 88
+        },
+        {
+          "condition": "Pre_Opening_Indication",
+          "modifier": "89",
+          "modifier_int": 89
+        },
+        {
+          "condition": "Syndicate_Bid",
+          "modifier": "90",
+          "modifier_int": 90
+        },
+        {
+          "condition": "Pre_Syndicate_Bid",
+          "modifier": "91",
+          "modifier_int": 91
+        },
+        {
+          "condition": "Penalty_Bid",
+          "modifier": "92",
+          "modifier_int": 92
+        },
+        {
+          "condition": "Regular trade which was not corrected, changed or signified as cancel or error.",
+          "modifier": "00",
+          "modifier_int": 0
+        },
+        {
+          "condition": "Original trade which was late corrected (This record contains the original time - HHMM and the corrected data for the trade).",
+          "modifier": "01",
+          "modifier_int": 1
+        },
+        {
+          "condition": "Original trade which was later marked as erroneous",
+          "modifier": "07",
+          "modifier_int": 7
+        },
+        {
+          "condition": "Original trade which was later cancelled",
+          "modifier": "08",
+          "modifier_int": 8
+        },
+        {
+          "condition": "Cancel record (This record follows '08' records)",
+          "modifier": "10",
+          "modifier_int": 10
+        },
+        {
+          "condition": "Error record (This record follows '07' records)",
+          "modifier": "11",
+          "modifier_int": 11
+        },
+        {
+          "condition": "Correction record (This record follows '01' records and contains the correction time and the original \\\\",
+          "modifier": "12",
+          "modifier_int": 12
+        },
+        {
+          "condition": "Normal",
+          "modifier": "50",
+          "modifier_int": 50
+        },
+        {
+          "condition": "Bankrupt",
+          "modifier": "51",
+          "modifier_int": 51
+        },
+        {
+          "condition": "Deficient - Below listing requirements",
+          "modifier": "52",
+          "modifier_int": 52
+        },
+        {
+          "condition": "Delinquent - Late filing",
+          "modifier": "53",
+          "modifier_int": 53
+        },
+        {
+          "condition": "Bankrupt and Deficient",
+          "modifier": "54",
+          "modifier_int": 54
+        },
+        {
+          "condition": "Bankrupt and Delinquent",
+          "modifier": "55",
+          "modifier_int": 55
+        },
+        {
+          "condition": "Deficient and Delinquent",
+          "modifier": "56",
+          "modifier_int": 56
+        },
+        {
+          "condition": "Deficient, Delinquent, and Bankrupt",
+          "modifier": "57",
+          "modifier_int": 57
+        },
+        {
+          "condition": "Liquidation",
+          "modifier": "58",
+          "modifier_int": 58
+        },
+        {
+          "condition": "Creations Suspended",
+          "modifier": "59",
+          "modifier_int": 59
+        },
+        {
+          "condition": "Redemptions Suspended",
+          "modifier": "60",
+          "modifier_int": 60
+        },
+        {
+          "condition": "Creations and/or Redemptions Suspended",
+          "modifier": "61",
+          "modifier_int": 61
+        },
+        {
+          "condition": "Normal Trading",
+          "modifier": "100",
+          "modifier_int": 100
+        },
+        {
+          "condition": "Opening Delay",
+          "modifier": "101",
+          "modifier_int": 101
+        },
+        {
+          "condition": "Trading Halt",
+          "modifier": "102",
+          "modifier_int": 102
+        },
+        {
+          "condition": "Resume",
+          "modifier": "103",
+          "modifier_int": 103
+        },
+        {
+          "condition": "No Open/No Resume",
+          "modifier": "104",
+          "modifier_int": 104
+        },
+        {
+          "condition": "Price Indication",
+          "modifier": "105",
+          "modifier_int": 105
+        },
+        {
+          "condition": "Trading Range Indication",
+          "modifier": "106",
+          "modifier_int": 106
+        },
+        {
+          "condition": "Market Imbalance Buy",
+          "modifier": "107",
+          "modifier_int": 107
+        },
+        {
+          "condition": "Market Imbalance Sell",
+          "modifier": "108",
+          "modifier_int": 108
+        },
+        {
+          "condition": "Market On Close Imbalance Buy",
+          "modifier": "109",
+          "modifier_int": 109
+        },
+        {
+          "condition": "Market On Close Imbalance Sell",
+          "modifier": "110",
+          "modifier_int": 110
+        },
+        {
+          "condition": "No Market Imbalance",
+          "modifier": "111",
+          "modifier_int": 111
+        },
+        {
+          "condition": "No Market On Close Imbalance",
+          "modifier": "112",
+          "modifier_int": 112
+        },
+        {
+          "condition": "Short Sale Restriction",
+          "modifier": "113",
+          "modifier_int": 113
+        },
+        {
+          "condition": "Limit Up-Limit Down",
+          "modifier": "114",
+          "modifier_int": 114
+        },
+        {
+          "condition": "Quotation Resumption",
+          "modifier": "115",
+          "modifier_int": 115
+        },
+        {
+          "condition": "Trading Resumption",
+          "modifier": "116",
+          "modifier_int": 116
+        },
+        {
+          "condition": "Volatility Trading Pause",
+          "modifier": "117",
+          "modifier_int": 117
+        },
+        {
+          "condition": "MASSIVE_RESERVED",
+          "modifier": "150",
+          "modifier_int": 150
+        },
+        {
+          "condition": "Halt: News Pending",
+          "modifier": "151",
+          "modifier_int": 151
+        },
+        {
+          "condition": "Update: News Dissemination",
+          "modifier": "152",
+          "modifier_int": 152
+        },
+        {
+          "condition": "Halt: Single Stock Trading Pause In Affect",
+          "modifier": "153",
+          "modifier_int": 153
+        },
+        {
+          "condition": "Halt: Regulatory Extraordinary Market Activity",
+          "modifier": "154",
+          "modifier_int": 154
+        },
+        {
+          "condition": "Halt: ETF",
+          "modifier": "155",
+          "modifier_int": 155
+        },
+        {
+          "condition": "Halt: Information Requested",
+          "modifier": "156",
+          "modifier_int": 156
+        },
+        {
+          "condition": "Halt: Exchange Non Compliance",
+          "modifier": "157",
+          "modifier_int": 157
+        },
+        {
+          "condition": "Halt: Filings Not Current",
+          "modifier": "158",
+          "modifier_int": 158
+        },
+        {
+          "condition": "Halt: SEC Trading Suspension",
+          "modifier": "159",
+          "modifier_int": 159
+        },
+        {
+          "condition": "Halt: Regulatory Concern",
+          "modifier": "160",
+          "modifier_int": 160
+        },
+        {
+          "condition": "Halt: Market Operations",
+          "modifier": "161",
+          "modifier_int": 161
+        },
+        {
+          "condition": "IPO Security: Not Yet Trading",
+          "modifier": "162",
+          "modifier_int": 162
+        },
+        {
+          "condition": "Halt: Corporate Action",
+          "modifier": "163",
+          "modifier_int": 163
+        },
+        {
+          "condition": "Quotation Not Available",
+          "modifier": "164",
+          "modifier_int": 164
+        },
+        {
+          "condition": "Halt: Volatility Trading Pause",
+          "modifier": "165",
+          "modifier_int": 165
+        },
+        {
+          "condition": "Halt: Volatility Trading Pause \u2013 Straddle Condition",
+          "modifier": "166",
+          "modifier_int": 166
+        },
+        {
+          "condition": "Update: News and Resumption Times",
+          "modifier": "167",
+          "modifier_int": 167
+        },
+        {
+          "condition": "Halt: Single Stock Trading Pause - Quotes Only",
+          "modifier": "168",
+          "modifier_int": 168
+        },
+        {
+          "condition": "Resume: Qualification Issues Reviewed / Resolved",
+          "modifier": "169",
+          "modifier_int": 169
+        },
+        {
+          "condition": "Resume: Filing Requirements Satisfied / Resolved",
+          "modifier": "170",
+          "modifier_int": 170
+        },
+        {
+          "condition": "Resume: News Not Forthcoming",
+          "modifier": "171",
+          "modifier_int": 171
+        },
+        {
+          "condition": "Resume: Qualifications - Maintenance Requirements Met",
+          "modifier": "172",
+          "modifier_int": 172
+        },
+        {
+          "condition": "Resume: Qualifications - Filings Met",
+          "modifier": "173",
+          "modifier_int": 173
+        },
+        {
+          "condition": "Resume: Regulatory Auth",
+          "modifier": "174",
+          "modifier_int": 174
+        },
+        {
+          "condition": "New Issue Available",
+          "modifier": "175",
+          "modifier_int": 175
+        },
+        {
+          "condition": "Issue Available",
+          "modifier": "176",
+          "modifier_int": 176
+        },
+        {
+          "condition": "MWCB - Carry from previous day",
+          "modifier": "177",
+          "modifier_int": 177
+        },
+        {
+          "condition": "MWCB - Resume",
+          "modifier": "178",
+          "modifier_int": 178
+        },
+        {
+          "condition": "IPO Security: Released for quotation",
+          "modifier": "179",
+          "modifier_int": 179
+        },
+        {
+          "condition": "IPO Security: Positioning window extension",
+          "modifier": "180",
+          "modifier_int": 180
+        },
+        {
+          "condition": "MWCB - Level 1",
+          "modifier": "181",
+          "modifier_int": 181
+        },
+        {
+          "condition": "MWCB - Level 2",
+          "modifier": "182",
+          "modifier_int": 182
+        },
+        {
+          "condition": "MWCB - Level 3",
+          "modifier": "183",
+          "modifier_int": 183
+        },
+        {
+          "condition": "Halt: Sub Penny Trading",
+          "modifier": "184",
+          "modifier_int": 184
+        },
+        {
+          "condition": "Order Imbalance",
+          "modifier": "185",
+          "modifier_int": 185
+        },
+        {
+          "condition": "LULD Trading Pause",
+          "modifier": "186",
+          "modifier_int": 186
+        },
+        {
+          "condition": "NONE",
+          "modifier": "300",
+          "modifier_int": 300
+        },
+        {
+          "condition": "Short Sales Restriction Activated",
+          "modifier": "301",
+          "modifier_int": 301
+        },
+        {
+          "condition": "Short Sales Restriction Continued",
+          "modifier": "302",
+          "modifier_int": 302
+        },
+        {
+          "condition": "Short Sales Restriction Deactivated",
+          "modifier": "303",
+          "modifier_int": 303
+        },
+        {
+          "condition": "Short Sales Restriction in Effect",
+          "modifier": "304",
+          "modifier_int": 304
+        },
+        {
+          "condition": "Short Sales Restriction Max",
+          "modifier": "305",
+          "modifier_int": 305
+        },
+        {
+          "condition": "NBBO_NO_CHANGE",
+          "modifier": "601",
+          "modifier_int": 601
+        },
+        {
+          "condition": "NBBO_QUOTE_IS_NBBO",
+          "modifier": "602",
+          "modifier_int": 602
+        },
+        {
+          "condition": "NBBO_NO_BB_NO_BO",
+          "modifier": "603",
+          "modifier_int": 603
+        },
+        {
+          "condition": "NBBO_BB_BO_SHORT_APPENDAGE",
+          "modifier": "604",
+          "modifier_int": 604
+        },
+        {
+          "condition": "NBBO_BB_BO_LONG_APPENDAGE",
+          "modifier": "605",
+          "modifier_int": 605
+        },
+        {
+          "condition": "HELD_TRADE_NOT_LAST_SALE_AND_NOT_ON_CONSOLIDATED",
+          "modifier": "621",
+          "modifier_int": 621
+        },
+        {
+          "condition": "HELD_TRADE_LAST_SALE_BUT_NOT_ON_CONSOLIDATED",
+          "modifier": "622",
+          "modifier_int": 622
+        },
+        {
+          "condition": "HELD_TRADE_LAST_SALE_AND_ON_CONSOLIDATED",
+          "modifier": "623",
+          "modifier_int": 623
+        },
+        {
+          "condition": "RETAIL_INTEREST_ON_BID NYSE",
+          "modifier": "501",
+          "modifier_int": 501
+        },
+        {
+          "condition": "RETAIL_INTEREST_ON_ASK NYSE",
+          "modifier": "502",
+          "modifier_int": 502
+        },
+        {
+          "condition": "RETAIL_INTEREST_ON_BID_AND_ASK NYSE",
+          "modifier": "503",
+          "modifier_int": 503
+        },
+        {
+          "condition": "FINRA_BBO_NO_CHANGE",
+          "modifier": "504",
+          "modifier_int": 504
+        },
+        {
+          "condition": "FINRA_BBO_DOES_NOT_EXIST",
+          "modifier": "505",
+          "modifier_int": 505
+        },
+        {
+          "condition": "FINRA_BB_BO_EXECUTABLE",
+          "modifier": "506",
+          "modifier_int": 506
+        },
+        {
+          "condition": "FINRA_BB_BELOW_LOWER_BAND",
+          "modifier": "507",
+          "modifier_int": 507
+        },
+        {
+          "condition": "FINRA_BO_ABOVE_UPPER_BAND",
+          "modifier": "508",
+          "modifier_int": 508
+        },
+        {
+          "condition": "FINRA_BB_BELOW_LOWER_BAND_BO_ABOVE_UPPER_BAND",
+          "modifier": "509",
+          "modifier_int": 509
+        },
+        {
+          "condition": "CTA_NOT_DUE_TO_RELATED_SECURITY",
+          "modifier": "901",
+          "modifier_int": 901
+        },
+        {
+          "condition": "CTA_DUE_TO_RELATED_SECURITY",
+          "modifier": "902",
+          "modifier_int": 902
+        },
+        {
+          "condition": "CTA_NOT_IN_VIEW_OF_COMMON",
+          "modifier": "903",
+          "modifier_int": 903
+        },
+        {
+          "condition": "CTA_IN_VIEW_OF_COMMON",
+          "modifier": "904",
+          "modifier_int": 904
+        },
+        {
+          "condition": "CTA_PRICE_INDICATOR",
+          "modifier": "905",
+          "modifier_int": 905
+        },
+        {
+          "condition": "CTA_NEW_PRICE_INDICATOR",
+          "modifier": "906",
+          "modifier_int": 906
+        },
+        {
+          "condition": "CTA_CORRECTED_PRICE_INDICATION",
+          "modifier": "907",
+          "modifier_int": 907
+        },
+        {
+          "condition": "CTA_CANCELLED_MARKET_IMBALANCE_PRICE_TRADING_RANGE_INDICATION",
+          "modifier": "908",
+          "modifier_int": 908
+        },
+        {
+          "condition": "NBB NBO Executable",
+          "modifier": "1",
+          "modifier_int": 1
+        },
+        {
+          "condition": "NBB Below Lower Band",
+          "modifier": "2",
+          "modifier_int": 2
+        },
+        {
+          "condition": "NBO Above Upper Band",
+          "modifier": "3",
+          "modifier_int": 3
+        },
+        {
+          "condition": "NBB Below Lower Band NBO Above Upper Band",
+          "modifier": "4",
+          "modifier_int": 4
+        },
+        {
+          "condition": "NBB Equal To Upper Band",
+          "modifier": "5",
+          "modifier_int": 5
+        },
+        {
+          "condition": "NBO Equal To Lower Band",
+          "modifier": "6",
+          "modifier_int": 6
+        },
+        {
+          "condition": "NBB Equals Upper Band NBO Above Upper Band",
+          "modifier": "7",
+          "modifier_int": 7
+        },
+        {
+          "condition": "NBB Below Lower Band NBO Equals Lower Band",
+          "modifier": "8",
+          "modifier_int": 8
+        },
+        {
+          "condition": "NBB Equals Upper Band NBO Equals Lower Band",
+          "modifier": "9",
+          "modifier_int": 9
+        },
+        {
+          "condition": "Bid Price Above Upper Limit",
+          "modifier": "11",
+          "modifier_int": 11
+        },
+        {
+          "condition": "Ask Price Below Lower Limit",
+          "modifier": "12",
+          "modifier_int": 12
+        },
+        {
+          "condition": "Bid Ask Outside",
+          "modifier": "13",
+          "modifier_int": 13
+        },
+        {
+          "condition": "Opening Update",
+          "modifier": "14",
+          "modifier_int": 14
+        },
+        {
+          "condition": "Intraday Update",
+          "modifier": "15",
+          "modifier_int": 15
+        },
+        {
+          "condition": "Restated Value",
+          "modifier": "16",
+          "modifier_int": 16
+        },
+        {
+          "condition": "Suspended Halt Pause",
+          "modifier": "17",
+          "modifier_int": 17
+        },
+        {
+          "condition": "Reopening Update",
+          "modifier": "18",
+          "modifier_int": 18
+        },
+        {
+          "condition": "Outside Price Band Rule Hours",
+          "modifier": "19",
+          "modifier_int": 19
+        },
+        {
+          "condition": "Auction Extension",
+          "modifier": "20",
+          "modifier_int": 20
+        },
+        {
+          "condition": "Price Band",
+          "modifier": "21",
+          "modifier_int": 21
+        },
+        {
+          "condition": "Republished LULD Price Band",
+          "modifier": "22",
+          "modifier_int": 22
+        },
+        {
+          "condition": "NBB Limit State Entered",
+          "modifier": "23",
+          "modifier_int": 23
+        },
+        {
+          "condition": "NBB Limit State Exited",
+          "modifier": "24",
+          "modifier_int": 24
+        },
+        {
+          "condition": "NBO Limit State Entered",
+          "modifier": "25",
+          "modifier_int": 25
+        },
+        {
+          "condition": "NBO Limit State Exited",
+          "modifier": "26",
+          "modifier_int": 26
+        },
+        {
+          "condition": "NBB NBO Limit State Entered",
+          "modifier": "27",
+          "modifier_int": 27
+        },
+        {
+          "condition": "NBB NBO Limit State Exited",
+          "modifier": "28",
+          "modifier_int": 28
+        },
+        {
+          "condition": "NBB Limit State Entered NBO Limit State Exited",
+          "modifier": "29",
+          "modifier_int": 29
+        },
+        {
+          "condition": "NBB Limit State Exited NBO Limit State Entered",
+          "modifier": "30",
+          "modifier_int": 30
+        }
+      ]
+    },
+    "trade_conditions": {
+      "columns": [
+        "modifier",
+        "condition",
+        "sip_mapping",
+        "update_high_low",
+        "update_last",
+        "update_volume"
+      ],
+      "heading": "Trade Conditions",
+      "metadata": {
+        "dense_combo_id_bits_with_unknown": 6,
+        "dense_combo_id_capacity": 64,
+        "modifier_max": 59,
+        "modifier_min": 0,
+        "modifier_signed_bits": 7,
+        "rows": 57
+      },
+      "rows": [
+        {
+          "condition": "Regular Sale",
+          "modifier": "0",
+          "modifier_int": 0,
+          "sip_mapping": "@",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Acquisition",
+          "modifier": "1",
+          "modifier_int": 1,
+          "sip_mapping": "A",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Average Price Trade",
+          "modifier": "2",
+          "modifier_int": 2,
+          "sip_mapping": "W",
+          "update_high_low": "No",
+          "update_last": "No",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Automatic Execution",
+          "modifier": "3",
+          "modifier_int": 3,
+          "sip_mapping": "N/A",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Bunched Trade",
+          "modifier": "4",
+          "modifier_int": 4,
+          "sip_mapping": "B",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Bunched Sold Trade",
+          "modifier": "5",
+          "modifier_int": 5,
+          "sip_mapping": "G",
+          "update_high_low": "Yes",
+          "update_last": "No 1",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "CAP Election",
+          "modifier": "6",
+          "modifier_int": 6,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Cash Sale",
+          "modifier": "7",
+          "modifier_int": 7,
+          "sip_mapping": "C",
+          "update_high_low": "No",
+          "update_last": "No",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Closing Prints",
+          "modifier": "8",
+          "modifier_int": 8,
+          "sip_mapping": "6",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Cross Trade",
+          "modifier": "9",
+          "modifier_int": 9,
+          "sip_mapping": "X",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Derivatively Priced",
+          "modifier": "10",
+          "modifier_int": 10,
+          "sip_mapping": "4",
+          "update_high_low": "Yes",
+          "update_last": "No 1",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Distribution",
+          "modifier": "11",
+          "modifier_int": 11,
+          "sip_mapping": "D",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Form T",
+          "modifier": "12",
+          "modifier_int": 12,
+          "sip_mapping": "T",
+          "update_high_low": "No",
+          "update_last": "No",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Extended Trading Hours (Sold Out of Sequence)",
+          "modifier": "13",
+          "modifier_int": 13,
+          "sip_mapping": "U",
+          "update_high_low": "No",
+          "update_last": "No",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Intermarket Sweep",
+          "modifier": "14",
+          "modifier_int": 14,
+          "sip_mapping": "F",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Market Center Official Close",
+          "modifier": "15",
+          "modifier_int": 15,
+          "sip_mapping": "M",
+          "update_high_low": "No",
+          "update_last": "No",
+          "update_volume": "No"
+        },
+        {
+          "condition": "Market Center Official Open 3",
+          "modifier": "16",
+          "modifier_int": 16,
+          "sip_mapping": "Q",
+          "update_high_low": "No",
+          "update_last": "No",
+          "update_volume": "No"
+        },
+        {
+          "condition": "Market Center Opening Trade 3",
+          "modifier": "17",
+          "modifier_int": 17,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Market Center Reopening Trade 3",
+          "modifier": "18",
+          "modifier_int": 18,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Market Center Closing Trade 3",
+          "modifier": "19",
+          "modifier_int": 19,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Next Day",
+          "modifier": "20",
+          "modifier_int": 20,
+          "sip_mapping": "N",
+          "update_high_low": "No",
+          "update_last": "No",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Price Variation Trade",
+          "modifier": "21",
+          "modifier_int": 21,
+          "sip_mapping": "H",
+          "update_high_low": "No",
+          "update_last": "No",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Prior Reference Price",
+          "modifier": "22",
+          "modifier_int": 22,
+          "sip_mapping": "P",
+          "update_high_low": "Yes",
+          "update_last": "No 1",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Rule 155 Trade (AMEX)",
+          "modifier": "23",
+          "modifier_int": 23,
+          "sip_mapping": "K",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Rule 127 NYSE",
+          "modifier": "24",
+          "modifier_int": 24,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Opening Prints",
+          "modifier": "25",
+          "modifier_int": 25,
+          "sip_mapping": "O",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Opened",
+          "modifier": "26",
+          "modifier_int": 26,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Stopped Stock (Regular Trade)",
+          "modifier": "27",
+          "modifier_int": 27,
+          "sip_mapping": "1",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Re-Opening Prints",
+          "modifier": "28",
+          "modifier_int": 28,
+          "sip_mapping": "5",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Seller",
+          "modifier": "29",
+          "modifier_int": 29,
+          "sip_mapping": "R",
+          "update_high_low": "Yes",
+          "update_last": "No 1",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Sold Last",
+          "modifier": "30",
+          "modifier_int": 30,
+          "sip_mapping": "L",
+          "update_high_low": "Yes",
+          "update_last": "Yes 2",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Sold Out",
+          "modifier": "32",
+          "modifier_int": 32,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Sold (out of Sequence)",
+          "modifier": "33",
+          "modifier_int": 33,
+          "sip_mapping": "Z",
+          "update_high_low": "Yes",
+          "update_last": "No 1",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Split Trade",
+          "modifier": "34",
+          "modifier_int": 34,
+          "sip_mapping": "S",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Stock Option",
+          "modifier": "35",
+          "modifier_int": 35,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Yellow Flag Regular Trade",
+          "modifier": "36",
+          "modifier_int": 36,
+          "sip_mapping": "Y",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Odd Lot Trade",
+          "modifier": "37",
+          "modifier_int": 37,
+          "sip_mapping": "I",
+          "update_high_low": "No",
+          "update_last": "No",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Corrected Consolidated Close (per listing market)",
+          "modifier": "38",
+          "modifier_int": 38,
+          "sip_mapping": "9",
+          "update_high_low": "Yes",
+          "update_last": "Yes",
+          "update_volume": "No"
+        },
+        {
+          "condition": "Unknown",
+          "modifier": "39",
+          "modifier_int": 39,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Held",
+          "modifier": "40",
+          "modifier_int": 40,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Trade Thru Exempt",
+          "modifier": "41",
+          "modifier_int": 41,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "NonEligible",
+          "modifier": "42",
+          "modifier_int": 42,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "NonEligible Extended",
+          "modifier": "43",
+          "modifier_int": 43,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Cancelled",
+          "modifier": "44",
+          "modifier_int": 44,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Recovery",
+          "modifier": "45",
+          "modifier_int": 45,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Correction",
+          "modifier": "46",
+          "modifier_int": 46,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "As of",
+          "modifier": "47",
+          "modifier_int": 47,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "As of Correction",
+          "modifier": "48",
+          "modifier_int": 48,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "As of Cancel",
+          "modifier": "49",
+          "modifier_int": 49,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "OOB",
+          "modifier": "50",
+          "modifier_int": 50,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Summary",
+          "modifier": "51",
+          "modifier_int": 51,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Contingent Trade",
+          "modifier": "52",
+          "modifier_int": 52,
+          "sip_mapping": "V",
+          "update_high_low": "No",
+          "update_last": "No",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Qualified Contingent Trade (\\\\",
+          "modifier": "53",
+          "modifier_int": 53,
+          "sip_mapping": "7",
+          "update_high_low": "No",
+          "update_last": "No",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Errored",
+          "modifier": "54",
+          "modifier_int": 54,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "OPENING_REOPENING_TRADE_DETAIL",
+          "modifier": "55",
+          "modifier_int": 55,
+          "sip_mapping": "",
+          "update_high_low": "",
+          "update_last": "",
+          "update_volume": "Yes"
+        },
+        {
+          "condition": "Placeholder",
+          "modifier": "56",
+          "modifier_int": 56,
+          "sip_mapping": "E",
+          "update_high_low": "TBD",
+          "update_last": "TBD",
+          "update_volume": "TBD"
+        },
+        {
+          "condition": "Placeholder for 611 exempt",
+          "modifier": "59",
+          "modifier_int": 59,
+          "sip_mapping": "8",
+          "update_high_low": "TBD",
+          "update_last": "TBD",
+          "update_volume": "TBD"
+        }
+      ]
+    }
+  }
+}
