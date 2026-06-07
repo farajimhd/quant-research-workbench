@@ -81,7 +81,7 @@ trades
     participant_delta_us Int32 CODEC(T64, ZSTD(1)),
     sequence_number UInt32 CODEC(T64, ZSTD(1)),
     price_int UInt32 CODEC(T64, ZSTD(1)),
-    size Float32,
+    size Float32 CODEC(ZSTD(1)),
     exchange UInt8,
     conditions LowCardinality(String),
     trade_flags UInt8,
@@ -163,13 +163,15 @@ bid_size = toUInt32(toFloat64OrZero(bid_size))
 ask_size = toUInt32(toFloat64OrZero(ask_size))
 ```
 
-Trade size is stored as `Float32`:
+Trade size is stored as `Float32 CODEC(ZSTD(1))`:
 
 ```sql
 size = toFloat32OrZero(size)
 ```
 
 This is intentional. Massive trade sizes can be fractional. Earlier integer conversion turned fractional sizes into `0`; validation confirmed `Float32` preserves the tested rows.
+
+`T64` is not used for trade size because it is an integer-oriented codec. Quote sizes are integer-like and use `UInt32 CODEC(T64, ZSTD(1))`; trade size can be fractional, so it remains `Float32` with `ZSTD(1)` compression.
 
 ## Conditions And Indicators
 

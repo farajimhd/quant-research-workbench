@@ -208,7 +208,7 @@ CREATE TABLE IF NOT EXISTS {db}.{table_name}
     participant_delta_us {codec_suffix("Int32", enabled=codecs)},
     sequence_number {codec_suffix("UInt32", enabled=codecs)},
     price_int {codec_suffix("UInt32", enabled=codecs)},
-    size Float32,
+    size Float32 CODEC(ZSTD(1)),
     exchange UInt8,
     conditions LowCardinality(String),
     trade_flags UInt8,
