@@ -66,7 +66,45 @@ class BucketJob:
 
 
 @dataclass(frozen=True, slots=True)
-class BucketResult:
+class DownloadedArtifact:
+    raw_artifact_path: str
+    raw_payload_hash: str
+    downloaded_at_utc: str
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadResult:
+    bucket_id: str
+    start_utc: str
+    end_utc: str
+    artifacts: list[DownloadedArtifact]
+    downloaded_rows: int
+    page_count: int
+    saturated: int
+    wall_seconds: float
+    exception: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizeJob:
+    bucket_id: str
+    start_utc: str
+    end_utc: str
+    artifacts: list[DownloadedArtifact]
+    downloaded_rows: int
+    page_count: int
+    saturated: int
+    artifact_root_win: str
+    fetch_external: bool
+    extract_pdfs: bool
+    extraction_timeout_seconds: float
+    external_min_body_chars: int
+    max_pdf_bytes: int
+    text_limit_chars: int
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizeResult:
     bucket_id: str
     start_utc: str
     end_utc: str
@@ -80,11 +118,22 @@ class BucketResult:
 
 
 @dataclass(frozen=True, slots=True)
-class InsertJob:
+class BucketInsertMeta:
     bucket_id: str
     start_utc: str
     end_utc: str
+    downloaded_rows: int
+    normalized_rows: int
+    page_count: int
+    saturated: int
+
+
+@dataclass(frozen=True, slots=True)
+class InsertJob:
+    batch_id: str
     rows: list[dict[str, Any]]
+    bucket_metas: list[BucketInsertMeta]
+    bucket_row_counts: dict[str, int]
     clickhouse_url: str
     user: str
     password: str
@@ -94,9 +143,9 @@ class InsertJob:
 
 @dataclass(frozen=True, slots=True)
 class InsertResult:
-    bucket_id: str
-    start_utc: str
-    end_utc: str
+    batch_id: str
+    bucket_metas: list[BucketInsertMeta]
+    bucket_row_counts: dict[str, int]
     inserted_rows: int
     wall_seconds: float
     exception: str = ""
@@ -122,7 +171,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=int(os.environ.get("NEWS_BENZINGA_POLL_LIMIT", "1000")))
     parser.add_argument("--max-pages", type=int, default=int(os.environ.get("NEWS_BENZINGA_MAX_PAGES", "20")))
     parser.add_argument("--download-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_DOWNLOAD_PROCESSES", "8")))
+    parser.add_argument("--normalize-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZE_PROCESSES", "0")))
     parser.add_argument("--insert-concurrency", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_CONCURRENCY", "4")))
+    parser.add_argument("--insert-batch-rows", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_BATCH_ROWS", "5000")))
     parser.add_argument("--artifact-root-win", default=os.environ.get("NEWS_BENZINGA_ARTIFACT_ROOT_WIN", str(DEFAULT_ARTIFACT_ROOT_WIN)))
     parser.add_argument("--output-root-win", default=os.environ.get("NEWS_BENZINGA_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument("--external-min-body-chars", type=int, default=int(os.environ.get("NEWS_EXTRACTION_MIN_BODY_CHARS", "300")))
@@ -203,6 +254,10 @@ def env_status_keys() -> list[str]:
 def main() -> None:
     loaded_env_files = load_env_files(discover_clickhouse_env_files(), verbose=True)
     args = parse_args()
+    args.download_processes = max(1, args.download_processes)
+    args.normalize_processes = args.normalize_processes if args.normalize_processes > 0 else max(1, args.download_processes // 2)
+    args.insert_concurrency = max(1, args.insert_concurrency)
+    args.insert_batch_rows = max(1, args.insert_batch_rows)
     if not args.api_key:
         raise RuntimeError("MASSIVE_API_KEY is required for Benzinga historical download.")
     if not args.storage_policy:
@@ -223,7 +278,11 @@ def main() -> None:
     print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
     print(f"start_utc={args.start_utc} end_utc={args.end_utc} bucket_minutes={args.bucket_minutes}", flush=True)
     print(f"buckets={len(buckets):,} limit_buckets={args.limit_buckets}", flush=True)
-    print(f"download_processes={args.download_processes} insert_concurrency={args.insert_concurrency}", flush=True)
+    print(
+        f"download_processes={args.download_processes} normalize_processes={args.normalize_processes} "
+        f"insert_concurrency={args.insert_concurrency} insert_batch_rows={args.insert_batch_rows}",
+        flush=True,
+    )
     print(f"fetch_external={not args.no_fetch_external} extract_pdfs={not args.no_extract_pdfs}", flush=True)
     print(f"artifact_root={artifact_root}", flush=True)
     print(f"report={report_path}", flush=True)
@@ -253,124 +312,232 @@ def main() -> None:
     if not pending:
         return
 
-    completed = 0
-    failed = 0
+    final_completed = 0
+    final_failed = 0
+    download_completed = 0
+    normalize_completed = 0
+    downloaded_total = 0
     inserted_total = 0
     normalized_total = 0
     started_at = time.perf_counter()
-    insert_futures: dict[concurrent.futures.Future[InsertResult], BucketResult] = {}
+    insert_futures: dict[concurrent.futures.Future[InsertResult], InsertJob] = {}
+    insert_rows_buffer: list[dict[str, Any]] = []
+    insert_bucket_counts: dict[str, int] = {}
+    insert_bucket_metas: dict[str, BucketInsertMeta] = {}
+    insert_batch_index = 0
+    next_download_index = 0
+    max_download_backlog = max(args.download_processes, args.download_processes * 4)
     max_insert_workers = max(1, min(args.insert_concurrency, len(pending)))
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.download_processes)) as download_pool, concurrent.futures.ThreadPoolExecutor(max_workers=max_insert_workers) as insert_pool:
-        future_to_bucket = {download_pool.submit(process_bucket_worker, bucket): bucket for bucket in pending}
-        for index, future in enumerate(concurrent.futures.as_completed(future_to_bucket), start=1):
-            bucket = future_to_bucket[future]
-            try:
-                result = future.result()
-            except Exception as exc:  # noqa: BLE001
-                result = BucketResult(
-                    bucket_id=bucket.bucket_id,
-                    start_utc=bucket.start_utc,
-                    end_utc=bucket.end_utc,
-                    rows=[],
-                    downloaded_rows=0,
-                    normalized_rows=0,
-                    page_count=0,
-                    saturated=0,
-                    wall_seconds=0.0,
-                    exception=repr(exc),
-                )
-            normalized_total += result.normalized_rows
-            append_jsonl(report_path, {"type": "bucket", "run_id": run_id, "result": bucket_result_public(result)})
-            if not args.no_insert:
-                insert_manifest_rows(
-                    client,
-                    database=args.database,
-                    table=args.manifest_table,
-                    rows=[
-                        NewsIngestManifestRow(
-                            run_id=run_id,
-                            bucket_id=result.bucket_id,
-                            bucket_start_utc=result.start_utc,
-                            bucket_end_utc=result.end_utc,
-                            status="normalized" if not result.exception else "failed",
-                            downloaded_rows=result.downloaded_rows,
-                            normalized_rows=result.normalized_rows,
-                            page_count=result.page_count,
-                            saturated=result.saturated,
-                            wall_seconds=result.wall_seconds,
-                            exception=result.exception,
-                        )
-                    ],
-                )
-            if result.exception:
-                failed += 1
-            elif args.no_insert:
-                completed += 1
-            elif result.rows:
-                insert_job = InsertJob(
-                    bucket_id=result.bucket_id,
-                    start_utc=result.start_utc,
-                    end_utc=result.end_utc,
-                    rows=result.rows,
-                    clickhouse_url=args.clickhouse_url,
-                    user=args.user,
-                    password=args.password,
-                    database=args.database,
-                    news_table=args.news_table,
-                )
-                insert_futures[insert_pool.submit(insert_rows_worker, insert_job)] = result
-            else:
-                completed += 1
-                insert_manifest_rows(
-                    client,
-                    database=args.database,
-                    table=args.manifest_table,
-                    rows=[
-                        NewsIngestManifestRow(
-                            run_id=run_id,
-                            bucket_id=result.bucket_id,
-                            bucket_start_utc=result.start_utc,
-                            bucket_end_utc=result.end_utc,
-                            status="inserted",
-                            downloaded_rows=result.downloaded_rows,
-                            normalized_rows=result.normalized_rows,
-                            inserted_rows=0,
-                            page_count=result.page_count,
-                            saturated=result.saturated,
-                            wall_seconds=result.wall_seconds,
-                        )
-                    ],
-                )
-            insert_completed, insert_failed, insert_rows = drain_finished_inserts(
-                insert_futures,
-                client,
-                args,
-                run_id,
-                report_path,
-                block=False,
-            )
-            completed += insert_completed
-            failed += insert_failed
-            inserted_total += insert_rows
-            print_progress(index, len(pending), completed, failed, normalized_total, inserted_total, started_at)
+    def submit_insert_batch(insert_pool: concurrent.futures.ThreadPoolExecutor) -> None:
+        nonlocal insert_batch_index
+        if not insert_rows_buffer:
+            return
+        insert_batch_index += 1
+        batch_id = f"{run_id}_batch_{insert_batch_index:08d}"
+        job = InsertJob(
+            batch_id=batch_id,
+            rows=list(insert_rows_buffer),
+            bucket_metas=list(insert_bucket_metas.values()),
+            bucket_row_counts=dict(insert_bucket_counts),
+            clickhouse_url=args.clickhouse_url,
+            user=args.user,
+            password=args.password,
+            database=args.database,
+            news_table=args.news_table,
+        )
+        insert_futures[insert_pool.submit(insert_rows_worker, job)] = job
+        insert_rows_buffer.clear()
+        insert_bucket_counts.clear()
+        insert_bucket_metas.clear()
 
-        while insert_futures:
-            insert_completed, insert_failed, insert_rows = drain_finished_inserts(
-                insert_futures,
-                client,
-                args,
-                run_id,
-                report_path,
-                block=True,
-            )
-            completed += insert_completed
-            failed += insert_failed
-            inserted_total += insert_rows
+    with (
+        concurrent.futures.ProcessPoolExecutor(max_workers=args.download_processes) as download_pool,
+        concurrent.futures.ProcessPoolExecutor(max_workers=args.normalize_processes) as normalize_pool,
+        concurrent.futures.ThreadPoolExecutor(max_workers=max_insert_workers) as insert_pool,
+    ):
+        download_futures: dict[concurrent.futures.Future[DownloadResult], BucketJob] = {}
+        normalize_futures: dict[concurrent.futures.Future[NormalizeResult], DownloadResult] = {}
+
+        def submit_more_downloads() -> None:
+            nonlocal next_download_index
+            while next_download_index < len(pending) and len(download_futures) < max_download_backlog:
+                bucket = pending[next_download_index]
+                next_download_index += 1
+                download_futures[download_pool.submit(download_bucket_worker, bucket)] = bucket
+
+        submit_more_downloads()
+        while download_futures or normalize_futures or insert_futures or next_download_index < len(pending):
+            submit_more_downloads()
+            active_futures: list[concurrent.futures.Future[Any]] = [
+                *download_futures.keys(),
+                *normalize_futures.keys(),
+                *insert_futures.keys(),
+            ]
+            if not active_futures:
+                continue
+            done, _ = concurrent.futures.wait(active_futures, return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                if future in download_futures:
+                    bucket = download_futures.pop(future)
+                    try:
+                        download_result = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        download_result = DownloadResult(
+                            bucket_id=bucket.bucket_id,
+                            start_utc=bucket.start_utc,
+                            end_utc=bucket.end_utc,
+                            artifacts=[],
+                            downloaded_rows=0,
+                            page_count=0,
+                            saturated=0,
+                            wall_seconds=0.0,
+                            exception=repr(exc),
+                        )
+                    download_completed += 1
+                    downloaded_total += download_result.downloaded_rows
+                    append_jsonl(report_path, {"type": "download", "run_id": run_id, "result": result_public(download_result)})
+                    if not args.no_insert:
+                        insert_manifest_rows(
+                            client,
+                            database=args.database,
+                            table=args.manifest_table,
+                            rows=[manifest_from_download(run_id, download_result)],
+                        )
+                    if download_result.exception:
+                        final_failed += 1
+                    elif download_result.artifacts:
+                        normalize_job = NormalizeJob(
+                            bucket_id=download_result.bucket_id,
+                            start_utc=download_result.start_utc,
+                            end_utc=download_result.end_utc,
+                            artifacts=download_result.artifacts,
+                            downloaded_rows=download_result.downloaded_rows,
+                            page_count=download_result.page_count,
+                            saturated=download_result.saturated,
+                            artifact_root_win=bucket.artifact_root_win,
+                            fetch_external=bucket.fetch_external,
+                            extract_pdfs=bucket.extract_pdfs,
+                            extraction_timeout_seconds=bucket.extraction_timeout_seconds,
+                            external_min_body_chars=bucket.external_min_body_chars,
+                            max_pdf_bytes=bucket.max_pdf_bytes,
+                            text_limit_chars=bucket.text_limit_chars,
+                        )
+                        normalize_futures[normalize_pool.submit(normalize_bucket_worker, normalize_job)] = download_result
+                    else:
+                        normalize_completed += 1
+                        if args.no_insert:
+                            final_completed += 1
+                        else:
+                            insert_manifest_rows(
+                                client,
+                                database=args.database,
+                                table=args.manifest_table,
+                                rows=[manifest_empty_insert(run_id, download_result)],
+                            )
+                            final_completed += 1
+
+                elif future in normalize_futures:
+                    download_result = normalize_futures.pop(future)
+                    try:
+                        normalize_result = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        normalize_result = NormalizeResult(
+                            bucket_id=download_result.bucket_id,
+                            start_utc=download_result.start_utc,
+                            end_utc=download_result.end_utc,
+                            rows=[],
+                            downloaded_rows=download_result.downloaded_rows,
+                            normalized_rows=0,
+                            page_count=download_result.page_count,
+                            saturated=download_result.saturated,
+                            wall_seconds=0.0,
+                            exception=repr(exc),
+                        )
+                    normalize_completed += 1
+                    normalized_total += normalize_result.normalized_rows
+                    append_jsonl(report_path, {"type": "normalize", "run_id": run_id, "result": result_public(normalize_result)})
+                    if not args.no_insert:
+                        insert_manifest_rows(
+                            client,
+                            database=args.database,
+                            table=args.manifest_table,
+                            rows=[manifest_from_normalize(run_id, normalize_result)],
+                        )
+                    if normalize_result.exception:
+                        final_failed += 1
+                    elif args.no_insert:
+                        final_completed += 1
+                    elif normalize_result.rows:
+                        meta = BucketInsertMeta(
+                            bucket_id=normalize_result.bucket_id,
+                            start_utc=normalize_result.start_utc,
+                            end_utc=normalize_result.end_utc,
+                            downloaded_rows=normalize_result.downloaded_rows,
+                            normalized_rows=normalize_result.normalized_rows,
+                            page_count=normalize_result.page_count,
+                            saturated=normalize_result.saturated,
+                        )
+                        insert_rows_buffer.extend(normalize_result.rows)
+                        insert_bucket_metas[meta.bucket_id] = meta
+                        insert_bucket_counts[meta.bucket_id] = insert_bucket_counts.get(meta.bucket_id, 0) + len(normalize_result.rows)
+                        if len(insert_rows_buffer) >= args.insert_batch_rows:
+                            submit_insert_batch(insert_pool)
+                    else:
+                        insert_manifest_rows(
+                            client,
+                            database=args.database,
+                            table=args.manifest_table,
+                            rows=[manifest_empty_insert(run_id, normalize_result)],
+                        )
+                        final_completed += 1
+
+                elif future in insert_futures:
+                    insert_job = insert_futures.pop(future)
+                    try:
+                        insert_result = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        insert_result = InsertResult(
+                            batch_id=insert_job.batch_id,
+                            bucket_metas=insert_job.bucket_metas,
+                            bucket_row_counts=insert_job.bucket_row_counts,
+                            inserted_rows=0,
+                            wall_seconds=0.0,
+                            exception=repr(exc),
+                        )
+                    insert_completed, insert_failed, insert_rows = handle_insert_result(
+                        insert_result,
+                        client,
+                        args,
+                        run_id,
+                        report_path,
+                    )
+                    final_completed += insert_completed
+                    final_failed += insert_failed
+                    inserted_total += insert_rows
+
+                if not download_futures and not normalize_futures and not args.no_insert and insert_rows_buffer:
+                    submit_insert_batch(insert_pool)
+                print_progress(
+                    total=len(pending),
+                    download_completed=download_completed,
+                    normalize_completed=normalize_completed,
+                    final_completed=final_completed,
+                    final_failed=final_failed,
+                    downloaded_rows=downloaded_total,
+                    normalized_rows=normalized_total,
+                    inserted_rows=inserted_total,
+                    pending_insert_rows=len(insert_rows_buffer),
+                    started_at=started_at,
+                )
 
     elapsed = time.perf_counter() - started_at
     print("=" * 96, flush=True)
-    print(f"DONE completed={completed:,} failed={failed:,} normalized_rows={normalized_total:,} inserted_rows={inserted_total:,}", flush=True)
+    print(
+        f"DONE completed={final_completed:,} failed={final_failed:,} "
+        f"downloaded_rows={downloaded_total:,} normalized_rows={normalized_total:,} inserted_rows={inserted_total:,}",
+        flush=True,
+    )
     print(f"elapsed_min={elapsed / 60:.1f} report={report_path}", flush=True)
     print("=" * 96, flush=True)
 
@@ -410,29 +577,21 @@ def build_bucket_jobs(args: argparse.Namespace) -> list[BucketJob]:
     return jobs
 
 
-def process_bucket_worker(job: BucketJob) -> BucketResult:
+def download_bucket_worker(job: BucketJob) -> DownloadResult:
     started_at = time.perf_counter()
     artifact_root = Path(job.artifact_root_win)
-    rows: list[dict[str, Any]] = []
+    artifacts: list[DownloadedArtifact] = []
     downloaded_rows = 0
     page_count = 0
     saturated = 0
     next_url: str | None = build_benzinga_url(job.endpoint_url, job.api_key, job.start_utc, job.end_utc, job.limit)
-    options = NewsExtractionOptions(
-        fetch_external=job.fetch_external,
-        extract_pdfs=job.extract_pdfs,
-        external_min_body_chars=job.external_min_body_chars,
-        request_timeout_seconds=job.extraction_timeout_seconds,
-        max_pdf_bytes=job.max_pdf_bytes,
-        text_limit_chars=job.text_limit_chars,
-    )
     try:
         while next_url and page_count < job.max_pages:
             page_count += 1
             response = fetch_json(next_url)
             items = response.get("results") or []
             downloaded_rows += len(items)
-            downloaded_at = datetime.now(UTC)
+            downloaded_at = to_provider_rfc3339(datetime.now(UTC))
             for item in items:
                 if not isinstance(item, dict):
                     continue
@@ -442,41 +601,91 @@ def process_bucket_worker(job: BucketJob) -> BucketResult:
                     published = datetime.now(UTC)
                 raw_path = artifact_path_for_payload(artifact_root, item, published)
                 raw_hash = write_raw_payload(raw_path, item)
-                row = normalize_benzinga_payload(
-                    item,
-                    raw_artifact_path=str(raw_path),
-                    raw_payload_hash=raw_hash,
-                    downloaded_at_utc=downloaded_at,
-                    artifact_root=artifact_root,
-                    options=options,
+                artifacts.append(
+                    DownloadedArtifact(
+                        raw_artifact_path=str(raw_path),
+                        raw_payload_hash=raw_hash,
+                        downloaded_at_utc=downloaded_at,
+                    )
                 )
-                rows.append(row)
             next_url = response.get("next_url")
             if next_url:
                 next_url = append_api_key(str(next_url), job.api_key)
         if next_url:
             saturated = 1
-        return BucketResult(
+        return DownloadResult(
             bucket_id=job.bucket_id,
             start_utc=job.start_utc,
             end_utc=job.end_utc,
-            rows=rows,
+            artifacts=artifacts,
             downloaded_rows=downloaded_rows,
-            normalized_rows=len(rows),
             page_count=page_count,
             saturated=saturated,
             wall_seconds=time.perf_counter() - started_at,
         )
     except Exception as exc:  # noqa: BLE001
-        return BucketResult(
+        return DownloadResult(
+            bucket_id=job.bucket_id,
+            start_utc=job.start_utc,
+            end_utc=job.end_utc,
+            artifacts=artifacts,
+            downloaded_rows=downloaded_rows,
+            page_count=page_count,
+            saturated=saturated,
+            wall_seconds=time.perf_counter() - started_at,
+            exception=repr(exc),
+        )
+
+
+def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
+    started_at = time.perf_counter()
+    artifact_root = Path(job.artifact_root_win)
+    rows: list[dict[str, Any]] = []
+    options = NewsExtractionOptions(
+        fetch_external=job.fetch_external,
+        extract_pdfs=job.extract_pdfs,
+        external_min_body_chars=job.external_min_body_chars,
+        request_timeout_seconds=job.extraction_timeout_seconds,
+        max_pdf_bytes=job.max_pdf_bytes,
+        text_limit_chars=job.text_limit_chars,
+    )
+    try:
+        for artifact in job.artifacts:
+            raw_path = Path(artifact.raw_artifact_path)
+            payload = json.loads(raw_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                continue
+            rows.append(
+                normalize_benzinga_payload(
+                    payload,
+                    raw_artifact_path=artifact.raw_artifact_path,
+                    raw_payload_hash=artifact.raw_payload_hash,
+                    downloaded_at_utc=parse_provider_datetime(artifact.downloaded_at_utc),
+                    artifact_root=artifact_root,
+                    options=options,
+                )
+            )
+        return NormalizeResult(
             bucket_id=job.bucket_id,
             start_utc=job.start_utc,
             end_utc=job.end_utc,
             rows=rows,
-            downloaded_rows=downloaded_rows,
+            downloaded_rows=job.downloaded_rows,
             normalized_rows=len(rows),
-            page_count=page_count,
-            saturated=saturated,
+            page_count=job.page_count,
+            saturated=job.saturated,
+            wall_seconds=time.perf_counter() - started_at,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return NormalizeResult(
+            bucket_id=job.bucket_id,
+            start_utc=job.start_utc,
+            end_utc=job.end_utc,
+            rows=rows,
+            downloaded_rows=job.downloaded_rows,
+            normalized_rows=len(rows),
+            page_count=job.page_count,
+            saturated=job.saturated,
             wall_seconds=time.perf_counter() - started_at,
             exception=repr(exc),
         )
@@ -488,45 +697,35 @@ def insert_rows_worker(job: InsertJob) -> InsertResult:
         client = ClickHouseHttpClient(job.clickhouse_url, job.user, job.password)
         inserted = insert_news_rows(client, database=job.database, table=job.news_table, rows=job.rows)
         return InsertResult(
-            bucket_id=job.bucket_id,
-            start_utc=job.start_utc,
-            end_utc=job.end_utc,
+            batch_id=job.batch_id,
+            bucket_metas=job.bucket_metas,
+            bucket_row_counts=job.bucket_row_counts,
             inserted_rows=inserted,
             wall_seconds=time.perf_counter() - started_at,
         )
     except Exception as exc:  # noqa: BLE001
         return InsertResult(
-            bucket_id=job.bucket_id,
-            start_utc=job.start_utc,
-            end_utc=job.end_utc,
+            batch_id=job.batch_id,
+            bucket_metas=job.bucket_metas,
+            bucket_row_counts=job.bucket_row_counts,
             inserted_rows=0,
             wall_seconds=time.perf_counter() - started_at,
             exception=repr(exc),
         )
 
 
-def drain_finished_inserts(
-    futures: dict[concurrent.futures.Future[InsertResult], BucketResult],
+def handle_insert_result(
+    result: InsertResult,
     client: ClickHouseHttpClient,
     args: argparse.Namespace,
     run_id: str,
     report_path: Path,
-    *,
-    block: bool,
 ) -> tuple[int, int, int]:
-    if not futures:
-        return 0, 0, 0
-    done: list[concurrent.futures.Future[InsertResult]] = []
-    if block:
-        done = [next(concurrent.futures.as_completed(futures))]
-    else:
-        done = [future for future in futures if future.done()]
     completed = 0
     failed = 0
     inserted_rows = 0
-    for future in done:
-        bucket_result = futures.pop(future)
-        result = future.result()
+    manifest_rows: list[NewsIngestManifestRow] = []
+    for meta in result.bucket_metas:
         status = "inserted"
         exception = result.exception
         if result.exception:
@@ -534,31 +733,36 @@ def drain_finished_inserts(
             failed += 1
         else:
             completed += 1
-            inserted_rows += result.inserted_rows
-            if bucket_result.saturated:
+            bucket_inserted_rows = result.bucket_row_counts.get(meta.bucket_id, 0)
+            inserted_rows += bucket_inserted_rows
+            if meta.saturated:
                 status = "partial"
-        insert_manifest_rows(
-            client,
-            database=args.database,
-            table=args.manifest_table,
-            rows=[
-                NewsIngestManifestRow(
-                    run_id=run_id,
-                    bucket_id=result.bucket_id,
-                    bucket_start_utc=result.start_utc,
-                    bucket_end_utc=result.end_utc,
-                    status=status,
-                    downloaded_rows=bucket_result.downloaded_rows,
-                    normalized_rows=bucket_result.normalized_rows,
-                    inserted_rows=result.inserted_rows,
-                    page_count=bucket_result.page_count,
-                    saturated=bucket_result.saturated,
-                    wall_seconds=result.wall_seconds,
-                    exception=exception,
-                )
-            ],
+        manifest_rows.append(
+            NewsIngestManifestRow(
+                run_id=run_id,
+                bucket_id=meta.bucket_id,
+                bucket_start_utc=meta.start_utc,
+                bucket_end_utc=meta.end_utc,
+                status=status,
+                downloaded_rows=meta.downloaded_rows,
+                normalized_rows=meta.normalized_rows,
+                inserted_rows=0 if result.exception else result.bucket_row_counts.get(meta.bucket_id, 0),
+                page_count=meta.page_count,
+                saturated=meta.saturated,
+                wall_seconds=result.wall_seconds,
+                exception=exception,
+            )
         )
-        append_jsonl(report_path, {"type": "insert", "run_id": run_id, "result": asdict(result), "status": status})
+    insert_manifest_rows(client, database=args.database, table=args.manifest_table, rows=manifest_rows)
+    append_jsonl(
+        report_path,
+        {
+            "type": "insert",
+            "run_id": run_id,
+            "result": result_public(result),
+            "status": "failed" if result.exception else "inserted",
+        },
+    )
     return completed, failed, inserted_rows
 
 
@@ -638,28 +842,87 @@ def public_args(args: argparse.Namespace) -> dict[str, Any]:
     return payload
 
 
-def bucket_result_public(result: BucketResult) -> dict[str, Any]:
+def result_public(result: Any) -> dict[str, Any]:
     payload = asdict(result)
+    payload.pop("artifacts", None)
     payload.pop("rows", None)
     return payload
 
 
+def manifest_from_download(run_id: str, result: DownloadResult) -> NewsIngestManifestRow:
+    return NewsIngestManifestRow(
+        run_id=run_id,
+        bucket_id=result.bucket_id,
+        bucket_start_utc=result.start_utc,
+        bucket_end_utc=result.end_utc,
+        status="failed" if result.exception else "downloaded",
+        downloaded_rows=result.downloaded_rows,
+        normalized_rows=0,
+        inserted_rows=0,
+        page_count=result.page_count,
+        saturated=result.saturated,
+        wall_seconds=result.wall_seconds,
+        exception=result.exception,
+    )
+
+
+def manifest_from_normalize(run_id: str, result: NormalizeResult) -> NewsIngestManifestRow:
+    return NewsIngestManifestRow(
+        run_id=run_id,
+        bucket_id=result.bucket_id,
+        bucket_start_utc=result.start_utc,
+        bucket_end_utc=result.end_utc,
+        status="failed" if result.exception else "normalized",
+        downloaded_rows=result.downloaded_rows,
+        normalized_rows=result.normalized_rows,
+        inserted_rows=0,
+        page_count=result.page_count,
+        saturated=result.saturated,
+        wall_seconds=result.wall_seconds,
+        exception=result.exception,
+    )
+
+
+def manifest_empty_insert(run_id: str, result: DownloadResult | NormalizeResult) -> NewsIngestManifestRow:
+    normalized_rows = result.normalized_rows if isinstance(result, NormalizeResult) else 0
+    return NewsIngestManifestRow(
+        run_id=run_id,
+        bucket_id=result.bucket_id,
+        bucket_start_utc=result.start_utc,
+        bucket_end_utc=result.end_utc,
+        status="partial" if result.saturated else "inserted",
+        downloaded_rows=result.downloaded_rows,
+        normalized_rows=normalized_rows,
+        inserted_rows=0,
+        page_count=result.page_count,
+        saturated=result.saturated,
+        wall_seconds=result.wall_seconds,
+    )
+
+
 def print_progress(
-    index: int,
+    *,
     total: int,
-    completed: int,
-    failed: int,
+    download_completed: int,
+    normalize_completed: int,
+    final_completed: int,
+    final_failed: int,
+    downloaded_rows: int,
     normalized_rows: int,
     inserted_rows: int,
+    pending_insert_rows: int,
     started_at: float,
 ) -> None:
     elapsed = time.perf_counter() - started_at
-    rate = index / elapsed if elapsed > 0 else 0.0
-    remaining = total - index
+    finalized = final_completed + final_failed
+    rate = finalized / elapsed if elapsed > 0 else 0.0
+    remaining = total - finalized
     eta = remaining / rate if rate > 0 else 0.0
     print(
-        f"[{index:,}/{total:,}] completed={completed:,} failed={failed:,} "
-        f"normalized={normalized_rows:,} inserted={inserted_rows:,} "
+        f"[finalized {finalized:,}/{total:,}] downloaded_buckets={download_completed:,} "
+        f"normalized_buckets={normalize_completed:,} completed={final_completed:,} failed={final_failed:,} "
+        f"downloaded_rows={downloaded_rows:,} normalized_rows={normalized_rows:,} "
+        f"inserted_rows={inserted_rows:,} insert_buffer={pending_insert_rows:,} "
         f"elapsed_min={elapsed / 60:.1f} eta_min={eta / 60:.1f}",
         flush=True,
     )

@@ -4,7 +4,8 @@ This guide runs the canonical Benzinga historical news pipeline:
 
 1. Download Benzinga news from the Massive-hosted Benzinga endpoint.
 2. Save raw provider payloads and optional PDF artifacts to disk.
-3. Normalize rows in memory and insert them into ClickHouse.
+3. Queue downloaded raw files for normalization.
+4. Queue normalized rows for batched ClickHouse insertion.
 
 Normalized rows are not saved as local files. They are inserted into ClickHouse only.
 
@@ -82,10 +83,10 @@ Small API smoke test. This downloads and normalizes one tiny bucket, writes raw 
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --no-insert --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T00:05:00Z --bucket-minutes 5 --limit-buckets 1 --download-processes 1 --no-fetch-external --no-extract-pdfs
 ```
 
-Small insert test. This creates tables and inserts normalized rows for a short period.
+Small insert test. This creates tables and inserts normalized rows for a short period. Use a tiny insert batch to validate the staged path.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T01:00:00Z --bucket-minutes 15 --limit-buckets 4 --download-processes 2 --insert-concurrency 2 --no-fetch-external --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T01:00:00Z --bucket-minutes 15 --limit-buckets 4 --download-processes 2 --normalize-processes 2 --insert-concurrency 2 --insert-batch-rows 25 --no-fetch-external --no-extract-pdfs
 ```
 
 ## Full Historical Run
@@ -93,19 +94,19 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 Start conservative:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --insert-concurrency 6
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 5000
 ```
 
 If Massive and ClickHouse remain stable, increase gradually:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 24 --insert-concurrency 8
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 24 --normalize-processes 12 --insert-concurrency 8 --insert-batch-rows 10000
 ```
 
 For a first full run, keep PDF and external URL enrichment enabled only if the workstation network and disk can handle the extra work. To prioritize canonical Benzinga text first:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --insert-concurrency 6 --no-fetch-external --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --no-fetch-external --no-extract-pdfs
 ```
 
 ## Argument Reference
@@ -279,14 +280,27 @@ Debug limit after bucket construction. Default:
 
 `--download-processes`
 
-Worker processes for download plus normalization. Default:
+Worker processes for API download and raw-payload disk writes. Default:
 
 ```text
 NEWS_BENZINGA_DOWNLOAD_PROCESSES
 8
 ```
 
-This is the main throughput control. Start with 16 on the workstation, then increase only if Massive, network, and disk remain stable.
+This controls Massive request pressure and raw JSON write pressure. Start with 16 on the workstation, then increase only if Massive, network, and disk remain stable.
+
+The script keeps only a bounded download backlog in memory, currently `--download-processes * 4`, so a full historical run does not create one pending future per time bucket.
+
+`--normalize-processes`
+
+Worker processes for normalization, optional external URL extraction, and optional PDF extraction. Default:
+
+```text
+NEWS_BENZINGA_NORMALIZE_PROCESSES
+0
+```
+
+`0` means half of `--download-processes`, with a minimum of 1. Increase this when CPU/extraction is behind download. Decrease it if external sites, PDF parsing, or disk reads become the bottleneck.
 
 `--insert-concurrency`
 
@@ -298,6 +312,17 @@ NEWS_BENZINGA_INSERT_CONCURRENCY
 ```
 
 Start with 6 on the workstation. Increase only if ClickHouse insert latency and memory stay stable.
+
+`--insert-batch-rows`
+
+Minimum normalized rows accumulated before a ClickHouse insert batch is submitted. Default:
+
+```text
+NEWS_BENZINGA_INSERT_BATCH_ROWS
+5000
+```
+
+Rows are batched across buckets. Larger batches reduce ClickHouse overhead, but they also make a failed insert affect more buckets. Start with 5,000 to 10,000 for the full run.
 
 ### Artifact and Report Arguments
 
@@ -423,7 +448,7 @@ Normal resume skips buckets whose latest status is `inserted`. Buckets marked `p
 Recommended retry flow for saturated buckets:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 5 --max-pages 40 --retry-partial --download-processes 16 --insert-concurrency 6
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 5 --max-pages 40 --retry-partial --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 5000
 ```
 
 ## Monitoring
@@ -434,8 +459,10 @@ The script prints:
 pending_buckets
 completed
 failed
-normalized
-inserted
+downloaded_rows
+normalized_rows
+inserted_rows
+insert_buffer
 elapsed_min
 eta_min
 ```
@@ -471,7 +498,7 @@ FROM q_live.benzinga_news_normalized_v1;
 For the first real canonical pass, prioritize complete provider rows before expensive extraction:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --insert-concurrency 6 --no-fetch-external --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --no-fetch-external --no-extract-pdfs
 ```
 
 After this baseline is complete, run targeted enrichment for title-only or PDF/link-heavy rows as a separate pass instead of making the first full ingest slower and harder to debug.
