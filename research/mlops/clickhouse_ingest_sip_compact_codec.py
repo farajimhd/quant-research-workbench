@@ -63,6 +63,30 @@ DEFAULT_END_DATE = "2026-12-31"
 DEFAULT_INSERT_CONCURRENCY = 12
 DEFAULT_MAX_THREADS = 4
 
+REQUIRED_QUOTE_COLUMN_TYPES = {
+    "sip_timestamp_us": "UInt64",
+    "participant_delta_us": "Int32",
+    "sequence_number": "UInt32",
+    "bid_price_int": "UInt64",
+    "ask_price_int": "UInt64",
+    "bid_size": "UInt32",
+    "ask_size": "UInt32",
+    "bid_exchange": "UInt8",
+    "ask_exchange": "UInt8",
+    "quote_flags": "UInt8",
+    "issue_flags": "UInt16",
+}
+REQUIRED_TRADE_COLUMN_TYPES = {
+    "sip_timestamp_us": "UInt64",
+    "participant_delta_us": "Int32",
+    "sequence_number": "UInt32",
+    "price_int": "UInt64",
+    "size": "Float32",
+    "exchange": "UInt8",
+    "trade_flags": "UInt8",
+    "issue_flags": "UInt16",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class CompactIngestJob:
@@ -190,6 +214,36 @@ def create_database_and_tables(client: ClickHouseHttpClient, args: argparse.Name
     client.execute(quote_table_sql(args.database, args.quote_table, codecs=True, storage_policy=args.storage_policy))
     client.execute(trade_table_sql(args.database, args.trade_table, codecs=True, storage_policy=args.storage_policy))
     client.execute(create_manifest_table_sql(args.database, args.manifest_table, args.storage_policy))
+    validate_target_schema(client, args.database, args.quote_table, REQUIRED_QUOTE_COLUMN_TYPES)
+    validate_target_schema(client, args.database, args.trade_table, REQUIRED_TRADE_COLUMN_TYPES)
+
+
+def validate_target_schema(client: ClickHouseHttpClient, database: str, table: str, required_types: dict[str, str]) -> None:
+    rows = client.query_tsv(
+        "SELECT name, type "
+        "FROM system.columns "
+        f"WHERE database = {sql_string(database)} AND table = {sql_string(table)}"
+    ).strip().splitlines()
+    actual = {}
+    for row in rows:
+        parts = row.split("\t")
+        if len(parts) >= 2:
+            actual[parts[0]] = parts[1]
+    problems = []
+    for column, expected_type in required_types.items():
+        actual_type = actual.get(column)
+        if actual_type is None:
+            problems.append(f"{column}: missing, expected {expected_type}")
+        elif actual_type != expected_type:
+            problems.append(f"{column}: expected {expected_type}, found {actual_type}")
+    if problems:
+        formatted = "\n  ".join(problems)
+        raise RuntimeError(
+            f"Target table {database}.{table} does not match the validated compact schema.\n"
+            f"  {formatted}\n"
+            "Use a fresh table/database or migrate/drop the stale table before ingesting."
+        )
+    print(f"SCHEMA OK {database}.{table}", flush=True)
 
 
 def latest_manifest_status(client: ClickHouseHttpClient, database: str, manifest_table: str, kind: str, date: str, source_file: str) -> str:
