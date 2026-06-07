@@ -221,7 +221,9 @@ def clamp_int32(value: int) -> int:
 
 
 def scale_code(price: Decimal) -> int:
-    return 1 if price > 0 and price < 1 else 0
+    cents = price * Decimal("100")
+    has_sub_cent_precision = cents != cents.to_integral_value(rounding=ROUND_HALF_EVEN)
+    return 1 if price > 0 and (price < 1 or has_sub_cent_precision) else 0
 
 
 def price_int(price: Decimal) -> int:

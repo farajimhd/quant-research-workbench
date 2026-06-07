@@ -178,8 +178,8 @@ CREATE TABLE IF NOT EXISTS {db}.{table_name}
     sip_timestamp_us {codec_suffix("UInt64", enabled=codecs)},
     participant_delta_us {codec_suffix("Int32", enabled=codecs)},
     sequence_number {codec_suffix("UInt32", enabled=codecs)},
-    bid_price_int {codec_suffix("UInt32", enabled=codecs)},
-    ask_price_int {codec_suffix("UInt32", enabled=codecs)},
+    bid_price_int {codec_suffix("UInt64", enabled=codecs)},
+    ask_price_int {codec_suffix("UInt64", enabled=codecs)},
     bid_size {codec_suffix("UInt32", enabled=codecs)},
     ask_size {codec_suffix("UInt32", enabled=codecs)},
     bid_exchange UInt8,
@@ -207,7 +207,7 @@ CREATE TABLE IF NOT EXISTS {db}.{table_name}
     sip_timestamp_us {codec_suffix("UInt64", enabled=codecs)},
     participant_delta_us {codec_suffix("Int32", enabled=codecs)},
     sequence_number {codec_suffix("UInt32", enabled=codecs)},
-    price_int {codec_suffix("UInt32", enabled=codecs)},
+    price_int {codec_suffix("UInt64", enabled=codecs)},
     size Float32,
     exchange UInt8,
     conditions LowCardinality(String),
@@ -227,12 +227,13 @@ def clamp_int32_sql(expr: str) -> str:
 
 
 def scale_code_sql(price_expr: str) -> str:
-    return f"if({price_expr} > 0 AND {price_expr} < 1, 1, 0)"
+    cent_fraction = f"abs(({price_expr} * 100) - round({price_expr} * 100))"
+    return f"if({price_expr} > 0 AND ({price_expr} < 1 OR {cent_fraction} > 0.0000001), 1, 0)"
 
 
 def price_int_sql(price_expr: str) -> str:
     scale = scale_code_sql(price_expr)
-    return f"toUInt32(round(if({scale} = 1, {price_expr} * 10000, {price_expr} * 100)))"
+    return f"toUInt64(round(if({scale} = 1, {price_expr} * 10000, {price_expr} * 100)))"
 
 
 def tape_code_sql(tape_expr: str) -> str:
