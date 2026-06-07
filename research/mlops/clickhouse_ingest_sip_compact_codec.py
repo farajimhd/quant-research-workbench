@@ -326,7 +326,7 @@ def latest_manifest_statuses(
     end_date = max(job.date for job in jobs)
     query = (
         "SELECT "
-        "kind, toString(source_date) AS source_date, source_file, target_table, "
+        "kind, toString(source_date) AS source_date_text, source_file, target_table, "
         "argMax(status, tuple(updated_at, "
         "multiIf(status = 'failed', 90, status = 'ok', 80, status = 'started', 70, status = 'discovered', 60, 0)"
         ")) AS status "
@@ -357,8 +357,8 @@ def latest_manifest_statuses(
         parts = row.split("\t")
         if len(parts) < 5:
             continue
-        kind, source_date, source_file, target_table, status = parts[:5]
-        statuses[(kind, source_date, source_file, target_table)] = status
+        kind, source_date_text, source_file, target_table, status = parts[:5]
+        statuses[(kind, source_date_text, source_file, target_table)] = status
     return statuses
 
 
