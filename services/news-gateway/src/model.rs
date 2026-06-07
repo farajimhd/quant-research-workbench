@@ -81,6 +81,8 @@ pub struct NewsArticle {
     pub reject_reason: String,
     pub content_hash: String,
     pub raw_json: String,
+    pub raw_artifact_path: String,
+    pub raw_payload_hash: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -167,6 +169,8 @@ pub struct NormalizedNewsInput {
     pub publisher_name: String,
     pub publisher_raw: String,
     pub raw_json: String,
+    pub raw_artifact_path: String,
+    pub raw_payload_hash: String,
     pub source: String,
     pub source_endpoint: String,
     pub tags: Vec<String>,
@@ -315,6 +319,8 @@ pub fn parse_benzinga(value: &Value) -> Result<NormalizedNewsInput, String> {
         publisher_name: "Benzinga".to_string(),
         publisher_raw: "{}".to_string(),
         raw_json: value.to_string(),
+        raw_artifact_path: String::new(),
+        raw_payload_hash: String::new(),
         source: "benzinga".to_string(),
         source_endpoint: "/benzinga/v2/news".to_string(),
         tags: string_array(value.get("tags")),

@@ -51,6 +51,8 @@ ClickHouse tables:
 <database>.benzinga_news_ingest_manifest_v1
 ```
 
+The live `services/news-gateway` writes to the same normalized table by default. Historical and live rows are deduplicated by `(published_date, provider_article_id)` through `ReplacingMergeTree(updated_at_utc)`.
+
 ## Required Environment
 
 The script loads `.env` through the shared MLOps environment discovery. Required values:
@@ -357,6 +359,27 @@ D:/market-data/prepared/benzinga_news_ingest
 ```
 
 This is not the raw download location.
+
+## Live Gateway Integration
+
+The Rust live news gateway uses the same raw artifact root and canonical ClickHouse table:
+
+```text
+NEWS_BENZINGA_ARTIFACT_ROOT_WIN
+NEWS_BENZINGA_CANONICAL_ENABLED
+NEWS_BENZINGA_CANONICAL_TABLE
+NEWS_CLICKHOUSE_STORAGE_POLICY
+```
+
+Default live behavior:
+
+```text
+NEWS_BENZINGA_CANONICAL_ENABLED=true
+NEWS_BENZINGA_CANONICAL_TABLE=benzinga_news_normalized_v1
+NEWS_BENZINGA_ARTIFACT_ROOT_WIN=D:/market-data/benzinga_news_canonical
+```
+
+The live process saves the raw provider payload first, then normalizes and batch-inserts into ClickHouse asynchronously through the gateway writer task. The live UI stream still uses the gateway's in-memory state and existing `live_news_articles` write path.
 
 ### Extraction Arguments
 

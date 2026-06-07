@@ -111,6 +111,10 @@ impl NewsClickHouse {
             true,
         )
         .await?;
+        if self.config.benzinga_canonical_enabled {
+            self.execute(&canonical_news_table_sql(&self.config.benzinga_canonical_table, &settings), true)
+                .await?;
+        }
         for statement in intelligence_column_migrations() {
             self.execute(statement, true).await?;
         }
@@ -170,6 +174,11 @@ impl NewsClickHouse {
         let rows = std::mem::take(rows);
         if let Err(error) = self.insert_articles(&rows).await {
             eprintln!("News ClickHouse insert failed: {error}");
+        }
+        if self.config.benzinga_canonical_enabled {
+            if let Err(error) = self.insert_canonical_articles(&rows).await {
+                eprintln!("Canonical Benzinga ClickHouse insert failed: {error}");
+            }
         }
     }
 
@@ -260,6 +269,27 @@ impl NewsClickHouse {
             .map(|_| ())
     }
 
+    async fn insert_canonical_articles(&self, rows: &[NewsArticle]) -> Result<(), String> {
+        let body = rows
+            .iter()
+            .filter(|row| row.source == "benzinga")
+            .map(|row| canonical_article_json(row).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if body.trim().is_empty() {
+            return Ok(());
+        }
+        self.query(
+            &format!(
+                "INSERT INTO `{}` FORMAT JSONEachRow\n{body}",
+                self.config.benzinga_canonical_table.replace('`', "``")
+            ),
+            true,
+        )
+        .await
+        .map(|_| ())
+    }
+
     async fn execute(&self, sql: &str, use_database: bool) -> Result<(), String> {
         self.query(sql, use_database).await.map(|_| ())
     }
@@ -291,6 +321,227 @@ impl NewsClickHouse {
             return Err(format!("ClickHouse HTTP {status}: {text}"));
         }
         Ok(text)
+    }
+}
+
+fn canonical_news_table_sql(table: &str, settings: &str) -> String {
+    format!(
+        r#"
+CREATE TABLE IF NOT EXISTS `{}`
+(
+    provider LowCardinality(String),
+    provider_article_id String,
+    canonical_news_id String,
+    published_date Date,
+    published_at_utc DateTime64(9, 'UTC'),
+    published_raw String,
+    last_updated_at_utc Nullable(DateTime64(9, 'UTC')),
+    last_updated_raw String,
+    downloaded_at_utc DateTime64(9, 'UTC'),
+    provider_delay_ns Nullable(Int64),
+    title String,
+    normalized_title String,
+    teaser String,
+    body_text String,
+    external_text String,
+    pdf_text String,
+    normalized_full_text String,
+    text_hash String,
+    article_url String,
+    url_domain LowCardinality(String),
+    author String,
+    tickers Array(String),
+    channels Array(String),
+    provider_tags Array(String),
+    image_urls Array(String),
+    links Array(String),
+    has_body UInt8,
+    is_title_only UInt8,
+    has_external_text UInt8,
+    has_pdf UInt8,
+    pdf_urls Array(String),
+    pdf_artifact_paths Array(String),
+    content_quality_flags Array(LowCardinality(String)),
+    external_fetch_status LowCardinality(String),
+    external_fetch_error String,
+    pdf_extract_status LowCardinality(String),
+    pdf_extract_error String,
+    raw_artifact_path String,
+    raw_payload_hash String,
+    normalizer_version LowCardinality(String),
+    updated_at_utc DateTime64(9, 'UTC') DEFAULT now64(9)
+)
+ENGINE = ReplacingMergeTree(updated_at_utc)
+PARTITION BY toYYYYMM(published_at_utc)
+ORDER BY (published_date, provider_article_id)
+SETTINGS {settings}
+"#,
+        table.replace('`', "``")
+    )
+}
+
+fn canonical_article_json(row: &NewsArticle) -> Value {
+    let pdf_text = normalize_text(&row.pdf_texts.join(" "));
+    let external_text = if row.extraction_status == "url_enriched" {
+        text_delta(&row.extracted_text, &row.body_text)
+    } else {
+        String::new()
+    };
+    let normalized_full_text = truncate_text(
+        &normalize_text(&format!(
+            "{} {} {} {} {}",
+            row.title, row.teaser, row.body_text, external_text, pdf_text
+        )),
+        24_000,
+    );
+    json!({
+        "provider": &row.source,
+        "provider_article_id": &row.provider_article_id,
+        "canonical_news_id": &row.canonical_article_id,
+        "published_date": &row.session_date,
+        "published_at_utc": row.published_at.to_rfc3339(),
+        "published_raw": &row.published_raw,
+        "last_updated_at_utc": row.last_updated_at.as_ref().map(|value| value.to_rfc3339()),
+        "last_updated_raw": &row.last_updated_raw,
+        "downloaded_at_utc": row.gateway_seen_at.to_rfc3339(),
+        "provider_delay_ns": row.provider_ingest_delay_ns,
+        "title": &row.title,
+        "normalized_title": normalize_title(&row.title),
+        "teaser": &row.teaser,
+        "body_text": truncate_text(&row.body_text, 24_000),
+        "external_text": truncate_text(&external_text, 24_000),
+        "pdf_text": truncate_text(&pdf_text, 24_000),
+        "normalized_full_text": normalized_full_text,
+        "text_hash": &row.content_hash,
+        "article_url": &row.article_url,
+        "url_domain": &row.url_domain,
+        "author": &row.author,
+        "tickers": &row.tickers,
+        "channels": &row.channels,
+        "provider_tags": &row.tags,
+        "image_urls": &row.image_urls,
+        "links": canonical_links(row),
+        "has_body": row.has_body,
+        "is_title_only": if row.body_text.trim().is_empty() && external_text.trim().is_empty() && pdf_text.trim().is_empty() { 1 } else { 0 },
+        "has_external_text": if external_text.trim().is_empty() { 0 } else { 1 },
+        "has_pdf": row.has_pdf,
+        "pdf_urls": &row.pdf_urls,
+        "pdf_artifact_paths": Vec::<String>::new(),
+        "content_quality_flags": content_quality_flags(row, &external_text, &pdf_text),
+        "external_fetch_status": external_fetch_status(row),
+        "external_fetch_error": external_fetch_error(row),
+        "pdf_extract_status": pdf_extract_status(row),
+        "pdf_extract_error": pdf_extract_error(row),
+        "raw_artifact_path": &row.raw_artifact_path,
+        "raw_payload_hash": &row.raw_payload_hash,
+        "normalizer_version": "benzinga-normalizer-v1",
+    })
+}
+
+fn canonical_links(row: &NewsArticle) -> Vec<String> {
+    let mut links = Vec::new();
+    if !row.article_url.trim().is_empty() {
+        links.push(row.article_url.clone());
+    }
+    for url in &row.pdf_urls {
+        if !url.trim().is_empty() && !links.contains(url) {
+            links.push(url.clone());
+        }
+    }
+    links
+}
+
+fn content_quality_flags(row: &NewsArticle, external_text: &str, pdf_text: &str) -> Vec<String> {
+    let mut flags = Vec::new();
+    if row.body_text.trim().is_empty() && external_text.trim().is_empty() && pdf_text.trim().is_empty() {
+        flags.push("title_only".to_string());
+    }
+    if !row.body_text.trim().is_empty() && row.body_text.len() < 300 {
+        flags.push("short_body".to_string());
+    }
+    if !external_text.trim().is_empty() {
+        flags.push("external_text".to_string());
+    }
+    if !row.pdf_urls.is_empty() {
+        flags.push("pdf_link".to_string());
+    }
+    if !pdf_text.trim().is_empty() {
+        flags.push("pdf_text".to_string());
+    }
+    if row.extraction_status == "url_failed" {
+        flags.push("external_fetch_failed".to_string());
+    }
+    if !row.extraction_error.trim().is_empty() && row.has_pdf == 1 && pdf_text.trim().is_empty() {
+        flags.push("pdf_extract_failed".to_string());
+    }
+    flags
+}
+
+fn external_fetch_status(row: &NewsArticle) -> String {
+    match row.extraction_status.as_str() {
+        "url_enriched" => "fetched",
+        "url_failed" => "failed",
+        _ => "not_needed",
+    }
+    .to_string()
+}
+
+fn external_fetch_error(row: &NewsArticle) -> String {
+    if row.extraction_status == "url_failed" {
+        row.extraction_error.clone()
+    } else {
+        String::new()
+    }
+}
+
+fn pdf_extract_status(row: &NewsArticle) -> String {
+    if row.pdf_urls.is_empty() {
+        "not_needed"
+    } else if row.pdf_texts.iter().any(|text| !text.trim().is_empty()) {
+        "extracted"
+    } else if !row.extraction_error.trim().is_empty() {
+        "failed"
+    } else {
+        "empty"
+    }
+    .to_string()
+}
+
+fn pdf_extract_error(row: &NewsArticle) -> String {
+    if row.has_pdf == 1 && row.pdf_texts.iter().all(|text| text.trim().is_empty()) {
+        row.extraction_error.clone()
+    } else {
+        String::new()
+    }
+}
+
+fn text_delta(full_text: &str, body_text: &str) -> String {
+    let full = full_text.trim();
+    let body = body_text.trim();
+    if body.is_empty() {
+        full.to_string()
+    } else if full.starts_with(body) {
+        full[body.len()..].trim().to_string()
+    } else if full.len() > body.len() {
+        full.to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn normalize_title(input: &str) -> String {
+    normalize_text(input).to_lowercase()
+}
+
+fn normalize_text(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_text(input: &str, limit: usize) -> String {
+    if limit == 0 || input.len() <= limit {
+        input.to_string()
+    } else {
+        input.chars().take(limit).collect::<String>().trim().to_string()
     }
 }
 

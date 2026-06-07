@@ -6,15 +6,17 @@ The service polls only:
 
 - Benzinga news: `/benzinga/v2/news`
 
-It writes every valid article to one ClickHouse table, `live_news_articles`, and classifies rows for live scanner and research use. It does not drop crypto, macro, politics, war, ETF, no-ticker, or title-only rows. Those are persisted and labeled because they can matter for model training and broad market context.
+It writes every valid article to the existing live table, `live_news_articles`, and also to the canonical normalized Benzinga table, `benzinga_news_normalized_v1`. It does not drop crypto, macro, politics, war, ETF, no-ticker, or title-only rows. Those are persisted and labeled because they can matter for model training and broad market context.
 
 ## Responsibilities
 
 - Poll Massive REST endpoints incrementally.
+- Save each raw Benzinga provider payload under the same artifact layout used by the historical ingest script.
 - Save provider timestamps with high precision.
 - Save `gateway_seen_at` so provider delay can be measured live.
 - Normalize Benzinga news into the canonical news schema.
-- Persist raw JSON, article text, tickers, channels, tags, and normalized metadata.
+- Persist raw JSON, article text, tickers, channels, tags, and normalized metadata in the legacy live table.
+- Persist compact canonical rows in `benzinga_news_normalized_v1`.
 - Clean HTML into text.
 - Optionally fetch article URLs when body text is short.
 - Optionally discover/download PDF links and extract text with `pdftotext`.
@@ -37,6 +39,9 @@ Common settings:
 - `NEWS_GATEWAY_BIND`, default `127.0.0.1:8796`
 - `NEWS_BENZINGA_URL`, default `https://api.massive.com/benzinga/v2/news`
 - `NEWS_BENZINGA_ENABLED`, default `true`
+- `NEWS_BENZINGA_ARTIFACT_ROOT_WIN`, default `D:/market-data/benzinga_news_canonical`
+- `NEWS_BENZINGA_CANONICAL_ENABLED`, default `true`
+- `NEWS_BENZINGA_CANONICAL_TABLE`, default `benzinga_news_normalized_v1`
 - `NEWS_BENZINGA_POLL_INTERVAL_MS`, default `5000`
 - `NEWS_POLL_LIMIT`, default `1000`
 - `NEWS_MAX_PAGES_PER_POLL`, default `5`
@@ -91,10 +96,24 @@ raw JSON, and full intelligence outputs are in ClickHouse.
 
 ## Persistence Rule
 
-The gateway persists every valid article. It only skips malformed rows that lack a stable provider id/title/time. Duplicates are handled by `ReplacingMergeTree(gateway_seen_at)` using:
+The gateway first saves the raw provider payload to:
+
+```text
+NEWS_BENZINGA_ARTIFACT_ROOT_WIN/raw/YYYY/MM/DD/benzinga_<id>.json
+```
+
+It then normalizes the article and queues it for asynchronous batch persistence.
+
+The legacy live table keeps later provider updates with `ReplacingMergeTree(gateway_seen_at)` using:
 
 ```text
 ORDER BY (session_date, source, provider_article_id)
+```
+
+The canonical normalized table uses the same schema as the historical ingest script:
+
+```text
+benzinga_news_normalized_v1
 ```
 
 The canonical source value is `benzinga`. The derivative Massive general news endpoint is intentionally excluded from this service.

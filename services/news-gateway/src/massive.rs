@@ -6,9 +6,12 @@ use crate::intelligence::NewsIntelligenceClient;
 use crate::metrics::SharedMetrics;
 use crate::model::{parse_benzinga, parse_dt_opt, NewsArticle, NormalizedNewsInput, PollResponse, NEWS_SCHEMA_VERSION};
 use crate::state::SharedNewsState;
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use blake2::digest::{Update, VariableOutput};
+use blake2::Blake2bVar;
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, Utc};
 use reqwest::Client;
 use serde_json::Value;
+use std::path::PathBuf;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Duration};
 
@@ -171,7 +174,16 @@ async fn normalize_article(
     _source: &str,
     value: Value,
 ) -> Result<NewsArticle, String> {
-    let input = parse_benzinga(&value)?;
+    let mut input = parse_benzinga(&value)?;
+    match save_raw_payload(config, &input).await {
+        Ok((path, hash)) => {
+            input.raw_artifact_path = path;
+            input.raw_payload_hash = hash;
+        }
+        Err(error) => {
+            eprintln!("Failed to save raw Benzinga payload {}: {error}", input.provider_article_id);
+        }
+    }
     build_article(client, config, input).await
 }
 
@@ -291,7 +303,47 @@ async fn build_article(
         reject_reason: String::new(),
         content_hash,
         raw_json: input.raw_json,
+        raw_artifact_path: input.raw_artifact_path,
+        raw_payload_hash: input.raw_payload_hash,
     })
+}
+
+async fn save_raw_payload(config: &NewsGatewayConfig, input: &NormalizedNewsInput) -> Result<(String, String), String> {
+    let mut path = PathBuf::from(&config.benzinga_artifact_root_win);
+    path.push("raw");
+    path.push(format!("{:04}", input.published_at.year()));
+    path.push(format!("{:02}", input.published_at.month()));
+    path.push(format!("{:02}", input.published_at.day()));
+    tokio::fs::create_dir_all(&path).await.map_err(|error| error.to_string())?;
+    path.push(format!("benzinga_{}.json", safe_filename(&input.provider_article_id)));
+    tokio::fs::write(&path, &input.raw_json).await.map_err(|error| error.to_string())?;
+    Ok((path.to_string_lossy().to_string(), blake2b_128_hex(&input.raw_json)))
+}
+
+fn safe_filename(value: &str) -> String {
+    let mut output = String::new();
+    for ch in value.chars().take(120) {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+            output.push(ch);
+        } else {
+            output.push('_');
+        }
+    }
+    if output.trim_matches(['_', '.', '-']).is_empty() {
+        "artifact".to_string()
+    } else {
+        output
+    }
+}
+
+fn blake2b_128_hex(value: &str) -> String {
+    let mut hasher = Blake2bVar::new(16).expect("valid blake2b output size");
+    hasher.update(value.as_bytes());
+    let mut output = [0_u8; 16];
+    hasher
+        .finalize_variable(&mut output)
+        .expect("blake2b output buffer has valid size");
+    output.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
 }
 
 fn build_url(spec: &SourceSpec, config: &NewsGatewayConfig, cursor: DateTime<Utc>) -> String {

@@ -5,6 +5,9 @@ use std::env;
 pub struct NewsGatewayConfig {
     pub api_key_present: bool,
     pub benzinga_enabled: bool,
+    pub benzinga_artifact_root_win: String,
+    pub benzinga_canonical_enabled: bool,
+    pub benzinga_canonical_table: String,
     pub benzinga_poll_interval_ms: u64,
     pub benzinga_url: String,
     pub bind: String,
@@ -41,6 +44,12 @@ impl NewsGatewayConfig {
         Self {
             api_key_present: !massive_api_key.is_empty(),
             benzinga_enabled: env_bool("NEWS_BENZINGA_ENABLED", true),
+            benzinga_artifact_root_win: env_string(
+                "NEWS_BENZINGA_ARTIFACT_ROOT_WIN",
+                "D:/market-data/benzinga_news_canonical",
+            ),
+            benzinga_canonical_enabled: env_bool("NEWS_BENZINGA_CANONICAL_ENABLED", true),
+            benzinga_canonical_table: env_string("NEWS_BENZINGA_CANONICAL_TABLE", "benzinga_news_normalized_v1"),
             benzinga_poll_interval_ms: env_u64("NEWS_BENZINGA_POLL_INTERVAL_MS", 5_000),
             benzinga_url: env_string(
                 "NEWS_BENZINGA_URL",
