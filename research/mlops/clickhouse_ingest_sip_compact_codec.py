@@ -57,7 +57,7 @@ from research.mlops.clickhouse_ingest_sip_flatfiles import (  # noqa: E402
 
 
 DEFAULT_DATABASE = "market_sip_compact"
-DEFAULT_MANIFEST_TABLE = "compact_ingest_manifest"
+DEFAULT_MANIFEST_TABLE = "ingest_manifest"
 DEFAULT_START_DATE = "2024-01-01"
 DEFAULT_END_DATE = "2026-12-31"
 DEFAULT_INSERT_CONCURRENCY = 12
@@ -123,8 +123,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-date", default=DEFAULT_START_DATE)
     parser.add_argument("--end-date", default=DEFAULT_END_DATE)
     parser.add_argument("--kinds", default="quotes,trades")
-    parser.add_argument("--quote-table", default="quotes_canonical")
-    parser.add_argument("--trade-table", default="trades_canonical")
+    parser.add_argument("--quote-table", default="quotes")
+    parser.add_argument("--trade-table", default="trades")
     parser.add_argument("--storage-policy", default=default_storage_policy())
     parser.add_argument("--insert-concurrency", type=int, default=DEFAULT_INSERT_CONCURRENCY)
     parser.add_argument("--max-threads", type=int, default=DEFAULT_MAX_THREADS)

@@ -19,9 +19,9 @@ research/mlops/clickhouse_compact_schema_codec_benchmark.py
 Default production settings:
 
 - Database: `market_sip_compact`
-- Quote table: `quotes_canonical`
-- Trade table: `trades_canonical`
-- Manifest table: `compact_ingest_manifest`
+- Quote table: `quotes`
+- Trade table: `trades`
+- Manifest table: `ingest_manifest`
 - Default concurrency: `12`
 - Default per-insert ClickHouse threads: `4`
 - Default source root on Windows: discovered from the shared flatfile config, normally `D:\market-data\flatfiles\us_stocks_sip`
@@ -40,7 +40,7 @@ Example for the next older chunk:
 python D:\TradingML\codes\masked_event_model\v4\research\mlops\clickhouse_ingest_sip_compact_codec.py --database market_sip_compact --start-date 2024-01-01 --end-date 2024-12-31 --insert-concurrency 12 --max-threads 4
 ```
 
-The script is resumable. It writes one row per source file attempt to `compact_ingest_manifest`. Files with latest status `ok` are skipped. Files with latest status `failed` or `started` are skipped unless `--retry-failed` or `--retry-started` is provided.
+The script is resumable. It writes one row per source file attempt to `ingest_manifest`. Files with latest status `ok` are skipped. Files with latest status `failed` or `started` are skipped unless `--retry-failed` or `--retry-started` is provided.
 
 The script validates the existing target table schema before ingesting. If a stale table exists, for example from an older schema where price integers were widened to `UInt64`, the script stops with a clear error. Use a fresh table/database or migrate/drop the stale table before ingesting.
 
@@ -49,7 +49,7 @@ The script validates the existing target table schema before ingesting. If a sta
 Quote table:
 
 ```sql
-quotes_canonical
+quotes
 (
     ticker LowCardinality(String),
     sip_timestamp_us UInt64 CODEC(DoubleDelta, ZSTD(1)),
@@ -74,7 +74,7 @@ ORDER BY (ticker, sip_timestamp_us, sequence_number)
 Trade table:
 
 ```sql
-trades_canonical
+trades
 (
     ticker LowCardinality(String),
     sip_timestamp_us UInt64 CODEC(DoubleDelta, ZSTD(1)),
@@ -220,7 +220,7 @@ SELECT
     conditions,
     indicators,
     issue_flags
-FROM market_sip_compact.quotes_canonical
+FROM market_sip_compact.quotes
 WHERE ticker = 'AAPL'
   AND event_date BETWEEN toDate('2025-01-01') AND toDate('2025-01-31')
 ORDER BY sip_timestamp_us, sequence_number
@@ -242,7 +242,7 @@ SELECT
     bitAnd(bitShiftRight(trade_flags, 3), 15) AS correction,
     conditions,
     issue_flags
-FROM market_sip_compact.trades_canonical
+FROM market_sip_compact.trades
 WHERE ticker = 'AAPL'
   AND event_date BETWEEN toDate('2025-01-01') AND toDate('2025-01-31')
 ORDER BY sip_timestamp_us, sequence_number
@@ -258,7 +258,7 @@ SELECT
     count() AS attempts,
     uniqExact(source_date, source_file) AS files,
     max(updated_at) AS last_update
-FROM market_sip_compact.compact_ingest_manifest
+FROM market_sip_compact.ingest_manifest
 GROUP BY kind, status
 ORDER BY kind, status
 ```
@@ -275,7 +275,7 @@ FROM
             PARTITION BY kind, source_date, source_file
             ORDER BY updated_at DESC
         ) AS rn
-    FROM market_sip_compact.compact_ingest_manifest
+    FROM market_sip_compact.ingest_manifest
 )
 WHERE rn = 1
 ORDER BY kind, source_date, source_file
@@ -286,7 +286,7 @@ ORDER BY kind, source_date, source_file
 After ingesting a test chunk, validate random raw rows against ClickHouse decoded rows:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\mlops\clickhouse_compact_schema_validate_sample.py --database market_sip_compact --quote-table quotes_canonical --trade-table trades_canonical --quote-date 2026-05-15 --trade-date 2026-05-15 --sample-size 1000
+python D:\TradingML\codes\masked_event_model\v4\research\mlops\clickhouse_compact_schema_validate_sample.py --database market_sip_compact --quote-table quotes --trade-table trades --quote-date 2026-05-15 --trade-date 2026-05-15 --sample-size 1000
 ```
 
 Expected result for a valid schema is:
