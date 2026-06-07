@@ -14,7 +14,6 @@ struct MetricsInner {
     benzinga_poll_failures: AtomicU64,
     duplicate_updates_seen: AtomicU64,
     extraction_failures: AtomicU64,
-    massive_news_poll_failures: AtomicU64,
     last_article_unix_ns: AtomicI64,
     malformed_rows: AtomicU64,
     poll_runs: AtomicU64,
@@ -31,7 +30,6 @@ pub struct MetricsSnapshot {
     pub benzinga_poll_failures: u64,
     pub duplicate_updates_seen: u64,
     pub extraction_failures: u64,
-    pub massive_news_poll_failures: u64,
     pub last_article_lag_ms: Option<i64>,
     pub last_article_ts: Option<DateTime<Utc>>,
     pub malformed_rows: u64,
@@ -51,7 +49,6 @@ impl SharedMetrics {
                 benzinga_poll_failures: AtomicU64::new(0),
                 duplicate_updates_seen: AtomicU64::new(0),
                 extraction_failures: AtomicU64::new(0),
-                massive_news_poll_failures: AtomicU64::new(0),
                 last_article_unix_ns: AtomicI64::new(0),
                 malformed_rows: AtomicU64::new(0),
                 poll_runs: AtomicU64::new(0),
@@ -73,7 +70,6 @@ impl SharedMetrics {
             benzinga_poll_failures: self.get(&self.inner.benzinga_poll_failures),
             duplicate_updates_seen: self.get(&self.inner.duplicate_updates_seen),
             extraction_failures: self.get(&self.inner.extraction_failures),
-            massive_news_poll_failures: self.get(&self.inner.massive_news_poll_failures),
             last_article_lag_ms: if last_ms > 0 { Some(now_ms - last_ms) } else { None },
             last_article_ts: if last_ms > 0 {
                 DateTime::<Utc>::from_timestamp_millis(last_ms)
@@ -116,12 +112,8 @@ impl SharedMetrics {
         self.inc(&self.inner.articles_persisted_queued, 1);
     }
 
-    pub fn inc_poll_failure(&self, source: &str) {
-        if source == "massive_benzinga" {
-            self.inc(&self.inner.benzinga_poll_failures, 1);
-        } else {
-            self.inc(&self.inner.massive_news_poll_failures, 1);
-        }
+    pub fn inc_poll_failure(&self, _source: &str) {
+        self.inc(&self.inner.benzinga_poll_failures, 1);
     }
 
     pub fn inc_poll_run(&self) {

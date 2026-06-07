@@ -1,11 +1,10 @@
 # News Gateway
 
-Standalone Rust gateway for Massive REST news.
+Standalone Rust gateway for Benzinga news served through the Massive REST API.
 
-The service polls:
+The service polls only:
 
-- Massive Benzinga news: `/benzinga/v2/news`
-- Massive news: `/v2/reference/news`
+- Benzinga news: `/benzinga/v2/news`
 
 It writes every valid article to one ClickHouse table, `live_news_articles`, and classifies rows for live scanner and research use. It does not drop crypto, macro, politics, war, ETF, no-ticker, or title-only rows. Those are persisted and labeled because they can matter for model training and broad market context.
 
@@ -14,8 +13,8 @@ It writes every valid article to one ClickHouse table, `live_news_articles`, and
 - Poll Massive REST endpoints incrementally.
 - Save provider timestamps with high precision.
 - Save `gateway_seen_at` so provider delay can be measured live.
-- Normalize Benzinga news and Massive news into one schema.
-- Persist raw JSON, publisher fields, article text, tickers, channels, tags, keywords, and Massive sentiment insights.
+- Normalize Benzinga news into the canonical news schema.
+- Persist raw JSON, article text, tickers, channels, tags, and normalized metadata.
 - Clean HTML into text.
 - Optionally fetch article URLs when body text is short.
 - Optionally discover/download PDF links and extract text with `pdftotext`.
@@ -31,14 +30,14 @@ Required:
 - `NEWS_CLICKHOUSE_DATABASE`, defaults to `QMD_CLICKHOUSE_DATABASE`, then `q_live`
 - `NEWS_CLICKHOUSE_USER`, defaults to `QMD_CLICKHOUSE_USER`, then `default`
 - `NEWS_CLICKHOUSE_PASSWORD`, defaults to `QMD_CLICKHOUSE_PASSWORD`
+- `NEWS_CLICKHOUSE_STORAGE_POLICY`, defaults to `CLICKHOUSE_LIVE_STORAGE_POLICY`
 
 Common settings:
 
 - `NEWS_GATEWAY_BIND`, default `127.0.0.1:8796`
+- `NEWS_BENZINGA_URL`, default `https://api.massive.com/benzinga/v2/news`
 - `NEWS_BENZINGA_ENABLED`, default `true`
-- `NEWS_MASSIVE_ENABLED`, default `true`
 - `NEWS_BENZINGA_POLL_INTERVAL_MS`, default `5000`
-- `NEWS_MASSIVE_POLL_INTERVAL_MS`, default `30000`
 - `NEWS_POLL_LIMIT`, default `1000`
 - `NEWS_MAX_PAGES_PER_POLL`, default `5`
 - `NEWS_LIVE_LOOKBACK_MINUTES`, default `30`
@@ -98,4 +97,4 @@ The gateway persists every valid article. It only skips malformed rows that lack
 ORDER BY (session_date, source, provider_article_id)
 ```
 
-This keeps later provider updates without widening the gateway into a final trading-signal service.
+The canonical source value is `benzinga`. The derivative Massive general news endpoint is intentionally excluded from this service.

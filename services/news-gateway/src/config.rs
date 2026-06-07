@@ -10,6 +10,7 @@ pub struct NewsGatewayConfig {
     pub bind: String,
     pub clickhouse_database: String,
     pub clickhouse_password_present: bool,
+    pub clickhouse_storage_policy: String,
     pub clickhouse_url: String,
     pub clickhouse_user: String,
     pub extraction_enabled: bool,
@@ -19,9 +20,6 @@ pub struct NewsGatewayConfig {
     pub intelligence_enabled: bool,
     pub intelligence_timeout_ms: u64,
     pub intelligence_url: String,
-    pub massive_news_enabled: bool,
-    pub massive_news_poll_interval_ms: u64,
-    pub massive_news_url: String,
     pub live_lookback_minutes: i64,
     #[serde(skip_serializing)]
     pub massive_api_key: String,
@@ -44,10 +42,17 @@ impl NewsGatewayConfig {
             api_key_present: !massive_api_key.is_empty(),
             benzinga_enabled: env_bool("NEWS_BENZINGA_ENABLED", true),
             benzinga_poll_interval_ms: env_u64("NEWS_BENZINGA_POLL_INTERVAL_MS", 5_000),
-            benzinga_url: env_string("NEWS_MASSIVE_BENZINGA_URL", "https://api.massive.com/benzinga/v2/news"),
+            benzinga_url: env_string(
+                "NEWS_BENZINGA_URL",
+                &env_string("NEWS_MASSIVE_BENZINGA_URL", "https://api.massive.com/benzinga/v2/news"),
+            ),
             bind: env_string("NEWS_GATEWAY_BIND", "127.0.0.1:8796"),
             clickhouse_database: env_string("NEWS_CLICKHOUSE_DATABASE", &env_string("QMD_CLICKHOUSE_DATABASE", "q_live")),
             clickhouse_password_present: !clickhouse_password.is_empty(),
+            clickhouse_storage_policy: env_string(
+                "NEWS_CLICKHOUSE_STORAGE_POLICY",
+                &env_string("CLICKHOUSE_LIVE_STORAGE_POLICY", ""),
+            ),
             clickhouse_url: env_string("NEWS_CLICKHOUSE_URL", &env_string("QMD_CLICKHOUSE_URL", "http://localhost:8123"))
                 .trim_end_matches('/')
                 .to_string(),
@@ -59,9 +64,6 @@ impl NewsGatewayConfig {
             intelligence_enabled: env_bool("NEWS_INTELLIGENCE_ENABLED", true),
             intelligence_timeout_ms: env_u64("NEWS_INTELLIGENCE_TIMEOUT_MS", 1_500),
             intelligence_url: env_string("NEWS_INTELLIGENCE_URL", "http://127.0.0.1:8797").trim_end_matches('/').to_string(),
-            massive_news_enabled: env_bool("NEWS_MASSIVE_ENABLED", true),
-            massive_news_poll_interval_ms: env_u64("NEWS_MASSIVE_POLL_INTERVAL_MS", 30_000),
-            massive_news_url: env_string("NEWS_MASSIVE_URL", "https://api.massive.com/v2/reference/news"),
             live_lookback_minutes: env_i64("NEWS_LIVE_LOOKBACK_MINUTES", 30),
             massive_api_key,
             max_batch: env_usize("NEWS_CLICKHOUSE_MAX_BATCH", 1_000),

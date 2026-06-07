@@ -283,12 +283,24 @@ The LLM stage should receive only selected rows: uncertain, rare, high impact, m
 - Rename source identifiers to `benzinga`.
 - Keep the current live endpoint behavior but route it through the shared Benzinga normalizer.
 
+Implementation files:
+
+- `services/news-gateway/src/config.rs`
+- `services/news-gateway/src/massive.rs`
+- `services/news-gateway/src/model.rs`
+- `services/news-gateway/src/clickhouse.rs`
+
 ### Phase 2: Shared Normalizer
 
 - Create a reusable Python module for historical ingestion scripts.
 - Keep Rust live gateway behavior aligned with the same contract.
 - Define normalizer version and exact field semantics.
 - Add deterministic text cleanup and quality flags.
+
+Implementation files:
+
+- `research/mlops/news_benzinga_normalize.py`
+- `research/mlops/news_benzinga_clickhouse.py`
 
 Python is the right choice for the historical workstation path because it already matches the MLOps scripts, ClickHouse tooling, multiprocessing, PDF extraction libraries, and workstation run workflow. Rust remains appropriate for the low-latency live gateway.
 
@@ -302,6 +314,10 @@ Python is the right choice for the historical workstation path because it alread
 - Maintain manifest rows and JSONL reports.
 - Use `CLICKHOUSE_LIVE_STORAGE_POLICY`.
 - Mirror the script to the workstation MLOps path.
+
+Implementation file:
+
+- `research/mlops/news_benzinga_historical_ingest.py`
 
 ### Phase 4: Keyword Discovery
 

@@ -315,49 +315,10 @@ pub fn parse_benzinga(value: &Value) -> Result<NormalizedNewsInput, String> {
         publisher_name: "Benzinga".to_string(),
         publisher_raw: "{}".to_string(),
         raw_json: value.to_string(),
-        source: "massive_benzinga".to_string(),
+        source: "benzinga".to_string(),
         source_endpoint: "/benzinga/v2/news".to_string(),
         tags: string_array(value.get("tags")),
         teaser: string_field(value, "teaser"),
-        tickers: normalize_tickers(string_array(value.get("tickers"))),
-        title: string_field(value, "title"),
-    })
-}
-
-pub fn parse_massive_news(value: &Value) -> Result<NormalizedNewsInput, String> {
-    let published_raw = string_field(value, "published_utc");
-    let published_at = parse_dt(&published_raw)?;
-    let publisher = value.get("publisher").cloned().unwrap_or(Value::Null);
-    let insights = value.get("insights").and_then(Value::as_array).cloned().unwrap_or_default();
-    Ok(NormalizedNewsInput {
-        article_url: string_field(value, "article_url"),
-        author: string_field(value, "author"),
-        body_html: String::new(),
-        channels: Vec::new(),
-        image_urls: optional_string_field(value, "image_url").into_iter().collect(),
-        insight_reasons: insights.iter().map(|item| string_field(item, "sentiment_reasoning")).collect(),
-        insight_sentiments: insights.iter().map(|item| string_field(item, "sentiment")).collect(),
-        insight_tickers: normalize_tickers(insights.iter().map(|item| string_field(item, "ticker")).collect()),
-        keywords: string_array(value.get("keywords")),
-        last_updated_at: None,
-        last_updated_raw: String::new(),
-        provider_article_id: value
-            .get("id")
-            .map(value_to_id)
-            .filter(|item| !item.is_empty())
-            .ok_or_else(|| "missing id".to_string())?,
-        published_at,
-        published_raw,
-        publisher_favicon_url: string_field(&publisher, "favicon_url"),
-        publisher_homepage_url: string_field(&publisher, "homepage_url"),
-        publisher_logo_url: string_field(&publisher, "logo_url"),
-        publisher_name: string_field(&publisher, "name"),
-        publisher_raw: publisher.to_string(),
-        raw_json: value.to_string(),
-        source: "massive_news".to_string(),
-        source_endpoint: "/v2/reference/news".to_string(),
-        tags: Vec::new(),
-        teaser: string_field(value, "description"),
         tickers: normalize_tickers(string_array(value.get("tickers"))),
         title: string_field(value, "title"),
     })
@@ -407,15 +368,6 @@ fn string_array(value: Option<&Value>) -> Vec<String> {
             .collect(),
         Some(Value::String(item)) if !item.trim().is_empty() => vec![item.trim().to_string()],
         _ => Vec::new(),
-    }
-}
-
-fn optional_string_field(value: &Value, key: &str) -> Option<String> {
-    let text = string_field(value, key);
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
     }
 }
 

@@ -22,8 +22,10 @@ impl NewsClickHouse {
     pub async fn initialize(&self) -> Result<(), String> {
         self.execute(&format!("CREATE DATABASE IF NOT EXISTS `{}`", self.config.clickhouse_database), false)
             .await?;
+        let settings = merge_tree_settings(&self.config.clickhouse_storage_policy);
         self.execute(
-            r#"
+            &format!(
+                r#"
             CREATE TABLE IF NOT EXISTS live_news_articles
             (
                 session_date Date,
@@ -103,7 +105,9 @@ impl NewsClickHouse {
             ENGINE = ReplacingMergeTree(gateway_seen_at)
             PARTITION BY session_date
             ORDER BY (session_date, source, provider_article_id)
+            SETTINGS {settings}
             "#,
+            ),
             true,
         )
         .await?;
@@ -288,6 +292,15 @@ impl NewsClickHouse {
         }
         Ok(text)
     }
+}
+
+fn merge_tree_settings(storage_policy: &str) -> String {
+    let mut settings = vec!["index_granularity = 8192".to_string()];
+    let policy = storage_policy.trim();
+    if !policy.is_empty() {
+        settings.push(format!("storage_policy = '{}'", policy.replace('\'', "''")));
+    }
+    settings.join(", ")
 }
 
 fn intelligence_column_migrations() -> Vec<&'static str> {

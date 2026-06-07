@@ -4,9 +4,7 @@ use crate::config::NewsGatewayConfig;
 use crate::extract::{extract_content, stable_hash, url_domain};
 use crate::intelligence::NewsIntelligenceClient;
 use crate::metrics::SharedMetrics;
-use crate::model::{
-    parse_benzinga, parse_dt_opt, parse_massive_news, NewsArticle, NormalizedNewsInput, PollResponse, NEWS_SCHEMA_VERSION,
-};
+use crate::model::{parse_benzinga, parse_dt_opt, NewsArticle, NormalizedNewsInput, PollResponse, NEWS_SCHEMA_VERSION};
 use crate::state::SharedNewsState;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use reqwest::Client;
@@ -28,16 +26,6 @@ pub async fn run_news_pollers(
     if config.benzinga_enabled {
         tokio::spawn(run_source_poller(
             SourceSpec::benzinga(config.clone()),
-            config.clone(),
-            state.clone(),
-            writer_sender.clone(),
-            article_sender.clone(),
-            metrics.clone(),
-        ));
-    }
-    if config.massive_news_enabled {
-        tokio::spawn(run_source_poller(
-            SourceSpec::massive_news(config.clone()),
             config,
             state,
             writer_sender,
@@ -62,18 +50,8 @@ impl SourceSpec {
             interval_ms: config.benzinga_poll_interval_ms,
             published_filter: "published.gte",
             sort_params: vec![("sort", "published.asc")],
-            source: "massive_benzinga",
+            source: "benzinga",
             url: config.benzinga_url,
-        }
-    }
-
-    fn massive_news(config: NewsGatewayConfig) -> Self {
-        Self {
-            interval_ms: config.massive_news_poll_interval_ms,
-            published_filter: "published_utc.gte",
-            sort_params: vec![("sort", "published_utc"), ("order", "asc")],
-            source: "massive_news",
-            url: config.massive_news_url,
         }
     }
 }
@@ -190,14 +168,10 @@ async fn poll_once(
 async fn normalize_article(
     client: &Client,
     config: &NewsGatewayConfig,
-    source: &str,
+    _source: &str,
     value: Value,
 ) -> Result<NewsArticle, String> {
-    let input = if source == "massive_benzinga" {
-        parse_benzinga(&value)?
-    } else {
-        parse_massive_news(&value)?
-    };
+    let input = parse_benzinga(&value)?;
     build_article(client, config, input).await
 }
 
