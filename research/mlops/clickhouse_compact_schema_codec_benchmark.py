@@ -58,6 +58,7 @@ DEFAULT_TRADE_DATE = "2026-05-15"
 DEFAULT_START_DATE = "2026-05-15"
 DEFAULT_END_DATE = "2026-06-03"
 DEFAULT_MAX_FILES_PER_KIND = 15
+EVENT_DATE_TIMEZONE = "UTC"
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +169,10 @@ def codec_suffix(sql_type: str, *, enabled: bool) -> str:
     return sql_type
 
 
+def event_date_expr(timestamp_column: str = "sip_timestamp_us") -> str:
+    return f"toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64({timestamp_column})), '{EVENT_DATE_TIMEZONE}'))"
+
+
 def quote_table_sql(database: str, table: str, *, codecs: bool, storage_policy: str) -> str:
     db = quote_ident(database)
     table_name = quote_ident(table)
@@ -188,7 +193,7 @@ CREATE TABLE IF NOT EXISTS {db}.{table_name}
     indicators LowCardinality(String),
     quote_flags UInt8,
     issue_flags UInt16,
-    event_date Date MATERIALIZED toDate(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)))
+    event_date Date MATERIALIZED {event_date_expr()}
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(event_date)
@@ -213,7 +218,7 @@ CREATE TABLE IF NOT EXISTS {db}.{table_name}
     conditions LowCardinality(String),
     trade_flags UInt8,
     issue_flags UInt16,
-    event_date Date MATERIALIZED toDate(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)))
+    event_date Date MATERIALIZED {event_date_expr()}
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(event_date)

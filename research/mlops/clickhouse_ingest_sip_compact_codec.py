@@ -17,6 +17,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from research.mlops.env import load_env_files, secret_status  # noqa: E402
 from research.mlops.clickhouse_compact_schema_codec_benchmark import (  # noqa: E402
+    EVENT_DATE_TIMEZONE,
+    event_date_expr,
     insert_quote_sql,
     insert_trade_sql,
     quote_table_sql,
@@ -244,6 +246,8 @@ def create_database_and_tables(client: ClickHouseHttpClient, args: argparse.Name
     ensure_manifest_columns(client, args.database, args.manifest_table)
     validate_target_schema(client, args.database, args.quote_table, REQUIRED_QUOTE_COLUMN_TYPES)
     validate_target_schema(client, args.database, args.trade_table, REQUIRED_TRADE_COLUMN_TYPES)
+    validate_event_date_expression(client, args.database, args.quote_table)
+    validate_event_date_expression(client, args.database, args.trade_table)
 
 
 def ensure_manifest_columns(client: ClickHouseHttpClient, database: str, manifest_table: str) -> None:
@@ -284,6 +288,29 @@ def validate_target_schema(client: ClickHouseHttpClient, database: str, table: s
             "Use a fresh table/database or migrate/drop the stale table before ingesting."
         )
     print(f"SCHEMA OK {database}.{table}", flush=True)
+
+
+def validate_event_date_expression(client: ClickHouseHttpClient, database: str, table: str) -> None:
+    rows = client.query_tsv(
+        "SELECT default_kind, default_expression "
+        "FROM system.columns "
+        f"WHERE database = {sql_string(database)} "
+        f"AND table = {sql_string(table)} "
+        "AND name = 'event_date'"
+    ).strip().splitlines()
+    if not rows:
+        raise RuntimeError(f"Target table {database}.{table} is missing materialized event_date.")
+    parts = rows[0].split("\t", 1)
+    default_kind = parts[0] if parts else ""
+    default_expression = (parts[1] if len(parts) > 1 else "").replace("\\'", "'")
+    if default_kind != "MATERIALIZED" or "toTimeZone" not in default_expression or f"'{EVENT_DATE_TIMEZONE}'" not in default_expression:
+        raise RuntimeError(
+            f"Target table {database}.{table} has stale event_date expression: {default_expression!r}.\n"
+            f"Expected UTC materialization: {event_date_expr()}.\n"
+            "Run research/mlops/clickhouse_fix_compact_event_date.py to rebuild/swap the existing compact tables "
+            "before ingesting more data into this database."
+        )
+    print(f"EVENT_DATE OK {database}.{table} timezone={EVENT_DATE_TIMEZONE}", flush=True)
 
 
 def latest_manifest_status(

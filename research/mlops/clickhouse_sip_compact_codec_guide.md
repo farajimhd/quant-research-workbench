@@ -45,6 +45,8 @@ The script is resumable. It writes one row per source file attempt to `ingest_ma
 
 The script validates the existing target table schema before ingesting. If a stale table exists, for example from an older schema where price integers were widened to `UInt64`, the script stops with a clear error. Use a fresh table/database or migrate/drop the stale table before ingesting.
 
+The script also validates that `event_date` is materialized from `sip_timestamp_us` in UTC. This matters because the ClickHouse server timezone may be different from UTC, and a server-local materialized date can partition late-session or after-hours rows into the wrong day/month.
+
 Before inserting, the script loads manifest status in bulk, skips files whose latest status is already `ok`, then runs a Polars streaming/lazy source preflight for each pending CSV file. The preflight extracts:
 
 - `expected_rows`
@@ -76,7 +78,7 @@ quotes
     indicators LowCardinality(String),
     quote_flags UInt8,
     issue_flags UInt16,
-    event_date Date MATERIALIZED toDate(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)))
+    event_date Date MATERIALIZED toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'UTC'))
 )
 PARTITION BY toYYYYMM(event_date)
 ORDER BY (ticker, sip_timestamp_us, sequence_number)
@@ -97,7 +99,7 @@ trades
     conditions LowCardinality(String),
     trade_flags UInt8,
     issue_flags UInt16,
-    event_date Date MATERIALIZED toDate(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)))
+    event_date Date MATERIALIZED toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'UTC'))
 )
 PARTITION BY toYYYYMM(event_date)
 ORDER BY (ticker, sip_timestamp_us, sequence_number)
@@ -165,6 +167,14 @@ sip_timestamp_us + participant_delta_us AS participant_timestamp_us
 
 TRF timestamps are intentionally not stored because the downloaded data showed poor availability/reliability.
 
+`event_date` is the UTC date derived from `sip_timestamp_us`:
+
+```sql
+toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'UTC'))
+```
+
+Do not use server-local date materialization here. On a workstation whose ClickHouse timezone is not UTC, `toDate(fromUnixTimestamp64Micro(...))` can silently create a local date and shift rows into the previous day.
+
 ## Sizes
 
 Quote sizes are stored as `UInt32`:
@@ -220,7 +230,7 @@ Quote chart query:
 ```sql
 SELECT
     ticker,
-    fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)) AS sip_time,
+    toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'UTC') AS sip_time_utc,
     sip_timestamp_us,
     sequence_number,
     if(bitAnd(quote_flags, 1) = 1, bid_price_int / 10000.0, bid_price_int / 100.0) AS bid_price,
@@ -245,7 +255,7 @@ Trade chart query:
 ```sql
 SELECT
     ticker,
-    fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)) AS sip_time,
+    toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'UTC') AS sip_time_utc,
     sip_timestamp_us,
     sequence_number,
     if(bitAnd(trade_flags, 1) = 1, price_int / 10000.0, price_int / 100.0) AS price,
@@ -308,3 +318,36 @@ Expected result for a valid schema is:
 - trade mismatches: `0`
 - missing rows: `0`
 - duplicate key rows: `0`
+
+## Fixing A Stale Server-Local `event_date`
+
+Older compact tables may have this stale expression:
+
+```sql
+event_date Date MATERIALIZED toDate(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)))
+```
+
+That expression uses the ClickHouse server timezone. If the server timezone is not UTC, existing partitions and future inserts will use the wrong date semantics.
+
+Use the UTC rebuild script before inserting more data into such a database:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v4\research\mlops\clickhouse_fix_compact_event_date.py --database market_sip_compact --copy --validate --max-threads 24
+```
+
+The script:
+
+- creates UTC shadow tables: `quotes_event_date_utc_rebuild` and `trades_event_date_utc_rebuild`
+- copies the old tables month by month
+- records copy status in `event_date_fix_manifest`
+- validates source/shadow row counts
+- validates that shadow `event_date` exactly matches UTC-derived `sip_timestamp_us`
+- does not replace the production tables unless `--swap` is provided
+
+After copy/validation completes cleanly, promote the corrected tables:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v4\research\mlops\clickhouse_fix_compact_event_date.py --database market_sip_compact --validate --swap
+```
+
+The swap renames the old tables to timestamped backups and promotes the UTC shadow tables to `quotes` and `trades`. Keep the backups until downstream queries and training loaders are verified.
