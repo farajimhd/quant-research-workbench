@@ -1,0 +1,505 @@
+# Benzinga Historical News Ingest Guide
+
+This guide runs the canonical Benzinga historical news pipeline:
+
+1. Download Benzinga news from the Massive-hosted Benzinga endpoint.
+2. Save raw provider payloads and optional PDF artifacts to disk.
+3. Normalize rows in memory and insert them into ClickHouse.
+
+Normalized rows are not saved as local files. They are inserted into ClickHouse only.
+
+## Script
+
+Laptop repo path:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\news_benzinga_historical_ingest.py
+```
+
+Workstation runtime path:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py
+```
+
+Use the workstation path for the full redownload because it can use the workstation CPU, network, and disk layout.
+
+## What Gets Written
+
+Raw downloaded provider payloads:
+
+```text
+--artifact-root-win\raw\YYYY\MM\DD\benzinga_<id>.json
+```
+
+Optional PDF artifacts:
+
+```text
+--artifact-root-win\pdfs\YYYY\MM\DD\<id>\*.pdf
+```
+
+Run reports:
+
+```text
+--output-root-win\benzinga_historical_ingest_<run_id>.jsonl
+```
+
+ClickHouse tables:
+
+```text
+<database>.benzinga_news_normalized_v1
+<database>.benzinga_news_ingest_manifest_v1
+```
+
+## Required Environment
+
+The script loads `.env` through the shared MLOps environment discovery. Required values:
+
+```text
+MASSIVE_API_KEY
+REAL_LIVE_CLICKHOUSE_WRITE_URL
+REAL_LIVE_CLICKHOUSE_WRITE_DATABASE
+REAL_LIVE_CLICKHOUSE_WRITE_USER
+REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD
+CLICKHOUSE_LIVE_STORAGE_POLICY
+```
+
+If ClickHouse does not require a user/password in the current environment, those values can be absent.
+
+## Recommended First Run
+
+Dry-run only. This validates env loading, date parsing, bucket construction, target database, and storage policy. It does not download or insert.
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
+  --dry-run `
+  --start-utc 2026-01-01T00:00:00Z `
+  --end-utc 2026-01-02T00:00:00Z `
+  --bucket-minutes 15
+```
+
+Small API smoke test. This downloads and normalizes one tiny bucket, writes raw payloads if rows exist, but does not insert into ClickHouse.
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
+  --no-insert `
+  --start-utc 2026-01-01T00:00:00Z `
+  --end-utc 2026-01-01T00:05:00Z `
+  --bucket-minutes 5 `
+  --limit-buckets 1 `
+  --download-processes 1 `
+  --no-fetch-external `
+  --no-extract-pdfs
+```
+
+Small insert test. This creates tables and inserts normalized rows for a short period.
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
+  --start-utc 2026-01-01T00:00:00Z `
+  --end-utc 2026-01-01T01:00:00Z `
+  --bucket-minutes 15 `
+  --limit-buckets 4 `
+  --download-processes 2 `
+  --insert-concurrency 2 `
+  --no-fetch-external `
+  --no-extract-pdfs
+```
+
+## Full Historical Run
+
+Start conservative:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
+  --start-utc 2010-01-01T00:00:00Z `
+  --end-utc 2026-06-08T00:00:00Z `
+  --bucket-minutes 15 `
+  --download-processes 16 `
+  --insert-concurrency 6
+```
+
+If Massive and ClickHouse remain stable, increase gradually:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
+  --start-utc 2010-01-01T00:00:00Z `
+  --end-utc 2026-06-08T00:00:00Z `
+  --bucket-minutes 15 `
+  --download-processes 24 `
+  --insert-concurrency 8
+```
+
+For a first full run, keep PDF and external URL enrichment enabled only if the workstation network and disk can handle the extra work. To prioritize canonical Benzinga text first:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
+  --start-utc 2010-01-01T00:00:00Z `
+  --end-utc 2026-06-08T00:00:00Z `
+  --bucket-minutes 15 `
+  --download-processes 16 `
+  --insert-concurrency 6 `
+  --no-fetch-external `
+  --no-extract-pdfs
+```
+
+## Argument Reference
+
+### ClickHouse Arguments
+
+`--clickhouse-url`
+
+ClickHouse HTTP endpoint. Default resolution:
+
+```text
+REAL_LIVE_CLICKHOUSE_WRITE_URL
+NEWS_CLICKHOUSE_URL
+QMD_CLICKHOUSE_URL
+CLICKHOUSE_URL
+TD__DATABASE__CLICKHOUSE__ENDPOINT_URL
+http://localhost:8123
+```
+
+`--user`
+
+ClickHouse user. Default resolution:
+
+```text
+REAL_LIVE_CLICKHOUSE_WRITE_USER
+NEWS_CLICKHOUSE_USER
+QMD_CLICKHOUSE_USER
+CLICKHOUSE_WORKSTATION_USER
+CLICKHOUSE_USER
+TD__DATABASE__CLICKHOUSE__USER
+default
+```
+
+`--password`
+
+ClickHouse password. Default resolution:
+
+```text
+REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD
+NEWS_CLICKHOUSE_PASSWORD
+QMD_CLICKHOUSE_PASSWORD
+CLICKHOUSE_WORKSTATION_PASSWORD
+CLICKHOUSE_PASSWORD
+TD__DATABASE__CLICKHOUSE__PASSWORD
+empty
+```
+
+`--database`
+
+Target database. Default resolution:
+
+```text
+REAL_LIVE_CLICKHOUSE_WRITE_DATABASE
+NEWS_CLICKHOUSE_DATABASE
+QMD_CLICKHOUSE_DATABASE
+q_live
+```
+
+`--news-table`
+
+Normalized news target table. Default:
+
+```text
+benzinga_news_normalized_v1
+```
+
+`--manifest-table`
+
+Bucket/run manifest table. Default:
+
+```text
+benzinga_news_ingest_manifest_v1
+```
+
+`--storage-policy`
+
+MergeTree storage policy for both news and manifest tables. Default:
+
+```text
+CLICKHOUSE_LIVE_STORAGE_POLICY
+NEWS_CLICKHOUSE_STORAGE_POLICY
+empty
+```
+
+Use `CLICKHOUSE_LIVE_STORAGE_POLICY` for this pipeline so news is stored on the SSD policy reserved for the live database.
+
+### Provider Arguments
+
+`--api-key`
+
+Massive API key used to call the Benzinga endpoint. Default:
+
+```text
+MASSIVE_API_KEY
+```
+
+`--endpoint-url`
+
+Benzinga endpoint served through Massive. Default:
+
+```text
+NEWS_BENZINGA_URL
+NEWS_MASSIVE_BENZINGA_URL
+https://api.massive.com/benzinga/v2/news
+```
+
+`NEWS_MASSIVE_BENZINGA_URL` is only a backward-compatible variable name. The canonical source is Benzinga.
+
+### Date and Bucket Arguments
+
+`--start-utc`
+
+Inclusive start timestamp. Default:
+
+```text
+NEWS_BENZINGA_HISTORICAL_START_UTC
+2024-01-01T00:00:00Z
+```
+
+`--end-utc`
+
+Exclusive end timestamp. Default:
+
+```text
+NEWS_BENZINGA_HISTORICAL_END_UTC
+2026-01-01T00:00:00Z
+```
+
+`--bucket-minutes`
+
+Fixed UTC bucket size. Default:
+
+```text
+NEWS_BENZINGA_BUCKET_MINUTES
+15
+```
+
+Smaller buckets reduce the chance that a dense period saturates the provider page limit. Larger buckets reduce scheduling overhead.
+
+`--limit`
+
+Provider page size. Default:
+
+```text
+NEWS_BENZINGA_POLL_LIMIT
+1000
+```
+
+`--max-pages`
+
+Maximum provider pages per bucket. Default:
+
+```text
+NEWS_BENZINGA_MAX_PAGES
+20
+```
+
+If a bucket still has a next page after this limit, the bucket is marked saturated/partial in the manifest.
+
+`--limit-buckets`
+
+Debug limit after bucket construction. Default:
+
+```text
+0
+```
+
+`0` means all buckets.
+
+### Concurrency Arguments
+
+`--download-processes`
+
+Worker processes for download plus normalization. Default:
+
+```text
+NEWS_BENZINGA_DOWNLOAD_PROCESSES
+8
+```
+
+This is the main throughput control. Start with 16 on the workstation, then increase only if Massive, network, and disk remain stable.
+
+`--insert-concurrency`
+
+Concurrent ClickHouse insert workers. Default:
+
+```text
+NEWS_BENZINGA_INSERT_CONCURRENCY
+4
+```
+
+Start with 6 on the workstation. Increase only if ClickHouse insert latency and memory stay stable.
+
+### Artifact and Report Arguments
+
+`--artifact-root-win`
+
+Root for raw provider payloads and optional PDF artifacts. Default:
+
+```text
+NEWS_BENZINGA_ARTIFACT_ROOT_WIN
+D:/market-data/benzinga_news_canonical
+```
+
+This is the raw download location.
+
+`--output-root-win`
+
+Root for run reports. Default:
+
+```text
+NEWS_BENZINGA_OUTPUT_ROOT_WIN
+D:/market-data/prepared/benzinga_news_ingest
+```
+
+This is not the raw download location.
+
+### Extraction Arguments
+
+`--external-min-body-chars`
+
+If Benzinga body text is shorter than this threshold, the normalizer may fetch the article URL when external fetching is enabled. Default:
+
+```text
+NEWS_EXTRACTION_MIN_BODY_CHARS
+300
+```
+
+`--extraction-timeout-seconds`
+
+Timeout for external URL and PDF requests. Default:
+
+```text
+NEWS_EXTRACTION_TIMEOUT_SECONDS
+8
+```
+
+`--max-pdf-bytes`
+
+Maximum PDF size to download/extract. Default:
+
+```text
+NEWS_PDF_MAX_BYTES
+12000000
+```
+
+`--text-limit-chars`
+
+Maximum characters stored per normalized text field. Default:
+
+```text
+NEWS_NORMALIZED_TEXT_LIMIT_CHARS
+24000
+```
+
+This keeps ClickHouse rows compact while preserving enough text for training and later keyword discovery.
+
+`--no-fetch-external`
+
+Disable article URL fetching. This is useful for fast first-pass ingestion.
+
+`--no-extract-pdfs`
+
+Disable PDF download and extraction. This is useful for fast first-pass ingestion.
+
+### Resume and Safety Arguments
+
+`--retry-inserted`
+
+Reprocess buckets whose latest manifest status is `inserted`. Leave this off for normal resume behavior.
+
+`--retry-partial`
+
+Reprocess buckets whose latest manifest status is `partial`. Use this after increasing `--max-pages` or decreasing `--bucket-minutes`.
+
+`--no-insert`
+
+Download and normalize only. Raw artifacts and run reports can still be written, but ClickHouse tables are not created and rows are not inserted.
+
+`--dry-run`
+
+Print configuration and bucket previews only. No download, raw artifact write, table creation, or insert.
+
+## Resume Behavior
+
+The script reads the latest status from:
+
+```text
+<database>.benzinga_news_ingest_manifest_v1
+```
+
+Normal resume skips buckets whose latest status is `inserted`. Buckets marked `partial` are also skipped unless `--retry-partial` is provided.
+
+Recommended retry flow for saturated buckets:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
+  --start-utc 2010-01-01T00:00:00Z `
+  --end-utc 2026-06-08T00:00:00Z `
+  --bucket-minutes 5 `
+  --max-pages 40 `
+  --retry-partial `
+  --download-processes 16 `
+  --insert-concurrency 6
+```
+
+## Monitoring
+
+The script prints:
+
+```text
+pending_buckets
+completed
+failed
+normalized
+inserted
+elapsed_min
+eta_min
+```
+
+Each run also writes a JSONL report under `--output-root-win`. Use that report to inspect bucket-level exceptions without searching terminal history.
+
+Useful ClickHouse checks:
+
+```sql
+SELECT count()
+FROM q_live.benzinga_news_normalized_v1;
+```
+
+```sql
+SELECT
+    status,
+    count()
+FROM q_live.benzinga_news_ingest_manifest_v1
+GROUP BY status
+ORDER BY status;
+```
+
+```sql
+SELECT
+    min(published_at_utc),
+    max(published_at_utc),
+    count()
+FROM q_live.benzinga_news_normalized_v1;
+```
+
+## Practical Starting Recommendation
+
+For the first real canonical pass, prioritize complete provider rows before expensive extraction:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
+  --start-utc 2010-01-01T00:00:00Z `
+  --end-utc 2026-06-08T00:00:00Z `
+  --bucket-minutes 15 `
+  --download-processes 16 `
+  --insert-concurrency 6 `
+  --no-fetch-external `
+  --no-extract-pdfs
+```
+
+After this baseline is complete, run targeted enrichment for title-only or PDF/link-heavy rows as a separate pass instead of making the first full ingest slower and harder to debug.
