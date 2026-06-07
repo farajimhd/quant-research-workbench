@@ -53,6 +53,8 @@ Before inserting, the script loads manifest status in bulk, skips files whose la
 
 Those values are written to `ingest_manifest` and to the JSONL report. After ClickHouse finishes each insert, the script compares ClickHouse query-log `read_rows` and `written_rows` against `expected_rows`. If row counts differ, the job is marked failed. Use `--preflight-processes 0` only for debugging when you explicitly want to skip this reconciliation.
 
+The preflight snapshot is written to the JSONL report before inserts start. Manifest `discovered` and `started` rows are written with bulk `INSERT ... VALUES` batches, not one row at a time.
+
 ## Tables
 
 Quote table:

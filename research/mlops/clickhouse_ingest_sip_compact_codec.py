@@ -413,6 +413,82 @@ VALUES
     client.execute(sql)
 
 
+def manifest_values_sql(
+    job: CompactIngestJob,
+    *,
+    status: str,
+    run_id: str,
+    profile: QueryProfile | None = None,
+    expected_stats: RowStats | None = None,
+    exception: str = "",
+) -> str:
+    profile = profile or QueryProfile(label="", query_id="", wall_seconds=0.0)
+    expected_stats = expected_stats or RowStats(rows=0, min_sip_timestamp=0, max_sip_timestamp=0)
+    actual_rows = int(profile.written_rows or 0)
+    return (
+        "("
+        f"{sql_string(job.kind)}, "
+        f"toDate({sql_string(job.date)}), "
+        f"{sql_string(job.source_file)}, "
+        f"{sql_string(job.source_path_ch)}, "
+        f"{int(job.file_bytes)}, "
+        f"{sql_string(job.table)}, "
+        f"{int(expected_stats.rows)}, "
+        f"{int(expected_stats.min_sip_timestamp)}, "
+        f"{int(expected_stats.max_sip_timestamp)}, "
+        f"{actual_rows}, "
+        f"{sql_string(status)}, "
+        f"{sql_string(run_id)}, "
+        f"{sql_string(profile.query_id or '')}, "
+        f"{float(profile.wall_seconds or 0.0)}, "
+        f"{int(profile.query_duration_ms or 0)}, "
+        f"{int(profile.memory_usage_bytes or 0)}, "
+        f"{int(profile.read_rows or 0)}, "
+        f"{int(profile.read_bytes or 0)}, "
+        f"{int(profile.written_rows or 0)}, "
+        f"{int(profile.written_bytes or 0)}, "
+        f"{sql_string(exception or profile.exception or '')}"
+        ")"
+    )
+
+
+def insert_manifest_many(
+    client: ClickHouseHttpClient,
+    database: str,
+    manifest_table: str,
+    entries: list[tuple[CompactIngestJob, str, RowStats]],
+    *,
+    run_id: str,
+    batch_size: int = 1000,
+) -> None:
+    if not entries:
+        return
+    columns = """
+(
+    kind, source_date, source_file, source_path_ch, file_bytes, target_table,
+    expected_rows, expected_min_sip_timestamp, expected_max_sip_timestamp, actual_rows,
+    status, run_id, query_id, wall_seconds, query_duration_ms, memory_usage_bytes,
+    read_rows, read_bytes, written_rows, written_bytes, exception
+)
+""".strip()
+    total = len(entries)
+    started_at = time.perf_counter()
+    for offset in range(0, total, batch_size):
+        chunk = entries[offset : offset + batch_size]
+        values = ",\n".join(
+            manifest_values_sql(job, status=status, run_id=run_id, expected_stats=expected_stats)
+            for job, status, expected_stats in chunk
+        )
+        sql = f"INSERT INTO {quote_ident(database)}.{quote_ident(manifest_table)}\n{columns}\nVALUES\n{values}"
+        client.execute(sql)
+        print(
+            f"BULK MANIFEST inserted={min(offset + len(chunk), total):,}/{total:,} "
+            f"statuses={sorted({status for _, status, _ in chunk})}",
+            flush=True,
+        )
+    print(f"DONE bulk manifest rows={total:,} elapsed_seconds={time.perf_counter() - started_at:.2f}", flush=True)
+
+
 def run_insert_job(job: CompactIngestJob) -> CompactIngestResult:
     client = ClickHouseHttpClient(job.clickhouse_url, job.user, job.password)
     profile = run_profiled(client, f"compact_insert_{job.kind}_{job.date}", job.sql, job.settings)
@@ -679,9 +755,24 @@ def main() -> None:
     print(f"Pending inserts={len(pending_jobs):,} skipped={skipped:,}", flush=True)
 
     source_preflight = preflight_jobs(pending_jobs, args.preflight_processes)
-    for job in pending_jobs:
-        expected_stats = source_preflight[source_identity(job)].stats
-        insert_manifest(client, args.database, args.manifest_table, job, status="discovered", run_id=run_id, expected_stats=expected_stats)
+    append_jsonl(
+        report_path,
+        {
+            "type": "preflight",
+            "run_id": run_id,
+            "rows": [
+                {"job": job_public(job), "expected_stats": asdict(source_preflight[source_identity(job)].stats)}
+                for job in pending_jobs
+            ],
+        },
+    )
+    insert_manifest_many(
+        client,
+        args.database,
+        args.manifest_table,
+        [(job, "discovered", source_preflight[source_identity(job)].stats) for job in pending_jobs],
+        run_id=run_id,
+    )
 
     completed = 0
     failed = 0
@@ -690,9 +781,14 @@ def main() -> None:
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(insert_concurrency, max(1, len(pending_jobs)))) as executor:
         future_to_job = {}
+        insert_manifest_many(
+            client,
+            args.database,
+            args.manifest_table,
+            [(job, "started", source_preflight[source_identity(job)].stats) for job in pending_jobs],
+            run_id=run_id,
+        )
         for job in pending_jobs:
-            expected_stats = source_preflight[source_identity(job)].stats
-            insert_manifest(client, args.database, args.manifest_table, job, status="started", run_id=run_id, expected_stats=expected_stats)
             future_to_job[executor.submit(run_insert_job, job)] = job
         for future in concurrent.futures.as_completed(future_to_job):
             job = future_to_job[future]
