@@ -45,6 +45,8 @@ Run reports:
 --output-root-win\benzinga_historical_ingest_<run_id>.jsonl
 ```
 
+The report includes compact `extraction_event` records for external article/PDF work. These records are for audit/debug only and are not inserted into the normalized news table.
+
 ClickHouse tables:
 
 ```text
@@ -66,6 +68,14 @@ REAL_LIVE_CLICKHOUSE_WRITE_USER
 REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD
 CLICKHOUSE_LIVE_STORAGE_POLICY
 ```
+
+Recommended for SEC PDF fetching:
+
+```text
+SEC_EDGAR_USER_AGENT
+```
+
+Set this to a descriptive application name and contact email, for example `QuantResearchWorkbench/1.0 your_email@example.com`. The script falls back to the normal browser user-agent when it is absent, but full SEC-heavy runs should set it explicitly.
 
 If ClickHouse does not require a user/password in the current environment, those values can be absent.
 
@@ -109,10 +119,10 @@ If Massive and ClickHouse remain stable, increase gradually:
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 24 --normalize-processes 12 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000
 ```
 
-For a full run, keep external URL and PDF extraction enabled and control request pressure with `--external-request-min-interval-seconds`. The pipeline is designed to download, normalize, extract required external/PDF text, and insert in one pass.
+For a full run, keep external URL and PDF extraction enabled and control request pressure with the provider-specific interval arguments. The pipeline is designed to download, normalize, extract required external/PDF text, and insert in one pass.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.5
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.5 --benzinga-request-min-interval-seconds 1.0 --sec-request-min-interval-seconds 0.13 --external-max-retries 3 --external-retry-base-seconds 1.0
 ```
 
 ## Argument Reference
@@ -297,6 +307,8 @@ This controls Massive request pressure and raw JSON write pressure. Start with 1
 
 The script keeps only a bounded download backlog in memory, currently `--download-processes * 4`, so a full historical run does not create one pending future per time bucket.
 
+Massive page downloads retry transient HTTP failures, including `429 Too Many Requests`; if the provider sends `Retry-After`, the worker waits for that value before retrying.
+
 `--normalize-processes`
 
 Worker processes for normalization, optional external URL extraction, and optional PDF extraction. Default:
@@ -408,14 +420,75 @@ NEWS_EXTRACTION_TIMEOUT_SECONDS
 
 `--external-request-min-interval-seconds`
 
-Minimum seconds between external HTTP requests to the same host, shared across normalization worker processes through a lock directory under `--artifact-root-win`. Default:
+Minimum seconds between external HTTP requests to the same host for domains that do not have a provider-specific override. This is shared across normalization worker processes through a lock directory under `--artifact-root-win`. Default:
 
 ```text
 NEWS_EXTERNAL_REQUEST_MIN_INTERVAL_SECONDS
 0.5
 ```
 
-This is required for one-pass external/PDF extraction because Benzinga article-page fetches can return `429 Too Many Requests` when many workers hit the same host concurrently.
+This protects miscellaneous external websites during one-pass external/PDF extraction.
+
+`--benzinga-request-min-interval-seconds`
+
+Minimum seconds between Benzinga article-page requests to the same host. Default:
+
+```text
+NEWS_BENZINGA_REQUEST_MIN_INTERVAL_SECONDS
+1.0
+```
+
+This is intentionally slower than the generic default because Benzinga article-page fetches can return `429 Too Many Requests` when many workers hit the same host concurrently.
+
+`--sec-request-min-interval-seconds`
+
+Minimum seconds between SEC/EDGAR requests to the same host. Default:
+
+```text
+NEWS_SEC_REQUEST_MIN_INTERVAL_SECONDS
+0.13
+```
+
+The SEC publishes a 10 requests/second ceiling. `0.13` seconds is deliberately below that ceiling once process scheduling jitter is included.
+
+`--external-max-retries`
+
+Maximum retries after the first external/PDF HTTP attempt for transient failures such as 408, 429, and 5xx responses. Default:
+
+```text
+NEWS_EXTERNAL_MAX_RETRIES
+3
+```
+
+`--external-retry-base-seconds`
+
+Base backoff used when the server does not provide `Retry-After`. If a response includes `Retry-After`, the script honors it. Default:
+
+```text
+NEWS_EXTERNAL_RETRY_BASE_SECONDS
+1.0
+```
+
+`--external-user-agent`
+
+Default user-agent for non-SEC external article/PDF requests. Default:
+
+```text
+NEWS_EXTERNAL_USER_AGENT
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36
+```
+
+`--sec-user-agent`
+
+SEC-specific user-agent for SEC/EDGAR requests. Default resolution:
+
+```text
+NEWS_SEC_USER_AGENT
+SEC_EDGAR_USER_AGENT
+empty
+```
+
+Set this before SEC-heavy runs so SEC sees a descriptive app/contact identity.
 
 `--max-pdf-bytes`
 

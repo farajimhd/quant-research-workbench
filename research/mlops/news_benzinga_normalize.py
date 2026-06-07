@@ -11,6 +11,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -33,7 +34,13 @@ class NewsExtractionOptions:
     max_pdf_bytes: int = 12_000_000
     text_limit_chars: int = DEFAULT_TEXT_LIMIT_CHARS
     external_request_min_interval_seconds: float = 0.5
+    benzinga_request_min_interval_seconds: float = 1.0
+    sec_request_min_interval_seconds: float = 0.13
+    external_max_retries: int = 3
+    external_retry_base_seconds: float = 1.0
     external_rate_limit_root: str = ""
+    default_user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36"
+    sec_user_agent: str = ""
 
 
 class HtmlTextExtractor(HTMLParser):
@@ -76,6 +83,7 @@ def normalize_benzinga_payload(
     downloaded_at_utc: datetime | None = None,
     artifact_root: Path | None = None,
     options: NewsExtractionOptions | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     options = options or NewsExtractionOptions()
     downloaded_at = downloaded_at_utc or datetime.now(UTC)
@@ -103,28 +111,65 @@ def normalize_benzinga_payload(
     external_error = ""
     if options.fetch_external and should_skip_external_fetch(article_url):
         external_status = "skipped_non_article_url"
+        record_extraction_event(
+            diagnostics,
+            stage="external_fetch",
+            status=external_status,
+            provider_article_id=provider_article_id,
+            published_raw=published_raw,
+            url=article_url,
+        )
     elif options.fetch_external and should_fetch_external(body_text, article_url, options):
+        started_at = time.perf_counter()
         try:
             if looks_like_pdf_url(article_url):
                 if article_url not in pdf_urls:
                     pdf_urls.append(article_url)
                 external_status = "deferred_to_pdf"
+                record_extraction_event(
+                    diagnostics,
+                    stage="external_fetch",
+                    status=external_status,
+                    provider_article_id=provider_article_id,
+                    published_raw=published_raw,
+                    url=article_url,
+                    elapsed_seconds=time.perf_counter() - started_at,
+                )
             else:
                 fetched = fetch_url_text(
                     article_url,
-                    timeout_seconds=options.request_timeout_seconds,
-                    rate_limit_root=options.external_rate_limit_root,
-                    min_interval_seconds=options.external_request_min_interval_seconds,
+                    options=options,
                 )
                 fetched_text, fetched_links = html_to_text_and_links(fetched)
                 external_text = fetched_text
                 external_status = "fetched" if fetched_text else "empty"
+                record_extraction_event(
+                    diagnostics,
+                    stage="external_fetch",
+                    status=external_status,
+                    provider_article_id=provider_article_id,
+                    published_raw=published_raw,
+                    url=article_url,
+                    fetched_bytes=len(fetched.encode("utf-8", errors="ignore")),
+                    extracted_text_chars=len(fetched_text),
+                    elapsed_seconds=time.perf_counter() - started_at,
+                )
                 for url in [*fetched_links, *extract_pdf_urls(fetched)]:
                     if looks_like_pdf_url(url) and url not in pdf_urls:
                         pdf_urls.append(url)
         except Exception as exc:  # noqa: BLE001
             external_status = "failed"
             external_error = repr(exc)
+            record_extraction_event(
+                diagnostics,
+                stage="external_fetch",
+                status=external_status,
+                provider_article_id=provider_article_id,
+                published_raw=published_raw,
+                url=article_url,
+                exception=external_error,
+                elapsed_seconds=time.perf_counter() - started_at,
+            )
 
     pdf_texts: list[str] = []
     pdf_artifact_paths: list[str] = []
@@ -133,21 +178,42 @@ def normalize_benzinga_payload(
     if options.extract_pdfs and pdf_urls:
         pdf_status = "started"
         for url in pdf_urls[:4]:
+            started_at = time.perf_counter()
             try:
                 pdf_bytes = fetch_url_bytes(
                     url,
-                    timeout_seconds=options.request_timeout_seconds,
                     max_bytes=options.max_pdf_bytes,
-                    rate_limit_root=options.external_rate_limit_root,
-                    min_interval_seconds=options.external_request_min_interval_seconds,
+                    options=options,
                 )
                 pdf_path = write_pdf_artifact(artifact_root, published_at, provider_article_id, url, pdf_bytes)
                 pdf_artifact_paths.append(str(pdf_path) if pdf_path else "")
                 text = extract_pdf_text(pdf_bytes)
                 if text:
                     pdf_texts.append(text)
+                record_extraction_event(
+                    diagnostics,
+                    stage="pdf_fetch_extract",
+                    status="extracted" if text else "empty",
+                    provider_article_id=provider_article_id,
+                    published_raw=published_raw,
+                    url=url,
+                    fetched_bytes=len(pdf_bytes),
+                    extracted_text_chars=len(text),
+                    artifact_path=str(pdf_path or ""),
+                    elapsed_seconds=time.perf_counter() - started_at,
+                )
             except Exception as exc:  # noqa: BLE001
                 pdf_error = repr(exc)
+                record_extraction_event(
+                    diagnostics,
+                    stage="pdf_fetch_extract",
+                    status="failed",
+                    provider_article_id=provider_article_id,
+                    published_raw=published_raw,
+                    url=url,
+                    exception=pdf_error,
+                    elapsed_seconds=time.perf_counter() - started_at,
+                )
         pdf_status = "extracted" if pdf_texts else ("failed" if pdf_error else "empty")
 
     full_text_parts = [title, teaser, body_text, external_text, *pdf_texts]
@@ -303,34 +369,91 @@ def should_skip_external_fetch(article_url: str) -> bool:
     return host.endswith("benzinga.com") and path.startswith("/quote/")
 
 
-def fetch_url_text(url: str, *, timeout_seconds: float, rate_limit_root: str = "", min_interval_seconds: float = 0.0) -> str:
-    apply_host_rate_limit(url, rate_limit_root=rate_limit_root, min_interval_seconds=min_interval_seconds)
-    with request.urlopen(build_request(url), timeout=timeout_seconds) as response:  # noqa: S310
-        return response.read().decode("utf-8", errors="replace")
+def fetch_url_text(url: str, *, options: NewsExtractionOptions) -> str:
+    data = fetch_url_with_retries(url, options=options)
+    return data.decode("utf-8", errors="replace")
 
 
-def fetch_url_bytes(url: str, *, timeout_seconds: float, max_bytes: int, rate_limit_root: str = "", min_interval_seconds: float = 0.0) -> bytes:
-    apply_host_rate_limit(url, rate_limit_root=rate_limit_root, min_interval_seconds=min_interval_seconds)
-    with request.urlopen(build_request(url), timeout=timeout_seconds) as response:  # noqa: S310
-        data = response.read(max_bytes + 1)
+def fetch_url_bytes(url: str, *, max_bytes: int, options: NewsExtractionOptions) -> bytes:
+    data = fetch_url_with_retries(url, options=options, max_bytes=max_bytes)
     if len(data) > max_bytes:
         raise ValueError("pdf_too_large")
     return data
 
 
-def build_request(url: str) -> request.Request:
-    return request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36",
-            "Accept": "text/html,application/pdf,application/xhtml+xml,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.benzinga.com/",
-        },
-    )
+def fetch_url_with_retries(url: str, *, options: NewsExtractionOptions, max_bytes: int | None = None) -> bytes:
+    attempts = max(1, options.external_max_retries + 1)
+    last_exception: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        apply_host_rate_limit(url, options=options)
+        try:
+            with request.urlopen(build_request(url, options=options), timeout=options.request_timeout_seconds) as response:  # noqa: S310
+                if max_bytes is None:
+                    return response.read()
+                return response.read(max_bytes + 1)
+        except error.HTTPError as exc:
+            last_exception = exc
+            if exc.code not in {408, 425, 429, 500, 502, 503, 504} or attempt >= attempts:
+                raise
+            time.sleep(retry_sleep_seconds(exc, attempt, options))
+        except (TimeoutError, error.URLError) as exc:
+            last_exception = exc
+            if attempt >= attempts:
+                raise
+            time.sleep(retry_sleep_seconds(exc, attempt, options))
+    if last_exception is not None:
+        raise last_exception
+    raise RuntimeError("external_fetch_failed_without_exception")
 
 
-def apply_host_rate_limit(url: str, *, rate_limit_root: str, min_interval_seconds: float) -> None:
+def build_request(url: str, *, options: NewsExtractionOptions) -> request.Request:
+    user_agent = user_agent_for_url(url, options)
+    headers = {
+        "User-Agent": user_agent,
+        "Accept": "text/html,application/pdf,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    if is_benzinga_host(url):
+        headers["Referer"] = "https://www.benzinga.com/"
+    return request.Request(url, headers=headers)
+
+
+def user_agent_for_url(url: str, options: NewsExtractionOptions) -> str:
+    if is_sec_host(url) and options.sec_user_agent:
+        return options.sec_user_agent
+    return options.default_user_agent
+
+
+def retry_sleep_seconds(exc: Exception, attempt: int, options: NewsExtractionOptions) -> float:
+    retry_after = ""
+    if isinstance(exc, error.HTTPError):
+        retry_after = exc.headers.get("Retry-After", "")
+    parsed_retry_after = parse_retry_after_seconds(retry_after)
+    if parsed_retry_after is not None:
+        return min(300.0, parsed_retry_after)
+    base = max(0.0, options.external_retry_base_seconds)
+    return min(300.0, base * (2 ** (attempt - 1)))
+
+
+def parse_retry_after_seconds(value: str) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return max(0.0, (parsed.astimezone(UTC) - datetime.now(UTC)).total_seconds())
+
+
+def apply_host_rate_limit(url: str, *, options: NewsExtractionOptions) -> None:
+    min_interval_seconds = request_min_interval_seconds(url, options)
+    rate_limit_root = options.external_rate_limit_root
     if min_interval_seconds <= 0 or not rate_limit_root:
         return
     host = parse.urlparse(url).netloc.lower() or "unknown"
@@ -365,6 +488,30 @@ def apply_host_rate_limit(url: str, *, rate_limit_root: str, min_interval_second
     finally:
         os.close(fd)
         lock_path.unlink(missing_ok=True)
+
+
+def request_min_interval_seconds(url: str, options: NewsExtractionOptions) -> float:
+    if is_sec_host(url):
+        return max(0.0, options.sec_request_min_interval_seconds)
+    if is_benzinga_host(url):
+        return max(0.0, options.benzinga_request_min_interval_seconds)
+    return max(0.0, options.external_request_min_interval_seconds)
+
+
+def is_sec_host(url: str) -> bool:
+    host = parse.urlparse(url).netloc.lower()
+    return host == "sec.gov" or host.endswith(".sec.gov")
+
+
+def is_benzinga_host(url: str) -> bool:
+    host = parse.urlparse(url).netloc.lower()
+    return host == "benzinga.com" or host.endswith(".benzinga.com")
+
+
+def record_extraction_event(diagnostics: list[dict[str, Any]] | None, **payload: Any) -> None:
+    if diagnostics is None:
+        return
+    diagnostics.append({key: value for key, value in payload.items() if value not in ("", None, [])})
 
 
 def write_pdf_artifact(

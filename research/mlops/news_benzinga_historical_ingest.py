@@ -10,6 +10,7 @@ import time
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
@@ -46,6 +47,7 @@ DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_ingest")
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/benzinga_news_canonical")
 DEFAULT_START_UTC = "2024-01-01T00:00:00Z"
 DEFAULT_END_UTC = "2026-01-01T00:00:00Z"
+PROVIDER_RETRY_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
 CURRENT_RUN_ID = ""
 CURRENT_REPORT_PATH: Path | None = None
 
@@ -67,6 +69,12 @@ class BucketJob:
     max_pdf_bytes: int
     text_limit_chars: int
     external_request_min_interval_seconds: float
+    benzinga_request_min_interval_seconds: float
+    sec_request_min_interval_seconds: float
+    external_max_retries: int
+    external_retry_base_seconds: float
+    default_user_agent: str
+    sec_user_agent: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +127,12 @@ class NormalizeJob:
     max_pdf_bytes: int
     text_limit_chars: int
     external_request_min_interval_seconds: float
+    benzinga_request_min_interval_seconds: float
+    sec_request_min_interval_seconds: float
+    external_max_retries: int
+    external_retry_base_seconds: float
+    default_user_agent: str
+    sec_user_agent: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +142,7 @@ class NormalizeResult:
     end_utc: str
     rows: list[dict[str, Any]]
     file_errors: list[FileError]
+    extraction_events: list[dict[str, Any]]
     downloaded_rows: int
     normalized_rows: int
     page_count: int
@@ -219,6 +234,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--external-min-body-chars", type=int, default=int(os.environ.get("NEWS_EXTRACTION_MIN_BODY_CHARS", "300")))
     parser.add_argument("--extraction-timeout-seconds", type=float, default=float(os.environ.get("NEWS_EXTRACTION_TIMEOUT_SECONDS", "8")))
     parser.add_argument("--external-request-min-interval-seconds", type=float, default=float(os.environ.get("NEWS_EXTERNAL_REQUEST_MIN_INTERVAL_SECONDS", "0.5")))
+    parser.add_argument("--benzinga-request-min-interval-seconds", type=float, default=float(os.environ.get("NEWS_BENZINGA_REQUEST_MIN_INTERVAL_SECONDS", "1.0")))
+    parser.add_argument("--sec-request-min-interval-seconds", type=float, default=float(os.environ.get("NEWS_SEC_REQUEST_MIN_INTERVAL_SECONDS", "0.13")))
+    parser.add_argument("--external-max-retries", type=int, default=int(os.environ.get("NEWS_EXTERNAL_MAX_RETRIES", "3")))
+    parser.add_argument("--external-retry-base-seconds", type=float, default=float(os.environ.get("NEWS_EXTERNAL_RETRY_BASE_SECONDS", "1.0")))
+    parser.add_argument("--external-user-agent", default=os.environ.get("NEWS_EXTERNAL_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36"))
+    parser.add_argument("--sec-user-agent", default=os.environ.get("NEWS_SEC_USER_AGENT") or os.environ.get("SEC_EDGAR_USER_AGENT", ""))
     parser.add_argument("--max-pdf-bytes", type=int, default=int(os.environ.get("NEWS_PDF_MAX_BYTES", "12000000")))
     parser.add_argument("--text-limit-chars", type=int, default=int(os.environ.get("NEWS_NORMALIZED_TEXT_LIMIT_CHARS", "24000")))
     parser.add_argument("--no-fetch-external", action="store_true")
@@ -301,10 +322,21 @@ def main() -> None:
     args.insert_concurrency = max(1, args.insert_concurrency)
     args.insert_batch_rows = max(1, args.insert_batch_rows)
     args.manifest_batch_rows = max(1, args.manifest_batch_rows)
+    args.external_max_retries = max(0, args.external_max_retries)
+    args.external_retry_base_seconds = max(0.0, args.external_retry_base_seconds)
+    args.external_request_min_interval_seconds = max(0.0, args.external_request_min_interval_seconds)
+    args.benzinga_request_min_interval_seconds = max(0.0, args.benzinga_request_min_interval_seconds)
+    args.sec_request_min_interval_seconds = max(0.0, args.sec_request_min_interval_seconds)
     if not args.api_key:
         raise RuntimeError("MASSIVE_API_KEY is required for Benzinga historical download.")
     if not args.storage_policy:
         print("WARNING: CLICKHOUSE_LIVE_STORAGE_POLICY/--storage-policy is empty; news tables will use ClickHouse defaults.", flush=True)
+    if not args.no_extract_pdfs and not args.sec_user_agent:
+        print(
+            "WARNING: SEC PDF fetching is enabled but NEWS_SEC_USER_AGENT/SEC_EDGAR_USER_AGENT is empty; "
+            "set it to an app name and contact email before full SEC-heavy runs.",
+            flush=True,
+        )
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_root = Path(args.output_root_win)
@@ -330,6 +362,12 @@ def main() -> None:
         flush=True,
     )
     print(f"fetch_external={not args.no_fetch_external} extract_pdfs={not args.no_extract_pdfs}", flush=True)
+    print(
+        f"external_intervals_seconds=default:{args.external_request_min_interval_seconds} "
+        f"benzinga:{args.benzinga_request_min_interval_seconds} sec:{args.sec_request_min_interval_seconds} "
+        f"external_max_retries={args.external_max_retries}",
+        flush=True,
+    )
     print(f"artifact_root={artifact_root}", flush=True)
     print(f"report={report_path}", flush=True)
     print(f"dry_run={args.dry_run} no_insert={args.no_insert}", flush=True)
@@ -504,6 +542,12 @@ def main() -> None:
                             max_pdf_bytes=bucket.max_pdf_bytes,
                             text_limit_chars=bucket.text_limit_chars,
                             external_request_min_interval_seconds=bucket.external_request_min_interval_seconds,
+                            benzinga_request_min_interval_seconds=bucket.benzinga_request_min_interval_seconds,
+                            sec_request_min_interval_seconds=bucket.sec_request_min_interval_seconds,
+                            external_max_retries=bucket.external_max_retries,
+                            external_retry_base_seconds=bucket.external_retry_base_seconds,
+                            default_user_agent=bucket.default_user_agent,
+                            sec_user_agent=bucket.sec_user_agent,
                         )
                         normalize_futures[normalize_pool.submit(normalize_bucket_worker, normalize_job)] = download_result
                     else:
@@ -525,6 +569,7 @@ def main() -> None:
                             end_utc=download_result.end_utc,
                             rows=[],
                             file_errors=[],
+                            extraction_events=[],
                             downloaded_rows=download_result.downloaded_rows,
                             normalized_rows=0,
                             page_count=download_result.page_count,
@@ -536,6 +581,7 @@ def main() -> None:
                     normalized_total += normalize_result.normalized_rows
                     append_jsonl(report_path, {"type": "normalize", "run_id": run_id, "result": result_public(normalize_result)})
                     append_file_errors(report_path, run_id, normalize_result.file_errors)
+                    append_extraction_events(report_path, run_id, normalize_result.extraction_events)
                     if not args.no_insert:
                         queue_manifest_rows([manifest_from_normalize(run_id, normalize_result)], insert_pool)
                     if normalize_result.exception:
@@ -652,6 +698,12 @@ def build_bucket_jobs(args: argparse.Namespace) -> list[BucketJob]:
                 max_pdf_bytes=max(1, args.max_pdf_bytes),
                 text_limit_chars=max(0, args.text_limit_chars),
                 external_request_min_interval_seconds=max(0.0, args.external_request_min_interval_seconds),
+                benzinga_request_min_interval_seconds=max(0.0, args.benzinga_request_min_interval_seconds),
+                sec_request_min_interval_seconds=max(0.0, args.sec_request_min_interval_seconds),
+                external_max_retries=max(0, args.external_max_retries),
+                external_retry_base_seconds=max(0.0, args.external_retry_base_seconds),
+                default_user_agent=args.external_user_agent,
+                sec_user_agent=args.sec_user_agent,
             )
         )
         current = bucket_end
@@ -743,6 +795,7 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
     artifact_root = Path(job.artifact_root_win)
     rows: list[dict[str, Any]] = []
     file_errors: list[FileError] = []
+    extraction_events: list[dict[str, Any]] = []
     options = NewsExtractionOptions(
         fetch_external=job.fetch_external,
         extract_pdfs=job.extract_pdfs,
@@ -751,7 +804,13 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
         max_pdf_bytes=job.max_pdf_bytes,
         text_limit_chars=job.text_limit_chars,
         external_request_min_interval_seconds=job.external_request_min_interval_seconds,
+        benzinga_request_min_interval_seconds=job.benzinga_request_min_interval_seconds,
+        sec_request_min_interval_seconds=job.sec_request_min_interval_seconds,
+        external_max_retries=job.external_max_retries,
+        external_retry_base_seconds=job.external_retry_base_seconds,
         external_rate_limit_root=str(Path(job.artifact_root_win) / "rate_limits"),
+        default_user_agent=job.default_user_agent,
+        sec_user_agent=job.sec_user_agent,
     )
     for artifact in job.artifacts:
         provider_article_id = ""
@@ -771,6 +830,7 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
                     downloaded_at_utc=parse_provider_datetime(artifact.downloaded_at_utc),
                     artifact_root=artifact_root,
                     options=options,
+                    diagnostics=extraction_events,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -792,6 +852,7 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
         end_utc=job.end_utc,
         rows=rows,
         file_errors=file_errors,
+        extraction_events=extraction_events,
         downloaded_rows=job.downloaded_rows,
         normalized_rows=len(rows),
         page_count=job.page_count,
@@ -932,16 +993,50 @@ def append_api_key(url: str, api_key: str) -> str:
 
 def fetch_json(url: str) -> dict[str, Any]:
     req = request.Request(url, headers={"User-Agent": "quant-research-workbench-benzinga-ingest/1.0"})
-    try:
-        with request.urlopen(req, timeout=60) as response:  # noqa: S310
-            body = response.read().decode("utf-8", errors="replace")
-    except error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Massive Benzinga HTTP {exc.code}: {body}") from exc
+    attempts = 4
+    body = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            with request.urlopen(req, timeout=60) as response:  # noqa: S310
+                body = response.read().decode("utf-8", errors="replace")
+                break
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            if exc.code not in PROVIDER_RETRY_HTTP_CODES or attempt >= attempts:
+                raise RuntimeError(f"Massive Benzinga HTTP {exc.code}: {body}") from exc
+            time.sleep(provider_retry_sleep_seconds(exc, attempt))
+        except (TimeoutError, error.URLError):
+            if attempt >= attempts:
+                raise
+            time.sleep(provider_retry_sleep_seconds(None, attempt))
     value = json.loads(body)
     if not isinstance(value, dict):
         raise RuntimeError("Massive Benzinga response was not a JSON object")
     return value
+
+
+def provider_retry_sleep_seconds(exc: error.HTTPError | None, attempt: int) -> float:
+    retry_after = exc.headers.get("Retry-After", "") if exc is not None else ""
+    parsed_retry_after = parse_retry_after_seconds(retry_after)
+    if parsed_retry_after is not None:
+        return min(300.0, parsed_retry_after)
+    return min(300.0, 1.0 * (2 ** (attempt - 1)))
+
+
+def parse_retry_after_seconds(value: str) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return max(0.0, (parsed.astimezone(UTC) - datetime.now(UTC)).total_seconds())
 
 
 def parse_input_datetime(value: str) -> datetime:
@@ -974,6 +1069,8 @@ def result_public(result: Any) -> dict[str, Any]:
     payload = asdict(result)
     file_errors = payload.pop("file_errors", [])
     payload["file_error_count"] = len(file_errors)
+    extraction_events = payload.pop("extraction_events", [])
+    payload["extraction_event_count"] = len(extraction_events)
     payload.pop("artifacts", None)
     payload.pop("rows", None)
     return payload
@@ -982,6 +1079,11 @@ def result_public(result: Any) -> dict[str, Any]:
 def append_file_errors(report_path: Path, run_id: str, errors: list[FileError]) -> None:
     for item in errors:
         append_jsonl(report_path, {"type": "file_error", "run_id": run_id, "error": asdict(item)})
+
+
+def append_extraction_events(report_path: Path, run_id: str, events: list[dict[str, Any]]) -> None:
+    for item in events:
+        append_jsonl(report_path, {"type": "extraction_event", "run_id": run_id, "event": item})
 
 
 def provider_id_from_payload(payload: dict[str, Any]) -> str:
