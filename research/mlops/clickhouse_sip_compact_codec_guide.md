@@ -24,6 +24,7 @@ Default production settings:
 - Manifest table: `ingest_manifest`
 - Default concurrency: `12`
 - Default per-insert ClickHouse threads: `4`
+- Default Polars source preflight workers: inherited from `SIP_INGEST_PREFLIGHT_PROCESSES`
 - Default source root on Windows: discovered from the shared flatfile config, normally `D:\market-data\flatfiles\us_stocks_sip`
 - Default ClickHouse file root: discovered from env, normally `/mnt/d/market-data/flatfiles/us_stocks_sip`
 - Storage policy: discovered from `CLICKHOUSE_HISTORICAL_STORAGE_POLICY` first
@@ -43,6 +44,14 @@ python D:\TradingML\codes\masked_event_model\v4\research\mlops\clickhouse_ingest
 The script is resumable. It writes one row per source file attempt to `ingest_manifest`. Files with latest status `ok` are skipped. Files with latest status `failed` or `started` are skipped unless `--retry-failed` or `--retry-started` is provided.
 
 The script validates the existing target table schema before ingesting. If a stale table exists, for example from an older schema where price integers were widened to `UInt64`, the script stops with a clear error. Use a fresh table/database or migrate/drop the stale table before ingesting.
+
+Before inserting, the script loads manifest status in bulk, skips files whose latest status is already `ok`, then runs a Polars streaming/lazy source preflight for each pending CSV file. The preflight extracts:
+
+- `expected_rows`
+- `expected_min_sip_timestamp`
+- `expected_max_sip_timestamp`
+
+Those values are written to `ingest_manifest` and to the JSONL report. After ClickHouse finishes each insert, the script compares ClickHouse query-log `read_rows` and `written_rows` against `expected_rows`. If row counts differ, the job is marked failed. Use `--preflight-processes 0` only for debugging when you explicitly want to skip this reconciliation.
 
 ## Tables
 
