@@ -344,10 +344,10 @@ The script:
 - validates that shadow `event_date` exactly matches UTC-derived `sip_timestamp_us`
 - does not replace the production tables unless `--swap` is provided
 
-After copy/validation completes cleanly, promote the corrected tables:
+After copy/validation completes cleanly, promote the corrected tables and remove the stale local-date backups:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\mlops\clickhouse_fix_compact_event_date.py --database market_sip_compact --validate --swap
+python D:\TradingML\codes\masked_event_model\v4\research\mlops\clickhouse_fix_compact_event_date.py --database market_sip_compact --validate --swap --drop-stale-backups-after-swap
 ```
 
-The swap renames the old tables to timestamped backups and promotes the UTC shadow tables to `quotes` and `trades`. Keep the backups until downstream queries and training loaders are verified.
+The swap first validates the UTC shadow tables, renames the old tables to timestamped backups, promotes the UTC shadow tables to `quotes` and `trades`, validates the promoted production tables, and then drops the stale backups when `--drop-stale-backups-after-swap` is provided. Use this flag for the large production dataset so stale server-local-date tables are not kept on disk.

@@ -122,6 +122,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--copy", action="store_true", help="Copy source-table rows into UTC shadow tables.")
     parser.add_argument("--validate", action="store_true", help="Validate source/shadow counts and UTC event_date consistency.")
     parser.add_argument("--swap", action="store_true", help="Rename source tables to backups and promote validated shadow tables.")
+    parser.add_argument(
+        "--drop-stale-backups-after-swap",
+        action="store_true",
+        help="After a successful swap, immediately drop the old server-local-date backup tables.",
+    )
     parser.add_argument("--retry-ok", action="store_true", help="Re-copy months even when the fix manifest has latest status ok.")
     parser.set_defaults(delete_before_copy=True)
     parser.add_argument("--no-delete-before-copy", action="store_false", dest="delete_before_copy")
@@ -359,6 +364,7 @@ def validate_shadow(client: ClickHouseHttpClient, args: argparse.Namespace, plan
 
 def swap_tables(client: ClickHouseHttpClient, args: argparse.Namespace, plans: list[TablePlan]) -> None:
     backup_suffix = args.backup_suffix or f"event_date_local_backup_{args.run_id}"
+    backup_tables: list[str] = []
     for plan in plans:
         validation = validate_shadow(client, args, plan)
         if validation["source_rows"] != validation["shadow_rows"] or validation["shadow_utc_mismatches"] != 0:
@@ -380,6 +386,27 @@ def swap_tables(client: ClickHouseHttpClient, args: argparse.Namespace, plans: l
                 f"TO {quote_ident(args.database)}.{quote_ident(plan.source_table)}"
             )
             validate_event_date_expression(client, args.database, plan.source_table)
+            production_validation = validate_shadow_after_swap(client, args, plan.source_table, validation["source_rows"])
+            if production_validation["utc_mismatches"] != 0 or production_validation["rows"] != validation["source_rows"]:
+                raise RuntimeError(f"Post-swap validation failed for {plan.source_table}: {production_validation}")
+            backup_tables.append(backup_table)
+    if args.drop_stale_backups_after_swap:
+        for backup_table in backup_tables:
+            print(f"DROP STALE BACKUP {args.database}.{backup_table}", flush=True)
+            if not args.dry_run:
+                client.execute(f"DROP TABLE {quote_ident(args.database)}.{quote_ident(backup_table)}")
+
+
+def validate_shadow_after_swap(client: ClickHouseHttpClient, args: argparse.Namespace, table: str, expected_rows: int) -> dict[str, int]:
+    rows = scalar_int(client, f"SELECT count() FROM {quote_ident(args.database)}.{quote_ident(table)}")
+    utc_mismatches = scalar_int(
+        client,
+        f"SELECT count() FROM {quote_ident(args.database)}.{quote_ident(table)} "
+        f"WHERE event_date != {event_date_expr()}",
+    )
+    result = {"rows": rows, "expected_rows": expected_rows, "utc_mismatches": utc_mismatches}
+    print(f"POST-SWAP VALIDATE {table}: {json.dumps(result, sort_keys=True)}", flush=True)
+    return result
 
 
 def main() -> None:
@@ -395,7 +422,11 @@ def main() -> None:
     print("Compact SIP event_date UTC fix", flush=True)
     print(f"database={args.database} timezone={EVENT_DATE_TIMEZONE}", flush=True)
     print(f"tables={[(plan.source_table, plan.shadow_table) for plan in plans]}", flush=True)
-    print(f"copy={args.copy} validate={args.validate} swap={args.swap} dry_run={args.dry_run}", flush=True)
+    print(
+        f"copy={args.copy} validate={args.validate} swap={args.swap} "
+        f"drop_stale_backups_after_swap={args.drop_stale_backups_after_swap} dry_run={args.dry_run}",
+        flush=True,
+    )
     print(f"storage_policy={args.storage_policy} max_threads={args.max_threads} max_memory={args.max_memory_usage}", flush=True)
     print(f"report={report_path}", flush=True)
     print(f"secret_status={secret_status(env_status_keys())}", flush=True)
