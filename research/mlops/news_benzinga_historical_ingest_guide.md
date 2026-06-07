@@ -73,39 +73,19 @@ If ClickHouse does not require a user/password in the current environment, those
 Dry-run only. This validates env loading, date parsing, bucket construction, target database, and storage policy. It does not download or insert.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
-  --dry-run `
-  --start-utc 2026-01-01T00:00:00Z `
-  --end-utc 2026-01-02T00:00:00Z `
-  --bucket-minutes 15
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --dry-run --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-02T00:00:00Z --bucket-minutes 15
 ```
 
 Small API smoke test. This downloads and normalizes one tiny bucket, writes raw payloads if rows exist, but does not insert into ClickHouse.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
-  --no-insert `
-  --start-utc 2026-01-01T00:00:00Z `
-  --end-utc 2026-01-01T00:05:00Z `
-  --bucket-minutes 5 `
-  --limit-buckets 1 `
-  --download-processes 1 `
-  --no-fetch-external `
-  --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --no-insert --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T00:05:00Z --bucket-minutes 5 --limit-buckets 1 --download-processes 1 --no-fetch-external --no-extract-pdfs
 ```
 
 Small insert test. This creates tables and inserts normalized rows for a short period.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
-  --start-utc 2026-01-01T00:00:00Z `
-  --end-utc 2026-01-01T01:00:00Z `
-  --bucket-minutes 15 `
-  --limit-buckets 4 `
-  --download-processes 2 `
-  --insert-concurrency 2 `
-  --no-fetch-external `
-  --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T01:00:00Z --bucket-minutes 15 --limit-buckets 4 --download-processes 2 --insert-concurrency 2 --no-fetch-external --no-extract-pdfs
 ```
 
 ## Full Historical Run
@@ -113,36 +93,19 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 Start conservative:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
-  --start-utc 2010-01-01T00:00:00Z `
-  --end-utc 2026-06-08T00:00:00Z `
-  --bucket-minutes 15 `
-  --download-processes 16 `
-  --insert-concurrency 6
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --insert-concurrency 6
 ```
 
 If Massive and ClickHouse remain stable, increase gradually:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
-  --start-utc 2010-01-01T00:00:00Z `
-  --end-utc 2026-06-08T00:00:00Z `
-  --bucket-minutes 15 `
-  --download-processes 24 `
-  --insert-concurrency 8
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 24 --insert-concurrency 8
 ```
 
 For a first full run, keep PDF and external URL enrichment enabled only if the workstation network and disk can handle the extra work. To prioritize canonical Benzinga text first:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
-  --start-utc 2010-01-01T00:00:00Z `
-  --end-utc 2026-06-08T00:00:00Z `
-  --bucket-minutes 15 `
-  --download-processes 16 `
-  --insert-concurrency 6 `
-  --no-fetch-external `
-  --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --insert-concurrency 6 --no-fetch-external --no-extract-pdfs
 ```
 
 ## Argument Reference
@@ -460,14 +423,7 @@ Normal resume skips buckets whose latest status is `inserted`. Buckets marked `p
 Recommended retry flow for saturated buckets:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
-  --start-utc 2010-01-01T00:00:00Z `
-  --end-utc 2026-06-08T00:00:00Z `
-  --bucket-minutes 5 `
-  --max-pages 40 `
-  --retry-partial `
-  --download-processes 16 `
-  --insert-concurrency 6
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 5 --max-pages 40 --retry-partial --download-processes 16 --insert-concurrency 6
 ```
 
 ## Monitoring
@@ -515,14 +471,7 @@ FROM q_live.benzinga_news_normalized_v1;
 For the first real canonical pass, prioritize complete provider rows before expensive extraction:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py `
-  --start-utc 2010-01-01T00:00:00Z `
-  --end-utc 2026-06-08T00:00:00Z `
-  --bucket-minutes 15 `
-  --download-processes 16 `
-  --insert-concurrency 6 `
-  --no-fetch-external `
-  --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --insert-concurrency 6 --no-fetch-external --no-extract-pdfs
 ```
 
 After this baseline is complete, run targeted enrichment for title-only or PDF/link-heavy rows as a separate pass instead of making the first full ingest slower and harder to debug.
