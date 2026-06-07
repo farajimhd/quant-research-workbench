@@ -178,8 +178,8 @@ CREATE TABLE IF NOT EXISTS {db}.{table_name}
     sip_timestamp_us {codec_suffix("UInt64", enabled=codecs)},
     participant_delta_us {codec_suffix("Int32", enabled=codecs)},
     sequence_number {codec_suffix("UInt32", enabled=codecs)},
-    bid_price_int {codec_suffix("UInt64", enabled=codecs)},
-    ask_price_int {codec_suffix("UInt64", enabled=codecs)},
+    bid_price_int {codec_suffix("UInt32", enabled=codecs)},
+    ask_price_int {codec_suffix("UInt32", enabled=codecs)},
     bid_size {codec_suffix("UInt32", enabled=codecs)},
     ask_size {codec_suffix("UInt32", enabled=codecs)},
     bid_exchange UInt8,
@@ -207,7 +207,7 @@ CREATE TABLE IF NOT EXISTS {db}.{table_name}
     sip_timestamp_us {codec_suffix("UInt64", enabled=codecs)},
     participant_delta_us {codec_suffix("Int32", enabled=codecs)},
     sequence_number {codec_suffix("UInt32", enabled=codecs)},
-    price_int {codec_suffix("UInt64", enabled=codecs)},
+    price_int {codec_suffix("UInt32", enabled=codecs)},
     size Float32,
     exchange UInt8,
     conditions LowCardinality(String),
@@ -227,13 +227,21 @@ def clamp_int32_sql(expr: str) -> str:
 
 
 def scale_code_sql(price_expr: str) -> str:
-    cent_fraction = f"abs(({price_expr} * 100) - round({price_expr} * 100))"
-    return f"if({price_expr} > 0 AND ({price_expr} < 1 OR {cent_fraction} > 0.0000001), 1, 0)"
+    cent_fraction = sub_cent_precision_sql(price_expr)
+    return f"if({price_expr} > 0 AND ({price_expr} < 1 OR ({cent_fraction} AND {price_expr} <= 429496.7295)), 1, 0)"
+
+
+def sub_cent_precision_sql(price_expr: str) -> str:
+    return f"abs(({price_expr} * 100) - round({price_expr} * 100)) > 0.0000001"
+
+
+def price_precision_clipped_sql(price_expr: str) -> str:
+    return f"({price_expr} > 429496.7295 AND {sub_cent_precision_sql(price_expr)})"
 
 
 def price_int_sql(price_expr: str) -> str:
     scale = scale_code_sql(price_expr)
-    return f"toUInt64(round(if({scale} = 1, {price_expr} * 10000, {price_expr} * 100)))"
+    return f"toUInt32(round(if({scale} = 1, {price_expr} * 10000, {price_expr} * 100)))"
 
 
 def tape_code_sql(tape_expr: str) -> str:
@@ -254,7 +262,9 @@ def insert_quote_sql(database: str, table: str, source_path: str) -> str:
         f"if({ask_price} <= 0, 2, 0) + "
         "if(toFloat64OrZero(bid_size) <= 0, 4, 0) + "
         "if(toFloat64OrZero(ask_size) <= 0, 8, 0) + "
-        f"if({delta_us} < -2147483648 OR {delta_us} > 2147483647, 16, 0))"
+        f"if({delta_us} < -2147483648 OR {delta_us} > 2147483647, 16, 0) + "
+        f"if({price_precision_clipped_sql(bid_price)}, 32, 0) + "
+        f"if({price_precision_clipped_sql(ask_price)}, 64, 0))"
     )
     return f"""
 INSERT INTO {db}.{table_name}
@@ -304,7 +314,8 @@ def insert_trade_sql(database: str, table: str, source_path: str) -> str:
     issue_flags = (
         f"toUInt16(if({price} <= 0, 1, 0) + "
         "if(toFloat64OrZero(size) <= 0, 2, 0) + "
-        f"if({delta_us} < -2147483648 OR {delta_us} > 2147483647, 4, 0))"
+        f"if({delta_us} < -2147483648 OR {delta_us} > 2147483647, 4, 0) + "
+        f"if({price_precision_clipped_sql(price)}, 8, 0))"
     )
     return f"""
 INSERT INTO {db}.{table_name}

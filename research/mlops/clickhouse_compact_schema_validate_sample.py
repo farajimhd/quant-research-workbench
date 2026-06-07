@@ -79,6 +79,7 @@ TRADE_COLUMNS = [
     "size",
     "tape",
 ]
+UINT32_1E4_MAX_PRICE = Decimal("429496.7295")
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,9 +222,16 @@ def clamp_int32(value: int) -> int:
 
 
 def scale_code(price: Decimal) -> int:
+    return 1 if price > 0 and (price < 1 or (has_sub_cent_precision(price) and price <= UINT32_1E4_MAX_PRICE)) else 0
+
+
+def has_sub_cent_precision(price: Decimal) -> bool:
     cents = price * Decimal("100")
-    has_sub_cent_precision = cents != cents.to_integral_value(rounding=ROUND_HALF_EVEN)
-    return 1 if price > 0 and (price < 1 or has_sub_cent_precision) else 0
+    return cents != cents.to_integral_value(rounding=ROUND_HALF_EVEN)
+
+
+def price_precision_clipped(price: Decimal) -> bool:
+    return price > UINT32_1E4_MAX_PRICE and has_sub_cent_precision(price)
 
 
 def price_int(price: Decimal) -> int:
@@ -258,6 +266,8 @@ def quote_expected(row: dict[str, Any]) -> dict[str, Any]:
         + (4 if bid_size <= 0 else 0)
         + (8 if ask_size <= 0 else 0)
         + (16 if delta_us < -2147483648 or delta_us > 2147483647 else 0)
+        + (32 if price_precision_clipped(bid_price) else 0)
+        + (64 if price_precision_clipped(ask_price) else 0)
     )
     return {
         "ticker": str(row["ticker"]),
@@ -285,6 +295,7 @@ def trade_expected(row: dict[str, Any]) -> dict[str, Any]:
         (1 if price <= 0 else 0)
         + (2 if size <= 0 else 0)
         + (4 if delta_us < -2147483648 or delta_us > 2147483647 else 0)
+        + (8 if price_precision_clipped(price) else 0)
     )
     return {
         "ticker": str(row["ticker"]),

@@ -42,7 +42,7 @@ python D:\TradingML\codes\masked_event_model\v4\research\mlops\clickhouse_ingest
 
 The script is resumable. It writes one row per source file attempt to `compact_ingest_manifest`. Files with latest status `ok` are skipped. Files with latest status `failed` or `started` are skipped unless `--retry-failed` or `--retry-started` is provided.
 
-The script validates the existing target table schema before ingesting. If a stale table exists, for example from an older schema where price integers were `UInt32`, the script stops with a clear error. Use a fresh table/database or migrate/drop the stale table before ingesting.
+The script validates the existing target table schema before ingesting. If a stale table exists, for example from an older schema where price integers were widened to `UInt64`, the script stops with a clear error. Use a fresh table/database or migrate/drop the stale table before ingesting.
 
 ## Tables
 
@@ -55,8 +55,8 @@ quotes_canonical
     sip_timestamp_us UInt64 CODEC(DoubleDelta, ZSTD(1)),
     participant_delta_us Int32 CODEC(T64, ZSTD(1)),
     sequence_number UInt32 CODEC(T64, ZSTD(1)),
-    bid_price_int UInt64 CODEC(DoubleDelta, ZSTD(1)),
-    ask_price_int UInt64 CODEC(DoubleDelta, ZSTD(1)),
+    bid_price_int UInt32 CODEC(T64, ZSTD(1)),
+    ask_price_int UInt32 CODEC(T64, ZSTD(1)),
     bid_size UInt32 CODEC(T64, ZSTD(1)),
     ask_size UInt32 CODEC(T64, ZSTD(1)),
     bid_exchange UInt8,
@@ -80,7 +80,7 @@ trades_canonical
     sip_timestamp_us UInt64 CODEC(DoubleDelta, ZSTD(1)),
     participant_delta_us Int32 CODEC(T64, ZSTD(1)),
     sequence_number UInt32 CODEC(T64, ZSTD(1)),
-    price_int UInt64 CODEC(DoubleDelta, ZSTD(1)),
+    price_int UInt32 CODEC(T64, ZSTD(1)),
     size Float32,
     exchange UInt8,
     conditions LowCardinality(String),
@@ -94,15 +94,16 @@ ORDER BY (ticker, sip_timestamp_us, sequence_number)
 
 ## Price Compacting
 
-Prices are stored as an integer plus one scale bit.
+Prices are stored as a `UInt32` integer plus one scale bit.
 
 Scale rule:
 
 - scale bit `0`: price has cent precision. Store `round(price * 100)`.
 - scale bit `1`: price needs 1e-4 precision. Store `round(price * 10000)`.
-- scale bit `1` is used when `0 < price < 1` or when a price above or equal to `$1` has sub-cent precision.
+- scale bit `1` is used when `0 < price < 1`.
+- scale bit `1` is also used when a price above or equal to `$1` has non-zero precision beyond cents and `round(price * 10000)` fits in `UInt32`.
 
-This preserves validated sub-cent trade prices while keeping ordinary cent-priced rows compact.
+This preserves validated sub-cent trade prices while keeping the price column at 32 bits. If an extremely high price above `$429,496.7295` has sub-cent precision, the row falls back to cent scale and sets a precision-clipped issue bit. That rare case is explicitly flagged instead of widening every price to 64 bits.
 
 Quote flags:
 
@@ -187,12 +188,15 @@ Quote `issue_flags`:
 - bit 2: `bid_size <= 0`
 - bit 3: `ask_size <= 0`
 - bit 4: participant delta exceeded `Int32` range before clipping
+- bit 5: bid price had sub-cent precision but could not fit 1e-4 scale in `UInt32`
+- bit 6: ask price had sub-cent precision but could not fit 1e-4 scale in `UInt32`
 
 Trade `issue_flags`:
 
 - bit 0: `price <= 0`
 - bit 1: `size <= 0`
 - bit 2: participant delta exceeded `Int32` range before clipping
+- bit 3: trade price had sub-cent precision but could not fit 1e-4 scale in `UInt32`
 
 Rows are not dropped by this ingest. Problematic rows are preserved and flagged so downstream model-data builders can decide whether to filter, mask, or learn robustly from them.
 
@@ -291,4 +295,3 @@ Expected result for a valid schema is:
 - trade mismatches: `0`
 - missing rows: `0`
 - duplicate key rows: `0`
-
