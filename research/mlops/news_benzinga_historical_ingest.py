@@ -66,6 +66,7 @@ class BucketJob:
     external_min_body_chars: int
     max_pdf_bytes: int
     text_limit_chars: int
+    external_request_min_interval_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +118,7 @@ class NormalizeJob:
     external_min_body_chars: int
     max_pdf_bytes: int
     text_limit_chars: int
+    external_request_min_interval_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +218,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root-win", default=os.environ.get("NEWS_BENZINGA_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument("--external-min-body-chars", type=int, default=int(os.environ.get("NEWS_EXTRACTION_MIN_BODY_CHARS", "300")))
     parser.add_argument("--extraction-timeout-seconds", type=float, default=float(os.environ.get("NEWS_EXTRACTION_TIMEOUT_SECONDS", "8")))
+    parser.add_argument("--external-request-min-interval-seconds", type=float, default=float(os.environ.get("NEWS_EXTERNAL_REQUEST_MIN_INTERVAL_SECONDS", "0.5")))
     parser.add_argument("--max-pdf-bytes", type=int, default=int(os.environ.get("NEWS_PDF_MAX_BYTES", "12000000")))
     parser.add_argument("--text-limit-chars", type=int, default=int(os.environ.get("NEWS_NORMALIZED_TEXT_LIMIT_CHARS", "24000")))
     parser.add_argument("--no-fetch-external", action="store_true")
@@ -500,6 +503,7 @@ def main() -> None:
                             external_min_body_chars=bucket.external_min_body_chars,
                             max_pdf_bytes=bucket.max_pdf_bytes,
                             text_limit_chars=bucket.text_limit_chars,
+                            external_request_min_interval_seconds=bucket.external_request_min_interval_seconds,
                         )
                         normalize_futures[normalize_pool.submit(normalize_bucket_worker, normalize_job)] = download_result
                     else:
@@ -647,6 +651,7 @@ def build_bucket_jobs(args: argparse.Namespace) -> list[BucketJob]:
                 external_min_body_chars=max(0, args.external_min_body_chars),
                 max_pdf_bytes=max(1, args.max_pdf_bytes),
                 text_limit_chars=max(0, args.text_limit_chars),
+                external_request_min_interval_seconds=max(0.0, args.external_request_min_interval_seconds),
             )
         )
         current = bucket_end
@@ -745,6 +750,8 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
         request_timeout_seconds=job.extraction_timeout_seconds,
         max_pdf_bytes=job.max_pdf_bytes,
         text_limit_chars=job.text_limit_chars,
+        external_request_min_interval_seconds=job.external_request_min_interval_seconds,
+        external_rate_limit_root=str(Path(job.artifact_root_win) / "rate_limits"),
     )
     for artifact in job.artifacts:
         provider_article_id = ""

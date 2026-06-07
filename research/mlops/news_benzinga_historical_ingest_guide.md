@@ -69,6 +69,12 @@ CLICKHOUSE_LIVE_STORAGE_POLICY
 
 If ClickHouse does not require a user/password in the current environment, those values can be absent.
 
+Install the Python dependencies in the workstation environment before a PDF-enabled run:
+
+```powershell
+python -m pip install -r \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\requirements.txt
+```
+
 ## Recommended First Run
 
 Dry-run only. This validates env loading, date parsing, bucket construction, target database, and storage policy. It does not download or insert.
@@ -103,10 +109,10 @@ If Massive and ClickHouse remain stable, increase gradually:
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 24 --normalize-processes 12 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000
 ```
 
-For a first full run, keep PDF and external URL enrichment enabled only if the workstation network and disk can handle the extra work. To prioritize canonical Benzinga text first:
+For a full run, keep external URL and PDF extraction enabled and control request pressure with `--external-request-min-interval-seconds`. The pipeline is designed to download, normalize, extract required external/PDF text, and insert in one pass.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --manifest-batch-rows 2000 --no-fetch-external --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.5
 ```
 
 ## Argument Reference
@@ -400,6 +406,17 @@ NEWS_EXTRACTION_TIMEOUT_SECONDS
 8
 ```
 
+`--external-request-min-interval-seconds`
+
+Minimum seconds between external HTTP requests to the same host, shared across normalization worker processes through a lock directory under `--artifact-root-win`. Default:
+
+```text
+NEWS_EXTERNAL_REQUEST_MIN_INTERVAL_SECONDS
+0.5
+```
+
+This is required for one-pass external/PDF extraction because Benzinga article-page fetches can return `429 Too Many Requests` when many workers hit the same host concurrently.
+
 `--max-pdf-bytes`
 
 Maximum PDF size to download/extract. Default:
@@ -514,10 +531,10 @@ FROM q_live.benzinga_news_normalized_v1;
 
 ## Practical Starting Recommendation
 
-For the first real canonical pass, prioritize complete provider rows before expensive extraction:
+For the first real canonical pass, keep enrichment enabled but start with controlled external request pressure:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --manifest-batch-rows 2000 --no-fetch-external --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.5
 ```
 
-After this baseline is complete, run targeted enrichment for title-only or PDF/link-heavy rows as a separate pass instead of making the first full ingest slower and harder to debug.
+Install `PyMuPDF` in the workstation environment before running with PDF extraction enabled. The repo `requirements.txt` includes it.

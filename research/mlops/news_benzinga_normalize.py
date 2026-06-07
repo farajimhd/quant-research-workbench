@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import html
+import io
 import json
 import mimetypes
+import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -29,6 +32,8 @@ class NewsExtractionOptions:
     request_timeout_seconds: float = 8.0
     max_pdf_bytes: int = 12_000_000
     text_limit_chars: int = DEFAULT_TEXT_LIMIT_CHARS
+    external_request_min_interval_seconds: float = 0.5
+    external_rate_limit_root: str = ""
 
 
 class HtmlTextExtractor(HTMLParser):
@@ -96,14 +101,21 @@ def normalize_benzinga_payload(
     external_text = ""
     external_status = "not_needed"
     external_error = ""
-    if options.fetch_external and should_fetch_external(body_text, article_url, options):
+    if options.fetch_external and should_skip_external_fetch(article_url):
+        external_status = "skipped_non_article_url"
+    elif options.fetch_external and should_fetch_external(body_text, article_url, options):
         try:
             if looks_like_pdf_url(article_url):
                 if article_url not in pdf_urls:
                     pdf_urls.append(article_url)
                 external_status = "deferred_to_pdf"
             else:
-                fetched = fetch_url_text(article_url, timeout_seconds=options.request_timeout_seconds)
+                fetched = fetch_url_text(
+                    article_url,
+                    timeout_seconds=options.request_timeout_seconds,
+                    rate_limit_root=options.external_rate_limit_root,
+                    min_interval_seconds=options.external_request_min_interval_seconds,
+                )
                 fetched_text, fetched_links = html_to_text_and_links(fetched)
                 external_text = fetched_text
                 external_status = "fetched" if fetched_text else "empty"
@@ -126,6 +138,8 @@ def normalize_benzinga_payload(
                     url,
                     timeout_seconds=options.request_timeout_seconds,
                     max_bytes=options.max_pdf_bytes,
+                    rate_limit_root=options.external_rate_limit_root,
+                    min_interval_seconds=options.external_request_min_interval_seconds,
                 )
                 pdf_path = write_pdf_artifact(artifact_root, published_at, provider_article_id, url, pdf_bytes)
                 pdf_artifact_paths.append(str(pdf_path) if pdf_path else "")
@@ -282,12 +296,21 @@ def should_fetch_external(body_text: str, article_url: str, options: NewsExtract
     return bool(article_url and len(body_text) < options.external_min_body_chars)
 
 
-def fetch_url_text(url: str, *, timeout_seconds: float) -> str:
+def should_skip_external_fetch(article_url: str) -> bool:
+    parsed = parse.urlparse(article_url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    return host.endswith("benzinga.com") and path.startswith("/quote/")
+
+
+def fetch_url_text(url: str, *, timeout_seconds: float, rate_limit_root: str = "", min_interval_seconds: float = 0.0) -> str:
+    apply_host_rate_limit(url, rate_limit_root=rate_limit_root, min_interval_seconds=min_interval_seconds)
     with request.urlopen(build_request(url), timeout=timeout_seconds) as response:  # noqa: S310
         return response.read().decode("utf-8", errors="replace")
 
 
-def fetch_url_bytes(url: str, *, timeout_seconds: float, max_bytes: int) -> bytes:
+def fetch_url_bytes(url: str, *, timeout_seconds: float, max_bytes: int, rate_limit_root: str = "", min_interval_seconds: float = 0.0) -> bytes:
+    apply_host_rate_limit(url, rate_limit_root=rate_limit_root, min_interval_seconds=min_interval_seconds)
     with request.urlopen(build_request(url), timeout=timeout_seconds) as response:  # noqa: S310
         data = response.read(max_bytes + 1)
     if len(data) > max_bytes:
@@ -299,10 +322,49 @@ def build_request(url: str) -> request.Request:
     return request.Request(
         url,
         headers={
-            "User-Agent": "quant-research-workbench-news-normalizer/1.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36",
             "Accept": "text/html,application/pdf,application/xhtml+xml,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.benzinga.com/",
         },
     )
+
+
+def apply_host_rate_limit(url: str, *, rate_limit_root: str, min_interval_seconds: float) -> None:
+    if min_interval_seconds <= 0 or not rate_limit_root:
+        return
+    host = parse.urlparse(url).netloc.lower() or "unknown"
+    folder = Path(rate_limit_root)
+    folder.mkdir(parents=True, exist_ok=True)
+    safe_host = safe_filename(host)
+    lock_path = folder / f"{safe_host}.lock"
+    state_path = folder / f"{safe_host}.last_request"
+    stale_seconds = max(30.0, min_interval_seconds * 20)
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock_path.stat().st_mtime > stale_seconds:
+                    lock_path.unlink(missing_ok=True)
+                    continue
+            except FileNotFoundError:
+                continue
+            time.sleep(0.05)
+    try:
+        last_request = 0.0
+        try:
+            last_request = float(state_path.read_text(encoding="utf-8").strip() or "0")
+        except (FileNotFoundError, ValueError):
+            last_request = 0.0
+        wait_seconds = last_request + min_interval_seconds - time.time()
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        state_path.write_text(f"{time.time():.6f}", encoding="utf-8")
+    finally:
+        os.close(fd)
+        lock_path.unlink(missing_ok=True)
 
 
 def write_pdf_artifact(
@@ -330,7 +392,12 @@ def extract_pdf_text(pdf_bytes: bytes) -> str:
         try:
             import fitz as pymupdf  # type: ignore
         except ImportError as exc:
-            raise RuntimeError("pymupdf_not_available") from exc
+            try:
+                from pypdf import PdfReader
+            except ImportError as pypdf_exc:
+                raise RuntimeError("pdf_parser_not_available") from pypdf_exc
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            return normalize_text(" ".join(page.extract_text() or "" for page in reader.pages))
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as handle:
         handle.write(pdf_bytes)
         handle.flush()
