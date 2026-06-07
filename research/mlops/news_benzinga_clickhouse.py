@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from typing import Any
 
 from research.mlops.clickhouse_ingest_sip_flatfiles import ClickHouseHttpClient, quote_ident, sql_string
@@ -136,9 +137,24 @@ def insert_manifest_rows(
 ) -> int:
     if not rows:
         return 0
-    payload = "\n".join(json.dumps(asdict(row), ensure_ascii=False, default=str) for row in rows)
+    payload = "\n".join(json.dumps(manifest_payload(row), ensure_ascii=False, default=str) for row in rows)
     client.execute(f"INSERT INTO {quote_ident(database)}.{quote_ident(table)} FORMAT JSONEachRow\n{payload}")
     return len(rows)
+
+
+def manifest_payload(row: NewsIngestManifestRow) -> dict[str, Any]:
+    payload = asdict(row)
+    payload["bucket_start_utc"] = clickhouse_datetime64(payload["bucket_start_utc"])
+    payload["bucket_end_utc"] = clickhouse_datetime64(payload["bucket_end_utc"])
+    return payload
+
+
+def clickhouse_datetime64(value: str) -> str:
+    text = str(value).strip()
+    if "T" not in text:
+        return text
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return parsed.strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
 def latest_manifest_statuses(

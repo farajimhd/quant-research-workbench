@@ -35,6 +35,7 @@ from research.mlops.news_benzinga_normalize import (  # noqa: E402
     normalize_benzinga_payload,
     parse_provider_datetime,
     to_clickhouse_dt64,
+    to_provider_rfc3339,
     write_raw_payload,
 )
 
@@ -388,8 +389,8 @@ def build_bucket_jobs(args: argparse.Namespace) -> list[BucketJob]:
         jobs.append(
             BucketJob(
                 bucket_id=bucket_id,
-                start_utc=to_clickhouse_dt64(current),
-                end_utc=to_clickhouse_dt64(bucket_end),
+                start_utc=to_provider_rfc3339(current),
+                end_utc=to_provider_rfc3339(bucket_end),
                 endpoint_url=args.endpoint_url,
                 api_key=args.api_key,
                 limit=max(1, min(args.limit, 50_000)),

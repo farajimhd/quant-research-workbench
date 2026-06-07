@@ -210,7 +210,11 @@ def parse_provider_datetime(value: str) -> datetime:
 
 def to_clickhouse_dt64(value: datetime) -> str:
     utc_value = value.astimezone(UTC)
-    return utc_value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return utc_value.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def to_provider_rfc3339(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def datetime_delay_ns(later: datetime, earlier: datetime) -> int:
