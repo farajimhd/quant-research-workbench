@@ -246,7 +246,15 @@ def validate_target_schema(client: ClickHouseHttpClient, database: str, table: s
     print(f"SCHEMA OK {database}.{table}", flush=True)
 
 
-def latest_manifest_status(client: ClickHouseHttpClient, database: str, manifest_table: str, kind: str, date: str, source_file: str) -> str:
+def latest_manifest_status(
+    client: ClickHouseHttpClient,
+    database: str,
+    manifest_table: str,
+    kind: str,
+    date: str,
+    source_file: str,
+    target_table: str,
+) -> str:
     try:
         rows = client.query_tsv(
             "SELECT status FROM "
@@ -254,6 +262,7 @@ def latest_manifest_status(client: ClickHouseHttpClient, database: str, manifest
             f"WHERE kind = {sql_string(kind)} "
             f"AND source_date = toDate({sql_string(date)}) "
             f"AND source_file = {sql_string(source_file)} "
+            f"AND target_table = {sql_string(target_table)} "
             "ORDER BY updated_at DESC, "
             "multiIf(status = 'failed', 90, status = 'ok', 80, status = 'started', 70, status = 'discovered', 60, 0) DESC "
             "LIMIT 1"
@@ -261,6 +270,56 @@ def latest_manifest_status(client: ClickHouseHttpClient, database: str, manifest
     except Exception:
         return ""
     return rows[0] if rows else ""
+
+
+def latest_manifest_statuses(
+    client: ClickHouseHttpClient,
+    database: str,
+    manifest_table: str,
+    jobs: list[CompactIngestJob],
+) -> dict[tuple[str, str, str, str], str]:
+    if not jobs:
+        return {}
+    kinds = sorted({job.kind for job in jobs})
+    target_tables = sorted({job.table for job in jobs})
+    start_date = min(job.date for job in jobs)
+    end_date = max(job.date for job in jobs)
+    query = (
+        "SELECT "
+        "kind, toString(source_date) AS source_date, source_file, target_table, "
+        "argMax(status, tuple(updated_at, "
+        "multiIf(status = 'failed', 90, status = 'ok', 80, status = 'started', 70, status = 'discovered', 60, 0)"
+        ")) AS status "
+        f"FROM {quote_ident(database)}.{quote_ident(manifest_table)} "
+        f"WHERE source_date BETWEEN toDate({sql_string(start_date)}) AND toDate({sql_string(end_date)}) "
+        f"AND kind IN ({', '.join(sql_string(kind) for kind in kinds)}) "
+        f"AND target_table IN ({', '.join(sql_string(table) for table in target_tables)}) "
+        "GROUP BY kind, source_date, source_file, target_table"
+    )
+    try:
+        rows = client.query_tsv(query).strip().splitlines()
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN bulk manifest status query failed; falling back to per-file checks: {exc!r}", flush=True)
+        statuses = {}
+        for job in jobs:
+            statuses[(job.kind, job.date, job.source_file, job.table)] = latest_manifest_status(
+                client,
+                database,
+                manifest_table,
+                job.kind,
+                job.date,
+                job.source_file,
+                job.table,
+            )
+        return statuses
+    statuses: dict[tuple[str, str, str, str], str] = {}
+    for row in rows:
+        parts = row.split("\t")
+        if len(parts) < 5:
+            continue
+        kind, source_date, source_file, target_table, status = parts[:5]
+        statuses[(kind, source_date, source_file, target_table)] = status
+    return statuses
 
 
 def insert_manifest(
@@ -429,27 +488,6 @@ def main() -> None:
     if args.dry_run:
         return
 
-    pending_jobs: list[CompactIngestJob] = []
-    skipped = 0
-    for index, job in enumerate(jobs, start=1):
-        status = latest_manifest_status(client, args.database, args.manifest_table, job.kind, job.date, job.source_file)
-        should_retry = (status == "failed" and args.retry_failed) or (status == "started" and args.retry_started)
-        if status == "ok" and not should_retry:
-            skipped += 1
-            print(f"[{index:,}/{len(jobs):,}] SKIP {job.kind}:{job.date} status=ok", flush=True)
-            continue
-        if status in {"failed", "started"} and not should_retry:
-            skipped += 1
-            print(f"[{index:,}/{len(jobs):,}] SKIP {job.kind}:{job.date} status={status} use retry flag to rerun", flush=True)
-            continue
-        insert_manifest(client, args.database, args.manifest_table, job, status="discovered", run_id=run_id)
-        pending_jobs.append(job)
-    print(f"Pending inserts={len(pending_jobs):,} skipped={skipped:,}", flush=True)
-
-    completed = 0
-    failed = 0
-    aggregate_rows = 0
-    started_at = time.perf_counter()
     append_jsonl(
         report_path,
         {
@@ -467,6 +505,35 @@ def main() -> None:
             "settings": settings.strip(),
         },
     )
+    print(f"Loading latest manifest statuses for {len(jobs):,} discovered files...", flush=True)
+    manifest_started_at = time.perf_counter()
+    manifest_statuses = latest_manifest_statuses(client, args.database, args.manifest_table, jobs)
+    print(
+        f"Loaded {len(manifest_statuses):,} manifest statuses in {time.perf_counter() - manifest_started_at:.2f}s",
+        flush=True,
+    )
+
+    pending_jobs: list[CompactIngestJob] = []
+    skipped = 0
+    for index, job in enumerate(jobs, start=1):
+        status = manifest_statuses.get((job.kind, job.date, job.source_file, job.table), "")
+        should_retry = (status == "failed" and args.retry_failed) or (status == "started" and args.retry_started)
+        if status == "ok" and not should_retry:
+            skipped += 1
+            print(f"[{index:,}/{len(jobs):,}] SKIP {job.kind}:{job.date} status=ok", flush=True)
+            continue
+        if status in {"failed", "started"} and not should_retry:
+            skipped += 1
+            print(f"[{index:,}/{len(jobs):,}] SKIP {job.kind}:{job.date} status={status} use retry flag to rerun", flush=True)
+            continue
+        insert_manifest(client, args.database, args.manifest_table, job, status="discovered", run_id=run_id)
+        pending_jobs.append(job)
+    print(f"Pending inserts={len(pending_jobs):,} skipped={skipped:,}", flush=True)
+
+    completed = 0
+    failed = 0
+    aggregate_rows = 0
+    started_at = time.perf_counter()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(insert_concurrency, max(1, len(pending_jobs)))) as executor:
         future_to_job = {}
