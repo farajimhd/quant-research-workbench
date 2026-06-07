@@ -76,11 +76,24 @@ class DownloadedArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class FileError:
+    stage: str
+    bucket_id: str
+    raw_artifact_path: str = ""
+    raw_payload_hash: str = ""
+    provider_article_id: str = ""
+    published_raw: str = ""
+    exception: str = ""
+    traceback: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class DownloadResult:
     bucket_id: str
     start_utc: str
     end_utc: str
     artifacts: list[DownloadedArtifact]
+    file_errors: list[FileError]
     downloaded_rows: int
     page_count: int
     saturated: int
@@ -112,6 +125,7 @@ class NormalizeResult:
     start_utc: str
     end_utc: str
     rows: list[dict[str, Any]]
+    file_errors: list[FileError]
     downloaded_rows: int
     normalized_rows: int
     page_count: int
@@ -455,6 +469,7 @@ def main() -> None:
                             start_utc=bucket.start_utc,
                             end_utc=bucket.end_utc,
                             artifacts=[],
+                            file_errors=[],
                             downloaded_rows=0,
                             page_count=0,
                             saturated=0,
@@ -464,6 +479,7 @@ def main() -> None:
                     download_completed += 1
                     downloaded_total += download_result.downloaded_rows
                     append_jsonl(report_path, {"type": "download", "run_id": run_id, "result": result_public(download_result)})
+                    append_file_errors(report_path, run_id, download_result.file_errors)
                     if not args.no_insert:
                         queue_manifest_rows([manifest_from_download(run_id, download_result)], insert_pool)
                     if download_result.exception:
@@ -504,6 +520,7 @@ def main() -> None:
                             start_utc=download_result.start_utc,
                             end_utc=download_result.end_utc,
                             rows=[],
+                            file_errors=[],
                             downloaded_rows=download_result.downloaded_rows,
                             normalized_rows=0,
                             page_count=download_result.page_count,
@@ -514,6 +531,7 @@ def main() -> None:
                     normalize_completed += 1
                     normalized_total += normalize_result.normalized_rows
                     append_jsonl(report_path, {"type": "normalize", "run_id": run_id, "result": result_public(normalize_result)})
+                    append_file_errors(report_path, run_id, normalize_result.file_errors)
                     if not args.no_insert:
                         queue_manifest_rows([manifest_from_normalize(run_id, normalize_result)], insert_pool)
                     if normalize_result.exception:
@@ -641,6 +659,7 @@ def download_bucket_worker(job: BucketJob) -> DownloadResult:
     started_at = time.perf_counter()
     artifact_root = Path(job.artifact_root_win)
     artifacts: list[DownloadedArtifact] = []
+    file_errors: list[FileError] = []
     downloaded_rows = 0
     page_count = 0
     saturated = 0
@@ -655,19 +674,33 @@ def download_bucket_worker(job: BucketJob) -> DownloadResult:
             for item in items:
                 if not isinstance(item, dict):
                     continue
+                raw_path: Path | None = None
                 try:
-                    published = parse_provider_datetime(str(item.get("published") or ""))
-                except Exception:
-                    published = datetime.now(UTC)
-                raw_path = artifact_path_for_payload(artifact_root, item, published)
-                raw_hash = write_raw_payload(raw_path, item)
-                artifacts.append(
-                    DownloadedArtifact(
-                        raw_artifact_path=str(raw_path),
-                        raw_payload_hash=raw_hash,
-                        downloaded_at_utc=downloaded_at,
+                    try:
+                        published = parse_provider_datetime(str(item.get("published") or ""))
+                    except Exception:
+                        published = datetime.now(UTC)
+                    raw_path = artifact_path_for_payload(artifact_root, item, published)
+                    raw_hash = write_raw_payload(raw_path, item)
+                    artifacts.append(
+                        DownloadedArtifact(
+                            raw_artifact_path=str(raw_path),
+                            raw_payload_hash=raw_hash,
+                            downloaded_at_utc=downloaded_at,
+                        )
                     )
-                )
+                except Exception as exc:  # noqa: BLE001
+                    file_errors.append(
+                        FileError(
+                            stage="download_raw_write",
+                            bucket_id=job.bucket_id,
+                            raw_artifact_path=str(raw_path or ""),
+                            provider_article_id=provider_id_from_payload(item),
+                            published_raw=str(item.get("published") or ""),
+                            exception=repr(exc),
+                            traceback=traceback.format_exc(),
+                        )
+                    )
             next_url = response.get("next_url")
             if next_url:
                 next_url = append_api_key(str(next_url), job.api_key)
@@ -678,10 +711,12 @@ def download_bucket_worker(job: BucketJob) -> DownloadResult:
             start_utc=job.start_utc,
             end_utc=job.end_utc,
             artifacts=artifacts,
+            file_errors=file_errors,
             downloaded_rows=downloaded_rows,
             page_count=page_count,
             saturated=saturated,
             wall_seconds=time.perf_counter() - started_at,
+            exception="all downloaded payload raw writes failed" if downloaded_rows and file_errors and not artifacts else "",
         )
     except Exception as exc:  # noqa: BLE001
         return DownloadResult(
@@ -689,6 +724,7 @@ def download_bucket_worker(job: BucketJob) -> DownloadResult:
             start_utc=job.start_utc,
             end_utc=job.end_utc,
             artifacts=artifacts,
+            file_errors=file_errors,
             downloaded_rows=downloaded_rows,
             page_count=page_count,
             saturated=saturated,
@@ -701,6 +737,7 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
     started_at = time.perf_counter()
     artifact_root = Path(job.artifact_root_win)
     rows: list[dict[str, Any]] = []
+    file_errors: list[FileError] = []
     options = NewsExtractionOptions(
         fetch_external=job.fetch_external,
         extract_pdfs=job.extract_pdfs,
@@ -709,12 +746,16 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
         max_pdf_bytes=job.max_pdf_bytes,
         text_limit_chars=job.text_limit_chars,
     )
-    try:
-        for artifact in job.artifacts:
+    for artifact in job.artifacts:
+        provider_article_id = ""
+        published_raw = ""
+        try:
             raw_path = Path(artifact.raw_artifact_path)
             payload = json.loads(raw_path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
-                continue
+                raise TypeError(f"raw payload was {type(payload).__name__}, expected dict")
+            provider_article_id = provider_id_from_payload(payload)
+            published_raw = str(payload.get("published") or "")
             rows.append(
                 normalize_benzinga_payload(
                     payload,
@@ -725,30 +766,32 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
                     options=options,
                 )
             )
-        return NormalizeResult(
-            bucket_id=job.bucket_id,
-            start_utc=job.start_utc,
-            end_utc=job.end_utc,
-            rows=rows,
-            downloaded_rows=job.downloaded_rows,
-            normalized_rows=len(rows),
-            page_count=job.page_count,
-            saturated=job.saturated,
-            wall_seconds=time.perf_counter() - started_at,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return NormalizeResult(
-            bucket_id=job.bucket_id,
-            start_utc=job.start_utc,
-            end_utc=job.end_utc,
-            rows=rows,
-            downloaded_rows=job.downloaded_rows,
-            normalized_rows=len(rows),
-            page_count=job.page_count,
-            saturated=job.saturated,
-            wall_seconds=time.perf_counter() - started_at,
-            exception=repr(exc),
-        )
+        except Exception as exc:  # noqa: BLE001
+            file_errors.append(
+                FileError(
+                    stage="normalize_raw_file",
+                    bucket_id=job.bucket_id,
+                    raw_artifact_path=artifact.raw_artifact_path,
+                    raw_payload_hash=artifact.raw_payload_hash,
+                    provider_article_id=provider_article_id,
+                    published_raw=published_raw,
+                    exception=repr(exc),
+                    traceback=traceback.format_exc(),
+                )
+            )
+    return NormalizeResult(
+        bucket_id=job.bucket_id,
+        start_utc=job.start_utc,
+        end_utc=job.end_utc,
+        rows=rows,
+        file_errors=file_errors,
+        downloaded_rows=job.downloaded_rows,
+        normalized_rows=len(rows),
+        page_count=job.page_count,
+        saturated=job.saturated,
+        wall_seconds=time.perf_counter() - started_at,
+        exception="all raw files failed normalization" if job.artifacts and file_errors and not rows else "",
+    )
 
 
 def insert_rows_worker(job: InsertJob) -> InsertResult:
@@ -922,9 +965,23 @@ def public_args(args: argparse.Namespace) -> dict[str, Any]:
 
 def result_public(result: Any) -> dict[str, Any]:
     payload = asdict(result)
+    file_errors = payload.pop("file_errors", [])
+    payload["file_error_count"] = len(file_errors)
     payload.pop("artifacts", None)
     payload.pop("rows", None)
     return payload
+
+
+def append_file_errors(report_path: Path, run_id: str, errors: list[FileError]) -> None:
+    for item in errors:
+        append_jsonl(report_path, {"type": "file_error", "run_id": run_id, "error": asdict(item)})
+
+
+def provider_id_from_payload(payload: dict[str, Any]) -> str:
+    value = payload.get("benzinga_id", payload.get("id", ""))
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value or "").strip()
 
 
 def manifest_from_download(run_id: str, result: DownloadResult) -> NewsIngestManifestRow:

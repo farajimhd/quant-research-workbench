@@ -480,6 +480,14 @@ eta_min
 
 Each run also writes a JSONL report under `--output-root-win`. Use that report to inspect bucket-level exceptions without searching terminal history.
 
+If a specific raw payload fails during raw-file write or normalization, the report writes a separate record:
+
+```text
+type=file_error
+```
+
+That record includes the stage, bucket id, raw artifact path when available, raw payload hash when available, provider article id when available, provider timestamp, exception, and traceback. The stage summary rows only include `file_error_count` so the report does not duplicate tracebacks and the normalized ClickHouse table stays compact.
+
 Useful ClickHouse checks:
 
 ```sql
