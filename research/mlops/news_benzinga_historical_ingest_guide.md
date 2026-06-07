@@ -86,7 +86,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 Small insert test. This creates tables and inserts normalized rows for a short period. Use a tiny insert batch to validate the staged path.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T01:00:00Z --bucket-minutes 15 --limit-buckets 4 --download-processes 2 --normalize-processes 2 --insert-concurrency 2 --insert-batch-rows 25 --no-fetch-external --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T01:00:00Z --bucket-minutes 15 --limit-buckets 4 --download-processes 2 --normalize-processes 2 --insert-concurrency 2 --insert-batch-rows 25 --manifest-batch-rows 25 --no-fetch-external --no-extract-pdfs
 ```
 
 ## Full Historical Run
@@ -94,19 +94,19 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 Start conservative:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 5000
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 5000 --manifest-batch-rows 1000
 ```
 
 If Massive and ClickHouse remain stable, increase gradually:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 24 --normalize-processes 12 --insert-concurrency 8 --insert-batch-rows 10000
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 24 --normalize-processes 12 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000
 ```
 
 For a first full run, keep PDF and external URL enrichment enabled only if the workstation network and disk can handle the extra work. To prioritize canonical Benzinga text first:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --no-fetch-external --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --manifest-batch-rows 2000 --no-fetch-external --no-extract-pdfs
 ```
 
 ## Argument Reference
@@ -324,6 +324,17 @@ NEWS_BENZINGA_INSERT_BATCH_ROWS
 
 Rows are batched across buckets. Larger batches reduce ClickHouse overhead, but they also make a failed insert affect more buckets. Start with 5,000 to 10,000 for the full run.
 
+`--manifest-batch-rows`
+
+Minimum manifest/status rows accumulated before a ClickHouse manifest insert batch is submitted. Default:
+
+```text
+NEWS_BENZINGA_MANIFEST_BATCH_ROWS
+1000
+```
+
+Manifest writes are queued through the same bounded ClickHouse writer pool as news inserts. The main orchestration loop does not open separate synchronous ClickHouse connections for status updates.
+
 ### Artifact and Report Arguments
 
 `--artifact-root-win`
@@ -448,7 +459,7 @@ Normal resume skips buckets whose latest status is `inserted`. Buckets marked `p
 Recommended retry flow for saturated buckets:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 5 --max-pages 40 --retry-partial --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 5000
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 5 --max-pages 40 --retry-partial --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 5000 --manifest-batch-rows 1000
 ```
 
 ## Monitoring
@@ -498,7 +509,7 @@ FROM q_live.benzinga_news_normalized_v1;
 For the first real canonical pass, prioritize complete provider rows before expensive extraction:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --no-fetch-external --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 10000 --manifest-batch-rows 2000 --no-fetch-external --no-extract-pdfs
 ```
 
 After this baseline is complete, run targeted enrichment for title-only or PDF/link-heavy rows as a separate pass instead of making the first full ingest slower and harder to debug.

@@ -154,6 +154,26 @@ class InsertResult:
     exception: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ManifestJob:
+    batch_id: str
+    rows: list[NewsIngestManifestRow]
+    clickhouse_url: str
+    user: str
+    password: str
+    database: str
+    manifest_table: str
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestResult:
+    batch_id: str
+    row_count: int
+    bucket_ids: list[str]
+    wall_seconds: float
+    exception: str = ""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download, normalize, and ingest canonical Benzinga news.")
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url())
@@ -177,6 +197,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--normalize-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZE_PROCESSES", "0")))
     parser.add_argument("--insert-concurrency", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_CONCURRENCY", "4")))
     parser.add_argument("--insert-batch-rows", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_BATCH_ROWS", "5000")))
+    parser.add_argument("--manifest-batch-rows", type=int, default=int(os.environ.get("NEWS_BENZINGA_MANIFEST_BATCH_ROWS", "1000")))
     parser.add_argument("--artifact-root-win", default=os.environ.get("NEWS_BENZINGA_ARTIFACT_ROOT_WIN", str(DEFAULT_ARTIFACT_ROOT_WIN)))
     parser.add_argument("--output-root-win", default=os.environ.get("NEWS_BENZINGA_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument("--external-min-body-chars", type=int, default=int(os.environ.get("NEWS_EXTRACTION_MIN_BODY_CHARS", "300")))
@@ -262,6 +283,7 @@ def main() -> None:
     args.normalize_processes = args.normalize_processes if args.normalize_processes > 0 else max(1, args.download_processes // 2)
     args.insert_concurrency = max(1, args.insert_concurrency)
     args.insert_batch_rows = max(1, args.insert_batch_rows)
+    args.manifest_batch_rows = max(1, args.manifest_batch_rows)
     if not args.api_key:
         raise RuntimeError("MASSIVE_API_KEY is required for Benzinga historical download.")
     if not args.storage_policy:
@@ -286,7 +308,8 @@ def main() -> None:
     print(f"buckets={len(buckets):,} limit_buckets={args.limit_buckets}", flush=True)
     print(
         f"download_processes={args.download_processes} normalize_processes={args.normalize_processes} "
-        f"insert_concurrency={args.insert_concurrency} insert_batch_rows={args.insert_batch_rows}",
+        f"insert_concurrency={args.insert_concurrency} insert_batch_rows={args.insert_batch_rows} "
+        f"manifest_batch_rows={args.manifest_batch_rows}",
         flush=True,
     )
     print(f"fetch_external={not args.no_fetch_external} extract_pdfs={not args.no_extract_pdfs}", flush=True)
@@ -327,10 +350,13 @@ def main() -> None:
     normalized_total = 0
     started_at = time.perf_counter()
     insert_futures: dict[concurrent.futures.Future[InsertResult], InsertJob] = {}
+    manifest_futures: dict[concurrent.futures.Future[ManifestResult], ManifestJob] = {}
     insert_rows_buffer: list[dict[str, Any]] = []
     insert_bucket_counts: dict[str, int] = {}
     insert_bucket_metas: dict[str, BucketInsertMeta] = {}
+    manifest_rows_buffer: list[NewsIngestManifestRow] = []
     insert_batch_index = 0
+    manifest_batch_index = 0
     next_download_index = 0
     max_download_backlog = max(args.download_processes, args.download_processes * 4)
     max_insert_workers = max(1, min(args.insert_concurrency, len(pending)))
@@ -357,6 +383,31 @@ def main() -> None:
         insert_bucket_counts.clear()
         insert_bucket_metas.clear()
 
+    def queue_manifest_rows(rows: list[NewsIngestManifestRow], insert_pool: concurrent.futures.ThreadPoolExecutor) -> None:
+        if not rows:
+            return
+        manifest_rows_buffer.extend(rows)
+        if len(manifest_rows_buffer) >= args.manifest_batch_rows:
+            submit_manifest_batch(insert_pool)
+
+    def submit_manifest_batch(insert_pool: concurrent.futures.ThreadPoolExecutor) -> None:
+        nonlocal manifest_batch_index
+        if not manifest_rows_buffer:
+            return
+        manifest_batch_index += 1
+        batch_id = f"{run_id}_manifest_{manifest_batch_index:08d}"
+        job = ManifestJob(
+            batch_id=batch_id,
+            rows=list(manifest_rows_buffer),
+            clickhouse_url=args.clickhouse_url,
+            user=args.user,
+            password=args.password,
+            database=args.database,
+            manifest_table=args.manifest_table,
+        )
+        manifest_futures[insert_pool.submit(manifest_rows_worker, job)] = job
+        manifest_rows_buffer.clear()
+
     with (
         concurrent.futures.ProcessPoolExecutor(max_workers=args.download_processes) as download_pool,
         concurrent.futures.ProcessPoolExecutor(max_workers=args.normalize_processes) as normalize_pool,
@@ -373,12 +424,22 @@ def main() -> None:
                 download_futures[download_pool.submit(download_bucket_worker, bucket)] = bucket
 
         submit_more_downloads()
-        while download_futures or normalize_futures or insert_futures or next_download_index < len(pending):
+        while (
+            download_futures
+            or normalize_futures
+            or insert_futures
+            or manifest_futures
+            or manifest_rows_buffer
+            or next_download_index < len(pending)
+        ):
             submit_more_downloads()
+            if not download_futures and not normalize_futures and not insert_futures and manifest_rows_buffer:
+                submit_manifest_batch(insert_pool)
             active_futures: list[concurrent.futures.Future[Any]] = [
                 *download_futures.keys(),
                 *normalize_futures.keys(),
                 *insert_futures.keys(),
+                *manifest_futures.keys(),
             ]
             if not active_futures:
                 continue
@@ -404,12 +465,7 @@ def main() -> None:
                     downloaded_total += download_result.downloaded_rows
                     append_jsonl(report_path, {"type": "download", "run_id": run_id, "result": result_public(download_result)})
                     if not args.no_insert:
-                        insert_manifest_rows(
-                            client,
-                            database=args.database,
-                            table=args.manifest_table,
-                            rows=[manifest_from_download(run_id, download_result)],
-                        )
+                        queue_manifest_rows([manifest_from_download(run_id, download_result)], insert_pool)
                     if download_result.exception:
                         final_failed += 1
                     elif download_result.artifacts:
@@ -435,12 +491,7 @@ def main() -> None:
                         if args.no_insert:
                             final_completed += 1
                         else:
-                            insert_manifest_rows(
-                                client,
-                                database=args.database,
-                                table=args.manifest_table,
-                                rows=[manifest_empty_insert(run_id, download_result)],
-                            )
+                            queue_manifest_rows([manifest_empty_insert(run_id, download_result)], insert_pool)
                             final_completed += 1
 
                 elif future in normalize_futures:
@@ -464,12 +515,7 @@ def main() -> None:
                     normalized_total += normalize_result.normalized_rows
                     append_jsonl(report_path, {"type": "normalize", "run_id": run_id, "result": result_public(normalize_result)})
                     if not args.no_insert:
-                        insert_manifest_rows(
-                            client,
-                            database=args.database,
-                            table=args.manifest_table,
-                            rows=[manifest_from_normalize(run_id, normalize_result)],
-                        )
+                        queue_manifest_rows([manifest_from_normalize(run_id, normalize_result)], insert_pool)
                     if normalize_result.exception:
                         final_failed += 1
                     elif args.no_insert:
@@ -490,12 +536,7 @@ def main() -> None:
                         if len(insert_rows_buffer) >= args.insert_batch_rows:
                             submit_insert_batch(insert_pool)
                     else:
-                        insert_manifest_rows(
-                            client,
-                            database=args.database,
-                            table=args.manifest_table,
-                            rows=[manifest_empty_insert(run_id, normalize_result)],
-                        )
+                        queue_manifest_rows([manifest_empty_insert(run_id, normalize_result)], insert_pool)
                         final_completed += 1
 
                 elif future in insert_futures:
@@ -511,16 +552,29 @@ def main() -> None:
                             wall_seconds=0.0,
                             exception=repr(exc),
                         )
-                    insert_completed, insert_failed, insert_rows = handle_insert_result(
+                    insert_completed, insert_failed, insert_rows, manifest_rows = handle_insert_result(
                         insert_result,
-                        client,
-                        args,
                         run_id,
                         report_path,
                     )
                     final_completed += insert_completed
                     final_failed += insert_failed
                     inserted_total += insert_rows
+                    queue_manifest_rows(manifest_rows, insert_pool)
+
+                elif future in manifest_futures:
+                    manifest_futures.pop(future)
+                    try:
+                        manifest_result = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        manifest_result = ManifestResult(
+                            batch_id="unknown",
+                            row_count=0,
+                            bucket_ids=[],
+                            wall_seconds=0.0,
+                            exception=repr(exc),
+                        )
+                    append_jsonl(report_path, {"type": "manifest_insert", "run_id": run_id, "result": asdict(manifest_result)})
 
                 if not download_futures and not normalize_futures and not args.no_insert and insert_rows_buffer:
                     submit_insert_batch(insert_pool)
@@ -720,13 +774,32 @@ def insert_rows_worker(job: InsertJob) -> InsertResult:
         )
 
 
+def manifest_rows_worker(job: ManifestJob) -> ManifestResult:
+    started_at = time.perf_counter()
+    try:
+        client = ClickHouseHttpClient(job.clickhouse_url, job.user, job.password)
+        insert_manifest_rows(client, database=job.database, table=job.manifest_table, rows=job.rows)
+        return ManifestResult(
+            batch_id=job.batch_id,
+            row_count=len(job.rows),
+            bucket_ids=[row.bucket_id for row in job.rows[:200]],
+            wall_seconds=time.perf_counter() - started_at,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return ManifestResult(
+            batch_id=job.batch_id,
+            row_count=len(job.rows),
+            bucket_ids=[row.bucket_id for row in job.rows[:200]],
+            wall_seconds=time.perf_counter() - started_at,
+            exception=repr(exc),
+        )
+
+
 def handle_insert_result(
     result: InsertResult,
-    client: ClickHouseHttpClient,
-    args: argparse.Namespace,
     run_id: str,
     report_path: Path,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, list[NewsIngestManifestRow]]:
     completed = 0
     failed = 0
     inserted_rows = 0
@@ -759,7 +832,6 @@ def handle_insert_result(
                 exception=exception,
             )
         )
-    insert_manifest_rows(client, database=args.database, table=args.manifest_table, rows=manifest_rows)
     append_jsonl(
         report_path,
         {
@@ -769,7 +841,7 @@ def handle_insert_result(
             "status": "failed" if result.exception else "inserted",
         },
     )
-    return completed, failed, inserted_rows
+    return completed, failed, inserted_rows, manifest_rows
 
 
 def filter_pending_buckets(
