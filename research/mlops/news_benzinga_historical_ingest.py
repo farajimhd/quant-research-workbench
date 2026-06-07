@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -45,6 +46,8 @@ DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_ingest")
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/benzinga_news_canonical")
 DEFAULT_START_UTC = "2024-01-01T00:00:00Z"
 DEFAULT_END_UTC = "2026-01-01T00:00:00Z"
+CURRENT_RUN_ID = ""
+CURRENT_REPORT_PATH: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,6 +255,7 @@ def env_status_keys() -> list[str]:
 
 
 def main() -> None:
+    global CURRENT_REPORT_PATH, CURRENT_RUN_ID
     loaded_env_files = load_env_files(discover_clickhouse_env_files(), verbose=True)
     args = parse_args()
     args.download_processes = max(1, args.download_processes)
@@ -267,6 +271,8 @@ def main() -> None:
     output_root = Path(args.output_root_win)
     output_root.mkdir(parents=True, exist_ok=True)
     report_path = output_root / f"benzinga_historical_ingest_{run_id}.jsonl"
+    CURRENT_RUN_ID = run_id
+    CURRENT_REPORT_PATH = report_path
     artifact_root = Path(args.artifact_root_win)
     buckets = build_bucket_jobs(args)
 
@@ -928,5 +934,23 @@ def print_progress(
     )
 
 
+def append_fatal_error(exc: BaseException) -> None:
+    if CURRENT_REPORT_PATH is None:
+        return
+    append_jsonl(
+        CURRENT_REPORT_PATH,
+        {
+            "type": "fatal",
+            "run_id": CURRENT_RUN_ID,
+            "exception": repr(exc),
+            "traceback": traceback.format_exc(),
+        },
+    )
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException as exc:
+        append_fatal_error(exc)
+        raise
