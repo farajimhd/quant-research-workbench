@@ -112,6 +112,7 @@ class ProgressDisplay:
         self._job_slot: dict[str, int] = {}
         self._rows = [self._empty_row(slot) for slot in range(self.worker_slots)]
         self._rich = False
+        self._fallback_reason = ""
         self._live: Any = None
         self._layout: Any = None
 
@@ -124,6 +125,7 @@ class ProgressDisplay:
                 from rich.table import Table
                 from rich.text import Text
             except ImportError:
+                self._fallback_reason = "Rich is not installed; using throttled text progress"
                 if self.mode == "rich":
                     raise
             else:
@@ -155,6 +157,10 @@ class ProgressDisplay:
     @property
     def rich_active(self) -> bool:
         return self._rich
+
+    @property
+    def fallback_reason(self) -> str:
+        return self._fallback_reason
 
     def job_start(self, job_key: str, slot: int | None = None) -> None:
         with self._lock:
@@ -380,6 +386,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-timeout-seconds", type=float, default=float(os.environ.get("SEC_REQUEST_TIMEOUT_SECONDS", "60")))
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("SEC_MAX_RETRIES", "4")))
     parser.add_argument("--retry-base-seconds", type=float, default=float(os.environ.get("SEC_RETRY_BASE_SECONDS", "1.5")))
+    parser.add_argument("--header-max-retries", type=int, default=int(os.environ.get("SEC_HEADER_MAX_RETRIES", "1")))
+    parser.add_argument("--header-retry-base-seconds", type=float, default=float(os.environ.get("SEC_HEADER_RETRY_BASE_SECONDS", "0.5")))
+    parser.add_argument("--header-failure-breaker-threshold", type=int, default=int(os.environ.get("SEC_HEADER_FAILURE_BREAKER_THRESHOLD", "4")))
     parser.add_argument("--progress-interval-seconds", type=float, default=float(os.environ.get("SEC_PROGRESS_INTERVAL_SECONDS", "10")))
     parser.add_argument("--progress-file-interval-mib", type=float, default=float(os.environ.get("SEC_PROGRESS_FILE_INTERVAL_MIB", "64")))
     parser.add_argument("--progress-record-interval", type=int, default=int(os.environ.get("SEC_PROGRESS_RECORD_INTERVAL", "500")))
@@ -405,7 +414,7 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Render Rich progress in normal terminal scrollback instead of the fixed live screen.",
     )
-    parser.set_defaults(download_progress_bars=parse_bool_env("SEC_DOWNLOAD_PROGRESS_BARS", True))
+    parser.set_defaults(download_progress_bars=parse_bool_env("SEC_DOWNLOAD_PROGRESS_BARS", False))
     progress_bar_group = parser.add_mutually_exclusive_group()
     progress_bar_group.add_argument("--download-progress-bars", dest="download_progress_bars", action="store_true", help="Show tqdm progress bars for SEC archive downloads.")
     progress_bar_group.add_argument("--no-download-progress-bars", dest="download_progress_bars", action="store_false", help="Disable tqdm archive download bars and use text progress only.")
@@ -450,6 +459,9 @@ def main() -> None:
     request_timeout = max(1.0, args.request_timeout_seconds)
     max_retries = max(0, args.max_retries)
     retry_base = max(0.1, args.retry_base_seconds)
+    header_max_retries = max(0, args.header_max_retries)
+    header_retry_base = max(0.1, args.header_retry_base_seconds)
+    header_failure_breaker_threshold = max(0, args.header_failure_breaker_threshold)
     progress_interval = max(1.0, args.progress_interval_seconds)
     progress_file_interval_mib = max(1.0, args.progress_file_interval_mib)
     progress_record_interval = max(1, args.progress_record_interval)
@@ -467,6 +479,9 @@ def main() -> None:
             request_timeout,
             max_retries,
             retry_base,
+            header_max_retries,
+            header_retry_base,
+            header_failure_breaker_threshold,
             max(1, args.header_concurrency),
             max(0, args.limit_files_per_day),
             args.force_redownload,
@@ -491,6 +506,9 @@ def main() -> None:
         "download_concurrency": max(1, args.download_concurrency),
         "archive_copy_concurrency": max(1, args.archive_copy_concurrency),
         "header_concurrency": max(1, args.header_concurrency),
+        "header_max_retries": header_max_retries,
+        "header_retry_base_seconds": header_retry_base,
+        "header_failure_breaker_threshold": header_failure_breaker_threshold,
         "sec_request_min_interval_seconds": request_min_interval,
         "progress_interval_seconds": progress_interval,
         "progress_file_interval_mib": progress_file_interval_mib,
@@ -520,6 +538,8 @@ def main() -> None:
         max(1, args.download_concurrency),
     ) as progress:
         print_header(config, progress)
+        if progress.fallback_reason:
+            progress.log(f"progress_fallback={progress.fallback_reason}; install rich or run with --progress-layout rich for fixed matrix display")
 
         if args.dry_run:
             for job in jobs:
@@ -750,7 +770,7 @@ def stream_download_to_file(
                 expected_bytes = int(expected_length) if expected_length else 0
                 written = 0
                 task_key = f"{job.archive_date}:download:{attempt}"
-                use_structured_download_bar = download_progress_bars and progress.rich_active
+                use_structured_download_bar = progress.rich_active
                 bar = make_download_bar(
                     enabled=download_progress_bars and not progress.rich_active,
                     archive_date=job.archive_date,
@@ -786,10 +806,7 @@ def stream_download_to_file(
                                 detail=f"{format_bytes(written)}" + (f" / {format_bytes(expected_bytes)}" if expected_bytes else ""),
                             )
                         now = time.perf_counter()
-                        if bar is None and not progress.rich_active and (
-                            written - last_reported_bytes >= progress_file_interval_bytes
-                            or now - last_progress >= progress_interval_seconds
-                        ):
+                        if bar is None and not progress.rich_active and now - last_progress >= progress_interval_seconds:
                             pct = f" {written / expected_bytes:.1%}" if expected_bytes else ""
                             progress.log(
                                 f"[{job.archive_date}] download: {format_bytes(written)}{pct} elapsed={now - started:.1f}s",
@@ -846,10 +863,8 @@ def validate_archive_integrity(
                     if progress is not None and progress_label:
                         progress.task_update(task_key, advance=1, detail=f"{nc_members:,} .nc members")
                     now = time.perf_counter()
-                    if progress_label and (
-                        (progress_every > 0 and nc_members % progress_every == 0)
-                        or now - last_progress >= progress_interval_seconds
-                    ):
+                    should_log_detail = progress is None and progress_every > 0 and nc_members % progress_every == 0
+                    if progress_label and (should_log_detail or now - last_progress >= progress_interval_seconds):
                         if progress is not None:
                             progress.log(f"{progress_label}: {nc_members:,} .nc members scanned elapsed={now - started:.1f}s")
                         else:
@@ -932,10 +947,8 @@ def copy_file_verified(
             if progress is not None and progress_label:
                 progress.task_update(progress_label, advance=len(chunk), detail=f"{format_bytes(copied)} / {format_bytes(total_bytes)}")
             now = time.perf_counter()
-            if progress_label and (
-                copied - last_reported_bytes >= progress_file_interval_bytes
-                or now - last_progress >= progress_interval_seconds
-            ):
+            should_log_detail = progress is None and copied - last_reported_bytes >= progress_file_interval_bytes
+            if progress_label and (should_log_detail or now - last_progress >= progress_interval_seconds):
                 message = f"{progress_label}: {format_bytes(copied)} {copied / total_bytes:.1%} elapsed={now - started:.1f}s"
                 if progress is not None:
                     progress.log(message)
@@ -1110,6 +1123,9 @@ def print_header(config: dict[str, Any], progress: ProgressDisplay) -> None:
         "download_concurrency",
         "archive_copy_concurrency",
         "header_concurrency",
+        "header_max_retries",
+        "header_retry_base_seconds",
+        "header_failure_breaker_threshold",
         "sec_request_min_interval_seconds",
         "progress_interval_seconds",
         "progress_file_interval_mib",

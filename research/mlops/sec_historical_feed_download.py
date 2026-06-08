@@ -50,6 +50,9 @@ class DayJob:
     request_timeout_seconds: float
     max_retries: int
     retry_base_seconds: float
+    header_max_retries: int
+    header_retry_base_seconds: float
+    header_failure_breaker_threshold: int
     header_concurrency: int
     limit_files: int
     force_redownload: bool
@@ -67,6 +70,9 @@ class ExistingDirJob:
     request_timeout_seconds: float
     max_retries: int
     retry_base_seconds: float
+    header_max_retries: int
+    header_retry_base_seconds: float
+    header_failure_breaker_threshold: int
     header_concurrency: int
     limit_files: int
     no_header_fetch: bool
@@ -177,6 +183,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-timeout-seconds", type=float, default=float(os.environ.get("SEC_REQUEST_TIMEOUT_SECONDS", "60")))
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("SEC_MAX_RETRIES", "4")))
     parser.add_argument("--retry-base-seconds", type=float, default=float(os.environ.get("SEC_RETRY_BASE_SECONDS", "1.5")))
+    parser.add_argument("--header-max-retries", type=int, default=int(os.environ.get("SEC_HEADER_MAX_RETRIES", "1")))
+    parser.add_argument("--header-retry-base-seconds", type=float, default=float(os.environ.get("SEC_HEADER_RETRY_BASE_SECONDS", "0.5")))
+    parser.add_argument("--header-failure-breaker-threshold", type=int, default=int(os.environ.get("SEC_HEADER_FAILURE_BREAKER_THRESHOLD", "4")))
     parser.add_argument("--limit-days", type=int, default=0, help="Optional smoke-test cap on archive days.")
     parser.add_argument("--limit-files-per-day", type=int, default=0, help="Optional smoke-test cap on .nc files parsed per day.")
     parser.add_argument("--force-redownload", action="store_true", help="Redownload archive files even when already present.")
@@ -212,6 +221,9 @@ def main() -> None:
                 request_timeout_seconds=max(1.0, args.request_timeout_seconds),
                 max_retries=max(0, args.max_retries),
                 retry_base_seconds=max(0.1, args.retry_base_seconds),
+                header_max_retries=max(0, args.header_max_retries),
+                header_retry_base_seconds=max(0.1, args.header_retry_base_seconds),
+                header_failure_breaker_threshold=max(0, args.header_failure_breaker_threshold),
                 header_concurrency=max(1, args.header_concurrency),
                 limit_files=max(0, args.limit_files_per_day),
                 no_header_fetch=args.no_header_fetch,
@@ -239,6 +251,9 @@ def main() -> None:
                 max(1.0, args.request_timeout_seconds),
                 max(0, args.max_retries),
                 max(0.1, args.retry_base_seconds),
+                max(0, args.header_max_retries),
+                max(0.1, args.header_retry_base_seconds),
+                max(0, args.header_failure_breaker_threshold),
                 max(1, args.header_concurrency),
                 max(0, args.limit_files_per_day),
                 args.force_redownload,
@@ -265,6 +280,9 @@ def main() -> None:
         "headers_path": str(headers_path),
         "archive_concurrency": effective_archive_concurrency(args),
         "header_concurrency": max(1, args.header_concurrency),
+        "header_max_retries": max(0, args.header_max_retries),
+        "header_retry_base_seconds": max(0.1, args.header_retry_base_seconds),
+        "header_failure_breaker_threshold": max(0, args.header_failure_breaker_threshold),
         "sec_request_min_interval_seconds": max(0.0, args.sec_request_min_interval_seconds),
         "request_timeout_seconds": max(1.0, args.request_timeout_seconds),
         "max_retries": max(0, args.max_retries),
@@ -590,9 +608,10 @@ def parse_nc_archive(
                     detail=f"{index:,}/{total_members:,} members, docs={len(documents):,}",
                 )
             now = time.perf_counter()
+            should_log_detail = progress is None and progress_every > 0 and index % progress_every == 0
             if progress_label and (
                 index == total_members
-                or (progress_every > 0 and index % progress_every == 0)
+                or should_log_detail
                 or now - last_progress >= progress_interval_seconds
             ):
                 message = (
@@ -721,41 +740,79 @@ def fetch_headers_for_submissions(
     total = len(submissions)
     started = time.perf_counter()
     last_progress = started
+    completed = 0
+    retryable_failures = 0
+    breaker_threshold = max(0, job.header_failure_breaker_threshold)
+    abort_reason = ""
     if progress_label:
         if progress is not None:
             progress.log(f"{progress_label} headers: fetching accepted_at for {total:,} submissions")
             progress.task_start(f"{progress_label}:headers", f"{progress_label} headers", total=total, detail="0 fetched")
         else:
             print(f"{progress_label} headers: fetching accepted_at for {total:,} submissions", flush=True)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=job.header_concurrency) as pool:
-        futures = {pool.submit(fetch_header_timestamp, item, job, limiter): item for item in submissions}
-        for completed, future in enumerate(concurrent.futures.as_completed(futures), start=1):
-            item = futures[future]
-            try:
-                output[item.accession_number] = future.result()
-            except Exception as exc:  # noqa: BLE001
-                output[item.accession_number] = failed_header(item.accession_number, repr(exc))
-            if progress is not None and progress_label:
-                progress.task_update(f"{progress_label}:headers", completed=completed, detail=f"{completed:,}/{total:,} fetched")
-            now = time.perf_counter()
-            if progress_label and (
-                completed == total
-                or (progress_every > 0 and completed % progress_every == 0)
-                or now - last_progress >= progress_interval_seconds
-            ):
-                ok = sum(1 for timestamp in output.values() if timestamp.fetch_status == "ok")
-                failed = sum(1 for timestamp in output.values() if timestamp.fetch_status == "failed")
-                missing = sum(1 for timestamp in output.values() if timestamp.fetch_status == "missing_acceptance")
-                unavailable = sum(1 for timestamp in output.values() if timestamp.fetch_status == "unavailable_404")
-                message = (
-                    f"{progress_label} headers: {completed:,}/{total:,} done "
-                    f"ok={ok:,} missing={missing:,} unavailable={unavailable:,} failed={failed:,} elapsed={now - started:.1f}s"
-                )
-                if progress is not None:
-                    progress.log(message)
-                else:
-                    print(message, flush=True)
-                last_progress = now
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=job.header_concurrency)
+    futures: dict[concurrent.futures.Future[HeaderTimestamp], ParsedSubmission] = {}
+    next_index = 0
+
+    def submit_until_full() -> None:
+        nonlocal next_index
+        while next_index < total and len(futures) < job.header_concurrency:
+            item = submissions[next_index]
+            futures[pool.submit(fetch_header_timestamp, item, job, limiter)] = item
+            next_index += 1
+
+    try:
+        submit_until_full()
+        while futures:
+            done, _pending = concurrent.futures.wait(futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                item = futures.pop(future)
+                try:
+                    timestamp = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    timestamp = failed_header(item.accession_number, repr(exc))
+                output[item.accession_number] = timestamp
+                completed += 1
+                if is_retryable_header_failure(timestamp):
+                    retryable_failures += 1
+                if progress is not None and progress_label:
+                    progress.task_update(f"{progress_label}:headers", completed=completed, detail=f"{completed:,}/{total:,} fetched")
+                now = time.perf_counter()
+                if progress_label and (
+                    completed == total
+                    or now - last_progress >= progress_interval_seconds
+                    or (not progress and progress_every > 0 and completed % progress_every == 0)
+                ):
+                    log_header_progress(progress_label, completed, total, output, started, progress)
+                    last_progress = now
+                if breaker_threshold and retryable_failures >= breaker_threshold and not any(ts.fetch_status == "ok" for ts in output.values()):
+                    abort_reason = (
+                        f"header fetch stopped after {retryable_failures} retryable failures; "
+                        f"set --header-failure-breaker-threshold 0 to disable"
+                    )
+                    break
+                submit_until_full()
+            if abort_reason:
+                break
+    finally:
+        if abort_reason:
+            for future in futures:
+                future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+        else:
+            pool.shutdown(wait=True)
+    if abort_reason:
+        pending_items = [item for item in submissions if item.accession_number not in output]
+        for item in pending_items:
+            output[item.accession_number] = failed_header(item.accession_number, abort_reason)
+        completed = len(output)
+        if progress_label:
+            if progress is not None:
+                progress.log(f"{progress_label} headers: {abort_reason}; marked {len(pending_items):,} remaining submissions")
+            else:
+                print(f"{progress_label} headers: {abort_reason}; marked {len(pending_items):,} remaining submissions", flush=True)
+        if progress is not None and progress_label:
+            progress.task_update(f"{progress_label}:headers", completed=completed, detail=f"{completed:,}/{total:,} fetched")
     if progress is not None and progress_label:
         progress.task_stop(f"{progress_label}:headers", detail=f"{len(output):,} fetched")
     return output
@@ -764,7 +821,14 @@ def fetch_headers_for_submissions(
 def fetch_header_timestamp(submission: ParsedSubmission, job: DayJob | ExistingDirJob, limiter: RateLimiter) -> HeaderTimestamp:
     url = hdr_url_for_accession(submission.accession_number)
     try:
-        body = fetch_url(url, job.user_agent, job.request_timeout_seconds, job.max_retries, job.retry_base_seconds, limiter)
+        body = fetch_url(
+            url,
+            job.user_agent,
+            job.request_timeout_seconds,
+            job.header_max_retries,
+            job.header_retry_base_seconds,
+            limiter,
+        )
         text = body.decode("utf-8", errors="replace")
         accepted_raw = first_tag(text, "ACCEPTANCE-DATETIME")
         accepted_et, accepted_utc = accepted_times(accepted_raw)
@@ -789,6 +853,58 @@ def fetch_header_timestamp(submission: ParsedSubmission, job: DayJob | ExistingD
         return failed_header(submission.accession_number, repr(exc))
     except Exception as exc:  # noqa: BLE001
         return failed_header(submission.accession_number, repr(exc))
+
+
+def log_header_progress(
+    progress_label: str,
+    completed: int,
+    total: int,
+    output: dict[str, HeaderTimestamp],
+    started: float,
+    progress: Any = None,
+) -> None:
+    ok = sum(1 for timestamp in output.values() if timestamp.fetch_status == "ok")
+    failed = sum(1 for timestamp in output.values() if timestamp.fetch_status == "failed")
+    missing = sum(1 for timestamp in output.values() if timestamp.fetch_status == "missing_acceptance")
+    unavailable = sum(1 for timestamp in output.values() if timestamp.fetch_status == "unavailable_404")
+    first_error = next((timestamp.fetch_error for timestamp in output.values() if timestamp.fetch_error), "")
+    error_suffix = f" first_error={compact_error(first_error)}" if first_error else ""
+    message = (
+        f"{progress_label} headers: {completed:,}/{total:,} done "
+        f"ok={ok:,} missing={missing:,} unavailable={unavailable:,} failed={failed:,} elapsed={time.perf_counter() - started:.1f}s"
+        f"{error_suffix}"
+    )
+    if progress is not None:
+        progress.log(message)
+    else:
+        print(message, flush=True)
+
+
+def is_retryable_header_failure(timestamp: HeaderTimestamp) -> bool:
+    if timestamp.fetch_status != "failed":
+        return False
+    text = timestamp.fetch_error.lower()
+    retryable_markers = (
+        "http 408",
+        "http 425",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "temporarily unavailable",
+    )
+    return any(marker in text for marker in retryable_markers)
+
+
+def compact_error(value: str, limit: int = 120) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: max(0, limit - 3)].rstrip() + "..."
 
 
 def failed_header(accession: str, error_text: str) -> HeaderTimestamp:
@@ -918,6 +1034,9 @@ def build_day_job(
     request_timeout_seconds: float,
     max_retries: int,
     retry_base_seconds: float,
+    header_max_retries: int,
+    header_retry_base_seconds: float,
+    header_failure_breaker_threshold: int,
     header_concurrency: int,
     limit_files: int,
     force_redownload: bool,
@@ -940,6 +1059,9 @@ def build_day_job(
         request_timeout_seconds=request_timeout_seconds,
         max_retries=max_retries,
         retry_base_seconds=retry_base_seconds,
+        header_max_retries=header_max_retries,
+        header_retry_base_seconds=header_retry_base_seconds,
+        header_failure_breaker_threshold=header_failure_breaker_threshold,
         header_concurrency=header_concurrency,
         limit_files=limit_files,
         force_redownload=force_redownload,
@@ -1095,6 +1217,9 @@ def print_header(config: dict[str, Any]) -> None:
         "job_count",
         "archive_concurrency",
         "header_concurrency",
+        "header_max_retries",
+        "header_retry_base_seconds",
+        "header_failure_breaker_threshold",
         "sec_request_min_interval_seconds",
         "limit_days",
         "limit_files_per_day",

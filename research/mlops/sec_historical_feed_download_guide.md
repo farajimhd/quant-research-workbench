@@ -137,11 +137,20 @@ Progress controls:
 - `--progress-interval-seconds`: maximum quiet time before printing progress inside a long step. Default: `10`.
 - `--progress-file-interval-mib`: byte interval for archive download/copy progress. Default: `64`.
 - `--progress-record-interval`: `.nc` member or header-record interval for validation, parsing, and header fetch progress. Default: `500`.
-- `--download-progress-bars` / `--no-download-progress-bars`: enable or disable archive download bars. Rich layout uses Rich bars; text layout uses tqdm when installed and falls back to text progress otherwise.
+- `--download-progress-bars` / `--no-download-progress-bars`: enable or disable tqdm archive download bars in text fallback mode. Rich layout always uses the structured matrix cell for downloads. Default: disabled, to avoid tqdm/log interleaving when Rich is unavailable.
 - `--progress-layout auto|rich|text`: `auto` uses a Rich two-panel console when Rich is installed. The top panel is a fixed worker-slot matrix: each download worker has one row, and the fixed columns are `Download`, `Validate`, `Copy`, `Parse`, and `Headers`. The bottom panel holds ordered logs. Use `text` for plain console output.
 - `--progress-log-lines`: number of log lines retained in the Rich log panel. Default: `24`.
 - `--progress-panel-rows`: fixed height for the top Rich progress panel. Default: `12`; increase it if you run many concurrent days and want more visible rows.
 - `--progress-screen` / `--no-progress-screen`: `--progress-screen` is the default and pins the Rich layout to a fixed live screen so validation and download log messages cannot push the matrix upward. Use `--no-progress-screen` only when you specifically want normal terminal scrollback.
+- `--header-max-retries`: retry count for `.hdr.sgml` accepted-time probes only. Default: `1`; archive downloads still use `--max-retries`.
+- `--header-retry-base-seconds`: retry backoff base for `.hdr.sgml` probes only. Default: `0.5`.
+- `--header-failure-breaker-threshold`: stop scheduling more header probes for a day after this many retryable header failures and no successes. Default: `4`; set `0` to disable.
+
+The fixed five-column progress matrix requires Rich in the active Python environment. If Rich is not installed and `--progress-layout auto` is used, the script falls back to throttled text progress and disables tqdm download bars by default so progress lines do not corrupt each other. Install Rich in the workstation environment when you want the matrix:
+
+```powershell
+conda run -n ml4t python -m pip install rich
+```
 
 ## Parse From Compressed Archives
 
@@ -184,6 +193,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_fe
 - With the Rich layout, `--download-concurrency 5` creates five fixed worker rows. Each row keeps the same five stage columns while its assigned archive day moves through the pipeline.
 - Stages with a known total, such as byte downloads and copies, show a bounded progress bar. Stages whose total is discovered while running, such as archive validation, show a stable running cell with elapsed time and the latest count.
 - The lower Rich panel is reserved for messages, ordered oldest to newest within the retained log window.
+- Header timestamp probes have their own retry policy. This prevents repeated `.hdr.sgml` failures from consuming the same retry budget intended for large archive downloads.
 - `.hdr.sgml` is the timestamp authority for `accepted_at`.
 - Some SEC feed entries do not expose a separate `.hdr.sgml` sidecar even though the filing directory is listed. Those rows are retained and marked with `timestamp_fetch_status="unavailable_404"` rather than counted as request failures.
 - `accepted_at_edgar_raw` is parsed as EDGAR Eastern time and converted to `accepted_at_utc`.
