@@ -6,6 +6,7 @@ import hmac
 import json
 import multiprocessing as mp
 import os
+import queue as queue_module
 import re
 import signal
 import ssl
@@ -509,9 +510,57 @@ def worker_main(worker_id: int, jobs: list[DownloadJob], config: DownloadConfig,
 
 def ignore_sigint_in_worker() -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+
+
+def install_console_interrupt_handlers() -> None:
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
+
+
+def worker_process_main(
+    worker_id: int,
+    jobs: list[DownloadJob],
+    config: DownloadConfig,
+    report_queue: mp.Queue | None,
+    summary_queue: mp.Queue,
+) -> None:
+    install_console_interrupt_handlers()
+    try:
+        results = worker_main(worker_id, jobs, config, report_queue)
+    except KeyboardInterrupt:
+        print(f"\nworker {worker_id:02d} interrupted", flush=True)
+        summary_queue.put(
+            {
+                "worker_id": worker_id,
+                "counts": {},
+                "downloaded_bytes": 0,
+                "result_count": 0,
+                "interrupted": True,
+            }
+        )
+        return
+    counts: dict[str, int] = {}
+    downloaded_bytes = 0
+    for result in results:
+        counts[result.status] = counts.get(result.status, 0) + 1
+        if result.status == "downloaded":
+            downloaded_bytes += result.bytes_written
+    summary_queue.put(
+        {
+            "worker_id": worker_id,
+            "counts": counts,
+            "downloaded_bytes": downloaded_bytes,
+            "result_count": len(results),
+            "interrupted": False,
+        }
+    )
 
 
 def result_writer(report_path: Path, queue: mp.Queue, expected_done_messages: int) -> None:
+    ignore_sigint_in_worker()
     report_path.parent.mkdir(parents=True, exist_ok=True)
     done = 0
     with report_path.open("a", encoding="utf-8") as handle:
@@ -532,6 +581,7 @@ def split_jobs(jobs: list[DownloadJob], processes: int) -> list[list[DownloadJob
 
 
 def main() -> None:
+    install_console_interrupt_handlers()
     loaded_env_files = load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args()
     kinds = parse_kinds(args.kinds)
@@ -575,53 +625,85 @@ def main() -> None:
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
     print("=" * 96, flush=True)
 
-    manager = mp.Manager()
-    queue = manager.Queue()
-    writer = mp.Process(target=result_writer, args=(report_path, queue, processes), daemon=True)
+    report_queue = mp.Queue()
+    summary_queue = mp.Queue()
+    writer = mp.Process(target=result_writer, args=(report_path, report_queue, processes), daemon=True)
     writer.start()
-    result_sets: list[list[DownloadResult]] = []
-    pool: mp.pool.Pool | None = None
+    worker_processes = [
+        mp.Process(target=worker_process_main, args=(worker_id, chunk, config, report_queue, summary_queue), daemon=False)
+        for worker_id, chunk in enumerate(chunks)
+    ]
     interrupted = False
+    worker_failures: list[str] = []
     try:
-        pool = mp.Pool(processes=processes, initializer=ignore_sigint_in_worker)
-        async_results = [
-            pool.apply_async(worker_main, (worker_id, chunk, config, queue))
-            for worker_id, chunk in enumerate(chunks)
-        ]
-        for async_result in async_results:
-            result_sets.append(async_result.get())
-        pool.close()
-        pool.join()
+        for process in worker_processes:
+            process.start()
+        while True:
+            alive = False
+            for process in worker_processes:
+                process.join(timeout=0.2)
+                if process.is_alive():
+                    alive = True
+            if not alive:
+                break
     except KeyboardInterrupt:
         interrupted = True
-        print("\nCTRL+C received. Stopping download workers; completed files remain valid and partial .part files will be retried on the next run.", flush=True)
-        if pool is not None:
-            pool.terminate()
-            pool.join()
+        print(
+            "\nCTRL+C received. Stopping download workers now; completed files remain valid and partial .part files will be retried on the next run.",
+            flush=True,
+        )
+        for process in worker_processes:
+            if process.is_alive():
+                print(f"TERM worker pid={process.pid}", flush=True)
+                process.terminate()
+        deadline = time.time() + 5.0
+        for process in worker_processes:
+            remaining = max(0.0, deadline - time.time())
+            process.join(timeout=remaining)
+        for process in worker_processes:
+            if process.is_alive():
+                print(f"KILL worker pid={process.pid}", flush=True)
+                process.kill()
+                process.join(timeout=2.0)
     except BaseException:
-        if pool is not None:
-            pool.terminate()
-            pool.join()
+        for process in worker_processes:
+            if process.is_alive():
+                process.terminate()
+        for process in worker_processes:
+            process.join(timeout=5.0)
         raise
     finally:
         for _ in range(processes):
-            queue.put({"type": "worker_done"})
+            report_queue.put({"type": "worker_done"})
         writer.join(timeout=10)
         if writer.is_alive():
             writer.terminate()
             writer.join(timeout=5)
-        manager.shutdown()
+        report_queue.close()
+        report_queue.join_thread()
 
-    if interrupted:
-        raise SystemExit(130)
+    for process in worker_processes:
+        if process.exitcode not in (0, None):
+            worker_failures.append(f"worker pid={process.pid} exitcode={process.exitcode}")
 
-    all_results = [result for result_set in result_sets for result in result_set]
     counts: dict[str, int] = {}
     total_downloaded_bytes = 0
-    for result in all_results:
-        counts[result.status] = counts.get(result.status, 0) + 1
-        if result.status == "downloaded":
-            total_downloaded_bytes += result.bytes_written
+    summaries = []
+    while True:
+        try:
+            summaries.append(summary_queue.get_nowait())
+        except queue_module.Empty:
+            break
+    summary_queue.close()
+    summary_queue.join_thread()
+    summary_interrupted = any(bool(summary.get("interrupted", False)) for summary in summaries)
+    for summary in summaries:
+        for status, count in summary["counts"].items():
+            counts[status] = counts.get(status, 0) + int(count)
+        total_downloaded_bytes += int(summary["downloaded_bytes"])
+
+    if interrupted or summary_interrupted:
+        raise SystemExit(130)
     print("\n" + "=" * 96, flush=True)
     print("Download summary", flush=True)
     for status in sorted(counts):
@@ -629,10 +711,15 @@ def main() -> None:
     print(f"downloaded_bytes={total_downloaded_bytes:,}", flush=True)
     print(f"downloaded_gib={total_downloaded_bytes / (1024**3):.3f}", flush=True)
     print(f"report_path={report_path}", flush=True)
+    for failure in worker_failures:
+        print(f"worker_failure: {failure}", flush=True)
     failed = sum(count for status, count in counts.items() if status.startswith("failed"))
     incomplete = counts.get("incomplete_existing", 0)
-    if failed or incomplete:
-        raise SystemExit(f"Download completed with failed={failed:,} incomplete_existing={incomplete:,}. See report: {report_path}")
+    if failed or incomplete or worker_failures:
+        raise SystemExit(
+            f"Download completed with failed={failed:,} incomplete_existing={incomplete:,} "
+            f"worker_failures={len(worker_failures):,}. See report: {report_path}"
+        )
     print("DONE", flush=True)
 
 
