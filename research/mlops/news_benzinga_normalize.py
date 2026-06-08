@@ -8,7 +8,7 @@ import mimetypes
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -88,6 +88,11 @@ class NewsExtractionOptions:
     external_rate_limit_root: str = ""
     default_user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125 Safari/537.36"
     sec_user_agent: str = ""
+    artifact_only: bool = False
+    external_html_artifact_paths: dict[str, str] = field(default_factory=dict)
+    external_fetch_errors: dict[str, str] = field(default_factory=dict)
+    pdf_artifact_paths_by_url: dict[str, str] = field(default_factory=dict)
+    pdf_metadata_by_url: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class HtmlTextExtractor(HTMLParser):
@@ -183,10 +188,18 @@ def normalize_benzinga_payload(
                     elapsed_seconds=time.perf_counter() - started_at,
                 )
             else:
-                fetched = fetch_url_text(
-                    article_url,
-                    options=options,
-                )
+                artifact_path = options.external_html_artifact_paths.get(article_url, "")
+                if artifact_path:
+                    fetched = Path(artifact_path).read_bytes().decode("utf-8", errors="replace")
+                elif article_url in options.external_fetch_errors:
+                    raise RuntimeError(options.external_fetch_errors[article_url])
+                elif options.artifact_only:
+                    raise FileNotFoundError(f"missing_external_html_artifact:{article_url}")
+                else:
+                    fetched = fetch_url_text(
+                        article_url,
+                        options=options,
+                    )
                 fetched_text, fetched_links = html_to_text_and_links(fetched)
                 external_text = fetched_text
                 external_status = "fetched" if fetched_text else "empty"
@@ -197,6 +210,7 @@ def normalize_benzinga_payload(
                     provider_article_id=provider_article_id,
                     published_raw=published_raw,
                     url=article_url,
+                    artifact_path=artifact_path,
                     fetched_bytes=len(fetched.encode("utf-8", errors="ignore")),
                     extracted_text_chars=len(fetched_text),
                     elapsed_seconds=time.perf_counter() - started_at,
@@ -227,24 +241,27 @@ def normalize_benzinga_payload(
         pdf_status = "started"
         for url in pdf_urls[:4]:
             started_at = time.perf_counter()
-            metadata = pdf_download_metadata(
-                url,
-                payload=payload,
-                title=title,
-                teaser=teaser,
-                body_text=body_text,
-                article_url=article_url,
-                max_pdf_bytes=options.max_pdf_bytes,
-                options=options,
-            )
+            metadata = dict(options.pdf_metadata_by_url.get(url) or {})
+            if not metadata:
+                metadata = pdf_download_metadata(
+                    url,
+                    payload=payload,
+                    title=title,
+                    teaser=teaser,
+                    body_text=body_text,
+                    article_url=article_url,
+                    max_pdf_bytes=options.max_pdf_bytes,
+                    options=options,
+                )
             try:
-                if metadata["download_policy"] != "download_now":
-                    metadata["status"] = metadata["download_policy"]
+                download_policy = str(metadata.get("download_policy") or "download_now")
+                if download_policy != "download_now":
+                    metadata["status"] = download_policy
                     pdf_metadata.append(metadata)
                     record_extraction_event(
                         diagnostics,
                         stage="pdf_fetch_extract",
-                        status=metadata["download_policy"],
+                        status=download_policy,
                         provider_article_id=provider_article_id,
                         published_raw=published_raw,
                         url=url,
@@ -252,17 +269,24 @@ def normalize_benzinga_payload(
                         content_type=metadata.get("content_type"),
                         importance_score=metadata.get("importance_score"),
                         importance_tier=metadata.get("importance_tier"),
-                        download_policy=metadata.get("download_policy"),
+                        download_policy=download_policy,
                         policy_reasons=metadata.get("importance_reasons"),
                         elapsed_seconds=time.perf_counter() - started_at,
                     )
                     continue
-                pdf_bytes = fetch_url_bytes(
-                    url,
-                    max_bytes=options.max_pdf_bytes,
-                    options=options,
-                )
-                pdf_path = write_pdf_artifact(artifact_root, published_at, provider_article_id, url, pdf_bytes)
+                cached_pdf_path = options.pdf_artifact_paths_by_url.get(url, "")
+                if cached_pdf_path:
+                    pdf_path = Path(cached_pdf_path)
+                    pdf_bytes = pdf_path.read_bytes()
+                elif options.artifact_only:
+                    raise FileNotFoundError(f"missing_pdf_artifact:{url}")
+                else:
+                    pdf_bytes = fetch_url_bytes(
+                        url,
+                        max_bytes=options.max_pdf_bytes,
+                        options=options,
+                    )
+                    pdf_path = write_pdf_artifact(artifact_root, published_at, provider_article_id, url, pdf_bytes)
                 pdf_artifact_paths.append(str(pdf_path) if pdf_path else "")
                 text = extract_pdf_text(pdf_bytes)
                 if text:

@@ -114,29 +114,31 @@ The script uses a base-first asynchronous enrichment pipeline in one invocation:
 ```text
 download raw payloads
 base-normalize rows without external/PDF fetches
-insert base rows quickly
-queue only rows needing external/PDF enrichment
-insert enriched replacement rows later in the same run
+insert base rows that do not need enrichment
+hold back rows needing external/PDF enrichment
+network workers fetch article/PDF bytes into local artifacts
+local extraction workers parse downloaded artifacts without provider rate limits
+insert each enriched row once later in the same run
 ```
 
-The provider pass is still one pass over Massive/Benzinga. External article/PDF rate limits affect only the enrichment lane, not the base row insertion lane.
+The provider pass is still one pass over Massive/Benzinga. External article/PDF rate limits affect only the enrichment network lane. Local HTML/PDF extraction runs from saved artifacts and is not rate-limited by providers. Rows that require enrichment are not inserted as temporary base rows, so the normalized table does not receive redundant base/enriched versions for the same article.
 
 Fast one-pass run:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 4 --enrichment-chunk-size 1 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 4 --external-retry-base-seconds 1.5
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 24 --enrichment-extract-processes 12 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 4 --external-retry-base-seconds 1.5
 ```
 
 If Massive and ClickHouse remain stable, increase the base lane while keeping enrichment controlled:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 32 --normalize-processes 16 --enrichment-processes 4 --enrichment-chunk-size 1 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 4 --external-retry-base-seconds 1.5
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 32 --normalize-processes 16 --enrichment-processes 32 --enrichment-extract-processes 16 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 4 --external-retry-base-seconds 1.5
 ```
 
 If any provider starts returning rate limits, keep the base lane high and reduce enrichment worker pressure first:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 2 --enrichment-chunk-size 1 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 5 --external-retry-base-seconds 2.0
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 8 --enrichment-extract-processes 12 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 5 --external-retry-base-seconds 2.0
 ```
 
 If rate limits continue after reducing workers, raise the interval values above `0.1`.
@@ -340,25 +342,36 @@ NEWS_BENZINGA_NORMALIZE_PROCESSES
 
 `--enrichment-processes`
 
-Worker threads for external article/PDF enrichment. Default:
+Worker threads for external article/PDF network fetches. Default:
 
 ```text
 NEWS_BENZINGA_ENRICHMENT_PROCESSES
 0
 ```
 
-`0` means `min(4, --normalize-processes)`. Keep this lower than the base lane because these workers are the ones that hit Benzinga article pages, SEC, and other external domains. Enrichment uses threads because this lane is mostly network I/O. The script keeps a bounded enrichment backlog of `--enrichment-processes * 4`, so a fast base lane does not create unlimited pending enrichment futures.
+`0` means `min(4, --normalize-processes)`. These workers only perform provider-capped HTTP work and write fetched bytes to the artifact store. The script keeps a bounded network backlog of `--enrichment-processes * 4`, so a fast base lane does not create unlimited pending network futures.
+
+`--enrichment-extract-processes`
+
+Worker processes for local artifact extraction after network fetches have completed. Default:
+
+```text
+NEWS_BENZINGA_ENRICHMENT_EXTRACT_PROCESSES
+0
+```
+
+`0` means the same value as `--normalize-processes`. These workers do not make HTTP requests. They read downloaded HTML/PDF artifacts, extract text, assemble the enriched replacement row, and can be scaled higher when CPU and memory allow.
 
 `--enrichment-chunk-size`
 
-Maximum enrichment artifacts assigned to one enrichment worker job. Default:
+Compatibility flag retained so older commands keep working. It no longer changes dispatch behavior because the staged pipeline always sends one article artifact to the network lane and one article artifact to the extraction lane. Default:
 
 ```text
 NEWS_BENZINGA_ENRICHMENT_CHUNK_SIZE
 1
 ```
 
-The default is one artifact per enrichment job so progress advances per enriched article/PDF. Larger chunks reduce scheduling overhead, but they can make progress appear stuck when the first active chunks contain slow URLs.
+Keep this at `1`; changing it has no effect in the current staged pipeline.
 
 `--insert-concurrency`
 
@@ -615,11 +628,15 @@ failed
 downloaded_rows
 normalized_rows
 enrichment_required_rows
+enrichment_network_done
+enrichment_network_requests
 enrichment_pending_rows
 enrichment_completed_rows
 enriched_rows
-active_enrichment_jobs
-queued_enrichment_jobs
+active_enrichment_network_jobs
+queued_enrichment_network_jobs
+active_enrichment_extract_jobs
+queued_enrichment_extract_jobs
 inserted_rows
 insert_buffer
 elapsed_min
@@ -665,7 +682,7 @@ FROM q_live.benzinga_news_normalized_v1;
 For the first real canonical pass, keep enrichment enabled but let only the enrichment lane run under controlled external request pressure:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 4 --enrichment-chunk-size 1 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 4 --external-retry-base-seconds 1.5
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 24 --enrichment-extract-processes 12 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 4 --external-retry-base-seconds 1.5
 ```
 
 Install `PyMuPDF` in the workstation environment before running with PDF extraction enabled. The repo `requirements.txt` includes it.

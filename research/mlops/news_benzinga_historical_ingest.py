@@ -34,10 +34,17 @@ from research.mlops.news_benzinga_clickhouse import (  # noqa: E402
 from research.mlops.news_benzinga_normalize import (  # noqa: E402
     NewsExtractionOptions,
     artifact_path_for_payload,
+    fetch_url_bytes,
+    fetch_url_with_retries,
+    looks_like_pdf_url,
     normalize_benzinga_payload,
+    pdf_download_metadata,
     parse_provider_datetime,
+    record_extraction_event,
+    stable_sha256,
     to_clickhouse_dt64,
     to_provider_rfc3339,
+    write_pdf_artifact,
     write_raw_payload,
 )
 
@@ -161,6 +168,71 @@ class EnrichmentFutureContext:
 
 
 @dataclass(frozen=True, slots=True)
+class EnrichmentNetworkJob:
+    bucket_id: str
+    start_utc: str
+    end_utc: str
+    artifact: DownloadedArtifact
+    artifact_root_win: str
+    fetch_external: bool
+    extract_pdfs: bool
+    extraction_timeout_seconds: float
+    external_min_body_chars: int
+    max_pdf_bytes: int
+    text_limit_chars: int
+    external_request_min_interval_seconds: float
+    benzinga_request_min_interval_seconds: float
+    sec_request_min_interval_seconds: float
+    external_max_retries: int
+    external_retry_base_seconds: float
+    default_user_agent: str
+    sec_user_agent: str
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichmentNetworkResult:
+    bucket_id: str
+    start_utc: str
+    end_utc: str
+    artifact: DownloadedArtifact
+    file_errors: list[FileError]
+    extraction_events: list[dict[str, Any]]
+    external_html_artifact_paths: dict[str, str]
+    external_fetch_errors: dict[str, str]
+    pdf_artifact_paths_by_url: dict[str, str]
+    pdf_metadata_by_url: dict[str, dict[str, Any]]
+    network_requests: int
+    wall_seconds: float
+    exception: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichmentExtractJob:
+    bucket_id: str
+    start_utc: str
+    end_utc: str
+    artifact: DownloadedArtifact
+    artifact_root_win: str
+    fetch_external: bool
+    extract_pdfs: bool
+    extraction_timeout_seconds: float
+    external_min_body_chars: int
+    max_pdf_bytes: int
+    text_limit_chars: int
+    external_request_min_interval_seconds: float
+    benzinga_request_min_interval_seconds: float
+    sec_request_min_interval_seconds: float
+    external_max_retries: int
+    external_retry_base_seconds: float
+    default_user_agent: str
+    sec_user_agent: str
+    external_html_artifact_paths: dict[str, str]
+    external_fetch_errors: dict[str, str]
+    pdf_artifact_paths_by_url: dict[str, str]
+    pdf_metadata_by_url: dict[str, dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
 class BucketInsertMeta:
     bucket_id: str
     start_utc: str
@@ -238,6 +310,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_DOWNLOAD_PROCESSES", "8")))
     parser.add_argument("--normalize-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZE_PROCESSES", "0")))
     parser.add_argument("--enrichment-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_ENRICHMENT_PROCESSES", "0")))
+    parser.add_argument("--enrichment-extract-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_ENRICHMENT_EXTRACT_PROCESSES", "0")))
     parser.add_argument("--enrichment-chunk-size", type=int, default=int(os.environ.get("NEWS_BENZINGA_ENRICHMENT_CHUNK_SIZE", "1")))
     parser.add_argument("--insert-concurrency", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_CONCURRENCY", "4")))
     parser.add_argument("--insert-batch-rows", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_BATCH_ROWS", "5000")))
@@ -333,6 +406,7 @@ def main() -> None:
     args.download_processes = max(1, args.download_processes)
     args.normalize_processes = args.normalize_processes if args.normalize_processes > 0 else max(1, args.download_processes // 2)
     args.enrichment_processes = args.enrichment_processes if args.enrichment_processes > 0 else max(1, min(4, args.normalize_processes))
+    args.enrichment_extract_processes = args.enrichment_extract_processes if args.enrichment_extract_processes > 0 else max(1, args.normalize_processes)
     args.enrichment_chunk_size = max(1, args.enrichment_chunk_size)
     args.insert_concurrency = max(1, args.insert_concurrency)
     args.insert_batch_rows = max(1, args.insert_batch_rows)
@@ -372,7 +446,9 @@ def main() -> None:
     print(f"buckets={len(buckets):,} limit_buckets={args.limit_buckets}", flush=True)
     print(
         f"download_processes={args.download_processes} normalize_processes={args.normalize_processes} "
-        f"enrichment_processes={args.enrichment_processes} enrichment_chunk_size={args.enrichment_chunk_size} "
+        f"enrichment_processes={args.enrichment_processes} "
+        f"enrichment_extract_processes={args.enrichment_extract_processes} "
+        f"enrichment_chunk_size_compat={args.enrichment_chunk_size} "
         f"insert_concurrency={args.insert_concurrency} insert_batch_rows={args.insert_batch_rows} "
         f"manifest_batch_rows={args.manifest_batch_rows}",
         flush=True,
@@ -426,8 +502,13 @@ def main() -> None:
     inserted_total = 0
     normalized_total = 0
     enrichment_required_total = 0
+    enrichment_network_completed_total = 0
     enrichment_completed_total = 0
     enriched_total = 0
+    enrichment_network_requests_total = 0
+    bucket_expected_enrichment: dict[str, int] = {}
+    bucket_enrichment_inserted_counts: dict[str, int] = {}
+    finalized_buckets: set[str] = set()
     started_at = time.perf_counter()
     insert_futures: dict[concurrent.futures.Future[InsertResult], InsertJob] = {}
     manifest_futures: dict[concurrent.futures.Future[ManifestResult], ManifestJob] = {}
@@ -519,13 +600,16 @@ def main() -> None:
     with (
         concurrent.futures.ProcessPoolExecutor(max_workers=args.download_processes) as download_pool,
         concurrent.futures.ProcessPoolExecutor(max_workers=args.normalize_processes) as normalize_pool,
-        concurrent.futures.ThreadPoolExecutor(max_workers=args.enrichment_processes) as enrichment_pool,
+        concurrent.futures.ThreadPoolExecutor(max_workers=args.enrichment_processes) as enrichment_network_pool,
+        concurrent.futures.ProcessPoolExecutor(max_workers=args.enrichment_extract_processes) as enrichment_extract_pool,
         concurrent.futures.ThreadPoolExecutor(max_workers=max_insert_workers) as insert_pool,
     ):
         download_futures: dict[concurrent.futures.Future[DownloadResult], BucketJob] = {}
         normalize_futures: dict[concurrent.futures.Future[NormalizeResult], DownloadResult] = {}
-        enrichment_futures: dict[concurrent.futures.Future[NormalizeResult], EnrichmentFutureContext] = {}
-        pending_enrichment_jobs: list[tuple[NormalizeJob, EnrichmentFutureContext]] = []
+        enrichment_network_futures: dict[concurrent.futures.Future[EnrichmentNetworkResult], EnrichmentFutureContext] = {}
+        enrichment_extract_futures: dict[concurrent.futures.Future[NormalizeResult], EnrichmentFutureContext] = {}
+        pending_enrichment_network_jobs: list[tuple[EnrichmentNetworkJob, EnrichmentFutureContext]] = []
+        pending_enrichment_extract_jobs: list[tuple[EnrichmentExtractJob, EnrichmentFutureContext]] = []
 
         def submit_more_downloads() -> None:
             nonlocal next_download_index
@@ -534,17 +618,24 @@ def main() -> None:
                 next_download_index += 1
                 download_futures[download_pool.submit(download_bucket_worker, bucket)] = bucket
 
-        def submit_more_enrichments() -> None:
-            while pending_enrichment_jobs and len(enrichment_futures) < max_enrichment_backlog:
-                job, context = pending_enrichment_jobs.pop(0)
-                enrichment_futures[enrichment_pool.submit(normalize_bucket_worker, job)] = context
+        def submit_more_enrichment_network() -> None:
+            while pending_enrichment_network_jobs and len(enrichment_network_futures) < max_enrichment_backlog:
+                job, context = pending_enrichment_network_jobs.pop(0)
+                enrichment_network_futures[enrichment_network_pool.submit(enrichment_network_worker, job)] = context
+
+        def submit_more_enrichment_extract() -> None:
+            while pending_enrichment_extract_jobs and len(enrichment_extract_futures) < max_enrichment_backlog:
+                job, context = pending_enrichment_extract_jobs.pop(0)
+                enrichment_extract_futures[enrichment_extract_pool.submit(enrichment_extract_worker, job)] = context
 
         submit_more_downloads()
         while (
             download_futures
             or normalize_futures
-            or pending_enrichment_jobs
-            or enrichment_futures
+            or pending_enrichment_network_jobs
+            or enrichment_network_futures
+            or pending_enrichment_extract_jobs
+            or enrichment_extract_futures
             or insert_futures
             or manifest_futures
             or enrichment_rows_buffer
@@ -552,13 +643,22 @@ def main() -> None:
             or next_download_index < len(pending)
         ):
             submit_more_downloads()
-            submit_more_enrichments()
-            if not download_futures and not normalize_futures and not enrichment_futures and not insert_futures and manifest_rows_buffer:
+            submit_more_enrichment_network()
+            submit_more_enrichment_extract()
+            if (
+                not download_futures
+                and not normalize_futures
+                and not enrichment_network_futures
+                and not enrichment_extract_futures
+                and not insert_futures
+                and manifest_rows_buffer
+            ):
                 submit_manifest_batch(insert_pool)
             active_futures: list[concurrent.futures.Future[Any]] = [
                 *download_futures.keys(),
                 *normalize_futures.keys(),
-                *enrichment_futures.keys(),
+                *enrichment_network_futures.keys(),
+                *enrichment_extract_futures.keys(),
                 *insert_futures.keys(),
                 *manifest_futures.keys(),
             ]
@@ -651,22 +751,24 @@ def main() -> None:
                     append_jsonl(report_path, {"type": "normalize", "run_id": run_id, "result": result_public(normalize_result)})
                     append_file_errors(report_path, run_id, normalize_result.file_errors)
                     append_extraction_events(report_path, run_id, normalize_result.extraction_events)
+                    enrichment_raw_paths = {artifact.raw_artifact_path for artifact in normalize_result.enrichment_artifacts}
+                    base_insert_rows = [
+                        row
+                        for row in normalize_result.rows
+                        if str(row.get("raw_artifact_path") or "") not in enrichment_raw_paths
+                    ]
+                    bucket_expected_enrichment[normalize_result.bucket_id] = len(normalize_result.enrichment_artifacts)
                     if normalize_result.enrichment_artifacts:
                         enrichment_required_total += len(normalize_result.enrichment_artifacts)
-                        for chunk in chunk_artifacts(normalize_result.enrichment_artifacts, args.enrichment_chunk_size):
-                            enrichment_job = NormalizeJob(
+                        for artifact in normalize_result.enrichment_artifacts:
+                            enrichment_job = EnrichmentNetworkJob(
                                 bucket_id=normalize_result.bucket_id,
                                 start_utc=normalize_result.start_utc,
                                 end_utc=normalize_result.end_utc,
-                                artifacts=chunk,
-                                downloaded_rows=len(chunk),
-                                page_count=0,
-                                saturated=normalize_result.saturated,
+                                artifact=artifact,
                                 artifact_root_win=args.artifact_root_win,
                                 fetch_external=not args.no_fetch_external,
                                 extract_pdfs=not args.no_extract_pdfs,
-                                desired_fetch_external=not args.no_fetch_external,
-                                desired_extract_pdfs=not args.no_extract_pdfs,
                                 extraction_timeout_seconds=args.extraction_timeout_seconds,
                                 external_min_body_chars=args.external_min_body_chars,
                                 max_pdf_bytes=args.max_pdf_bytes,
@@ -679,20 +781,22 @@ def main() -> None:
                                 default_user_agent=args.external_user_agent,
                                 sec_user_agent=args.sec_user_agent,
                             )
-                            pending_enrichment_jobs.append(
+                            pending_enrichment_network_jobs.append(
                                 (
                                     enrichment_job,
-                                    EnrichmentFutureContext(base_result=normalize_result, artifact_count=len(chunk)),
+                                    EnrichmentFutureContext(base_result=normalize_result, artifact_count=1),
                                 )
                             )
-                        submit_more_enrichments()
+                        submit_more_enrichment_network()
                     if not args.no_insert:
                         queue_manifest_rows([manifest_from_normalize(run_id, normalize_result)], insert_pool)
                     if normalize_result.exception:
                         final_failed += 1
+                        finalized_buckets.add(normalize_result.bucket_id)
                     elif args.no_insert:
                         final_completed += 1
-                    elif normalize_result.rows:
+                        finalized_buckets.add(normalize_result.bucket_id)
+                    elif base_insert_rows:
                         meta = BucketInsertMeta(
                             bucket_id=normalize_result.bucket_id,
                             start_utc=normalize_result.start_utc,
@@ -702,17 +806,79 @@ def main() -> None:
                             page_count=normalize_result.page_count,
                             saturated=normalize_result.saturated,
                         )
-                        insert_rows_buffer.extend(normalize_result.rows)
+                        insert_rows_buffer.extend(base_insert_rows)
                         insert_bucket_metas[meta.bucket_id] = meta
-                        insert_bucket_counts[meta.bucket_id] = insert_bucket_counts.get(meta.bucket_id, 0) + len(normalize_result.rows)
+                        insert_bucket_counts[meta.bucket_id] = insert_bucket_counts.get(meta.bucket_id, 0) + len(base_insert_rows)
                         if len(insert_rows_buffer) >= args.insert_batch_rows:
                             submit_insert_batch(insert_pool)
+                    elif normalize_result.enrichment_artifacts:
+                        pass
                     else:
                         queue_manifest_rows([manifest_empty_insert(run_id, normalize_result)], insert_pool)
                         final_completed += 1
+                        finalized_buckets.add(normalize_result.bucket_id)
 
-                elif future in enrichment_futures:
-                    enrichment_context = enrichment_futures.pop(future)
+                elif future in enrichment_network_futures:
+                    enrichment_context = enrichment_network_futures.pop(future)
+                    base_result = enrichment_context.base_result
+                    try:
+                        network_result = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        network_result = EnrichmentNetworkResult(
+                            bucket_id=base_result.bucket_id,
+                            start_utc=base_result.start_utc,
+                            end_utc=base_result.end_utc,
+                            artifact=DownloadedArtifact("", "", ""),
+                            file_errors=[],
+                            extraction_events=[],
+                            external_html_artifact_paths={},
+                            external_fetch_errors={},
+                            pdf_artifact_paths_by_url={},
+                            pdf_metadata_by_url={},
+                            network_requests=0,
+                            wall_seconds=0.0,
+                            exception=repr(exc),
+                        )
+                    enrichment_network_completed_total += enrichment_context.artifact_count
+                    enrichment_network_requests_total += network_result.network_requests
+                    append_jsonl(report_path, {"type": "enrichment_network", "run_id": run_id, "result": result_public(network_result)})
+                    append_file_errors(report_path, run_id, network_result.file_errors)
+                    append_extraction_events(report_path, run_id, network_result.extraction_events)
+                    if network_result.exception:
+                        enrichment_completed_total += enrichment_context.artifact_count
+                        if network_result.bucket_id not in finalized_buckets:
+                            final_failed += 1
+                            finalized_buckets.add(network_result.bucket_id)
+                    else:
+                        extract_job = EnrichmentExtractJob(
+                            bucket_id=network_result.bucket_id,
+                            start_utc=network_result.start_utc,
+                            end_utc=network_result.end_utc,
+                            artifact=network_result.artifact,
+                            artifact_root_win=args.artifact_root_win,
+                            fetch_external=not args.no_fetch_external,
+                            extract_pdfs=not args.no_extract_pdfs,
+                            extraction_timeout_seconds=args.extraction_timeout_seconds,
+                            external_min_body_chars=args.external_min_body_chars,
+                            max_pdf_bytes=args.max_pdf_bytes,
+                            text_limit_chars=args.text_limit_chars,
+                            external_request_min_interval_seconds=args.external_request_min_interval_seconds,
+                            benzinga_request_min_interval_seconds=args.benzinga_request_min_interval_seconds,
+                            sec_request_min_interval_seconds=args.sec_request_min_interval_seconds,
+                            external_max_retries=args.external_max_retries,
+                            external_retry_base_seconds=args.external_retry_base_seconds,
+                            default_user_agent=args.external_user_agent,
+                            sec_user_agent=args.sec_user_agent,
+                            external_html_artifact_paths=network_result.external_html_artifact_paths,
+                            external_fetch_errors=network_result.external_fetch_errors,
+                            pdf_artifact_paths_by_url=network_result.pdf_artifact_paths_by_url,
+                            pdf_metadata_by_url=network_result.pdf_metadata_by_url,
+                        )
+                        pending_enrichment_extract_jobs.append((extract_job, enrichment_context))
+                        submit_more_enrichment_extract()
+
+                elif future in enrichment_extract_futures:
+                    enrichment_context = enrichment_extract_futures.pop(future)
                     base_result = enrichment_context.base_result
                     enrichment_completed_total += enrichment_context.artifact_count
                     try:
@@ -734,9 +900,12 @@ def main() -> None:
                             exception=repr(exc),
                         )
                     enriched_total += enrichment_result.normalized_rows
-                    append_jsonl(report_path, {"type": "enrichment", "run_id": run_id, "result": result_public(enrichment_result)})
+                    append_jsonl(report_path, {"type": "enrichment_extract", "run_id": run_id, "result": result_public(enrichment_result)})
                     append_file_errors(report_path, run_id, enrichment_result.file_errors)
                     append_extraction_events(report_path, run_id, enrichment_result.extraction_events)
+                    if enrichment_result.exception and enrichment_result.bucket_id not in finalized_buckets:
+                        final_failed += 1
+                        finalized_buckets.add(enrichment_result.bucket_id)
                     if not args.no_insert and enrichment_result.rows:
                         meta = BucketInsertMeta(
                             bucket_id=enrichment_result.bucket_id,
@@ -767,15 +936,33 @@ def main() -> None:
                             wall_seconds=0.0,
                             exception=repr(exc),
                         )
-                    insert_completed, insert_failed, insert_rows, manifest_rows = handle_insert_result(
+                    _, _, insert_rows, manifest_rows = handle_insert_result(
                         insert_result,
                         run_id,
                         report_path,
                     )
                     if insert_job.kind == "base":
-                        final_completed += insert_completed
-                        final_failed += insert_failed
                         queue_manifest_rows(manifest_rows, insert_pool)
+                    elif insert_job.kind == "enrichment":
+                        queue_manifest_rows(manifest_rows, insert_pool)
+                    for manifest_row in manifest_rows:
+                        if manifest_row.bucket_id in finalized_buckets:
+                            continue
+                        if manifest_row.status == "failed":
+                            final_failed += 1
+                            finalized_buckets.add(manifest_row.bucket_id)
+                        elif insert_job.kind == "base" and bucket_expected_enrichment.get(manifest_row.bucket_id, 0) > 0:
+                            continue
+                        elif insert_job.kind == "enrichment":
+                            inserted_for_bucket = bucket_enrichment_inserted_counts.get(manifest_row.bucket_id, 0) + manifest_row.inserted_rows
+                            bucket_enrichment_inserted_counts[manifest_row.bucket_id] = inserted_for_bucket
+                            if inserted_for_bucket < bucket_expected_enrichment.get(manifest_row.bucket_id, 0):
+                                continue
+                            final_completed += 1
+                            finalized_buckets.add(manifest_row.bucket_id)
+                        else:
+                            final_completed += 1
+                            finalized_buckets.add(manifest_row.bucket_id)
                     inserted_total += insert_rows
 
                 elif future in manifest_futures:
@@ -794,7 +981,14 @@ def main() -> None:
 
                 if not download_futures and not normalize_futures and not args.no_insert and insert_rows_buffer:
                     submit_insert_batch(insert_pool)
-                if not pending_enrichment_jobs and not enrichment_futures and not args.no_insert and enrichment_rows_buffer:
+                if (
+                    not pending_enrichment_network_jobs
+                    and not enrichment_network_futures
+                    and not pending_enrichment_extract_jobs
+                    and not enrichment_extract_futures
+                    and not args.no_insert
+                    and enrichment_rows_buffer
+                ):
                     submit_enrichment_insert_batch(insert_pool)
                 print_progress(
                     total=len(pending),
@@ -805,10 +999,14 @@ def main() -> None:
                     downloaded_rows=downloaded_total,
                     normalized_rows=normalized_total,
                     enrichment_required_rows=enrichment_required_total,
+                    enrichment_network_completed_rows=enrichment_network_completed_total,
+                    enrichment_network_requests=enrichment_network_requests_total,
                     enrichment_completed_rows=enrichment_completed_total,
                     enriched_rows=enriched_total,
-                    active_enrichment_jobs=len(enrichment_futures),
-                    queued_enrichment_jobs=len(pending_enrichment_jobs),
+                    active_enrichment_network_jobs=len(enrichment_network_futures),
+                    queued_enrichment_network_jobs=len(pending_enrichment_network_jobs),
+                    active_enrichment_extract_jobs=len(enrichment_extract_futures),
+                    queued_enrichment_extract_jobs=len(pending_enrichment_extract_jobs),
                     inserted_rows=inserted_total,
                     pending_insert_rows=len(insert_rows_buffer) + len(enrichment_rows_buffer),
                     started_at=started_at,
@@ -820,7 +1018,9 @@ def main() -> None:
         f"DONE completed={final_completed:,} failed={final_failed:,} "
         f"downloaded_rows={downloaded_total:,} normalized_rows={normalized_total:,} "
         f"enrichment_required_rows={enrichment_required_total:,} "
+        f"enrichment_network_completed_rows={enrichment_network_completed_total:,} "
         f"enrichment_completed_rows={enrichment_completed_total:,} "
+        f"enrichment_network_requests={enrichment_network_requests_total:,} "
         f"enriched_rows={enriched_total:,} inserted_rows={inserted_total:,}",
         flush=True,
     )
@@ -1025,9 +1225,299 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
     )
 
 
-def chunk_artifacts(artifacts: list[DownloadedArtifact], chunk_size: int) -> list[list[DownloadedArtifact]]:
-    size = max(1, chunk_size)
-    return [artifacts[index : index + size] for index in range(0, len(artifacts), size)]
+def enrichment_network_worker(job: EnrichmentNetworkJob) -> EnrichmentNetworkResult:
+    started_at = time.perf_counter()
+    artifact_root = Path(job.artifact_root_win)
+    file_errors: list[FileError] = []
+    extraction_events: list[dict[str, Any]] = []
+    external_html_artifact_paths: dict[str, str] = {}
+    external_fetch_errors: dict[str, str] = {}
+    pdf_artifact_paths_by_url: dict[str, str] = {}
+    pdf_metadata_by_url: dict[str, dict[str, Any]] = {}
+    network_requests = 0
+    provider_article_id = ""
+    published_raw = ""
+    try:
+        raw_path = Path(job.artifact.raw_artifact_path)
+        payload = json.loads(raw_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError(f"raw payload was {type(payload).__name__}, expected dict")
+        provider_article_id = provider_id_from_payload(payload)
+        published_raw = str(payload.get("published") or "")
+        published_at = parse_provider_datetime(published_raw)
+        base_options = NewsExtractionOptions(
+            fetch_external=False,
+            extract_pdfs=False,
+            external_min_body_chars=job.external_min_body_chars,
+            request_timeout_seconds=job.extraction_timeout_seconds,
+            max_pdf_bytes=job.max_pdf_bytes,
+            text_limit_chars=job.text_limit_chars,
+        )
+        row = normalize_benzinga_payload(
+            payload,
+            raw_artifact_path=job.artifact.raw_artifact_path,
+            raw_payload_hash=job.artifact.raw_payload_hash,
+            downloaded_at_utc=parse_provider_datetime(job.artifact.downloaded_at_utc),
+            artifact_root=artifact_root,
+            options=base_options,
+            diagnostics=[],
+        )
+        options = NewsExtractionOptions(
+            fetch_external=job.fetch_external,
+            extract_pdfs=job.extract_pdfs,
+            external_min_body_chars=job.external_min_body_chars,
+            request_timeout_seconds=job.extraction_timeout_seconds,
+            max_pdf_bytes=job.max_pdf_bytes,
+            text_limit_chars=job.text_limit_chars,
+            external_request_min_interval_seconds=job.external_request_min_interval_seconds,
+            benzinga_request_min_interval_seconds=job.benzinga_request_min_interval_seconds,
+            sec_request_min_interval_seconds=job.sec_request_min_interval_seconds,
+            external_max_retries=job.external_max_retries,
+            external_retry_base_seconds=job.external_retry_base_seconds,
+            external_rate_limit_root=str(artifact_root / "rate_limits"),
+            default_user_agent=job.default_user_agent,
+            sec_user_agent=job.sec_user_agent,
+        )
+        article_url = str(row.get("article_url") or "")
+        if job.fetch_external and should_fetch_external_for_row(row, job.external_min_body_chars):
+            fetch_started_at = time.perf_counter()
+            try:
+                if looks_like_pdf_url(article_url):
+                    record_extraction_event(
+                        extraction_events,
+                        stage="external_network",
+                        status="deferred_to_pdf",
+                        provider_article_id=provider_article_id,
+                        published_raw=published_raw,
+                        url=article_url,
+                        elapsed_seconds=time.perf_counter() - fetch_started_at,
+                    )
+                else:
+                    html_bytes = fetch_url_with_retries(article_url, options=options)
+                    network_requests += 1
+                    html_path = write_external_html_artifact(artifact_root, published_at, provider_article_id, article_url, html_bytes)
+                    external_html_artifact_paths[article_url] = str(html_path)
+                    record_extraction_event(
+                        extraction_events,
+                        stage="external_network",
+                        status="downloaded",
+                        provider_article_id=provider_article_id,
+                        published_raw=published_raw,
+                        url=article_url,
+                        fetched_bytes=len(html_bytes),
+                        fetched_sha256=stable_sha256(html_bytes),
+                        artifact_path=str(html_path),
+                        elapsed_seconds=time.perf_counter() - fetch_started_at,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                error_text = repr(exc)
+                external_fetch_errors[article_url] = error_text
+                record_extraction_event(
+                    extraction_events,
+                    stage="external_network",
+                    status="failed",
+                    provider_article_id=provider_article_id,
+                    published_raw=published_raw,
+                    url=article_url,
+                    exception=error_text,
+                    elapsed_seconds=time.perf_counter() - fetch_started_at,
+                )
+        if job.extract_pdfs:
+            for url in list(row.get("pdf_urls") or [])[:4]:
+                pdf_started_at = time.perf_counter()
+                try:
+                    metadata = pdf_download_metadata(
+                        url,
+                        payload=payload,
+                        title=str(row.get("title") or ""),
+                        teaser=str(row.get("teaser") or ""),
+                        body_text=str(row.get("body_text") or ""),
+                        article_url=article_url,
+                        max_pdf_bytes=job.max_pdf_bytes,
+                        options=options,
+                    )
+                    network_requests += 1
+                    if metadata.get("download_policy") == "download_now":
+                        pdf_bytes = fetch_url_bytes(url, max_bytes=job.max_pdf_bytes, options=options)
+                        network_requests += 1
+                        pdf_path = write_pdf_artifact(artifact_root, published_at, provider_article_id, url, pdf_bytes)
+                        if pdf_path:
+                            pdf_artifact_paths_by_url[url] = str(pdf_path)
+                        metadata.update(
+                            {
+                                "status": "downloaded",
+                                "fetched_bytes": len(pdf_bytes),
+                                "fetched_sha256": stable_sha256(pdf_bytes),
+                                "artifact_path": str(pdf_path or ""),
+                            }
+                        )
+                        event_status = "downloaded"
+                    else:
+                        metadata["status"] = metadata.get("download_policy", "metadata_only")
+                        event_status = str(metadata["status"])
+                    pdf_metadata_by_url[url] = metadata
+                    record_extraction_event(
+                        extraction_events,
+                        stage="pdf_network",
+                        status=event_status,
+                        provider_article_id=provider_article_id,
+                        published_raw=published_raw,
+                        url=url,
+                        content_length=metadata.get("content_length"),
+                        content_type=metadata.get("content_type"),
+                        importance_score=metadata.get("importance_score"),
+                        importance_tier=metadata.get("importance_tier"),
+                        download_policy=metadata.get("download_policy"),
+                        policy_reasons=metadata.get("importance_reasons"),
+                        artifact_path=metadata.get("artifact_path"),
+                        elapsed_seconds=time.perf_counter() - pdf_started_at,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    error_text = repr(exc)
+                    metadata = {
+                        "url": url,
+                        "status": "failed",
+                        "download_policy": "download_now",
+                        "exception": error_text,
+                    }
+                    pdf_metadata_by_url[url] = metadata
+                    record_extraction_event(
+                        extraction_events,
+                        stage="pdf_network",
+                        status="failed",
+                        provider_article_id=provider_article_id,
+                        published_raw=published_raw,
+                        url=url,
+                        exception=error_text,
+                        elapsed_seconds=time.perf_counter() - pdf_started_at,
+                    )
+    except Exception as exc:  # noqa: BLE001
+        file_errors.append(
+            FileError(
+                stage="enrichment_network",
+                bucket_id=job.bucket_id,
+                raw_artifact_path=job.artifact.raw_artifact_path,
+                raw_payload_hash=job.artifact.raw_payload_hash,
+                provider_article_id=provider_article_id,
+                published_raw=published_raw,
+                exception=repr(exc),
+                traceback=traceback.format_exc(),
+            )
+        )
+        return EnrichmentNetworkResult(
+            bucket_id=job.bucket_id,
+            start_utc=job.start_utc,
+            end_utc=job.end_utc,
+            artifact=job.artifact,
+            file_errors=file_errors,
+            extraction_events=extraction_events,
+            external_html_artifact_paths=external_html_artifact_paths,
+            external_fetch_errors=external_fetch_errors,
+            pdf_artifact_paths_by_url=pdf_artifact_paths_by_url,
+            pdf_metadata_by_url=pdf_metadata_by_url,
+            network_requests=network_requests,
+            wall_seconds=time.perf_counter() - started_at,
+            exception=repr(exc),
+        )
+    return EnrichmentNetworkResult(
+        bucket_id=job.bucket_id,
+        start_utc=job.start_utc,
+        end_utc=job.end_utc,
+        artifact=job.artifact,
+        file_errors=file_errors,
+        extraction_events=extraction_events,
+        external_html_artifact_paths=external_html_artifact_paths,
+        external_fetch_errors=external_fetch_errors,
+        pdf_artifact_paths_by_url=pdf_artifact_paths_by_url,
+        pdf_metadata_by_url=pdf_metadata_by_url,
+        network_requests=network_requests,
+        wall_seconds=time.perf_counter() - started_at,
+    )
+
+
+def enrichment_extract_worker(job: EnrichmentExtractJob) -> NormalizeResult:
+    started_at = time.perf_counter()
+    artifact_root = Path(job.artifact_root_win)
+    rows: list[dict[str, Any]] = []
+    file_errors: list[FileError] = []
+    extraction_events: list[dict[str, Any]] = []
+    provider_article_id = ""
+    published_raw = ""
+    try:
+        raw_path = Path(job.artifact.raw_artifact_path)
+        payload = json.loads(raw_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError(f"raw payload was {type(payload).__name__}, expected dict")
+        provider_article_id = provider_id_from_payload(payload)
+        published_raw = str(payload.get("published") or "")
+        options = NewsExtractionOptions(
+            fetch_external=job.fetch_external,
+            extract_pdfs=job.extract_pdfs,
+            external_min_body_chars=job.external_min_body_chars,
+            request_timeout_seconds=job.extraction_timeout_seconds,
+            max_pdf_bytes=job.max_pdf_bytes,
+            text_limit_chars=job.text_limit_chars,
+            external_request_min_interval_seconds=job.external_request_min_interval_seconds,
+            benzinga_request_min_interval_seconds=job.benzinga_request_min_interval_seconds,
+            sec_request_min_interval_seconds=job.sec_request_min_interval_seconds,
+            external_max_retries=job.external_max_retries,
+            external_retry_base_seconds=job.external_retry_base_seconds,
+            external_rate_limit_root=str(artifact_root / "rate_limits"),
+            default_user_agent=job.default_user_agent,
+            sec_user_agent=job.sec_user_agent,
+            artifact_only=True,
+            external_html_artifact_paths=job.external_html_artifact_paths,
+            external_fetch_errors=job.external_fetch_errors,
+            pdf_artifact_paths_by_url=job.pdf_artifact_paths_by_url,
+            pdf_metadata_by_url=job.pdf_metadata_by_url,
+        )
+        row = normalize_benzinga_payload(
+            payload,
+            raw_artifact_path=job.artifact.raw_artifact_path,
+            raw_payload_hash=job.artifact.raw_payload_hash,
+            downloaded_at_utc=parse_provider_datetime(job.artifact.downloaded_at_utc),
+            artifact_root=artifact_root,
+            options=options,
+            diagnostics=extraction_events,
+        )
+        row["updated_at_utc"] = to_clickhouse_dt64(datetime.now(UTC))
+        rows.append(row)
+    except Exception as exc:  # noqa: BLE001
+        file_errors.append(
+            FileError(
+                stage="enrichment_extract",
+                bucket_id=job.bucket_id,
+                raw_artifact_path=job.artifact.raw_artifact_path,
+                raw_payload_hash=job.artifact.raw_payload_hash,
+                provider_article_id=provider_article_id,
+                published_raw=published_raw,
+                exception=repr(exc),
+                traceback=traceback.format_exc(),
+            )
+        )
+    return NormalizeResult(
+        bucket_id=job.bucket_id,
+        start_utc=job.start_utc,
+        end_utc=job.end_utc,
+        rows=rows,
+        file_errors=file_errors,
+        extraction_events=extraction_events,
+        enrichment_artifacts=[],
+        downloaded_rows=1,
+        normalized_rows=len(rows),
+        page_count=0,
+        saturated=0,
+        wall_seconds=time.perf_counter() - started_at,
+        exception="all enrichment artifacts failed extraction" if file_errors and not rows else "",
+    )
+
+
+def write_external_html_artifact(artifact_root: Path, published_at: datetime, provider_article_id: str, url: str, html_bytes: bytes) -> Path:
+    folder = artifact_root / "external_html" / published_at.strftime("%Y") / published_at.strftime("%m") / published_at.strftime("%d") / provider_article_id
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{hashlib.sha256(url.encode('utf-8')).hexdigest()[:24]}.html"
+    path.write_bytes(html_bytes)
+    return path
 
 
 def insert_rows_worker(job: InsertJob) -> InsertResult:
@@ -1342,10 +1832,14 @@ def print_progress(
     downloaded_rows: int,
     normalized_rows: int,
     enrichment_required_rows: int,
+    enrichment_network_completed_rows: int,
+    enrichment_network_requests: int,
     enrichment_completed_rows: int,
     enriched_rows: int,
-    active_enrichment_jobs: int,
-    queued_enrichment_jobs: int,
+    active_enrichment_network_jobs: int,
+    queued_enrichment_network_jobs: int,
+    active_enrichment_extract_jobs: int,
+    queued_enrichment_extract_jobs: int,
     inserted_rows: int,
     pending_insert_rows: int,
     started_at: float,
@@ -1361,9 +1855,14 @@ def print_progress(
         f"normalized_buckets={normalize_completed:,} completed={final_completed:,} failed={final_failed:,} "
         f"downloaded_rows={downloaded_rows:,} normalized_rows={normalized_rows:,} "
         f"enrichment_required_rows={enrichment_required_rows:,} "
+        f"enrichment_network_done={enrichment_network_completed_rows:,} "
+        f"enrichment_network_requests={enrichment_network_requests:,} "
         f"enrichment_pending_rows={pending_enrichment_rows:,} "
         f"enrichment_completed_rows={enrichment_completed_rows:,} enriched_rows={enriched_rows:,} "
-        f"active_enrichment_jobs={active_enrichment_jobs:,} queued_enrichment_jobs={queued_enrichment_jobs:,} "
+        f"active_enrichment_network_jobs={active_enrichment_network_jobs:,} "
+        f"queued_enrichment_network_jobs={queued_enrichment_network_jobs:,} "
+        f"active_enrichment_extract_jobs={active_enrichment_extract_jobs:,} "
+        f"queued_enrichment_extract_jobs={queued_enrichment_extract_jobs:,} "
         f"inserted_rows={inserted_rows:,} insert_buffer={pending_insert_rows:,} "
         f"elapsed_min={elapsed / 60:.1f} eta_min={eta / 60:.1f}",
         flush=True,
