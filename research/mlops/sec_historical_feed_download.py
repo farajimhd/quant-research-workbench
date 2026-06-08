@@ -15,7 +15,7 @@ import traceback
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from urllib import error, request
 from zoneinfo import ZoneInfo
 
@@ -33,6 +33,10 @@ DEFAULT_SEC_USER_AGENT = "QuantResearchWorkbench SEC historical feed ingest cont
 SEC_BASE_URL = "https://www.sec.gov/Archives/edgar"
 SEC_ET = ZoneInfo("America/New_York")
 RETRY_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
+
+
+class MissingArchiveError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,7 +218,16 @@ def main() -> None:
             )
         ]
     else:
-        days = date_range(parse_date(args.start_date), parse_date(args.end_date))
+        discovery_limiter = RateLimiter(max(0.0, args.sec_request_min_interval_seconds))
+        days = discover_available_archive_days(
+            parse_date(args.start_date),
+            parse_date(args.end_date),
+            user_agent,
+            max(1.0, args.request_timeout_seconds),
+            max(0, args.max_retries),
+            max(0.1, args.retry_base_seconds),
+            discovery_limiter,
+        )
         if args.limit_days:
             days = days[: max(0, args.limit_days)]
         jobs = [
@@ -265,6 +278,7 @@ def main() -> None:
         "secret_status": secret_status(["SEC_USER_AGENT", "SEC_EDGAR_USER_AGENT", "NEWS_SEC_USER_AGENT"]),
         "loaded_env_files": [str(path) for path in loaded_env_files],
         "job_count": len(jobs),
+        "job_discovery": "sec_feed_quarter_directory_listing" if not args.existing_extracted_dir else "existing_extracted_dir",
     }
     print_header(config)
     append_jsonl(report_path, config)
@@ -322,7 +336,7 @@ def main() -> None:
                     error=f"{exc!r}\n{traceback.format_exc()}",
                 )
             append_jsonl(report_path, {"type": "day", "run_id": run_id, "result": asdict(result)})
-            if result.status in {"ok", "downloaded"}:
+            if result.status in {"ok", "downloaded", "missing_archive"}:
                 completed += 1
             else:
                 failed += 1
@@ -367,6 +381,41 @@ def effective_archive_concurrency(args: argparse.Namespace) -> int:
     return 1
 
 
+def discover_available_archive_days(
+    start: date,
+    end: date,
+    user_agent: str,
+    request_timeout_seconds: float,
+    max_retries: int,
+    retry_base_seconds: float,
+    limiter: RateLimiter,
+) -> list[date]:
+    available: set[date] = set()
+    for year, quarter in quarters_between(start, end):
+        url = f"{SEC_BASE_URL}/Feed/{year}/{quarter}/"
+        body = fetch_url(url, user_agent, request_timeout_seconds, max_retries, retry_base_seconds, limiter)
+        text = body.decode("utf-8", errors="replace")
+        for match in re.finditer(r"(?P<day>[0-9]{8})\.nc\.tar\.gz", text):
+            archive_day = datetime.strptime(match.group("day"), "%Y%m%d").date()
+            if start <= archive_day < end:
+                available.add(archive_day)
+    return sorted(available)
+
+
+def quarters_between(start: date, end: date) -> Iterable[tuple[int, str]]:
+    current = date(start.year, ((start.month - 1) // 3) * 3 + 1, 1)
+    seen: set[tuple[int, str]] = set()
+    while current < end:
+        key = (current.year, quarter_name(current))
+        if key not in seen:
+            seen.add(key)
+            yield key
+        month = current.month + 3
+        year = current.year + ((month - 1) // 12)
+        month = ((month - 1) % 12) + 1
+        current = date(year, month, 1)
+
+
 def process_day_job(job: DayJob, submissions_path: Path, documents_path: Path, headers_path: Path) -> DayResult:
     started = time.perf_counter()
     archive_path = Path(job.archive_path)
@@ -374,7 +423,25 @@ def process_day_job(job: DayJob, submissions_path: Path, documents_path: Path, h
     limiter = RateLimiter(job.request_min_interval_seconds)
 
     try:
-        download_archive(job, limiter)
+        try:
+            download_archive(job, limiter)
+        except MissingArchiveError as exc:
+            return DayResult(
+                archive_date=job.archive_date,
+                archive_url=job.archive_url,
+                archive_path=str(archive_path),
+                extract_dir="",
+                archive_bytes=0,
+                archive_sha256="",
+                nc_files=0,
+                submissions=0,
+                documents=0,
+                header_success=0,
+                header_failed=0,
+                wall_seconds=round(time.perf_counter() - started, 3),
+                status="missing_archive",
+                error=str(exc),
+            )
         archive_bytes = archive_path.stat().st_size
         archive_sha = sha256_file(archive_path)
         if job.download_only:
@@ -682,6 +749,8 @@ def fetch_url(
                 return body
         except error.HTTPError as exc:
             last_error = f"HTTP {exc.code}: {exc.reason}"
+            if exc.code in {403, 404} and url.endswith(".nc.tar.gz"):
+                raise MissingArchiveError(last_error) from exc
             if exc.code not in RETRY_HTTP_CODES or attempt >= max_retries:
                 raise RuntimeError(last_error) from exc
             retry_after = parse_retry_after(exc.headers.get("Retry-After"))

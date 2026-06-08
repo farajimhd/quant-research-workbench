@@ -62,6 +62,7 @@ These are JSONL outputs for inspection and schema finalization. The script does 
 
 This is the safest first pass. It downloads compressed daily archives and stops.
 `--archive-concurrency` applies in this mode.
+The script first reads the SEC quarterly Feed directory listings and creates jobs only for archive files that actually exist. Weekends, holidays, and missing archive dates are not guessed as failed jobs.
 
 ```powershell
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_download.py --start-date 2026-06-01 --end-date 2026-06-08 --download-only --archive-concurrency 2
