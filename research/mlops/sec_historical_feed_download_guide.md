@@ -120,10 +120,16 @@ The pipeline keeps at most roughly `--download-concurrency` archive downloads ah
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500
 ```
 
-Recommended smoke test:
+Recommended dry-run smoke test. This validates discovery/config without writing partial normalized data:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --archive-copy-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --limit-files-per-day 20 --progress-interval-seconds 5 --progress-file-interval-mib 16 --progress-record-interval 10
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --archive-copy-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 5 --progress-file-interval-mib 16 --progress-record-interval 500 --dry-run
+```
+
+Recommended full one-day pipeline smoke test. This parses every filing in the selected daily archive:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --archive-copy-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500
 ```
 
 Delete permanent HDD compressed archives only after a day parses successfully:
@@ -171,16 +177,16 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 
 ## Local Smoke Test With Already Extracted Folder
 
-This uses the folder you already extracted and parses only a small number of files.
+This uses the folder you already extracted and parses every `.nc` file in it.
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_feed_download.py --existing-extracted-dir C:\Users\g835l\Downloads\20260605.nc.tar\20260605.nc --existing-archive-date 2026-06-05 --limit-files-per-day 20 --header-concurrency 4 --sec-request-min-interval-seconds 0.11
+python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_feed_download.py --existing-extracted-dir C:\Users\g835l\Downloads\20260605.nc.tar\20260605.nc --existing-archive-date 2026-06-05 --header-concurrency 4 --sec-request-min-interval-seconds 0.11
 ```
 
 Skip SEC header fetch if you only want to validate local `.nc` parsing:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_feed_download.py --existing-extracted-dir C:\Users\g835l\Downloads\20260605.nc.tar\20260605.nc --existing-archive-date 2026-06-05 --limit-files-per-day 20 --no-header-fetch
+python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_feed_download.py --existing-extracted-dir C:\Users\g835l\Downloads\20260605.nc.tar\20260605.nc --existing-archive-date 2026-06-05 --no-header-fetch
 ```
 
 ## Important Behavior
@@ -189,6 +195,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_fe
 - In the bounded pipeline, SSD temp archives are working files and HDD archives are the retained compressed source-of-truth artifacts.
 - Final normalized JSONL files should be written on SSD. Keep the compressed `.nc.tar.gz` archive on HDD and set `SEC_HISTORICAL_NORMALIZED_ROOT_WIN` to an SSD path such as `D:/market-data/sec_edgar_feed_normalized`.
 - Existing archive files are integrity-checked before reuse. Corrupt temp/HDD archives are removed and redownloaded.
+- The runnable historical ingest scripts do not expose a per-day filing cap. Every `.nc` filing in each selected daily archive is parsed so normalized output is complete for that day.
 - The bounded pipeline reports every active archive date through the same fixed stages: `Download`, `Validate`, `Copy`, `Parse`, and `Headers`.
 - With the Rich layout, `--download-concurrency 5` creates five fixed worker rows. Each row keeps the same five stage columns while its assigned archive day moves through the pipeline.
 - Stages with a known total, such as byte downloads and copies, show a bounded progress bar. Stages whose total is discovered while running, such as archive validation, show a stable running cell with elapsed time and the latest count.

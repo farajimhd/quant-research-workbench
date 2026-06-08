@@ -419,7 +419,6 @@ def parse_args() -> argparse.Namespace:
     progress_bar_group.add_argument("--download-progress-bars", dest="download_progress_bars", action="store_true", help="Show tqdm progress bars for SEC archive downloads.")
     progress_bar_group.add_argument("--no-download-progress-bars", dest="download_progress_bars", action="store_false", help="Disable tqdm archive download bars and use text progress only.")
     parser.add_argument("--limit-days", type=int, default=0, help="Smoke-test cap on discovered archive days.")
-    parser.add_argument("--limit-files-per-day", type=int, default=0, help="Smoke-test cap on .nc files parsed per day.")
     parser.add_argument("--force-redownload", action="store_true", help="Redownload archives even when already present.")
     parser.add_argument("--no-header-fetch", action="store_true", help="Skip .hdr.sgml accepted_at enrichment.")
     parser.add_argument("--persist-nc-files", action="store_true", help="Also persist individual .nc files. Default streams from tar.gz only.")
@@ -483,7 +482,6 @@ def main() -> None:
             header_retry_base,
             header_failure_breaker_threshold,
             max(1, args.header_concurrency),
-            max(0, args.limit_files_per_day),
             args.force_redownload,
             False,
             args.persist_nc_files,
@@ -519,7 +517,6 @@ def main() -> None:
         "progress_screen": bool(args.progress_screen),
         "download_progress_bars": bool(args.download_progress_bars),
         "limit_days": max(0, args.limit_days),
-        "limit_files_per_day": max(0, args.limit_files_per_day),
         "persist_nc_files": args.persist_nc_files,
         "delete_archive_after_parse": args.delete_archive_after_parse,
         "no_header_fetch": args.no_header_fetch,
@@ -1027,7 +1024,7 @@ def parse_one_archive(
         job.archive_date,
         temp_archive_path,
         Path(job.extract_dir),
-        job.limit_files,
+        0,
         job.persist_nc_files,
         f"{label}",
         progress_record_interval,
@@ -1136,7 +1133,6 @@ def print_header(config: dict[str, Any], progress: ProgressDisplay) -> None:
         "normalized_root",
         "output_root",
         "limit_days",
-        "limit_files_per_day",
         "persist_nc_files",
         "delete_archive_after_parse",
         "no_header_fetch",

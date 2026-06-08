@@ -54,7 +54,6 @@ class DayJob:
     header_retry_base_seconds: float
     header_failure_breaker_threshold: int
     header_concurrency: int
-    limit_files: int
     force_redownload: bool
     download_only: bool
     persist_nc_files: bool
@@ -74,7 +73,6 @@ class ExistingDirJob:
     header_retry_base_seconds: float
     header_failure_breaker_threshold: int
     header_concurrency: int
-    limit_files: int
     no_header_fetch: bool
 
 
@@ -187,7 +185,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--header-retry-base-seconds", type=float, default=float(os.environ.get("SEC_HEADER_RETRY_BASE_SECONDS", "0.5")))
     parser.add_argument("--header-failure-breaker-threshold", type=int, default=int(os.environ.get("SEC_HEADER_FAILURE_BREAKER_THRESHOLD", "4")))
     parser.add_argument("--limit-days", type=int, default=0, help="Optional smoke-test cap on archive days.")
-    parser.add_argument("--limit-files-per-day", type=int, default=0, help="Optional smoke-test cap on .nc files parsed per day.")
     parser.add_argument("--force-redownload", action="store_true", help="Redownload archive files even when already present.")
     parser.add_argument("--download-only", action="store_true", help="Only download compressed daily .nc.tar.gz archives; do not decompress, parse, or fetch headers.")
     parser.add_argument("--persist-nc-files", action="store_true", help="When parsing downloaded archives, also write individual .nc files to disk. By default parsing streams from tar.gz without expanding all files.")
@@ -225,7 +222,6 @@ def main() -> None:
                 header_retry_base_seconds=max(0.1, args.header_retry_base_seconds),
                 header_failure_breaker_threshold=max(0, args.header_failure_breaker_threshold),
                 header_concurrency=max(1, args.header_concurrency),
-                limit_files=max(0, args.limit_files_per_day),
                 no_header_fetch=args.no_header_fetch,
             )
         ]
@@ -255,7 +251,6 @@ def main() -> None:
                 max(0.1, args.header_retry_base_seconds),
                 max(0, args.header_failure_breaker_threshold),
                 max(1, args.header_concurrency),
-                max(0, args.limit_files_per_day),
                 args.force_redownload,
                 args.download_only,
                 args.persist_nc_files,
@@ -288,7 +283,6 @@ def main() -> None:
         "max_retries": max(0, args.max_retries),
         "retry_base_seconds": max(0.1, args.retry_base_seconds),
         "limit_days": max(0, args.limit_days),
-        "limit_files_per_day": max(0, args.limit_files_per_day),
         "download_only": args.download_only,
         "persist_nc_files": args.persist_nc_files,
         "no_header_fetch": args.no_header_fetch,
@@ -478,7 +472,7 @@ def process_day_job(job: DayJob, submissions_path: Path, documents_path: Path, h
                 wall_seconds=round(time.perf_counter() - started, 3),
                 status="downloaded",
             )
-        parsed, documents = parse_nc_archive(job.archive_date, archive_path, extract_dir, job.limit_files, job.persist_nc_files)
+        parsed, documents = parse_nc_archive(job.archive_date, archive_path, extract_dir, 0, job.persist_nc_files)
         timestamps = fetch_headers_for_submissions(parsed, job, limiter)
         write_rows(submissions_path, [merge_submission_timestamp(item, timestamps.get(item.accession_number)) for item in parsed])
         write_rows(documents_path, [asdict(item) for item in documents])
@@ -521,7 +515,7 @@ def process_existing_dir_job(job: ExistingDirJob, submissions_path: Path, docume
     started = time.perf_counter()
     extract_dir = Path(job.extract_dir)
     limiter = RateLimiter(job.request_min_interval_seconds)
-    parsed, documents = parse_nc_directory(job.archive_date, extract_dir, job.limit_files)
+    parsed, documents = parse_nc_directory(job.archive_date, extract_dir, 0)
     timestamps = fetch_headers_for_submissions(parsed, job, limiter)
     write_rows(submissions_path, [merge_submission_timestamp(item, timestamps.get(item.accession_number)) for item in parsed])
     write_rows(documents_path, [asdict(item) for item in documents])
@@ -1038,7 +1032,6 @@ def build_day_job(
     header_retry_base_seconds: float,
     header_failure_breaker_threshold: int,
     header_concurrency: int,
-    limit_files: int,
     force_redownload: bool,
     download_only: bool,
     persist_nc_files: bool,
@@ -1063,7 +1056,6 @@ def build_day_job(
         header_retry_base_seconds=header_retry_base_seconds,
         header_failure_breaker_threshold=header_failure_breaker_threshold,
         header_concurrency=header_concurrency,
-        limit_files=limit_files,
         force_redownload=force_redownload,
         download_only=download_only,
         persist_nc_files=persist_nc_files,
@@ -1222,7 +1214,6 @@ def print_header(config: dict[str, Any]) -> None:
         "header_failure_breaker_threshold",
         "sec_request_min_interval_seconds",
         "limit_days",
-        "limit_files_per_day",
         "download_only",
         "persist_nc_files",
         "no_header_fetch",
