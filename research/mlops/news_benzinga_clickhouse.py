@@ -38,6 +38,7 @@ def create_news_database_and_tables(
 ) -> None:
     client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}")
     client.execute(news_table_sql(database, news_table, storage_policy))
+    ensure_news_table_columns(client, database=database, table=news_table)
     client.execute(manifest_table_sql(database, manifest_table, storage_policy))
 
 
@@ -78,6 +79,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     has_pdf UInt8,
     pdf_urls Array(String),
     pdf_artifact_paths Array(String),
+    pdf_metadata_json String,
     content_quality_flags Array(LowCardinality(String)),
     external_fetch_status LowCardinality(String),
     external_fetch_error String,
@@ -93,6 +95,15 @@ PARTITION BY toYYYYMM(published_at_utc)
 ORDER BY (published_date, provider_article_id)
 SETTINGS {settings}
 """
+
+
+def ensure_news_table_columns(client: ClickHouseHttpClient, *, database: str, table: str) -> None:
+    client.execute(
+        f"""
+ALTER TABLE {quote_ident(database)}.{quote_ident(table)}
+ADD COLUMN IF NOT EXISTS pdf_metadata_json String AFTER pdf_artifact_paths
+"""
+    )
 
 
 def manifest_table_sql(database: str, table: str, storage_policy: str = "") -> str:

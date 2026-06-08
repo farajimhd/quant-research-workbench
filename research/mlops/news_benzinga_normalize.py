@@ -22,6 +22,54 @@ BENZINGA_NORMALIZER_VERSION = "benzinga-normalizer-v1"
 DEFAULT_TEXT_LIMIT_CHARS = 24_000
 DEFAULT_EXTRACTION_MIN_BODY_CHARS = 300
 PDF_URL_RE = re.compile(r"https?://[^\s\"'<>]+?\.pdf(?:[?#][^\s\"'<>]*)?", re.IGNORECASE)
+MATERIAL_PDF_KEYWORDS = {
+    "8-k",
+    "10-k",
+    "10-q",
+    "424b",
+    "approval",
+    "bankruptcy",
+    "clinical",
+    "earnings",
+    "fda",
+    "guidance",
+    "ipo",
+    "lawsuit",
+    "merger",
+    "offering",
+    "prospectus",
+    "s-1",
+    "settlement",
+}
+SOURCE_PDF_KEYWORDS = {
+    "financial-results",
+    "investor",
+    "news-release",
+    "presentation",
+    "press-release",
+}
+LOW_VALUE_PDF_KEYWORDS = {
+    "brochure",
+    "catalog",
+    "esg",
+    "fact-sheet",
+    "factsheet",
+    "marketing",
+    "sustainability",
+    "whitepaper",
+}
+REGULATOR_DOMAINS = {
+    "cboe.com",
+    "doj.gov",
+    "fda.gov",
+    "federalreserve.gov",
+    "finra.org",
+    "ftc.gov",
+    "nasdaq.com",
+    "nyse.com",
+    "otcmarkets.com",
+    "treasury.gov",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,13 +220,43 @@ def normalize_benzinga_payload(
 
     pdf_texts: list[str] = []
     pdf_artifact_paths: list[str] = []
+    pdf_metadata: list[dict[str, Any]] = []
     pdf_status = "not_needed"
     pdf_error = ""
     if options.extract_pdfs and pdf_urls:
         pdf_status = "started"
         for url in pdf_urls[:4]:
             started_at = time.perf_counter()
+            metadata = pdf_download_metadata(
+                url,
+                payload=payload,
+                title=title,
+                teaser=teaser,
+                body_text=body_text,
+                article_url=article_url,
+                max_pdf_bytes=options.max_pdf_bytes,
+                options=options,
+            )
             try:
+                if metadata["download_policy"] != "download_now":
+                    metadata["status"] = metadata["download_policy"]
+                    pdf_metadata.append(metadata)
+                    record_extraction_event(
+                        diagnostics,
+                        stage="pdf_fetch_extract",
+                        status=metadata["download_policy"],
+                        provider_article_id=provider_article_id,
+                        published_raw=published_raw,
+                        url=url,
+                        content_length=metadata.get("content_length"),
+                        content_type=metadata.get("content_type"),
+                        importance_score=metadata.get("importance_score"),
+                        importance_tier=metadata.get("importance_tier"),
+                        download_policy=metadata.get("download_policy"),
+                        policy_reasons=metadata.get("importance_reasons"),
+                        elapsed_seconds=time.perf_counter() - started_at,
+                    )
+                    continue
                 pdf_bytes = fetch_url_bytes(
                     url,
                     max_bytes=options.max_pdf_bytes,
@@ -201,19 +279,37 @@ def normalize_benzinga_payload(
                     artifact_path=str(pdf_path or ""),
                     elapsed_seconds=time.perf_counter() - started_at,
                 )
+                metadata.update(
+                    {
+                        "status": "extracted" if text else "empty",
+                        "fetched_bytes": len(pdf_bytes),
+                        "fetched_sha256": stable_sha256(pdf_bytes),
+                        "extracted_text_chars": len(text),
+                        "artifact_path": str(pdf_path or ""),
+                    }
+                )
+                pdf_metadata.append(metadata)
             except Exception as exc:  # noqa: BLE001
                 pdf_error = repr(exc)
+                status = "skipped_too_large" if is_pdf_too_large_exception(exc) else "failed"
+                metadata.update({"status": status, "exception": pdf_error})
+                pdf_metadata.append(metadata)
                 record_extraction_event(
                     diagnostics,
                     stage="pdf_fetch_extract",
-                    status="failed",
+                    status=status,
                     provider_article_id=provider_article_id,
                     published_raw=published_raw,
                     url=url,
+                    content_length=metadata.get("content_length"),
+                    content_type=metadata.get("content_type"),
+                    importance_score=metadata.get("importance_score"),
+                    importance_tier=metadata.get("importance_tier"),
+                    download_policy=metadata.get("download_policy"),
                     exception=pdf_error,
                     elapsed_seconds=time.perf_counter() - started_at,
                 )
-        pdf_status = "extracted" if pdf_texts else ("failed" if pdf_error else "empty")
+        pdf_status = aggregate_pdf_status(pdf_texts, pdf_metadata, pdf_error)
 
     full_text_parts = [title, teaser, body_text, external_text, *pdf_texts]
     normalized_full_text = truncate_text(normalize_text(" ".join(part for part in full_text_parts if part)), options.text_limit_chars)
@@ -223,7 +319,7 @@ def normalize_benzinga_payload(
     raw_hash = raw_payload_hash or stable_hash(json.dumps(payload, sort_keys=True, default=str))
     canonical_news_id = stable_hash("|".join([BENZINGA_PROVIDER, provider_article_id, published_raw, title]))
 
-    content_quality_flags = content_flags(body_text, external_text, pdf_text, pdf_urls, external_status, pdf_status)
+    content_quality_flags = content_flags(body_text, external_text, pdf_text, pdf_urls, external_status, pdf_status, pdf_metadata)
     return {
         "provider": BENZINGA_PROVIDER,
         "provider_article_id": provider_article_id,
@@ -257,6 +353,7 @@ def normalize_benzinga_payload(
         "has_pdf": 1 if pdf_urls else 0,
         "pdf_urls": pdf_urls,
         "pdf_artifact_paths": [path for path in pdf_artifact_paths if path],
+        "pdf_metadata_json": compact_json(pdf_metadata),
         "content_quality_flags": content_quality_flags,
         "external_fetch_status": external_status,
         "external_fetch_error": external_error,
@@ -405,7 +502,7 @@ def fetch_url_with_retries(url: str, *, options: NewsExtractionOptions, max_byte
     raise RuntimeError("external_fetch_failed_without_exception")
 
 
-def build_request(url: str, *, options: NewsExtractionOptions) -> request.Request:
+def build_request(url: str, *, options: NewsExtractionOptions, method: str = "GET") -> request.Request:
     user_agent = user_agent_for_url(url, options)
     headers = {
         "User-Agent": user_agent,
@@ -414,7 +511,7 @@ def build_request(url: str, *, options: NewsExtractionOptions) -> request.Reques
     }
     if is_benzinga_host(url):
         headers["Referer"] = "https://www.benzinga.com/"
-    return request.Request(url, headers=headers)
+    return request.Request(url, headers=headers, method=method)
 
 
 def user_agent_for_url(url: str, options: NewsExtractionOptions) -> str:
@@ -513,6 +610,163 @@ def record_extraction_event(diagnostics: list[dict[str, Any]] | None, **payload:
     diagnostics.append({key: value for key, value in payload.items() if value not in ("", None, [])})
 
 
+def pdf_download_metadata(
+    url: str,
+    *,
+    payload: dict[str, Any],
+    title: str,
+    teaser: str,
+    body_text: str,
+    article_url: str,
+    max_pdf_bytes: int,
+    options: NewsExtractionOptions,
+) -> dict[str, Any]:
+    importance = assess_pdf_importance(url, payload=payload, title=title, teaser=teaser, body_text=body_text, article_url=article_url)
+    head_metadata = fetch_url_head_metadata(url, options=options)
+    content_length = head_metadata.get("content_length")
+    download_policy = download_policy_for_pdf(
+        importance_score=int(importance["importance_score"]),
+        importance_tier=str(importance["importance_tier"]),
+        content_length=content_length if isinstance(content_length, int) else None,
+        max_pdf_bytes=max_pdf_bytes,
+    )
+    metadata = {
+        "url": url,
+        "domain": url_domain(url),
+        "content_type": head_metadata.get("content_type", ""),
+        "content_length": content_length,
+        "content_length_source": "head" if content_length is not None else "",
+        "head_status": head_metadata.get("head_status", ""),
+        "head_error": head_metadata.get("head_error", ""),
+        "max_pdf_bytes": max_pdf_bytes,
+        "importance_score": importance["importance_score"],
+        "importance_tier": importance["importance_tier"],
+        "importance_reasons": importance["importance_reasons"],
+        "download_policy": download_policy,
+    }
+    return {key: value for key, value in metadata.items() if value not in ("", None, [])}
+
+
+def assess_pdf_importance(
+    url: str,
+    *,
+    payload: dict[str, Any],
+    title: str,
+    teaser: str,
+    body_text: str,
+    article_url: str,
+) -> dict[str, Any]:
+    score = 0
+    reasons: list[str] = []
+    domain = url_domain(url)
+    article_domain = url_domain(article_url)
+    haystack = normalize_text(
+        " ".join(
+            [
+                url,
+                title,
+                teaser,
+                body_text[:2_000],
+                " ".join(normalize_string_array(payload.get("channels"))),
+                " ".join(normalize_string_array(payload.get("tags"))),
+            ]
+        )
+    ).casefold()
+    if is_sec_host(url):
+        score += 50
+        reasons.append("sec_domain")
+    if domain_matches_any(domain, REGULATOR_DOMAINS):
+        score += 35
+        reasons.append("regulator_or_exchange_domain")
+    if normalize_string_array(payload.get("tickers"), upper=True):
+        score += 15
+        reasons.append("has_tickers")
+    material_hits = sorted(keyword for keyword in MATERIAL_PDF_KEYWORDS if keyword in haystack)
+    if material_hits:
+        score += min(35, 12 + len(material_hits) * 4)
+        reasons.extend([f"material_keyword:{keyword}" for keyword in material_hits[:6]])
+    source_hits = sorted(keyword for keyword in SOURCE_PDF_KEYWORDS if keyword in haystack)
+    if source_hits:
+        score += min(20, 8 + len(source_hits) * 3)
+        reasons.extend([f"source_keyword:{keyword}" for keyword in source_hits[:5]])
+    if article_domain and domain and article_domain == domain:
+        score += 10
+        reasons.append("same_domain_as_article")
+    if "investor" in domain or "ir." in domain or ".ir-" in domain:
+        score += 25
+        reasons.append("investor_relations_domain")
+    low_value_hits = sorted(keyword for keyword in LOW_VALUE_PDF_KEYWORDS if keyword in haystack)
+    if low_value_hits and not material_hits:
+        score -= min(25, 8 + len(low_value_hits) * 4)
+        reasons.extend([f"low_value_keyword:{keyword}" for keyword in low_value_hits[:5]])
+    score = max(0, min(100, score))
+    if score >= 70:
+        tier = "critical"
+    elif score >= 45:
+        tier = "high"
+    elif score >= 25:
+        tier = "medium"
+    elif score >= 10:
+        tier = "low"
+    else:
+        tier = "skip"
+    if not reasons:
+        reasons.append("no_material_pdf_signal")
+    return {"importance_score": score, "importance_tier": tier, "importance_reasons": reasons}
+
+
+def download_policy_for_pdf(*, importance_score: int, importance_tier: str, content_length: int | None, max_pdf_bytes: int) -> str:
+    if content_length is not None and content_length > max_pdf_bytes:
+        return "offline_queue" if importance_score >= 25 else "metadata_only"
+    if importance_tier == "skip":
+        return "metadata_only"
+    return "download_now"
+
+
+def fetch_url_head_metadata(url: str, *, options: NewsExtractionOptions) -> dict[str, Any]:
+    try:
+        apply_host_rate_limit(url, options=options)
+        with request.urlopen(build_request(url, options=options, method="HEAD"), timeout=options.request_timeout_seconds) as response:  # noqa: S310
+            content_length = parse_content_length(response.headers.get("Content-Length"))
+            return {
+                "head_status": "ok",
+                "content_type": normalize_text(response.headers.get("Content-Type", "")),
+                "content_length": content_length,
+            }
+    except Exception as exc:  # noqa: BLE001
+        return {"head_status": "failed", "head_error": repr(exc)}
+
+
+def parse_content_length(value: str | None) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = int(text)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def aggregate_pdf_status(pdf_texts: list[str], pdf_metadata: list[dict[str, Any]], pdf_error: str) -> str:
+    statuses = {str(item.get("status", "")) for item in pdf_metadata}
+    if pdf_texts:
+        return "extracted"
+    if "offline_queue" in statuses:
+        return "offline_queue"
+    if "metadata_only" in statuses:
+        return "metadata_only"
+    if "skipped_too_large" in statuses:
+        return "skipped_too_large"
+    if pdf_error:
+        return "failed"
+    return "empty"
+
+
+def is_pdf_too_large_exception(exc: Exception) -> bool:
+    return "pdf_too_large" in repr(exc)
+
+
 def write_pdf_artifact(
     artifact_root: Path | None,
     published_at: datetime,
@@ -558,6 +812,7 @@ def content_flags(
     pdf_urls: list[str],
     external_status: str,
     pdf_status: str,
+    pdf_metadata: list[dict[str, Any]],
 ) -> list[str]:
     flags: list[str] = []
     if not body_text and not external_text and not pdf_text:
@@ -570,6 +825,14 @@ def content_flags(
         flags.append("pdf_link")
     if pdf_text:
         flags.append("pdf_text")
+    if any(item.get("download_policy") == "metadata_only" for item in pdf_metadata):
+        flags.append("pdf_metadata_only")
+    if any(item.get("download_policy") == "offline_queue" for item in pdf_metadata):
+        flags.append("pdf_offline_queue")
+    if any(int(item.get("content_length") or 0) > int(item.get("max_pdf_bytes") or 0) > 0 for item in pdf_metadata) or any(
+        item.get("status") == "skipped_too_large" for item in pdf_metadata
+    ):
+        flags.append("pdf_too_large")
     if external_status == "failed":
         flags.append("external_fetch_failed")
     if pdf_status == "failed":
@@ -585,6 +848,19 @@ def url_domain(url: str) -> str:
 
 def stable_hash(value: str) -> str:
     return hashlib.blake2b(value.encode("utf-8", errors="ignore"), digest_size=16).hexdigest()
+
+
+def stable_sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def compact_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def domain_matches_any(domain: str, roots: set[str]) -> bool:
+    clean = domain.lower().strip(".")
+    return any(clean == root or clean.endswith("." + root) for root in roots)
 
 
 def safe_filename(value: str) -> str:

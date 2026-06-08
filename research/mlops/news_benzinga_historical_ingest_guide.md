@@ -56,6 +56,8 @@ ClickHouse tables:
 
 The live `services/news-gateway` writes to the same normalized table by default. Historical and live rows are deduplicated by `(published_date, provider_article_id)` through `ReplacingMergeTree(updated_at_utc)`.
 
+PDF downloads never decide whether a news row is kept. Every valid Benzinga news row is normalized even when a linked PDF is too large, low-value, unavailable, or queued for offline handling. PDF decisions are stored in `pdf_metadata_json`.
+
 ## Required Environment
 
 The script loads `.env` through the shared MLOps environment discovery. Required values:
@@ -498,6 +500,16 @@ Maximum PDF size to download/extract. Default:
 NEWS_PDF_MAX_BYTES
 12000000
 ```
+
+Before downloading a PDF, the normalizer records deterministic metadata where available: URL, domain, HTTP `Content-Type`, HTTP `Content-Length`, max byte cap, importance score, importance tier, reasons, and policy. The policy values are:
+
+```text
+download_now
+metadata_only
+offline_queue
+```
+
+Large PDFs above `--max-pdf-bytes` are not downloaded in the hot path. If the deterministic score is medium-or-better, they are marked `offline_queue`; otherwise they are marked `metadata_only`. In both cases, the news row is still inserted.
 
 `--text-limit-chars`
 

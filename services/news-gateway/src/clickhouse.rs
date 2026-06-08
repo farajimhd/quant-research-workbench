@@ -114,6 +114,9 @@ impl NewsClickHouse {
         if self.config.benzinga_canonical_enabled {
             self.execute(&canonical_news_table_sql(&self.config.benzinga_canonical_table, &settings), true)
                 .await?;
+            for statement in canonical_news_column_migrations(&self.config.benzinga_canonical_table) {
+                self.execute(&statement, true).await?;
+            }
         }
         for statement in intelligence_column_migrations() {
             self.execute(statement, true).await?;
@@ -361,6 +364,7 @@ CREATE TABLE IF NOT EXISTS `{}`
     has_pdf UInt8,
     pdf_urls Array(String),
     pdf_artifact_paths Array(String),
+    pdf_metadata_json String,
     content_quality_flags Array(LowCardinality(String)),
     external_fetch_status LowCardinality(String),
     external_fetch_error String,
@@ -378,6 +382,14 @@ SETTINGS {settings}
 "#,
         table.replace('`', "``")
     )
+}
+
+fn canonical_news_column_migrations(table: &str) -> Vec<String> {
+    let safe_table = table.replace('`', "``");
+    vec![format!(
+        "ALTER TABLE `{}` ADD COLUMN IF NOT EXISTS pdf_metadata_json String AFTER pdf_artifact_paths",
+        safe_table
+    )]
 }
 
 fn canonical_article_json(row: &NewsArticle) -> Value {
@@ -427,6 +439,7 @@ fn canonical_article_json(row: &NewsArticle) -> Value {
         "has_pdf": row.has_pdf,
         "pdf_urls": &row.pdf_urls,
         "pdf_artifact_paths": Vec::<String>::new(),
+        "pdf_metadata_json": "[]",
         "content_quality_flags": content_quality_flags(row, &external_text, &pdf_text),
         "external_fetch_status": external_fetch_status(row),
         "external_fetch_error": external_fetch_error(row),
