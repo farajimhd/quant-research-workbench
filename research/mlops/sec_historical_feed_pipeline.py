@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -11,6 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib import error, request
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -24,11 +26,12 @@ from research.mlops.sec_historical_feed_download import (  # noqa: E402
     DayJob,
     MissingArchiveError,
     RateLimiter,
+    RETRY_HTTP_CODES,
     build_day_job,
     discover_available_archive_days,
-    download_archive,
     fetch_headers_for_submissions,
     merge_submission_timestamp,
+    parse_retry_after,
     parse_date,
     parse_nc_archive,
     quarter_name,
@@ -39,13 +42,15 @@ from research.mlops.sec_historical_feed_download import (  # noqa: E402
 
 
 DEFAULT_NORMALIZED_ROOT_WIN = Path("D:/market-data/sec_edgar_feed_normalized")
+DEFAULT_TEMP_ROOT_WIN = Path("D:/market-data/sec_edgar_feed_temp")
 
 
 @dataclass(frozen=True, slots=True)
 class PipelineDayResult:
     archive_date: str
     archive_url: str
-    archive_path: str
+    hdd_archive_path: str
+    temp_archive_path: str
     normalized_day_dir: str
     archive_bytes: int
     archive_sha256: str
@@ -54,25 +59,43 @@ class PipelineDayResult:
     header_success: int
     header_failed: int
     download_seconds: float
+    hdd_copy_seconds: float
     parse_seconds: float
     wall_seconds: float
+    archive_source: str
+    hdd_copy_status: str
+    cleanup_status: str
     status: str
     error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadedArchive:
+    job: DayJob
+    temp_archive_path: str
+    hdd_archive_path: str
+    archive_bytes: int
+    archive_sha256: str
+    download_seconds: float
+    archive_source: str
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Bounded SEC EDGAR Feed pipeline: discover real archive days, download compressed .nc.tar.gz archives, "
-            "stream-parse normalized filing/document rows, fetch accepted_at headers, and store normalized JSONL."
+            "Bounded SEC EDGAR Feed pipeline: discover real archive days, stage compressed .nc.tar.gz archives "
+            "on SSD, archive them to HDD, stream-parse normalized filing/document rows from SSD, fetch accepted_at "
+            "headers, and store normalized JSONL."
         )
     )
     parser.add_argument("--start-date", required=True, help="Inclusive archive date, YYYY-MM-DD.")
     parser.add_argument("--end-date", required=True, help="Exclusive archive date, YYYY-MM-DD.")
     parser.add_argument("--artifact-root-win", default=os.environ.get("SEC_HISTORICAL_ARTIFACT_ROOT_WIN", str(DEFAULT_ARTIFACT_ROOT_WIN)))
+    parser.add_argument("--temp-root-win", default=os.environ.get("SEC_HISTORICAL_TEMP_ROOT_WIN", str(DEFAULT_TEMP_ROOT_WIN)))
     parser.add_argument("--normalized-root-win", default=os.environ.get("SEC_HISTORICAL_NORMALIZED_ROOT_WIN", str(DEFAULT_NORMALIZED_ROOT_WIN)))
     parser.add_argument("--output-root-win", default=os.environ.get("SEC_HISTORICAL_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument("--download-concurrency", type=int, default=int(os.environ.get("SEC_DOWNLOAD_CONCURRENCY", "2")))
+    parser.add_argument("--archive-copy-concurrency", type=int, default=int(os.environ.get("SEC_ARCHIVE_COPY_CONCURRENCY", "1")))
     parser.add_argument("--header-concurrency", type=int, default=int(os.environ.get("SEC_HEADER_CONCURRENCY", "8")))
     parser.add_argument("--sec-request-min-interval-seconds", type=float, default=float(os.environ.get("SEC_REQUEST_MIN_INTERVAL_SECONDS", "0.11")))
     parser.add_argument("--request-timeout-seconds", type=float, default=float(os.environ.get("SEC_REQUEST_TIMEOUT_SECONDS", "60")))
@@ -83,7 +106,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-redownload", action="store_true", help="Redownload archives even when already present.")
     parser.add_argument("--no-header-fetch", action="store_true", help="Skip .hdr.sgml accepted_at enrichment.")
     parser.add_argument("--persist-nc-files", action="store_true", help="Also persist individual .nc files. Default streams from tar.gz only.")
-    parser.add_argument("--delete-archive-after-parse", action="store_true", help="Delete each compressed archive after successful normalized output write.")
+    parser.add_argument(
+        "--delete-archive-after-parse",
+        action="store_true",
+        help=(
+            "Delete the permanent HDD compressed archive after successful normalized output write. "
+            "SSD temp archives are always deleted after parse and verified HDD copy."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Only discover and report jobs.")
     return parser.parse_args()
 
@@ -97,10 +127,14 @@ def main() -> None:
         raise SystemExit("--end-date must be later than --start-date")
 
     artifact_root = Path(args.artifact_root_win)
+    temp_root = Path(args.temp_root_win)
     normalized_root = Path(args.normalized_root_win)
     output_root = Path(args.output_root_win)
     output_root.mkdir(parents=True, exist_ok=True)
+    temp_root.mkdir(parents=True, exist_ok=True)
     normalized_root.mkdir(parents=True, exist_ok=True)
+    if temp_root.resolve() == artifact_root.resolve():
+        raise SystemExit("--temp-root-win must be different from --artifact-root-win because temp archives are cleaned up after parsing")
     user_agent = sec_user_agent()
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     report_path = output_root / f"sec_feed_pipeline_{run_id}.jsonl"
@@ -139,10 +173,12 @@ def main() -> None:
         "start_date": args.start_date,
         "end_date": args.end_date,
         "artifact_root": str(artifact_root),
+        "temp_root": str(temp_root),
         "normalized_root": str(normalized_root),
         "output_root": str(output_root),
         "report_path": str(report_path),
         "download_concurrency": max(1, args.download_concurrency),
+        "archive_copy_concurrency": max(1, args.archive_copy_concurrency),
         "header_concurrency": max(1, args.header_concurrency),
         "sec_request_min_interval_seconds": request_min_interval,
         "limit_days": max(0, args.limit_days),
@@ -164,17 +200,25 @@ def main() -> None:
         print("dry_run=1, no archives downloaded and no normalized rows written", flush=True)
         return
 
-    run_pipeline(args, jobs, normalized_root, report_path, run_id)
+    run_pipeline(args, jobs, temp_root, normalized_root, report_path, run_id)
 
 
-def run_pipeline(args: argparse.Namespace, jobs: list[DayJob], normalized_root: Path, report_path: Path, run_id: str) -> None:
+def run_pipeline(
+    args: argparse.Namespace,
+    jobs: list[DayJob],
+    temp_root: Path,
+    normalized_root: Path,
+    report_path: Path,
+    run_id: str,
+) -> None:
     started = time.perf_counter()
     sec_request_limiter = RateLimiter(max(0.0, args.sec_request_min_interval_seconds))
     download_concurrency = max(1, args.download_concurrency)
+    archive_copy_concurrency = max(1, args.archive_copy_concurrency)
     next_index = 0
-    active: dict[concurrent.futures.Future[tuple[DayJob, float]], DayJob] = {}
+    active: dict[concurrent.futures.Future[DownloadedArchive], DayJob] = {}
     totals = {
-        "downloaded_days": 0,
+        "staged_days": 0,
         "parsed_days": 0,
         "failed_days": 0,
         "archive_bytes": 0,
@@ -182,11 +226,16 @@ def run_pipeline(args: argparse.Namespace, jobs: list[DayJob], normalized_root: 
         "documents": 0,
         "header_success": 0,
         "header_failed": 0,
+        "hdd_copied_days": 0,
+        "ssd_cleaned_days": 0,
     }
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=download_concurrency) as pool:
+    with (
+        concurrent.futures.ThreadPoolExecutor(max_workers=download_concurrency) as pool,
+        concurrent.futures.ThreadPoolExecutor(max_workers=archive_copy_concurrency) as copy_pool,
+    ):
         while next_index < len(jobs) and len(active) < download_concurrency:
-            future = pool.submit(download_one_archive, jobs[next_index], sec_request_limiter)
+            future = pool.submit(stage_archive_on_ssd, jobs[next_index], temp_root, sec_request_limiter)
             active[future] = jobs[next_index]
             next_index += 1
 
@@ -195,9 +244,9 @@ def run_pipeline(args: argparse.Namespace, jobs: list[DayJob], normalized_root: 
             for future in done:
                 job = active.pop(future)
                 try:
-                    downloaded_job, download_seconds = future.result()
-                    totals["downloaded_days"] += 1
-                    result = parse_one_archive(downloaded_job, args, normalized_root, download_seconds, sec_request_limiter)
+                    downloaded = future.result()
+                    totals["staged_days"] += 1
+                    result = parse_one_archive(downloaded, args, normalized_root, sec_request_limiter, copy_pool)
                 except Exception as exc:  # noqa: BLE001
                     result = failed_result(job, exc)
                 append_jsonl(report_path, {"type": "day", "run_id": run_id, "result": asdict(result)})
@@ -208,11 +257,13 @@ def run_pipeline(args: argparse.Namespace, jobs: list[DayJob], normalized_root: 
                     totals["documents"] += result.documents
                     totals["header_success"] += result.header_success
                     totals["header_failed"] += result.header_failed
+                    totals["hdd_copied_days"] += 1 if result.hdd_copy_status in {"ok", "existing"} else 0
+                    totals["ssd_cleaned_days"] += 1 if result.cleanup_status.startswith("ssd_deleted") else 0
                 else:
                     totals["failed_days"] += 1
                 print_progress(len(jobs), totals, started, result)
                 while next_index < len(jobs) and len(active) < download_concurrency:
-                    future = pool.submit(download_one_archive, jobs[next_index], sec_request_limiter)
+                    future = pool.submit(stage_archive_on_ssd, jobs[next_index], temp_root, sec_request_limiter)
                     active[future] = jobs[next_index]
                     next_index += 1
 
@@ -227,23 +278,129 @@ def run_pipeline(args: argparse.Namespace, jobs: list[DayJob], normalized_root: 
     print("\nsummary=" + json.dumps(summary, sort_keys=True), flush=True)
 
 
-def download_one_archive(job: DayJob, limiter: RateLimiter) -> tuple[DayJob, float]:
+def stage_archive_on_ssd(job: DayJob, temp_root: Path, limiter: RateLimiter) -> DownloadedArchive:
     started = time.perf_counter()
-    download_archive(job, limiter)
-    return job, round(time.perf_counter() - started, 3)
+    temp_archive_path = temp_archive_path_for_job(job, temp_root)
+    hdd_archive_path = Path(job.archive_path)
+    source = "sec_download"
+
+    if temp_archive_path.exists() and temp_archive_path.stat().st_size > 0 and not job.force_redownload:
+        source = "ssd_existing"
+    elif hdd_archive_path.exists() and hdd_archive_path.stat().st_size > 0 and not job.force_redownload:
+        copy_file_verified(hdd_archive_path, temp_archive_path)
+        source = "hdd_existing"
+    else:
+        stream_download_to_file(job, temp_archive_path, limiter)
+
+    return DownloadedArchive(
+        job=job,
+        temp_archive_path=str(temp_archive_path),
+        hdd_archive_path=str(hdd_archive_path),
+        archive_bytes=temp_archive_path.stat().st_size,
+        archive_sha256=sha256_file(temp_archive_path),
+        download_seconds=round(time.perf_counter() - started, 3),
+        archive_source=source,
+    )
+
+
+def stream_download_to_file(job: DayJob, target_path: Path, limiter: RateLimiter) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    part_path = target_path.with_suffix(target_path.suffix + ".part")
+    part_path.unlink(missing_ok=True)
+    headers = {
+        "User-Agent": job.user_agent,
+        "Accept-Encoding": "identity",
+        "Host": "www.sec.gov",
+    }
+    last_error = ""
+    for attempt in range(job.max_retries + 1):
+        limiter.wait()
+        req = request.Request(job.archive_url, headers=headers)
+        try:
+            with request.urlopen(req, timeout=job.request_timeout_seconds) as response, part_path.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+            part_path.replace(target_path)
+            return
+        except error.HTTPError as exc:
+            part_path.unlink(missing_ok=True)
+            last_error = f"HTTP {exc.code}: {exc.reason}"
+            if exc.code in {403, 404}:
+                raise MissingArchiveError(last_error) from exc
+            if exc.code not in RETRY_HTTP_CODES or attempt >= job.max_retries:
+                raise RuntimeError(last_error) from exc
+            retry_after = parse_retry_after(exc.headers.get("Retry-After"))
+            time.sleep(retry_after if retry_after is not None else job.retry_base_seconds * (2**attempt))
+        except Exception as exc:  # noqa: BLE001
+            part_path.unlink(missing_ok=True)
+            last_error = repr(exc)
+            if attempt >= job.max_retries:
+                raise RuntimeError(last_error) from exc
+            time.sleep(job.retry_base_seconds * (2**attempt))
+    raise RuntimeError(last_error or "archive download failed")
+
+
+def copy_archive_to_hdd(temp_archive_path: Path, hdd_archive_path: Path, expected_sha256: str) -> tuple[str, float]:
+    started = time.perf_counter()
+    if hdd_archive_path.exists() and hdd_archive_path.stat().st_size == temp_archive_path.stat().st_size:
+        if sha256_file(hdd_archive_path) == expected_sha256:
+            return "existing", round(time.perf_counter() - started, 3)
+    copy_file_verified(temp_archive_path, hdd_archive_path)
+    actual_sha256 = sha256_file(hdd_archive_path)
+    if actual_sha256 != expected_sha256:
+        hdd_archive_path.unlink(missing_ok=True)
+        raise RuntimeError(f"HDD archive checksum mismatch for {hdd_archive_path}")
+    return "ok", round(time.perf_counter() - started, 3)
+
+
+def copy_file_verified(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part_path = target.with_suffix(target.suffix + ".part")
+    part_path.unlink(missing_ok=True)
+    with source.open("rb") as src, part_path.open("wb") as dst:
+        shutil.copyfileobj(src, dst, length=1024 * 1024 * 16)
+    if part_path.stat().st_size != source.stat().st_size:
+        part_path.unlink(missing_ok=True)
+        raise RuntimeError(f"copy size mismatch: {source} -> {target}")
+    part_path.replace(target)
+
+
+def cleanup_archives(
+    temp_archive_path: Path,
+    hdd_archive_path: Path,
+    hdd_copy_status: str,
+    delete_hdd_archive_after_parse: bool,
+) -> str:
+    if hdd_copy_status not in {"ok", "existing"}:
+        return "kept_ssd_copy_not_verified"
+    temp_archive_path.unlink(missing_ok=True)
+    if delete_hdd_archive_after_parse:
+        hdd_archive_path.unlink(missing_ok=True)
+        return "ssd_deleted_hdd_deleted"
+    return "ssd_deleted"
+
+
+def temp_archive_path_for_job(job: DayJob, temp_root: Path) -> Path:
+    archive_day = parse_date(job.archive_date)
+    quarter = quarter_name(archive_day)
+    return temp_root / "archives" / f"{archive_day:%Y}" / quarter / f"{archive_day:%Y%m%d}.nc.tar.gz"
 
 
 def parse_one_archive(
-    job: DayJob,
+    downloaded: DownloadedArchive,
     args: argparse.Namespace,
     normalized_root: Path,
-    download_seconds: float,
     sec_request_limiter: RateLimiter,
+    copy_pool: concurrent.futures.ThreadPoolExecutor,
 ) -> PipelineDayResult:
     started = time.perf_counter()
-    archive_path = Path(job.archive_path)
-    archive_sha = sha256_file(archive_path)
-    archive_bytes = archive_path.stat().st_size
+    job = downloaded.job
+    temp_archive_path = Path(downloaded.temp_archive_path)
+    hdd_archive_path = Path(downloaded.hdd_archive_path)
+    copy_future = copy_pool.submit(copy_archive_to_hdd, temp_archive_path, hdd_archive_path, downloaded.archive_sha256)
     normalized_day_dir = normalized_root / job.archive_date[:4] / quarter_name(parse_date(job.archive_date)) / job.archive_date
     normalized_day_dir.mkdir(parents=True, exist_ok=True)
     submissions_path = normalized_day_dir / "submissions.jsonl"
@@ -251,33 +408,38 @@ def parse_one_archive(
     headers_path = normalized_day_dir / "headers.jsonl"
     manifest_path = normalized_day_dir / "manifest.jsonl"
 
-    parsed, documents = parse_nc_archive(job.archive_date, archive_path, Path(job.extract_dir), job.limit_files, job.persist_nc_files)
+    parsed, documents = parse_nc_archive(job.archive_date, temp_archive_path, Path(job.extract_dir), job.limit_files, job.persist_nc_files)
     timestamps = fetch_headers_for_submissions(parsed, job, sec_request_limiter)
     submission_rows = [merge_submission_timestamp(item, timestamps.get(item.accession_number)) for item in parsed]
     write_rows(submissions_path, submission_rows)
     write_rows(documents_path, [asdict(item) for item in documents])
     write_rows(headers_path, [asdict(item) for item in timestamps.values()])
     parse_seconds = round(time.perf_counter() - started, 3)
+    hdd_copy_status, hdd_copy_seconds = copy_future.result()
+    cleanup_status = cleanup_archives(temp_archive_path, hdd_archive_path, hdd_copy_status, args.delete_archive_after_parse)
 
     result = PipelineDayResult(
         archive_date=job.archive_date,
         archive_url=job.archive_url,
-        archive_path=str(archive_path),
+        hdd_archive_path=str(hdd_archive_path),
+        temp_archive_path=str(temp_archive_path),
         normalized_day_dir=str(normalized_day_dir),
-        archive_bytes=archive_bytes,
-        archive_sha256=archive_sha,
+        archive_bytes=downloaded.archive_bytes,
+        archive_sha256=downloaded.archive_sha256,
         submissions=len(parsed),
         documents=len(documents),
         header_success=sum(1 for item in timestamps.values() if item.fetch_status == "ok"),
         header_failed=sum(1 for item in timestamps.values() if item.fetch_status == "failed"),
-        download_seconds=download_seconds,
+        download_seconds=downloaded.download_seconds,
+        hdd_copy_seconds=hdd_copy_seconds,
         parse_seconds=parse_seconds,
-        wall_seconds=round(download_seconds + parse_seconds, 3),
+        wall_seconds=round(downloaded.download_seconds + max(parse_seconds, hdd_copy_seconds), 3),
+        archive_source=downloaded.archive_source,
+        hdd_copy_status=hdd_copy_status,
+        cleanup_status=cleanup_status,
         status="ok",
     )
     append_jsonl(manifest_path, {"type": "day_manifest", "result": asdict(result)})
-    if args.delete_archive_after_parse:
-        archive_path.unlink(missing_ok=True)
     return result
 
 
@@ -285,7 +447,8 @@ def failed_result(job: DayJob, exc: Exception) -> PipelineDayResult:
     return PipelineDayResult(
         archive_date=job.archive_date,
         archive_url=job.archive_url,
-        archive_path=job.archive_path,
+        hdd_archive_path=job.archive_path,
+        temp_archive_path="",
         normalized_day_dir="",
         archive_bytes=0,
         archive_sha256="",
@@ -294,8 +457,12 @@ def failed_result(job: DayJob, exc: Exception) -> PipelineDayResult:
         header_success=0,
         header_failed=0,
         download_seconds=0.0,
+        hdd_copy_seconds=0.0,
         parse_seconds=0.0,
         wall_seconds=0.0,
+        archive_source="",
+        hdd_copy_status="not_started",
+        cleanup_status="not_started",
         status="failed",
         error=f"{exc!r}\n{traceback.format_exc()}",
     )
@@ -316,9 +483,11 @@ def print_header(config: dict[str, Any]) -> None:
         "end_date",
         "job_count",
         "download_concurrency",
+        "archive_copy_concurrency",
         "header_concurrency",
         "sec_request_min_interval_seconds",
         "artifact_root",
+        "temp_root",
         "normalized_root",
         "output_root",
         "limit_days",
@@ -340,11 +509,13 @@ def print_progress(total_days: int, totals: dict[str, int], started: float, last
     print(
         "progress "
         f"{processed:,}/{total_days:,} days "
-        f"downloaded={totals['downloaded_days']:,} parsed={totals['parsed_days']:,} failed={totals['failed_days']:,} "
+        f"staged={totals['staged_days']:,} parsed={totals['parsed_days']:,} failed={totals['failed_days']:,} "
         f"archives={gib:.2f} GiB submissions={totals['submissions']:,} documents={totals['documents']:,} "
         f"headers_ok={totals['header_success']:,} headers_failed={totals['header_failed']:,} "
+        f"hdd_archived={totals['hdd_copied_days']:,} ssd_cleaned={totals['ssd_cleaned_days']:,} "
         f"last={last_result.archive_date}:{last_result.status} "
-        f"last_download={last_result.download_seconds:.1f}s last_parse={last_result.parse_seconds:.1f}s "
+        f"last_download={last_result.download_seconds:.1f}s last_copy={last_result.hdd_copy_seconds:.1f}s "
+        f"last_parse={last_result.parse_seconds:.1f}s "
         f"elapsed={elapsed:.1f}s",
         flush=True,
     )

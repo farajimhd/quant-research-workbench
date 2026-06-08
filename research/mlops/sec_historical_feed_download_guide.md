@@ -5,9 +5,11 @@ This script handles the historical SEC raw filing source that complements live S
 It has two separate modes:
 
 1. **Raw archive download**: save daily `.nc.tar.gz` archives only. No decompression, parsing, or header timestamp fetch.
-2. **Parse/enrich**: stream `.nc` members from the compressed archive, parse SGML submission containers, and fetch small `.hdr.sgml` files for `accepted_at`.
+2. **Parse/enrich**: stage the compressed archive on SSD, keep a verified compressed archive on HDD, stream `.nc` members from the SSD archive, parse SGML submission containers, and fetch small `.hdr.sgml` files for `accepted_at`.
 
 By default, parse/enrich mode does **not** expand all `.nc` files to disk. It streams each member from the `.tar.gz`. Use `--persist-nc-files` only when you intentionally want individual `.nc` artifacts written to disk.
+
+The bounded pipeline is designed for HDD archival plus SSD parsing. It downloads each daily archive to `SEC_HISTORICAL_TEMP_ROOT_WIN`, asynchronously copies the compressed archive to `SEC_HISTORICAL_ARTIFACT_ROOT_WIN`, parses from the SSD copy, writes normalized JSONL to `SEC_HISTORICAL_NORMALIZED_ROOT_WIN`, then deletes the SSD temp archive after parsing and HDD copy verification succeed.
 
 ## Required Environment
 
@@ -18,6 +20,15 @@ $env:SEC_USER_AGENT="QuantResearchWorkbench SEC historical ingest your_email@exa
 ```
 
 The script also loads `.env` from the repo through shared MLOps environment discovery. It never prints secret values.
+
+Recommended workstation roots:
+
+```powershell
+$env:SEC_HISTORICAL_ARTIFACT_ROOT_WIN="G:/market-data/sec_edgar_feed"
+$env:SEC_HISTORICAL_OUTPUT_ROOT_WIN="G:/market-data/prepared/sec_edgar_feed"
+$env:SEC_HISTORICAL_NORMALIZED_ROOT_WIN="G:/market-data/sec_edgar_feed_normalized"
+$env:SEC_HISTORICAL_TEMP_ROOT_WIN="D:/market-data/sec_edgar_feed_temp"
+```
 
 ## Script Path
 
@@ -52,6 +63,14 @@ Compressed raw archives:
 ```text
 <SEC_HISTORICAL_ARTIFACT_ROOT_WIN>\archives\YYYY\QTRN\YYYYMMDD.nc.tar.gz
 ```
+
+Temporary SSD archives used by the bounded pipeline:
+
+```text
+<SEC_HISTORICAL_TEMP_ROOT_WIN>\archives\YYYY\QTRN\YYYYMMDD.nc.tar.gz
+```
+
+These SSD temp archives are deleted after normalized output is written and the permanent HDD archive is verified. They are not the source of truth.
 
 Header timestamp artifacts:
 
@@ -91,24 +110,24 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 
 ## Bounded Download + Normalize Pipeline
 
-Use this when you want to keep compressed archives on HDD and write normalized JSONL as each day finishes. Downloads and parsing overlap, but each archive is parsed only after its `.nc.tar.gz` download is complete.
+Use this when you want to keep compressed archives on HDD and write normalized JSONL as each day finishes. Downloads, HDD copy, and parsing overlap, but each archive is parsed only after its `.nc.tar.gz` is fully staged on SSD.
 
 The pipeline keeps at most roughly `--download-concurrency` archive downloads ahead of parsing, so it does not require downloading the entire historical range before normalized output starts.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --header-concurrency 8 --sec-request-min-interval-seconds 0.11
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11
 ```
 
 Recommended smoke test:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --limit-files-per-day 20
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --archive-copy-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --limit-files-per-day 20
 ```
 
-Delete compressed archives only after a day parses successfully:
+Delete permanent HDD compressed archives only after a day parses successfully:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --delete-archive-after-parse
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --delete-archive-after-parse
 ```
 
 ## Parse From Compressed Archives
@@ -145,6 +164,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_fe
 ## Important Behavior
 
 - The daily archive is the content source.
+- In the bounded pipeline, SSD temp archives are working files and HDD archives are the retained compressed source-of-truth artifacts.
 - `.hdr.sgml` is the timestamp authority for `accepted_at`.
 - `accepted_at_edgar_raw` is parsed as EDGAR Eastern time and converted to `accepted_at_utc`.
 - The archive date is not used as the event timestamp.
