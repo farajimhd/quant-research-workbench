@@ -340,14 +340,14 @@ NEWS_BENZINGA_NORMALIZE_PROCESSES
 
 `--enrichment-processes`
 
-Worker processes for external article/PDF enrichment. Default:
+Worker threads for external article/PDF enrichment. Default:
 
 ```text
 NEWS_BENZINGA_ENRICHMENT_PROCESSES
 0
 ```
 
-`0` means `min(4, --normalize-processes)`. Keep this lower than the base lane because these workers are the ones that hit Benzinga article pages, SEC, and other external domains. The script keeps a bounded enrichment backlog of `--enrichment-processes * 4`, so a fast base lane does not create unlimited pending enrichment futures.
+`0` means `min(4, --normalize-processes)`. Keep this lower than the base lane because these workers are the ones that hit Benzinga article pages, SEC, and other external domains. Enrichment uses threads because this lane is mostly network I/O. The script keeps a bounded enrichment backlog of `--enrichment-processes * 4`, so a fast base lane does not create unlimited pending enrichment futures.
 
 `--enrichment-chunk-size`
 
@@ -358,7 +358,7 @@ NEWS_BENZINGA_ENRICHMENT_CHUNK_SIZE
 1
 ```
 
-The default is one artifact per enrichment job so progress advances per enriched article/PDF. Larger chunks reduce process scheduling overhead, but they can make progress appear stuck when the first active chunks contain slow URLs.
+The default is one artifact per enrichment job so progress advances per enriched article/PDF. Larger chunks reduce scheduling overhead, but they can make progress appear stuck when the first active chunks contain slow URLs.
 
 `--insert-concurrency`
 

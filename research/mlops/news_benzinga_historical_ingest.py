@@ -519,7 +519,7 @@ def main() -> None:
     with (
         concurrent.futures.ProcessPoolExecutor(max_workers=args.download_processes) as download_pool,
         concurrent.futures.ProcessPoolExecutor(max_workers=args.normalize_processes) as normalize_pool,
-        concurrent.futures.ProcessPoolExecutor(max_workers=args.enrichment_processes) as enrichment_pool,
+        concurrent.futures.ThreadPoolExecutor(max_workers=args.enrichment_processes) as enrichment_pool,
         concurrent.futures.ThreadPoolExecutor(max_workers=max_insert_workers) as insert_pool,
     ):
         download_futures: dict[concurrent.futures.Future[DownloadResult], BucketJob] = {}
