@@ -59,6 +59,7 @@ class PipelineDayResult:
     submissions: int
     documents: int
     header_success: int
+    header_unavailable: int
     header_failed: int
     download_seconds: float
     hdd_copy_seconds: float
@@ -249,6 +250,7 @@ def run_pipeline(
         "submissions": 0,
         "documents": 0,
         "header_success": 0,
+        "header_unavailable": 0,
         "header_failed": 0,
         "hdd_copied_days": 0,
         "ssd_cleaned_days": 0,
@@ -298,6 +300,7 @@ def run_pipeline(
                     totals["submissions"] += result.submissions
                     totals["documents"] += result.documents
                     totals["header_success"] += result.header_success
+                    totals["header_unavailable"] += result.header_unavailable
                     totals["header_failed"] += result.header_failed
                     totals["hdd_copied_days"] += 1 if result.hdd_copy_status in {"ok", "existing"} else 0
                     totals["ssd_cleaned_days"] += 1 if result.cleanup_status.startswith("ssd_deleted") else 0
@@ -681,6 +684,7 @@ def parse_one_archive(
         submissions=len(parsed),
         documents=len(documents),
         header_success=sum(1 for item in timestamps.values() if item.fetch_status == "ok"),
+        header_unavailable=sum(1 for item in timestamps.values() if item.fetch_status == "unavailable_404"),
         header_failed=sum(1 for item in timestamps.values() if item.fetch_status == "failed"),
         download_seconds=downloaded.download_seconds,
         hdd_copy_seconds=hdd_copy_seconds,
@@ -707,6 +711,7 @@ def failed_result(job: DayJob, exc: Exception, downloaded: DownloadedArchive | N
         submissions=0,
         documents=0,
         header_success=0,
+        header_unavailable=0,
         header_failed=0,
         download_seconds=downloaded.download_seconds if downloaded else 0.0,
         hdd_copy_seconds=0.0,
@@ -767,7 +772,8 @@ def print_progress(total_days: int, totals: dict[str, int], started: float, last
         f"{processed:,}/{total_days:,} days "
         f"staged={totals['staged_days']:,} parsed={totals['parsed_days']:,} failed={totals['failed_days']:,} "
         f"archives={gib:.2f} GiB submissions={totals['submissions']:,} documents={totals['documents']:,} "
-        f"headers_ok={totals['header_success']:,} headers_failed={totals['header_failed']:,} "
+        f"headers_ok={totals['header_success']:,} headers_unavailable={totals['header_unavailable']:,} "
+        f"headers_failed={totals['header_failed']:,} "
         f"hdd_archived={totals['hdd_copied_days']:,} ssd_cleaned={totals['ssd_cleaned_days']:,} "
         f"last={last_result.archive_date}:{last_result.status} "
         f"last_download={last_result.download_seconds:.1f}s last_copy={last_result.hdd_copy_seconds:.1f}s "

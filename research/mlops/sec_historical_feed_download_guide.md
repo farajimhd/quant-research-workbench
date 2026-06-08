@@ -179,6 +179,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_fe
 - The bounded pipeline prints progress while validating archives, downloading, copying, parsing `.nc` members, fetching headers, writing normalized files, and cleaning temp archives.
 - SEC archive downloads use tqdm byte progress bars by default. With multiple concurrent downloads, each active download gets its own tqdm row.
 - `.hdr.sgml` is the timestamp authority for `accepted_at`.
+- Some SEC feed entries do not expose a separate `.hdr.sgml` sidecar even though the filing directory is listed. Those rows are retained and marked with `timestamp_fetch_status="unavailable_404"` rather than counted as request failures.
 - `accepted_at_edgar_raw` is parsed as EDGAR Eastern time and converted to `accepted_at_utc`.
 - The archive date is not used as the event timestamp.
 - `FILING-DATE` is stored but should not be used for market-reaction labels.

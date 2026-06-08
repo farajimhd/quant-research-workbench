@@ -718,9 +718,10 @@ def fetch_headers_for_submissions(
                 ok = sum(1 for timestamp in output.values() if timestamp.fetch_status == "ok")
                 failed = sum(1 for timestamp in output.values() if timestamp.fetch_status == "failed")
                 missing = sum(1 for timestamp in output.values() if timestamp.fetch_status == "missing_acceptance")
+                unavailable = sum(1 for timestamp in output.values() if timestamp.fetch_status == "unavailable_404")
                 print(
                     f"{progress_label} headers: {completed:,}/{total:,} done "
-                    f"ok={ok:,} missing={missing:,} failed={failed:,} elapsed={now - started:.1f}s",
+                    f"ok={ok:,} missing={missing:,} unavailable={unavailable:,} failed={failed:,} elapsed={now - started:.1f}s",
                     flush=True,
                 )
                 last_progress = now
@@ -749,6 +750,10 @@ def fetch_header_timestamp(submission: ParsedSubmission, job: DayJob | ExistingD
             fetch_status="ok" if accepted_raw else "missing_acceptance",
             fetch_error="",
         )
+    except RuntimeError as exc:
+        if "HTTP 404" in str(exc):
+            return unavailable_header(submission.accession_number, repr(exc))
+        return failed_header(submission.accession_number, repr(exc))
     except Exception as exc:  # noqa: BLE001
         return failed_header(submission.accession_number, repr(exc))
 
@@ -765,6 +770,22 @@ def failed_header(accession: str, error_text: str) -> HeaderTimestamp:
         accepted_at_utc="",
         timestamp_source="missing",
         fetch_status="failed",
+        fetch_error=error_text,
+    )
+
+
+def unavailable_header(accession: str, error_text: str) -> HeaderTimestamp:
+    return HeaderTimestamp(
+        accession_number=accession,
+        header_url=hdr_url_for_accession(accession),
+        hdr_artifact_path="",
+        hdr_byte_size=0,
+        hdr_sha256="",
+        accepted_at_edgar_raw="",
+        accepted_at_et="",
+        accepted_at_utc="",
+        timestamp_source="unavailable_404",
+        fetch_status="unavailable_404",
         fetch_error=error_text,
     )
 
