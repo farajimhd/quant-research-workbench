@@ -8,8 +8,10 @@ import os
 import shutil
 import sys
 import tarfile
+import threading
 import time
 import traceback
+from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -87,6 +89,115 @@ class ArchiveIntegrityError(RuntimeError):
     pass
 
 
+class ProgressDisplay:
+    def __init__(self, mode: str, log_lines: int) -> None:
+        self.mode = mode
+        self.log_lines = max(5, log_lines)
+        self._lock = threading.RLock()
+        self._logs: deque[str] = deque(maxlen=self.log_lines)
+        self._task_ids: dict[str, int] = {}
+        self._rich = False
+        self._live: Any = None
+        self._progress: Any = None
+        self._layout: Any = None
+
+    def __enter__(self) -> "ProgressDisplay":
+        if self.mode in {"auto", "rich"}:
+            try:
+                from rich.console import Group
+                from rich.live import Live
+                from rich.panel import Panel
+                from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn
+                from rich.text import Text
+            except ImportError:
+                if self.mode == "rich":
+                    raise
+            else:
+                self._rich = True
+                self._text_cls = Text
+                self._panel_cls = Panel
+                self._group_cls = Group
+                self._progress = Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold]{task.description}"),
+                    BarColumn(),
+                    TaskProgressColumn(),
+                    TextColumn("{task.fields[detail]}"),
+                    TimeElapsedColumn(),
+                    expand=True,
+                )
+                self._layout = Group(
+                    Panel(self._progress, title="Long-running progress", border_style="cyan"),
+                    Panel(self._text_cls(""), title="Logs (oldest to newest)", border_style="white"),
+                )
+                self._live = Live(self._layout, refresh_per_second=4, transient=False)
+                self._live.start()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self._live is not None:
+            self._live.stop()
+
+    @property
+    def rich_active(self) -> bool:
+        return self._rich
+
+    def log(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"{timestamp} {message}"
+        with self._lock:
+            if self._rich:
+                self._logs.append(line)
+                self._refresh()
+            else:
+                print(line, flush=True)
+
+    def task_start(self, key: str, description: str, total: int | float | None = None, detail: str = "") -> None:
+        with self._lock:
+            if not self._rich or self._progress is None:
+                return
+            if key in self._task_ids:
+                task_id = self._task_ids[key]
+                self._progress.update(task_id, description=description, total=total, completed=0, detail=detail, visible=True)
+            else:
+                self._task_ids[key] = self._progress.add_task(description, total=total, detail=detail)
+            self._refresh()
+
+    def task_update(
+        self,
+        key: str,
+        advance: int | float = 0,
+        completed: int | float | None = None,
+        total: int | float | None = None,
+        detail: str | None = None,
+    ) -> None:
+        with self._lock:
+            if not self._rich or self._progress is None or key not in self._task_ids:
+                return
+            kwargs: dict[str, Any] = {}
+            if completed is not None:
+                kwargs["completed"] = completed
+            if total is not None:
+                kwargs["total"] = total
+            if detail is not None:
+                kwargs["detail"] = detail
+            self._progress.update(self._task_ids[key], advance=advance, **kwargs)
+            self._refresh()
+
+    def task_stop(self, key: str, detail: str = "") -> None:
+        with self._lock:
+            if not self._rich or self._progress is None or key not in self._task_ids:
+                return
+            self._progress.update(self._task_ids[key], detail=detail, visible=False)
+            self._refresh()
+
+    def _refresh(self) -> None:
+        if not self._rich:
+            return
+        log_text = self._text_cls("\n".join(self._logs) if self._logs else "No log messages yet.")
+        self._layout.renderables[1] = self._panel_cls(log_text, title="Logs (oldest to newest)", border_style="white")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -111,6 +222,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-interval-seconds", type=float, default=float(os.environ.get("SEC_PROGRESS_INTERVAL_SECONDS", "10")))
     parser.add_argument("--progress-file-interval-mib", type=float, default=float(os.environ.get("SEC_PROGRESS_FILE_INTERVAL_MIB", "64")))
     parser.add_argument("--progress-record-interval", type=int, default=int(os.environ.get("SEC_PROGRESS_RECORD_INTERVAL", "500")))
+    parser.add_argument(
+        "--progress-layout",
+        choices=["auto", "rich", "text"],
+        default=os.environ.get("SEC_PROGRESS_LAYOUT", "auto"),
+        help="Console progress layout. auto uses Rich when installed; text keeps plain logs/tqdm.",
+    )
+    parser.add_argument("--progress-log-lines", type=int, default=int(os.environ.get("SEC_PROGRESS_LOG_LINES", "24")))
     parser.set_defaults(download_progress_bars=parse_bool_env("SEC_DOWNLOAD_PROGRESS_BARS", True))
     progress_bar_group = parser.add_mutually_exclusive_group()
     progress_bar_group.add_argument("--download-progress-bars", dest="download_progress_bars", action="store_true", help="Show tqdm progress bars for SEC archive downloads.")
@@ -134,7 +252,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    loaded_env_files = load_env_files(discover_env_files(REPO_ROOT))
+    loaded_env_files = load_env_files(discover_env_files(REPO_ROOT), verbose=False)
     start_date = parse_date(args.start_date)
     end_date = parse_date(args.end_date)
     if end_date <= start_date:
@@ -201,6 +319,8 @@ def main() -> None:
         "progress_interval_seconds": progress_interval,
         "progress_file_interval_mib": progress_file_interval_mib,
         "progress_record_interval": progress_record_interval,
+        "progress_layout": args.progress_layout,
+        "progress_log_lines": max(5, args.progress_log_lines),
         "download_progress_bars": bool(args.download_progress_bars),
         "limit_days": max(0, args.limit_days),
         "limit_files_per_day": max(0, args.limit_files_per_day),
@@ -212,16 +332,18 @@ def main() -> None:
         "secret_status": secret_status(["SEC_USER_AGENT", "SEC_EDGAR_USER_AGENT", "NEWS_SEC_USER_AGENT"]),
         "loaded_env_files": [str(path) for path in loaded_env_files],
     }
-    print_header(config)
     append_jsonl(report_path, config)
 
-    if args.dry_run:
-        for job in jobs:
-            append_jsonl(report_path, {"type": "planned_job", "run_id": run_id, "job": asdict(job)})
-        print("dry_run=1, no archives downloaded and no normalized rows written", flush=True)
-        return
+    with ProgressDisplay(args.progress_layout, args.progress_log_lines) as progress:
+        print_header(config, progress)
 
-    run_pipeline(args, jobs, temp_root, normalized_root, report_path, run_id)
+        if args.dry_run:
+            for job in jobs:
+                append_jsonl(report_path, {"type": "planned_job", "run_id": run_id, "job": asdict(job)})
+            progress.log("dry_run=1, no archives downloaded and no normalized rows written")
+            return
+
+        run_pipeline(args, jobs, temp_root, normalized_root, report_path, run_id, progress)
 
 
 def run_pipeline(
@@ -231,6 +353,7 @@ def run_pipeline(
     normalized_root: Path,
     report_path: Path,
     run_id: str,
+    progress: ProgressDisplay,
 ) -> None:
     started = time.perf_counter()
     sec_request_limiter = RateLimiter(max(0.0, args.sec_request_min_interval_seconds))
@@ -262,7 +385,7 @@ def run_pipeline(
     ):
         while next_index < len(jobs) and len(active) < download_concurrency:
             slot = available_download_slots.pop(0)
-            print(f"[{jobs[next_index].archive_date}] queued for SSD staging", flush=True)
+            progress.log(f"[{jobs[next_index].archive_date}] queued for SSD staging")
             future = pool.submit(
                 stage_archive_on_ssd,
                 jobs[next_index],
@@ -273,6 +396,7 @@ def run_pipeline(
                 progress_record_interval,
                 bool(args.download_progress_bars),
                 slot,
+                progress,
             )
             active[future] = (jobs[next_index], slot)
             next_index += 1
@@ -290,7 +414,7 @@ def run_pipeline(
                     result = failed_result(job, exc)
                 else:
                     try:
-                        result = parse_one_archive(downloaded, args, normalized_root, sec_request_limiter, copy_pool)
+                        result = parse_one_archive(downloaded, args, normalized_root, sec_request_limiter, copy_pool, progress)
                     except Exception as exc:  # noqa: BLE001
                         result = failed_result(downloaded.job, exc, downloaded)
                 append_jsonl(report_path, {"type": "day", "run_id": run_id, "result": asdict(result)})
@@ -306,10 +430,10 @@ def run_pipeline(
                     totals["ssd_cleaned_days"] += 1 if result.cleanup_status.startswith("ssd_deleted") else 0
                 else:
                     totals["failed_days"] += 1
-                print_progress(len(jobs), totals, started, result)
+                print_progress(len(jobs), totals, started, result, progress)
                 while next_index < len(jobs) and len(active) < download_concurrency:
                     slot = available_download_slots.pop(0)
-                    print(f"[{jobs[next_index].archive_date}] queued for SSD staging", flush=True)
+                    progress.log(f"[{jobs[next_index].archive_date}] queued for SSD staging")
                     future = pool.submit(
                         stage_archive_on_ssd,
                         jobs[next_index],
@@ -320,6 +444,7 @@ def run_pipeline(
                         progress_record_interval,
                         bool(args.download_progress_bars),
                         slot,
+                        progress,
                     )
                     active[future] = (jobs[next_index], slot)
                     next_index += 1
@@ -332,7 +457,7 @@ def run_pipeline(
         **totals,
     }
     append_jsonl(report_path, summary)
-    print("\nsummary=" + json.dumps(summary, sort_keys=True), flush=True)
+    progress.log("summary=" + json.dumps(summary, sort_keys=True))
 
 
 def stage_archive_on_ssd(
@@ -344,38 +469,40 @@ def stage_archive_on_ssd(
     progress_record_interval: int,
     download_progress_bars: bool,
     progress_position: int,
+    progress: ProgressDisplay,
 ) -> DownloadedArchive:
     started = time.perf_counter()
     temp_archive_path = temp_archive_path_for_job(job, temp_root)
     hdd_archive_path = Path(job.archive_path)
     source = "sec_download"
     label = f"[{job.archive_date}]"
-    print(f"{label} staging: temp={temp_archive_path} hdd={hdd_archive_path}", flush=True)
+    progress.log(f"{label} staging: temp={temp_archive_path} hdd={hdd_archive_path}")
 
     if temp_archive_path.exists() and temp_archive_path.stat().st_size > 0 and not job.force_redownload:
         try:
-            print(f"{label} staging: validating existing SSD temp archive ({format_bytes(temp_archive_path.stat().st_size)})", flush=True)
-            validate_archive_integrity(temp_archive_path, f"{label} validate-ssd", progress_record_interval, progress_interval_seconds)
+            progress.log(f"{label} staging: validating existing SSD temp archive ({format_bytes(temp_archive_path.stat().st_size)})")
+            validate_archive_integrity(temp_archive_path, f"{label} validate-ssd", progress_record_interval, progress_interval_seconds, progress)
             source = "ssd_existing"
         except ArchiveIntegrityError:
-            print(f"{label} staging: deleting corrupt SSD temp archive", flush=True)
+            progress.log(f"{label} staging: deleting corrupt SSD temp archive")
             temp_archive_path.unlink(missing_ok=True)
 
     if not temp_archive_path.exists() and hdd_archive_path.exists() and hdd_archive_path.stat().st_size > 0 and not job.force_redownload:
         try:
-            print(f"{label} staging: validating existing HDD archive ({format_bytes(hdd_archive_path.stat().st_size)})", flush=True)
-            validate_archive_integrity(hdd_archive_path, f"{label} validate-hdd", progress_record_interval, progress_interval_seconds)
+            progress.log(f"{label} staging: validating existing HDD archive ({format_bytes(hdd_archive_path.stat().st_size)})")
+            validate_archive_integrity(hdd_archive_path, f"{label} validate-hdd", progress_record_interval, progress_interval_seconds, progress)
             copy_file_verified(
                 hdd_archive_path,
                 temp_archive_path,
                 f"{label} copy-hdd-to-ssd",
                 progress_file_interval_bytes,
                 progress_interval_seconds,
+                progress,
             )
-            validate_archive_integrity(temp_archive_path, f"{label} validate-ssd", progress_record_interval, progress_interval_seconds)
+            validate_archive_integrity(temp_archive_path, f"{label} validate-ssd", progress_record_interval, progress_interval_seconds, progress)
             source = "hdd_existing"
         except ArchiveIntegrityError:
-            print(f"{label} staging: deleting corrupt cached archive and redownloading", flush=True)
+            progress.log(f"{label} staging: deleting corrupt cached archive and redownloading")
             hdd_archive_path.unlink(missing_ok=True)
             temp_archive_path.unlink(missing_ok=True)
 
@@ -388,14 +515,12 @@ def stage_archive_on_ssd(
             progress_interval_seconds,
             download_progress_bars,
             progress_position,
+            progress,
         )
-        validate_archive_integrity(temp_archive_path, f"{label} validate-download", progress_record_interval, progress_interval_seconds)
+        validate_archive_integrity(temp_archive_path, f"{label} validate-download", progress_record_interval, progress_interval_seconds, progress)
 
     elapsed = round(time.perf_counter() - started, 3)
-    print(
-        f"{label} staging: ready source={source} size={format_bytes(temp_archive_path.stat().st_size)} elapsed={elapsed:.1f}s",
-        flush=True,
-    )
+    progress.log(f"{label} staging: ready source={source} size={format_bytes(temp_archive_path.stat().st_size)} elapsed={elapsed:.1f}s")
     return DownloadedArchive(
         job=job,
         temp_archive_path=str(temp_archive_path),
@@ -415,6 +540,7 @@ def stream_download_to_file(
     progress_interval_seconds: float,
     download_progress_bars: bool,
     progress_position: int,
+    progress: ProgressDisplay,
 ) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     part_path = target_path.with_suffix(target_path.suffix + ".part")
@@ -436,18 +562,26 @@ def stream_download_to_file(
                 expected_length = response.headers.get("Content-Length")
                 expected_bytes = int(expected_length) if expected_length else 0
                 written = 0
+                task_key = f"{job.archive_date}:download:{attempt}"
+                use_structured_download_bar = download_progress_bars and progress.rich_active
                 bar = make_download_bar(
-                    enabled=download_progress_bars,
+                    enabled=download_progress_bars and not progress.rich_active,
                     archive_date=job.archive_date,
                     attempt=attempt + 1,
                     max_attempts=job.max_retries + 1,
                     total_bytes=expected_bytes,
                     position=progress_position,
                 )
-                print(
+                if use_structured_download_bar:
+                    progress.task_start(
+                        task_key,
+                        f"{job.archive_date} download {attempt + 1}/{job.max_retries + 1}",
+                        total=expected_bytes or None,
+                        detail=format_bytes(expected_bytes) if expected_bytes else "unknown size",
+                    )
+                progress.log(
                     f"[{job.archive_date}] download: attempt={attempt + 1}/{job.max_retries + 1} "
-                    f"expected={format_bytes(expected_bytes) if expected_bytes else 'unknown'} target={target_path}",
-                    flush=True,
+                    f"expected={format_bytes(expected_bytes) if expected_bytes else 'unknown'} target={target_path}"
                 )
                 try:
                     while True:
@@ -458,29 +592,33 @@ def stream_download_to_file(
                         written += len(chunk)
                         if bar is not None:
                             bar.update(len(chunk))
+                        if use_structured_download_bar:
+                            progress.task_update(
+                                task_key,
+                                advance=len(chunk),
+                                detail=f"{format_bytes(written)}" + (f" / {format_bytes(expected_bytes)}" if expected_bytes else ""),
+                            )
                         now = time.perf_counter()
-                        if bar is None and (
+                        if bar is None and not progress.rich_active and (
                             written - last_reported_bytes >= progress_file_interval_bytes
                             or now - last_progress >= progress_interval_seconds
                         ):
                             pct = f" {written / expected_bytes:.1%}" if expected_bytes else ""
-                            print(
+                            progress.log(
                                 f"[{job.archive_date}] download: {format_bytes(written)}{pct} elapsed={now - started:.1f}s",
-                                flush=True,
                             )
                             last_progress = now
                             last_reported_bytes = written
                 finally:
                     if bar is not None:
                         bar.close()
+                    if use_structured_download_bar:
+                        progress.task_stop(task_key, detail=f"complete {format_bytes(written)}")
             if expected_length and written != int(expected_length):
                 part_path.unlink(missing_ok=True)
                 raise RuntimeError(f"incomplete archive download: expected {expected_length} bytes, wrote {written} bytes")
             part_path.replace(target_path)
-            print(
-                f"[{job.archive_date}] download: complete size={format_bytes(written)} elapsed={time.perf_counter() - started:.1f}s",
-                flush=True,
-            )
+            progress.log(f"[{job.archive_date}] download: complete size={format_bytes(written)} elapsed={time.perf_counter() - started:.1f}s")
             return
         except error.HTTPError as exc:
             part_path.unlink(missing_ok=True)
@@ -505,26 +643,40 @@ def validate_archive_integrity(
     progress_label: str = "",
     progress_every: int = 500,
     progress_interval_seconds: float = 10.0,
+    progress: ProgressDisplay | None = None,
 ) -> int:
     try:
         nc_members = 0
         started = time.perf_counter()
         last_progress = started
+        task_key = f"{progress_label}:validate"
+        if progress is not None and progress_label:
+            progress.task_start(task_key, progress_label, total=None, detail="scanning .nc members")
         with tarfile.open(archive_path, "r:gz") as tar:
             for member in tar:
                 if member.isfile() and member.name.lower().endswith(".nc"):
                     nc_members += 1
+                    if progress is not None and progress_label:
+                        progress.task_update(task_key, advance=1, detail=f"{nc_members:,} .nc members")
                     now = time.perf_counter()
                     if progress_label and (
                         (progress_every > 0 and nc_members % progress_every == 0)
                         or now - last_progress >= progress_interval_seconds
                     ):
-                        print(f"{progress_label}: {nc_members:,} .nc members scanned elapsed={now - started:.1f}s", flush=True)
+                        if progress is not None:
+                            progress.log(f"{progress_label}: {nc_members:,} .nc members scanned elapsed={now - started:.1f}s")
+                        else:
+                            print(f"{progress_label}: {nc_members:,} .nc members scanned elapsed={now - started:.1f}s", flush=True)
                         last_progress = now
         if nc_members <= 0:
             raise ArchiveIntegrityError(f"archive contains no .nc members: {archive_path}")
         if progress_label:
-            print(f"{progress_label}: complete members={nc_members:,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
+            message = f"{progress_label}: complete members={nc_members:,} elapsed={time.perf_counter() - started:.1f}s"
+            if progress is not None:
+                progress.log(message)
+                progress.task_stop(task_key, detail=f"{nc_members:,} members")
+            else:
+                print(message, flush=True)
         return nc_members
     except (EOFError, gzip.BadGzipFile, tarfile.TarError, OSError) as exc:
         raise ArchiveIntegrityError(f"invalid SEC feed archive {archive_path}: {exc!r}") from exc
@@ -537,20 +689,27 @@ def copy_archive_to_hdd(
     progress_label: str = "",
     progress_file_interval_bytes: int = 64 * 1024 * 1024,
     progress_interval_seconds: float = 10.0,
+    progress: ProgressDisplay | None = None,
 ) -> tuple[str, float]:
     started = time.perf_counter()
     if hdd_archive_path.exists() and hdd_archive_path.stat().st_size == temp_archive_path.stat().st_size:
         if sha256_file(hdd_archive_path) == expected_sha256:
             if progress_label:
-                print(f"{progress_label}: HDD archive already verified", flush=True)
+                if progress is not None:
+                    progress.log(f"{progress_label}: HDD archive already verified")
+                else:
+                    print(f"{progress_label}: HDD archive already verified", flush=True)
             return "existing", round(time.perf_counter() - started, 3)
-    copy_file_verified(temp_archive_path, hdd_archive_path, progress_label, progress_file_interval_bytes, progress_interval_seconds)
+    copy_file_verified(temp_archive_path, hdd_archive_path, progress_label, progress_file_interval_bytes, progress_interval_seconds, progress)
     actual_sha256 = sha256_file(hdd_archive_path)
     if actual_sha256 != expected_sha256:
         hdd_archive_path.unlink(missing_ok=True)
         raise RuntimeError(f"HDD archive checksum mismatch for {hdd_archive_path}")
     if progress_label:
-        print(f"{progress_label}: complete elapsed={time.perf_counter() - started:.1f}s", flush=True)
+        if progress is not None:
+            progress.log(f"{progress_label}: complete elapsed={time.perf_counter() - started:.1f}s")
+        else:
+            print(f"{progress_label}: complete elapsed={time.perf_counter() - started:.1f}s", flush=True)
     return "ok", round(time.perf_counter() - started, 3)
 
 
@@ -560,6 +719,7 @@ def copy_file_verified(
     progress_label: str = "",
     progress_file_interval_bytes: int = 64 * 1024 * 1024,
     progress_interval_seconds: float = 10.0,
+    progress: ProgressDisplay | None = None,
 ) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     part_path = target.with_suffix(target.suffix + ".part")
@@ -570,7 +730,11 @@ def copy_file_verified(
     last_progress = started
     last_reported_bytes = 0
     if progress_label:
-        print(f"{progress_label}: copying {format_bytes(total_bytes)} {source} -> {target}", flush=True)
+        if progress is not None:
+            progress.log(f"{progress_label}: copying {format_bytes(total_bytes)} {source} -> {target}")
+            progress.task_start(progress_label, progress_label, total=total_bytes, detail=format_bytes(total_bytes))
+        else:
+            print(f"{progress_label}: copying {format_bytes(total_bytes)} {source} -> {target}", flush=True)
     with source.open("rb") as src, part_path.open("wb") as dst:
         while True:
             chunk = src.read(1024 * 1024 * 16)
@@ -578,15 +742,18 @@ def copy_file_verified(
                 break
             dst.write(chunk)
             copied += len(chunk)
+            if progress is not None and progress_label:
+                progress.task_update(progress_label, advance=len(chunk), detail=f"{format_bytes(copied)} / {format_bytes(total_bytes)}")
             now = time.perf_counter()
             if progress_label and (
                 copied - last_reported_bytes >= progress_file_interval_bytes
                 or now - last_progress >= progress_interval_seconds
             ):
-                print(
-                    f"{progress_label}: {format_bytes(copied)} {copied / total_bytes:.1%} elapsed={now - started:.1f}s",
-                    flush=True,
-                )
+                message = f"{progress_label}: {format_bytes(copied)} {copied / total_bytes:.1%} elapsed={now - started:.1f}s"
+                if progress is not None:
+                    progress.log(message)
+                else:
+                    print(message, flush=True)
                 last_progress = now
                 last_reported_bytes = copied
     if part_path.stat().st_size != source.stat().st_size:
@@ -594,7 +761,11 @@ def copy_file_verified(
         raise RuntimeError(f"copy size mismatch: {source} -> {target}")
     part_path.replace(target)
     if progress_label:
-        print(f"{progress_label}: copied {format_bytes(copied)} elapsed={time.perf_counter() - started:.1f}s", flush=True)
+        if progress is not None:
+            progress.log(f"{progress_label}: copied {format_bytes(copied)} elapsed={time.perf_counter() - started:.1f}s")
+            progress.task_stop(progress_label, detail=f"copied {format_bytes(copied)}")
+        else:
+            print(f"{progress_label}: copied {format_bytes(copied)} elapsed={time.perf_counter() - started:.1f}s", flush=True)
 
 
 def cleanup_archives(
@@ -624,6 +795,7 @@ def parse_one_archive(
     normalized_root: Path,
     sec_request_limiter: RateLimiter,
     copy_pool: concurrent.futures.ThreadPoolExecutor,
+    progress: ProgressDisplay,
 ) -> PipelineDayResult:
     started = time.perf_counter()
     job = downloaded.job
@@ -633,7 +805,7 @@ def parse_one_archive(
     progress_interval = max(1.0, args.progress_interval_seconds)
     progress_file_interval_bytes = int(max(1.0, args.progress_file_interval_mib) * 1024 * 1024)
     progress_record_interval = max(1, args.progress_record_interval)
-    print(f"{label} day: start parse/write pipeline source={downloaded.archive_source}", flush=True)
+    progress.log(f"{label} day: start parse/write pipeline source={downloaded.archive_source}")
     copy_future = copy_pool.submit(
         copy_archive_to_hdd,
         temp_archive_path,
@@ -642,6 +814,7 @@ def parse_one_archive(
         f"{label} copy-ssd-to-hdd",
         progress_file_interval_bytes,
         progress_interval,
+        progress,
     )
     normalized_day_dir = normalized_root / job.archive_date[:4] / quarter_name(parse_date(job.archive_date)) / job.archive_date
     normalized_day_dir.mkdir(parents=True, exist_ok=True)
@@ -659,19 +832,28 @@ def parse_one_archive(
         f"{label}",
         progress_record_interval,
         progress_interval,
+        progress,
     )
-    timestamps = fetch_headers_for_submissions(parsed, job, sec_request_limiter, f"{label}", max(1, progress_record_interval // 2), progress_interval)
+    timestamps = fetch_headers_for_submissions(
+        parsed,
+        job,
+        sec_request_limiter,
+        f"{label}",
+        max(1, progress_record_interval // 2),
+        progress_interval,
+        progress,
+    )
     submission_rows = [merge_submission_timestamp(item, timestamps.get(item.accession_number)) for item in parsed]
-    print(f"{label} write: submissions={len(submission_rows):,} documents={len(documents):,} headers={len(timestamps):,}", flush=True)
+    progress.log(f"{label} write: submissions={len(submission_rows):,} documents={len(documents):,} headers={len(timestamps):,}")
     write_rows(submissions_path, submission_rows)
     write_rows(documents_path, [asdict(item) for item in documents])
     write_rows(headers_path, [asdict(item) for item in timestamps.values()])
-    print(f"{label} write: normalized files written to {normalized_day_dir}", flush=True)
+    progress.log(f"{label} write: normalized files written to {normalized_day_dir}")
     parse_seconds = round(time.perf_counter() - started, 3)
     hdd_copy_status, hdd_copy_seconds = copy_future.result()
-    print(f"{label} copy: hdd_status={hdd_copy_status} copy_seconds={hdd_copy_seconds:.1f}", flush=True)
+    progress.log(f"{label} copy: hdd_status={hdd_copy_status} copy_seconds={hdd_copy_seconds:.1f}")
     cleanup_status = cleanup_archives(temp_archive_path, hdd_archive_path, hdd_copy_status, args.delete_archive_after_parse)
-    print(f"{label} cleanup: {cleanup_status}", flush=True)
+    progress.log(f"{label} cleanup: {cleanup_status}")
 
     result = PipelineDayResult(
         archive_date=job.archive_date,
@@ -731,9 +913,8 @@ def append_jsonl(path: Path, row: dict[str, Any]) -> None:
         handle.write(json.dumps(row, separators=(",", ":"), ensure_ascii=False) + "\n")
 
 
-def print_header(config: dict[str, Any]) -> None:
-    print("=" * 112, flush=True)
-    print("SEC EDGAR bounded historical pipeline", flush=True)
+def print_header(config: dict[str, Any], progress: ProgressDisplay) -> None:
+    progress.log("SEC EDGAR bounded historical pipeline")
     for key in [
         "run_id",
         "start_date",
@@ -757,17 +938,22 @@ def print_header(config: dict[str, Any]) -> None:
         "delete_archive_after_parse",
         "no_header_fetch",
     ]:
-        print(f"{key}={config.get(key)}", flush=True)
-    print(f"secret_status={config.get('secret_status')}", flush=True)
-    print(f"loaded_env_files={config.get('loaded_env_files')}", flush=True)
-    print("=" * 112, flush=True)
+        progress.log(f"{key}={config.get(key)}")
+    progress.log(f"secret_status={config.get('secret_status')}")
+    progress.log(f"loaded_env_files={config.get('loaded_env_files')}")
 
 
-def print_progress(total_days: int, totals: dict[str, int], started: float, last_result: PipelineDayResult) -> None:
+def print_progress(
+    total_days: int,
+    totals: dict[str, int],
+    started: float,
+    last_result: PipelineDayResult,
+    progress: ProgressDisplay,
+) -> None:
     elapsed = max(0.001, time.perf_counter() - started)
     processed = totals["parsed_days"] + totals["failed_days"]
     gib = totals["archive_bytes"] / (1024**3)
-    print(
+    progress.log(
         "progress "
         f"{processed:,}/{total_days:,} days "
         f"staged={totals['staged_days']:,} parsed={totals['parsed_days']:,} failed={totals['failed_days']:,} "
@@ -779,7 +965,6 @@ def print_progress(total_days: int, totals: dict[str, int], started: float, last
         f"last_download={last_result.download_seconds:.1f}s last_copy={last_result.hdd_copy_seconds:.1f}s "
         f"last_parse={last_result.parse_seconds:.1f}s "
         f"elapsed={elapsed:.1f}s",
-        flush=True,
     )
 
 

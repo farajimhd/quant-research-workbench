@@ -545,6 +545,7 @@ def parse_nc_archive(
     progress_label: str = "",
     progress_every: int = 500,
     progress_interval_seconds: float = 10.0,
+    progress: Any = None,
 ) -> tuple[list[ParsedSubmission], list[ParsedDocument]]:
     if persist_nc_files:
         extract_dir.mkdir(parents=True, exist_ok=True)
@@ -560,7 +561,11 @@ def parse_nc_archive(
             members = members[:limit_files]
         total_members = len(members)
         if progress_label:
-            print(f"{progress_label} parse: discovered {total_members:,} .nc members", flush=True)
+            if progress is not None:
+                progress.log(f"{progress_label} parse: discovered {total_members:,} .nc members")
+                progress.task_start(f"{progress_label}:parse", f"{progress_label} parse", total=total_members, detail="0 members")
+            else:
+                print(f"{progress_label} parse: discovered {total_members:,} .nc members", flush=True)
         for index, member in enumerate(members, start=1):
             handle = tar.extractfile(member)
             if handle is None:
@@ -578,18 +583,29 @@ def parse_nc_archive(
             submission, docs = parse_nc_bytes(archive_date, artifact_path, raw)
             submissions.append(submission)
             documents.extend(docs)
+            if progress is not None and progress_label:
+                progress.task_update(
+                    f"{progress_label}:parse",
+                    completed=index,
+                    detail=f"{index:,}/{total_members:,} members, docs={len(documents):,}",
+                )
             now = time.perf_counter()
             if progress_label and (
                 index == total_members
                 or (progress_every > 0 and index % progress_every == 0)
                 or now - last_progress >= progress_interval_seconds
             ):
-                print(
+                message = (
                     f"{progress_label} parse: {index:,}/{total_members:,} members "
-                    f"submissions={len(submissions):,} documents={len(documents):,} elapsed={now - started:.1f}s",
-                    flush=True,
+                    f"submissions={len(submissions):,} documents={len(documents):,} elapsed={now - started:.1f}s"
                 )
+                if progress is not None:
+                    progress.log(message)
+                else:
+                    print(message, flush=True)
                 last_progress = now
+        if progress is not None and progress_label:
+            progress.task_stop(f"{progress_label}:parse", detail=f"{len(submissions):,} submissions")
     return submissions, documents
 
 
@@ -675,10 +691,14 @@ def fetch_headers_for_submissions(
     progress_label: str = "",
     progress_every: int = 200,
     progress_interval_seconds: float = 10.0,
+    progress: Any = None,
 ) -> dict[str, HeaderTimestamp]:
     if job.no_header_fetch:
         if progress_label:
-            print(f"{progress_label} headers: skipped for {len(submissions):,} submissions", flush=True)
+            if progress is not None:
+                progress.log(f"{progress_label} headers: skipped for {len(submissions):,} submissions")
+            else:
+                print(f"{progress_label} headers: skipped for {len(submissions):,} submissions", flush=True)
         return {
             item.accession_number: HeaderTimestamp(
                 accession_number=item.accession_number,
@@ -700,7 +720,11 @@ def fetch_headers_for_submissions(
     started = time.perf_counter()
     last_progress = started
     if progress_label:
-        print(f"{progress_label} headers: fetching accepted_at for {total:,} submissions", flush=True)
+        if progress is not None:
+            progress.log(f"{progress_label} headers: fetching accepted_at for {total:,} submissions")
+            progress.task_start(f"{progress_label}:headers", f"{progress_label} headers", total=total, detail="0 fetched")
+        else:
+            print(f"{progress_label} headers: fetching accepted_at for {total:,} submissions", flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=job.header_concurrency) as pool:
         futures = {pool.submit(fetch_header_timestamp, item, job, limiter): item for item in submissions}
         for completed, future in enumerate(concurrent.futures.as_completed(futures), start=1):
@@ -709,6 +733,8 @@ def fetch_headers_for_submissions(
                 output[item.accession_number] = future.result()
             except Exception as exc:  # noqa: BLE001
                 output[item.accession_number] = failed_header(item.accession_number, repr(exc))
+            if progress is not None and progress_label:
+                progress.task_update(f"{progress_label}:headers", completed=completed, detail=f"{completed:,}/{total:,} fetched")
             now = time.perf_counter()
             if progress_label and (
                 completed == total
@@ -719,12 +745,17 @@ def fetch_headers_for_submissions(
                 failed = sum(1 for timestamp in output.values() if timestamp.fetch_status == "failed")
                 missing = sum(1 for timestamp in output.values() if timestamp.fetch_status == "missing_acceptance")
                 unavailable = sum(1 for timestamp in output.values() if timestamp.fetch_status == "unavailable_404")
-                print(
+                message = (
                     f"{progress_label} headers: {completed:,}/{total:,} done "
-                    f"ok={ok:,} missing={missing:,} unavailable={unavailable:,} failed={failed:,} elapsed={now - started:.1f}s",
-                    flush=True,
+                    f"ok={ok:,} missing={missing:,} unavailable={unavailable:,} failed={failed:,} elapsed={now - started:.1f}s"
                 )
+                if progress is not None:
+                    progress.log(message)
+                else:
+                    print(message, flush=True)
                 last_progress = now
+    if progress is not None and progress_label:
+        progress.task_stop(f"{progress_label}:headers", detail=f"{len(output):,} fetched")
     return output
 
 
