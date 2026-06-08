@@ -112,6 +112,8 @@ class DownloadProgressDisplay:
         refresh_per_second: float,
         panel_rows: int,
         worker_columns: int,
+        total_jobs: int,
+        total_bytes: int,
     ) -> None:
         self.mode = mode
         self.worker_slots = max(1, int(worker_slots))
@@ -120,6 +122,12 @@ class DownloadProgressDisplay:
         self.refresh_per_second = max(1.0, float(refresh_per_second))
         self.panel_rows = max(0, int(panel_rows))
         self.worker_columns = max(0, int(worker_columns))
+        self.total_jobs = max(0, int(total_jobs))
+        self.total_bytes = max(0, int(total_bytes))
+        self._started_at = time.time()
+        self._completed_jobs = 0
+        self._completed_bytes = 0
+        self._status_counts: dict[str, int] = {}
         self._logs: deque[str] = deque(maxlen=self.log_lines)
         self._rows: dict[int, dict[str, Any]] = {slot: self._empty_row(slot) for slot in range(self.worker_slots)}
         self._rich = False
@@ -135,6 +143,7 @@ class DownloadProgressDisplay:
                 from rich.panel import Panel
                 from rich.table import Table
                 from rich.text import Text
+                from rich.console import Group
             except ImportError:
                 self._fallback_reason = "Rich is not installed; using text progress"
                 if self.mode == "rich":
@@ -146,6 +155,7 @@ class DownloadProgressDisplay:
                 self._panel_cls = Panel
                 self._table_cls = Table
                 self._text_cls = Text
+                self._group_cls = Group
                 progress_rows = self.panel_rows or self._default_progress_rows()
                 self._layout = Layout(name="root")
                 self._layout.split_column(
@@ -216,6 +226,9 @@ class DownloadProgressDisplay:
         row["expected"] = int(event.get("bytes_expected") or row.get("expected") or 0)
         row["written"] = int(event.get("bytes_written") or row.get("written") or 0)
         row["updated_at"] = time.time()
+        self._completed_jobs += 1
+        self._status_counts[row["status"]] = self._status_counts.get(row["status"], 0) + 1
+        self._completed_bytes += self._result_completed_bytes(row)
         if row["status"] not in {"downloaded", "skipped_complete", "would_download"}:
             self.log(f"worker {worker_id:02d} {row['status']} {row['job']} {event.get('exception', '')}")
         if self._rich:
@@ -262,7 +275,7 @@ class DownloadProgressDisplay:
                 row_cells.append(self._text_cls(self._status_cell(status, compact=compact), style=self._status_style(status)))
                 cells.extend(row_cells)
             table.add_row(*cells)
-        return self._panel_cls(table, title="Massive SIP Downloads", border_style="cyan")
+        return self._panel_cls(self._group_cls(self._global_status_line(), table), title="Massive SIP Downloads", border_style="cyan")
 
     def _log_panel(self) -> Any:
         text = self._text_cls("\n".join(self._logs) if self._logs else "No log messages yet.")
@@ -275,7 +288,7 @@ class DownloadProgressDisplay:
             return "-"
         pct = max(0.0, min(1.0, written / expected))
         if compact:
-            return f"{pct:5.1%} {self._format_bytes(written)}/{self._format_bytes(expected)}"
+            return f"{self._mini_bar(pct, width=8)} {pct:4.0%} {self._format_bytes(written)}/{self._format_bytes(expected)}"
         return f"{self._mini_bar(pct)} {pct:5.1%} {self._format_bytes(written)}/{self._format_bytes(expected)}"
 
     def _speed_cell(self, row: dict[str, Any]) -> str:
@@ -323,6 +336,43 @@ class DownloadProgressDisplay:
             "failed": "ERR",
             "running": "RUN",
         }.get(status, status[:5].upper())
+
+    def _global_status_line(self) -> Any:
+        covered_bytes = min(self.total_bytes, self._completed_bytes + self._active_bytes())
+        file_pct = (self._completed_jobs / self.total_jobs) if self.total_jobs else 0.0
+        byte_pct = (covered_bytes / self.total_bytes) if self.total_bytes else 0.0
+        elapsed = max(1e-6, time.time() - self._started_at)
+        speed = covered_bytes / elapsed
+        eta = self._format_duration((self.total_bytes - covered_bytes) / speed) if speed > 0 and self.total_bytes > covered_bytes else "-"
+        counts = " ".join(
+            f"{self._status_cell(status, compact=True)}={count:,}"
+            for status, count in sorted(self._status_counts.items())
+            if count
+        )
+        if not counts:
+            counts = "no completed files yet"
+        message = (
+            f"Overall {self._mini_bar(byte_pct, width=28)} {byte_pct:5.1%} "
+            f"bytes {self._format_bytes(covered_bytes)}/{self._format_bytes(self.total_bytes)} "
+            f"files {self._completed_jobs:,}/{self.total_jobs:,} ({file_pct:5.1%}) "
+            f"speed {self._format_bytes(speed)}/s eta {eta} | {counts}"
+        )
+        return self._text_cls(message, style="bold cyan")
+
+    def _active_bytes(self) -> int:
+        total = 0
+        for row in self._rows.values():
+            if str(row.get("status") or "") in {"checking", "downloading", "running"}:
+                total += int(row.get("written") or 0)
+        return total
+
+    def _result_completed_bytes(self, row: dict[str, Any]) -> int:
+        status = str(row.get("status") or "")
+        expected = int(row.get("expected") or 0)
+        written = int(row.get("written") or 0)
+        if status in {"downloaded", "skipped_complete", "would_download"}:
+            return expected
+        return min(expected, written) if expected else written
 
     def _mini_bar(self, fraction: float, width: int = 12) -> str:
         filled = int(round(max(0.0, min(1.0, fraction)) * width))
@@ -994,6 +1044,7 @@ def main() -> None:
         jobs = jobs[: args.limit_files]
     processes = max(1, min(int(args.processes), len(jobs) or 1))
     chunks = split_jobs(jobs, processes)
+    total_remote_bytes = sum(max(0, int(job.remote_size or 0)) for job in jobs)
     default_report = flatfiles_root / "_download_reports" / f"massive_sip_flatfiles_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
     report_path = Path(args.report_path) if args.report_path else default_report
 
@@ -1020,12 +1071,17 @@ def main() -> None:
         refresh_per_second=args.progress_refresh_per_second,
         panel_rows=args.progress_panel_rows,
         worker_columns=args.progress_worker_columns,
+        total_jobs=len(jobs),
+        total_bytes=total_remote_bytes,
     ) as progress:
         if progress.fallback_reason:
             progress.log(progress.fallback_reason)
         progress.log("Massive SIP flatfile downloader")
         progress.log(f"date_range={args.start_date} -> {args.end_date} kinds={kinds} discovery={args.discovery}")
-        progress.log(f"jobs={len(jobs):,} processes={processes} chunk_bytes={config.chunk_bytes:,}")
+        progress.log(
+            f"jobs={len(jobs):,} processes={processes} chunk_bytes={config.chunk_bytes:,} "
+            f"remote_bytes={total_remote_bytes:,}"
+        )
         progress.log(f"endpoint={config.endpoint_url} bucket={config.bucket}")
         progress.log(f"flatfiles_root={flatfiles_root}")
         progress.log(f"report_path={report_path}")
