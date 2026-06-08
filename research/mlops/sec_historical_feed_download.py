@@ -696,7 +696,9 @@ def fetch_headers_for_submissions(
     if job.no_header_fetch:
         if progress_label:
             if progress is not None:
+                progress.task_start(f"{progress_label}:headers", f"{progress_label} headers", total=len(submissions), detail="skipped")
                 progress.log(f"{progress_label} headers: skipped for {len(submissions):,} submissions")
+                progress.task_stop(f"{progress_label}:headers", detail=f"skipped {len(submissions):,}")
             else:
                 print(f"{progress_label} headers: skipped for {len(submissions):,} submissions", flush=True)
         return {

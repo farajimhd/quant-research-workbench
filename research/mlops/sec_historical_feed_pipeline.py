@@ -5,6 +5,7 @@ import concurrent.futures
 import gzip
 import json
 import os
+import re
 import shutil
 import sys
 import tarfile
@@ -90,16 +91,27 @@ class ArchiveIntegrityError(RuntimeError):
 
 
 class ProgressDisplay:
-    def __init__(self, mode: str, log_lines: int, progress_rows: int = 12) -> None:
+    STAGES = ("download", "validate", "copy", "parse", "headers")
+    STAGE_TITLES = {
+        "download": "Download",
+        "validate": "Validate",
+        "copy": "Copy",
+        "parse": "Parse",
+        "headers": "Headers",
+    }
+
+    def __init__(self, mode: str, log_lines: int, progress_rows: int = 12, screen: bool = True) -> None:
         self.mode = mode
         self.log_lines = max(5, log_lines)
         self.progress_rows = max(6, progress_rows)
+        self.screen = screen
         self._lock = threading.RLock()
         self._logs: deque[str] = deque(maxlen=self.log_lines)
-        self._task_ids: dict[str, int] = {}
+        self._task_stage: dict[str, tuple[str, str]] = {}
+        self._jobs: dict[str, dict[str, dict[str, Any]]] = {}
+        self._job_order: list[str] = []
         self._rich = False
         self._live: Any = None
-        self._progress: Any = None
         self._layout: Any = None
 
     def __enter__(self) -> "ProgressDisplay":
@@ -108,7 +120,8 @@ class ProgressDisplay:
                 from rich.layout import Layout
                 from rich.live import Live
                 from rich.panel import Panel
-                from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn
+                from rich.progress_bar import ProgressBar
+                from rich.table import Table
                 from rich.text import Text
             except ImportError:
                 if self.mode == "rich":
@@ -117,21 +130,22 @@ class ProgressDisplay:
                 self._rich = True
                 self._text_cls = Text
                 self._panel_cls = Panel
-                self._progress = Progress(
-                    SpinnerColumn(),
-                    TextColumn("[bold]{task.description}"),
-                    BarColumn(),
-                    TaskProgressColumn(),
-                    TextColumn("{task.fields[detail]}"),
-                    TimeElapsedColumn(),
-                    expand=True,
-                )
+                self._table_cls = Table
+                self._progress_bar_cls = ProgressBar
                 self._layout = Layout(name="root")
                 self._layout.split_column(
                     Layout(self._progress_panel(), name="progress", size=self.progress_rows),
                     Layout(self._log_panel(), name="logs", ratio=1),
                 )
-                self._live = Live(self._layout, refresh_per_second=4, transient=False, vertical_overflow="crop")
+                self._live = Live(
+                    self._layout,
+                    refresh_per_second=4,
+                    transient=False,
+                    vertical_overflow="crop",
+                    screen=self.screen,
+                    redirect_stdout=True,
+                    redirect_stderr=True,
+                )
                 self._live.start()
         return self
 
@@ -142,6 +156,24 @@ class ProgressDisplay:
     @property
     def rich_active(self) -> bool:
         return self._rich
+
+    def job_start(self, job_key: str) -> None:
+        with self._lock:
+            if job_key not in self._jobs:
+                self._jobs[job_key] = {stage: self._empty_stage() for stage in self.STAGES}
+                self._job_order.append(job_key)
+            if self._rich:
+                self._refresh()
+
+    def job_finish(self, job_key: str) -> None:
+        with self._lock:
+            self._jobs.pop(job_key, None)
+            self._job_order = [item for item in self._job_order if item != job_key]
+            stale = [key for key, (job, _stage) in self._task_stage.items() if job == job_key]
+            for key in stale:
+                self._task_stage.pop(key, None)
+            if self._rich:
+                self._refresh()
 
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -155,13 +187,19 @@ class ProgressDisplay:
 
     def task_start(self, key: str, description: str, total: int | float | None = None, detail: str = "") -> None:
         with self._lock:
-            if not self._rich or self._progress is None:
+            if not self._rich:
                 return
-            if key in self._task_ids:
-                task_id = self._task_ids[key]
-                self._progress.update(task_id, description=description, total=total, completed=0, detail=detail, visible=True)
-            else:
-                self._task_ids[key] = self._progress.add_task(description, total=total, detail=detail)
+            job, stage = self._resolve_task(key, description)
+            self.job_start(job)
+            self._task_stage[key] = (job, stage)
+            self._jobs[job][stage] = {
+                "status": "running",
+                "completed": 0.0,
+                "total": float(total) if total else None,
+                "detail": detail,
+                "started_at": time.perf_counter(),
+                "ended_at": None,
+            }
             self._refresh()
 
     def task_update(
@@ -173,23 +211,35 @@ class ProgressDisplay:
         detail: str | None = None,
     ) -> None:
         with self._lock:
-            if not self._rich or self._progress is None or key not in self._task_ids:
+            if not self._rich or key not in self._task_stage:
                 return
-            kwargs: dict[str, Any] = {}
-            if completed is not None:
-                kwargs["completed"] = completed
+            job, stage = self._task_stage[key]
+            state = self._jobs.setdefault(job, {item: self._empty_stage() for item in self.STAGES})[stage]
             if total is not None:
-                kwargs["total"] = total
+                state["total"] = float(total) if total else None
+            if completed is not None:
+                state["completed"] = float(completed)
+            else:
+                state["completed"] = float(state.get("completed") or 0) + float(advance or 0)
             if detail is not None:
-                kwargs["detail"] = detail
-            self._progress.update(self._task_ids[key], advance=advance, **kwargs)
+                state["detail"] = detail
             self._refresh()
 
     def task_stop(self, key: str, detail: str = "") -> None:
         with self._lock:
-            if not self._rich or self._progress is None or key not in self._task_ids:
+            if not self._rich or key not in self._task_stage:
                 return
-            self._progress.update(self._task_ids[key], detail=detail, visible=False)
+            job, stage = self._task_stage[key]
+            state = self._jobs.setdefault(job, {item: self._empty_stage() for item in self.STAGES})[stage]
+            state["status"] = "complete"
+            state["ended_at"] = time.perf_counter()
+            if state.get("total") is None:
+                state["total"] = 1.0
+                state["completed"] = 1.0
+            else:
+                state["completed"] = state["total"]
+            if detail:
+                state["detail"] = detail
             self._refresh()
 
     def _refresh(self) -> None:
@@ -199,11 +249,84 @@ class ProgressDisplay:
         self._layout["logs"].update(self._log_panel())
 
     def _progress_panel(self) -> Any:
-        return self._panel_cls(self._progress, title="Long-running progress", border_style="cyan")
+        table = self._table_cls(expand=True, show_header=True, header_style="bold", box=None, pad_edge=False)
+        table.add_column("File", no_wrap=True, width=10)
+        for stage in self.STAGES:
+            table.add_column(self.STAGE_TITLES[stage], ratio=1, min_width=16)
+        if not self._job_order:
+            table.add_row(self._text_cls("-", style="dim"), *(self._text_cls("pending", style="dim") for _ in self.STAGES))
+        for job in self._job_order:
+            states = self._jobs.get(job, {stage: self._empty_stage() for stage in self.STAGES})
+            table.add_row(self._text_cls(job, style="bold cyan"), *(self._stage_cell(states[stage]) for stage in self.STAGES))
+        return self._panel_cls(table, title="Per-file stage progress", border_style="cyan")
 
     def _log_panel(self) -> Any:
         log_text = self._text_cls("\n".join(self._logs) if self._logs else "No log messages yet.")
         return self._panel_cls(log_text, title="Logs (oldest to newest)", border_style="white")
+
+    def _stage_cell(self, state: dict[str, Any]) -> Any:
+        status = state.get("status", "pending")
+        if status == "pending":
+            return self._text_cls("pending", style="dim")
+        completed = float(state.get("completed") or 0)
+        total = state.get("total")
+        detail = str(state.get("detail") or "")
+        elapsed = self._stage_elapsed(state)
+        elapsed_text = f"{elapsed:.1f}s" if elapsed is not None else ""
+        if total:
+            bar = self._progress_bar_cls(total=float(total), completed=min(completed, float(total)), width=10)
+            pct = completed / float(total)
+            message = self._compact_stage_message(" ".join(item for item in (f"{pct:.0%}", elapsed_text, detail) if item))
+            text = self._text_cls(message, style="green" if status == "complete" else "white")
+            return self._bar_cell(bar, text)
+        style = "green" if status == "complete" else "yellow"
+        message = self._compact_stage_message(" ".join(item for item in (status, elapsed_text, detail) if item))
+        return self._text_cls(message, style=style)
+
+    def _bar_cell(self, bar: Any, text: Any) -> Any:
+        cell = self._table_cls.grid(expand=True)
+        cell.add_column(ratio=1)
+        cell.add_column(no_wrap=True)
+        cell.add_row(bar, text)
+        return cell
+
+    def _compact_stage_message(self, message: str, limit: int = 24) -> str:
+        normalized = " ".join(message.split())
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[: max(0, limit - 1)].rstrip() + "..."
+
+    def _empty_stage(self) -> dict[str, Any]:
+        return {"status": "pending", "completed": 0.0, "total": None, "detail": "", "started_at": None, "ended_at": None}
+
+    def _stage_elapsed(self, state: dict[str, Any]) -> float | None:
+        started_at = state.get("started_at")
+        if started_at is None:
+            return None
+        ended_at = state.get("ended_at") or time.perf_counter()
+        return max(0.0, float(ended_at) - float(started_at))
+
+    def _resolve_task(self, key: str, description: str) -> tuple[str, str]:
+        text = f"{key} {description}"
+        job = "global"
+        if "[" in text and "]" in text:
+            job = text.split("[", 1)[1].split("]", 1)[0]
+        else:
+            match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+            if match:
+                job = match.group(0)
+        lowered = text.lower()
+        if "download" in lowered:
+            return job, "download"
+        if "validate" in lowered:
+            return job, "validate"
+        if "copy" in lowered:
+            return job, "copy"
+        if "parse" in lowered:
+            return job, "parse"
+        if "headers" in lowered or "header" in lowered:
+            return job, "headers"
+        return job, "parse"
 
 
 def parse_args() -> argparse.Namespace:
@@ -238,6 +361,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--progress-log-lines", type=int, default=int(os.environ.get("SEC_PROGRESS_LOG_LINES", "24")))
     parser.add_argument("--progress-panel-rows", type=int, default=int(os.environ.get("SEC_PROGRESS_PANEL_ROWS", "12")))
+    parser.set_defaults(progress_screen=parse_bool_env("SEC_PROGRESS_SCREEN", True))
+    progress_screen_group = parser.add_mutually_exclusive_group()
+    progress_screen_group.add_argument(
+        "--progress-screen",
+        dest="progress_screen",
+        action="store_true",
+        help="Use a fixed Rich live screen so log updates cannot scroll the progress matrix.",
+    )
+    progress_screen_group.add_argument(
+        "--no-progress-screen",
+        dest="progress_screen",
+        action="store_false",
+        help="Render Rich progress in normal terminal scrollback instead of the fixed live screen.",
+    )
     parser.set_defaults(download_progress_bars=parse_bool_env("SEC_DOWNLOAD_PROGRESS_BARS", True))
     progress_bar_group = parser.add_mutually_exclusive_group()
     progress_bar_group.add_argument("--download-progress-bars", dest="download_progress_bars", action="store_true", help="Show tqdm progress bars for SEC archive downloads.")
@@ -331,6 +468,7 @@ def main() -> None:
         "progress_layout": args.progress_layout,
         "progress_log_lines": max(5, args.progress_log_lines),
         "progress_panel_rows": max(6, args.progress_panel_rows),
+        "progress_screen": bool(args.progress_screen),
         "download_progress_bars": bool(args.download_progress_bars),
         "limit_days": max(0, args.limit_days),
         "limit_files_per_day": max(0, args.limit_files_per_day),
@@ -344,7 +482,7 @@ def main() -> None:
     }
     append_jsonl(report_path, config)
 
-    with ProgressDisplay(args.progress_layout, args.progress_log_lines, args.progress_panel_rows) as progress:
+    with ProgressDisplay(args.progress_layout, args.progress_log_lines, args.progress_panel_rows, bool(args.progress_screen)) as progress:
         print_header(config, progress)
 
         if args.dry_run:
@@ -395,6 +533,7 @@ def run_pipeline(
     ):
         while next_index < len(jobs) and len(active) < download_concurrency:
             slot = available_download_slots.pop(0)
+            progress.job_start(jobs[next_index].archive_date)
             progress.log(f"[{jobs[next_index].archive_date}] queued for SSD staging")
             future = pool.submit(
                 stage_archive_on_ssd,
@@ -441,8 +580,10 @@ def run_pipeline(
                 else:
                     totals["failed_days"] += 1
                 print_progress(len(jobs), totals, started, result, progress)
+                progress.job_finish(result.archive_date)
                 while next_index < len(jobs) and len(active) < download_concurrency:
                     slot = available_download_slots.pop(0)
+                    progress.job_start(jobs[next_index].archive_date)
                     progress.log(f"[{jobs[next_index].archive_date}] queued for SSD staging")
                     future = pool.submit(
                         stage_archive_on_ssd,
