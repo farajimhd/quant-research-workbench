@@ -11,6 +11,8 @@ By default, parse/enrich mode does **not** expand all `.nc` files to disk. It st
 
 The bounded pipeline is designed for HDD archival plus SSD parsing. It downloads each daily archive to `SEC_HISTORICAL_TEMP_ROOT_WIN`, asynchronously copies the compressed archive to `SEC_HISTORICAL_ARTIFACT_ROOT_WIN`, parses from the SSD copy, writes normalized JSONL to `SEC_HISTORICAL_NORMALIZED_ROOT_WIN`, then deletes the SSD temp archive after parsing and HDD copy verification succeed.
 
+Before an archive is parsed or reused from cache, the bounded pipeline validates that the `.tar.gz` is complete and contains `.nc` members. If an existing SSD temp archive or HDD archive is truncated/corrupt, it is deleted and the pipeline fetches a fresh copy from SEC.
+
 ## Required Environment
 
 Set a descriptive SEC user agent before production runs:
@@ -165,6 +167,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_fe
 
 - The daily archive is the content source.
 - In the bounded pipeline, SSD temp archives are working files and HDD archives are the retained compressed source-of-truth artifacts.
+- Existing archive files are integrity-checked before reuse. Corrupt temp/HDD archives are removed and redownloaded.
 - `.hdr.sgml` is the timestamp authority for `accepted_at`.
 - `accepted_at_edgar_raw` is parsed as EDGAR Eastern time and converted to `accepted_at_utc`.
 - The archive date is not used as the event timestamp.

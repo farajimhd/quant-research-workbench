@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import gzip
 import json
 import os
 import shutil
 import sys
+import tarfile
 import time
 import traceback
 from dataclasses import asdict, dataclass
@@ -78,6 +80,10 @@ class DownloadedArchive:
     archive_sha256: str
     download_seconds: float
     archive_source: str
+
+
+class ArchiveIntegrityError(RuntimeError):
+    pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -246,9 +252,13 @@ def run_pipeline(
                 try:
                     downloaded = future.result()
                     totals["staged_days"] += 1
-                    result = parse_one_archive(downloaded, args, normalized_root, sec_request_limiter, copy_pool)
                 except Exception as exc:  # noqa: BLE001
                     result = failed_result(job, exc)
+                else:
+                    try:
+                        result = parse_one_archive(downloaded, args, normalized_root, sec_request_limiter, copy_pool)
+                    except Exception as exc:  # noqa: BLE001
+                        result = failed_result(downloaded.job, exc, downloaded)
                 append_jsonl(report_path, {"type": "day", "run_id": run_id, "result": asdict(result)})
                 if result.status == "ok":
                     totals["parsed_days"] += 1
@@ -285,12 +295,25 @@ def stage_archive_on_ssd(job: DayJob, temp_root: Path, limiter: RateLimiter) -> 
     source = "sec_download"
 
     if temp_archive_path.exists() and temp_archive_path.stat().st_size > 0 and not job.force_redownload:
-        source = "ssd_existing"
-    elif hdd_archive_path.exists() and hdd_archive_path.stat().st_size > 0 and not job.force_redownload:
-        copy_file_verified(hdd_archive_path, temp_archive_path)
-        source = "hdd_existing"
-    else:
+        try:
+            validate_archive_integrity(temp_archive_path)
+            source = "ssd_existing"
+        except ArchiveIntegrityError:
+            temp_archive_path.unlink(missing_ok=True)
+
+    if not temp_archive_path.exists() and hdd_archive_path.exists() and hdd_archive_path.stat().st_size > 0 and not job.force_redownload:
+        try:
+            validate_archive_integrity(hdd_archive_path)
+            copy_file_verified(hdd_archive_path, temp_archive_path)
+            validate_archive_integrity(temp_archive_path)
+            source = "hdd_existing"
+        except ArchiveIntegrityError:
+            hdd_archive_path.unlink(missing_ok=True)
+            temp_archive_path.unlink(missing_ok=True)
+
+    if not temp_archive_path.exists():
         stream_download_to_file(job, temp_archive_path, limiter)
+        validate_archive_integrity(temp_archive_path)
 
     return DownloadedArchive(
         job=job,
@@ -318,11 +341,17 @@ def stream_download_to_file(job: DayJob, target_path: Path, limiter: RateLimiter
         req = request.Request(job.archive_url, headers=headers)
         try:
             with request.urlopen(req, timeout=job.request_timeout_seconds) as response, part_path.open("wb") as handle:
+                expected_length = response.headers.get("Content-Length")
+                written = 0
                 while True:
                     chunk = response.read(1024 * 1024)
                     if not chunk:
                         break
                     handle.write(chunk)
+                    written += len(chunk)
+            if expected_length and written != int(expected_length):
+                part_path.unlink(missing_ok=True)
+                raise RuntimeError(f"incomplete archive download: expected {expected_length} bytes, wrote {written} bytes")
             part_path.replace(target_path)
             return
         except error.HTTPError as exc:
@@ -341,6 +370,20 @@ def stream_download_to_file(job: DayJob, target_path: Path, limiter: RateLimiter
                 raise RuntimeError(last_error) from exc
             time.sleep(job.retry_base_seconds * (2**attempt))
     raise RuntimeError(last_error or "archive download failed")
+
+
+def validate_archive_integrity(archive_path: Path) -> int:
+    try:
+        nc_members = 0
+        with tarfile.open(archive_path, "r:gz") as tar:
+            for member in tar:
+                if member.isfile() and member.name.lower().endswith(".nc"):
+                    nc_members += 1
+        if nc_members <= 0:
+            raise ArchiveIntegrityError(f"archive contains no .nc members: {archive_path}")
+        return nc_members
+    except (EOFError, gzip.BadGzipFile, tarfile.TarError, OSError) as exc:
+        raise ArchiveIntegrityError(f"invalid SEC feed archive {archive_path}: {exc!r}") from exc
 
 
 def copy_archive_to_hdd(temp_archive_path: Path, hdd_archive_path: Path, expected_sha256: str) -> tuple[str, float]:
@@ -443,24 +486,24 @@ def parse_one_archive(
     return result
 
 
-def failed_result(job: DayJob, exc: Exception) -> PipelineDayResult:
+def failed_result(job: DayJob, exc: Exception, downloaded: DownloadedArchive | None = None) -> PipelineDayResult:
     return PipelineDayResult(
         archive_date=job.archive_date,
         archive_url=job.archive_url,
-        hdd_archive_path=job.archive_path,
-        temp_archive_path="",
+        hdd_archive_path=downloaded.hdd_archive_path if downloaded else job.archive_path,
+        temp_archive_path=downloaded.temp_archive_path if downloaded else "",
         normalized_day_dir="",
-        archive_bytes=0,
-        archive_sha256="",
+        archive_bytes=downloaded.archive_bytes if downloaded else 0,
+        archive_sha256=downloaded.archive_sha256 if downloaded else "",
         submissions=0,
         documents=0,
         header_success=0,
         header_failed=0,
-        download_seconds=0.0,
+        download_seconds=downloaded.download_seconds if downloaded else 0.0,
         hdd_copy_seconds=0.0,
         parse_seconds=0.0,
         wall_seconds=0.0,
-        archive_source="",
+        archive_source=downloaded.archive_source if downloaded else "",
         hdd_copy_status="not_started",
         cleanup_status="not_started",
         status="failed",
