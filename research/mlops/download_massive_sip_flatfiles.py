@@ -241,7 +241,7 @@ class DownloadProgressDisplay:
             table.add_column(f"Progress{suffix}", ratio=2, min_width=8 if ultra_compact else 12 if compact else 18, no_wrap=True, overflow="ellipsis")
             if not ultra_compact:
                 table.add_column(f"Speed{suffix}", width=9 if compact else 11, no_wrap=True)
-            table.add_column(f"Status{suffix}", width=7 if ultra_compact else 10 if compact else 13, no_wrap=True, overflow="ellipsis")
+            table.add_column(f"State{suffix}", width=5 if ultra_compact else 7 if compact else 13, no_wrap=True, overflow="ellipsis")
         rows_per_column = (self.worker_slots + worker_columns - 1) // worker_columns
         for row_index in range(rows_per_column):
             cells = []
@@ -259,7 +259,7 @@ class DownloadProgressDisplay:
                 ]
                 if worker_columns <= 2:
                     row_cells.append(self._text_cls(self._speed_cell(row), style="green"))
-                row_cells.append(self._text_cls(status, style=self._status_style(status)))
+                row_cells.append(self._text_cls(self._status_cell(status, compact=compact), style=self._status_style(status)))
                 cells.extend(row_cells)
             table.add_row(*cells)
         return self._panel_cls(table, title="Massive SIP Downloads", border_style="cyan")
@@ -307,6 +307,23 @@ class DownloadProgressDisplay:
             return "bold white"
         return "dim"
 
+    def _status_cell(self, status: str, *, compact: bool = False) -> str:
+        if not compact:
+            return status
+        return {
+            "idle": "-",
+            "checking": "CHK",
+            "downloading": "DL",
+            "downloaded": "OK",
+            "skipped_complete": "SKIP",
+            "would_download": "DRY",
+            "missing_remote": "MISS",
+            "incomplete_existing": "PART",
+            "failed_size_mismatch": "SIZE",
+            "failed": "ERR",
+            "running": "RUN",
+        }.get(status, status[:5].upper())
+
     def _mini_bar(self, fraction: float, width: int = 12) -> str:
         filled = int(round(max(0.0, min(1.0, fraction)) * width))
         return "#" * filled + "-" * (width - filled)
@@ -316,8 +333,6 @@ class DownloadProgressDisplay:
             return min(max(1, self.worker_columns), 4)
         if self.worker_slots > 72:
             return 4
-        if self.worker_slots > 32:
-            return 3
         if self.worker_slots > 16:
             return 2
         return 1
