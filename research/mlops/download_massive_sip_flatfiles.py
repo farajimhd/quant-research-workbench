@@ -7,6 +7,7 @@ import json
 import multiprocessing as mp
 import os
 import re
+import signal
 import ssl
 import sys
 import time
@@ -479,29 +480,35 @@ def worker_main(worker_id: int, jobs: list[DownloadJob], config: DownloadConfig,
         dynamic_ncols=True,
         leave=True,
     )
-    for job in jobs:
-        result = download_one(config, job, worker_id, bar)
-        results.append(result)
-        if queue is not None:
-            queue.put(asdict(result))
-        if result.status in ("downloaded", "would_download"):
-            counters["downloaded"] += 1
-        elif result.status.startswith("skipped") or result.status == "incomplete_existing":
-            counters["skipped"] += 1
-        elif result.status == "missing_remote":
-            counters["missing"] += 1
-        else:
-            counters["failed"] += 1
-        bar.set_postfix(
-            dl=counters["downloaded"],
-            skip=counters["skipped"],
-            miss=counters["missing"],
-            fail=counters["failed"],
-            refresh=True,
-        )
-        bar.update(1)
-    bar.close()
+    try:
+        for job in jobs:
+            result = download_one(config, job, worker_id, bar)
+            results.append(result)
+            if queue is not None:
+                queue.put(asdict(result))
+            if result.status in ("downloaded", "would_download"):
+                counters["downloaded"] += 1
+            elif result.status.startswith("skipped") or result.status == "incomplete_existing":
+                counters["skipped"] += 1
+            elif result.status == "missing_remote":
+                counters["missing"] += 1
+            else:
+                counters["failed"] += 1
+            bar.set_postfix(
+                dl=counters["downloaded"],
+                skip=counters["skipped"],
+                miss=counters["missing"],
+                fail=counters["failed"],
+                refresh=True,
+            )
+            bar.update(1)
+    finally:
+        bar.close()
     return results
+
+
+def ignore_sigint_in_worker() -> None:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def result_writer(report_path: Path, queue: mp.Queue, expected_done_messages: int) -> None:
@@ -573,16 +580,40 @@ def main() -> None:
     writer = mp.Process(target=result_writer, args=(report_path, queue, processes), daemon=True)
     writer.start()
     result_sets: list[list[DownloadResult]] = []
-    with mp.Pool(processes=processes) as pool:
+    pool: mp.pool.Pool | None = None
+    interrupted = False
+    try:
+        pool = mp.Pool(processes=processes, initializer=ignore_sigint_in_worker)
         async_results = [
             pool.apply_async(worker_main, (worker_id, chunk, config, queue))
             for worker_id, chunk in enumerate(chunks)
         ]
         for async_result in async_results:
             result_sets.append(async_result.get())
-    for _ in range(processes):
-        queue.put({"type": "worker_done"})
-    writer.join()
+        pool.close()
+        pool.join()
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\nCTRL+C received. Stopping download workers; completed files remain valid and partial .part files will be retried on the next run.", flush=True)
+        if pool is not None:
+            pool.terminate()
+            pool.join()
+    except BaseException:
+        if pool is not None:
+            pool.terminate()
+            pool.join()
+        raise
+    finally:
+        for _ in range(processes):
+            queue.put({"type": "worker_done"})
+        writer.join(timeout=10)
+        if writer.is_alive():
+            writer.terminate()
+            writer.join(timeout=5)
+        manager.shutdown()
+
+    if interrupted:
+        raise SystemExit(130)
 
     all_results = [result for result_set in result_sets for result in result_set]
     counts: dict[str, int] = {}
