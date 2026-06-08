@@ -27,10 +27,22 @@ Laptop repo:
 python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_feed_download.py
 ```
 
+Bounded pipeline script:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_feed_pipeline.py
+```
+
 Workstation mirror:
 
 ```powershell
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_download.py
+```
+
+Workstation bounded pipeline:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py
 ```
 
 ## What Gets Written
@@ -58,6 +70,15 @@ Run outputs:
 
 These are JSONL outputs for inspection and schema finalization. The script does not insert into ClickHouse yet.
 
+The bounded pipeline also stores per-day normalized data:
+
+```text
+<SEC_HISTORICAL_NORMALIZED_ROOT_WIN>\YYYY\QTRN\YYYY-MM-DD\submissions.jsonl
+<SEC_HISTORICAL_NORMALIZED_ROOT_WIN>\YYYY\QTRN\YYYY-MM-DD\documents.jsonl
+<SEC_HISTORICAL_NORMALIZED_ROOT_WIN>\YYYY\QTRN\YYYY-MM-DD\headers.jsonl
+<SEC_HISTORICAL_NORMALIZED_ROOT_WIN>\YYYY\QTRN\YYYY-MM-DD\manifest.jsonl
+```
+
 ## Raw Archive Download Only
 
 This is the safest first pass. It downloads compressed daily archives and stops.
@@ -66,6 +87,28 @@ The script first reads the SEC quarterly Feed directory listings and creates job
 
 ```powershell
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_download.py --start-date 2026-06-01 --end-date 2026-06-08 --download-only --archive-concurrency 2
+```
+
+## Bounded Download + Normalize Pipeline
+
+Use this when you want to keep compressed archives on HDD and write normalized JSONL as each day finishes. Downloads and parsing overlap, but each archive is parsed only after its `.nc.tar.gz` download is complete.
+
+The pipeline keeps at most roughly `--download-concurrency` archive downloads ahead of parsing, so it does not require downloading the entire historical range before normalized output starts.
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --header-concurrency 8 --sec-request-min-interval-seconds 0.11
+```
+
+Recommended smoke test:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --limit-files-per-day 20
+```
+
+Delete compressed archives only after a day parses successfully:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --delete-archive-after-parse
 ```
 
 ## Parse From Compressed Archives
