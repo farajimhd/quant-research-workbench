@@ -262,7 +262,7 @@ def remote_size(config: DownloadConfig, key: str) -> int | None:
         raise RuntimeError(f"HEAD failed for {key}: HTTP {exc.code} {exc.reason}: {body}") from exc
 
 
-def download_one(config: DownloadConfig, job: DownloadJob, worker_id: int) -> DownloadResult:
+def download_one(config: DownloadConfig, job: DownloadJob, worker_id: int, bar: tqdm | None = None) -> DownloadResult:
     t0 = time.time()
     destination = Path(job.destination)
     part_path = destination.with_name(destination.name + ".part")
@@ -295,6 +295,9 @@ def download_one(config: DownloadConfig, job: DownloadJob, worker_id: int) -> Do
             part_path.unlink()
         req = signed_request(config, "GET", job.key)
         bytes_written = 0
+        last_progress_update = time.monotonic()
+        if bar is not None:
+            bar.set_postfix_str(f"{job.kind} {job.session_date} 0.00/{expected_size / (1024**3):.2f} GiB")
         with urlopen_signed(req, config) as response, part_path.open("wb") as handle:
             while True:
                 chunk = response.read(config.chunk_bytes)
@@ -302,6 +305,13 @@ def download_one(config: DownloadConfig, job: DownloadJob, worker_id: int) -> Do
                     break
                 handle.write(chunk)
                 bytes_written += len(chunk)
+                now = time.monotonic()
+                if bar is not None and now - last_progress_update >= 1.0:
+                    bar.set_postfix_str(
+                        f"{job.kind} {job.session_date} {bytes_written / (1024**3):.2f}/{expected_size / (1024**3):.2f} GiB",
+                        refresh=True,
+                    )
+                    last_progress_update = now
         actual_size = part_path.stat().st_size
         if actual_size != expected_size:
             return DownloadResult(
@@ -319,6 +329,8 @@ def download_one(config: DownloadConfig, job: DownloadJob, worker_id: int) -> Do
         if destination.exists():
             destination.unlink()
         part_path.replace(destination)
+        if bar is not None:
+            bar.set_postfix_str(f"{job.kind} {job.session_date} done {actual_size / (1024**3):.2f} GiB", refresh=True)
         return DownloadResult(worker_id, job.kind, job.session_date, job.key, str(destination), "downloaded", expected_size, actual_size, time.time() - t0)
     except Exception as exc:
         return DownloadResult(worker_id, job.kind, job.session_date, job.key, str(destination), "failed", wall_seconds=time.time() - t0, exception=repr(exc))
@@ -340,7 +352,7 @@ def worker_main(worker_id: int, jobs: list[DownloadJob], config: DownloadConfig,
         leave=True,
     )
     for job in jobs:
-        result = download_one(config, job, worker_id)
+        result = download_one(config, job, worker_id, bar)
         results.append(result)
         if queue is not None:
             queue.put(asdict(result))
