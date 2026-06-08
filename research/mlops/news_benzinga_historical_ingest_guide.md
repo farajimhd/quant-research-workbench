@@ -107,6 +107,24 @@ Small insert test. This creates tables and inserts normalized rows for a short p
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T01:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --limit-buckets 4 --download-processes 2 --normalize-processes 2 --insert-concurrency 2 --insert-batch-rows 25 --manifest-batch-rows 25 --no-fetch-external --no-extract-pdfs
 ```
 
+## Raw-Only Download First Pass
+
+Use this when you want the safest first pass: only call the Massive-served Benzinga news endpoint and save raw JSON payloads to disk. It does not normalize, enrich, parse PDFs, call source URLs, create ClickHouse tables, or insert any rows.
+
+The script intentionally accepts only the time period and download process count. It uses `MASSIVE_API_KEY`, `NEWS_BENZINGA_URL` or `NEWS_MASSIVE_BENZINGA_URL`, `NEWS_BENZINGA_ARTIFACT_ROOT_WIN`, and `NEWS_BENZINGA_OUTPUT_ROOT_WIN` from the environment. Buckets are fixed at 90 minutes, `limit` is fixed at 1000, and `max_pages` is fixed at 1000.
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_raw_download.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --download-processes 32
+```
+
+Raw files are written under:
+
+```text
+<NEWS_BENZINGA_ARTIFACT_ROOT_WIN>\raw\YYYY\MM\DD\benzinga_<provider_article_id>.json
+```
+
+The progress/report JSONL is written under `NEWS_BENZINGA_OUTPUT_ROOT_WIN` with a `benzinga_raw_download_<run_id>.jsonl` name. This report is only an audit trail; it is not normalized data.
+
 ## Full Historical Run
 
 The script uses a base-first asynchronous enrichment pipeline in one invocation:
@@ -455,7 +473,7 @@ The live process saves the raw provider payload first, then normalizes and batch
 
 `--external-min-body-chars`
 
-If Benzinga body text is shorter than this threshold, the normalizer may fetch the article URL when external fetching is enabled. Default:
+If Benzinga body text is shorter than this threshold, the normalizer may fetch non-Benzinga source/citation URLs found inside the API body when external fetching is enabled. It does not redownload the Benzinga article URL. Default:
 
 ```text
 NEWS_EXTRACTION_MIN_BODY_CHARS
@@ -484,14 +502,14 @@ This protects miscellaneous external websites during one-pass external/PDF extra
 
 `--benzinga-request-min-interval-seconds`
 
-Minimum seconds between Benzinga article-page requests to the same host. Default:
+Minimum seconds between Benzinga-hosted external/PDF requests to the same host if any are explicitly eligible. The current source-link enrichment path does not redownload Benzinga article pages. Default:
 
 ```text
 NEWS_BENZINGA_REQUEST_MIN_INTERVAL_SECONDS
 0.1
 ```
 
-This targets roughly 10 Benzinga article-page requests per second across all enrichment workers because the host rate limiter is shared.
+This targets roughly 10 Benzinga-hosted external/PDF requests per second across all enrichment workers because the host rate limiter is shared.
 
 `--sec-request-min-interval-seconds`
 
