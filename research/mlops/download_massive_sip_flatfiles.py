@@ -314,10 +314,12 @@ class DownloadProgressDisplay:
     def _resolved_worker_columns(self) -> int:
         if self.worker_columns:
             return min(max(1, self.worker_columns), 4)
-        if self.worker_slots > 96:
+        if self.worker_slots > 72:
             return 4
         if self.worker_slots > 32:
             return 3
+        if self.worker_slots > 16:
+            return 2
         return 1
 
     def _default_progress_rows(self) -> int:
