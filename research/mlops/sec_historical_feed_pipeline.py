@@ -100,16 +100,17 @@ class ProgressDisplay:
         "headers": "Headers",
     }
 
-    def __init__(self, mode: str, log_lines: int, progress_rows: int = 12, screen: bool = True) -> None:
+    def __init__(self, mode: str, log_lines: int, progress_rows: int = 12, screen: bool = True, worker_slots: int = 1) -> None:
         self.mode = mode
         self.log_lines = max(5, log_lines)
         self.progress_rows = max(6, progress_rows)
         self.screen = screen
+        self.worker_slots = max(1, worker_slots)
         self._lock = threading.RLock()
         self._logs: deque[str] = deque(maxlen=self.log_lines)
         self._task_stage: dict[str, tuple[str, str]] = {}
-        self._jobs: dict[str, dict[str, dict[str, Any]]] = {}
-        self._job_order: list[str] = []
+        self._job_slot: dict[str, int] = {}
+        self._rows = [self._empty_row(slot) for slot in range(self.worker_slots)]
         self._rich = False
         self._live: Any = None
         self._layout: Any = None
@@ -120,7 +121,6 @@ class ProgressDisplay:
                 from rich.layout import Layout
                 from rich.live import Live
                 from rich.panel import Panel
-                from rich.progress_bar import ProgressBar
                 from rich.table import Table
                 from rich.text import Text
             except ImportError:
@@ -131,7 +131,6 @@ class ProgressDisplay:
                 self._text_cls = Text
                 self._panel_cls = Panel
                 self._table_cls = Table
-                self._progress_bar_cls = ProgressBar
                 self._layout = Layout(name="root")
                 self._layout.split_column(
                     Layout(self._progress_panel(), name="progress", size=self.progress_rows),
@@ -157,18 +156,22 @@ class ProgressDisplay:
     def rich_active(self) -> bool:
         return self._rich
 
-    def job_start(self, job_key: str) -> None:
+    def job_start(self, job_key: str, slot: int | None = None) -> None:
         with self._lock:
-            if job_key not in self._jobs:
-                self._jobs[job_key] = {stage: self._empty_stage() for stage in self.STAGES}
-                self._job_order.append(job_key)
+            slot_index = self._resolve_slot(job_key, slot)
+            row = self._rows[slot_index]
+            if row["job"] != job_key:
+                self._rows[slot_index] = self._empty_row(slot_index)
+                self._rows[slot_index]["job"] = job_key
+            self._job_slot[job_key] = slot_index
             if self._rich:
                 self._refresh()
 
     def job_finish(self, job_key: str) -> None:
         with self._lock:
-            self._jobs.pop(job_key, None)
-            self._job_order = [item for item in self._job_order if item != job_key]
+            slot_index = self._job_slot.pop(job_key, None)
+            if slot_index is not None:
+                self._rows[slot_index] = self._empty_row(slot_index)
             stale = [key for key, (job, _stage) in self._task_stage.items() if job == job_key]
             for key in stale:
                 self._task_stage.pop(key, None)
@@ -192,7 +195,7 @@ class ProgressDisplay:
             job, stage = self._resolve_task(key, description)
             self.job_start(job)
             self._task_stage[key] = (job, stage)
-            self._jobs[job][stage] = {
+            self._row_for_job(job)["stages"][stage] = {
                 "status": "running",
                 "completed": 0.0,
                 "total": float(total) if total else None,
@@ -214,7 +217,7 @@ class ProgressDisplay:
             if not self._rich or key not in self._task_stage:
                 return
             job, stage = self._task_stage[key]
-            state = self._jobs.setdefault(job, {item: self._empty_stage() for item in self.STAGES})[stage]
+            state = self._row_for_job(job)["stages"][stage]
             if total is not None:
                 state["total"] = float(total) if total else None
             if completed is not None:
@@ -230,7 +233,7 @@ class ProgressDisplay:
             if not self._rich or key not in self._task_stage:
                 return
             job, stage = self._task_stage[key]
-            state = self._jobs.setdefault(job, {item: self._empty_stage() for item in self.STAGES})[stage]
+            state = self._row_for_job(job)["stages"][stage]
             state["status"] = "complete"
             state["ended_at"] = time.perf_counter()
             if state.get("total") is None:
@@ -250,14 +253,15 @@ class ProgressDisplay:
 
     def _progress_panel(self) -> Any:
         table = self._table_cls(expand=True, show_header=True, header_style="bold", box=None, pad_edge=False)
-        table.add_column("File", no_wrap=True, width=10)
+        table.add_column("File", no_wrap=True, width=12)
         for stage in self.STAGES:
-            table.add_column(self.STAGE_TITLES[stage], ratio=1, min_width=16)
-        if not self._job_order:
-            table.add_row(self._text_cls("-", style="dim"), *(self._text_cls("pending", style="dim") for _ in self.STAGES))
-        for job in self._job_order:
-            states = self._jobs.get(job, {stage: self._empty_stage() for stage in self.STAGES})
-            table.add_row(self._text_cls(job, style="bold cyan"), *(self._stage_cell(states[stage]) for stage in self.STAGES))
+            table.add_column(self.STAGE_TITLES[stage], ratio=1, min_width=14, no_wrap=True)
+        for row in self._rows:
+            job = row["job"]
+            file_label = job if job else f"slot {row['slot'] + 1}"
+            file_style = "bold cyan" if job else "dim"
+            states = row["stages"]
+            table.add_row(self._text_cls(file_label, style=file_style), *(self._stage_cell(states[stage]) for stage in self.STAGES))
         return self._panel_cls(table, title="Per-file stage progress", border_style="cyan")
 
     def _log_panel(self) -> Any:
@@ -267,37 +271,63 @@ class ProgressDisplay:
     def _stage_cell(self, state: dict[str, Any]) -> Any:
         status = state.get("status", "pending")
         if status == "pending":
-            return self._text_cls("pending", style="dim")
+            return self._text_cls("-", style="dim", no_wrap=True)
         completed = float(state.get("completed") or 0)
         total = state.get("total")
         detail = str(state.get("detail") or "")
         elapsed = self._stage_elapsed(state)
         elapsed_text = f"{elapsed:.1f}s" if elapsed is not None else ""
         if total:
-            bar = self._progress_bar_cls(total=float(total), completed=min(completed, float(total)), width=10)
             pct = completed / float(total)
-            message = self._compact_stage_message(" ".join(item for item in (f"{pct:.0%}", elapsed_text, detail) if item))
-            text = self._text_cls(message, style="green" if status == "complete" else "white")
-            return self._bar_cell(bar, text)
+            message = self._compact_stage_message(
+                f"{self._mini_bar(pct)}{pct:.0%}",
+                10,
+            )
+            return self._text_cls(message, style="green" if status == "complete" else "white", no_wrap=True)
         style = "green" if status == "complete" else "yellow"
-        message = self._compact_stage_message(" ".join(item for item in (status, elapsed_text, detail) if item))
-        return self._text_cls(message, style=style)
+        short_status = "done" if status == "complete" else "run"
+        message = self._compact_stage_message(" ".join(item for item in (short_status, elapsed_text) if item), 16)
+        return self._text_cls(message, style=style, no_wrap=True)
 
-    def _bar_cell(self, bar: Any, text: Any) -> Any:
-        cell = self._table_cls.grid(expand=True)
-        cell.add_column(ratio=1)
-        cell.add_column(no_wrap=True)
-        cell.add_row(bar, text)
-        return cell
-
-    def _compact_stage_message(self, message: str, limit: int = 24) -> str:
+    def _compact_stage_message(self, message: str, limit: int = 16) -> str:
         normalized = " ".join(message.split())
         if len(normalized) <= limit:
             return normalized
         return normalized[: max(0, limit - 1)].rstrip() + "..."
 
+    def _mini_bar(self, fraction: float, width: int = 6) -> str:
+        bounded = max(0.0, min(1.0, fraction))
+        filled = int(round(bounded * width))
+        return "#" * filled + "-" * (width - filled)
+
     def _empty_stage(self) -> dict[str, Any]:
         return {"status": "pending", "completed": 0.0, "total": None, "detail": "", "started_at": None, "ended_at": None}
+
+    def _empty_row(self, slot: int) -> dict[str, Any]:
+        return {
+            "slot": slot,
+            "job": "",
+            "stages": {stage: self._empty_stage() for stage in self.STAGES},
+        }
+
+    def _resolve_slot(self, job_key: str, slot: int | None = None) -> int:
+        if job_key in self._job_slot:
+            return self._job_slot[job_key]
+        if slot is not None:
+            return min(max(0, slot), self.worker_slots - 1)
+        for row in self._rows:
+            if not row["job"]:
+                return int(row["slot"])
+        return 0
+
+    def _row_for_job(self, job_key: str) -> dict[str, Any]:
+        slot_index = self._resolve_slot(job_key)
+        self._job_slot[job_key] = slot_index
+        row = self._rows[slot_index]
+        if row["job"] != job_key:
+            self._rows[slot_index] = self._empty_row(slot_index)
+            self._rows[slot_index]["job"] = job_key
+        return self._rows[slot_index]
 
     def _stage_elapsed(self, state: dict[str, Any]) -> float | None:
         started_at = state.get("started_at")
@@ -482,7 +512,13 @@ def main() -> None:
     }
     append_jsonl(report_path, config)
 
-    with ProgressDisplay(args.progress_layout, args.progress_log_lines, args.progress_panel_rows, bool(args.progress_screen)) as progress:
+    with ProgressDisplay(
+        args.progress_layout,
+        args.progress_log_lines,
+        args.progress_panel_rows,
+        bool(args.progress_screen),
+        max(1, args.download_concurrency),
+    ) as progress:
         print_header(config, progress)
 
         if args.dry_run:
@@ -533,7 +569,7 @@ def run_pipeline(
     ):
         while next_index < len(jobs) and len(active) < download_concurrency:
             slot = available_download_slots.pop(0)
-            progress.job_start(jobs[next_index].archive_date)
+            progress.job_start(jobs[next_index].archive_date, slot)
             progress.log(f"[{jobs[next_index].archive_date}] queued for SSD staging")
             future = pool.submit(
                 stage_archive_on_ssd,
@@ -583,7 +619,7 @@ def run_pipeline(
                 progress.job_finish(result.archive_date)
                 while next_index < len(jobs) and len(active) < download_concurrency:
                     slot = available_download_slots.pop(0)
-                    progress.job_start(jobs[next_index].archive_date)
+                    progress.job_start(jobs[next_index].archive_date, slot)
                     progress.log(f"[{jobs[next_index].archive_date}] queued for SSD staging")
                     future = pool.submit(
                         stage_archive_on_ssd,

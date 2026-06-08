@@ -138,7 +138,7 @@ Progress controls:
 - `--progress-file-interval-mib`: byte interval for archive download/copy progress. Default: `64`.
 - `--progress-record-interval`: `.nc` member or header-record interval for validation, parsing, and header fetch progress. Default: `500`.
 - `--download-progress-bars` / `--no-download-progress-bars`: enable or disable archive download bars. Rich layout uses Rich bars; text layout uses tqdm when installed and falls back to text progress otherwise.
-- `--progress-layout auto|rich|text`: `auto` uses a Rich two-panel console when Rich is installed. The top panel is a per-file matrix: each active archive date is one row, and the fixed columns are `Download`, `Validate`, `Copy`, `Parse`, and `Headers`. The bottom panel holds ordered logs. Use `text` for plain console output.
+- `--progress-layout auto|rich|text`: `auto` uses a Rich two-panel console when Rich is installed. The top panel is a fixed worker-slot matrix: each download worker has one row, and the fixed columns are `Download`, `Validate`, `Copy`, `Parse`, and `Headers`. The bottom panel holds ordered logs. Use `text` for plain console output.
 - `--progress-log-lines`: number of log lines retained in the Rich log panel. Default: `24`.
 - `--progress-panel-rows`: fixed height for the top Rich progress panel. Default: `12`; increase it if you run many concurrent days and want more visible rows.
 - `--progress-screen` / `--no-progress-screen`: `--progress-screen` is the default and pins the Rich layout to a fixed live screen so validation and download log messages cannot push the matrix upward. Use `--no-progress-screen` only when you specifically want normal terminal scrollback.
@@ -181,7 +181,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_fe
 - Final normalized JSONL files should be written on SSD. Keep the compressed `.nc.tar.gz` archive on HDD and set `SEC_HISTORICAL_NORMALIZED_ROOT_WIN` to an SSD path such as `D:/market-data/sec_edgar_feed_normalized`.
 - Existing archive files are integrity-checked before reuse. Corrupt temp/HDD archives are removed and redownloaded.
 - The bounded pipeline reports every active archive date through the same fixed stages: `Download`, `Validate`, `Copy`, `Parse`, and `Headers`.
-- With the Rich layout, each active day gets one matrix row. If `--download-concurrency 5`, up to five day rows are normally visible at once, and each row keeps the same five stage columns while the day moves through the pipeline.
+- With the Rich layout, `--download-concurrency 5` creates five fixed worker rows. Each row keeps the same five stage columns while its assigned archive day moves through the pipeline.
 - Stages with a known total, such as byte downloads and copies, show a bounded progress bar. Stages whose total is discovered while running, such as archive validation, show a stable running cell with elapsed time and the latest count.
 - The lower Rich panel is reserved for messages, ordered oldest to newest within the retained log window.
 - `.hdr.sgml` is the timestamp authority for `accepted_at`.
