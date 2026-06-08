@@ -155,6 +155,12 @@ class NormalizeResult:
 
 
 @dataclass(frozen=True, slots=True)
+class EnrichmentFutureContext:
+    base_result: NormalizeResult
+    artifact_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class BucketInsertMeta:
     bucket_id: str
     start_utc: str
@@ -232,6 +238,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_DOWNLOAD_PROCESSES", "8")))
     parser.add_argument("--normalize-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZE_PROCESSES", "0")))
     parser.add_argument("--enrichment-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_ENRICHMENT_PROCESSES", "0")))
+    parser.add_argument("--enrichment-chunk-size", type=int, default=int(os.environ.get("NEWS_BENZINGA_ENRICHMENT_CHUNK_SIZE", "10")))
     parser.add_argument("--insert-concurrency", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_CONCURRENCY", "4")))
     parser.add_argument("--insert-batch-rows", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_BATCH_ROWS", "5000")))
     parser.add_argument("--manifest-batch-rows", type=int, default=int(os.environ.get("NEWS_BENZINGA_MANIFEST_BATCH_ROWS", "1000")))
@@ -326,6 +333,7 @@ def main() -> None:
     args.download_processes = max(1, args.download_processes)
     args.normalize_processes = args.normalize_processes if args.normalize_processes > 0 else max(1, args.download_processes // 2)
     args.enrichment_processes = args.enrichment_processes if args.enrichment_processes > 0 else max(1, min(4, args.normalize_processes))
+    args.enrichment_chunk_size = max(1, args.enrichment_chunk_size)
     args.insert_concurrency = max(1, args.insert_concurrency)
     args.insert_batch_rows = max(1, args.insert_batch_rows)
     args.manifest_batch_rows = max(1, args.manifest_batch_rows)
@@ -364,7 +372,7 @@ def main() -> None:
     print(f"buckets={len(buckets):,} limit_buckets={args.limit_buckets}", flush=True)
     print(
         f"download_processes={args.download_processes} normalize_processes={args.normalize_processes} "
-        f"enrichment_processes={args.enrichment_processes} "
+        f"enrichment_processes={args.enrichment_processes} enrichment_chunk_size={args.enrichment_chunk_size} "
         f"insert_concurrency={args.insert_concurrency} insert_batch_rows={args.insert_batch_rows} "
         f"manifest_batch_rows={args.manifest_batch_rows}",
         flush=True,
@@ -516,8 +524,8 @@ def main() -> None:
     ):
         download_futures: dict[concurrent.futures.Future[DownloadResult], BucketJob] = {}
         normalize_futures: dict[concurrent.futures.Future[NormalizeResult], DownloadResult] = {}
-        enrichment_futures: dict[concurrent.futures.Future[NormalizeResult], NormalizeResult] = {}
-        pending_enrichment_jobs: list[tuple[NormalizeJob, NormalizeResult]] = []
+        enrichment_futures: dict[concurrent.futures.Future[NormalizeResult], EnrichmentFutureContext] = {}
+        pending_enrichment_jobs: list[tuple[NormalizeJob, EnrichmentFutureContext]] = []
 
         def submit_more_downloads() -> None:
             nonlocal next_download_index
@@ -528,8 +536,8 @@ def main() -> None:
 
         def submit_more_enrichments() -> None:
             while pending_enrichment_jobs and len(enrichment_futures) < max_enrichment_backlog:
-                job, base_result = pending_enrichment_jobs.pop(0)
-                enrichment_futures[enrichment_pool.submit(normalize_bucket_worker, job)] = base_result
+                job, context = pending_enrichment_jobs.pop(0)
+                enrichment_futures[enrichment_pool.submit(normalize_bucket_worker, job)] = context
 
         submit_more_downloads()
         while (
@@ -645,32 +653,38 @@ def main() -> None:
                     append_extraction_events(report_path, run_id, normalize_result.extraction_events)
                     if normalize_result.enrichment_artifacts:
                         enrichment_required_total += len(normalize_result.enrichment_artifacts)
-                        enrichment_job = NormalizeJob(
-                            bucket_id=normalize_result.bucket_id,
-                            start_utc=normalize_result.start_utc,
-                            end_utc=normalize_result.end_utc,
-                            artifacts=normalize_result.enrichment_artifacts,
-                            downloaded_rows=normalize_result.downloaded_rows,
-                            page_count=normalize_result.page_count,
-                            saturated=normalize_result.saturated,
-                            artifact_root_win=args.artifact_root_win,
-                            fetch_external=not args.no_fetch_external,
-                            extract_pdfs=not args.no_extract_pdfs,
-                            desired_fetch_external=not args.no_fetch_external,
-                            desired_extract_pdfs=not args.no_extract_pdfs,
-                            extraction_timeout_seconds=args.extraction_timeout_seconds,
-                            external_min_body_chars=args.external_min_body_chars,
-                            max_pdf_bytes=args.max_pdf_bytes,
-                            text_limit_chars=args.text_limit_chars,
-                            external_request_min_interval_seconds=args.external_request_min_interval_seconds,
-                            benzinga_request_min_interval_seconds=args.benzinga_request_min_interval_seconds,
-                            sec_request_min_interval_seconds=args.sec_request_min_interval_seconds,
-                            external_max_retries=args.external_max_retries,
-                            external_retry_base_seconds=args.external_retry_base_seconds,
-                            default_user_agent=args.external_user_agent,
-                            sec_user_agent=args.sec_user_agent,
-                        )
-                        pending_enrichment_jobs.append((enrichment_job, normalize_result))
+                        for chunk in chunk_artifacts(normalize_result.enrichment_artifacts, args.enrichment_chunk_size):
+                            enrichment_job = NormalizeJob(
+                                bucket_id=normalize_result.bucket_id,
+                                start_utc=normalize_result.start_utc,
+                                end_utc=normalize_result.end_utc,
+                                artifacts=chunk,
+                                downloaded_rows=len(chunk),
+                                page_count=0,
+                                saturated=normalize_result.saturated,
+                                artifact_root_win=args.artifact_root_win,
+                                fetch_external=not args.no_fetch_external,
+                                extract_pdfs=not args.no_extract_pdfs,
+                                desired_fetch_external=not args.no_fetch_external,
+                                desired_extract_pdfs=not args.no_extract_pdfs,
+                                extraction_timeout_seconds=args.extraction_timeout_seconds,
+                                external_min_body_chars=args.external_min_body_chars,
+                                max_pdf_bytes=args.max_pdf_bytes,
+                                text_limit_chars=args.text_limit_chars,
+                                external_request_min_interval_seconds=args.external_request_min_interval_seconds,
+                                benzinga_request_min_interval_seconds=args.benzinga_request_min_interval_seconds,
+                                sec_request_min_interval_seconds=args.sec_request_min_interval_seconds,
+                                external_max_retries=args.external_max_retries,
+                                external_retry_base_seconds=args.external_retry_base_seconds,
+                                default_user_agent=args.external_user_agent,
+                                sec_user_agent=args.sec_user_agent,
+                            )
+                            pending_enrichment_jobs.append(
+                                (
+                                    enrichment_job,
+                                    EnrichmentFutureContext(base_result=normalize_result, artifact_count=len(chunk)),
+                                )
+                            )
                         submit_more_enrichments()
                     if not args.no_insert:
                         queue_manifest_rows([manifest_from_normalize(run_id, normalize_result)], insert_pool)
@@ -698,8 +712,9 @@ def main() -> None:
                         final_completed += 1
 
                 elif future in enrichment_futures:
-                    base_result = enrichment_futures.pop(future)
-                    enrichment_completed_total += len(base_result.enrichment_artifacts)
+                    enrichment_context = enrichment_futures.pop(future)
+                    base_result = enrichment_context.base_result
+                    enrichment_completed_total += enrichment_context.artifact_count
                     try:
                         enrichment_result = future.result()
                     except Exception as exc:  # noqa: BLE001
@@ -711,9 +726,9 @@ def main() -> None:
                             file_errors=[],
                             extraction_events=[],
                             enrichment_artifacts=[],
-                            downloaded_rows=base_result.downloaded_rows,
+                            downloaded_rows=enrichment_context.artifact_count,
                             normalized_rows=0,
-                            page_count=base_result.page_count,
+                            page_count=0,
                             saturated=base_result.saturated,
                             wall_seconds=0.0,
                             exception=repr(exc),
@@ -1006,6 +1021,11 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
         wall_seconds=time.perf_counter() - started_at,
         exception="all raw files failed normalization" if job.artifacts and file_errors and not rows else "",
     )
+
+
+def chunk_artifacts(artifacts: list[DownloadedArtifact], chunk_size: int) -> list[list[DownloadedArtifact]]:
+    size = max(1, chunk_size)
+    return [artifacts[index : index + size] for index in range(0, len(artifacts), size)]
 
 
 def insert_rows_worker(job: InsertJob) -> InsertResult:
