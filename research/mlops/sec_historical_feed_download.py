@@ -969,9 +969,13 @@ def sha256_file(path: Path) -> str:
 def write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
-    with path.open("a", encoding="utf-8") as handle:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part_path = path.with_suffix(path.suffix + ".part")
+    part_path.unlink(missing_ok=True)
+    with part_path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, separators=(",", ":"), ensure_ascii=False) + "\n")
+    part_path.replace(path)
 
 
 def append_jsonl(path: Path, row: dict[str, Any]) -> None:

@@ -28,7 +28,7 @@ Recommended workstation roots:
 ```powershell
 $env:SEC_HISTORICAL_ARTIFACT_ROOT_WIN="G:/market-data/sec_edgar_feed"
 $env:SEC_HISTORICAL_OUTPUT_ROOT_WIN="G:/market-data/prepared/sec_edgar_feed"
-$env:SEC_HISTORICAL_NORMALIZED_ROOT_WIN="G:/market-data/sec_edgar_feed_normalized"
+$env:SEC_HISTORICAL_NORMALIZED_ROOT_WIN="D:/market-data/sec_edgar_feed_normalized"
 $env:SEC_HISTORICAL_TEMP_ROOT_WIN="D:/market-data/sec_edgar_feed_temp"
 ```
 
@@ -91,7 +91,7 @@ Run outputs:
 
 These are JSONL outputs for inspection and schema finalization. The script does not insert into ClickHouse yet.
 
-The bounded pipeline also stores per-day normalized data:
+The bounded pipeline also stores per-day normalized data. Put this root on SSD; these are the final normalized training inputs.
 
 ```text
 <SEC_HISTORICAL_NORMALIZED_ROOT_WIN>\YYYY\QTRN\YYYY-MM-DD\submissions.jsonl
@@ -174,6 +174,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_fe
 
 - The daily archive is the content source.
 - In the bounded pipeline, SSD temp archives are working files and HDD archives are the retained compressed source-of-truth artifacts.
+- Final normalized JSONL files should be written on SSD. Keep the compressed `.nc.tar.gz` archive on HDD and set `SEC_HISTORICAL_NORMALIZED_ROOT_WIN` to an SSD path such as `D:/market-data/sec_edgar_feed_normalized`.
 - Existing archive files are integrity-checked before reuse. Corrupt temp/HDD archives are removed and redownloaded.
 - The bounded pipeline prints progress while validating archives, downloading, copying, parsing `.nc` members, fetching headers, writing normalized files, and cleaning temp archives.
 - SEC archive downloads use tqdm byte progress bars by default. With multiple concurrent downloads, each active download gets its own tqdm row.
