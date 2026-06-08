@@ -137,6 +137,7 @@ Progress controls:
 - `--progress-interval-seconds`: maximum quiet time before printing progress inside a long step. Default: `10`.
 - `--progress-file-interval-mib`: byte interval for archive download/copy progress. Default: `64`.
 - `--progress-record-interval`: `.nc` member or header-record interval for validation, parsing, and header fetch progress. Default: `500`.
+- `--download-progress-bars` / `--no-download-progress-bars`: enable or disable tqdm bars for each SEC archive download. Default: enabled when `tqdm` is installed; otherwise the script falls back to text progress.
 
 ## Parse From Compressed Archives
 
@@ -175,6 +176,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_fe
 - In the bounded pipeline, SSD temp archives are working files and HDD archives are the retained compressed source-of-truth artifacts.
 - Existing archive files are integrity-checked before reuse. Corrupt temp/HDD archives are removed and redownloaded.
 - The bounded pipeline prints progress while validating archives, downloading, copying, parsing `.nc` members, fetching headers, writing normalized files, and cleaning temp archives.
+- SEC archive downloads use tqdm byte progress bars by default. With multiple concurrent downloads, each active download gets its own tqdm row.
 - `.hdr.sgml` is the timestamp authority for `accepted_at`.
 - `accepted_at_edgar_raw` is parsed as EDGAR Eastern time and converted to `accepted_at_utc`.
 - The archive date is not used as the event timestamp.

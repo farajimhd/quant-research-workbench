@@ -110,6 +110,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-interval-seconds", type=float, default=float(os.environ.get("SEC_PROGRESS_INTERVAL_SECONDS", "10")))
     parser.add_argument("--progress-file-interval-mib", type=float, default=float(os.environ.get("SEC_PROGRESS_FILE_INTERVAL_MIB", "64")))
     parser.add_argument("--progress-record-interval", type=int, default=int(os.environ.get("SEC_PROGRESS_RECORD_INTERVAL", "500")))
+    parser.set_defaults(download_progress_bars=parse_bool_env("SEC_DOWNLOAD_PROGRESS_BARS", True))
+    progress_bar_group = parser.add_mutually_exclusive_group()
+    progress_bar_group.add_argument("--download-progress-bars", dest="download_progress_bars", action="store_true", help="Show tqdm progress bars for SEC archive downloads.")
+    progress_bar_group.add_argument("--no-download-progress-bars", dest="download_progress_bars", action="store_false", help="Disable tqdm archive download bars and use text progress only.")
     parser.add_argument("--limit-days", type=int, default=0, help="Smoke-test cap on discovered archive days.")
     parser.add_argument("--limit-files-per-day", type=int, default=0, help="Smoke-test cap on .nc files parsed per day.")
     parser.add_argument("--force-redownload", action="store_true", help="Redownload archives even when already present.")
@@ -196,6 +200,7 @@ def main() -> None:
         "progress_interval_seconds": progress_interval,
         "progress_file_interval_mib": progress_file_interval_mib,
         "progress_record_interval": progress_record_interval,
+        "download_progress_bars": bool(args.download_progress_bars),
         "limit_days": max(0, args.limit_days),
         "limit_files_per_day": max(0, args.limit_files_per_day),
         "persist_nc_files": args.persist_nc_files,
@@ -234,7 +239,8 @@ def run_pipeline(
     progress_file_interval_bytes = int(max(1.0, args.progress_file_interval_mib) * 1024 * 1024)
     progress_record_interval = max(1, args.progress_record_interval)
     next_index = 0
-    active: dict[concurrent.futures.Future[DownloadedArchive], DayJob] = {}
+    active: dict[concurrent.futures.Future[DownloadedArchive], tuple[DayJob, int]] = {}
+    available_download_slots = list(range(download_concurrency))
     totals = {
         "staged_days": 0,
         "parsed_days": 0,
@@ -253,6 +259,7 @@ def run_pipeline(
         concurrent.futures.ThreadPoolExecutor(max_workers=archive_copy_concurrency) as copy_pool,
     ):
         while next_index < len(jobs) and len(active) < download_concurrency:
+            slot = available_download_slots.pop(0)
             print(f"[{jobs[next_index].archive_date}] queued for SSD staging", flush=True)
             future = pool.submit(
                 stage_archive_on_ssd,
@@ -262,14 +269,18 @@ def run_pipeline(
                 progress_interval,
                 progress_file_interval_bytes,
                 progress_record_interval,
+                bool(args.download_progress_bars),
+                slot,
             )
-            active[future] = jobs[next_index]
+            active[future] = (jobs[next_index], slot)
             next_index += 1
 
         while active:
             done, _ = concurrent.futures.wait(active.keys(), return_when=concurrent.futures.FIRST_COMPLETED)
             for future in done:
-                job = active.pop(future)
+                job, slot = active.pop(future)
+                available_download_slots.append(slot)
+                available_download_slots.sort()
                 try:
                     downloaded = future.result()
                     totals["staged_days"] += 1
@@ -294,6 +305,7 @@ def run_pipeline(
                     totals["failed_days"] += 1
                 print_progress(len(jobs), totals, started, result)
                 while next_index < len(jobs) and len(active) < download_concurrency:
+                    slot = available_download_slots.pop(0)
                     print(f"[{jobs[next_index].archive_date}] queued for SSD staging", flush=True)
                     future = pool.submit(
                         stage_archive_on_ssd,
@@ -303,8 +315,10 @@ def run_pipeline(
                         progress_interval,
                         progress_file_interval_bytes,
                         progress_record_interval,
+                        bool(args.download_progress_bars),
+                        slot,
                     )
-                    active[future] = jobs[next_index]
+                    active[future] = (jobs[next_index], slot)
                     next_index += 1
 
     summary = {
@@ -325,6 +339,8 @@ def stage_archive_on_ssd(
     progress_interval_seconds: float,
     progress_file_interval_bytes: int,
     progress_record_interval: int,
+    download_progress_bars: bool,
+    progress_position: int,
 ) -> DownloadedArchive:
     started = time.perf_counter()
     temp_archive_path = temp_archive_path_for_job(job, temp_root)
@@ -361,7 +377,15 @@ def stage_archive_on_ssd(
             temp_archive_path.unlink(missing_ok=True)
 
     if not temp_archive_path.exists():
-        stream_download_to_file(job, temp_archive_path, limiter, progress_file_interval_bytes, progress_interval_seconds)
+        stream_download_to_file(
+            job,
+            temp_archive_path,
+            limiter,
+            progress_file_interval_bytes,
+            progress_interval_seconds,
+            download_progress_bars,
+            progress_position,
+        )
         validate_archive_integrity(temp_archive_path, f"{label} validate-download", progress_record_interval, progress_interval_seconds)
 
     elapsed = round(time.perf_counter() - started, 3)
@@ -386,6 +410,8 @@ def stream_download_to_file(
     limiter: RateLimiter,
     progress_file_interval_bytes: int,
     progress_interval_seconds: float,
+    download_progress_bars: bool,
+    progress_position: int,
 ) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     part_path = target_path.with_suffix(target_path.suffix + ".part")
@@ -407,26 +433,43 @@ def stream_download_to_file(
                 expected_length = response.headers.get("Content-Length")
                 expected_bytes = int(expected_length) if expected_length else 0
                 written = 0
+                bar = make_download_bar(
+                    enabled=download_progress_bars,
+                    archive_date=job.archive_date,
+                    attempt=attempt + 1,
+                    max_attempts=job.max_retries + 1,
+                    total_bytes=expected_bytes,
+                    position=progress_position,
+                )
                 print(
                     f"[{job.archive_date}] download: attempt={attempt + 1}/{job.max_retries + 1} "
                     f"expected={format_bytes(expected_bytes) if expected_bytes else 'unknown'} target={target_path}",
                     flush=True,
                 )
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
-                    written += len(chunk)
-                    now = time.perf_counter()
-                    if written - last_reported_bytes >= progress_file_interval_bytes or now - last_progress >= progress_interval_seconds:
-                        pct = f" {written / expected_bytes:.1%}" if expected_bytes else ""
-                        print(
-                            f"[{job.archive_date}] download: {format_bytes(written)}{pct} elapsed={now - started:.1f}s",
-                            flush=True,
-                        )
-                        last_progress = now
-                        last_reported_bytes = written
+                try:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        written += len(chunk)
+                        if bar is not None:
+                            bar.update(len(chunk))
+                        now = time.perf_counter()
+                        if bar is None and (
+                            written - last_reported_bytes >= progress_file_interval_bytes
+                            or now - last_progress >= progress_interval_seconds
+                        ):
+                            pct = f" {written / expected_bytes:.1%}" if expected_bytes else ""
+                            print(
+                                f"[{job.archive_date}] download: {format_bytes(written)}{pct} elapsed={now - started:.1f}s",
+                                flush=True,
+                            )
+                            last_progress = now
+                            last_reported_bytes = written
+                finally:
+                    if bar is not None:
+                        bar.close()
             if expected_length and written != int(expected_length):
                 part_path.unlink(missing_ok=True)
                 raise RuntimeError(f"incomplete archive download: expected {expected_length} bytes, wrote {written} bytes")
@@ -698,6 +741,7 @@ def print_header(config: dict[str, Any]) -> None:
         "progress_interval_seconds",
         "progress_file_interval_mib",
         "progress_record_interval",
+        "download_progress_bars",
         "artifact_root",
         "temp_root",
         "normalized_root",
@@ -731,6 +775,40 @@ def print_progress(total_days: int, totals: dict[str, int], started: float, last
         f"elapsed={elapsed:.1f}s",
         flush=True,
     )
+
+
+def make_download_bar(
+    enabled: bool,
+    archive_date: str,
+    attempt: int,
+    max_attempts: int,
+    total_bytes: int,
+    position: int,
+) -> Any:
+    if not enabled:
+        return None
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        print(f"[{archive_date}] download: tqdm is not installed; using text progress", flush=True)
+        return None
+    return tqdm(
+        total=total_bytes or None,
+        desc=f"{archive_date} download {attempt}/{max_attempts}",
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        dynamic_ncols=True,
+        leave=True,
+        position=max(0, position),
+    )
+
+
+def parse_bool_env(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def format_bytes(value: int | float) -> str:
