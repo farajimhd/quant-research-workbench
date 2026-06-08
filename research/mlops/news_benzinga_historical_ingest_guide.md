@@ -92,19 +92,19 @@ python -m pip install -r \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_
 Dry-run only. This validates env loading, date parsing, bucket construction, target database, and storage policy. It does not download or insert.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --dry-run --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-02T00:00:00Z --bucket-minutes 15
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --dry-run --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-02T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000
 ```
 
 Small API smoke test. This downloads and normalizes one tiny bucket, writes raw payloads if rows exist, but does not insert into ClickHouse.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --no-insert --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T00:05:00Z --bucket-minutes 5 --limit-buckets 1 --download-processes 1 --no-fetch-external --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --no-insert --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T00:05:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --limit-buckets 1 --download-processes 1 --no-fetch-external --no-extract-pdfs
 ```
 
 Small insert test. This creates tables and inserts normalized rows for a short period. Use a tiny insert batch to validate the staged path.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T01:00:00Z --bucket-minutes 15 --limit-buckets 4 --download-processes 2 --normalize-processes 2 --insert-concurrency 2 --insert-batch-rows 25 --manifest-batch-rows 25 --no-fetch-external --no-extract-pdfs
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2026-01-01T00:00:00Z --end-utc 2026-01-01T01:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --limit-buckets 4 --download-processes 2 --normalize-processes 2 --insert-concurrency 2 --insert-batch-rows 25 --manifest-batch-rows 25 --no-fetch-external --no-extract-pdfs
 ```
 
 ## Full Historical Run
@@ -124,19 +124,19 @@ The provider pass is still one pass over Massive/Benzinga. External article/PDF 
 Fast one-pass run:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 24 --normalize-processes 12 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 1.0 --benzinga-request-min-interval-seconds 1.25 --sec-request-min-interval-seconds 0.25 --external-max-retries 4 --external-retry-base-seconds 1.5
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 1.0 --benzinga-request-min-interval-seconds 1.25 --sec-request-min-interval-seconds 0.25 --external-max-retries 4 --external-retry-base-seconds 1.5
 ```
 
 If Massive and ClickHouse remain stable, increase the base lane while keeping enrichment controlled:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 32 --normalize-processes 16 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 1.0 --benzinga-request-min-interval-seconds 1.25 --sec-request-min-interval-seconds 0.25 --external-max-retries 4 --external-retry-base-seconds 1.5
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 32 --normalize-processes 16 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 1.0 --benzinga-request-min-interval-seconds 1.25 --sec-request-min-interval-seconds 0.25 --external-max-retries 4 --external-retry-base-seconds 1.5
 ```
 
 If any provider starts returning rate limits, keep the base lane high and reduce only enrichment pressure:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 24 --normalize-processes 12 --enrichment-processes 2 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 2.0 --benzinga-request-min-interval-seconds 3.0 --sec-request-min-interval-seconds 0.5 --external-max-retries 5 --external-retry-base-seconds 2.0
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 2 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 2.0 --benzinga-request-min-interval-seconds 3.0 --sec-request-min-interval-seconds 0.5 --external-max-retries 5 --external-retry-base-seconds 2.0
 ```
 
 ## Argument Reference
@@ -271,8 +271,10 @@ Fixed UTC bucket size. Default:
 
 ```text
 NEWS_BENZINGA_BUCKET_MINUTES
-15
+90
 ```
+
+Buckets are half-open UTC ranges: `published.gte` at the bucket start and `published.lt` at the bucket end. A news item exactly on a 90-minute boundary belongs to the next bucket. This avoids both missed rows and duplicate boundary downloads.
 
 Smaller buckets reduce the chance that a dense period saturates the provider page limit. Larger buckets reduce scheduling overhead.
 
@@ -291,7 +293,7 @@ Maximum provider pages per bucket. Default:
 
 ```text
 NEWS_BENZINGA_MAX_PAGES
-20
+1000
 ```
 
 If a bucket still has a next page after this limit, the bucket is marked saturated/partial in the manifest.
@@ -561,7 +563,7 @@ Reprocess buckets whose latest manifest status is `inserted`. Leave this off for
 
 `--retry-partial`
 
-Reprocess buckets whose latest manifest status is `partial`. Use this after increasing `--max-pages` or decreasing `--bucket-minutes`.
+Reprocess buckets whose latest manifest status is `partial`. Use this after increasing `--max-pages`; reduce `--bucket-minutes` only if a bucket remains saturated after the 1000-page cap.
 
 `--no-insert`
 
@@ -581,11 +583,13 @@ The script reads the latest status from:
 
 Normal resume skips buckets whose latest status is `inserted`. Buckets marked `partial` are also skipped unless `--retry-partial` is provided.
 
-Recommended retry flow for saturated buckets:
+Recommended retry flow for saturated buckets after increasing the page cap:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 5 --max-pages 40 --retry-partial --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 5000 --manifest-batch-rows 1000
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --retry-partial --download-processes 16 --normalize-processes 8 --insert-concurrency 6 --insert-batch-rows 5000 --manifest-batch-rows 1000
 ```
+
+If any bucket is still marked `partial`, rerun that affected date range with a smaller `--bucket-minutes` value.
 
 ## Monitoring
 
@@ -642,7 +646,7 @@ FROM q_live.benzinga_news_normalized_v1;
 For the first real canonical pass, keep enrichment enabled but let only the enrichment lane run under controlled external request pressure:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 15 --download-processes 24 --normalize-processes 12 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 1.0 --benzinga-request-min-interval-seconds 1.25 --sec-request-min-interval-seconds 0.25 --external-max-retries 4 --external-retry-base-seconds 1.5
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 1.0 --benzinga-request-min-interval-seconds 1.25 --sec-request-min-interval-seconds 0.25 --external-max-retries 4 --external-retry-base-seconds 1.5
 ```
 
 Install `PyMuPDF` in the workstation environment before running with PDF extraction enabled. The repo `requirements.txt` includes it.

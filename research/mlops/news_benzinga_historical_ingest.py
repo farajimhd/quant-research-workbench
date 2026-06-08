@@ -226,9 +226,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-utc", default=os.environ.get("NEWS_BENZINGA_HISTORICAL_START_UTC", DEFAULT_START_UTC))
     parser.add_argument("--end-utc", default=os.environ.get("NEWS_BENZINGA_HISTORICAL_END_UTC", DEFAULT_END_UTC))
-    parser.add_argument("--bucket-minutes", type=int, default=int(os.environ.get("NEWS_BENZINGA_BUCKET_MINUTES", "15")))
+    parser.add_argument("--bucket-minutes", type=int, default=int(os.environ.get("NEWS_BENZINGA_BUCKET_MINUTES", "90")))
     parser.add_argument("--limit", type=int, default=int(os.environ.get("NEWS_BENZINGA_POLL_LIMIT", "1000")))
-    parser.add_argument("--max-pages", type=int, default=int(os.environ.get("NEWS_BENZINGA_MAX_PAGES", "20")))
+    parser.add_argument("--max-pages", type=int, default=int(os.environ.get("NEWS_BENZINGA_MAX_PAGES", "1000")))
     parser.add_argument("--download-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_DOWNLOAD_PROCESSES", "8")))
     parser.add_argument("--normalize-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZE_PROCESSES", "0")))
     parser.add_argument("--enrichment-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_ENRICHMENT_PROCESSES", "0")))
@@ -1132,7 +1132,7 @@ def filter_pending_buckets(
 def build_benzinga_url(endpoint_url: str, api_key: str, start_utc: str, end_utc: str, limit: int) -> str:
     params = {
         "published.gte": start_utc,
-        "published.lte": end_utc,
+        "published.lt": end_utc,
         "limit": str(limit),
         "sort": "published.asc",
         "apiKey": api_key,
