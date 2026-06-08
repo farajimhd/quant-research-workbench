@@ -7,7 +7,6 @@ import json
 import mimetypes
 import os
 import re
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -545,14 +544,11 @@ def extract_pdf_text(pdf_bytes: bytes) -> str:
                 raise RuntimeError("pdf_parser_not_available") from pypdf_exc
             reader = PdfReader(io.BytesIO(pdf_bytes))
             return normalize_text(" ".join(page.extract_text() or "" for page in reader.pages))
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as handle:
-        handle.write(pdf_bytes)
-        handle.flush()
-        doc = pymupdf.open(handle.name)
-        try:
-            return normalize_text(" ".join(page.get_text("text") for page in doc))
-        finally:
-            doc.close()
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        return normalize_text(" ".join(page.get_text("text") for page in doc))
+    finally:
+        doc.close()
 
 
 def content_flags(
