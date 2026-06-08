@@ -6,9 +6,11 @@ import hmac
 import json
 import multiprocessing as mp
 import os
+import re
+import ssl
 import sys
 import time
-import ssl
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -31,10 +33,12 @@ DEFAULT_PROCESSES = 8
 DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024
 DEFAULT_AWS_REGION = "us-east-1"
 DEFAULT_AWS_SERVICE = "s3"
+DEFAULT_DISCOVERY = "remote"
 KIND_PREFIXES = {
     "quotes": "us_stocks_sip/quotes_v1",
     "trades": "us_stocks_sip/trades_v1",
 }
+REMOTE_FILE_RE = re.compile(r"(?P<date>\d{4}-\d{2}-\d{2})\.csv\.gz$")
 ENV_KEYS = [
     "MASSIVE_API_KEY",
     "AWS_ACCESS_KEY_ID",
@@ -51,6 +55,13 @@ class DownloadJob:
     session_date: str
     key: str
     destination: str
+    remote_size: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteObject:
+    key: str
+    size: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +115,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk-bytes", type=int, default=DEFAULT_CHUNK_BYTES)
     parser.add_argument("--limit-files", type=int, default=0, help="Debug limit after job discovery. 0 means no limit.")
     parser.add_argument("--report-path", default="", help="Optional JSONL report path.")
+    parser.add_argument(
+        "--discovery",
+        choices=("remote", "calendar"),
+        default=DEFAULT_DISCOVERY,
+        help=(
+            "remote lists Massive prefixes and downloads only existing remote files; "
+            "calendar builds every calendar date and HEADs each object."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-verify-tls", action="store_true")
     parser.add_argument(
@@ -125,6 +145,21 @@ def iter_dates(start: str, end: str) -> Iterable[str]:
         current += timedelta(days=1)
 
 
+def iter_months(start: str, end: str) -> Iterable[tuple[int, int]]:
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end)
+    if end_date < start_date:
+        raise ValueError(f"end-date {end} is before start-date {start}")
+    year = start_date.year
+    month = start_date.month
+    while (year, month) <= (end_date.year, end_date.month):
+        yield year, month
+        month += 1
+        if month == 13:
+            month = 1
+            year += 1
+
+
 def parse_kinds(raw: str) -> list[str]:
     kinds = [item.strip() for item in raw.split(",") if item.strip()]
     invalid = [kind for kind in kinds if kind not in KIND_PREFIXES]
@@ -141,7 +176,7 @@ def object_key(kind: str, session_date: str) -> str:
     return f"{KIND_PREFIXES[kind]}/{year}/{month}/{session_date}.csv.gz"
 
 
-def build_jobs(flatfiles_root: Path, start_date: str, end_date: str, kinds: list[str]) -> list[DownloadJob]:
+def build_calendar_jobs(flatfiles_root: Path, start_date: str, end_date: str, kinds: list[str]) -> list[DownloadJob]:
     jobs: list[DownloadJob] = []
     for session_date in iter_dates(start_date, end_date):
         for kind in kinds:
@@ -231,7 +266,12 @@ def signed_headers(
     }
 
 
-def signed_request(config: DownloadConfig, method: str, key: str) -> request.Request:
+def signed_request(
+    config: DownloadConfig,
+    method: str,
+    key: str,
+    query_params: dict[str, str] | None = None,
+) -> request.Request:
     url, headers = signed_headers(
         method=method,
         endpoint_url=config.endpoint_url,
@@ -241,6 +281,7 @@ def signed_request(config: DownloadConfig, method: str, key: str) -> request.Req
         secret_key=config.secret_key,
         region=config.region,
         service=config.service,
+        query_params=query_params,
     )
     return request.Request(url, headers=headers, method=method)
 
@@ -262,12 +303,99 @@ def remote_size(config: DownloadConfig, key: str) -> int | None:
         raise RuntimeError(f"HEAD failed for {key}: HTTP {exc.code} {exc.reason}: {body}") from exc
 
 
+def xml_child_text(parent: ET.Element, child_name: str) -> str:
+    for child in list(parent):
+        if child.tag.rsplit("}", 1)[-1] == child_name:
+            return child.text or ""
+    return ""
+
+
+def xml_children(parent: ET.Element, child_name: str) -> list[ET.Element]:
+    return [child for child in list(parent) if child.tag.rsplit("}", 1)[-1] == child_name]
+
+
+def list_remote_objects(config: DownloadConfig, prefix: str) -> list[RemoteObject]:
+    objects: list[RemoteObject] = []
+    continuation_token = ""
+    page = 0
+    while True:
+        page += 1
+        query_params = {
+            "list-type": "2",
+            "prefix": prefix,
+        }
+        if continuation_token:
+            query_params["continuation-token"] = continuation_token
+        req = signed_request(config, "GET", "", query_params=query_params)
+        try:
+            with urlopen_signed(req, config) as response:
+                body = response.read()
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"LIST failed for prefix {prefix!r} page={page}: HTTP {exc.code} {exc.reason}: {body}") from exc
+
+        root = ET.fromstring(body)
+        for item in xml_children(root, "Contents"):
+            key = xml_child_text(item, "Key")
+            size_text = xml_child_text(item, "Size")
+            if key:
+                objects.append(RemoteObject(key=key, size=int(size_text or "0")))
+        is_truncated = xml_child_text(root, "IsTruncated").lower() == "true"
+        continuation_token = xml_child_text(root, "NextContinuationToken")
+        if not is_truncated:
+            break
+        if not continuation_token:
+            raise RuntimeError(f"LIST response for prefix {prefix!r} is truncated but has no NextContinuationToken")
+    return objects
+
+
+def build_remote_jobs(
+    flatfiles_root: Path,
+    start_date: str,
+    end_date: str,
+    kinds: list[str],
+    config: DownloadConfig,
+) -> list[DownloadJob]:
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    jobs: list[DownloadJob] = []
+    for kind in kinds:
+        for year, month in iter_months(start_date, end_date):
+            prefix = f"{KIND_PREFIXES[kind]}/{year:04d}/{month:02d}/"
+            print(f"DISCOVER {kind} prefix={prefix}", flush=True)
+            objects = list_remote_objects(config, prefix)
+            matched = 0
+            for obj in objects:
+                match = REMOTE_FILE_RE.search(Path(obj.key).name)
+                if not match:
+                    continue
+                session = date.fromisoformat(match.group("date"))
+                if not (start <= session <= end):
+                    continue
+                expected_key = object_key(kind, session.isoformat())
+                if obj.key != expected_key:
+                    continue
+                jobs.append(
+                    DownloadJob(
+                        kind=kind,
+                        session_date=session.isoformat(),
+                        key=obj.key,
+                        destination=str(flatfiles_root / obj.key),
+                        remote_size=obj.size,
+                    )
+                )
+                matched += 1
+            print(f"DISCOVER {kind} prefix={prefix} remote_files={matched:,}", flush=True)
+    jobs.sort(key=lambda item: (item.session_date, item.kind, item.key))
+    return jobs
+
+
 def download_one(config: DownloadConfig, job: DownloadJob, worker_id: int, bar: tqdm | None = None) -> DownloadResult:
     t0 = time.time()
     destination = Path(job.destination)
     part_path = destination.with_name(destination.name + ".part")
     try:
-        expected_size = remote_size(config, job.key)
+        expected_size = job.remote_size or remote_size(config, job.key)
         if expected_size is None:
             return DownloadResult(worker_id, job.kind, job.session_date, job.key, str(destination), "missing_remote", wall_seconds=time.time() - t0)
         if destination.exists():
@@ -415,7 +543,10 @@ def main() -> None:
         overwrite_incomplete=not args.keep_incomplete,
         dry_run=bool(args.dry_run),
     )
-    jobs = build_jobs(flatfiles_root, args.start_date, args.end_date, kinds)
+    if args.discovery == "remote":
+        jobs = build_remote_jobs(flatfiles_root, args.start_date, args.end_date, kinds, config)
+    else:
+        jobs = build_calendar_jobs(flatfiles_root, args.start_date, args.end_date, kinds)
     if args.limit_files > 0:
         jobs = jobs[: args.limit_files]
     processes = max(1, min(int(args.processes), len(jobs) or 1))
@@ -427,6 +558,7 @@ def main() -> None:
     print("Massive SIP flatfile downloader", flush=True)
     print(f"date_range={args.start_date} -> {args.end_date}", flush=True)
     print(f"kinds={kinds}", flush=True)
+    print(f"discovery={args.discovery}", flush=True)
     print(f"jobs={len(jobs):,} processes={processes}", flush=True)
     print(f"endpoint={config.endpoint_url} bucket={config.bucket}", flush=True)
     print(f"flatfiles_root={flatfiles_root}", flush=True)
