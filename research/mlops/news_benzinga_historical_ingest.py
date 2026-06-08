@@ -122,6 +122,8 @@ class NormalizeJob:
     artifact_root_win: str
     fetch_external: bool
     extract_pdfs: bool
+    desired_fetch_external: bool
+    desired_extract_pdfs: bool
     extraction_timeout_seconds: float
     external_min_body_chars: int
     max_pdf_bytes: int
@@ -143,6 +145,7 @@ class NormalizeResult:
     rows: list[dict[str, Any]]
     file_errors: list[FileError]
     extraction_events: list[dict[str, Any]]
+    enrichment_artifacts: list[DownloadedArtifact]
     downloaded_rows: int
     normalized_rows: int
     page_count: int
@@ -164,6 +167,7 @@ class BucketInsertMeta:
 
 @dataclass(frozen=True, slots=True)
 class InsertJob:
+    kind: str
     batch_id: str
     rows: list[dict[str, Any]]
     bucket_metas: list[BucketInsertMeta]
@@ -177,6 +181,7 @@ class InsertJob:
 
 @dataclass(frozen=True, slots=True)
 class InsertResult:
+    kind: str
     batch_id: str
     bucket_metas: list[BucketInsertMeta]
     bucket_row_counts: dict[str, int]
@@ -226,6 +231,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-pages", type=int, default=int(os.environ.get("NEWS_BENZINGA_MAX_PAGES", "20")))
     parser.add_argument("--download-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_DOWNLOAD_PROCESSES", "8")))
     parser.add_argument("--normalize-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZE_PROCESSES", "0")))
+    parser.add_argument("--enrichment-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_ENRICHMENT_PROCESSES", "0")))
     parser.add_argument("--insert-concurrency", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_CONCURRENCY", "4")))
     parser.add_argument("--insert-batch-rows", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_BATCH_ROWS", "5000")))
     parser.add_argument("--manifest-batch-rows", type=int, default=int(os.environ.get("NEWS_BENZINGA_MANIFEST_BATCH_ROWS", "1000")))
@@ -319,6 +325,7 @@ def main() -> None:
     args = parse_args()
     args.download_processes = max(1, args.download_processes)
     args.normalize_processes = args.normalize_processes if args.normalize_processes > 0 else max(1, args.download_processes // 2)
+    args.enrichment_processes = args.enrichment_processes if args.enrichment_processes > 0 else max(1, min(4, args.normalize_processes))
     args.insert_concurrency = max(1, args.insert_concurrency)
     args.insert_batch_rows = max(1, args.insert_batch_rows)
     args.manifest_batch_rows = max(1, args.manifest_batch_rows)
@@ -357,11 +364,18 @@ def main() -> None:
     print(f"buckets={len(buckets):,} limit_buckets={args.limit_buckets}", flush=True)
     print(
         f"download_processes={args.download_processes} normalize_processes={args.normalize_processes} "
+        f"enrichment_processes={args.enrichment_processes} "
         f"insert_concurrency={args.insert_concurrency} insert_batch_rows={args.insert_batch_rows} "
         f"manifest_batch_rows={args.manifest_batch_rows}",
         flush=True,
     )
     print(f"fetch_external={not args.no_fetch_external} extract_pdfs={not args.no_extract_pdfs}", flush=True)
+    print(
+        "pipeline=base_first_async_enrichment "
+        f"max_download_backlog={max(args.download_processes, args.download_processes * 4)} "
+        f"max_enrichment_backlog={max(args.enrichment_processes, args.enrichment_processes * 4)}",
+        flush=True,
+    )
     print(
         f"external_intervals_seconds=default:{args.external_request_min_interval_seconds} "
         f"benzinga:{args.benzinga_request_min_interval_seconds} sec:{args.sec_request_min_interval_seconds} "
@@ -403,17 +417,22 @@ def main() -> None:
     downloaded_total = 0
     inserted_total = 0
     normalized_total = 0
+    enriched_total = 0
     started_at = time.perf_counter()
     insert_futures: dict[concurrent.futures.Future[InsertResult], InsertJob] = {}
     manifest_futures: dict[concurrent.futures.Future[ManifestResult], ManifestJob] = {}
     insert_rows_buffer: list[dict[str, Any]] = []
     insert_bucket_counts: dict[str, int] = {}
     insert_bucket_metas: dict[str, BucketInsertMeta] = {}
+    enrichment_rows_buffer: list[dict[str, Any]] = []
+    enrichment_bucket_counts: dict[str, int] = {}
+    enrichment_bucket_metas: dict[str, BucketInsertMeta] = {}
     manifest_rows_buffer: list[NewsIngestManifestRow] = []
     insert_batch_index = 0
     manifest_batch_index = 0
     next_download_index = 0
     max_download_backlog = max(args.download_processes, args.download_processes * 4)
+    max_enrichment_backlog = max(args.enrichment_processes, args.enrichment_processes * 4)
     max_insert_workers = max(1, min(args.insert_concurrency, len(pending)))
 
     def submit_insert_batch(insert_pool: concurrent.futures.ThreadPoolExecutor) -> None:
@@ -421,8 +440,9 @@ def main() -> None:
         if not insert_rows_buffer:
             return
         insert_batch_index += 1
-        batch_id = f"{run_id}_batch_{insert_batch_index:08d}"
+        batch_id = f"{run_id}_base_batch_{insert_batch_index:08d}"
         job = InsertJob(
+            kind="base",
             batch_id=batch_id,
             rows=list(insert_rows_buffer),
             bucket_metas=list(insert_bucket_metas.values()),
@@ -437,6 +457,29 @@ def main() -> None:
         insert_rows_buffer.clear()
         insert_bucket_counts.clear()
         insert_bucket_metas.clear()
+
+    def submit_enrichment_insert_batch(insert_pool: concurrent.futures.ThreadPoolExecutor) -> None:
+        nonlocal insert_batch_index
+        if not enrichment_rows_buffer:
+            return
+        insert_batch_index += 1
+        batch_id = f"{run_id}_enrichment_batch_{insert_batch_index:08d}"
+        job = InsertJob(
+            kind="enrichment",
+            batch_id=batch_id,
+            rows=list(enrichment_rows_buffer),
+            bucket_metas=list(enrichment_bucket_metas.values()),
+            bucket_row_counts=dict(enrichment_bucket_counts),
+            clickhouse_url=args.clickhouse_url,
+            user=args.user,
+            password=args.password,
+            database=args.database,
+            news_table=args.news_table,
+        )
+        insert_futures[insert_pool.submit(insert_rows_worker, job)] = job
+        enrichment_rows_buffer.clear()
+        enrichment_bucket_counts.clear()
+        enrichment_bucket_metas.clear()
 
     def queue_manifest_rows(rows: list[NewsIngestManifestRow], insert_pool: concurrent.futures.ThreadPoolExecutor) -> None:
         if not rows:
@@ -466,10 +509,13 @@ def main() -> None:
     with (
         concurrent.futures.ProcessPoolExecutor(max_workers=args.download_processes) as download_pool,
         concurrent.futures.ProcessPoolExecutor(max_workers=args.normalize_processes) as normalize_pool,
+        concurrent.futures.ProcessPoolExecutor(max_workers=args.enrichment_processes) as enrichment_pool,
         concurrent.futures.ThreadPoolExecutor(max_workers=max_insert_workers) as insert_pool,
     ):
         download_futures: dict[concurrent.futures.Future[DownloadResult], BucketJob] = {}
         normalize_futures: dict[concurrent.futures.Future[NormalizeResult], DownloadResult] = {}
+        enrichment_futures: dict[concurrent.futures.Future[NormalizeResult], NormalizeResult] = {}
+        pending_enrichment_jobs: list[tuple[NormalizeJob, NormalizeResult]] = []
 
         def submit_more_downloads() -> None:
             nonlocal next_download_index
@@ -478,21 +524,31 @@ def main() -> None:
                 next_download_index += 1
                 download_futures[download_pool.submit(download_bucket_worker, bucket)] = bucket
 
+        def submit_more_enrichments() -> None:
+            while pending_enrichment_jobs and len(enrichment_futures) < max_enrichment_backlog:
+                job, base_result = pending_enrichment_jobs.pop(0)
+                enrichment_futures[enrichment_pool.submit(normalize_bucket_worker, job)] = base_result
+
         submit_more_downloads()
         while (
             download_futures
             or normalize_futures
+            or pending_enrichment_jobs
+            or enrichment_futures
             or insert_futures
             or manifest_futures
+            or enrichment_rows_buffer
             or manifest_rows_buffer
             or next_download_index < len(pending)
         ):
             submit_more_downloads()
-            if not download_futures and not normalize_futures and not insert_futures and manifest_rows_buffer:
+            submit_more_enrichments()
+            if not download_futures and not normalize_futures and not enrichment_futures and not insert_futures and manifest_rows_buffer:
                 submit_manifest_batch(insert_pool)
             active_futures: list[concurrent.futures.Future[Any]] = [
                 *download_futures.keys(),
                 *normalize_futures.keys(),
+                *enrichment_futures.keys(),
                 *insert_futures.keys(),
                 *manifest_futures.keys(),
             ]
@@ -535,8 +591,10 @@ def main() -> None:
                             page_count=download_result.page_count,
                             saturated=download_result.saturated,
                             artifact_root_win=bucket.artifact_root_win,
-                            fetch_external=bucket.fetch_external,
-                            extract_pdfs=bucket.extract_pdfs,
+                            fetch_external=False,
+                            extract_pdfs=False,
+                            desired_fetch_external=bucket.fetch_external,
+                            desired_extract_pdfs=bucket.extract_pdfs,
                             extraction_timeout_seconds=bucket.extraction_timeout_seconds,
                             external_min_body_chars=bucket.external_min_body_chars,
                             max_pdf_bytes=bucket.max_pdf_bytes,
@@ -570,6 +628,7 @@ def main() -> None:
                             rows=[],
                             file_errors=[],
                             extraction_events=[],
+                            enrichment_artifacts=[],
                             downloaded_rows=download_result.downloaded_rows,
                             normalized_rows=0,
                             page_count=download_result.page_count,
@@ -582,6 +641,34 @@ def main() -> None:
                     append_jsonl(report_path, {"type": "normalize", "run_id": run_id, "result": result_public(normalize_result)})
                     append_file_errors(report_path, run_id, normalize_result.file_errors)
                     append_extraction_events(report_path, run_id, normalize_result.extraction_events)
+                    if normalize_result.enrichment_artifacts:
+                        enrichment_job = NormalizeJob(
+                            bucket_id=normalize_result.bucket_id,
+                            start_utc=normalize_result.start_utc,
+                            end_utc=normalize_result.end_utc,
+                            artifacts=normalize_result.enrichment_artifacts,
+                            downloaded_rows=normalize_result.downloaded_rows,
+                            page_count=normalize_result.page_count,
+                            saturated=normalize_result.saturated,
+                            artifact_root_win=args.artifact_root_win,
+                            fetch_external=not args.no_fetch_external,
+                            extract_pdfs=not args.no_extract_pdfs,
+                            desired_fetch_external=not args.no_fetch_external,
+                            desired_extract_pdfs=not args.no_extract_pdfs,
+                            extraction_timeout_seconds=args.extraction_timeout_seconds,
+                            external_min_body_chars=args.external_min_body_chars,
+                            max_pdf_bytes=args.max_pdf_bytes,
+                            text_limit_chars=args.text_limit_chars,
+                            external_request_min_interval_seconds=args.external_request_min_interval_seconds,
+                            benzinga_request_min_interval_seconds=args.benzinga_request_min_interval_seconds,
+                            sec_request_min_interval_seconds=args.sec_request_min_interval_seconds,
+                            external_max_retries=args.external_max_retries,
+                            external_retry_base_seconds=args.external_retry_base_seconds,
+                            default_user_agent=args.external_user_agent,
+                            sec_user_agent=args.sec_user_agent,
+                        )
+                        pending_enrichment_jobs.append((enrichment_job, normalize_result))
+                        submit_more_enrichments()
                     if not args.no_insert:
                         queue_manifest_rows([manifest_from_normalize(run_id, normalize_result)], insert_pool)
                     if normalize_result.exception:
@@ -607,12 +694,53 @@ def main() -> None:
                         queue_manifest_rows([manifest_empty_insert(run_id, normalize_result)], insert_pool)
                         final_completed += 1
 
+                elif future in enrichment_futures:
+                    base_result = enrichment_futures.pop(future)
+                    try:
+                        enrichment_result = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        enrichment_result = NormalizeResult(
+                            bucket_id=base_result.bucket_id,
+                            start_utc=base_result.start_utc,
+                            end_utc=base_result.end_utc,
+                            rows=[],
+                            file_errors=[],
+                            extraction_events=[],
+                            enrichment_artifacts=[],
+                            downloaded_rows=base_result.downloaded_rows,
+                            normalized_rows=0,
+                            page_count=base_result.page_count,
+                            saturated=base_result.saturated,
+                            wall_seconds=0.0,
+                            exception=repr(exc),
+                        )
+                    enriched_total += enrichment_result.normalized_rows
+                    append_jsonl(report_path, {"type": "enrichment", "run_id": run_id, "result": result_public(enrichment_result)})
+                    append_file_errors(report_path, run_id, enrichment_result.file_errors)
+                    append_extraction_events(report_path, run_id, enrichment_result.extraction_events)
+                    if not args.no_insert and enrichment_result.rows:
+                        meta = BucketInsertMeta(
+                            bucket_id=enrichment_result.bucket_id,
+                            start_utc=enrichment_result.start_utc,
+                            end_utc=enrichment_result.end_utc,
+                            downloaded_rows=enrichment_result.downloaded_rows,
+                            normalized_rows=enrichment_result.normalized_rows,
+                            page_count=enrichment_result.page_count,
+                            saturated=enrichment_result.saturated,
+                        )
+                        enrichment_rows_buffer.extend(enrichment_result.rows)
+                        enrichment_bucket_metas[meta.bucket_id] = meta
+                        enrichment_bucket_counts[meta.bucket_id] = enrichment_bucket_counts.get(meta.bucket_id, 0) + len(enrichment_result.rows)
+                        if len(enrichment_rows_buffer) >= args.insert_batch_rows:
+                            submit_enrichment_insert_batch(insert_pool)
+
                 elif future in insert_futures:
                     insert_job = insert_futures.pop(future)
                     try:
                         insert_result = future.result()
                     except Exception as exc:  # noqa: BLE001
                         insert_result = InsertResult(
+                            kind=insert_job.kind,
                             batch_id=insert_job.batch_id,
                             bucket_metas=insert_job.bucket_metas,
                             bucket_row_counts=insert_job.bucket_row_counts,
@@ -625,10 +753,11 @@ def main() -> None:
                         run_id,
                         report_path,
                     )
-                    final_completed += insert_completed
-                    final_failed += insert_failed
+                    if insert_job.kind == "base":
+                        final_completed += insert_completed
+                        final_failed += insert_failed
+                        queue_manifest_rows(manifest_rows, insert_pool)
                     inserted_total += insert_rows
-                    queue_manifest_rows(manifest_rows, insert_pool)
 
                 elif future in manifest_futures:
                     manifest_futures.pop(future)
@@ -646,6 +775,8 @@ def main() -> None:
 
                 if not download_futures and not normalize_futures and not args.no_insert and insert_rows_buffer:
                     submit_insert_batch(insert_pool)
+                if not pending_enrichment_jobs and not enrichment_futures and not args.no_insert and enrichment_rows_buffer:
+                    submit_enrichment_insert_batch(insert_pool)
                 print_progress(
                     total=len(pending),
                     download_completed=download_completed,
@@ -654,8 +785,9 @@ def main() -> None:
                     final_failed=final_failed,
                     downloaded_rows=downloaded_total,
                     normalized_rows=normalized_total,
+                    enriched_rows=enriched_total,
                     inserted_rows=inserted_total,
-                    pending_insert_rows=len(insert_rows_buffer),
+                    pending_insert_rows=len(insert_rows_buffer) + len(enrichment_rows_buffer),
                     started_at=started_at,
                 )
 
@@ -663,7 +795,8 @@ def main() -> None:
     print("=" * 96, flush=True)
     print(
         f"DONE completed={final_completed:,} failed={final_failed:,} "
-        f"downloaded_rows={downloaded_total:,} normalized_rows={normalized_total:,} inserted_rows={inserted_total:,}",
+        f"downloaded_rows={downloaded_total:,} normalized_rows={normalized_total:,} "
+        f"enriched_rows={enriched_total:,} inserted_rows={inserted_total:,}",
         flush=True,
     )
     print(f"elapsed_min={elapsed / 60:.1f} report={report_path}", flush=True)
@@ -796,6 +929,7 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
     rows: list[dict[str, Any]] = []
     file_errors: list[FileError] = []
     extraction_events: list[dict[str, Any]] = []
+    enrichment_artifacts: list[DownloadedArtifact] = []
     options = NewsExtractionOptions(
         fetch_external=job.fetch_external,
         extract_pdfs=job.extract_pdfs,
@@ -823,7 +957,7 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
             provider_article_id = provider_id_from_payload(payload)
             published_raw = str(payload.get("published") or "")
             rows.append(
-                normalize_benzinga_payload(
+                row := normalize_benzinga_payload(
                     payload,
                     raw_artifact_path=artifact.raw_artifact_path,
                     raw_payload_hash=artifact.raw_payload_hash,
@@ -833,6 +967,9 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
                     diagnostics=extraction_events,
                 )
             )
+            row["updated_at_utc"] = to_clickhouse_dt64(datetime.now(UTC))
+            if not job.fetch_external and not job.extract_pdfs and artifact_needs_enrichment(row, job):
+                enrichment_artifacts.append(artifact)
         except Exception as exc:  # noqa: BLE001
             file_errors.append(
                 FileError(
@@ -853,6 +990,7 @@ def normalize_bucket_worker(job: NormalizeJob) -> NormalizeResult:
         rows=rows,
         file_errors=file_errors,
         extraction_events=extraction_events,
+        enrichment_artifacts=enrichment_artifacts,
         downloaded_rows=job.downloaded_rows,
         normalized_rows=len(rows),
         page_count=job.page_count,
@@ -868,6 +1006,7 @@ def insert_rows_worker(job: InsertJob) -> InsertResult:
         client = ClickHouseHttpClient(job.clickhouse_url, job.user, job.password)
         inserted = insert_news_rows(client, database=job.database, table=job.news_table, rows=job.rows)
         return InsertResult(
+            kind=job.kind,
             batch_id=job.batch_id,
             bucket_metas=job.bucket_metas,
             bucket_row_counts=job.bucket_row_counts,
@@ -876,6 +1015,7 @@ def insert_rows_worker(job: InsertJob) -> InsertResult:
         )
     except Exception as exc:  # noqa: BLE001
         return InsertResult(
+            kind=job.kind,
             batch_id=job.batch_id,
             bucket_metas=job.bucket_metas,
             bucket_row_counts=job.bucket_row_counts,
@@ -883,6 +1023,22 @@ def insert_rows_worker(job: InsertJob) -> InsertResult:
             wall_seconds=time.perf_counter() - started_at,
             exception=repr(exc),
         )
+
+
+def artifact_needs_enrichment(row: dict[str, Any], job: NormalizeJob) -> bool:
+    if job.desired_fetch_external and should_fetch_external_for_row(row, job.external_min_body_chars):
+        return True
+    return bool(job.desired_extract_pdfs and row.get("pdf_urls"))
+
+
+def should_fetch_external_for_row(row: dict[str, Any], min_body_chars: int) -> bool:
+    article_url = str(row.get("article_url") or "").strip()
+    if not article_url:
+        return False
+    parsed = parse.urlparse(article_url)
+    if parsed.netloc.lower().endswith("benzinga.com") and parsed.path.lower().startswith("/quote/"):
+        return False
+    return len(str(row.get("body_text") or "")) < min_body_chars
 
 
 def manifest_rows_worker(job: ManifestJob) -> ManifestResult:
@@ -1071,6 +1227,8 @@ def result_public(result: Any) -> dict[str, Any]:
     payload["file_error_count"] = len(file_errors)
     extraction_events = payload.pop("extraction_events", [])
     payload["extraction_event_count"] = len(extraction_events)
+    enrichment_artifacts = payload.pop("enrichment_artifacts", [])
+    payload["enrichment_artifact_count"] = len(enrichment_artifacts)
     payload.pop("artifacts", None)
     payload.pop("rows", None)
     return payload
@@ -1153,6 +1311,7 @@ def print_progress(
     final_failed: int,
     downloaded_rows: int,
     normalized_rows: int,
+    enriched_rows: int,
     inserted_rows: int,
     pending_insert_rows: int,
     started_at: float,
@@ -1166,7 +1325,7 @@ def print_progress(
         f"[finalized {finalized:,}/{total:,}] downloaded_buckets={download_completed:,} "
         f"normalized_buckets={normalize_completed:,} completed={final_completed:,} failed={final_failed:,} "
         f"downloaded_rows={downloaded_rows:,} normalized_rows={normalized_rows:,} "
-        f"inserted_rows={inserted_rows:,} insert_buffer={pending_insert_rows:,} "
+        f"enriched_rows={enriched_rows:,} inserted_rows={inserted_rows:,} insert_buffer={pending_insert_rows:,} "
         f"elapsed_min={elapsed / 60:.1f} eta_min={eta / 60:.1f}",
         flush=True,
     )
