@@ -833,6 +833,7 @@ def merge_submission_timestamp(submission: ParsedSubmission, timestamp: HeaderTi
     row = asdict(submission)
     if timestamp is None:
         timestamp = failed_header(submission.accession_number, "header timestamp missing from fetch output")
+    has_exact_event_time = bool(timestamp.accepted_at_utc and timestamp.timestamp_source == "hdr_sgml")
     row.update(
         {
             "header_url": timestamp.header_url,
@@ -840,6 +841,10 @@ def merge_submission_timestamp(submission: ParsedSubmission, timestamp: HeaderTi
             "accepted_at_edgar_raw": timestamp.accepted_at_edgar_raw,
             "accepted_at_et": timestamp.accepted_at_et,
             "accepted_at_utc": timestamp.accepted_at_utc,
+            "event_time_utc": timestamp.accepted_at_utc if has_exact_event_time else "",
+            "event_time_source": timestamp.timestamp_source if timestamp.accepted_at_utc else "",
+            "event_time_quality": "exact_sec_acceptance" if has_exact_event_time else "missing",
+            "market_label_eligible": has_exact_event_time,
             "timestamp_source": timestamp.timestamp_source,
             "timestamp_fetch_status": timestamp.fetch_status,
             "timestamp_fetch_error": timestamp.fetch_error,

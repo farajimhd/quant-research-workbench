@@ -181,6 +181,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_fe
 - `.hdr.sgml` is the timestamp authority for `accepted_at`.
 - Some SEC feed entries do not expose a separate `.hdr.sgml` sidecar even though the filing directory is listed. Those rows are retained and marked with `timestamp_fetch_status="unavailable_404"` rather than counted as request failures.
 - `accepted_at_edgar_raw` is parsed as EDGAR Eastern time and converted to `accepted_at_utc`.
+- Normalized submission rows include `event_time_utc`, `event_time_source`, `event_time_quality`, and `market_label_eligible`. Only rows with `event_time_quality="exact_sec_acceptance"` and `market_label_eligible=true` should be used for market-reaction labels.
 - The archive date is not used as the event timestamp.
 - `FILING-DATE` is stored but should not be used for market-reaction labels.
 - The script rate-limits SEC requests with `--sec-request-min-interval-seconds`. Use `0.11` or slower for production to stay below SEC's 10 requests/second guidance.
