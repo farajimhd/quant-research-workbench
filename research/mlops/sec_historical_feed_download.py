@@ -542,18 +542,26 @@ def parse_nc_archive(
     extract_dir: Path,
     limit_files: int,
     persist_nc_files: bool,
+    progress_label: str = "",
+    progress_every: int = 500,
+    progress_interval_seconds: float = 10.0,
 ) -> tuple[list[ParsedSubmission], list[ParsedDocument]]:
     if persist_nc_files:
         extract_dir.mkdir(parents=True, exist_ok=True)
     root = extract_dir.resolve()
     submissions: list[ParsedSubmission] = []
     documents: list[ParsedDocument] = []
+    started = time.perf_counter()
+    last_progress = started
     with tarfile.open(archive_path, "r:gz") as tar:
         members = [member for member in tar.getmembers() if member.isfile() and member.name.lower().endswith(".nc")]
         members.sort(key=lambda member: member.name)
         if limit_files:
             members = members[:limit_files]
-        for member in members:
+        total_members = len(members)
+        if progress_label:
+            print(f"{progress_label} parse: discovered {total_members:,} .nc members", flush=True)
+        for index, member in enumerate(members, start=1):
             handle = tar.extractfile(member)
             if handle is None:
                 continue
@@ -570,6 +578,18 @@ def parse_nc_archive(
             submission, docs = parse_nc_bytes(archive_date, artifact_path, raw)
             submissions.append(submission)
             documents.extend(docs)
+            now = time.perf_counter()
+            if progress_label and (
+                index == total_members
+                or (progress_every > 0 and index % progress_every == 0)
+                or now - last_progress >= progress_interval_seconds
+            ):
+                print(
+                    f"{progress_label} parse: {index:,}/{total_members:,} members "
+                    f"submissions={len(submissions):,} documents={len(documents):,} elapsed={now - started:.1f}s",
+                    flush=True,
+                )
+                last_progress = now
     return submissions, documents
 
 
@@ -652,8 +672,13 @@ def fetch_headers_for_submissions(
     submissions: list[ParsedSubmission],
     job: DayJob | ExistingDirJob,
     limiter: RateLimiter,
+    progress_label: str = "",
+    progress_every: int = 200,
+    progress_interval_seconds: float = 10.0,
 ) -> dict[str, HeaderTimestamp]:
     if job.no_header_fetch:
+        if progress_label:
+            print(f"{progress_label} headers: skipped for {len(submissions):,} submissions", flush=True)
         return {
             item.accession_number: HeaderTimestamp(
                 accession_number=item.accession_number,
@@ -671,14 +696,34 @@ def fetch_headers_for_submissions(
             for item in submissions
         }
     output: dict[str, HeaderTimestamp] = {}
+    total = len(submissions)
+    started = time.perf_counter()
+    last_progress = started
+    if progress_label:
+        print(f"{progress_label} headers: fetching accepted_at for {total:,} submissions", flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=job.header_concurrency) as pool:
         futures = {pool.submit(fetch_header_timestamp, item, job, limiter): item for item in submissions}
-        for future in concurrent.futures.as_completed(futures):
+        for completed, future in enumerate(concurrent.futures.as_completed(futures), start=1):
             item = futures[future]
             try:
                 output[item.accession_number] = future.result()
             except Exception as exc:  # noqa: BLE001
                 output[item.accession_number] = failed_header(item.accession_number, repr(exc))
+            now = time.perf_counter()
+            if progress_label and (
+                completed == total
+                or (progress_every > 0 and completed % progress_every == 0)
+                or now - last_progress >= progress_interval_seconds
+            ):
+                ok = sum(1 for timestamp in output.values() if timestamp.fetch_status == "ok")
+                failed = sum(1 for timestamp in output.values() if timestamp.fetch_status == "failed")
+                missing = sum(1 for timestamp in output.values() if timestamp.fetch_status == "missing_acceptance")
+                print(
+                    f"{progress_label} headers: {completed:,}/{total:,} done "
+                    f"ok={ok:,} missing={missing:,} failed={failed:,} elapsed={now - started:.1f}s",
+                    flush=True,
+                )
+                last_progress = now
     return output
 
 

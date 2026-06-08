@@ -117,20 +117,26 @@ Use this when you want to keep compressed archives on HDD and write normalized J
 The pipeline keeps at most roughly `--download-concurrency` archive downloads ahead of parsing, so it does not require downloading the entire historical range before normalized output starts.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500
 ```
 
 Recommended smoke test:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --archive-copy-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --limit-files-per-day 20
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2026-06-05 --end-date 2026-06-06 --download-concurrency 1 --archive-copy-concurrency 1 --header-concurrency 4 --sec-request-min-interval-seconds 0.11 --limit-files-per-day 20 --progress-interval-seconds 5 --progress-file-interval-mib 16 --progress-record-interval 10
 ```
 
 Delete permanent HDD compressed archives only after a day parses successfully:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --delete-archive-after-parse
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500 --delete-archive-after-parse
 ```
+
+Progress controls:
+
+- `--progress-interval-seconds`: maximum quiet time before printing progress inside a long step. Default: `10`.
+- `--progress-file-interval-mib`: byte interval for archive download/copy progress. Default: `64`.
+- `--progress-record-interval`: `.nc` member or header-record interval for validation, parsing, and header fetch progress. Default: `500`.
 
 ## Parse From Compressed Archives
 
@@ -168,6 +174,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_fe
 - The daily archive is the content source.
 - In the bounded pipeline, SSD temp archives are working files and HDD archives are the retained compressed source-of-truth artifacts.
 - Existing archive files are integrity-checked before reuse. Corrupt temp/HDD archives are removed and redownloaded.
+- The bounded pipeline prints progress while validating archives, downloading, copying, parsing `.nc` members, fetching headers, writing normalized files, and cleaning temp archives.
 - `.hdr.sgml` is the timestamp authority for `accepted_at`.
 - `accepted_at_edgar_raw` is parsed as EDGAR Eastern time and converted to `accepted_at_utc`.
 - The archive date is not used as the event timestamp.
