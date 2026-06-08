@@ -90,9 +90,10 @@ class ArchiveIntegrityError(RuntimeError):
 
 
 class ProgressDisplay:
-    def __init__(self, mode: str, log_lines: int) -> None:
+    def __init__(self, mode: str, log_lines: int, progress_rows: int = 12) -> None:
         self.mode = mode
         self.log_lines = max(5, log_lines)
+        self.progress_rows = max(6, progress_rows)
         self._lock = threading.RLock()
         self._logs: deque[str] = deque(maxlen=self.log_lines)
         self._task_ids: dict[str, int] = {}
@@ -104,7 +105,7 @@ class ProgressDisplay:
     def __enter__(self) -> "ProgressDisplay":
         if self.mode in {"auto", "rich"}:
             try:
-                from rich.console import Group
+                from rich.layout import Layout
                 from rich.live import Live
                 from rich.panel import Panel
                 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn
@@ -116,7 +117,6 @@ class ProgressDisplay:
                 self._rich = True
                 self._text_cls = Text
                 self._panel_cls = Panel
-                self._group_cls = Group
                 self._progress = Progress(
                     SpinnerColumn(),
                     TextColumn("[bold]{task.description}"),
@@ -126,11 +126,12 @@ class ProgressDisplay:
                     TimeElapsedColumn(),
                     expand=True,
                 )
-                self._layout = Group(
-                    Panel(self._progress, title="Long-running progress", border_style="cyan"),
-                    Panel(self._text_cls(""), title="Logs (oldest to newest)", border_style="white"),
+                self._layout = Layout(name="root")
+                self._layout.split_column(
+                    Layout(self._progress_panel(), name="progress", size=self.progress_rows),
+                    Layout(self._log_panel(), name="logs", ratio=1),
                 )
-                self._live = Live(self._layout, refresh_per_second=4, transient=False)
+                self._live = Live(self._layout, refresh_per_second=4, transient=False, vertical_overflow="crop")
                 self._live.start()
         return self
 
@@ -194,8 +195,15 @@ class ProgressDisplay:
     def _refresh(self) -> None:
         if not self._rich:
             return
+        self._layout["progress"].update(self._progress_panel())
+        self._layout["logs"].update(self._log_panel())
+
+    def _progress_panel(self) -> Any:
+        return self._panel_cls(self._progress, title="Long-running progress", border_style="cyan")
+
+    def _log_panel(self) -> Any:
         log_text = self._text_cls("\n".join(self._logs) if self._logs else "No log messages yet.")
-        self._layout.renderables[1] = self._panel_cls(log_text, title="Logs (oldest to newest)", border_style="white")
+        return self._panel_cls(log_text, title="Logs (oldest to newest)", border_style="white")
 
 
 def parse_args() -> argparse.Namespace:
@@ -229,6 +237,7 @@ def parse_args() -> argparse.Namespace:
         help="Console progress layout. auto uses Rich when installed; text keeps plain logs/tqdm.",
     )
     parser.add_argument("--progress-log-lines", type=int, default=int(os.environ.get("SEC_PROGRESS_LOG_LINES", "24")))
+    parser.add_argument("--progress-panel-rows", type=int, default=int(os.environ.get("SEC_PROGRESS_PANEL_ROWS", "12")))
     parser.set_defaults(download_progress_bars=parse_bool_env("SEC_DOWNLOAD_PROGRESS_BARS", True))
     progress_bar_group = parser.add_mutually_exclusive_group()
     progress_bar_group.add_argument("--download-progress-bars", dest="download_progress_bars", action="store_true", help="Show tqdm progress bars for SEC archive downloads.")
@@ -321,6 +330,7 @@ def main() -> None:
         "progress_record_interval": progress_record_interval,
         "progress_layout": args.progress_layout,
         "progress_log_lines": max(5, args.progress_log_lines),
+        "progress_panel_rows": max(6, args.progress_panel_rows),
         "download_progress_bars": bool(args.download_progress_bars),
         "limit_days": max(0, args.limit_days),
         "limit_files_per_day": max(0, args.limit_files_per_day),
@@ -334,7 +344,7 @@ def main() -> None:
     }
     append_jsonl(report_path, config)
 
-    with ProgressDisplay(args.progress_layout, args.progress_log_lines) as progress:
+    with ProgressDisplay(args.progress_layout, args.progress_log_lines, args.progress_panel_rows) as progress:
         print_header(config, progress)
 
         if args.dry_run:

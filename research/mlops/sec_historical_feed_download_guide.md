@@ -140,6 +140,7 @@ Progress controls:
 - `--download-progress-bars` / `--no-download-progress-bars`: enable or disable archive download bars. Rich layout uses Rich bars; text layout uses tqdm when installed and falls back to text progress otherwise.
 - `--progress-layout auto|rich|text`: `auto` uses a Rich two-panel console when Rich is installed. The top panel holds active progress bars and the bottom panel holds ordered logs. Use `text` for plain console output.
 - `--progress-log-lines`: number of log lines retained in the Rich log panel. Default: `24`.
+- `--progress-panel-rows`: fixed height for the top Rich progress panel. Default: `12`; increase it if you run many concurrent days and want more visible bars.
 
 ## Parse From Compressed Archives
 
@@ -179,7 +180,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_historical_fe
 - Final normalized JSONL files should be written on SSD. Keep the compressed `.nc.tar.gz` archive on HDD and set `SEC_HISTORICAL_NORMALIZED_ROOT_WIN` to an SSD path such as `D:/market-data/sec_edgar_feed_normalized`.
 - Existing archive files are integrity-checked before reuse. Corrupt temp/HDD archives are removed and redownloaded.
 - The bounded pipeline prints progress while validating archives, downloading, copying, parsing `.nc` members, fetching headers, writing normalized files, and cleaning temp archives.
-- With the Rich layout, progress is split into two sections: active long-running progress bars on top and logs below, ordered oldest to newest within the retained log window.
+- With the Rich layout, progress is split into two fixed sections: active long-running progress bars on top and logs below, ordered oldest to newest within the retained log window.
 - SEC archive downloads use byte progress bars by default. With multiple concurrent downloads, each active download gets its own progress row.
 - `.hdr.sgml` is the timestamp authority for `accepted_at`.
 - Some SEC feed entries do not expose a separate `.hdr.sgml` sidecar even though the filing directory is listed. Those rows are retained and marked with `timestamp_fetch_status="unavailable_404"` rather than counted as request failures.
