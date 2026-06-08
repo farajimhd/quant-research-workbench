@@ -21,6 +21,7 @@ BENZINGA_PROVIDER = "benzinga"
 BENZINGA_NORMALIZER_VERSION = "benzinga-normalizer-v1"
 DEFAULT_TEXT_LIMIT_CHARS = 24_000
 DEFAULT_EXTRACTION_MIN_BODY_CHARS = 300
+DEFAULT_EXTERNAL_SOURCE_URL_LIMIT = 3
 PDF_URL_RE = re.compile(r"https?://[^\s\"'<>]+?\.pdf(?:[?#][^\s\"'<>]*)?", re.IGNORECASE)
 MATERIAL_PDF_KEYWORDS = {
     "8-k",
@@ -80,6 +81,7 @@ class NewsExtractionOptions:
     request_timeout_seconds: float = 8.0
     max_pdf_bytes: int = 12_000_000
     text_limit_chars: int = DEFAULT_TEXT_LIMIT_CHARS
+    max_external_source_urls: int = DEFAULT_EXTERNAL_SOURCE_URL_LIMIT
     external_request_min_interval_seconds: float = 0.5
     benzinga_request_min_interval_seconds: float = 1.0
     sec_request_min_interval_seconds: float = 0.13
@@ -152,17 +154,19 @@ def normalize_benzinga_payload(
     last_updated_at = parse_provider_datetime(last_updated_raw) if last_updated_raw else None
 
     body_html = str(payload.get("body") or "")
-    body_text, body_links = html_to_text_and_links(body_html)
+    body_text, body_links_raw = html_to_text_and_links(body_html)
     teaser = normalize_text(str(payload.get("teaser") or ""))
     article_url = str(payload.get("url") or "").strip()
+    body_links = [resolve_url(article_url, url) for url in body_links_raw]
     links = unique_strings([article_url, *body_links, *extract_pdf_urls(body_html), *extract_pdf_urls(json.dumps(payload, default=str))])
     pdf_urls = [url for url in links if looks_like_pdf_url(url)]
+    external_source_urls = source_candidate_urls(article_url, links, limit=options.max_external_source_urls)
 
     external_text = ""
     external_status = "not_needed"
     external_error = ""
-    if options.fetch_external and should_skip_external_fetch(article_url):
-        external_status = "skipped_non_article_url"
+    if options.fetch_external and len(body_text) < options.external_min_body_chars and not external_source_urls:
+        external_status = "no_source_url"
         record_extraction_event(
             diagnostics,
             stage="external_fetch",
@@ -171,66 +175,66 @@ def normalize_benzinga_payload(
             published_raw=published_raw,
             url=article_url,
         )
-    elif options.fetch_external and should_fetch_external(body_text, article_url, options):
+    elif options.fetch_external and should_fetch_external(body_text, external_source_urls, options):
         started_at = time.perf_counter()
-        try:
-            if looks_like_pdf_url(article_url):
-                if article_url not in pdf_urls:
-                    pdf_urls.append(article_url)
-                external_status = "deferred_to_pdf"
-                record_extraction_event(
-                    diagnostics,
-                    stage="external_fetch",
-                    status=external_status,
-                    provider_article_id=provider_article_id,
-                    published_raw=published_raw,
-                    url=article_url,
-                    elapsed_seconds=time.perf_counter() - started_at,
-                )
-            else:
-                artifact_path = options.external_html_artifact_paths.get(article_url, "")
+        external_texts: list[str] = []
+        external_errors: list[str] = []
+        for source_url in external_source_urls:
+            try:
+                artifact_path = options.external_html_artifact_paths.get(source_url, "")
                 if artifact_path:
                     fetched = Path(artifact_path).read_bytes().decode("utf-8", errors="replace")
-                elif article_url in options.external_fetch_errors:
-                    raise RuntimeError(options.external_fetch_errors[article_url])
+                elif source_url in options.external_fetch_errors:
+                    raise RuntimeError(options.external_fetch_errors[source_url])
                 elif options.artifact_only:
-                    raise FileNotFoundError(f"missing_external_html_artifact:{article_url}")
+                    raise FileNotFoundError(f"missing_external_html_artifact:{source_url}")
                 else:
                     fetched = fetch_url_text(
-                        article_url,
+                        source_url,
                         options=options,
                     )
                 fetched_text, fetched_links = html_to_text_and_links(fetched)
-                external_text = fetched_text
-                external_status = "fetched" if fetched_text else "empty"
+                if fetched_text:
+                    external_texts.append(fetched_text)
                 record_extraction_event(
                     diagnostics,
                     stage="external_fetch",
-                    status=external_status,
+                    status="fetched" if fetched_text else "empty",
                     provider_article_id=provider_article_id,
                     published_raw=published_raw,
-                    url=article_url,
+                    url=source_url,
                     artifact_path=artifact_path,
                     fetched_bytes=len(fetched.encode("utf-8", errors="ignore")),
                     extracted_text_chars=len(fetched_text),
                     elapsed_seconds=time.perf_counter() - started_at,
                 )
                 for url in [*fetched_links, *extract_pdf_urls(fetched)]:
+                    url = resolve_url(source_url, url)
                     if looks_like_pdf_url(url) and url not in pdf_urls:
                         pdf_urls.append(url)
-        except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                error_text = repr(exc)
+                external_errors.append(f"{source_url}: {error_text}")
+                record_extraction_event(
+                    diagnostics,
+                    stage="external_fetch",
+                    status="failed",
+                    provider_article_id=provider_article_id,
+                    published_raw=published_raw,
+                    url=source_url,
+                    exception=error_text,
+                    elapsed_seconds=time.perf_counter() - started_at,
+                )
+        external_text = normalize_text(" ".join(external_texts))
+        if external_text and external_errors:
+            external_status = "partial"
+        elif external_text:
+            external_status = "fetched"
+        elif external_errors:
             external_status = "failed"
-            external_error = repr(exc)
-            record_extraction_event(
-                diagnostics,
-                stage="external_fetch",
-                status=external_status,
-                provider_article_id=provider_article_id,
-                published_raw=published_raw,
-                url=article_url,
-                exception=external_error,
-                elapsed_seconds=time.perf_counter() - started_at,
-            )
+        else:
+            external_status = "empty"
+        external_error = "; ".join(external_errors)
 
     pdf_texts: list[str] = []
     pdf_artifact_paths: list[str] = []
@@ -478,15 +482,41 @@ def looks_like_pdf_url(value: str) -> bool:
     return ".pdf" in value.lower()
 
 
-def should_fetch_external(body_text: str, article_url: str, options: NewsExtractionOptions) -> bool:
-    return bool(article_url and len(body_text) < options.external_min_body_chars)
+def should_fetch_external(body_text: str, source_urls: list[str], options: NewsExtractionOptions) -> bool:
+    return bool(source_urls and len(body_text) < options.external_min_body_chars)
 
 
-def should_skip_external_fetch(article_url: str) -> bool:
-    parsed = parse.urlparse(article_url)
-    host = parsed.netloc.lower()
-    path = parsed.path.lower()
-    return host.endswith("benzinga.com") and path.startswith("/quote/")
+def source_candidate_urls(article_url: str, links: list[str], *, limit: int = DEFAULT_EXTERNAL_SOURCE_URL_LIMIT) -> list[str]:
+    candidates: list[str] = []
+    for url in links:
+        resolved = resolve_url(article_url, url)
+        if not is_fetchable_source_url(resolved):
+            continue
+        candidates.append(resolved)
+    return unique_strings(candidates)[: max(0, limit)]
+
+
+def resolve_url(base_url: str, url: str) -> str:
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    return parse.urljoin(base_url, html.unescape(text))
+
+
+def is_fetchable_source_url(url: str) -> bool:
+    parsed = parse.urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return False
+    if looks_like_pdf_url(url):
+        return False
+    if is_benzinga_url(url):
+        return False
+    return True
+
+
+def is_benzinga_url(url: str) -> bool:
+    host = parse.urlparse(url).netloc.lower()
+    return host == "benzinga.com" or host.endswith(".benzinga.com")
 
 
 def fetch_url_text(url: str, *, options: NewsExtractionOptions) -> str:

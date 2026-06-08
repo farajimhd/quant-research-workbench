@@ -116,12 +116,12 @@ download raw payloads
 base-normalize rows without external/PDF fetches
 insert base rows that do not need enrichment
 hold back rows needing external/PDF enrichment
-network workers fetch article/PDF bytes into local artifacts
+network workers fetch source article/PDF bytes into local artifacts
 local extraction workers parse downloaded artifacts without provider rate limits
 insert each enriched row once later in the same run
 ```
 
-The provider pass is still one pass over Massive/Benzinga. External article/PDF rate limits affect only the enrichment network lane. Local HTML/PDF extraction runs from saved artifacts and is not rate-limited by providers. Rows that require enrichment are not inserted as temporary base rows, so the normalized table does not receive redundant base/enriched versions for the same article.
+The provider pass is still one pass over Massive/Benzinga. The API response body is treated as the primary Benzinga text. When that body is short, enrichment inspects links inside the body and fetches only non-Benzinga source/citation pages; it does not redownload `benzinga.com` article pages. External source/PDF rate limits affect only the enrichment network lane. Local HTML/PDF extraction runs from saved artifacts and is not rate-limited by providers. Rows that require enrichment are not inserted as temporary base rows, so the normalized table does not receive redundant base/enriched versions for the same article.
 
 Fast one-pass run:
 
@@ -349,7 +349,7 @@ NEWS_BENZINGA_ENRICHMENT_PROCESSES
 0
 ```
 
-`0` means `min(4, --normalize-processes)`. These workers only perform provider-capped HTTP work and write fetched bytes to the artifact store. The script keeps a bounded network backlog of `--enrichment-processes * 4`, so a fast base lane does not create unlimited pending network futures.
+`0` means `min(4, --normalize-processes)`. These workers only perform capped HTTP work for non-Benzinga source/citation pages and PDFs, then write fetched bytes to the artifact store. The script keeps a bounded network backlog of `--enrichment-processes * 4`, so a fast base lane does not create unlimited pending network futures.
 
 `--enrichment-extract-processes`
 

@@ -36,11 +36,11 @@ from research.mlops.news_benzinga_normalize import (  # noqa: E402
     artifact_path_for_payload,
     fetch_url_bytes,
     fetch_url_with_retries,
-    looks_like_pdf_url,
     normalize_benzinga_payload,
     pdf_download_metadata,
     parse_provider_datetime,
     record_extraction_event,
+    source_candidate_urls,
     stable_sha256,
     to_clickhouse_dt64,
     to_provider_rfc3339,
@@ -1279,49 +1279,49 @@ def enrichment_network_worker(job: EnrichmentNetworkJob) -> EnrichmentNetworkRes
             sec_user_agent=job.sec_user_agent,
         )
         article_url = str(row.get("article_url") or "")
+        source_urls = source_candidate_urls(article_url, list(row.get("links") or []), limit=options.max_external_source_urls)
         if job.fetch_external and should_fetch_external_for_row(row, job.external_min_body_chars):
-            fetch_started_at = time.perf_counter()
-            try:
-                if looks_like_pdf_url(article_url):
-                    record_extraction_event(
-                        extraction_events,
-                        stage="external_network",
-                        status="deferred_to_pdf",
-                        provider_article_id=provider_article_id,
-                        published_raw=published_raw,
-                        url=article_url,
-                        elapsed_seconds=time.perf_counter() - fetch_started_at,
-                    )
-                else:
-                    html_bytes = fetch_url_with_retries(article_url, options=options)
+            for source_url in source_urls:
+                fetch_started_at = time.perf_counter()
+                try:
+                    html_bytes = fetch_url_with_retries(source_url, options=options)
                     network_requests += 1
-                    html_path = write_external_html_artifact(artifact_root, published_at, provider_article_id, article_url, html_bytes)
-                    external_html_artifact_paths[article_url] = str(html_path)
+                    html_path = write_external_html_artifact(artifact_root, published_at, provider_article_id, source_url, html_bytes)
+                    external_html_artifact_paths[source_url] = str(html_path)
                     record_extraction_event(
                         extraction_events,
                         stage="external_network",
                         status="downloaded",
                         provider_article_id=provider_article_id,
                         published_raw=published_raw,
-                        url=article_url,
+                        url=source_url,
                         fetched_bytes=len(html_bytes),
                         fetched_sha256=stable_sha256(html_bytes),
                         artifact_path=str(html_path),
                         elapsed_seconds=time.perf_counter() - fetch_started_at,
                     )
-            except Exception as exc:  # noqa: BLE001
-                error_text = repr(exc)
-                external_fetch_errors[article_url] = error_text
-                record_extraction_event(
-                    extraction_events,
-                    stage="external_network",
-                    status="failed",
-                    provider_article_id=provider_article_id,
-                    published_raw=published_raw,
-                    url=article_url,
-                    exception=error_text,
-                    elapsed_seconds=time.perf_counter() - fetch_started_at,
-                )
+                except Exception as exc:  # noqa: BLE001
+                    error_text = repr(exc)
+                    external_fetch_errors[source_url] = error_text
+                    record_extraction_event(
+                        extraction_events,
+                        stage="external_network",
+                        status="failed",
+                        provider_article_id=provider_article_id,
+                        published_raw=published_raw,
+                        url=source_url,
+                        exception=error_text,
+                        elapsed_seconds=time.perf_counter() - fetch_started_at,
+                    )
+        elif job.fetch_external and len(str(row.get("body_text") or "")) < job.external_min_body_chars:
+            record_extraction_event(
+                extraction_events,
+                stage="external_network",
+                status="no_source_url",
+                provider_article_id=provider_article_id,
+                published_raw=published_raw,
+                url=article_url,
+            )
         if job.extract_pdfs:
             for url in list(row.get("pdf_urls") or [])[:4]:
                 pdf_started_at = time.perf_counter()
@@ -1553,12 +1553,8 @@ def artifact_needs_enrichment(row: dict[str, Any], job: NormalizeJob) -> bool:
 
 def should_fetch_external_for_row(row: dict[str, Any], min_body_chars: int) -> bool:
     article_url = str(row.get("article_url") or "").strip()
-    if not article_url:
-        return False
-    parsed = parse.urlparse(article_url)
-    if parsed.netloc.lower().endswith("benzinga.com") and parsed.path.lower().startswith("/quote/"):
-        return False
-    return len(str(row.get("body_text") or "")) < min_body_chars
+    source_urls = source_candidate_urls(article_url, list(row.get("links") or []))
+    return bool(source_urls and len(str(row.get("body_text") or "")) < min_body_chars)
 
 
 def manifest_rows_worker(job: ManifestJob) -> ManifestResult:
