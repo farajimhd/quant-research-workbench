@@ -7,3 +7,4 @@ pyarrow
 pypdf
 PyMuPDF
 python-dotenv
+rich
