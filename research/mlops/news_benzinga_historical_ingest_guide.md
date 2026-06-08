@@ -124,20 +124,22 @@ The provider pass is still one pass over Massive/Benzinga. External article/PDF 
 Fast one-pass run:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 1.0 --benzinga-request-min-interval-seconds 1.25 --sec-request-min-interval-seconds 0.25 --external-max-retries 4 --external-retry-base-seconds 1.5
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 4 --external-retry-base-seconds 1.5
 ```
 
 If Massive and ClickHouse remain stable, increase the base lane while keeping enrichment controlled:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 32 --normalize-processes 16 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 1.0 --benzinga-request-min-interval-seconds 1.25 --sec-request-min-interval-seconds 0.25 --external-max-retries 4 --external-retry-base-seconds 1.5
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 32 --normalize-processes 16 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 4 --external-retry-base-seconds 1.5
 ```
 
-If any provider starts returning rate limits, keep the base lane high and reduce only enrichment pressure:
+If any provider starts returning rate limits, keep the base lane high and reduce enrichment worker pressure first:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 2 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 2.0 --benzinga-request-min-interval-seconds 3.0 --sec-request-min-interval-seconds 0.5 --external-max-retries 5 --external-retry-base-seconds 2.0
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 2 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 5 --external-retry-base-seconds 2.0
 ```
+
+If rate limits continue after reducing workers, raise the interval values above `0.1`.
 
 ## Argument Reference
 
@@ -451,7 +453,7 @@ Minimum seconds between external HTTP requests to the same host for domains that
 
 ```text
 NEWS_EXTERNAL_REQUEST_MIN_INTERVAL_SECONDS
-0.5
+0.1
 ```
 
 This protects miscellaneous external websites during one-pass external/PDF extraction.
@@ -462,10 +464,10 @@ Minimum seconds between Benzinga article-page requests to the same host. Default
 
 ```text
 NEWS_BENZINGA_REQUEST_MIN_INTERVAL_SECONDS
-1.0
+0.1
 ```
 
-This is intentionally slower than the generic default because Benzinga article-page fetches can return `429 Too Many Requests` when many workers hit the same host concurrently.
+This targets roughly 10 Benzinga article-page requests per second across all enrichment workers because the host rate limiter is shared.
 
 `--sec-request-min-interval-seconds`
 
@@ -473,10 +475,10 @@ Minimum seconds between SEC/EDGAR requests to the same host. Default:
 
 ```text
 NEWS_SEC_REQUEST_MIN_INTERVAL_SECONDS
-0.13
+0.1
 ```
 
-The SEC publishes a 10 requests/second ceiling. `0.13` seconds is deliberately below that ceiling once process scheduling jitter is included.
+The SEC publishes a 10 requests/second ceiling. `0.1` seconds targets that ceiling, so keep `NEWS_SEC_USER_AGENT` set for SEC-heavy runs.
 
 `--external-max-retries`
 
@@ -650,7 +652,7 @@ FROM q_live.benzinga_news_normalized_v1;
 For the first real canonical pass, keep enrichment enabled but let only the enrichment lane run under controlled external request pressure:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 1.0 --benzinga-request-min-interval-seconds 1.25 --sec-request-min-interval-seconds 0.25 --external-max-retries 4 --external-retry-base-seconds 1.5
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_historical_ingest.py --start-utc 2010-01-01T00:00:00Z --end-utc 2026-06-08T00:00:00Z --bucket-minutes 90 --limit 1000 --max-pages 1000 --download-processes 24 --normalize-processes 12 --enrichment-processes 4 --insert-concurrency 8 --insert-batch-rows 10000 --manifest-batch-rows 2000 --external-request-min-interval-seconds 0.1 --benzinga-request-min-interval-seconds 0.1 --sec-request-min-interval-seconds 0.1 --external-max-retries 4 --external-retry-base-seconds 1.5
 ```
 
 Install `PyMuPDF` in the workstation environment before running with PDF extraction enabled. The repo `requirements.txt` includes it.
