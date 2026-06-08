@@ -417,6 +417,8 @@ def main() -> None:
     downloaded_total = 0
     inserted_total = 0
     normalized_total = 0
+    enrichment_required_total = 0
+    enrichment_completed_total = 0
     enriched_total = 0
     started_at = time.perf_counter()
     insert_futures: dict[concurrent.futures.Future[InsertResult], InsertJob] = {}
@@ -642,6 +644,7 @@ def main() -> None:
                     append_file_errors(report_path, run_id, normalize_result.file_errors)
                     append_extraction_events(report_path, run_id, normalize_result.extraction_events)
                     if normalize_result.enrichment_artifacts:
+                        enrichment_required_total += len(normalize_result.enrichment_artifacts)
                         enrichment_job = NormalizeJob(
                             bucket_id=normalize_result.bucket_id,
                             start_utc=normalize_result.start_utc,
@@ -696,6 +699,7 @@ def main() -> None:
 
                 elif future in enrichment_futures:
                     base_result = enrichment_futures.pop(future)
+                    enrichment_completed_total += len(base_result.enrichment_artifacts)
                     try:
                         enrichment_result = future.result()
                     except Exception as exc:  # noqa: BLE001
@@ -785,6 +789,8 @@ def main() -> None:
                     final_failed=final_failed,
                     downloaded_rows=downloaded_total,
                     normalized_rows=normalized_total,
+                    enrichment_required_rows=enrichment_required_total,
+                    enrichment_completed_rows=enrichment_completed_total,
                     enriched_rows=enriched_total,
                     inserted_rows=inserted_total,
                     pending_insert_rows=len(insert_rows_buffer) + len(enrichment_rows_buffer),
@@ -796,6 +802,8 @@ def main() -> None:
     print(
         f"DONE completed={final_completed:,} failed={final_failed:,} "
         f"downloaded_rows={downloaded_total:,} normalized_rows={normalized_total:,} "
+        f"enrichment_required_rows={enrichment_required_total:,} "
+        f"enrichment_completed_rows={enrichment_completed_total:,} "
         f"enriched_rows={enriched_total:,} inserted_rows={inserted_total:,}",
         flush=True,
     )
@@ -1311,6 +1319,8 @@ def print_progress(
     final_failed: int,
     downloaded_rows: int,
     normalized_rows: int,
+    enrichment_required_rows: int,
+    enrichment_completed_rows: int,
     enriched_rows: int,
     inserted_rows: int,
     pending_insert_rows: int,
@@ -1321,11 +1331,15 @@ def print_progress(
     rate = finalized / elapsed if elapsed > 0 else 0.0
     remaining = total - finalized
     eta = remaining / rate if rate > 0 else 0.0
+    pending_enrichment_rows = max(0, enrichment_required_rows - enrichment_completed_rows)
     print(
         f"[finalized {finalized:,}/{total:,}] downloaded_buckets={download_completed:,} "
         f"normalized_buckets={normalize_completed:,} completed={final_completed:,} failed={final_failed:,} "
         f"downloaded_rows={downloaded_rows:,} normalized_rows={normalized_rows:,} "
-        f"enriched_rows={enriched_rows:,} inserted_rows={inserted_rows:,} insert_buffer={pending_insert_rows:,} "
+        f"enrichment_required_rows={enrichment_required_rows:,} "
+        f"enrichment_pending_rows={pending_enrichment_rows:,} "
+        f"enrichment_completed_rows={enrichment_completed_rows:,} enriched_rows={enriched_rows:,} "
+        f"inserted_rows={inserted_rows:,} insert_buffer={pending_insert_rows:,} "
         f"elapsed_min={elapsed / 60:.1f} eta_min={eta / 60:.1f}",
         flush=True,
     )

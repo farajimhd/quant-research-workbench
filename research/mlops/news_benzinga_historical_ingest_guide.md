@@ -601,6 +601,10 @@ completed
 failed
 downloaded_rows
 normalized_rows
+enrichment_required_rows
+enrichment_pending_rows
+enrichment_completed_rows
+enriched_rows
 inserted_rows
 insert_buffer
 elapsed_min
