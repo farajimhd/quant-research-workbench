@@ -39,6 +39,8 @@ DEFAULT_PROGRESS_LAYOUT = "auto"
 DEFAULT_PROGRESS_LOG_LINES = 24
 DEFAULT_PROGRESS_REFRESH_PER_SECOND = 4
 DEFAULT_PROGRESS_INTERVAL_SECONDS = 0.5
+DEFAULT_PROGRESS_PANEL_ROWS = 0
+DEFAULT_PROGRESS_WORKER_COLUMNS = 0
 KIND_PREFIXES = {
     "quotes": "us_stocks_sip/quotes_v1",
     "trades": "us_stocks_sip/trades_v1",
@@ -108,12 +110,16 @@ class DownloadProgressDisplay:
         log_lines: int,
         screen: bool,
         refresh_per_second: float,
+        panel_rows: int,
+        worker_columns: int,
     ) -> None:
         self.mode = mode
         self.worker_slots = max(1, int(worker_slots))
         self.log_lines = max(5, int(log_lines))
         self.screen = bool(screen)
         self.refresh_per_second = max(1.0, float(refresh_per_second))
+        self.panel_rows = max(0, int(panel_rows))
+        self.worker_columns = max(0, int(worker_columns))
         self._logs: deque[str] = deque(maxlen=self.log_lines)
         self._rows: dict[int, dict[str, Any]] = {slot: self._empty_row(slot) for slot in range(self.worker_slots)}
         self._rich = False
@@ -140,7 +146,7 @@ class DownloadProgressDisplay:
                 self._panel_cls = Panel
                 self._table_cls = Table
                 self._text_cls = Text
-                progress_rows = min(max(8, self.worker_slots + 4), max(10, self.worker_slots + 6))
+                progress_rows = self.panel_rows or self._default_progress_rows()
                 self._layout = Layout(name="root")
                 self._layout.split_column(
                     Layout(self._progress_panel(), name="progress", size=progress_rows),
@@ -225,34 +231,51 @@ class DownloadProgressDisplay:
 
     def _progress_panel(self) -> Any:
         table = self._table_cls(expand=True, show_header=True, header_style="bold", box=None, pad_edge=False)
-        table.add_column("Worker", width=7, no_wrap=True)
-        table.add_column("File", ratio=2, min_width=18, no_wrap=True, overflow="ellipsis")
-        table.add_column("Progress", ratio=2, min_width=20, no_wrap=True, overflow="ellipsis")
-        table.add_column("Speed", width=12, no_wrap=True)
-        table.add_column("ETA", width=10, no_wrap=True)
-        table.add_column("Status", width=18, no_wrap=True)
-        for worker_id in range(self.worker_slots):
-            row = self._rows.get(worker_id, self._empty_row(worker_id))
-            table.add_row(
-                self._text_cls(f"{worker_id:02d}", style="cyan"),
-                self._text_cls(str(row.get("job") or "-"), style="white" if row.get("job") else "dim"),
-                self._text_cls(self._progress_cell(row), style=self._status_style(str(row.get("status") or "idle"))),
-                self._text_cls(self._speed_cell(row), style="green"),
-                self._text_cls(self._eta_cell(row), style="yellow"),
-                self._text_cls(str(row.get("status") or "idle"), style=self._status_style(str(row.get("status") or "idle"))),
-            )
+        worker_columns = self._resolved_worker_columns()
+        for column_index in range(worker_columns):
+            suffix = "" if worker_columns == 1 else f" {column_index + 1}"
+            compact = worker_columns > 1
+            ultra_compact = worker_columns > 2
+            table.add_column(f"W{suffix}", width=3 if compact else 4, no_wrap=True)
+            table.add_column(f"File{suffix}", ratio=2, min_width=9 if ultra_compact else 12 if compact else 14, no_wrap=True, overflow="ellipsis")
+            table.add_column(f"Progress{suffix}", ratio=2, min_width=8 if ultra_compact else 12 if compact else 18, no_wrap=True, overflow="ellipsis")
+            if not ultra_compact:
+                table.add_column(f"Speed{suffix}", width=9 if compact else 11, no_wrap=True)
+            table.add_column(f"Status{suffix}", width=7 if ultra_compact else 10 if compact else 13, no_wrap=True, overflow="ellipsis")
+        rows_per_column = (self.worker_slots + worker_columns - 1) // worker_columns
+        for row_index in range(rows_per_column):
+            cells = []
+            for column_index in range(worker_columns):
+                worker_id = row_index + column_index * rows_per_column
+                if worker_id >= self.worker_slots:
+                    cells.extend(["", "", "", ""] if worker_columns > 2 else ["", "", "", "", ""])
+                    continue
+                row = self._rows.get(worker_id, self._empty_row(worker_id))
+                status = str(row.get("status") or "idle")
+                row_cells = [
+                    self._text_cls(f"{worker_id:02d}", style="cyan"),
+                    self._text_cls(str(row.get("job") or "-"), style="white" if row.get("job") else "dim"),
+                    self._text_cls(self._progress_cell(row, compact=worker_columns > 1), style=self._status_style(status)),
+                ]
+                if worker_columns <= 2:
+                    row_cells.append(self._text_cls(self._speed_cell(row), style="green"))
+                row_cells.append(self._text_cls(status, style=self._status_style(status)))
+                cells.extend(row_cells)
+            table.add_row(*cells)
         return self._panel_cls(table, title="Massive SIP Downloads", border_style="cyan")
 
     def _log_panel(self) -> Any:
         text = self._text_cls("\n".join(self._logs) if self._logs else "No log messages yet.")
         return self._panel_cls(text, title="Logs", border_style="white")
 
-    def _progress_cell(self, row: dict[str, Any]) -> str:
+    def _progress_cell(self, row: dict[str, Any], *, compact: bool = False) -> str:
         expected = int(row.get("expected") or 0)
         written = int(row.get("written") or 0)
         if expected <= 0:
             return "-"
         pct = max(0.0, min(1.0, written / expected))
+        if compact:
+            return f"{pct:5.1%} {self._format_bytes(written)}/{self._format_bytes(expected)}"
         return f"{self._mini_bar(pct)} {pct:5.1%} {self._format_bytes(written)}/{self._format_bytes(expected)}"
 
     def _speed_cell(self, row: dict[str, Any]) -> str:
@@ -287,6 +310,19 @@ class DownloadProgressDisplay:
     def _mini_bar(self, fraction: float, width: int = 12) -> str:
         filled = int(round(max(0.0, min(1.0, fraction)) * width))
         return "#" * filled + "-" * (width - filled)
+
+    def _resolved_worker_columns(self) -> int:
+        if self.worker_columns:
+            return min(max(1, self.worker_columns), 4)
+        if self.worker_slots > 96:
+            return 4
+        if self.worker_slots > 32:
+            return 3
+        return 1
+
+    def _default_progress_rows(self) -> int:
+        rows_per_column = (self.worker_slots + self._resolved_worker_columns() - 1) // self._resolved_worker_columns()
+        return max(8, rows_per_column + 4)
 
     def _empty_row(self, worker_id: int) -> dict[str, Any]:
         return {
@@ -361,6 +397,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--progress-log-lines", type=int, default=DEFAULT_PROGRESS_LOG_LINES)
     parser.add_argument("--progress-refresh-per-second", type=float, default=DEFAULT_PROGRESS_REFRESH_PER_SECOND)
+    parser.add_argument(
+        "--progress-panel-rows",
+        type=int,
+        default=DEFAULT_PROGRESS_PANEL_ROWS,
+        help="Fixed height for the Rich top progress panel. 0 chooses a compact automatic height.",
+    )
+    parser.add_argument(
+        "--progress-worker-columns",
+        type=int,
+        default=DEFAULT_PROGRESS_WORKER_COLUMNS,
+        help="Number of side-by-side worker blocks in the Rich top panel. 0 auto-selects based on process count.",
+    )
     screen_group = parser.add_mutually_exclusive_group()
     screen_group.add_argument(
         "--progress-screen",
@@ -953,6 +1001,8 @@ def main() -> None:
         log_lines=args.progress_log_lines,
         screen=args.progress_screen,
         refresh_per_second=args.progress_refresh_per_second,
+        panel_rows=args.progress_panel_rows,
+        worker_columns=args.progress_worker_columns,
     ) as progress:
         if progress.fallback_reason:
             progress.log(progress.fallback_reason)
