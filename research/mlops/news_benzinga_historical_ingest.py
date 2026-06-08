@@ -238,7 +238,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_DOWNLOAD_PROCESSES", "8")))
     parser.add_argument("--normalize-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZE_PROCESSES", "0")))
     parser.add_argument("--enrichment-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_ENRICHMENT_PROCESSES", "0")))
-    parser.add_argument("--enrichment-chunk-size", type=int, default=int(os.environ.get("NEWS_BENZINGA_ENRICHMENT_CHUNK_SIZE", "10")))
+    parser.add_argument("--enrichment-chunk-size", type=int, default=int(os.environ.get("NEWS_BENZINGA_ENRICHMENT_CHUNK_SIZE", "1")))
     parser.add_argument("--insert-concurrency", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_CONCURRENCY", "4")))
     parser.add_argument("--insert-batch-rows", type=int, default=int(os.environ.get("NEWS_BENZINGA_INSERT_BATCH_ROWS", "5000")))
     parser.add_argument("--manifest-batch-rows", type=int, default=int(os.environ.get("NEWS_BENZINGA_MANIFEST_BATCH_ROWS", "1000")))
@@ -807,6 +807,8 @@ def main() -> None:
                     enrichment_required_rows=enrichment_required_total,
                     enrichment_completed_rows=enrichment_completed_total,
                     enriched_rows=enriched_total,
+                    active_enrichment_jobs=len(enrichment_futures),
+                    queued_enrichment_jobs=len(pending_enrichment_jobs),
                     inserted_rows=inserted_total,
                     pending_insert_rows=len(insert_rows_buffer) + len(enrichment_rows_buffer),
                     started_at=started_at,
@@ -1342,6 +1344,8 @@ def print_progress(
     enrichment_required_rows: int,
     enrichment_completed_rows: int,
     enriched_rows: int,
+    active_enrichment_jobs: int,
+    queued_enrichment_jobs: int,
     inserted_rows: int,
     pending_insert_rows: int,
     started_at: float,
@@ -1359,6 +1363,7 @@ def print_progress(
         f"enrichment_required_rows={enrichment_required_rows:,} "
         f"enrichment_pending_rows={pending_enrichment_rows:,} "
         f"enrichment_completed_rows={enrichment_completed_rows:,} enriched_rows={enriched_rows:,} "
+        f"active_enrichment_jobs={active_enrichment_jobs:,} queued_enrichment_jobs={queued_enrichment_jobs:,} "
         f"inserted_rows={inserted_rows:,} insert_buffer={pending_insert_rows:,} "
         f"elapsed_min={elapsed / 60:.1f} eta_min={eta / 60:.1f}",
         flush=True,
