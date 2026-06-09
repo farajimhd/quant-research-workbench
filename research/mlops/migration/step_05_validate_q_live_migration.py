@@ -264,7 +264,7 @@ def validate_operational_state(client: ClickHouseHttpClient, args: argparse.Name
             count_check(client, "sec_market_bridge", "id_sec_market_bridge_v1", f"SELECT count() FROM {db}.id_sec_market_bridge_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="SEC CIK-to-market bridge has not been built yet."),
             count_check(client, "tradable_universe_features", "feature_tradable_universe_v1", f"SELECT count() FROM {db}.feature_tradable_universe_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="Derived tradable universe features are not built yet."),
             count_check(client, "scanner_static_features", "feature_scanner_static_v1", f"SELECT count() FROM {db}.feature_scanner_static_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="Derived scanner static features are not built yet."),
-            count_check(client, "sec_event_market_bridge_features", "feature_sec_event_market_bridge_v1", f"SELECT count() FROM {db}.feature_sec_event_market_bridge_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="SEC event-to-market feature bridge is not built yet."),
+            sec_event_feature_check(client, args.target_database),
         ]
     )
     return rows
@@ -302,7 +302,7 @@ def run_status_checks(client: ClickHouseHttpClient, database: str) -> list[dict[
     rows = query_json_each_row(
         client,
         f"""
-        SELECT job_name, anyLast(status) AS status, max(inserted_at) AS last_inserted_at, sum(rows_failed) AS rows_failed
+        SELECT job_name, argMax(status, inserted_at) AS status, max(inserted_at) AS last_inserted_at, sum(rows_failed) AS rows_failed
         FROM {quote_ident(database)}.source_run_v1
         WHERE startsWith(job_name, 'step_')
         GROUP BY job_name
@@ -357,6 +357,34 @@ def count_check(
         "expected_value": expected,
         "mismatch_count": mismatch,
         "message": message,
+    }
+
+
+def sec_event_feature_check(client: ClickHouseHttpClient, database: str) -> dict[str, Any]:
+    db = quote_ident(database)
+    accepted_rows = scalar_int(client, f"SELECT count() FROM {db}.sec_filing_v2 WHERE accepted_at_utc IS NOT NULL")
+    event_rows = scalar_int(client, f"SELECT count() FROM {db}.feature_sec_event_market_bridge_v1")
+    if accepted_rows == 0:
+        return {
+            "check_name": "sec_event_market_bridge_features",
+            "target_table": "feature_sec_event_market_bridge_v1",
+            "status": "pass",
+            "severity": "info",
+            "observed_value": f"{event_rows} events / {accepted_rows} accepted filings",
+            "expected_value": "blocked_until_accepted_at_backfill",
+            "mismatch_count": 0,
+            "message": "SEC event features depend on accepted_at_utc; accepted timestamp backfill has no source data yet.",
+        }
+    status = "pass" if event_rows > 0 else "warn"
+    return {
+        "check_name": "sec_event_market_bridge_features",
+        "target_table": "feature_sec_event_market_bridge_v1",
+        "status": status,
+        "severity": "info" if status == "pass" else "warning",
+        "observed_value": f"{event_rows} events / {accepted_rows} accepted filings",
+        "expected_value": ">0 events when accepted filings exist",
+        "mismatch_count": 0 if status == "pass" else 1,
+        "message": "" if status == "pass" else "Accepted filings exist but SEC event-to-market feature bridge is empty.",
     }
 
 

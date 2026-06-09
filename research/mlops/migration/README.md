@@ -276,3 +276,38 @@ Step 5 validates:
 - known pending work for SEC accepted timestamps, filing document/text extraction, SEC market bridge, and derived feature tables
 
 The command writes local JSONL and Markdown reports in both dry-run and execute mode. `--execute` also records validation rows in `q_live.sync_validation_v1` and one run row in `q_live.source_run_v1`.
+
+## Step 6: Build Bridge And Derived Feature Tables
+
+Dry-run locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_06_build_q_live_bridge_features.py --output-root-win D:/market-data/prepared/q_live_migration/step_06_bridge_features --feature-date 2026-06-09
+```
+
+Execute locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_06_build_q_live_bridge_features.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_06_bridge_features --feature-date 2026-06-09
+```
+
+Resume after a partial run locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_06_build_q_live_bridge_features.py --execute --skip-non-empty-targets --output-root-win D:/market-data/prepared/q_live_migration/step_06_bridge_features --feature-date 2026-06-09
+```
+
+Execute on workstation:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_06_build_q_live_bridge_features.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_06_bridge_features --feature-date 2026-06-09
+```
+
+Step 6 builds:
+
+- `id_sec_market_bridge_v1` from issuer CIK identifiers to active security/listing/symbol rows
+- `sec_filing_document_v1` metadata rows from `sec_filing_v2.primary_document`
+- `feature_tradable_universe_v1` for the requested feature date
+- `feature_scanner_static_v1` for the requested feature date
+
+This step intentionally does not invent SEC accepted timestamps or filing text. Those require SEC submissions/daily-feed artifacts and must be produced by the SEC bulk/feed parser before `feature_sec_event_market_bridge_v1` can be populated.
