@@ -31,7 +31,7 @@ from research.mlops.paths import machine_name  # noqa: E402
 
 DEFAULT_TARGET_DATABASE = "q_live"
 DEFAULT_SOURCE_DATABASE = "sec_core"
-DEFAULT_SOURCE_TABLE = "sec_filing_v1"
+DEFAULT_SOURCE_TABLE = "sec_bulk_mirror_filing_v1"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps")
 
 

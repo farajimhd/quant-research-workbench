@@ -16,12 +16,12 @@ D:\market-data\sec_core\bulk\mappings\company_tickers_mf.json
 
 ## Tables Created
 
-- `sec_raw_source_file_v1`
-- `sec_company_v1`
-- `sec_company_ticker_v1`
-- `sec_submission_file_ref_v1`
-- `sec_filing_v1`
-- `sec_xbrl_fact_v1`
+- `sec_bulk_mirror_raw_source_file_v1`
+- `sec_bulk_mirror_company_v1`
+- `sec_bulk_mirror_company_ticker_v1`
+- `sec_bulk_mirror_submission_file_ref_v1`
+- `sec_bulk_mirror_filing_v1`
+- `sec_bulk_mirror_xbrl_fact_v1`
 
 The script creates the database and tables if they do not exist.
 
@@ -67,6 +67,6 @@ The script refuses `G:` and `\\DESKTOP-SAAI85T\Workstation-G\...` roots by defau
 - The script inserts only SEC bulk data.
 - It does not download or parse daily feed archives.
 - It does not download accession `.txt` files yet.
-- It stores `sec_submission_file_ref_v1` rows from `submissions.zip` so later queries can decide whether older submission fragments are needed.
+- It stores `sec_bulk_mirror_submission_file_ref_v1` rows from `submissions.zip` so later queries can decide whether older submission fragments are needed.
 - `companyfacts.zip` is exploded into one row per XBRL fact observation.
 - `submissions.zip` is parsed into company metadata and recent filing rows with `accepted_at_utc` from `acceptanceDateTime`.

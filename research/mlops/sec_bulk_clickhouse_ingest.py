@@ -60,7 +60,7 @@ class SourceArtifact:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create sec_core ClickHouse tables and insert SEC bulk metadata. Daily EDGAR feed archives are not used."
+        description="Create sec_core ClickHouse SEC bulk mirror tables and insert SEC bulk metadata. Daily EDGAR feed archives are not used."
     )
     parser.add_argument("--clickhouse-url", default=default_sec_clickhouse_url())
     parser.add_argument("--user", default=default_sec_clickhouse_user())
@@ -107,7 +107,7 @@ def main() -> None:
         started = time.perf_counter()
         if artifact.source_name in {"company_tickers", "company_tickers_exchange", "company_tickers_mf"}:
             rows = parse_ticker_mapping(artifact)
-            inserted = insert_rows(client, args.database, "sec_company_ticker_v1", rows)
+            inserted = insert_rows(client, args.database, "sec_bulk_mirror_company_ticker_v1", rows)
         elif artifact.source_name == "submissions":
             inserted = ingest_submissions_zip(client, args.database, artifact, args.batch_size, args.limit_ciks)
         elif artifact.source_name == "companyfacts":
@@ -235,7 +235,7 @@ def insert_raw_source_rows(client: ClickHouseHttpClient, database: str, artifact
         }
         for item in artifacts
     ]
-    insert_rows(client, database, "sec_raw_source_file_v1", rows)
+    insert_rows(client, database, "sec_bulk_mirror_raw_source_file_v1", rows)
 
 
 def parse_ticker_mapping(artifact: SourceArtifact) -> list[dict[str, Any]]:
@@ -312,16 +312,16 @@ def ingest_submissions_zip(
             filing_batch.extend(submission_filing_rows(data, cik, artifact, now))
             processed += 1
             if len(company_batch) >= batch_size:
-                inserted += flush(client, database, "sec_company_v1", company_batch)
+                inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch)
             if len(file_ref_batch) >= batch_size:
-                inserted += flush(client, database, "sec_submission_file_ref_v1", file_ref_batch)
+                inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch)
             if len(filing_batch) >= batch_size:
-                inserted += flush(client, database, "sec_filing_v1", filing_batch)
+                inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch)
             if processed % 5_000 == 0:
                 print(f"submissions processed_ciks={processed:,} pending_filings={len(filing_batch):,}", flush=True)
-    inserted += flush(client, database, "sec_company_v1", company_batch)
-    inserted += flush(client, database, "sec_submission_file_ref_v1", file_ref_batch)
-    inserted += flush(client, database, "sec_filing_v1", filing_batch)
+    inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch)
+    inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch)
+    inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch)
     return inserted
 
 
@@ -436,11 +436,11 @@ def ingest_companyfacts_zip(
                         for fact in facts:
                             batch.append(xbrl_fact_row(cik, entity_name, taxonomy, tag, label, description, unit, fact, artifact.source_file_id, now))
                             if len(batch) >= batch_size:
-                                inserted += flush(client, database, "sec_xbrl_fact_v1", batch)
+                                inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch)
             processed += 1
             if processed % 1_000 == 0:
                 print(f"companyfacts processed_ciks={processed:,} pending_facts={len(batch):,}", flush=True)
-    inserted += flush(client, database, "sec_xbrl_fact_v1", batch)
+    inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch)
     return inserted
 
 
@@ -499,7 +499,7 @@ def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: l
 
 def raw_source_file_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_raw_source_file_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_raw_source_file_v1
 (
     source_file_id String,
     source_kind LowCardinality(String),
@@ -521,7 +521,7 @@ SETTINGS {merge_tree_settings(storage_policy)}
 
 def company_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_company_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_company_v1
 (
     cik String,
     entity_name String,
@@ -544,7 +544,7 @@ SETTINGS {merge_tree_settings(storage_policy)}
 
 def ticker_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_company_ticker_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_company_ticker_v1
 (
     mapping_id String,
     cik String,
@@ -567,7 +567,7 @@ SETTINGS {merge_tree_settings(storage_policy)}
 
 def submission_file_ref_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_submission_file_ref_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_submission_file_ref_v1
 (
     file_ref_id String,
     cik String,
@@ -586,7 +586,7 @@ SETTINGS {merge_tree_settings(storage_policy)}
 
 def filing_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_filing_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_filing_v1
 (
     accession_number String,
     accession_number_compact String,
@@ -621,7 +621,7 @@ SETTINGS {merge_tree_settings(storage_policy)}
 
 def xbrl_fact_table_sql(database: str, storage_policy: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_xbrl_fact_v1
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_xbrl_fact_v1
 (
     fact_id String,
     cik String,
