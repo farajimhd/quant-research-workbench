@@ -84,3 +84,5 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 - `accepted_rows_inserted`: valid accepted rows inserted into the narrow source table. This is zero in dry-run mode.
 - `remaining_missing_rows`: current q_live missing keys not found in `submissions.zip` recent filings.
 - `not_found_ciks.jsonl`: CIK-level summary used to decide whether older SEC submission fragments are needed.
+
+Run `sec_acceptance_fragment_fill.py` next when `remaining_missing_rows` is non-zero. It downloads only older SEC submission fragment JSON files needed for the remaining q_live rows and appends matches to the same staging table.
