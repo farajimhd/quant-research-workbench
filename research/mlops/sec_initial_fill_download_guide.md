@@ -88,7 +88,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 Full historical archive download from 2020 through today:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11 --progress-layout auto
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.25 --progress-layout auto
 ```
 
 Expected daily archive output:
@@ -115,10 +115,12 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 - `--end-date`: exclusive daily archive end date.
 - `--limit-days`: smoke-test cap after archive-day discovery.
 - `--download-concurrency`: concurrent download workers. The global SEC request limiter still applies.
-- `--sec-request-min-interval-seconds`: minimum spacing between SEC requests. Use `0.11` or slower for production.
+- `--sec-request-min-interval-seconds`: minimum spacing between SEC request starts. Use `0.25` or slower for large daily archive backfills. `0.11` is the theoretical 10 requests/second boundary and may still be too aggressive when many downloads are active.
 - `--request-timeout-seconds`: socket timeout for each request.
 - `--max-retries`: retry count for retryable HTTP/network failures.
 - `--retry-base-seconds`: exponential backoff base for retries.
+- `--max-429-before-stop`: number of SEC HTTP 429 responses allowed before stopping queued work. Default: `1`.
+- `--stop-on-429` / `--continue-on-429`: default is `--stop-on-429`. Use `--continue-on-429` only for a deliberate retry experiment.
 - `--progress-interval-seconds`: progress print interval for large streaming downloads.
 - `--progress-layout`: `auto`, `rich`, or `text`. `auto` uses Rich when installed and falls back to text otherwise.
 - `--progress-log-lines`: retained message lines in the Rich message panel.
@@ -133,8 +135,20 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 - Every completed or reused file is hashed with SHA-256 and recorded in the manifest.
 - Large files are streamed to `<target>.part` and atomically moved into place only after the download completes.
 - A failed download removes its partial file and records the failure in the manifest.
+- SEC HTTP 429 is treated as a run-level throttle event by default. The script stops queued work, removes partial files for stopped workers, records stopped rows in the manifest, writes summary status `stopped`, and exits with code `2`.
+- A normal request failure still records `failed`, writes summary status `failed`, and exits with code `1`.
 - With Rich installed, the top panel reports overall source count, active workers, elapsed time, completed/reused/failed counts, and total completed bytes.
 - With Rich installed, each active worker gets a fixed row showing source, status, byte progress, size, rate, attempt number, elapsed time, and message.
 - The lower Rich panel is reserved for retry, completion, and summary messages.
 - If Rich is not installed and `--progress-layout auto` is used, the script falls back to plain text completion and retry messages.
 - This script intentionally does not parse `.zip` or `.nc.tar.gz` files. Parsing and database insertion are Phase 3.
+
+## 429 Recovery
+
+If SEC returns 429, wait before restarting. The manifest tells you which files were already `downloaded` or `reused`; rerunning without `--force` skips those files and resumes the remaining sources.
+
+Recommended restart after a 429:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 1.0 --progress-layout auto
+```

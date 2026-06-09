@@ -67,6 +67,44 @@ class DownloadResult:
     error: str = ""
 
 
+class DownloadStopped(RuntimeError):
+    pass
+
+
+class DownloadCoordinator:
+    def __init__(self, *, stop_on_429: bool, max_429_before_stop: int) -> None:
+        self.stop_on_429 = stop_on_429
+        self.max_429_before_stop = max(1, max_429_before_stop)
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._stop_reason = ""
+        self._http_429_count = 0
+
+    @property
+    def stop_reason(self) -> str:
+        with self._lock:
+            return self._stop_reason
+
+    def should_stop(self) -> bool:
+        return self._stop_event.is_set()
+
+    def request_stop(self, reason: str) -> None:
+        with self._lock:
+            if not self._stop_event.is_set():
+                self._stop_reason = reason
+                self._stop_event.set()
+
+    def record_429(self, retry_after_seconds: float | None) -> str:
+        with self._lock:
+            self._http_429_count += 1
+            retry_after_text = f" retry_after={retry_after_seconds:.1f}s" if retry_after_seconds is not None else ""
+            reason = f"SEC returned HTTP 429 ({self._http_429_count}/{self.max_429_before_stop}).{retry_after_text}"
+            if self.stop_on_429 and self._http_429_count >= self.max_429_before_stop and not self._stop_event.is_set():
+                self._stop_reason = reason
+                self._stop_event.set()
+            return reason
+
+
 class ProgressDisplay:
     def __init__(
         self,
@@ -91,6 +129,7 @@ class ProgressDisplay:
         self._downloaded = 0
         self._reused = 0
         self._failed = 0
+        self._stopped = 0
         self._completed_bytes = 0
         self._started_at = time.perf_counter()
         self._rich = False
@@ -194,6 +233,8 @@ class ProgressDisplay:
             self._completed += 1
             if result.status == "failed":
                 self._failed += 1
+            elif result.status.startswith("stopped") or result.status == "cancelled":
+                self._stopped += 1
             elif result.status == "reused":
                 self._reused += 1
             elif result.status == "downloaded":
@@ -263,7 +304,7 @@ class ProgressDisplay:
         active_bytes = sum(int(row.get("downloaded") or 0) for row in self._rows if row.get("job_id"))
         lines = [
             f"Sources {self.total_sources:<6} Done {self._completed:<6} ({pct:5.1f}%)  Active {active:<4} Elapsed {elapsed}",
-            f"Downloaded {self._downloaded:<5} Reused {self._reused:<5} Failed {self._failed:<5} Bytes {format_bytes(self._completed_bytes + active_bytes)}",
+            f"Downloaded {self._downloaded:<5} Reused {self._reused:<5} Failed {self._failed:<5} Stopped {self._stopped:<5} Bytes {format_bytes(self._completed_bytes + active_bytes)}",
             f"Overall  {self._bar(self._completed, self.total_sources)}",
         ]
         return self._panel_cls("\n".join(lines), title="Overall SEC Initial Fill Download", border_style="cyan")
@@ -346,6 +387,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-timeout-seconds", type=float, default=float(os.environ.get("SEC_REQUEST_TIMEOUT_SECONDS", "120")))
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("SEC_MAX_RETRIES", "4")))
     parser.add_argument("--retry-base-seconds", type=float, default=float(os.environ.get("SEC_RETRY_BASE_SECONDS", "1.5")))
+    parser.add_argument("--max-429-before-stop", type=int, default=int(os.environ.get("SEC_MAX_429_BEFORE_STOP", "1")))
+    parser.add_argument("--stop-on-429", dest="stop_on_429", action="store_true", default=True)
+    parser.add_argument("--continue-on-429", dest="stop_on_429", action="store_false")
     parser.add_argument("--progress-interval-seconds", type=float, default=20.0)
     parser.add_argument("--progress-layout", choices=["auto", "rich", "text"], default=os.environ.get("SEC_INITIAL_PROGRESS_LAYOUT", "auto"))
     parser.add_argument("--progress-log-lines", type=int, default=18)
@@ -384,6 +428,8 @@ def main() -> None:
             "end_date": args.end_date or "",
             "planned_downloads": len(specs),
             "download_concurrency": max(1, args.download_concurrency),
+            "stop_on_429": args.stop_on_429,
+            "max_429_before_stop": max(1, args.max_429_before_stop),
             "dry_run": args.dry_run,
             "loaded_env_files": [str(path) for path in loaded_env_files],
             "secret_status": secret_status(["SEC_USER_AGENT", "SEC_EDGAR_USER_AGENT", "NEWS_SEC_USER_AGENT"]),
@@ -405,6 +451,8 @@ def main() -> None:
     print("summary=" + json.dumps(summary, sort_keys=True), flush=True)
     if any(row.status == "failed" for row in results):
         raise SystemExit(1)
+    if any(row.status.startswith("stopped") or row.status == "cancelled" for row in results):
+        raise SystemExit(2)
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -498,8 +546,10 @@ def download_all(specs: list[SourceSpec], args: argparse.Namespace, user_agent: 
     if not specs:
         return []
     results: list[DownloadResult] = []
+    completed_job_ids: set[str] = set()
     started = time.perf_counter()
     worker_count = max(1, args.download_concurrency)
+    coordinator = DownloadCoordinator(stop_on_429=bool(args.stop_on_429), max_429_before_stop=max(1, args.max_429_before_stop))
     with ProgressDisplay(
         total_sources=len(specs),
         worker_count=worker_count,
@@ -509,9 +559,11 @@ def download_all(specs: list[SourceSpec], args: argparse.Namespace, user_agent: 
         screen=args.progress_screen,
     ) as progress:
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
-            future_to_job = {}
+            future_to_job: dict[concurrent.futures.Future[DownloadResult], str] = {}
+            job_to_spec: dict[str, SourceSpec] = {}
             for spec in specs:
                 job_id = source_job_id(spec)
+                job_to_spec[job_id] = spec
                 future = executor.submit(
                     download_source,
                     spec,
@@ -524,12 +576,41 @@ def download_all(specs: list[SourceSpec], args: argparse.Namespace, user_agent: 
                     max(1.0, args.progress_interval_seconds),
                     bool(args.force),
                     progress,
+                    coordinator,
                 )
                 future_to_job[future] = job_id
-            for future in concurrent.futures.as_completed(future_to_job):
-                result = future.result()
-                results.append(result)
-                progress.finish(future_to_job[future], result)
+            try:
+                pending_cancelled = False
+                for future in concurrent.futures.as_completed(future_to_job):
+                    job_id = future_to_job[future]
+                    spec = job_to_spec[job_id]
+                    if future.cancelled():
+                        result = stopped_result(spec, "cancelled", "cancelled before start")
+                    else:
+                        result = future.result()
+                    completed_job_ids.add(job_id)
+                    results.append(result)
+                    progress.finish(job_id, result)
+                    if coordinator.should_stop() and not pending_cancelled:
+                        pending_cancelled = True
+                        reason = coordinator.stop_reason or "download stopped"
+                        progress.log(f"stopping queued downloads: {reason}")
+                        for pending_future in future_to_job:
+                            if not pending_future.done():
+                                pending_future.cancel()
+            except KeyboardInterrupt:
+                coordinator.request_stop("keyboard interrupt")
+                progress.log("keyboard interrupt received; cancelling queued downloads")
+                for pending_future in future_to_job:
+                    if not pending_future.done():
+                        pending_future.cancel()
+            finally:
+                for job_id, spec in job_to_spec.items():
+                    if job_id not in completed_job_ids:
+                        result = stopped_result(spec, "stopped_before_start", coordinator.stop_reason or "stopped before start")
+                        results.append(result)
+                        completed_job_ids.add(job_id)
+                        progress.finish(job_id, result)
         progress.log(f"download_wall_seconds={time.perf_counter() - started:.1f}")
     return sorted(results, key=lambda item: (item.source_kind, item.source_date, item.artifact_path))
 
@@ -545,10 +626,16 @@ def download_source(
     progress_interval_seconds: float,
     force: bool,
     progress: ProgressDisplay,
+    coordinator: DownloadCoordinator,
 ) -> DownloadResult:
     target = Path(spec.artifact_path)
     started = time.perf_counter()
+    if coordinator.should_stop():
+        return stopped_result(spec, "stopped_before_start", coordinator.stop_reason or "stopped before start", started)
     progress.start(job_id, spec)
+    if coordinator.should_stop():
+        progress.update(job_id, status="stopped", message=coordinator.stop_reason or "stopped")
+        return stopped_result(spec, "stopped_before_request", coordinator.stop_reason or "stopped before request", started)
     if target.exists() and not force:
         size = target.stat().st_size
         progress.update(job_id, status="hashing", downloaded=size, total=size, message="reusing existing file")
@@ -579,6 +666,7 @@ def download_source(
             retry_base_seconds,
             progress_interval_seconds,
             progress,
+            coordinator,
         )
         size = target.stat().st_size
         progress.update(job_id, status="hashing", downloaded=size, total=size, message="calculating sha256")
@@ -597,6 +685,9 @@ def download_source(
             elapsed_seconds=round(time.perf_counter() - started, 3),
             status="downloaded",
         )
+    except DownloadStopped as exc:
+        progress.update(job_id, status="stopped", message=str(exc))
+        return stopped_result(spec, "stopped_429" if "429" in str(exc) else "stopped", str(exc), started)
     except Exception as exc:  # noqa: BLE001
         progress.update(job_id, status="failed", message=repr(exc))
         return DownloadResult(
@@ -627,6 +718,7 @@ def stream_download(
     retry_base_seconds: float,
     progress_interval_seconds: float,
     progress: ProgressDisplay,
+    coordinator: DownloadCoordinator,
 ) -> tuple[str, str]:
     target.parent.mkdir(parents=True, exist_ok=True)
     part_path = target.with_suffix(target.suffix + ".part")
@@ -637,9 +729,13 @@ def stream_download(
     }
     last_error = ""
     for attempt in range(max_retries + 1):
+        if coordinator.should_stop():
+            raise DownloadStopped(coordinator.stop_reason or "download stopped")
         part_path.unlink(missing_ok=True)
         progress.update(job_id, status="waiting", attempt=attempt + 1, message="waiting for SEC rate limiter")
         limiter.wait()
+        if coordinator.should_stop():
+            raise DownloadStopped(coordinator.stop_reason or "download stopped")
         req = request.Request(url, headers=headers)
         bytes_written = 0
         last_progress_at = time.perf_counter()
@@ -662,6 +758,8 @@ def stream_download(
                         chunk = response.read(CHUNK_SIZE_BYTES)
                         if not chunk:
                             break
+                        if coordinator.should_stop():
+                            raise DownloadStopped(coordinator.stop_reason or "download stopped")
                         handle.write(chunk)
                         bytes_written += len(chunk)
                         now = time.perf_counter()
@@ -681,11 +779,19 @@ def stream_download(
         except error.HTTPError as exc:
             last_error = f"HTTP {exc.code}: {exc.reason}"
             part_path.unlink(missing_ok=True)
+            retry_after = parse_retry_after(exc.headers.get("Retry-After"))
+            if exc.code == 429:
+                reason = coordinator.record_429(retry_after)
+                progress.log(f"{target.name}: {reason}")
+                if coordinator.should_stop():
+                    raise DownloadStopped(reason) from exc
             if exc.code not in RETRY_HTTP_CODES or attempt >= max_retries:
                 raise RuntimeError(last_error) from exc
-            retry_after = parse_retry_after(exc.headers.get("Retry-After"))
             progress.log(f"retry {attempt + 1}/{max_retries} {target.name}: {last_error}")
             time.sleep(retry_after if retry_after is not None else retry_base_seconds * (2**attempt))
+        except DownloadStopped:
+            part_path.unlink(missing_ok=True)
+            raise
         except Exception as exc:  # noqa: BLE001
             last_error = repr(exc)
             part_path.unlink(missing_ok=True)
@@ -778,6 +884,26 @@ def planned_result(spec: SourceSpec) -> DownloadResult:
     )
 
 
+def stopped_result(spec: SourceSpec, status: str, reason: str, started_at: float | None = None) -> DownloadResult:
+    target = Path(spec.artifact_path)
+    elapsed = 0.0 if started_at is None else round(time.perf_counter() - started_at, 3)
+    return DownloadResult(
+        source_file_id=source_file_id_from_text(spec),
+        source_kind=spec.source_kind,
+        source_url=spec.source_url,
+        artifact_path=str(target),
+        source_date=spec.source_date,
+        downloaded_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        byte_size=target.stat().st_size if target.exists() else 0,
+        sha256=sha256_file(target) if target.exists() else "",
+        etag="",
+        last_modified="",
+        elapsed_seconds=elapsed,
+        status=status,
+        error=reason,
+    )
+
+
 def source_file_id(spec: SourceSpec, target: Path, sha256: str) -> str:
     text = f"{spec.source_kind}|{spec.source_url}|{target}|{sha256}"
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -801,9 +927,11 @@ def build_summary(run_id: str, rows: list[DownloadResult], wall_seconds: float, 
     for row in rows:
         status_counts[row.status] = status_counts.get(row.status, 0) + 1
         bytes_by_kind[row.source_kind] = bytes_by_kind.get(row.source_kind, 0) + row.byte_size
+    has_failed = bool(status_counts.get("failed"))
+    has_stopped = any(status.startswith("stopped") or status == "cancelled" for status in status_counts)
     return {
         "run_id": run_id,
-        "status": "failed" if status_counts.get("failed") else "ok",
+        "status": "failed" if has_failed else "stopped" if has_stopped else "ok",
         "sources": len(rows),
         "status_counts": status_counts,
         "bytes_total": sum(row.byte_size for row in rows),
