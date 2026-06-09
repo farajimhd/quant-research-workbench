@@ -28,7 +28,13 @@ The target ClickHouse database name is `sec_core`.
 ### Daily Files
 
 - SEC daily `.nc.tar.gz` feed archives under `Archives/edgar/Feed/YYYY/QTRn/YYYYMMDD.nc.tar.gz`.
-- These contain SGML `.nc` filing containers. They are the historical filing-content source and should be parsed for filing/document structure.
+- These contain SGML `.nc` filing containers for many filings on a day. They are useful for archive mirroring and fallback reconciliation, but they are no longer the default historical text source because they are very large and include many filings outside our trading/model universe.
+
+### Selected Accession Text Files
+
+- Per-accession complete submission text under `Archives/edgar/data/{cik}/{accession_compact}/{accession}.txt`.
+- These should be the default historical text source after bulk metadata is loaded and filtered.
+- The selected accession queue should be produced by ClickHouse queries over `sec_filing_v1`, SEC ticker mappings, and market quotes/trades availability.
 
 ### Live Sources
 
@@ -55,7 +61,7 @@ Suggested columns:
 | Column | Type | Notes |
 | --- | --- | --- |
 | `source_file_id` | `String` | Stable source id, preferably SHA-based or path-based. |
-| `source_kind` | `LowCardinality(String)` | `submissions_bulk`, `companyfacts_bulk`, `daily_feed_archive`, `company_tickers`, `company_tickers_exchange`, `company_tickers_mf`, `live_feed`, `filing_detail`, `filing_document`. |
+| `source_kind` | `LowCardinality(String)` | `submissions_bulk`, `companyfacts_bulk`, `daily_feed_archive`, `company_tickers`, `company_tickers_exchange`, `company_tickers_mf`, `accession_text`, `live_feed`, `filing_detail`, `filing_document`. |
 | `source_url` | `String` | SEC URL or source endpoint. |
 | `artifact_path` | `String` | Local path to retained raw artifact. |
 | `source_date` | `Nullable(Date)` | Daily feed date when applicable. |
@@ -159,6 +165,23 @@ Recommended engine:
 - Partition by `toYYYYMM(coalesce(accepted_at_utc, toDateTime64(filing_date, 9, 'UTC')))`
 - Order by `(cik, accession_number)`
 - Add projections or views ordered by `(accepted_at_utc, accession_number)` for market-label joins.
+
+### `sec_submission_file_ref_v1`
+
+Stores references from SEC submissions bulk JSON to older filing-history fragment files. This is a planning/reconciliation table, not a market event table.
+
+Suggested columns:
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `file_ref_id` | `String` | Stable key from CIK and file name. |
+| `cik` | `String` | Zero-padded 10-digit CIK. |
+| `file_name` | `String` | SEC referenced file name. |
+| `filing_count` | `UInt64` | Filing count reported by SEC. |
+| `filing_from` | `Nullable(Date)` | Start date covered by referenced file. |
+| `filing_to` | `Nullable(Date)` | End date covered by referenced file. |
+| `source_file_id` | `String` | Parent submissions bulk artifact id. |
+| `last_seen_at_utc` | `DateTime64(9, 'UTC')` | Load/reconciliation time. |
 
 ### `sec_filing_document_v1`
 
@@ -281,7 +304,6 @@ Recommended engine:
    - `company_tickers.json`
    - `company_tickers_exchange.json`
    - `company_tickers_mf.json`
-   - daily `.nc.tar.gz` feed archives for the target historical period
 2. Create `sec_core` and all tables.
 3. Register downloaded artifacts in `sec_raw_source_file_v1`.
 4. Parse ticker mapping files into `sec_company_ticker_v1`.
@@ -289,20 +311,23 @@ Recommended engine:
    - populate `sec_company_v1`
    - populate `sec_filing_v1`
    - use `acceptanceDateTime` as `accepted_at_utc`
+   - populate `sec_submission_file_ref_v1` for referenced older submission fragments
 6. Parse `companyfacts.zip` into `sec_xbrl_fact_v1`.
-7. Parse every `.nc` filing in each archive:
-   - enrich by accession from `sec_filing_v1`
+7. Use ClickHouse queries to map filings to market data:
+   - join SEC CIK/ticker mappings to historical quotes/trades availability
+   - filter by form type, event timestamp, and market-data coverage around `accepted_at_utc`
+   - produce a selected accession `.txt` download queue
+8. Download only selected accession `.txt` files:
    - populate or refine `sec_filing_document_v1`
    - populate `sec_filing_text_v1`
-   - do not use per-day filing limits
-8. Run reconciliation:
+9. Run reconciliation:
    - missing accession in submissions
    - missing `accepted_at_utc`
-   - daily feed accession not in `sec_filing_v1`
-   - `sec_filing_v1` accession without downloaded content when content is expected
-9. Build `sec_fundamental_snapshot_v1`.
+   - selected `sec_filing_v1` accession without downloaded text
+   - optional daily-feed fallback when selected accession `.txt` is unavailable
+10. Build `sec_fundamental_snapshot_v1`.
 
-Phase 1 source download is implemented by `research/mlops/sec_initial_fill_download.py`. Keep that phase read-only with respect to ClickHouse; the manifest becomes the input to Phase 3 registration and parsing.
+Phase 1 source download is implemented by `research/mlops/sec_initial_fill_download.py`. Bulk ClickHouse ingestion is implemented by `research/mlops/sec_bulk_clickhouse_ingest.py`. Daily `.nc.tar.gz` feed archives are optional fallback inputs, not the default historical backfill path.
 
 ## Gap Fill
 
@@ -313,8 +338,7 @@ Nightly:
 - Upsert new/changed companies and filings.
 - Redownload or refresh `companyfacts.zip`.
 - Upsert new/changed facts.
-- Download any missing daily feed archives since the last complete feed date.
-- Parse missing filing content and text.
+- Query for new selected accessions and download missing accession `.txt` files.
 - Recompute affected fundamental snapshots.
 
 Intraday:
@@ -372,6 +396,6 @@ The eventual model event stream should combine:
 
 - Exact `sec_core` storage policy name.
 - Whether `sec_filing_text_v1.text` should use default compression or explicit ZSTD codec.
-- Whether daily feed archives should remain on HDD while normalized tables/text live on SSD.
 - Whether `sec_fundamental_snapshot_v1` should be one wide table or multiple feature-family tables.
 - How to map CIK to durable security/listing ids when one CIK maps to many share classes or tickers.
+- Whether daily feed archives should be retained at all, or only used as on-demand fallback for rare missing accession text.
