@@ -68,6 +68,10 @@ DEFAULT_INSERT_CONCURRENCY = 12
 DEFAULT_MAX_THREADS = 4
 MANIFEST_WRITE_ATTEMPTS = 6
 MANIFEST_WRITE_RETRY_SECONDS = 2.0
+STATUS_PRIORITY_SQL = (
+    "multiIf(status = 'should_delete', 100, status = 'failed', 90, status = 'ok', 80, "
+    "status = 'started', 70, status = 'discovered', 60, 0)"
+)
 
 REQUIRED_QUOTE_COLUMN_TYPES = {
     "sip_timestamp_us": "UInt64",
@@ -240,6 +244,11 @@ CREATE TABLE IF NOT EXISTS {db}.{table}
     written_rows UInt64,
     written_bytes UInt64,
     exception String,
+    audit_status LowCardinality(String) DEFAULT '',
+    audit_run_id String DEFAULT '',
+    audit_actual_rows UInt64 DEFAULT 0,
+    audit_note String DEFAULT '',
+    audit_checked_at DateTime DEFAULT toDateTime(0),
     updated_at DateTime DEFAULT now()
 )
 ENGINE = MergeTree
@@ -267,6 +276,11 @@ def ensure_manifest_columns(client: ClickHouseHttpClient, database: str, manifes
         ("expected_min_sip_timestamp", "UInt64"),
         ("expected_max_sip_timestamp", "UInt64"),
         ("actual_rows", "UInt64"),
+        ("audit_status", "LowCardinality(String) DEFAULT ''"),
+        ("audit_run_id", "String DEFAULT ''"),
+        ("audit_actual_rows", "UInt64 DEFAULT 0"),
+        ("audit_note", "String DEFAULT ''"),
+        ("audit_checked_at", "DateTime DEFAULT toDateTime(0)"),
     ]
     for name, dtype in columns:
         client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {quote_ident(name)} {dtype}")
@@ -334,19 +348,26 @@ def latest_manifest_status(
 ) -> str:
     try:
         rows = client.query_tsv(
-            "SELECT status FROM "
+            "SELECT status, audit_status FROM "
             f"{quote_ident(database)}.{quote_ident(manifest_table)} "
             f"WHERE kind = {sql_string(kind)} "
             f"AND source_date = toDate({sql_string(date)}) "
             f"AND source_file = {sql_string(source_file)} "
             f"AND target_table = {sql_string(target_table)} "
             "ORDER BY updated_at DESC, "
-            "multiIf(status = 'failed', 90, status = 'ok', 80, status = 'started', 70, status = 'discovered', 60, 0) DESC "
+            f"{STATUS_PRIORITY_SQL} DESC "
             "LIMIT 1"
         ).strip().splitlines()
     except Exception:
         return ""
-    return rows[0] if rows else ""
+    if not rows:
+        return ""
+    parts = rows[0].split("\t")
+    status = parts[0]
+    audit_status = parts[1] if len(parts) > 1 else ""
+    if audit_status in {"should_delete", "orphan_should_delete"}:
+        return f"audit_{audit_status}"
+    return status
 
 
 def latest_manifest_statuses(
@@ -364,9 +385,8 @@ def latest_manifest_statuses(
     query = (
         "SELECT "
         "kind, toString(source_date) AS source_date_text, source_file, target_table, "
-        "argMax(status, tuple(updated_at, "
-        "multiIf(status = 'failed', 90, status = 'ok', 80, status = 'started', 70, status = 'discovered', 60, 0)"
-        ")) AS status "
+        f"argMax(status, tuple(updated_at, {STATUS_PRIORITY_SQL})) AS status, "
+        f"argMax(audit_status, tuple(updated_at, {STATUS_PRIORITY_SQL})) AS audit_status "
         f"FROM {quote_ident(database)}.{quote_ident(manifest_table)} "
         f"WHERE source_date BETWEEN toDate({sql_string(start_date)}) AND toDate({sql_string(end_date)}) "
         f"AND kind IN ({', '.join(sql_string(kind) for kind in kinds)}) "
@@ -395,6 +415,9 @@ def latest_manifest_statuses(
         if len(parts) < 5:
             continue
         kind, source_date_text, source_file, target_table, status = parts[:5]
+        audit_status = parts[5] if len(parts) > 5 else ""
+        if audit_status in {"should_delete", "orphan_should_delete"}:
+            status = f"audit_{audit_status}"
         statuses[(kind, source_date_text, source_file, target_table)] = status
     return statuses
 
@@ -818,6 +841,10 @@ def main() -> None:
         if status == "ok" and not should_retry:
             skipped += 1
             print(f"[{index:,}/{len(jobs):,}] SKIP {job.kind}:{job.date} status=ok", flush=True)
+            continue
+        if status in {"should_delete", "audit_should_delete", "audit_orphan_should_delete"}:
+            skipped += 1
+            print(f"[{index:,}/{len(jobs):,}] SKIP {job.kind}:{job.date} status={status}; delete mismatched rows before retrying", flush=True)
             continue
         if status in {"failed", "started"} and not should_retry:
             skipped += 1
