@@ -238,3 +238,41 @@ Step 4 migrates:
 The source filing table does not contain exact SEC acceptance timestamps, so `accepted_at_utc` is intentionally null and `accepted_at_source` is `missing_in_source`. That field must be backfilled by the SEC downloader/parser that reads submissions bulk data or filing headers.
 
 SEC date-batched inserts use `toYear(batch_column) = year` instead of an exclusive next-year date bound. ClickHouse `Date` values can reach the upper supported boundary, such as `2149-06-06`, and an upper bound like `2150-01-01` can overflow.
+
+## Step 5: Validate q_live Migration
+
+Dry-run locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_05_validate_q_live_migration.py --output-root-win D:/market-data/prepared/q_live_migration/step_05_validation
+```
+
+Dry-run on workstation:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_05_validate_q_live_migration.py --output-root-win D:/market-data/prepared/q_live_migration/step_05_validation
+```
+
+Execute locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_05_validate_q_live_migration.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_05_validation
+```
+
+Execute on workstation:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_05_validate_q_live_migration.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_05_validation
+```
+
+Step 5 validates:
+
+- source-to-target logical row reconciliation for Steps 2-4
+- critical-key null/empty counts
+- target `FINAL` counts and ReplacingMergeTree duplicate physical rows
+- `source_run_id`, `source_content_sha256`, and latest insert timestamps where applicable
+- `CLICKHOUSE_LIVE_STORAGE_POLICY` coverage across q_live MergeTree tables
+- latest migration run status rows
+- known pending work for SEC accepted timestamps, filing document/text extraction, SEC market bridge, and derived feature tables
+
+The command writes local JSONL and Markdown reports in both dry-run and execute mode. `--execute` also records validation rows in `q_live.sync_validation_v1` and one run row in `q_live.source_run_v1`.
