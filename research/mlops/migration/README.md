@@ -332,7 +332,7 @@ Execute on workstation:
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_07_backfill_sec_accepted_timestamps.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps
 ```
 
-Step 7 backfills `q_live.sec_filing_v2.accepted_at_utc` from an SEC accepted timestamp source table, defaulting to `sec_core.sec_bulk_mirror_filing_v1`.
+Step 7 backfills `q_live.sec_filing_v2.accepted_at_utc` from an SEC accepted timestamp source table, defaulting to `sec_core.sec_bulk_mirror_filing_acceptance_v1`.
 
 Strict scope:
 
@@ -361,12 +361,14 @@ Optional source columns, used when present:
 Useful overrides:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_07_backfill_sec_accepted_timestamps.py --source-database sec_core --source-table sec_bulk_mirror_filing_v1 --output-root-win D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_07_backfill_sec_accepted_timestamps.py --source-database sec_core --source-table sec_bulk_mirror_filing_acceptance_v1 --output-root-win D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps
 ```
 
 Environment defaults:
 
 - `QLIVE_MIGRATION_SEC_ACCEPTED_SOURCE_DATABASE`, then `SEC_CLICKHOUSE_DATABASE`, then `SEC_ACCEPTED_SOURCE_DATABASE`, default `sec_core`.
-- `QLIVE_MIGRATION_SEC_ACCEPTED_SOURCE_TABLE`, then `SEC_ACCEPTED_SOURCE_TABLE`, default `sec_bulk_mirror_filing_v1`.
+- `QLIVE_MIGRATION_SEC_ACCEPTED_SOURCE_TABLE`, then `SEC_ACCEPTED_SOURCE_TABLE`, default `sec_bulk_mirror_filing_acceptance_v1`.
 
 If the source table does not exist, dry-run records a blocked report and exits without writing to ClickHouse. Execute mode refuses to run until the source exists.
+
+Build the focused source table first with `sec_acceptance_backfill_build.py`. It reads current missing q_live filing keys, extracts only matching rows from SEC `submissions.zip`, saves `accepted_rows.jsonl`, `not_found_keys.jsonl`, and `not_found_ciks.jsonl`, then inserts only matched accepted rows when `--execute` is used.
