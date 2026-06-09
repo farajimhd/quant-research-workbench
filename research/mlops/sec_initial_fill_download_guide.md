@@ -55,7 +55,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 Run this first. It downloads the required SEC bulk inputs for company identity, ticker mapping, accepted timestamps, and XBRL facts:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11 --progress-layout auto
 ```
 
 Expected raw output:
@@ -82,13 +82,13 @@ Run this when you are ready to fetch historical filing-content archives. The scr
 Small smoke test:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 0.11
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 0.11 --progress-layout auto
 ```
 
 Full historical archive download from 2020 through today:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11 --progress-layout auto
 ```
 
 Expected daily archive output:
@@ -102,7 +102,7 @@ G:\market-data\sec_core\daily_archives\YYYY\QTRN\YYYYMMDD.nc.tar.gz
 This downloads bulk sources plus daily archives. Use it only when you intentionally want both phases in one run:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources all --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources all --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11 --progress-layout auto
 ```
 
 ## Arguments
@@ -120,6 +120,10 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 - `--max-retries`: retry count for retryable HTTP/network failures.
 - `--retry-base-seconds`: exponential backoff base for retries.
 - `--progress-interval-seconds`: progress print interval for large streaming downloads.
+- `--progress-layout`: `auto`, `rich`, or `text`. `auto` uses Rich when installed and falls back to text otherwise.
+- `--progress-log-lines`: retained message lines in the Rich message panel.
+- `--progress-refresh-per-second`: Rich live-render refresh rate.
+- `--progress-screen` / `--no-progress-screen`: keep the Rich progress display in a fixed terminal screen or let it scroll in normal output. Fixed screen is the default.
 - `--force`: redownload existing artifacts.
 - `--dry-run`: write a planned manifest without downloading.
 
@@ -129,4 +133,8 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 - Every completed or reused file is hashed with SHA-256 and recorded in the manifest.
 - Large files are streamed to `<target>.part` and atomically moved into place only after the download completes.
 - A failed download removes its partial file and records the failure in the manifest.
+- With Rich installed, the top panel reports overall source count, active workers, elapsed time, completed/reused/failed counts, and total completed bytes.
+- With Rich installed, each active worker gets a fixed row showing source, status, byte progress, size, rate, attempt number, elapsed time, and message.
+- The lower Rich panel is reserved for retry, completion, and summary messages.
+- If Rich is not installed and `--progress-layout auto` is used, the script falls back to plain text completion and retry messages.
 - This script intentionally does not parse `.zip` or `.nc.tar.gz` files. Parsing and database insertion are Phase 3.
