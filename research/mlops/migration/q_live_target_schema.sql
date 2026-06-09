@@ -111,6 +111,23 @@ ENGINE = ReplacingMergeTree(last_seen_at_utc)
 ORDER BY country_id
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
+CREATE TABLE IF NOT EXISTS q_live.ref_asset_class_v1
+(
+    asset_class_id String,
+    asset_class String,
+    display_name String,
+    status LowCardinality(String),
+    source_system Nullable(String),
+    first_seen_at_utc DateTime64(3, 'UTC'),
+    last_seen_at_utc DateTime64(3, 'UTC'),
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(last_seen_at_utc)
+ORDER BY (asset_class, asset_class_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
 CREATE TABLE IF NOT EXISTS q_live.ref_exchange_v1
 (
     exchange_id String,
@@ -131,6 +148,25 @@ CREATE TABLE IF NOT EXISTS q_live.ref_exchange_v1
 )
 ENGINE = ReplacingMergeTree(last_seen_at_utc)
 ORDER BY (exchange_code, exchange_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.ref_exchange_currency_v1
+(
+    exchange_currency_id String,
+    exchange_code String,
+    currency_code String,
+    relation_status LowCardinality(String),
+    is_default UInt8,
+    source_system LowCardinality(String),
+    source_product_count UInt64,
+    first_seen_at_utc DateTime64(3, 'UTC'),
+    last_seen_at_utc DateTime64(3, 'UTC'),
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(last_seen_at_utc)
+ORDER BY (exchange_code, currency_code, exchange_currency_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
 CREATE TABLE IF NOT EXISTS q_live.ref_ticker_type_v1

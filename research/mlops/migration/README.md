@@ -106,3 +106,42 @@ Important behavior:
 - `--execute` is required before any DDL is sent to ClickHouse.
 - The script requires `CLICKHOUSE_LIVE_STORAGE_POLICY` unless `--allow-empty-storage-policy` is passed.
 - Every run writes `rendered_q_live_schema.sql`, `schema_create_manifest.json`, and `schema_create_execution.jsonl`.
+
+## Step 2: Migrate Reference And Identity Tables
+
+Dry-run locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_02_migrate_reference_identity.py --output-root-win D:/market-data/prepared/q_live_migration/step_02_reference_identity
+```
+
+Dry-run on workstation:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_02_migrate_reference_identity.py --output-root-win D:/market-data/prepared/q_live_migration/step_02_reference_identity
+```
+
+Execute locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_02_migrate_reference_identity.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_02_reference_identity
+```
+
+Execute on workstation:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_02_migrate_reference_identity.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_02_reference_identity
+```
+
+Record validation only after a completed migration, without inserting migrated rows:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_02_migrate_reference_identity.py --validate-only --output-root-win D:/market-data/prepared/q_live_migration/step_02_reference_identity
+```
+
+Step 2 migrates:
+
+- Reference tables: country, asset class, exchange, exchange currency, ticker type.
+- Identity tables: issuer, issuer identifiers, security, security identifiers, listing, symbol, source mappings, mapping issues.
+
+Default mode is dry-run. The script refuses to append into non-empty target tables unless `--allow-non-empty-targets` is passed. Validation compares target logical `FINAL` row counts to source distinct-key counts, because the source tables are `ReplacingMergeTree` and can contain duplicate physical rows.
