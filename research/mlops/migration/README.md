@@ -334,6 +334,8 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 
 Step 7 backfills `q_live.sec_filing_v2.accepted_at_utc` from an SEC accepted timestamp source table, defaulting to `sec_core.sec_bulk_mirror_filing_acceptance_v1`.
 
+Execution writes replacement rows by `toYYYYMM(accepted_at_utc)` so a multi-year backfill does not exceed ClickHouse's per-insert partition limit. If a run is interrupted, rerun the same command; already-filled keys are skipped because the candidate set is restricted to target rows where `accepted_at_utc IS NULL`.
+
 Strict scope:
 
 - It only inserts replacement versions for filing keys that already exist in `q_live.sec_filing_v2`.

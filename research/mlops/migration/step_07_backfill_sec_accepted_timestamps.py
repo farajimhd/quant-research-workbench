@@ -129,13 +129,16 @@ def main() -> None:
 
     insert_run_row(client, args.target_database, backfill_run_id, "running", inserted_at, rows_read=preflight["candidate_existing_rows"], rows_written=0, rows_failed=0)
     started = time.perf_counter()
-    client.execute(rendered_sql)
+    partition_batches = candidate_partition_batches(client, args, source_columns)
+    partition_executions = execute_partitioned_backfill(client, args, backfill_run_id, inserted_at, source_columns, partition_batches)
     after = preflight_counts(client, args, source_columns)
     inserted_delta = max(0, after["target_physical_rows"] - preflight["target_physical_rows"])
     execution = {
         "status": "ok",
         "backfill_run_id": backfill_run_id,
         "inserted_delta": inserted_delta,
+        "partition_batches": partition_batches,
+        "partition_executions": partition_executions,
         "preflight": preflight,
         "after": after,
         "wall_seconds": round(time.perf_counter() - started, 3),
@@ -231,11 +234,12 @@ def preflight_counts(client: ClickHouseHttpClient, args: argparse.Namespace, sou
     }
 
 
-def replacement_insert_sql(args: argparse.Namespace, run_id: str, inserted_at: str, source_columns: set[str]) -> str:
+def replacement_insert_sql(args: argparse.Namespace, run_id: str, inserted_at: str, source_columns: set[str], accepted_yyyymm: int | None = None) -> str:
     target = f"{quote_ident(args.target_database)}.sec_filing_v2"
     source_projection = source_projection_sql(args, source_columns)
     literal_run_id = sql_string(run_id)
     inserted_expr = f"toDateTime64({sql_string(inserted_at)}, 3, 'UTC')"
+    partition_filter = f"\n  AND toYYYYMM(s.accepted_at_utc) = {accepted_yyyymm}" if accepted_yyyymm is not None else ""
     return f"""
 INSERT INTO {target}
 (filing_id, accession_number, accession_number_compact, cik, issuer_id, company_name, form_type, filing_date, report_date, accepted_at_utc, acceptance_datetime_raw, accepted_at_source, primary_document, primary_document_url, filing_detail_url, source_file_name, filing_size, items, text_status, source_run_id, source_content_sha256, inserted_at)
@@ -267,6 +271,7 @@ INNER JOIN ({source_projection}) AS s
     ON q.cik = s.cik
    AND q.accession_number = s.accession_number
 WHERE q.accepted_at_utc IS NULL
+{partition_filter}
 """
 
 
@@ -299,6 +304,75 @@ SELECT
 FROM {source} FINAL
 WHERE accepted_at_utc IS NOT NULL
 """
+
+
+def candidate_partition_batches(client: ClickHouseHttpClient, args: argparse.Namespace, source_columns: set[str]) -> list[dict[str, int]]:
+    target = f"{quote_ident(args.target_database)}.sec_filing_v2"
+    source_projection = source_projection_sql(args, source_columns)
+    rows = query_json_each_row(
+        client,
+        f"""
+        SELECT
+            toYYYYMM(s.accepted_at_utc) AS accepted_yyyymm,
+            count() AS candidate_rows
+        FROM (SELECT * FROM {target} FINAL) AS q
+        INNER JOIN ({source_projection}) AS s
+            ON q.cik = s.cik
+           AND q.accession_number = s.accession_number
+        WHERE q.accepted_at_utc IS NULL
+        GROUP BY accepted_yyyymm
+        ORDER BY accepted_yyyymm
+        FORMAT JSONEachRow
+        """,
+    )
+    return [{"accepted_yyyymm": int(row["accepted_yyyymm"]), "candidate_rows": int(row["candidate_rows"])} for row in rows]
+
+
+def execute_partitioned_backfill(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    run_id: str,
+    inserted_at: str,
+    source_columns: set[str],
+    partition_batches: list[dict[str, int]],
+) -> list[dict[str, Any]]:
+    executions: list[dict[str, Any]] = []
+    total = sum(row["candidate_rows"] for row in partition_batches)
+    written = 0
+    for index, batch in enumerate(partition_batches, start=1):
+        accepted_yyyymm = int(batch["accepted_yyyymm"])
+        started = time.perf_counter()
+        before_physical = scalar_int(client, f"SELECT count() FROM {quote_ident(args.target_database)}.sec_filing_v2")
+        client.execute(replacement_insert_sql(args, run_id, inserted_at, source_columns, accepted_yyyymm=accepted_yyyymm))
+        after_physical = scalar_int(client, f"SELECT count() FROM {quote_ident(args.target_database)}.sec_filing_v2")
+        inserted_delta = max(0, after_physical - before_physical)
+        written += inserted_delta
+        event = {
+            "status": "ok",
+            "partition_index": index,
+            "partition_count": len(partition_batches),
+            "accepted_yyyymm": accepted_yyyymm,
+            "candidate_rows": int(batch["candidate_rows"]),
+            "inserted_delta": inserted_delta,
+            "inserted_total": written,
+            "candidate_total": total,
+            "wall_seconds": round(time.perf_counter() - started, 3),
+        }
+        print(
+            "partition_backfill="
+            + json.dumps(
+                {
+                    "accepted_yyyymm": accepted_yyyymm,
+                    "candidate_rows": int(batch["candidate_rows"]),
+                    "inserted_delta": inserted_delta,
+                    "progress": f"{index}/{len(partition_batches)}",
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        executions.append(event)
+    return executions
 
 
 def validate_after(client: ClickHouseHttpClient, args: argparse.Namespace, *, before: dict[str, int], after: dict[str, int], execute: bool) -> list[dict[str, Any]]:
