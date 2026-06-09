@@ -145,3 +145,52 @@ Step 2 migrates:
 - Identity tables: issuer, issuer identifiers, security, security identifiers, listing, symbol, source mappings, mapping issues.
 
 Default mode is dry-run. The script refuses to append into non-empty target tables unless `--allow-non-empty-targets` is passed. Validation compares target logical `FINAL` row counts to source distinct-key counts, because the source tables are `ReplacingMergeTree` and can contain duplicate physical rows.
+
+## Step 3: Migrate Market Publication Tables
+
+Dry-run locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_03_migrate_market_publications.py --output-root-win D:/market-data/prepared/q_live_migration/step_03_market_publications
+```
+
+Dry-run on workstation:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_03_migrate_market_publications.py --output-root-win D:/market-data/prepared/q_live_migration/step_03_market_publications
+```
+
+Execute locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_03_migrate_market_publications.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_03_market_publications
+```
+
+Resume after a partial run locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_03_migrate_market_publications.py --execute --skip-non-empty-targets --output-root-win D:/market-data/prepared/q_live_migration/step_03_market_publications
+```
+
+Execute on workstation:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_03_migrate_market_publications.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_03_market_publications
+```
+
+Step 3 migrates:
+
+- security classification
+- market/security snapshots
+- float
+- short interest
+- short volume
+- stock splits
+- cash dividends
+- IPOs
+- presentation assets
+- Massive flatfile source inventory
+
+Financial statement snapshots are intentionally deferred to the fundamentals/feature migration because they need stronger alignment with SEC/XBRL feature design.
+
+Large date-partitioned publication tables are inserted in calendar-year batches to avoid ClickHouse's `max_partitions_per_insert_block` guard. Validation compares target `FINAL` counts against the same logical keys used by each target `ReplacingMergeTree` sorting key, not always a single provider event id.

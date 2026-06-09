@@ -425,6 +425,25 @@ PARTITION BY toYYYYMM(effective_date)
 ORDER BY (symbol_id, effective_date, source_system, security_float_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
+CREATE TABLE IF NOT EXISTS q_live.market_security_classification_v1
+(
+    security_classification_id String,
+    security_id String,
+    classification_source LowCardinality(String),
+    classification_scheme LowCardinality(String),
+    classification_level LowCardinality(String),
+    classification_value String,
+    source_entity_key Nullable(String),
+    first_seen_at_utc DateTime64(3, 'UTC'),
+    last_seen_at_utc DateTime64(3, 'UTC'),
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(last_seen_at_utc)
+ORDER BY (security_id, classification_source, classification_scheme, classification_level, classification_value, security_classification_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
 CREATE TABLE IF NOT EXISTS q_live.market_short_interest_v1
 (
     short_interest_id String,
@@ -473,6 +492,94 @@ PARTITION BY toYYYYMM(trade_date)
 ORDER BY (symbol_id, trade_date, source_system, short_volume_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
+CREATE TABLE IF NOT EXISTS q_live.market_stock_split_v1
+(
+    stock_split_id String,
+    symbol_id String,
+    listing_id String,
+    security_id String,
+    source_system LowCardinality(String),
+    provider_ticker String,
+    execution_date Date,
+    split_from Float64,
+    split_to Float64,
+    source_event_key String,
+    source_evidence_ref String,
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY toYYYYMM(execution_date)
+ORDER BY (symbol_id, execution_date, source_system, stock_split_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.market_cash_dividend_v1
+(
+    cash_dividend_id String,
+    symbol_id String,
+    listing_id String,
+    security_id String,
+    source_system LowCardinality(String),
+    provider_ticker String,
+    cash_amount Nullable(Float64),
+    currency_code Nullable(String),
+    declaration_date Nullable(Date),
+    dividend_type Nullable(String),
+    ex_dividend_date Date,
+    frequency Nullable(String),
+    pay_date Nullable(Date),
+    record_date Nullable(Date),
+    source_event_key String,
+    source_evidence_ref String,
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY toYYYYMM(ex_dividend_date)
+ORDER BY (symbol_id, ex_dividend_date, source_system, cash_dividend_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.market_ipo_v1
+(
+    ipo_event_id String,
+    symbol_id String,
+    listing_id String,
+    security_id String,
+    source_system LowCardinality(String),
+    provider_ticker String,
+    issuer_name Nullable(String),
+    announced_date Nullable(Date),
+    listing_date Date,
+    issue_start_date Nullable(Date),
+    issue_end_date Nullable(Date),
+    last_updated_date Nullable(Date),
+    ipo_status Nullable(String),
+    currency_code Nullable(String),
+    final_issue_price Nullable(Float64),
+    highest_offer_price Nullable(Float64),
+    lowest_offer_price Nullable(Float64),
+    min_shares_offered Nullable(Float64),
+    max_shares_offered Nullable(Float64),
+    total_offer_size Nullable(Float64),
+    shares_outstanding Nullable(Float64),
+    primary_exchange Nullable(String),
+    security_type Nullable(String),
+    security_description Nullable(String),
+    us_code Nullable(String),
+    isin Nullable(String),
+    source_event_key String,
+    source_evidence_ref String,
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY toYYYYMM(listing_date)
+ORDER BY (symbol_id, listing_date, source_system, ipo_event_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
 CREATE TABLE IF NOT EXISTS q_live.market_security_market_snapshot_v1
 (
     security_market_snapshot_id String,
@@ -495,6 +602,56 @@ CREATE TABLE IF NOT EXISTS q_live.market_security_market_snapshot_v1
 ENGINE = ReplacingMergeTree(inserted_at)
 PARTITION BY toYYYYMM(observed_at_utc)
 ORDER BY (symbol_id, observed_at_utc, source_system, security_market_snapshot_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.market_presentation_asset_v1
+(
+    asset_id String,
+    asset_kind LowCardinality(String),
+    display_name String,
+    relative_path String,
+    mime_type String,
+    byte_size UInt64,
+    content_hash_sha256 String,
+    source_system Nullable(String),
+    source_reference Nullable(String),
+    source_file_name Nullable(String),
+    status LowCardinality(String),
+    first_seen_at_utc Nullable(DateTime64(3, 'UTC')),
+    last_seen_at_utc Nullable(DateTime64(3, 'UTC')),
+    last_verified_at_utc Nullable(DateTime64(3, 'UTC')),
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+ORDER BY (asset_kind, status, asset_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.massive_flatfile_source_file_v1
+(
+    file_id String,
+    provider LowCardinality(String),
+    dataset_root String,
+    partition_date Date,
+    object_key String,
+    source_etag String,
+    source_last_modified_utc DateTime64(3, 'UTC'),
+    source_byte_size UInt64,
+    checksum_sha256 String,
+    raw_file_id String,
+    file_status LowCardinality(String),
+    load_status LowCardinality(String),
+    loaded_row_count Nullable(UInt64),
+    quote_size_correction_status LowCardinality(String),
+    loaded_at_utc Nullable(DateTime64(3, 'UTC')),
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY toYYYYMM(partition_date)
+ORDER BY (provider, dataset_root, partition_date, file_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
 CREATE TABLE IF NOT EXISTS q_live.sec_filing_v2

@@ -135,6 +135,8 @@ These tables feed scanner setup, live trading metadata, and model features.
 
 These are publication tables. They should not contain raw provider payloads unless the payload is needed for reproducibility.
 
+`market_financial_statement_snapshot_v1` is not part of step 3. It is deferred to the fundamentals/feature migration because it overlaps with SEC/XBRL-derived snapshots and should be reconciled before publication.
+
 ### 5. SEC Publications
 
 SEC should be linked to canonical identities but still keep its own source truth.
