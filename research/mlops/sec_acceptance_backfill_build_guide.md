@@ -30,6 +30,8 @@ WHERE accepted_at_utc IS NULL
 sec_core.sec_bulk_mirror_filing_acceptance_v1
 ```
 
+The table is partitioned by `cityHash64(cik) % 64`, not by month. The source rows can span many years in one batch, and monthly partitioning can exceed ClickHouse's `max_partitions_per_insert_block` limit.
+
 The script does not add new rows to `q_live`. Step 7 performs the q_live replacement-row backfill after this source exists.
 
 ## Required Input

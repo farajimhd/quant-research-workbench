@@ -49,6 +49,7 @@ DEFAULT_STAGE_TABLE = "sec_bulk_mirror_filing_acceptance_v1"
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_core")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_backfill")
 DEFAULT_BATCH_SIZE = 50_000
+EXPECTED_STAGE_PARTITION_KEY = "cityHash64(cik) % 64"
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,7 +355,45 @@ def write_not_found(paths: RunPaths, missing_by_cik: dict[str, set[str]], found_
 
 def create_stage_table(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
     client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.stage_database)}")
+    ensure_stage_table_compatible(client, args.stage_database, args.stage_table)
     client.execute(stage_table_sql(args.stage_database, args.stage_table, args.storage_policy))
+
+
+def ensure_stage_table_compatible(client: ClickHouseHttpClient, database: str, table: str) -> None:
+    if not table_exists(client, database, table):
+        return
+    partition_key = first_cell(
+        client,
+        f"""
+        SELECT partition_key
+        FROM system.tables
+        WHERE database = {sql_string(database)}
+          AND name = {sql_string(table)}
+        FORMAT TSV
+        """,
+    )
+    if normalize_clickhouse_expr(partition_key) == normalize_clickhouse_expr(EXPECTED_STAGE_PARTITION_KEY):
+        return
+    row_count = int(
+        first_cell(
+            client,
+            f"SELECT count() FROM {quote_ident(database)}.{quote_ident(table)} FORMAT TSV",
+        )
+        or "0"
+    )
+    if row_count == 0:
+        print(
+            "stage_table_recreate_empty=true "
+            f"table={database}.{table} old_partition_key={partition_key!r} "
+            f"new_partition_key={EXPECTED_STAGE_PARTITION_KEY!r}",
+            flush=True,
+        )
+        client.execute(f"DROP TABLE {quote_ident(database)}.{quote_ident(table)}")
+        return
+    raise SystemExit(
+        f"Existing stage table {database}.{table} has incompatible partition key {partition_key!r} "
+        f"and {row_count:,} rows. Create a new --stage-table or migrate/drop it manually."
+    )
 
 
 def stage_table_sql(database: str, table: str, storage_policy: str) -> str:
@@ -386,7 +425,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     last_seen_at_utc DateTime64(3, 'UTC')
 )
 ENGINE = ReplacingMergeTree(last_seen_at_utc)
-PARTITION BY toYYYYMM(accepted_at_utc)
+PARTITION BY {EXPECTED_STAGE_PARTITION_KEY}
 ORDER BY (cik, accession_number)
 SETTINGS {", ".join(settings)}
 """
@@ -399,6 +438,33 @@ def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: l
     body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in valid_rows)
     client.execute(f"INSERT INTO {quote_ident(database)}.{quote_ident(table)} FORMAT JSONEachRow\n{body}")
     return len(valid_rows)
+
+
+def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:
+    return (
+        first_cell(
+            client,
+            f"""
+            SELECT count()
+            FROM system.tables
+            WHERE database = {sql_string(database)}
+              AND name = {sql_string(table)}
+            FORMAT TSV
+            """,
+        )
+        == "1"
+    )
+
+
+def first_cell(client: ClickHouseHttpClient, sql: str) -> str:
+    text = client.execute(sql.strip().rstrip(";"))
+    if not text.strip():
+        return ""
+    return text.splitlines()[0].split("\t")[0]
+
+
+def normalize_clickhouse_expr(value: str) -> str:
+    return "".join(value.lower().split())
 
 
 def write_manifest(
