@@ -34,8 +34,8 @@ from research.mlops.sec_historical_feed_download import (  # noqa: E402
 )
 
 
-DEFAULT_ARTIFACT_ROOT_WIN = Path("G:/market-data/sec_core")
-DEFAULT_OUTPUT_ROOT_WIN = Path("G:/market-data/prepared/sec_core")
+DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_core")
+DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_core")
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar"
 SEC_FILES_BASE_URL = "https://www.sec.gov/files"
 SEC_BULK_BASE_URL = "https://www.sec.gov/Archives/edgar/daily-index"
@@ -390,6 +390,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-429-before-stop", type=int, default=int(os.environ.get("SEC_MAX_429_BEFORE_STOP", "1")))
     parser.add_argument("--stop-on-429", dest="stop_on_429", action="store_true", default=True)
     parser.add_argument("--continue-on-429", dest="stop_on_429", action="store_false")
+    parser.add_argument(
+        "--allow-g-drive",
+        action="store_true",
+        help="Allow artifact/output roots on G:. Disabled by default so this downloader cannot write to HDD-backed G accidentally.",
+    )
     parser.add_argument("--progress-interval-seconds", type=float, default=20.0)
     parser.add_argument("--progress-layout", choices=["auto", "rich", "text"], default=os.environ.get("SEC_INITIAL_PROGRESS_LAYOUT", "auto"))
     parser.add_argument("--progress-log-lines", type=int, default=18)
@@ -456,6 +461,13 @@ def main() -> None:
 
 
 def validate_args(args: argparse.Namespace) -> None:
+    if not args.allow_g_drive:
+        for label, raw_path in [("artifact root", args.artifact_root_win), ("output root", args.output_root_win)]:
+            if is_g_drive_path(Path(raw_path)):
+                raise SystemExit(
+                    f"{label} points to G:, which is blocked for this downloader: {raw_path}. "
+                    "Use an SSD path such as D:/market-data/sec_core, or pass --allow-g-drive only for an intentional exception."
+                )
     if args.include_daily_archives:
         if not args.start_date or not args.end_date:
             raise SystemExit("--start-date and --end-date are required with --include-daily-archives")
@@ -465,6 +477,13 @@ def validate_args(args: argparse.Namespace) -> None:
             raise SystemExit("--end-date must be later than --start-date")
     if args.download_concurrency < 1:
         raise SystemExit("--download-concurrency must be >= 1")
+
+
+def is_g_drive_path(path: Path) -> bool:
+    raw = str(path).replace("/", "\\").lower()
+    if raw.startswith("g:\\") or raw == "g:":
+        return True
+    return raw.startswith("\\\\desktop-saai85t\\workstation-g\\")
 
 
 def build_specs(args: argparse.Namespace, artifact_root: Path, user_agent: str, limiter: RateLimiter) -> list[SourceSpec]:

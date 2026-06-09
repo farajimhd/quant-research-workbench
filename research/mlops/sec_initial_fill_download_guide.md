@@ -18,11 +18,11 @@ Optional daily archives:
 
 ## Recommended Roots
 
-For workstation runs, keep raw SEC artifacts on the HDD-backed market-data folder:
+For workstation runs, keep raw SEC artifacts on an SSD-backed market-data folder:
 
 ```powershell
-$env:SEC_CORE_ARTIFACT_ROOT_WIN="G:/market-data/sec_core"
-$env:SEC_CORE_OUTPUT_ROOT_WIN="G:/market-data/prepared/sec_core"
+$env:SEC_CORE_ARTIFACT_ROOT_WIN="D:/market-data/sec_core"
+$env:SEC_CORE_OUTPUT_ROOT_WIN="D:/market-data/prepared/sec_core"
 $env:SEC_USER_AGENT="QuantResearchWorkbench SEC initial fill your_email@example.com"
 ```
 
@@ -47,7 +47,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 Use this first to confirm paths and planned URLs without downloading:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --dry-run --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --dry-run --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core
 ```
 
 ## Phase 1A: Download Bulk Sources
@@ -55,24 +55,24 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 Run this first. It downloads the required SEC bulk inputs for company identity, ticker mapping, accepted timestamps, and XBRL facts:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11 --progress-layout auto
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11 --progress-layout auto
 ```
 
 Expected raw output:
 
 ```text
-G:\market-data\sec_core\bulk\submissions\submissions.zip
-G:\market-data\sec_core\bulk\companyfacts\companyfacts.zip
-G:\market-data\sec_core\bulk\mappings\company_tickers.json
-G:\market-data\sec_core\bulk\mappings\company_tickers_exchange.json
-G:\market-data\sec_core\bulk\mappings\company_tickers_mf.json
+D:\market-data\sec_core\bulk\submissions\submissions.zip
+D:\market-data\sec_core\bulk\companyfacts\companyfacts.zip
+D:\market-data\sec_core\bulk\mappings\company_tickers.json
+D:\market-data\sec_core\bulk\mappings\company_tickers_exchange.json
+D:\market-data\sec_core\bulk\mappings\company_tickers_mf.json
 ```
 
 Expected manifest output:
 
 ```text
-G:\market-data\prepared\sec_core\sec_initial_fill_sources_<run_id>.jsonl
-G:\market-data\prepared\sec_core\sec_initial_fill_summary_<run_id>.json
+D:\market-data\prepared\sec_core\sec_initial_fill_sources_<run_id>.jsonl
+D:\market-data\prepared\sec_core\sec_initial_fill_summary_<run_id>.json
 ```
 
 ## Phase 1B: Download Daily Filing Archives
@@ -82,19 +82,19 @@ Run this when you are ready to fetch historical filing-content archives. The scr
 Small smoke test:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 0.11 --progress-layout auto
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 0.11 --progress-layout auto
 ```
 
 Full historical archive download from 2020 through today:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.25 --progress-layout auto
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.25 --progress-layout auto
 ```
 
 Expected daily archive output:
 
 ```text
-G:\market-data\sec_core\daily_archives\YYYY\QTRN\YYYYMMDD.nc.tar.gz
+D:\market-data\sec_core\daily_archives\YYYY\QTRN\YYYYMMDD.nc.tar.gz
 ```
 
 ## Download Everything In One Run
@@ -102,13 +102,14 @@ G:\market-data\sec_core\daily_archives\YYYY\QTRN\YYYYMMDD.nc.tar.gz
 This downloads bulk sources plus daily archives. Use it only when you intentionally want both phases in one run:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources all --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11 --progress-layout auto
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources all --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11 --progress-layout auto
 ```
 
 ## Arguments
 
-- `--artifact-root-win`: raw artifact root. Defaults to `SEC_CORE_ARTIFACT_ROOT_WIN`, then `SEC_HISTORICAL_ARTIFACT_ROOT_WIN`, then `G:/market-data/sec_core`.
-- `--output-root-win`: manifest/report root. Defaults to `SEC_CORE_OUTPUT_ROOT_WIN`, then `SEC_HISTORICAL_OUTPUT_ROOT_WIN`, then `G:/market-data/prepared/sec_core`.
+- `--artifact-root-win`: raw artifact root. Defaults to `SEC_CORE_ARTIFACT_ROOT_WIN`, then `SEC_HISTORICAL_ARTIFACT_ROOT_WIN`, then `D:/market-data/sec_core`.
+- `--output-root-win`: manifest/report root. Defaults to `SEC_CORE_OUTPUT_ROOT_WIN`, then `SEC_HISTORICAL_OUTPUT_ROOT_WIN`, then `D:/market-data/prepared/sec_core`.
+- `--allow-g-drive`: opt-in override for G-drive paths. By default the script refuses `G:` and `\\DESKTOP-SAAI85T\Workstation-G\...` roots before any download starts.
 - `--sources`: comma-separated bulk sources. Valid values are `submissions`, `companyfacts`, `company_tickers`, `company_tickers_exchange`, `company_tickers_mf`, `all`, and `none`.
 - `--include-daily-archives`: enables daily `.nc.tar.gz` archive download.
 - `--start-date`: inclusive daily archive start date.
@@ -133,7 +134,6 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 
 - Existing files are reused unless `--force` is passed.
 - Every completed or reused file is hashed with SHA-256 and recorded in the manifest.
-- Large files are streamed to `<target>.part` and atomically moved into place only after the download completes.
 - Large files are streamed to unique per-attempt partial names and atomically moved into place only after the download completes. This avoids collisions with stale or locked `.part` files from earlier interrupted runs.
 - A failed download removes its own partial file when possible and records the failure in the manifest.
 - SEC HTTP 429 is treated as a run-level throttle event by default. The script stops queued work, removes partial files for stopped workers, records stopped rows in the manifest, writes summary status `stopped`, and exits with code `2`.
@@ -152,7 +152,7 @@ If SEC returns 429, wait before restarting. The manifest tells you which files w
 Recommended restart after a 429:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 1.0 --progress-layout auto
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 1.0 --progress-layout auto
 ```
 
 Older interrupted runs may leave `*.part` files in the raw artifact tree. New runs ignore those stale partials. Delete them only after confirming no downloader process is running.
