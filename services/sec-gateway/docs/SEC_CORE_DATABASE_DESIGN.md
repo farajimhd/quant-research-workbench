@@ -275,20 +275,21 @@ Recommended engine:
 
 ## Historical Initial Fill
 
-1. Create `sec_core` and all tables.
-2. Download and register bulk artifacts:
+1. Download raw SEC source artifacts and write a source manifest:
    - `submissions.zip`
    - `companyfacts.zip`
    - `company_tickers.json`
    - `company_tickers_exchange.json`
    - `company_tickers_mf.json`
-3. Parse ticker mapping files into `sec_company_ticker_v1`.
-4. Parse `submissions.zip`:
+   - daily `.nc.tar.gz` feed archives for the target historical period
+2. Create `sec_core` and all tables.
+3. Register downloaded artifacts in `sec_raw_source_file_v1`.
+4. Parse ticker mapping files into `sec_company_ticker_v1`.
+5. Parse `submissions.zip`:
    - populate `sec_company_v1`
    - populate `sec_filing_v1`
    - use `acceptanceDateTime` as `accepted_at_utc`
-5. Parse `companyfacts.zip` into `sec_xbrl_fact_v1`.
-6. Download daily `.nc.tar.gz` feed archives for the target historical period.
+6. Parse `companyfacts.zip` into `sec_xbrl_fact_v1`.
 7. Parse every `.nc` filing in each archive:
    - enrich by accession from `sec_filing_v1`
    - populate or refine `sec_filing_document_v1`
@@ -300,6 +301,8 @@ Recommended engine:
    - daily feed accession not in `sec_filing_v1`
    - `sec_filing_v1` accession without downloaded content when content is expected
 9. Build `sec_fundamental_snapshot_v1`.
+
+Phase 1 source download is implemented by `research/mlops/sec_initial_fill_download.py`. Keep that phase read-only with respect to ClickHouse; the manifest becomes the input to Phase 3 registration and parsing.
 
 ## Gap Fill
 
