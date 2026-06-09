@@ -311,3 +311,62 @@ Step 6 builds:
 - `feature_scanner_static_v1` for the requested feature date
 
 This step intentionally does not invent SEC accepted timestamps or filing text. Those require SEC submissions/daily-feed artifacts and must be produced by the SEC bulk/feed parser before `feature_sec_event_market_bridge_v1` can be populated.
+
+## Step 7: Backfill Existing SEC Filing Accepted Timestamps
+
+Dry-run locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_07_backfill_sec_accepted_timestamps.py --output-root-win D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps
+```
+
+Execute locally after the accepted timestamp source table exists:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_07_backfill_sec_accepted_timestamps.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps
+```
+
+Execute on workstation:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_07_backfill_sec_accepted_timestamps.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps
+```
+
+Step 7 backfills `q_live.sec_filing_v2.accepted_at_utc` from an SEC accepted timestamp source table, defaulting to `sec_core.sec_filing_v1`.
+
+Strict scope:
+
+- It only inserts replacement versions for filing keys that already exist in `q_live.sec_filing_v2`.
+- It joins on `(cik, accession_number)`.
+- It never inserts a new logical filing key from the source table.
+- It validates that the target logical `FINAL` row count is unchanged after execution.
+
+Required source columns:
+
+- `cik`
+- `accession_number`
+- `accepted_at_utc`
+- `acceptance_datetime_raw`
+- `accepted_at_source`
+
+Optional source columns, used when present:
+
+- `company_name`
+- `primary_document`
+- `primary_document_url`
+- `filing_detail_url`
+- `filing_size`
+- `items`
+
+Useful overrides:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_07_backfill_sec_accepted_timestamps.py --source-database sec_core --source-table sec_filing_v1 --output-root-win D:/market-data/prepared/q_live_migration/step_07_sec_accepted_timestamps
+```
+
+Environment defaults:
+
+- `QLIVE_MIGRATION_SEC_ACCEPTED_SOURCE_DATABASE`, then `SEC_CLICKHOUSE_DATABASE`, then `SEC_ACCEPTED_SOURCE_DATABASE`, default `sec_core`.
+- `QLIVE_MIGRATION_SEC_ACCEPTED_SOURCE_TABLE`, then `SEC_ACCEPTED_SOURCE_TABLE`, default `sec_filing_v1`.
+
+If the source table does not exist, dry-run records a blocked report and exits without writing to ClickHouse. Execute mode refuses to run until the source exists.
