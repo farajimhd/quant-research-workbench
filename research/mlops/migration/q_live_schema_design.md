@@ -261,10 +261,10 @@ This phase is design only. It should not write to ClickHouse.
 
 The next phase should implement:
 
-1. `create_q_live_schema.py`
-2. `migrate_reference_identity.py`
-3. `migrate_market_publications.py`
-4. `migrate_sec_publications.py`
-5. `validate_q_live_migration.py`
+1. `step_01_create_q_live_schema.py`
+2. `step_02_migrate_reference_identity.py`
+3. `step_03_migrate_market_publications.py`
+4. `step_04_migrate_sec_publications.py`
+5. `step_05_validate_q_live_migration.py`
 
 Each migrator should be idempotent and write rows to `source_run_v1` and `sync_validation_v1`.

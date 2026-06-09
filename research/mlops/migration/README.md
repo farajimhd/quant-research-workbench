@@ -63,3 +63,24 @@ The first q_live target design is documented in:
 - `q_live_target_schema.sql`
 
 These are review artifacts. They do not execute migration. The SQL file is a draft that must be run through a schema creation script after replacing the storage-policy placeholder with `CLICKHOUSE_LIVE_STORAGE_POLICY`.
+
+## Step 1: Create q_live Schema
+
+Render the schema without touching ClickHouse:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_01_create_q_live_schema.py --output-root-win D:/market-data/prepared/q_live_migration/schema_create
+```
+
+Execute the schema after reviewing the rendered SQL:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_01_create_q_live_schema.py --execute --output-root-win D:/market-data/prepared/q_live_migration/schema_create
+```
+
+Important behavior:
+
+- Default mode is dry-run.
+- `--execute` is required before any DDL is sent to ClickHouse.
+- The script requires `CLICKHOUSE_LIVE_STORAGE_POLICY` unless `--allow-empty-storage-policy` is passed.
+- Every run writes `rendered_q_live_schema.sql`, `schema_create_manifest.json`, and `schema_create_execution.jsonl`.
