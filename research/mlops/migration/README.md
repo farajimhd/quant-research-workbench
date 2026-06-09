@@ -16,6 +16,12 @@ Workstation runtime command after sync:
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\audit_trading_dashboard_dev.py --profile-mode metadata --output-root-win D:/market-data/prepared/q_live_migration/schema_audit
 ```
 
+Local command:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\audit_trading_dashboard_dev.py --profile-mode metadata --output-root-win D:/market-data/prepared/q_live_migration/schema_audit
+```
+
 Use `--profile-mode metadata` for the default audit. It reads ClickHouse system metadata only, so it avoids expensive scans of large tables.
 
 Use `--profile-mode light` only when you want small row samples and key-column profiles. It scans likely key columns and can be slower on large tables:
@@ -68,11 +74,27 @@ These are review artifacts. They do not execute migration. The SQL file is a dra
 
 Render the schema without touching ClickHouse:
 
+Local:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_01_create_q_live_schema.py --output-root-win D:/market-data/prepared/q_live_migration/schema_create
+```
+
+Workstation:
+
 ```powershell
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_01_create_q_live_schema.py --output-root-win D:/market-data/prepared/q_live_migration/schema_create
 ```
 
 Execute the schema after reviewing the rendered SQL:
+
+Local:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_01_create_q_live_schema.py --execute --output-root-win D:/market-data/prepared/q_live_migration/schema_create
+```
+
+Workstation:
 
 ```powershell
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_01_create_q_live_schema.py --execute --output-root-win D:/market-data/prepared/q_live_migration/schema_create

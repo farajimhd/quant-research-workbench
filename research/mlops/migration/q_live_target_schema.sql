@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS q_live.source_artifact_v1
 )
 ENGINE = ReplacingMergeTree(inserted_at)
 PARTITION BY toYYYYMM(observed_at_utc)
-ORDER BY (source_system, artifact_kind, source_date, artifact_id)
+ORDER BY (source_system, artifact_kind, ifNull(source_date, toDate('1970-01-01')), artifact_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
 CREATE TABLE IF NOT EXISTS q_live.sync_watermark_v1
@@ -647,5 +647,5 @@ CREATE TABLE IF NOT EXISTS q_live.feature_sec_event_market_bridge_v1
 )
 ENGINE = ReplacingMergeTree(inserted_at)
 PARTITION BY toYYYYMM(accepted_at_utc)
-ORDER BY (accepted_at_utc, ticker, accession_number, bridge_id)
+ORDER BY (accepted_at_utc, ifNull(ticker, ''), accession_number, bridge_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';

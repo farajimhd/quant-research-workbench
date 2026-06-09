@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -22,7 +23,6 @@ from research.mlops.clickhouse_ingest_sip_flatfiles import (  # noqa: E402
     default_clickhouse_user,
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
-from research.mlops.manifest import git_commit  # noqa: E402
 from research.mlops.paths import machine_name  # noqa: E402
 
 
@@ -212,6 +212,25 @@ def validate_rendered_sql(rendered_sql: str, statements: list[str], args: argpar
         ]
         if missing_policy:
             raise SystemExit("CREATE TABLE statements missing storage_policy: " + json.dumps(missing_policy))
+    nullable_sorting_errors = find_nullable_sorting_key_errors(rendered_sql)
+    if nullable_sorting_errors:
+        raise SystemExit("Nullable columns used directly in ORDER BY: " + json.dumps(nullable_sorting_errors, indent=2))
+
+
+def find_nullable_sorting_key_errors(sql: str) -> list[dict[str, Any]]:
+    errors = []
+    for match in re.finditer(r"CREATE TABLE IF NOT EXISTS\s+([^\s(]+)(.*?);", sql, flags=re.S | re.I):
+        table_name = match.group(1)
+        block = match.group(2)
+        nullable_columns = set(re.findall(r"^\s*(\w+)\s+Nullable\(", block, flags=re.M))
+        order_match = re.search(r"ORDER BY\s+(.+?)\nSETTINGS", block, flags=re.S | re.I)
+        if not order_match:
+            continue
+        order_expression = order_match.group(1).strip()
+        for column in sorted(nullable_columns):
+            if re.search(rf"(?<![A-Za-z0-9_]){re.escape(column)}(?![A-Za-z0-9_])", order_expression) and f"ifNull({column}" not in order_expression:
+                errors.append({"table": table_name, "column": column, "order_by": order_expression})
+    return errors
 
 
 def execute_statements(client: ClickHouseHttpClient, statements: list[str], log_path: Path) -> None:
@@ -255,7 +274,7 @@ def write_manifest(path: Path, args: argparse.Namespace, paths: SchemaCreatePath
         "created_at_utc": datetime.now(UTC).isoformat(),
         "machine": machine_name(),
         "repo_root": str(REPO_ROOT),
-        "git_commit": git_commit(REPO_ROOT),
+        "git_commit": quiet_git_commit(REPO_ROOT),
         "job_type": "q_live_schema_create",
         "dry_run": dry_run,
         "target_database": args.target_database,
@@ -317,6 +336,18 @@ def print_header(args: argparse.Namespace, paths: SchemaCreatePaths, loaded_env:
         flush=True,
     )
     print("=" * 96, flush=True)
+
+
+def quiet_git_commit(cwd: Path) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(cwd),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return "unknown"
 
 
 if __name__ == "__main__":
