@@ -134,9 +134,11 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 - Existing files are reused unless `--force` is passed.
 - Every completed or reused file is hashed with SHA-256 and recorded in the manifest.
 - Large files are streamed to `<target>.part` and atomically moved into place only after the download completes.
-- A failed download removes its partial file and records the failure in the manifest.
+- Large files are streamed to unique per-attempt partial names and atomically moved into place only after the download completes. This avoids collisions with stale or locked `.part` files from earlier interrupted runs.
+- A failed download removes its own partial file when possible and records the failure in the manifest.
 - SEC HTTP 429 is treated as a run-level throttle event by default. The script stops queued work, removes partial files for stopped workers, records stopped rows in the manifest, writes summary status `stopped`, and exits with code `2`.
 - A normal request failure still records `failed`, writes summary status `failed`, and exits with code `1`.
+- The downloader uses a bounded queue. It submits at most `--download-concurrency` active jobs, then schedules the next source only after a worker finishes. If SEC returns 429, unscheduled sources are marked `stopped_before_start` instead of creating thousands of cancelled futures.
 - With Rich installed, the top panel reports overall source count, active workers, elapsed time, completed/reused/failed counts, and total completed bytes.
 - With Rich installed, each active worker gets a fixed row showing source, status, byte progress, size, rate, attempt number, elapsed time, and message.
 - The lower Rich panel is reserved for retry, completion, and summary messages.
@@ -152,3 +154,5 @@ Recommended restart after a 429:
 ```powershell
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2020-01-01 --end-date 2026-06-09 --artifact-root-win G:/market-data/sec_core --output-root-win G:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 1.0 --progress-layout auto
 ```
+
+Older interrupted runs may leave `*.part` files in the raw artifact tree. New runs ignore those stale partials. Delete them only after confirming no downloader process is running.

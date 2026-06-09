@@ -546,7 +546,6 @@ def download_all(specs: list[SourceSpec], args: argparse.Namespace, user_agent: 
     if not specs:
         return []
     results: list[DownloadResult] = []
-    completed_job_ids: set[str] = set()
     started = time.perf_counter()
     worker_count = max(1, args.download_concurrency)
     coordinator = DownloadCoordinator(stop_on_429=bool(args.stop_on_429), max_429_before_stop=max(1, args.max_429_before_stop))
@@ -561,7 +560,14 @@ def download_all(specs: list[SourceSpec], args: argparse.Namespace, user_agent: 
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
             future_to_job: dict[concurrent.futures.Future[DownloadResult], str] = {}
             job_to_spec: dict[str, SourceSpec] = {}
-            for spec in specs:
+            next_index = 0
+
+            def submit_next() -> bool:
+                nonlocal next_index
+                if coordinator.should_stop() or next_index >= len(specs):
+                    return False
+                spec = specs[next_index]
+                next_index += 1
                 job_id = source_job_id(spec)
                 job_to_spec[job_id] = spec
                 future = executor.submit(
@@ -579,37 +585,59 @@ def download_all(specs: list[SourceSpec], args: argparse.Namespace, user_agent: 
                     coordinator,
                 )
                 future_to_job[future] = job_id
+                return True
+
+            for _ in range(min(worker_count, len(specs))):
+                submit_next()
             try:
-                pending_cancelled = False
-                for future in concurrent.futures.as_completed(future_to_job):
+                while future_to_job:
+                    done, _pending = concurrent.futures.wait(
+                        future_to_job,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    for future in done:
+                        job_id = future_to_job.pop(future)
+                        spec = job_to_spec[job_id]
+                        result = future.result()
+                        results.append(result)
+                        progress.finish(job_id, result)
+                    if coordinator.should_stop():
+                        reason = coordinator.stop_reason or "download stopped"
+                        progress.log(f"stopping new downloads: {reason}")
+                    else:
+                        while len(future_to_job) < worker_count and submit_next():
+                            pass
+                if coordinator.should_stop():
+                    reason = coordinator.stop_reason or "download stopped"
+                    for spec in specs[next_index:]:
+                        result = stopped_result(spec, "stopped_before_start", reason)
+                        results.append(result)
+                        progress.finish(source_job_id(spec), result)
+            except KeyboardInterrupt:
+                coordinator.request_stop("keyboard interrupt")
+                progress.log("keyboard interrupt received; waiting for active downloads to stop")
+                for future in list(future_to_job):
+                    if not future.done():
+                        future.cancel()
+                for future, job_id in list(future_to_job.items()):
                     job_id = future_to_job[future]
                     spec = job_to_spec[job_id]
                     if future.cancelled():
-                        result = stopped_result(spec, "cancelled", "cancelled before start")
+                        result = stopped_result(spec, "stopped_before_start", coordinator.stop_reason)
                     else:
                         result = future.result()
-                    completed_job_ids.add(job_id)
                     results.append(result)
                     progress.finish(job_id, result)
-                    if coordinator.should_stop() and not pending_cancelled:
-                        pending_cancelled = True
-                        reason = coordinator.stop_reason or "download stopped"
-                        progress.log(f"stopping queued downloads: {reason}")
-                        for pending_future in future_to_job:
-                            if not pending_future.done():
-                                pending_future.cancel()
-            except KeyboardInterrupt:
-                coordinator.request_stop("keyboard interrupt")
-                progress.log("keyboard interrupt received; cancelling queued downloads")
-                for pending_future in future_to_job:
-                    if not pending_future.done():
-                        pending_future.cancel()
+                for spec in specs[next_index:]:
+                    result = stopped_result(spec, "stopped_before_start", coordinator.stop_reason)
+                    results.append(result)
+                    progress.finish(source_job_id(spec), result)
             finally:
-                for job_id, spec in job_to_spec.items():
-                    if job_id not in completed_job_ids:
+                for future, job_id in list(future_to_job.items()):
+                    if not future.done() or future.cancelled():
+                        spec = job_to_spec[job_id]
                         result = stopped_result(spec, "stopped_before_start", coordinator.stop_reason or "stopped before start")
                         results.append(result)
-                        completed_job_ids.add(job_id)
                         progress.finish(job_id, result)
         progress.log(f"download_wall_seconds={time.perf_counter() - started:.1f}")
     return sorted(results, key=lambda item: (item.source_kind, item.source_date, item.artifact_path))
@@ -721,7 +749,6 @@ def stream_download(
     coordinator: DownloadCoordinator,
 ) -> tuple[str, str]:
     target.parent.mkdir(parents=True, exist_ok=True)
-    part_path = target.with_suffix(target.suffix + ".part")
     headers = {
         "User-Agent": user_agent,
         "Accept-Encoding": "identity",
@@ -729,9 +756,9 @@ def stream_download(
     }
     last_error = ""
     for attempt in range(max_retries + 1):
+        part_path = unique_part_path(target, attempt + 1)
         if coordinator.should_stop():
             raise DownloadStopped(coordinator.stop_reason or "download stopped")
-        part_path.unlink(missing_ok=True)
         progress.update(job_id, status="waiting", attempt=attempt + 1, message="waiting for SEC rate limiter")
         limiter.wait()
         if coordinator.should_stop():
@@ -778,7 +805,7 @@ def stream_download(
             return etag, last_modified
         except error.HTTPError as exc:
             last_error = f"HTTP {exc.code}: {exc.reason}"
-            part_path.unlink(missing_ok=True)
+            remove_partial(part_path, progress, target.name)
             retry_after = parse_retry_after(exc.headers.get("Retry-After"))
             if exc.code == 429:
                 reason = coordinator.record_429(retry_after)
@@ -790,11 +817,11 @@ def stream_download(
             progress.log(f"retry {attempt + 1}/{max_retries} {target.name}: {last_error}")
             time.sleep(retry_after if retry_after is not None else retry_base_seconds * (2**attempt))
         except DownloadStopped:
-            part_path.unlink(missing_ok=True)
+            remove_partial(part_path, progress, target.name)
             raise
         except Exception as exc:  # noqa: BLE001
             last_error = repr(exc)
-            part_path.unlink(missing_ok=True)
+            remove_partial(part_path, progress, target.name)
             if attempt >= max_retries:
                 raise RuntimeError(last_error) from exc
             progress.log(f"retry {attempt + 1}/{max_retries} {target.name}: {last_error}")
@@ -804,6 +831,18 @@ def stream_download(
 
 def source_job_id(spec: SourceSpec) -> str:
     return hashlib.sha256(f"{spec.source_kind}|{spec.source_date}|{spec.source_url}|{spec.artifact_path}".encode("utf-8")).hexdigest()
+
+
+def unique_part_path(target: Path, attempt: int) -> Path:
+    token = f"{os.getpid()}.{threading.get_ident()}.{attempt}.{time.time_ns()}"
+    return target.with_name(f"{target.name}.{token}.part")
+
+
+def remove_partial(path: Path, progress: ProgressDisplay, target_name: str) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except PermissionError as exc:
+        progress.log(f"partial cleanup deferred for {target_name}: {exc}")
 
 
 def source_label(spec: SourceSpec) -> str:
