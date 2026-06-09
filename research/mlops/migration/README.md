@@ -54,3 +54,12 @@ Other useful variables:
 - `QLIVE_MIGRATION_SAMPLE_ROWS`, default `3`.
 
 The audit does not write to ClickHouse.
+
+## Phase 2: Target Schema Design
+
+The first q_live target design is documented in:
+
+- `q_live_schema_design.md`
+- `q_live_target_schema.sql`
+
+These are review artifacts. They do not execute migration. The SQL file is a draft that must be run through a schema creation script after replacing the storage-policy placeholder with `CLICKHOUSE_LIVE_STORAGE_POLICY`.
