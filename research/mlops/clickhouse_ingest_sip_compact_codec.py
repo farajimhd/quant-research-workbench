@@ -66,6 +66,8 @@ DEFAULT_START_DATE = "2024-01-01"
 DEFAULT_END_DATE = "2026-12-31"
 DEFAULT_INSERT_CONCURRENCY = 12
 DEFAULT_MAX_THREADS = 4
+MANIFEST_WRITE_ATTEMPTS = 6
+MANIFEST_WRITE_RETRY_SECONDS = 2.0
 
 REQUIRED_QUOTE_COLUMN_TYPES = {
     "sip_timestamp_us": "UInt64",
@@ -164,6 +166,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--retry-started", action="store_true")
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help=(
+            "Keep submitting new files after an insert or manifest error. By default the script stops "
+            "submitting new jobs after the first error and only drains jobs already in flight."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -389,6 +399,37 @@ def latest_manifest_statuses(
     return statuses
 
 
+def is_transient_clickhouse_write_error(exc: Exception) -> bool:
+    text = repr(exc)
+    transient_markers = (
+        "ConnectionResetError",
+        "ConnectionAbortedError",
+        "RemoteDisconnected",
+        "TimeoutError",
+        "temporarily unavailable",
+        "Connection reset",
+        "forcibly closed by the remote host",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+def execute_manifest_write(client: ClickHouseHttpClient, sql: str, *, label: str) -> None:
+    for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
+        try:
+            client.execute(sql)
+            return
+        except Exception as exc:  # noqa: BLE001
+            if attempt >= MANIFEST_WRITE_ATTEMPTS or not is_transient_clickhouse_write_error(exc):
+                raise
+            sleep_seconds = MANIFEST_WRITE_RETRY_SECONDS * attempt
+            print(
+                f"WARN manifest write failed label={label} attempt={attempt}/{MANIFEST_WRITE_ATTEMPTS}; "
+                f"retrying in {sleep_seconds:.1f}s: {exc!r}",
+                flush=True,
+            )
+            time.sleep(sleep_seconds)
+
+
 def insert_manifest(
     client: ClickHouseHttpClient,
     database: str,
@@ -437,7 +478,7 @@ VALUES
     {sql_string(exception or profile.exception or "")}
 )
 """
-    client.execute(sql)
+    execute_manifest_write(client, sql, label=f"{status}:{job.kind}:{job.date}")
 
 
 def manifest_values_sql(
@@ -507,7 +548,11 @@ def insert_manifest_many(
             for job, status, expected_stats in chunk
         )
         sql = f"INSERT INTO {quote_ident(database)}.{quote_ident(manifest_table)}\n{columns}\nVALUES\n{values}"
-        client.execute(sql)
+        execute_manifest_write(
+            client,
+            sql,
+            label=f"bulk:{min(offset + len(chunk), total)}/{total}",
+        )
         print(
             f"BULK MANIFEST inserted={min(offset + len(chunk), total):,}/{total:,} "
             f"statuses={sorted({status for _, status, _ in chunk})}",
@@ -803,77 +848,190 @@ def main() -> None:
 
     completed = 0
     failed = 0
+    manifest_failed = 0
     aggregate_rows = 0
     started_at = time.perf_counter()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(insert_concurrency, max(1, len(pending_jobs)))) as executor:
-        future_to_job = {}
-        insert_manifest_many(
-            client,
-            args.database,
-            args.manifest_table,
-            [(job, "started", source_preflight[source_identity(job)].stats) for job in pending_jobs],
-            run_id=run_id,
-        )
-        for job in pending_jobs:
-            future_to_job[executor.submit(run_insert_job, job)] = job
-        for future in concurrent.futures.as_completed(future_to_job):
-            job = future_to_job[future]
+    if pending_jobs:
+        max_workers = min(insert_concurrency, len(pending_jobs))
+        next_job_index = 0
+        stop_submitting = False
+        future_to_job: dict[concurrent.futures.Future[CompactIngestResult], CompactIngestJob] = {}
+
+        def submit_next_job(executor: concurrent.futures.ThreadPoolExecutor) -> bool:
+            nonlocal next_job_index, manifest_failed, stop_submitting
+            if stop_submitting or next_job_index >= len(pending_jobs):
+                return False
+            job = pending_jobs[next_job_index]
+            next_job_index += 1
             expected_stats = source_preflight[source_identity(job)].stats
             try:
-                result = future.result()
-                validate_insert_profile_rows(result.profile, expected_stats)
-                completed += 1
-                aggregate_rows += int(result.profile.written_rows or 0)
-                insert_manifest(client, args.database, args.manifest_table, job, status="ok", run_id=run_id, profile=result.profile, expected_stats=expected_stats)
-                append_jsonl(
-                    report_path,
-                    {
-                        "type": "insert_profile",
-                        "job": job_public(job),
-                        "expected_stats": asdict(expected_stats),
-                        "profile": asdict(result.profile),
-                        "status": "ok",
-                    },
+                insert_manifest(
+                    client,
+                    args.database,
+                    args.manifest_table,
+                    job,
+                    status="started",
+                    run_id=run_id,
+                    expected_stats=expected_stats,
                 )
-                print_profile(result.profile)
             except Exception as exc:  # noqa: BLE001
-                failed += 1
-                insert_manifest(client, args.database, args.manifest_table, job, status="failed", run_id=run_id, expected_stats=expected_stats, exception=repr(exc))
+                manifest_failed += 1
+                stop_submitting = not args.continue_on_error
                 append_jsonl(
                     report_path,
                     {
-                        "type": "insert_profile",
+                        "type": "manifest_write_failure",
                         "job": job_public(job),
                         "expected_stats": asdict(expected_stats),
-                        "status": "failed",
+                        "status": "started",
                         "exception": repr(exc),
                     },
                 )
-                print(f"FAILED {job.kind}:{job.date}: {exc!r}", flush=True)
-            done = completed + failed
-            elapsed = time.perf_counter() - started_at
-            rate = done / elapsed if elapsed > 0 else 0.0
-            remaining = len(pending_jobs) - done
-            eta_seconds = remaining / rate if rate > 0 else 0.0
-            rows_per_second = aggregate_rows / elapsed if elapsed > 0 else 0.0
+                print(f"MANIFEST FAILED before submit {job.kind}:{job.date}: {exc!r}", flush=True)
+                return args.continue_on_error
+            future_to_job[executor.submit(run_insert_job, job)] = job
+            return True
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            while len(future_to_job) < max_workers and submit_next_job(executor):
+                pass
+
+            while future_to_job:
+                done_futures, _ = concurrent.futures.wait(
+                    future_to_job,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done_futures:
+                    job = future_to_job.pop(future)
+                    expected_stats = source_preflight[source_identity(job)].stats
+                    try:
+                        result = future.result()
+                        validate_insert_profile_rows(result.profile, expected_stats)
+                        completed += 1
+                        aggregate_rows += int(result.profile.written_rows or 0)
+                        append_jsonl(
+                            report_path,
+                            {
+                                "type": "insert_profile",
+                                "job": job_public(job),
+                                "expected_stats": asdict(expected_stats),
+                                "profile": asdict(result.profile),
+                                "status": "ok_query_finished",
+                            },
+                        )
+                        try:
+                            insert_manifest(
+                                client,
+                                args.database,
+                                args.manifest_table,
+                                job,
+                                status="ok",
+                                run_id=run_id,
+                                profile=result.profile,
+                                expected_stats=expected_stats,
+                            )
+                            append_jsonl(
+                                report_path,
+                                {
+                                    "type": "manifest_write",
+                                    "job": job_public(job),
+                                    "status": "ok",
+                                    "query_id": result.profile.query_id,
+                                },
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            manifest_failed += 1
+                            stop_submitting = not args.continue_on_error
+                            append_jsonl(
+                                report_path,
+                                {
+                                    "type": "manifest_write_failure",
+                                    "job": job_public(job),
+                                    "expected_stats": asdict(expected_stats),
+                                    "profile": asdict(result.profile),
+                                    "status": "ok",
+                                    "exception": repr(exc),
+                                },
+                            )
+                            print(f"MANIFEST FAILED after ok insert {job.kind}:{job.date}: {exc!r}", flush=True)
+                        print_profile(result.profile)
+                    except Exception as exc:  # noqa: BLE001
+                        failed += 1
+                        stop_submitting = not args.continue_on_error
+                        try:
+                            insert_manifest(
+                                client,
+                                args.database,
+                                args.manifest_table,
+                                job,
+                                status="failed",
+                                run_id=run_id,
+                                expected_stats=expected_stats,
+                                exception=repr(exc),
+                            )
+                        except Exception as manifest_exc:  # noqa: BLE001
+                            manifest_failed += 1
+                            append_jsonl(
+                                report_path,
+                                {
+                                    "type": "manifest_write_failure",
+                                    "job": job_public(job),
+                                    "expected_stats": asdict(expected_stats),
+                                    "status": "failed",
+                                    "insert_exception": repr(exc),
+                                    "exception": repr(manifest_exc),
+                                },
+                            )
+                            print(
+                                f"MANIFEST FAILED after failed insert {job.kind}:{job.date}: {manifest_exc!r}",
+                                flush=True,
+                            )
+                        append_jsonl(
+                            report_path,
+                            {
+                                "type": "insert_profile",
+                                "job": job_public(job),
+                                "expected_stats": asdict(expected_stats),
+                                "status": "failed",
+                                "exception": repr(exc),
+                            },
+                        )
+                        print(f"FAILED {job.kind}:{job.date}: {exc!r}", flush=True)
+
+                    while len(future_to_job) < max_workers and submit_next_job(executor):
+                        pass
+
+                    elapsed = time.perf_counter() - started_at
+                    rate = max(completed + failed, 1) / elapsed if elapsed > 0 else 0.0
+                    remaining = len(pending_jobs) - next_job_index + len(future_to_job)
+                    eta_seconds = remaining / rate if rate > 0 else 0.0
+                    rows_per_second = aggregate_rows / elapsed if elapsed > 0 else 0.0
+                    print(
+                        f"PROGRESS submitted={next_job_index:,}/{len(pending_jobs):,} "
+                        f"completed={completed:,} failed={failed:,} manifest_failed={manifest_failed:,} "
+                        f"remaining={remaining:,} elapsed_min={elapsed / 60:.1f} eta_min={eta_seconds / 60:.1f} "
+                        f"rows_per_sec={round(rows_per_second):,}",
+                        flush=True,
+                    )
+        if stop_submitting and next_job_index < len(pending_jobs):
+            not_submitted = len(pending_jobs) - next_job_index
             print(
-                f"PROGRESS completed={completed:,} failed={failed:,} remaining={remaining:,} "
-                f"elapsed_min={elapsed / 60:.1f} eta_min={eta_seconds / 60:.1f} "
-                f"rows_per_sec={round(rows_per_second):,}",
+                f"STOPPED submitting new jobs after first error; not_submitted={not_submitted:,}. "
+                "Rerun after resolving the failed file.",
                 flush=True,
             )
 
     elapsed = time.perf_counter() - started_at
     print("=" * 96, flush=True)
     print(
-        f"DONE completed={completed:,} failed={failed:,} skipped={skipped:,} "
+        f"DONE completed={completed:,} failed={failed:,} manifest_failed={manifest_failed:,} skipped={skipped:,} "
         f"elapsed_min={elapsed / 60:.1f} rows={aggregate_rows:,}",
         flush=True,
     )
     print(f"report={report_path}", flush=True)
     print("=" * 96, flush=True)
-    if failed:
+    if failed or manifest_failed:
         raise SystemExit(1)
 
 
