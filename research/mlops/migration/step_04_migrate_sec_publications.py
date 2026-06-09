@@ -31,7 +31,7 @@ from research.mlops.paths import machine_name  # noqa: E402
 
 DEFAULT_SOURCE_DATABASE = "trading_dashboard_dev"
 DEFAULT_TARGET_DATABASE = "q_live"
-DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/q_live_migration/step_03_market_publications")
+DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/q_live_migration/step_04_sec_publications")
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,9 +47,9 @@ class StepPaths:
         run_root.mkdir(parents=True, exist_ok=True)
         return cls(
             run_root=run_root,
-            manifest_json=run_root / "step_03_manifest.json",
-            execution_jsonl=run_root / "step_03_execution.jsonl",
-            rendered_sql=run_root / "step_03_insert_select.sql",
+            manifest_json=run_root / "step_04_manifest.json",
+            execution_jsonl=run_root / "step_04_execution.jsonl",
+            rendered_sql=run_root / "step_04_insert_select.sql",
         )
 
 
@@ -69,7 +69,7 @@ class MigrationSpec:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Step 3 of q_live migration: migrate market publication tables. "
+            "Step 4 of q_live migration: migrate SEC filing and XBRL publication tables. "
             "Default mode is dry-run and writes counts/rendered SQL without inserting rows."
         )
     )
@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--password", default=default_migration_clickhouse_password())
     parser.add_argument("--source-database", default=os.environ.get("QLIVE_MIGRATION_SOURCE_DATABASE", DEFAULT_SOURCE_DATABASE))
     parser.add_argument("--target-database", default=os.environ.get("QLIVE_MIGRATION_TARGET_DATABASE", DEFAULT_TARGET_DATABASE))
-    parser.add_argument("--output-root-win", default=os.environ.get("QLIVE_MIGRATION_STEP_03_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
+    parser.add_argument("--output-root-win", default=os.environ.get("QLIVE_MIGRATION_STEP_04_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument("--execute", action="store_true", help="Execute inserts. Without this flag, the script is dry-run only.")
     parser.add_argument("--validate-only", action="store_true", help="Record validation rows for already migrated targets without inserting migration rows.")
     parser.add_argument("--allow-non-empty-targets", action="store_true", help="Permit appending/upserting into target tables that already contain rows.")
@@ -93,7 +93,7 @@ def main() -> None:
     validate_database_name(args.target_database, "--target-database")
 
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    migration_run_id = f"step_03_market_publications_{run_id}"
+    migration_run_id = f"step_04_sec_publications_{run_id}"
     inserted_at = clickhouse_now64()
     paths = StepPaths.create(Path(args.output_root_win), run_id)
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
@@ -162,142 +162,93 @@ def build_specs(source_db: str, run_id: str, inserted_at: str) -> list[Migration
     suffix = ", ".join([literal_run_id, "source_content_sha256", f"toDateTime64({literal_inserted_at}, 3, 'UTC')"])
     return [
         MigrationSpec(
-            name="market_security_classification",
-            target_table="market_security_classification_v1",
-            source_tables=("market_security_classification_v1",),
-            columns=("security_classification_id", "security_id", "classification_source", "classification_scheme", "classification_level", "classification_value", "source_entity_key", "first_seen_at_utc", "last_seen_at_utc", "source_run_id", "source_content_sha256", "inserted_at"),
+            name="sec_filing",
+            target_table="sec_filing_v2",
+            source_tables=("sec_filing_v1",),
+            columns=("filing_id", "accession_number", "accession_number_compact", "cik", "issuer_id", "company_name", "form_type", "filing_date", "report_date", "accepted_at_utc", "acceptance_datetime_raw", "accepted_at_source", "primary_document", "primary_document_url", "filing_detail_url", "source_file_name", "filing_size", "items", "text_status", "source_run_id", "source_content_sha256", "inserted_at"),
             select_sql=f"""
-SELECT security_classification_id, security_id, classification_source, classification_scheme, classification_level, classification_value, source_entity_key, first_seen_at_utc, last_seen_at_utc, {suffix}
-FROM {s}.market_security_classification_v1
+SELECT
+    filing_id,
+    accession_number,
+    replaceAll(accession_number, '-', '') AS accession_number_compact,
+    cik,
+    issuer_id,
+    CAST(NULL, 'Nullable(String)') AS company_name,
+    form_type,
+    filing_date,
+    report_date,
+    CAST(NULL, 'Nullable(DateTime64(9, \\'UTC\\'))') AS accepted_at_utc,
+    CAST(NULL, 'Nullable(String)') AS acceptance_datetime_raw,
+    'missing_in_source' AS accepted_at_source,
+    primary_document,
+    if(primary_document IS NULL OR primary_document = '', CAST(NULL, 'Nullable(String)'), concat('https://www.sec.gov/Archives/edgar/data/', toString(toUInt64(cik)), '/', replaceAll(accession_number, '-', ''), '/', primary_document)) AS primary_document_url,
+    concat('https://www.sec.gov/Archives/edgar/data/', toString(toUInt64(cik)), '/', replaceAll(accession_number, '-', ''), '/', replaceAll(accession_number, '-', ''), '-index.html') AS filing_detail_url,
+    source_file_name,
+    CAST(NULL, 'Nullable(UInt64)') AS filing_size,
+    CAST(NULL, 'Nullable(String)') AS items,
+    'metadata_only' AS text_status,
+    {suffix}
+FROM {s}.sec_filing_v1
 """,
-            source_count_sql=f"SELECT count() FROM {s}.market_security_classification_v1",
-            expected_count_sql=f"SELECT uniqExact(tuple(security_id, classification_source, classification_scheme, classification_level, classification_value, security_classification_id)) FROM {s}.market_security_classification_v1",
-            critical_columns=("security_classification_id", "security_id"),
+            source_count_sql=f"SELECT count() FROM {s}.sec_filing_v1",
+            expected_count_sql=f"SELECT uniqExact(tuple(cik, accession_number)) FROM {s}.sec_filing_v1",
+            critical_columns=("filing_id", "accession_number", "cik", "form_type"),
+            batch_date_column="filing_date",
         ),
         MigrationSpec(
-            name="market_security_market_snapshot",
-            target_table="market_security_market_snapshot_v1",
-            source_tables=("market_security_market_snapshot_v1",),
-            columns=("security_market_snapshot_id", "security_id", "listing_id", "symbol_id", "source_system", "provider_ticker", "as_of_date", "observed_at_utc", "market_cap", "round_lot", "share_class_shares_outstanding", "weighted_shares_outstanding", "snapshot_evidence_ref", "source_run_id", "source_content_sha256", "inserted_at"),
+            name="sec_xbrl_concept",
+            target_table="sec_xbrl_concept_v1",
+            source_tables=("sec_xbrl_concept_v1",),
+            columns=("concept_id", "taxonomy", "tag", "concept_label", "concept_description", "first_observed_at_utc", "last_observed_at_utc", "source_run_id", "source_content_sha256", "inserted_at"),
             select_sql=f"""
-SELECT security_market_snapshot_id, security_id, listing_id, symbol_id, source_system, provider_ticker, as_of_date, observed_at_utc, market_cap, round_lot, share_class_shares_outstanding, weighted_shares_outstanding, snapshot_evidence_ref, {suffix}
-FROM {s}.market_security_market_snapshot_v1
+SELECT concept_id, taxonomy, tag, concept_label, concept_description, first_observed_at_utc, last_observed_at_utc, {suffix}
+FROM {s}.sec_xbrl_concept_v1
 """,
-            source_count_sql=f"SELECT count() FROM {s}.market_security_market_snapshot_v1",
-            expected_count_sql=f"SELECT uniqExact(tuple(symbol_id, observed_at_utc, source_system, security_market_snapshot_id)) FROM {s}.market_security_market_snapshot_v1",
-            critical_columns=("security_market_snapshot_id", "security_id", "listing_id", "symbol_id"),
-            batch_date_column="observed_at_utc",
+            source_count_sql=f"SELECT count() FROM {s}.sec_xbrl_concept_v1",
+            expected_count_sql=f"SELECT uniqExact(tuple(taxonomy, tag)) FROM {s}.sec_xbrl_concept_v1",
+            critical_columns=("concept_id", "taxonomy", "tag"),
         ),
         MigrationSpec(
-            name="market_security_float",
-            target_table="market_security_float_v1",
-            source_tables=("market_security_float_v1",),
-            columns=("security_float_id", "symbol_id", "listing_id", "security_id", "source_system", "provider_ticker", "effective_date", "free_float", "free_float_percent", "source_event_key", "source_evidence_ref", "source_run_id", "source_content_sha256", "inserted_at"),
+            name="sec_xbrl_company_fact",
+            target_table="sec_xbrl_company_fact_v1",
+            source_tables=("sec_xbrl_company_fact_v1",),
+            columns=("company_fact_id", "issuer_id", "cik", "taxonomy", "tag", "unit_code", "fiscal_year", "fiscal_period", "filed_at_utc", "period_end_date", "value", "form_type", "accession_number", "recorded_at_utc", "source_run_id", "source_content_sha256", "inserted_at"),
             select_sql=f"""
-SELECT security_float_id, symbol_id, listing_id, security_id, source_system, provider_ticker, effective_date, free_float, free_float_percent, source_event_key, source_evidence_ref, {suffix}
-FROM {s}.market_security_float_v1
+SELECT company_fact_id, issuer_id, cik, taxonomy, tag, unit_code, fiscal_year, fiscal_period, filed_at_utc, period_end_date, value, form_type, accession_number, recorded_at_utc, {suffix}
+FROM {s}.sec_xbrl_company_fact_v1
 """,
-            source_count_sql=f"SELECT count() FROM {s}.market_security_float_v1",
-            expected_count_sql=f"SELECT uniqExact(tuple(symbol_id, effective_date, source_system, security_float_id)) FROM {s}.market_security_float_v1",
-            critical_columns=("security_float_id", "symbol_id", "listing_id", "security_id"),
-            batch_date_column="effective_date",
+            source_count_sql=f"SELECT count() FROM {s}.sec_xbrl_company_fact_v1",
+            expected_count_sql=f"SELECT uniqExact(tuple(cik, taxonomy, tag, unit_code, ifNull(period_end_date, toDate('1970-01-01')), ifNull(accession_number, ''))) FROM {s}.sec_xbrl_company_fact_v1",
+            critical_columns=("company_fact_id", "cik", "taxonomy", "tag", "unit_code"),
+            batch_date_column="period_end_date",
         ),
         MigrationSpec(
-            name="market_short_interest",
-            target_table="market_short_interest_v1",
-            source_tables=("market_short_interest_v1",),
-            columns=("short_interest_id", "symbol_id", "listing_id", "security_id", "source_system", "provider_ticker", "settlement_date", "short_interest", "avg_daily_volume", "days_to_cover", "source_event_key", "source_evidence_ref", "source_run_id", "source_content_sha256", "inserted_at"),
+            name="sec_xbrl_frame",
+            target_table="sec_xbrl_frame_v1",
+            source_tables=("sec_xbrl_frame_v1",),
+            columns=("frame_id", "taxonomy", "tag", "unit_code", "calendar_period_code", "recorded_at_utc", "source_run_id", "source_content_sha256", "inserted_at"),
             select_sql=f"""
-SELECT short_interest_id, symbol_id, listing_id, security_id, source_system, provider_ticker, settlement_date, short_interest, avg_daily_volume, days_to_cover, source_event_key, source_evidence_ref, {suffix}
-FROM {s}.market_short_interest_v1
+SELECT frame_id, taxonomy, tag, unit_code, calendar_period_code, recorded_at_utc, {suffix}
+FROM {s}.sec_xbrl_frame_v1
 """,
-            source_count_sql=f"SELECT count() FROM {s}.market_short_interest_v1",
-            expected_count_sql=f"SELECT uniqExact(tuple(symbol_id, settlement_date, source_system, short_interest_id)) FROM {s}.market_short_interest_v1",
-            critical_columns=("short_interest_id", "symbol_id", "listing_id", "security_id"),
-            batch_date_column="settlement_date",
+            source_count_sql=f"SELECT count() FROM {s}.sec_xbrl_frame_v1",
+            expected_count_sql=f"SELECT uniqExact(tuple(taxonomy, tag, unit_code, calendar_period_code)) FROM {s}.sec_xbrl_frame_v1",
+            critical_columns=("frame_id", "taxonomy", "tag", "unit_code", "calendar_period_code"),
+            batch_date_column="recorded_at_utc",
         ),
         MigrationSpec(
-            name="market_short_volume",
-            target_table="market_short_volume_v1",
-            source_tables=("market_short_volume_v1",),
-            columns=("short_volume_id", "symbol_id", "listing_id", "security_id", "source_system", "provider_ticker", "trade_date", "short_volume", "short_volume_ratio", "total_volume", "exempt_volume", "non_exempt_volume", "source_event_key", "source_evidence_ref", "source_run_id", "source_content_sha256", "inserted_at"),
+            name="sec_xbrl_frame_observation",
+            target_table="sec_xbrl_frame_observation_v1",
+            source_tables=("sec_xbrl_frame_observation_v1",),
+            columns=("frame_observation_id", "frame_id", "taxonomy", "tag", "unit_code", "calendar_period_code", "issuer_id", "cik", "entity_name", "location_code", "period_end_date", "value", "accession_number", "recorded_at_utc", "source_run_id", "source_content_sha256", "inserted_at"),
             select_sql=f"""
-SELECT short_volume_id, symbol_id, listing_id, security_id, source_system, provider_ticker, trade_date, short_volume, short_volume_ratio, total_volume, exempt_volume, non_exempt_volume, source_event_key, source_evidence_ref, {suffix}
-FROM {s}.market_short_volume_v1
+SELECT frame_observation_id, frame_id, taxonomy, tag, unit_code, calendar_period_code, issuer_id, cik, entity_name, location_code, period_end_date, value, accession_number, recorded_at_utc, {suffix}
+FROM {s}.sec_xbrl_frame_observation_v1
 """,
-            source_count_sql=f"SELECT count() FROM {s}.market_short_volume_v1",
-            expected_count_sql=f"SELECT uniqExact(tuple(symbol_id, trade_date, source_system, short_volume_id)) FROM {s}.market_short_volume_v1",
-            critical_columns=("short_volume_id", "symbol_id", "listing_id", "security_id"),
-            batch_date_column="trade_date",
-        ),
-        MigrationSpec(
-            name="market_stock_split",
-            target_table="market_stock_split_v1",
-            source_tables=("market_stock_split_v1",),
-            columns=("stock_split_id", "symbol_id", "listing_id", "security_id", "source_system", "provider_ticker", "execution_date", "split_from", "split_to", "source_event_key", "source_evidence_ref", "source_run_id", "source_content_sha256", "inserted_at"),
-            select_sql=f"""
-SELECT stock_split_id, symbol_id, listing_id, security_id, source_system, provider_ticker, execution_date, split_from, split_to, source_event_key, source_evidence_ref, {suffix}
-FROM {s}.market_stock_split_v1
-""",
-            source_count_sql=f"SELECT count() FROM {s}.market_stock_split_v1",
-            expected_count_sql=f"SELECT uniqExact(tuple(symbol_id, execution_date, source_system, stock_split_id)) FROM {s}.market_stock_split_v1",
-            critical_columns=("stock_split_id", "symbol_id", "listing_id", "security_id"),
-            batch_date_column="execution_date",
-        ),
-        MigrationSpec(
-            name="market_cash_dividend",
-            target_table="market_cash_dividend_v1",
-            source_tables=("market_cash_dividend_v1",),
-            columns=("cash_dividend_id", "symbol_id", "listing_id", "security_id", "source_system", "provider_ticker", "cash_amount", "currency_code", "declaration_date", "dividend_type", "ex_dividend_date", "frequency", "pay_date", "record_date", "source_event_key", "source_evidence_ref", "source_run_id", "source_content_sha256", "inserted_at"),
-            select_sql=f"""
-SELECT cash_dividend_id, symbol_id, listing_id, security_id, source_system, provider_ticker, cash_amount, currency_code, declaration_date, dividend_type, ex_dividend_date, frequency, pay_date, record_date, source_event_key, source_evidence_ref, {suffix}
-FROM {s}.market_cash_dividend_v1
-""",
-            source_count_sql=f"SELECT count() FROM {s}.market_cash_dividend_v1",
-            expected_count_sql=f"SELECT uniqExact(tuple(symbol_id, ex_dividend_date, source_system, cash_dividend_id)) FROM {s}.market_cash_dividend_v1",
-            critical_columns=("cash_dividend_id", "symbol_id", "listing_id", "security_id"),
-            batch_date_column="ex_dividend_date",
-        ),
-        MigrationSpec(
-            name="market_ipo",
-            target_table="market_ipo_v1",
-            source_tables=("market_ipo_v1",),
-            columns=("ipo_event_id", "symbol_id", "listing_id", "security_id", "source_system", "provider_ticker", "issuer_name", "announced_date", "listing_date", "issue_start_date", "issue_end_date", "last_updated_date", "ipo_status", "currency_code", "final_issue_price", "highest_offer_price", "lowest_offer_price", "min_shares_offered", "max_shares_offered", "total_offer_size", "shares_outstanding", "primary_exchange", "security_type", "security_description", "us_code", "isin", "source_event_key", "source_evidence_ref", "source_run_id", "source_content_sha256", "inserted_at"),
-            select_sql=f"""
-SELECT ipo_event_id, symbol_id, listing_id, security_id, source_system, provider_ticker, issuer_name, announced_date, listing_date, issue_start_date, issue_end_date, last_updated_date, ipo_status, currency_code, final_issue_price, highest_offer_price, lowest_offer_price, min_shares_offered, max_shares_offered, total_offer_size, shares_outstanding, primary_exchange, security_type, security_description, us_code, isin, source_event_key, source_evidence_ref, {suffix}
-FROM {s}.market_ipo_v1
-""",
-            source_count_sql=f"SELECT count() FROM {s}.market_ipo_v1",
-            expected_count_sql=f"SELECT uniqExact(tuple(symbol_id, listing_date, source_system, ipo_event_id)) FROM {s}.market_ipo_v1",
-            critical_columns=("ipo_event_id", "symbol_id", "listing_id", "security_id"),
-            batch_date_column="listing_date",
-        ),
-        MigrationSpec(
-            name="market_presentation_asset",
-            target_table="market_presentation_asset_v1",
-            source_tables=("market_presentation_asset_v1",),
-            columns=("asset_id", "asset_kind", "display_name", "relative_path", "mime_type", "byte_size", "content_hash_sha256", "source_system", "source_reference", "source_file_name", "status", "first_seen_at_utc", "last_seen_at_utc", "last_verified_at_utc", "source_run_id", "source_content_sha256", "inserted_at"),
-            select_sql=f"""
-SELECT asset_id, asset_kind, display_name, relative_path, mime_type, byte_size, content_hash_sha256, source_system, source_reference, source_file_name, status, first_seen_at_utc, last_seen_at_utc, last_verified_at_utc, {suffix}
-FROM {s}.market_presentation_asset_v1
-""",
-            source_count_sql=f"SELECT count() FROM {s}.market_presentation_asset_v1",
-            expected_count_sql=f"SELECT uniqExact(tuple(asset_kind, status, asset_id)) FROM {s}.market_presentation_asset_v1",
-            critical_columns=("asset_id", "asset_kind", "relative_path"),
-        ),
-        MigrationSpec(
-            name="massive_flatfile_source_file",
-            target_table="massive_flatfile_source_file_v1",
-            source_tables=("massive_flatfile_source_file_v1",),
-            columns=("file_id", "provider", "dataset_root", "partition_date", "object_key", "source_etag", "source_last_modified_utc", "source_byte_size", "checksum_sha256", "raw_file_id", "file_status", "load_status", "loaded_row_count", "quote_size_correction_status", "loaded_at_utc", "source_run_id", "source_content_sha256", "inserted_at"),
-            select_sql=f"""
-SELECT file_id, provider, dataset_root, partition_date, object_key, source_etag, source_last_modified_utc, source_byte_size, checksum_sha256, raw_file_id, file_status, load_status, loaded_row_count, quote_size_correction_status, loaded_at_utc, {suffix}
-FROM {s}.massive_flatfile_source_file_v1
-""",
-            source_count_sql=f"SELECT count() FROM {s}.massive_flatfile_source_file_v1",
-            expected_count_sql=f"SELECT uniqExact(tuple(provider, dataset_root, partition_date, file_id)) FROM {s}.massive_flatfile_source_file_v1",
-            critical_columns=("file_id", "provider", "dataset_root", "object_key"),
-            batch_date_column="partition_date",
+            source_count_sql=f"SELECT count() FROM {s}.sec_xbrl_frame_observation_v1",
+            expected_count_sql=f"SELECT uniqExact(tuple(taxonomy, tag, unit_code, calendar_period_code, cik, accession_number, period_end_date)) FROM {s}.sec_xbrl_frame_observation_v1",
+            critical_columns=("frame_observation_id", "frame_id", "cik", "accession_number", "taxonomy", "tag", "unit_code"),
+            batch_date_column="period_end_date",
         ),
     ]
 
@@ -506,7 +457,7 @@ def insert_run_row(client: ClickHouseHttpClient, source_db: str, target_db: str,
     now = clickhouse_now64()
     row = {
         "run_id": run_id,
-        "job_name": "step_03_migrate_market_publications",
+        "job_name": "step_04_migrate_sec_publications",
         "job_type": "migration",
         "source_system": "trading_dashboard_dev",
         "source_database": source_db,
@@ -537,7 +488,7 @@ def write_validations(client: ClickHouseHttpClient, target_db: str, run_id: str,
             {
                 "validation_id": f"{run_id}:{spec.name}:row_count",
                 "run_id": run_id,
-                "check_name": "row_count_after_step_03",
+                "check_name": "row_count_after_step_04",
                 "target_table": spec.target_table,
                 "check_status": "pass" if mismatch == 0 else "warn",
                 "severity": "info" if mismatch == 0 else "warning",
@@ -624,7 +575,7 @@ def write_manifest(path: Path, args: argparse.Namespace, paths: StepPaths, loade
         "machine": machine_name(),
         "repo_root": str(REPO_ROOT),
         "git_commit": quiet_git_commit(REPO_ROOT),
-        "job_type": "step_03_migrate_market_publications",
+        "job_type": "step_04_migrate_sec_publications",
         "migration_run_id": run_id,
         "dry_run": not args.execute,
         "source_database": args.source_database,
@@ -651,7 +602,7 @@ def validate_database_name(value: str, label: str) -> None:
 
 def print_header(args: argparse.Namespace, paths: StepPaths, loaded_env: list[Path], run_id: str, specs: list[MigrationSpec]) -> None:
     print("=" * 96, flush=True)
-    print("q_live migration step 3: market publication migration", flush=True)
+    print("q_live migration step 4: SEC publication migration", flush=True)
     print(f"execute={args.execute}", flush=True)
     print(f"validate_only={args.validate_only}", flush=True)
     print(f"source_database={args.source_database}", flush=True)

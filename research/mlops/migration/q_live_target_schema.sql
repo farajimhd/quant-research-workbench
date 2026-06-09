@@ -768,6 +768,48 @@ PARTITION BY toYYYYMM(ifNull(period_end_date, toDate('1970-01-01')))
 ORDER BY (cik, taxonomy, tag, unit_code, ifNull(period_end_date, toDate('1970-01-01')), ifNull(accession_number, ''))
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
+CREATE TABLE IF NOT EXISTS q_live.sec_xbrl_frame_v1
+(
+    frame_id String,
+    taxonomy LowCardinality(String),
+    tag String,
+    unit_code LowCardinality(String),
+    calendar_period_code String,
+    recorded_at_utc DateTime64(3, 'UTC'),
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY toYYYYMM(recorded_at_utc)
+ORDER BY (taxonomy, tag, unit_code, calendar_period_code)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.sec_xbrl_frame_observation_v1
+(
+    frame_observation_id String,
+    frame_id String,
+    taxonomy LowCardinality(String),
+    tag String,
+    unit_code LowCardinality(String),
+    calendar_period_code String,
+    issuer_id Nullable(String),
+    cik String,
+    entity_name String,
+    location_code Nullable(String),
+    period_end_date Date,
+    value Float64,
+    accession_number String,
+    recorded_at_utc DateTime64(3, 'UTC'),
+    source_run_id String,
+    source_content_sha256 String,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY toYYYYMM(period_end_date)
+ORDER BY (taxonomy, tag, unit_code, calendar_period_code, cik, accession_number, period_end_date)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
 CREATE TABLE IF NOT EXISTS q_live.feature_tradable_universe_v1
 (
     universe_date Date,

@@ -194,3 +194,47 @@ Step 3 migrates:
 Financial statement snapshots are intentionally deferred to the fundamentals/feature migration because they need stronger alignment with SEC/XBRL feature design.
 
 Large date-partitioned publication tables are inserted in calendar-year batches to avoid ClickHouse's `max_partitions_per_insert_block` guard. Validation compares target `FINAL` counts against the same logical keys used by each target `ReplacingMergeTree` sorting key, not always a single provider event id.
+
+## Step 4: Migrate SEC Filing and XBRL Publication Tables
+
+Dry-run locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_04_migrate_sec_publications.py --output-root-win D:/market-data/prepared/q_live_migration/step_04_sec_publications
+```
+
+Dry-run on workstation:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_04_migrate_sec_publications.py --output-root-win D:/market-data/prepared/q_live_migration/step_04_sec_publications
+```
+
+Execute locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_04_migrate_sec_publications.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_04_sec_publications
+```
+
+Resume after a partial run locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\migration\step_04_migrate_sec_publications.py --execute --skip-non-empty-targets --output-root-win D:/market-data/prepared/q_live_migration/step_04_sec_publications
+```
+
+Execute on workstation:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\migration\step_04_migrate_sec_publications.py --execute --output-root-win D:/market-data/prepared/q_live_migration/step_04_sec_publications
+```
+
+Step 4 migrates:
+
+- SEC filing metadata into `sec_filing_v2`
+- SEC XBRL concept metadata
+- SEC XBRL company facts
+- SEC XBRL frame metadata
+- SEC XBRL frame observations
+
+The source filing table does not contain exact SEC acceptance timestamps, so `accepted_at_utc` is intentionally null and `accepted_at_source` is `missing_in_source`. That field must be backfilled by the SEC downloader/parser that reads submissions bulk data or filing headers.
+
+SEC date-batched inserts use `toYear(batch_column) = year` instead of an exclusive next-year date bound. ClickHouse `Date` values can reach the upper supported boundary, such as `2149-06-06`, and an upper bound like `2150-01-01` can overflow.
