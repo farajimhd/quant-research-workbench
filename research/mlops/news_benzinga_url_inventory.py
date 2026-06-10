@@ -35,7 +35,8 @@ from research.mlops.news_benzinga_normalize import (  # noqa: E402
 )
 
 
-DEFAULT_RAW_ROOT_WIN = Path("D:/market-data/benzinga_news_canonical/raw")
+DEFAULT_RAW_ROOT_WIN = Path("D:/market-data/news_benzinga")
+LEGACY_RAW_ROOT_WIN = Path("D:/market-data/benzinga_news_canonical/raw")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_url_inventory")
 URL_RE = re.compile(r"https?://[^\s\"'<>\\]+", re.IGNORECASE)
 IMAGE_EXTENSIONS = {".apng", ".avif", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"}
@@ -74,7 +75,7 @@ def parse_args() -> argparse.Namespace:
             "No network calls and no ClickHouse writes are performed."
         )
     )
-    parser.add_argument("--raw-root-win", default=os.environ.get("NEWS_BENZINGA_RAW_ROOT_WIN") or str(DEFAULT_RAW_ROOT_WIN))
+    parser.add_argument("--raw-root-win", default=None, help="Raw Benzinga JSON root. Defaults to NEWS_BENZINGA_RAW_ROOT_WIN or D:/market-data/news_benzinga.")
     parser.add_argument("--output-root-win", default=os.environ.get("NEWS_BENZINGA_URL_INVENTORY_OUTPUT_ROOT_WIN") or str(DEFAULT_OUTPUT_ROOT_WIN))
     parser.add_argument("--processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_INVENTORY_PROCESSES", "8")))
     parser.add_argument("--chunk-size", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_INVENTORY_CHUNK_SIZE", "1000")))
@@ -85,7 +86,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     loaded_env_files = load_env_files(discover_env_files(REPO_ROOT))
     args = parse_args()
-    raw_root = Path(args.raw_root_win)
+    raw_root = resolve_raw_root(args)
     output_root = Path(args.output_root_win)
     if not raw_root.exists():
         raise SystemExit(f"raw root does not exist: {raw_root}")
@@ -165,6 +166,18 @@ def main() -> None:
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     print("manifest_path=" + str(manifest_path), flush=True)
     print("summary=" + json.dumps(manifest, sort_keys=True), flush=True)
+
+
+def resolve_raw_root(args: argparse.Namespace) -> Path:
+    explicit_value = str(args.raw_root_win or "").strip()
+    env_value = str(os.environ.get("NEWS_BENZINGA_RAW_ROOT_WIN") or "").strip()
+    if explicit_value:
+        return Path(explicit_value)
+    if env_value:
+        return Path(env_value)
+    if DEFAULT_RAW_ROOT_WIN.exists():
+        return DEFAULT_RAW_ROOT_WIN
+    return LEGACY_RAW_ROOT_WIN
 
 
 def process_chunk(paths: list[str]) -> InventoryResult:

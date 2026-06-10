@@ -46,28 +46,34 @@ Important attachment keys in `news_url_inventory.jsonl`:
 Laptop smoke test:
 
 ```powershell
-python D:/TradingCodes/quant-research-workbench/research/mlops/news_benzinga_url_inventory.py --raw-root-win D:/market-data/benzinga_news_canonical/raw --output-root-win D:/market-data/prepared/benzinga_news_url_inventory --limit-files 100 --processes 2 --chunk-size 25
+python D:/TradingCodes/quant-research-workbench/research/mlops/news_benzinga_url_inventory.py --output-root-win D:/market-data/prepared/benzinga_news_url_inventory --limit-files 100 --processes 2 --chunk-size 25
 ```
 
 Laptop full inventory:
 
 ```powershell
-python D:/TradingCodes/quant-research-workbench/research/mlops/news_benzinga_url_inventory.py --raw-root-win D:/market-data/benzinga_news_canonical/raw --output-root-win D:/market-data/prepared/benzinga_news_url_inventory --processes 16 --chunk-size 1000
+python D:/TradingCodes/quant-research-workbench/research/mlops/news_benzinga_url_inventory.py --raw-root-win D:/market-data/news_benzinga --output-root-win D:/market-data/prepared/benzinga_news_url_inventory --processes 16 --chunk-size 1000
 ```
 
 Workstation full inventory after sync:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_url_inventory.py --raw-root-win G:/market-data/benzinga_news_canonical/raw --output-root-win G:/market-data/prepared/benzinga_news_url_inventory --processes 32 --chunk-size 1000
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_url_inventory.py --raw-root-win G:/market-data/news_benzinga --output-root-win G:/market-data/prepared/benzinga_news_url_inventory --processes 32 --chunk-size 1000
 ```
 
 ## Arguments
 
-- `--raw-root-win`: root folder containing raw downloaded Benzinga JSON files.
+- `--raw-root-win`: root folder containing raw downloaded Benzinga JSON files. If omitted, the script uses `NEWS_BENZINGA_RAW_ROOT_WIN`, then `D:/market-data/news_benzinga`, then the older local sample folder `D:/market-data/benzinga_news_canonical/raw`.
 - `--output-root-win`: folder where the run output directory is created.
 - `--processes`: number of worker processes used to parse raw JSON files.
 - `--chunk-size`: number of raw JSON files sent to each worker task.
 - `--limit-files`: optional cap for smoke tests. Use `0` or omit for all files.
+
+## Concurrency And Efficiency
+
+The script is concurrent. It splits raw JSON paths into chunks and parses those chunks with a `ProcessPoolExecutor`. The parent process is the only writer, so output JSONL, error JSONL, domain summary, policy seed, and manifest files are written deterministically without concurrent file-write contention.
+
+This script is a local inventory pass only. It does not do network enrichment. For the downloaded raw corpus, the main bottleneck should be disk reads and JSON parsing. Increase `--processes` until disk throughput stops improving. Keep `--chunk-size` large enough to avoid process scheduling overhead, but not so large that each worker returns an overly large batch of URL rows to the parent process.
 
 Environment-variable defaults:
 
