@@ -43,6 +43,18 @@ daily continuity builder. The script refuses to append if `events` already has
 rows but `events_ordinal_continuity` is empty, because that state cannot preserve
 ordinal correctness.
 
+`--rebuild` is intentionally destructive. It drops and recreates the events,
+build-manifest, continuity, train-index, and validation-index tables. For these
+explicit rebuild drops, the script passes ClickHouse drop-size settings:
+
+```text
+max_table_size_to_drop = 0
+max_partition_size_to_drop = 0
+```
+
+This is required because ClickHouse protects large tables from accidental drops
+by default. The override is only used in the `--rebuild` table-drop path.
+
 The launcher calls:
 
 ```text

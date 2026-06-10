@@ -1358,12 +1358,20 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--events-per-chunk must be >= 2")
 
 
+def drop_table_for_rebuild_sql(args: argparse.Namespace, table: str) -> str:
+    return f"""
+DROP TABLE IF EXISTS {quote_ident(args.database)}.{quote_ident(table)} SYNC
+SETTINGS max_table_size_to_drop = 0, max_partition_size_to_drop = 0
+"""
+
+
 def initialize_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
     db = quote_ident(args.database)
     client.execute(f"CREATE DATABASE IF NOT EXISTS {db}")
     if args.rebuild:
         for table in (args.events_table, args.manifest_table, args.continuity_table, args.train_index_table, args.validation_index_table):
-            client.execute(f"DROP TABLE IF EXISTS {db}.{quote_ident(table)} SYNC")
+            print(f"DROP FOR REBUILD {args.database}.{table}", flush=True)
+            client.execute(drop_table_for_rebuild_sql(args, table))
             print(f"DROPPED {args.database}.{table}", flush=True)
     client.execute(create_events_table_sql(args))
     client.execute(create_manifest_table_sql(args))
