@@ -22,6 +22,7 @@ DEFAULTS = {
     "validation_start_date": "2026-01-01",
     "validation_end_date": "2099-12-31",
     "events_per_chunk": 128,
+    "partition_mode": "month",
     "partition_buckets": 256,
     "day_offset": 0,
     "limit_days": 0,
@@ -50,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-start-date", default=DEFAULTS["validation_start_date"])
     parser.add_argument("--validation-end-date", default=DEFAULTS["validation_end_date"])
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULTS["events_per_chunk"])
+    parser.add_argument("--partition-mode", choices=("month", "ticker_hash", "none"), default=DEFAULTS["partition_mode"])
     parser.add_argument("--partition-buckets", type=int, default=DEFAULTS["partition_buckets"])
     parser.add_argument("--tickers", default="")
     parser.add_argument("--ticker-file", default="")
@@ -112,6 +114,8 @@ def main() -> None:
         args.validation_end_date,
         "--events-per-chunk",
         str(args.events_per_chunk),
+        "--partition-mode",
+        args.partition_mode,
         "--partition-buckets",
         str(args.partition_buckets),
         "--max-threads",

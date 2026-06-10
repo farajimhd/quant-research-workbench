@@ -44,6 +44,7 @@ DEFAULT_TRAIN_END_DATE = "2025-12-31"
 DEFAULT_VALIDATION_START_DATE = "2026-01-01"
 DEFAULT_VALIDATION_END_DATE = "2099-12-31"
 DEFAULT_PARTITION_BUCKETS = 256
+DEFAULT_PARTITION_MODE = "month"
 DEFAULT_EVENTS_PER_CHUNK = 128
 DEFAULT_MAX_PARTITIONS_PER_INSERT_BLOCK = 1024
 
@@ -89,6 +90,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-end-date", default=DEFAULT_VALIDATION_END_DATE)
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULT_EVENTS_PER_CHUNK)
     parser.add_argument("--partition-buckets", type=int, default=DEFAULT_PARTITION_BUCKETS)
+    parser.add_argument(
+        "--partition-mode",
+        choices=("month", "ticker_hash", "none"),
+        default=DEFAULT_PARTITION_MODE,
+        help="Physical MergeTree partitioning. Default month avoids excessive active parts during daily appends.",
+    )
     parser.add_argument("--tickers", default="", help="Optional comma-separated ticker subset. Empty means discover all tickers.")
     parser.add_argument("--ticker-file", default="", help="Optional newline-delimited ticker list.")
     parser.add_argument("--ticker-offset", type=int, default=0)
@@ -144,10 +151,17 @@ def mergetree_settings(storage_policy: str) -> str:
     return "SETTINGS " + ", ".join(settings)
 
 
+def event_partition_clause(args: argparse.Namespace) -> str:
+    if args.partition_mode == "month":
+        return "PARTITION BY toYYYYMM(event_date)"
+    if args.partition_mode == "ticker_hash":
+        return f"PARTITION BY cityHash64(ticker) % {int(args.partition_buckets)}"
+    return "PARTITION BY tuple()"
+
+
 def create_events_table_sql(args: argparse.Namespace) -> str:
     db = quote_ident(args.database)
     table = quote_ident(args.events_table)
-    partition_buckets = int(args.partition_buckets)
     return f"""
 CREATE TABLE IF NOT EXISTS {db}.{table}
 (
@@ -166,7 +180,7 @@ CREATE TABLE IF NOT EXISTS {db}.{table}
     event_date Date
 )
 ENGINE = MergeTree
-PARTITION BY cityHash64(ticker) % {partition_buckets}
+{event_partition_clause(args)}
 ORDER BY (ticker, ordinal)
 {mergetree_settings(args.storage_policy)}
 """
@@ -1258,7 +1272,7 @@ def selected_ticker_jobs(tickers: list[str], args: argparse.Namespace) -> list[T
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    if args.partition_buckets <= 0:
+    if args.partition_mode == "ticker_hash" and args.partition_buckets <= 0:
         raise SystemExit("--partition-buckets must be positive")
     if args.ticker_offset < 0:
         raise SystemExit("--ticker-offset must be non-negative")
@@ -1328,7 +1342,11 @@ def main() -> None:
     print(f"day_jobs={len(jobs):,} day_offset={args.day_offset} limit_days={args.limit_days}", flush=True)
     print(f"ticker_filter={discover_requested_tickers(args)[:10] or '<all>'}", flush=True)
     print(f"preview_days={[job.source_date for job in jobs[:5]]}", flush=True)
-    print(f"partition_buckets={args.partition_buckets} storage_policy={args.storage_policy or '<default>'}", flush=True)
+    print(
+        f"partition_mode={args.partition_mode} partition_buckets={args.partition_buckets} "
+        f"storage_policy={args.storage_policy or '<default>'}",
+        flush=True,
+    )
     print(f"settings={query_settings(args).strip() or '<none>'}", flush=True)
     print(f"clean_mode={args.clean_mode} events_per_chunk={args.events_per_chunk}", flush=True)
     print(f"build_events={not args.no_build_events} build_index={not args.no_build_index} rebuild={args.rebuild} dry_run={args.dry_run}", flush=True)

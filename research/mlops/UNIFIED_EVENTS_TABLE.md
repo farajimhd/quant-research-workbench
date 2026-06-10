@@ -57,7 +57,7 @@ build unit: one source event_date at a time
 train index: 2019-01-01 -> 2025-12-31
 validation index: 2026-01-01 -> 2099-12-31
 storage policy: CLICKHOUSE_LIVE_STORAGE_POLICY
-storage partitions: cityHash64(ticker) % 256
+storage partition mode: toYYYYMM(event_date)
 max_partitions_per_insert_block: 1024
 clean mode: issue_flags_zero
 ```
@@ -102,28 +102,28 @@ sampling rows from `events_ordinal_continuity`, not from the completed `events`
 table. The continuity table is much smaller and already carries the per-day
 ticker event counts and ordinal ranges needed for split metadata.
 
-The hash expression below is only the physical ClickHouse table partitioning; it
-is not the build unit:
+The physical ClickHouse table partitioning is month based:
 
 ```text
-cityHash64(ticker) % partition_buckets
+toYYYYMM(event_date)
 ```
 
-This keeps storage spread across partitions while preserving a single continuous
-event sequence per ticker. Source days with latest status `ok` are skipped on
-rerun. Use `--retry-failed` or `--retry-started` to revisit failed or
+This keeps the number of active ClickHouse parts bounded during daily appends
+while preserving a single continuous event sequence per ticker through
+`ORDER BY (ticker, ordinal)`. Source days with latest status `ok` are skipped
+on rerun. Use `--retry-failed` or `--retry-started` to revisit failed or
 interrupted days. Use `--force-day-delete` only when you intentionally want to
 delete a previously written day before retrying it.
 
-Because one daily insert can touch many ticker hash partitions, the launcher
-sets:
+The launcher still sets:
 
 ```text
 --max-partitions-per-insert-block 1024
 ```
 
-The default table uses 256 hash partitions, so this avoids ClickHouse's default
-100-partition insert-block limit without changing the table layout.
+This remains harmless with monthly partitioning and keeps explicit
+`--partition-mode ticker_hash` experiments from hitting ClickHouse's default
+100-partition insert-block limit.
 
 Progress output includes:
 
@@ -220,7 +220,7 @@ CREATE TABLE market_sip_compact.events
     event_date Date
 )
 ENGINE = MergeTree
-PARTITION BY cityHash64(ticker) % 256
+PARTITION BY toYYYYMM(event_date)
 ORDER BY (ticker, ordinal)
 SETTINGS storage_policy = '<CLICKHOUSE_LIVE_STORAGE_POLICY>';
 ```
@@ -590,7 +590,7 @@ The first production build should decide:
 
 ```text
 events table name
-partition count, currently suggested as 256
+partition mode, currently suggested as month
 whether tape stays in event_flags bits2-4
 whether trade correction is dropped or packed
 whether events_issues is built immediately or in a later audit pass
