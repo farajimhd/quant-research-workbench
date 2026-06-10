@@ -35,7 +35,8 @@ from research.mlops.news_benzinga_normalize import (  # noqa: E402
 )
 
 
-DEFAULT_RAW_ROOT_WIN = Path("D:/market-data/news_benzinga")
+DEFAULT_RAW_ROOT_WIN = Path("D:/market-data/news-benzinga")
+ALT_RAW_ROOT_WIN = Path("D:/market-data/news_benzinga")
 LEGACY_RAW_ROOT_WIN = Path("D:/market-data/benzinga_news_canonical/raw")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_url_inventory")
 URL_RE = re.compile(r"https?://[^\s\"'<>\\]+", re.IGNORECASE)
@@ -75,7 +76,7 @@ def parse_args() -> argparse.Namespace:
             "No network calls and no ClickHouse writes are performed."
         )
     )
-    parser.add_argument("--raw-root-win", default=None, help="Raw Benzinga JSON root. Defaults to NEWS_BENZINGA_RAW_ROOT_WIN or D:/market-data/news_benzinga.")
+    parser.add_argument("--raw-root-win", default=None, help="Raw Benzinga JSON root. Defaults to NEWS_BENZINGA_RAW_ROOT_WIN or D:/market-data/news-benzinga.")
     parser.add_argument("--output-root-win", default=os.environ.get("NEWS_BENZINGA_URL_INVENTORY_OUTPUT_ROOT_WIN") or str(DEFAULT_OUTPUT_ROOT_WIN))
     parser.add_argument("--processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_INVENTORY_PROCESSES", "8")))
     parser.add_argument("--chunk-size", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_INVENTORY_CHUNK_SIZE", "1000")))
@@ -177,6 +178,8 @@ def resolve_raw_root(args: argparse.Namespace) -> Path:
         return Path(env_value)
     if DEFAULT_RAW_ROOT_WIN.exists():
         return DEFAULT_RAW_ROOT_WIN
+    if ALT_RAW_ROOT_WIN.exists():
+        return ALT_RAW_ROOT_WIN
     return LEGACY_RAW_ROOT_WIN
 
 
@@ -218,7 +221,7 @@ def inventory_payload(payload: dict[str, Any], *, raw_path: Path, raw_text: str)
     article_url = str(payload.get("url") or "").strip()
     body_html = str(payload.get("body") or "")
     body_text, body_links_raw = html_to_text_and_links(body_html)
-    body_links = [resolve_url(article_url, url) for url in body_links_raw]
+    body_links = [safe_resolve_url(article_url, url) for url in body_links_raw]
     images = normalize_string_array(payload.get("images") or payload.get("image"))
     tickers = normalize_string_array(payload.get("tickers"), upper=True)
     channels = normalize_string_array(payload.get("channels"))
@@ -230,11 +233,11 @@ def inventory_payload(payload: dict[str, Any], *, raw_path: Path, raw_text: str)
     for url in body_links:
         candidates.append(("body_link", url))
     for url in extract_pdf_urls(body_html):
-        candidates.append(("body_pdf_regex", resolve_url(article_url, url)))
+        candidates.append(("body_pdf_regex", safe_resolve_url(article_url, url)))
     for url in images:
         candidates.append(("image_url", url))
     for url in recursive_url_strings(payload):
-        candidates.append(("raw_json_url_string", resolve_url(article_url, url)))
+        candidates.append(("raw_json_url_string", safe_resolve_url(article_url, url)))
 
     rows: list[dict[str, Any]] = []
     seen_source_url: set[tuple[str, str]] = set()
@@ -291,18 +294,42 @@ def recursive_url_strings(value: Any) -> list[str]:
     return unique_preserve(output)
 
 
+def safe_resolve_url(base_url: str, url: str) -> str:
+    try:
+        return resolve_url(base_url, url)
+    except ValueError:
+        return str(url or "").strip()
+
+
 def normalize_url(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    parsed = parse.urlparse(text)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-        return ""
-    scheme = parsed.scheme.lower()
-    netloc = parsed.netloc.lower()
-    path = parsed.path or "/"
-    query = parse.urlencode(sorted(parse.parse_qsl(parsed.query, keep_blank_values=True)))
-    return parse.urlunparse((scheme, netloc, path, "", query, ""))
+    for candidate in candidate_url_variants(text):
+        try:
+            parsed = parse.urlparse(candidate)
+            if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+                continue
+            scheme = parsed.scheme.lower()
+            netloc = parsed.netloc.lower()
+            path = parsed.path or "/"
+            query = parse.urlencode(sorted(parse.parse_qsl(parsed.query, keep_blank_values=True)))
+            return parse.urlunparse((scheme, netloc, path, "", query, ""))
+        except ValueError:
+            continue
+    return ""
+
+
+def candidate_url_variants(value: str) -> list[str]:
+    text = str(value or "").strip().strip("\"'")
+    if not text:
+        return []
+    candidates = [text]
+    for match in re.finditer(r"https?://", text, flags=re.IGNORECASE):
+        embedded = text[match.start() :].strip().strip("[]()<>\"'").rstrip("].,;")
+        if embedded and embedded not in candidates:
+            candidates.append(embedded)
+    return candidates
 
 
 def classify_url(url: str, *, url_source: str) -> dict[str, Any]:

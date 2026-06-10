@@ -52,18 +52,18 @@ python D:/TradingCodes/quant-research-workbench/research/mlops/news_benzinga_url
 Laptop full inventory:
 
 ```powershell
-python D:/TradingCodes/quant-research-workbench/research/mlops/news_benzinga_url_inventory.py --raw-root-win D:/market-data/news_benzinga --output-root-win D:/market-data/prepared/benzinga_news_url_inventory --processes 16 --chunk-size 1000
+python D:/TradingCodes/quant-research-workbench/research/mlops/news_benzinga_url_inventory.py --raw-root-win D:/market-data/news-benzinga --output-root-win D:/market-data/prepared/benzinga_news_url_inventory --processes 16 --chunk-size 1000
 ```
 
 Workstation full inventory after sync:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_url_inventory.py --raw-root-win G:/market-data/news_benzinga --output-root-win G:/market-data/prepared/benzinga_news_url_inventory --processes 32 --chunk-size 1000
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_url_inventory.py --raw-root-win D:/market-data/news-benzinga --output-root-win D:/market-data/prepared/benzinga_news_url_inventory --processes 32 --chunk-size 1000
 ```
 
 ## Arguments
 
-- `--raw-root-win`: root folder containing raw downloaded Benzinga JSON files. If omitted, the script uses `NEWS_BENZINGA_RAW_ROOT_WIN`, then `D:/market-data/news_benzinga`, then the older local sample folder `D:/market-data/benzinga_news_canonical/raw`.
+- `--raw-root-win`: root folder containing raw downloaded Benzinga JSON files. If omitted, the script uses `NEWS_BENZINGA_RAW_ROOT_WIN`, then `D:/market-data/news-benzinga`, then `D:/market-data/news_benzinga`, then the older local sample folder `D:/market-data/benzinga_news_canonical/raw`.
 - `--output-root-win`: folder where the run output directory is created.
 - `--processes`: number of worker processes used to parse raw JSON files.
 - `--chunk-size`: number of raw JSON files sent to each worker task.
