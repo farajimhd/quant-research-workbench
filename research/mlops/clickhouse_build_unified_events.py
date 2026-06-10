@@ -218,6 +218,8 @@ def should_skip_status(status: str, args: argparse.Namespace) -> bool:
         return True
     if status == "started" and not args.retry_started:
         return True
+    if status == "interrupted" and not args.retry_started:
+        return True
     return False
 
 
@@ -489,7 +491,12 @@ def run_ticker(client: ClickHouseHttpClient, args: argparse.Namespace, job: Tick
         return "skipped"
     print("=" * 96, flush=True)
     print(f"TICKER START {job.ticker}", flush=True)
-    if status in {"failed", "started"} and args.force_ticker_delete:
+    if status in {"started", "interrupted"} and args.retry_started and not args.force_ticker_delete:
+        raise RuntimeError(
+            f"ticker={job.ticker} latest_status={status}; rerun with --force-ticker-delete "
+            "when retrying an interrupted/started ticker so duplicate rows cannot be created."
+        )
+    if status in {"failed", "started", "interrupted"} and args.force_ticker_delete:
         print(f"TICKER DELETE ticker={job.ticker} before retry", flush=True)
         run_profiled(client, f"delete_events_ticker_{job.ticker}", delete_ticker_sql(args, job))
     insert_manifest(client, args, job, status="started", run_id=run_id)
@@ -499,6 +506,12 @@ def run_ticker(client: ClickHouseHttpClient, args: argparse.Namespace, job: Tick
         append_jsonl(report_path, {"type": "ticker", "job": asdict(job), "status": "ok", "profile": asdict(profile)})
         print_ticker_profile(job, profile)
         return "ok"
+    except KeyboardInterrupt:
+        profile = QueryProfile(label=f"build_events_ticker_{job.ticker}", query_id="", wall_seconds=0.0, exception="KeyboardInterrupt")
+        insert_manifest(client, args, job, status="interrupted", run_id=run_id, profile=profile, exception="KeyboardInterrupt")
+        append_jsonl(report_path, {"type": "ticker", "job": asdict(job), "status": "interrupted", "exception": "KeyboardInterrupt"})
+        print(f"TICKER INTERRUPTED ticker={job.ticker}; manifest status set to interrupted", flush=True)
+        raise
     except Exception as exc:  # noqa: BLE001
         profile = QueryProfile(label=f"build_events_ticker_{job.ticker}", query_id="", wall_seconds=0.0, exception=repr(exc))
         insert_manifest(client, args, job, status="failed", run_id=run_id, profile=profile, exception=repr(exc))
@@ -555,6 +568,44 @@ def print_ticker_profile(job: TickerJob, profile: QueryProfile) -> None:
         f"query_ms={profile.query_duration_ms} memory_gib={None if memory_gib is None else round(memory_gib, 3)} "
         f"read_rows={profile.read_rows} written_rows={profile.written_rows} "
         f"rows_per_sec={rows_per_second_text}",
+        flush=True,
+    )
+
+
+def format_duration(seconds: float) -> str:
+    if seconds < 0:
+        seconds = 0
+    minutes, sec = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{sec:02d}s"
+    if minutes:
+        return f"{minutes}m{sec:02d}s"
+    return f"{sec}s"
+
+
+def print_progress(
+    *,
+    index: int,
+    total: int,
+    completed: int,
+    skipped: int,
+    failed: int,
+    started_at: float,
+    current_ticker: str,
+) -> None:
+    elapsed = time.perf_counter() - started_at
+    done = completed + skipped + failed
+    remaining = max(total - done, 0)
+    rate = done / elapsed if done > 0 and elapsed > 0 else 0.0
+    eta = remaining / rate if rate > 0 else 0.0
+    pct = (done / total * 100.0) if total else 100.0
+    print(
+        "PROGRESS "
+        f"ticker_step={index:,}/{total:,} current={current_ticker} "
+        f"done={done:,} completed={completed:,} skipped={skipped:,} failed={failed:,} remaining={remaining:,} "
+        f"pct={pct:.2f}% elapsed={format_duration(elapsed)} "
+        f"rate={rate * 60.0:.2f}_tickers_per_min eta={format_duration(eta) if rate > 0 else 'unknown'}",
         flush=True,
     )
 
@@ -696,29 +747,71 @@ def main() -> None:
 
     started = time.perf_counter()
     completed = skipped = failed = 0
-    if not args.no_build_events:
-        for index, job in enumerate(jobs, start=1):
-            print(f"PROGRESS ticker_step={index:,}/{len(jobs):,} completed={completed:,} skipped={skipped:,} failed={failed:,}", flush=True)
-            try:
-                result = run_ticker(client, args, job, run_id, report_path)
-                if result == "skipped":
-                    skipped += 1
-                else:
-                    completed += 1
-            except Exception:
-                failed += 1
-                raise
+    try:
+        if not args.no_build_events:
+            for index, job in enumerate(jobs, start=1):
+                print_progress(
+                    index=index,
+                    total=len(jobs),
+                    completed=completed,
+                    skipped=skipped,
+                    failed=failed,
+                    started_at=started,
+                    current_ticker=job.ticker,
+                )
+                try:
+                    result = run_ticker(client, args, job, run_id, report_path)
+                    if result == "skipped":
+                        skipped += 1
+                    else:
+                        completed += 1
+                except KeyboardInterrupt:
+                    raise
+                except Exception:
+                    failed += 1
+                    raise
+                print_progress(
+                    index=index,
+                    total=len(jobs),
+                    completed=completed,
+                    skipped=skipped,
+                    failed=failed,
+                    started_at=started,
+                    current_ticker=job.ticker,
+                )
 
-    if not args.no_build_index:
-        build_indexes(client, args, report_path)
+        if not args.no_build_index:
+            build_indexes(client, args, report_path)
 
-    if args.optimize_final:
-        run_profiled(client, f"optimize_{args.events_table}_final", f"OPTIMIZE TABLE {quote_ident(args.database)}.{quote_ident(args.events_table)} FINAL")
+        if args.optimize_final:
+            run_profiled(client, f"optimize_{args.events_table}_final", f"OPTIMIZE TABLE {quote_ident(args.database)}.{quote_ident(args.events_table)} FINAL")
+
+    except KeyboardInterrupt:
+        elapsed = time.perf_counter() - started
+        append_jsonl(
+            report_path,
+            {
+                "type": "run_interrupted",
+                "elapsed_seconds": elapsed,
+                "completed": completed,
+                "skipped": skipped,
+                "failed": failed,
+            },
+        )
+        print("=" * 96, flush=True)
+        print(
+            "INTERRUPTED "
+            f"elapsed={format_duration(elapsed)} completed={completed:,} skipped={skipped:,} failed={failed:,}. "
+            "The active ticker was marked interrupted when possible. Resume with --retry-started --force-ticker-delete.",
+            flush=True,
+        )
+        print("=" * 96, flush=True)
+        raise SystemExit(130)
 
     elapsed = time.perf_counter() - started
     append_jsonl(report_path, {"type": "run_done", "elapsed_seconds": elapsed, "completed": completed, "skipped": skipped, "failed": failed})
     print("=" * 96, flush=True)
-    print(f"DONE elapsed_minutes={elapsed / 60.0:.1f} completed={completed:,} skipped={skipped:,} failed={failed:,}", flush=True)
+    print(f"DONE elapsed={format_duration(elapsed)} completed={completed:,} skipped={skipped:,} failed={failed:,}", flush=True)
     print("=" * 96, flush=True)
 
 

@@ -73,6 +73,32 @@ Use `--retry-failed` or `--retry-started` to revisit failed or interrupted
 tickers. Use `--force-ticker-delete` only when you intentionally want to delete a
 previously written ticker before retrying it.
 
+Progress output includes:
+
+```text
+ticker_step
+current ticker
+completed / skipped / failed / remaining
+percent complete
+elapsed time
+tickers per minute
+ETA
+```
+
+Ctrl+C is handled. The active ticker is marked `interrupted` in
+`events_build_manifest` when the Python process receives the interrupt, and a
+`run_interrupted` row is appended to the JSONL report. To resume after Ctrl+C,
+use:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_build_unified_events.py --retry-started --force-ticker-delete
+```
+
+`--force-ticker-delete` is required for interrupted/started ticker retries so the
+script deletes any rows for that ticker before rebuilding it. This avoids
+duplicate rows if ClickHouse had already committed part or all of the interrupted
+insert.
+
 ## Storage
 
 Use the ClickHouse storage policy from:
