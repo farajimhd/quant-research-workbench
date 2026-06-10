@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import gzip
+import io
 import json
 import mimetypes
 import os
@@ -159,6 +161,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-interval", type=int, default=500)
     parser.add_argument("--load-progress-interval", type=int, default=100_000)
     parser.add_argument("--heartbeat-seconds", type=float, default=15.0)
+    parser.add_argument("--max-pending-futures", type=int, default=0)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--save-raw-artifacts", action="store_true")
     return parser.parse_args()
@@ -205,14 +208,37 @@ def main() -> None:
     action_counts: Counter[str] = Counter()
     quality_flag_counts: Counter[str] = Counter()
     processed = 0
+    interrupted = False
+    cancelled_count = 0
+    pending_count_at_shutdown = 0
+    submitted_count = 0
     with result_path.open("w", encoding="utf-8") as result_handle, error_path.open("w", encoding="utf-8") as error_handle:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.network_concurrency)) as pool:
-            futures = {
-                pool.submit(enrich_row, row, args, limiter, raw_root): row.get("url_hash", "")
-                for row in rows
-            }
-            print(f"submitted_workers={len(futures):,}", flush=True)
-            pending = set(futures)
+        worker_count = max(1, args.network_concurrency)
+        max_pending_futures = max(worker_count, args.max_pending_futures or worker_count * 4)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=worker_count)
+        pending: set[concurrent.futures.Future[dict[str, Any]]] = set()
+        future_url_hashes: dict[concurrent.futures.Future[dict[str, Any]], str] = {}
+        row_iter = iter(rows)
+
+        def submit_until_capacity() -> None:
+            nonlocal submitted_count
+            while len(pending) < max_pending_futures:
+                try:
+                    row = next(row_iter)
+                except StopIteration:
+                    return
+                future = pool.submit(enrich_row, row, args, limiter, raw_root)
+                pending.add(future)
+                future_url_hashes[future] = str(row.get("url_hash", ""))
+                submitted_count += 1
+
+        try:
+            submit_until_capacity()
+            print(
+                f"submitted_initial={submitted_count:,} max_pending_futures={max_pending_futures:,} "
+                f"total_rows={len(rows):,}",
+                flush=True,
+            )
             last_heartbeat = time.perf_counter()
             while pending:
                 done, pending = concurrent.futures.wait(
@@ -227,6 +253,7 @@ def main() -> None:
                         status_counts=status_counts,
                         started=started,
                         pending_count=len(pending),
+                        submitted_count=submitted_count,
                         prefix="heartbeat",
                     )
                     continue
@@ -236,7 +263,7 @@ def main() -> None:
                         row = future.result()
                     except Exception as exc:  # noqa: BLE001
                         row = {
-                            "url_hash": futures.get(future, ""),
+                            "url_hash": future_url_hashes.get(future, ""),
                             "status": "failed",
                             "status_reason": "worker_failed",
                             "error_type": type(exc).__name__,
@@ -250,6 +277,8 @@ def main() -> None:
                         quality_flag_counts[str(flag)] += 1
                     target = error_handle if status in {"failed", "transient_failed"} else result_handle
                     target.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+                    future_url_hashes.pop(future, None)
+                submit_until_capacity()
                 now = time.perf_counter()
                 if (args.progress_interval and processed % args.progress_interval == 0) or now - last_heartbeat >= args.heartbeat_seconds:
                     last_heartbeat = print_progress(
@@ -258,8 +287,23 @@ def main() -> None:
                         status_counts=status_counts,
                         started=started,
                         pending_count=len(pending),
+                        submitted_count=submitted_count,
                         prefix="progress",
                     )
+        except KeyboardInterrupt:
+            interrupted = True
+            pending_count_at_shutdown = len(pending)
+            for future in pending:
+                if future.cancel():
+                    cancelled_count += 1
+            print(
+                f"interrupt=received processed={processed:,}/{len(rows):,} "
+                f"pending={pending_count_at_shutdown:,} cancelled={cancelled_count:,} "
+                f"elapsed={time.perf_counter() - started:.1f}s",
+                flush=True,
+            )
+        finally:
+            pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
     manifest = {
         "run_id": run_id,
@@ -277,7 +321,12 @@ def main() -> None:
         "status_counts": dict(status_counts),
         "resolved_action_counts": dict(action_counts),
         "quality_flag_counts": dict(quality_flag_counts),
+        "interrupted": interrupted,
+        "pending_count_at_shutdown": pending_count_at_shutdown,
+        "cancelled_count": cancelled_count,
+        "submitted_count": submitted_count,
         "network_concurrency": max(1, args.network_concurrency),
+        "max_pending_futures": max(1, args.max_pending_futures or args.network_concurrency * 4),
         "per_domain_min_interval_seconds": args.per_domain_min_interval_seconds,
         "max_html_bytes": args.max_html_bytes,
         "max_pdf_bytes": args.max_pdf_bytes,
@@ -340,12 +389,13 @@ def print_progress(
     status_counts: Counter[str],
     started: float,
     pending_count: int,
+    submitted_count: int,
     prefix: str,
 ) -> float:
     elapsed = time.perf_counter() - started
     rate = processed / elapsed if elapsed > 0 else 0.0
     print(
-        f"{prefix}=processed {processed:,}/{total:,} pending={pending_count:,} "
+        f"{prefix}=processed {processed:,}/{total:,} submitted={submitted_count:,} pending={pending_count:,} "
         f"rate={rate:.2f}/s statuses={dict(status_counts)} elapsed={elapsed:.1f}s",
         flush=True,
     )
@@ -395,7 +445,7 @@ def enrich_row(row: dict[str, Any], args: argparse.Namespace, limiter: DomainRat
         base.update({"status": "deferred_sec_handler", "status_reason": "sec_handler_deferred_to_sec_pipeline", "resolved_action": "sec_handler"})
         return base
 
-    url = str(row.get("normalized_url") or "")
+    url = prepare_request_url(str(row.get("normalized_url") or ""))
     try:
         max_bytes = args.max_pdf_bytes if final_action == "fetch_pdf" else args.max_html_bytes
         response = fetch_with_retries(url, args=args, limiter=limiter, max_bytes=max_bytes)
@@ -551,6 +601,23 @@ def fetch_once(url: str, *, args: argparse.Namespace, limiter: DomainRateLimiter
         )
 
 
+def prepare_request_url(value: str) -> str:
+    url = normalize_text(value).strip()
+    if not url:
+        return url
+    parts = parse.urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return url
+    try:
+        netloc = parts.netloc.encode("idna").decode("ascii")
+    except UnicodeError:
+        netloc = parts.netloc
+    path = parse.quote(parts.path, safe="/%:@!$&'()*+,;=-._~")
+    query = parse.quote(parts.query, safe="=&%:@/?!$'()*+,;,-._~")
+    fragment = parse.quote(parts.fragment, safe="=&%:@/?!$'()*+,;,-._~")
+    return parse.urlunsplit((parts.scheme, netloc, path, query, fragment))
+
+
 def classify_resolved_action(original_action: str, final_url: str, content_type: str) -> str:
     path = parse.urlparse(final_url).path.lower()
     if "pdf" in content_type or path.endswith(".pdf"):
@@ -676,13 +743,16 @@ def extract_with_trafilatura(html_text: str, final_url: str) -> tuple[str, str, 
 
 
 def extract_with_readability(html_text: str, final_url: str) -> tuple[str, str, str, str]:
+    if not html_text.strip():
+        return "", "", "", "readability_empty_input"
     try:
         from readability import Document  # type: ignore
     except ImportError:
         return "", "", "", "readability_unavailable"
     try:
-        doc = Document(html_text)
-        summary_html = doc.summary(html_partial=True)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            doc = Document(html_text)
+            summary_html = doc.summary(html_partial=True)
         parser = CleanTextParser()
         parser.feed(summary_html)
         text = parser.text
