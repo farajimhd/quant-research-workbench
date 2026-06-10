@@ -82,6 +82,7 @@ Rerun the same command to resume. Existing archives are hashed and marked `reuse
 - `--sec-request-min-interval-seconds`: global minimum delay between SEC requests. Default `1.0`.
 - `--max-retries`: per-file retry count. Default `8`.
 - `--retry-base-seconds`: exponential backoff base. Default `30`.
+- `--request-timeout-seconds`: per socket operation timeout. Default `30`.
 - `--continue-on-429`: default. Retries throttled files without stopping the whole run.
 - `--stop-on-429`: optional stricter mode that stops scheduling new downloads after enough 429 responses.
 - `--force`: redownload existing files.
@@ -99,3 +100,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_daily_feed_ar
 If this runs for a while without 429 responses, try `--download-concurrency 2`. I would not go above `2` for these large archives unless SEC stays stable for multiple hours.
 
 If a run hit 429 and stopped before this update, rerun the same command. Completed archives are reused.
+
+## Stopping Safely
+
+Press `Ctrl+C` once. The script stops scheduling new archives, cancels queued work, asks active workers to stop, writes interrupted rows to the manifest, and exits without waiting for the full remaining archive queue. Rerun the same command to continue; completed archives are reused and partial `.part` files are cleaned up on the next worker stop.

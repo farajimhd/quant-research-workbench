@@ -79,7 +79,7 @@ def parse_args() -> argparse.Namespace:
         default=float(os.environ.get("SEC_DAILY_FEED_REQUEST_MIN_INTERVAL_SECONDS", os.environ.get("SEC_REQUEST_MIN_INTERVAL_SECONDS", "1.0"))),
         help="Global minimum delay between SEC requests. Daily archives are large, so the default is conservative.",
     )
-    parser.add_argument("--request-timeout-seconds", type=float, default=float(os.environ.get("SEC_DAILY_FEED_REQUEST_TIMEOUT_SECONDS", os.environ.get("SEC_REQUEST_TIMEOUT_SECONDS", "600"))))
+    parser.add_argument("--request-timeout-seconds", type=float, default=float(os.environ.get("SEC_DAILY_FEED_REQUEST_TIMEOUT_SECONDS", os.environ.get("SEC_REQUEST_TIMEOUT_SECONDS", "30"))))
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("SEC_DAILY_FEED_MAX_RETRIES", os.environ.get("SEC_MAX_RETRIES", "8"))))
     parser.add_argument("--retry-base-seconds", type=float, default=float(os.environ.get("SEC_DAILY_FEED_RETRY_BASE_SECONDS", os.environ.get("SEC_RETRY_BASE_SECONDS", "30"))))
     parser.add_argument("--max-429-before-stop", type=int, default=int(os.environ.get("SEC_DAILY_FEED_MAX_429_BEFORE_STOP", os.environ.get("SEC_MAX_429_BEFORE_STOP", "20"))))

@@ -311,8 +311,8 @@ class ProgressDisplay:
 
     def _worker_panel(self) -> Any:
         lines = [
-            f"{'W':<2} {'Source':<16} {'State':<10} {'Progress':<21} {'Rate':>8} {'Try':>3} {'Time':>5}",
-            f"{'-' * 2} {'-' * 16} {'-' * 10} {'-' * 21} {'-' * 8} {'-' * 3} {'-' * 5}",
+            f"{'W':<2} {'Source':<34} {'State':<12} {'Progress':<27} {'Rate':>10} {'Try':>3} {'Time':>7}  Message",
+            f"{'-' * 2} {'-' * 34} {'-' * 12} {'-' * 27} {'-' * 10} {'-' * 3} {'-' * 7}  {'-' * 48}",
         ]
         for row in self._rows:
             downloaded = int(row.get("downloaded") or 0)
@@ -320,13 +320,14 @@ class ProgressDisplay:
             started_at = float(row.get("started_at") or 0.0)
             elapsed = time.perf_counter() - started_at if started_at else 0.0
             rate = downloaded / elapsed if elapsed > 0 and row.get("job_id") else 0.0
-            source = truncate_middle(str(row.get("source") or "-"), 16)
-            status = truncate_right(str(row.get("status") or "idle"), 10)
-            progress = self._bar(downloaded, total, width=14) if row.get("job_id") else ""
+            source = truncate_middle(str(row.get("source") or "-"), 34)
+            status = truncate_right(str(row.get("status") or "idle"), 12)
+            message = truncate_middle(str(row.get("message") or ""), 64)
+            progress = self._bar(downloaded, total, width=18) if row.get("job_id") else ""
             lines.append(
-                f"{int(row['slot']) + 1:<2} {source:<16} {status:<10} {progress:<21} "
-                f"{(format_bytes(rate) + '/s') if rate else '':>8} {str(row.get('attempt') or ''):>3} "
-                f"{(format_seconds(elapsed) if row.get('job_id') else ''):>5}"
+                f"{int(row['slot']) + 1:<2} {source:<34} {status:<12} {progress:<27} "
+                f"{(format_bytes(rate) + '/s') if rate else '':>10} {str(row.get('attempt') or ''):>3} "
+                f"{(format_seconds(elapsed) if row.get('job_id') else ''):>7}  {message}"
             )
         return self._panel_cls("\n".join(lines), title="Download Workers", border_style="green")
 
@@ -576,7 +577,9 @@ def download_all(specs: list[SourceSpec], args: argparse.Namespace, user_agent: 
         refresh_per_second=args.progress_refresh_per_second,
         screen=args.progress_screen,
     ) as progress:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=worker_count)
+        interrupted = False
+        try:
             future_to_job: dict[concurrent.futures.Future[DownloadResult], str] = {}
             job_to_spec: dict[str, SourceSpec] = {}
             next_index = 0
@@ -608,50 +611,60 @@ def download_all(specs: list[SourceSpec], args: argparse.Namespace, user_agent: 
 
             for _ in range(min(worker_count, len(specs))):
                 submit_next()
-            try:
-                while future_to_job:
-                    done, _pending = concurrent.futures.wait(
-                        future_to_job,
-                        return_when=concurrent.futures.FIRST_COMPLETED,
-                    )
-                    for future in done:
-                        job_id = future_to_job.pop(future)
-                        spec = job_to_spec[job_id]
-                        result = future.result()
-                        results.append(result)
-                        progress.finish(job_id, result)
-                    if coordinator.should_stop():
-                        reason = coordinator.stop_reason or "download stopped"
-                        progress.log(f"stopping new downloads: {reason}")
-                    else:
-                        while len(future_to_job) < worker_count and submit_next():
-                            pass
-                if coordinator.should_stop():
-                    reason = coordinator.stop_reason or "download stopped"
-                    for spec in specs[next_index:]:
-                        result = stopped_result(spec, "stopped_before_start", reason)
-                        results.append(result)
-                        progress.finish(source_job_id(spec), result)
-            except KeyboardInterrupt:
-                coordinator.request_stop("keyboard interrupt")
-                progress.log("keyboard interrupt received; waiting for active downloads to stop")
-                for future in list(future_to_job):
-                    if not future.done():
-                        future.cancel()
-                for future, job_id in list(future_to_job.items()):
-                    job_id = future_to_job[future]
+            while future_to_job:
+                done, _pending = concurrent.futures.wait(
+                    future_to_job,
+                    timeout=0.5,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                if not done:
+                    continue
+                for future in done:
+                    job_id = future_to_job.pop(future)
                     spec = job_to_spec[job_id]
-                    if future.cancelled():
-                        result = stopped_result(spec, "stopped_before_start", coordinator.stop_reason)
-                    else:
-                        result = future.result()
+                    result = future.result()
                     results.append(result)
                     progress.finish(job_id, result)
+                if coordinator.should_stop():
+                    reason = coordinator.stop_reason or "download stopped"
+                    progress.log(f"stopping new downloads: {reason}")
+                else:
+                    while len(future_to_job) < worker_count and submit_next():
+                        pass
+            if coordinator.should_stop():
+                reason = coordinator.stop_reason or "download stopped"
                 for spec in specs[next_index:]:
-                    result = stopped_result(spec, "stopped_before_start", coordinator.stop_reason)
+                    result = stopped_result(spec, "stopped_before_start", reason)
                     results.append(result)
                     progress.finish(source_job_id(spec), result)
-            finally:
+        except KeyboardInterrupt:
+            interrupted = True
+            coordinator.request_stop("keyboard interrupt")
+            progress.log("keyboard interrupt received; cancelling queued downloads and stopping active downloads")
+            for future in list(future_to_job):
+                future.cancel()
+            done, _pending = concurrent.futures.wait(future_to_job, timeout=2.0)
+            for future in done:
+                job_id = future_to_job.pop(future)
+                spec = job_to_spec[job_id]
+                if future.cancelled():
+                    result = stopped_result(spec, "stopped_before_start", coordinator.stop_reason)
+                else:
+                    result = future.result()
+                results.append(result)
+                progress.finish(job_id, result)
+            for future, job_id in list(future_to_job.items()):
+                spec = job_to_spec[job_id]
+                result = stopped_result(spec, "interrupted_active_download", coordinator.stop_reason or "keyboard interrupt")
+                results.append(result)
+                progress.finish(job_id, result)
+            for spec in specs[next_index:]:
+                result = stopped_result(spec, "stopped_before_start", coordinator.stop_reason or "keyboard interrupt")
+                results.append(result)
+                progress.finish(source_job_id(spec), result)
+        finally:
+            executor.shutdown(wait=not interrupted, cancel_futures=True)
+            if not interrupted:
                 for future, job_id in list(future_to_job.items()):
                     if not future.done() or future.cancelled():
                         spec = job_to_spec[job_id]
@@ -833,8 +846,9 @@ def stream_download(
                     raise DownloadStopped(reason) from exc
             if exc.code not in RETRY_HTTP_CODES or attempt >= max_retries:
                 raise RuntimeError(last_error) from exc
-            progress.log(f"retry {attempt + 1}/{max_retries} {target.name}: {last_error}")
-            time.sleep(retry_after if retry_after is not None else retry_base_seconds * (2**attempt))
+            sleep_seconds = retry_after if retry_after is not None else retry_base_seconds * (2**attempt)
+            progress.log(f"retry {attempt + 1}/{max_retries} {target.name}: {last_error}; sleeping {sleep_seconds:.1f}s")
+            interruptible_sleep(sleep_seconds, coordinator)
         except DownloadStopped:
             remove_partial(part_path, progress, target.name)
             raise
@@ -843,9 +857,21 @@ def stream_download(
             remove_partial(part_path, progress, target.name)
             if attempt >= max_retries:
                 raise RuntimeError(last_error) from exc
-            progress.log(f"retry {attempt + 1}/{max_retries} {target.name}: {last_error}")
-            time.sleep(retry_base_seconds * (2**attempt))
+            sleep_seconds = retry_base_seconds * (2**attempt)
+            progress.log(f"retry {attempt + 1}/{max_retries} {target.name}: {last_error}; sleeping {sleep_seconds:.1f}s")
+            interruptible_sleep(sleep_seconds, coordinator)
     raise RuntimeError(last_error or "request failed")
+
+
+def interruptible_sleep(seconds: float, coordinator: DownloadCoordinator) -> None:
+    deadline = time.perf_counter() + max(0.0, seconds)
+    while True:
+        if coordinator.should_stop():
+            raise DownloadStopped(coordinator.stop_reason or "download stopped")
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.5, remaining))
 
 
 def source_job_id(spec: SourceSpec) -> str:
