@@ -21,9 +21,7 @@ DEFAULTS = {
     "validation_start_date": "2026-01-01",
     "validation_end_date": "2099-12-31",
     "events_per_chunk": 128,
-    "build_buckets": 256,
-    "start_bucket": 0,
-    "end_bucket": 255,
+    "partition_buckets": 256,
     "max_threads": 32,
     "max_memory_usage": "400G",
     "output_root_win": r"D:\market-data\prepared\clickhouse_sip_ingest\unified_events",
@@ -47,10 +45,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-start-date", default=DEFAULTS["validation_start_date"])
     parser.add_argument("--validation-end-date", default=DEFAULTS["validation_end_date"])
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULTS["events_per_chunk"])
-    parser.add_argument("--build-buckets", type=int, default=DEFAULTS["build_buckets"])
-    parser.add_argument("--start-bucket", type=int, default=DEFAULTS["start_bucket"])
-    parser.add_argument("--end-bucket", type=int, default=DEFAULTS["end_bucket"])
-    parser.add_argument("--limit-buckets", type=int, default=0)
+    parser.add_argument("--partition-buckets", type=int, default=DEFAULTS["partition_buckets"])
+    parser.add_argument("--tickers", default="")
+    parser.add_argument("--ticker-file", default="")
+    parser.add_argument("--ticker-offset", type=int, default=0)
+    parser.add_argument("--limit-tickers", type=int, default=0)
     parser.add_argument("--storage-policy", default="")
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
@@ -59,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--retry-started", action="store_true")
-    parser.add_argument("--force-bucket-delete", action="store_true")
+    parser.add_argument("--force-ticker-delete", action="store_true")
     parser.add_argument("--no-build-events", action="store_true")
     parser.add_argument("--no-build-index", action="store_true")
     parser.add_argument("--optimize-final", action="store_true")
@@ -102,12 +101,8 @@ def main() -> None:
         args.validation_end_date,
         "--events-per-chunk",
         str(args.events_per_chunk),
-        "--build-buckets",
-        str(args.build_buckets),
-        "--start-bucket",
-        str(args.start_bucket),
-        "--end-bucket",
-        str(args.end_bucket),
+        "--partition-buckets",
+        str(args.partition_buckets),
         "--max-threads",
         str(args.max_threads),
         "--max-memory-usage",
@@ -117,8 +112,14 @@ def main() -> None:
         "--clean-mode",
         args.clean_mode,
     ]
-    if args.limit_buckets:
-        command.extend(["--limit-buckets", str(args.limit_buckets)])
+    if args.tickers:
+        command.extend(["--tickers", args.tickers])
+    if args.ticker_file:
+        command.extend(["--ticker-file", args.ticker_file])
+    if args.ticker_offset:
+        command.extend(["--ticker-offset", str(args.ticker_offset)])
+    if args.limit_tickers:
+        command.extend(["--limit-tickers", str(args.limit_tickers)])
     if args.storage_policy:
         command.extend(["--storage-policy", args.storage_policy])
     if args.rebuild:
@@ -127,8 +128,8 @@ def main() -> None:
         command.append("--retry-failed")
     if args.retry_started:
         command.append("--retry-started")
-    if args.force_bucket_delete:
-        command.append("--force-bucket-delete")
+    if args.force_ticker_delete:
+        command.append("--force-ticker-delete")
     if args.no_build_events:
         command.append("--no-build-events")
     if args.no_build_index:

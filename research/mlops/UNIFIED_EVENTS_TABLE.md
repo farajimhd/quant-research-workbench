@@ -51,21 +51,27 @@ source range: 2019-01-01 -> 2099-12-31
 train index: 2019-01-01 -> 2025-12-31
 validation index: 2026-01-01 -> 2099-12-31
 storage policy: CLICKHOUSE_LIVE_STORAGE_POLICY
-event buckets: 256
+storage partitions: cityHash64(ticker) % 256
 clean mode: issue_flags_zero
 ```
 
-Events are built bucket-by-bucket using:
+Events are built one ticker at a time. Each ticker job reads that ticker's full
+clean quote/trade stream for the source range, merges quotes and trades, assigns
+the ticker-local ordinal, writes rows to `events`, and records status in
+`events_build_manifest`.
+
+The hash expression below is only the physical ClickHouse table partitioning; it
+is not the build unit:
 
 ```text
-cityHash64(ticker) % build_buckets
+cityHash64(ticker) % partition_buckets
 ```
 
-This keeps ordinal assignment correct per ticker while making the build
-restartable through `events_build_manifest`. Buckets with latest status `ok` are
-skipped on rerun. Use `--retry-failed` or `--retry-started` to revisit failed or
-interrupted buckets. Use `--force-bucket-delete` only when you intentionally want
-to delete a previously written bucket before retrying it.
+This keeps storage spread across partitions while preserving a single continuous
+event sequence per ticker. Tickers with latest status `ok` are skipped on rerun.
+Use `--retry-failed` or `--retry-started` to revisit failed or interrupted
+tickers. Use `--force-ticker-delete` only when you intentionally want to delete a
+previously written ticker before retrying it.
 
 ## Storage
 
