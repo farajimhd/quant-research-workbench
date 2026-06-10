@@ -157,6 +157,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-text-chars", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_ENRICH_MAX_TEXT_CHARS", str(300_000))))
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("NEWS_BENZINGA_URL_ENRICH_MAX_RETRIES", "2")))
     parser.add_argument("--progress-interval", type=int, default=500)
+    parser.add_argument("--load-progress-interval", type=int, default=100_000)
+    parser.add_argument("--heartbeat-seconds", type=float, default=15.0)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--save-raw-artifacts", action="store_true")
     return parser.parse_args()
@@ -165,6 +167,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     loaded_env_files = load_env_files(discover_env_files(REPO_ROOT))
     args = parse_args()
+    print("Benzinga URL enrichment starting", flush=True)
     fetch_plan_path = resolve_fetch_plan_path(args)
     if not fetch_plan_path.exists():
         raise SystemExit(f"fetch plan file does not exist: {fetch_plan_path}")
@@ -180,8 +183,12 @@ def main() -> None:
     if raw_root is not None:
         raw_root.mkdir(parents=True, exist_ok=True)
 
+    print(f"fetch_plan_path={fetch_plan_path}", flush=True)
+    print(f"run_root={run_root}", flush=True)
     completed = load_completed_url_hashes(output_root) if args.resume else set()
-    rows = load_fetch_plan_rows(fetch_plan_path, args.limit_urls, completed)
+    if completed:
+        print(f"resume_completed_url_hashes={len(completed):,}", flush=True)
+    rows = load_fetch_plan_rows(fetch_plan_path, args.limit_urls, completed, args.load_progress_interval)
     limiter = DomainRateLimiter(args.per_domain_min_interval_seconds)
 
     print("=" * 96, flush=True)
@@ -204,21 +211,54 @@ def main() -> None:
                 pool.submit(enrich_row, row, args, limiter, raw_root): row.get("url_hash", "")
                 for row in rows
             }
-            for future in concurrent.futures.as_completed(futures):
-                processed += 1
-                row = future.result()
-                status = str(row.get("status") or "unknown")
-                status_counts[status] += 1
-                action_counts[str(row.get("resolved_action") or row.get("final_action") or "")] += 1
-                for flag in row.get("quality_flags") or []:
-                    quality_flag_counts[str(flag)] += 1
-                target = error_handle if status in {"failed", "transient_failed"} else result_handle
-                target.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
-                if args.progress_interval and processed % args.progress_interval == 0:
-                    print(
-                        f"processed={processed:,}/{len(rows):,} statuses={dict(status_counts)} "
-                        f"elapsed={time.perf_counter() - started:.1f}s",
-                        flush=True,
+            print(f"submitted_workers={len(futures):,}", flush=True)
+            pending = set(futures)
+            last_heartbeat = time.perf_counter()
+            while pending:
+                done, pending = concurrent.futures.wait(
+                    pending,
+                    timeout=max(1.0, args.heartbeat_seconds),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                if not done:
+                    last_heartbeat = print_progress(
+                        processed=processed,
+                        total=len(rows),
+                        status_counts=status_counts,
+                        started=started,
+                        pending_count=len(pending),
+                        prefix="heartbeat",
+                    )
+                    continue
+                for future in done:
+                    processed += 1
+                    try:
+                        row = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        row = {
+                            "url_hash": futures.get(future, ""),
+                            "status": "failed",
+                            "status_reason": "worker_failed",
+                            "error_type": type(exc).__name__,
+                            "error_message": repr(exc),
+                            "quality_flags": [],
+                        }
+                    status = str(row.get("status") or "unknown")
+                    status_counts[status] += 1
+                    action_counts[str(row.get("resolved_action") or row.get("final_action") or "")] += 1
+                    for flag in row.get("quality_flags") or []:
+                        quality_flag_counts[str(flag)] += 1
+                    target = error_handle if status in {"failed", "transient_failed"} else result_handle
+                    target.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+                now = time.perf_counter()
+                if (args.progress_interval and processed % args.progress_interval == 0) or now - last_heartbeat >= args.heartbeat_seconds:
+                    last_heartbeat = print_progress(
+                        processed=processed,
+                        total=len(rows),
+                        status_counts=status_counts,
+                        started=started,
+                        pending_count=len(pending),
+                        prefix="progress",
                     )
 
     manifest = {
@@ -270,18 +310,46 @@ def resolve_fetch_plan_path(args: argparse.Namespace) -> Path:
     return root / "news_url_fetch_plan.jsonl"
 
 
-def load_fetch_plan_rows(fetch_plan_path: Path, limit_urls: int, completed: set[str]) -> list[dict[str, Any]]:
+def load_fetch_plan_rows(fetch_plan_path: Path, limit_urls: int, completed: set[str], progress_interval: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    started = time.perf_counter()
+    print("loading_fetch_plan_rows=started", flush=True)
     with fetch_plan_path.open("r", encoding="utf-8") as handle:
-        for line in handle:
+        for line_number, line in enumerate(handle, 1):
             row = json.loads(line)
             url_hash = str(row.get("url_hash") or "")
             if completed and url_hash in completed:
                 continue
             rows.append(row)
+            if progress_interval and len(rows) % progress_interval == 0:
+                print(
+                    f"loading_fetch_plan_rows={len(rows):,} file_lines={line_number:,} "
+                    f"elapsed={time.perf_counter() - started:.1f}s",
+                    flush=True,
+                )
             if limit_urls and len(rows) >= limit_urls:
                 break
+    print(f"loading_fetch_plan_rows=done rows={len(rows):,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
     return rows
+
+
+def print_progress(
+    *,
+    processed: int,
+    total: int,
+    status_counts: Counter[str],
+    started: float,
+    pending_count: int,
+    prefix: str,
+) -> float:
+    elapsed = time.perf_counter() - started
+    rate = processed / elapsed if elapsed > 0 else 0.0
+    print(
+        f"{prefix}=processed {processed:,}/{total:,} pending={pending_count:,} "
+        f"rate={rate:.2f}/s statuses={dict(status_counts)} elapsed={elapsed:.1f}s",
+        flush=True,
+    )
+    return time.perf_counter()
 
 
 def load_completed_url_hashes(output_root: Path) -> set[str]:

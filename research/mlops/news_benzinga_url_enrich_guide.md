@@ -88,25 +88,25 @@ Common statuses:
 Laptop smoke test against latest fetch plan:
 
 ```powershell
-python D:/TradingCodes/quant-research-workbench/research/mlops/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 1000 --network-concurrency 8 --per-domain-min-interval-seconds 0.2 --progress-interval 100
+python D:/TradingCodes/quant-research-workbench/research/mlops/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 1000 --network-concurrency 8 --per-domain-min-interval-seconds 0.2 --progress-interval 100 --heartbeat-seconds 15 --load-progress-interval 100000
 ```
 
 Workstation smoke test:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 1000 --network-concurrency 8 --per-domain-min-interval-seconds 0.2 --progress-interval 100
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 1000 --network-concurrency 8 --per-domain-min-interval-seconds 0.2 --progress-interval 100 --heartbeat-seconds 15 --load-progress-interval 100000
 ```
 
 Workstation medium run:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 50000 --network-concurrency 12 --per-domain-min-interval-seconds 0.2 --progress-interval 1000 --resume
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --limit-urls 50000 --network-concurrency 12 --per-domain-min-interval-seconds 0.2 --progress-interval 1000 --heartbeat-seconds 15 --load-progress-interval 100000 --resume
 ```
 
 Workstation full run:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --network-concurrency 12 --per-domain-min-interval-seconds 0.2 --progress-interval 1000 --resume
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_url_enrich.py --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --output-root-win D:/market-data/prepared/benzinga_news_url_enrichment --network-concurrency 12 --per-domain-min-interval-seconds 0.2 --progress-interval 1000 --heartbeat-seconds 15 --load-progress-interval 100000 --resume
 ```
 
 Debug run with raw artifacts:
@@ -129,6 +129,8 @@ python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/res
 - `--max-text-chars`: maximum extracted text stored per URL.
 - `--max-retries`: retry count for transient failures.
 - `--progress-interval`: completed URLs between progress prints.
+- `--load-progress-interval`: fetch-plan rows loaded between startup load-progress prints.
+- `--heartbeat-seconds`: maximum silence while URL workers are still pending.
 - `--resume`: skip URL hashes already present in previous successful result files under the output root.
 - `--save-raw-artifacts`: debug-only flag to save fetched bytes.
 
