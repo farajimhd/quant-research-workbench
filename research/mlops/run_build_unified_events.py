@@ -27,6 +27,7 @@ DEFAULTS = {
     "limit_days": 0,
     "max_threads": 32,
     "max_memory_usage": "400G",
+    "max_partitions_per_insert_block": 1024,
     "output_root_win": r"D:\market-data\prepared\clickhouse_sip_ingest\unified_events",
     "clean_mode": "issue_flags_zero",
 }
@@ -59,6 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--storage-policy", default="")
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
+    parser.add_argument("--max-partitions-per-insert-block", type=int, default=DEFAULTS["max_partitions_per_insert_block"])
     parser.add_argument("--output-root-win", default=DEFAULTS["output_root_win"])
     parser.add_argument("--clean-mode", choices=("issue_flags_zero", "structural"), default=DEFAULTS["clean_mode"])
     parser.add_argument("--rebuild", action="store_true")
@@ -116,6 +118,8 @@ def main() -> None:
         str(args.max_threads),
         "--max-memory-usage",
         args.max_memory_usage,
+        "--max-partitions-per-insert-block",
+        str(args.max_partitions_per_insert_block),
         "--output-root-win",
         args.output_root_win,
         "--clean-mode",

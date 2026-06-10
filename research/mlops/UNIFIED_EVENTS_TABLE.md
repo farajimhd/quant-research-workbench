@@ -58,6 +58,7 @@ train index: 2019-01-01 -> 2025-12-31
 validation index: 2026-01-01 -> 2099-12-31
 storage policy: CLICKHOUSE_LIVE_STORAGE_POLICY
 storage partitions: cityHash64(ticker) % 256
+max_partitions_per_insert_block: 1024
 clean mode: issue_flags_zero
 ```
 
@@ -105,6 +106,16 @@ event sequence per ticker. Source days with latest status `ok` are skipped on
 rerun. Use `--retry-failed` or `--retry-started` to revisit failed or
 interrupted days. Use `--force-day-delete` only when you intentionally want to
 delete a previously written day before retrying it.
+
+Because one daily insert can touch many ticker hash partitions, the launcher
+sets:
+
+```text
+--max-partitions-per-insert-block 1024
+```
+
+The default table uses 256 hash partitions, so this avoids ClickHouse's default
+100-partition insert-block limit without changing the table layout.
 
 Progress output includes:
 

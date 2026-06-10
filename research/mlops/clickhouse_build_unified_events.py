@@ -45,6 +45,7 @@ DEFAULT_VALIDATION_START_DATE = "2026-01-01"
 DEFAULT_VALIDATION_END_DATE = "2099-12-31"
 DEFAULT_PARTITION_BUCKETS = 256
 DEFAULT_EVENTS_PER_CHUNK = 128
+DEFAULT_MAX_PARTITIONS_PER_INSERT_BLOCK = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +98,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--storage-policy", default=default_live_storage_policy())
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--max-threads", type=int, default=32)
+    parser.add_argument("--max-partitions-per-insert-block", type=int, default=DEFAULT_MAX_PARTITIONS_PER_INSERT_BLOCK)
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN / "unified_events"))
     parser.add_argument("--clean-mode", choices=("issue_flags_zero", "structural"), default="issue_flags_zero")
     parser.add_argument("--rebuild", action="store_true", help="Drop event/index/manifest tables before building.")
@@ -121,6 +123,8 @@ def query_settings(args: argparse.Namespace) -> str:
         settings.append(f"max_threads = {int(args.max_threads)}")
     if str(args.max_memory_usage) != "0":
         settings.append(f"max_memory_usage = {parse_size_bytes(str(args.max_memory_usage))}")
+    if int(args.max_partitions_per_insert_block) > 0:
+        settings.append(f"max_partitions_per_insert_block = {int(args.max_partitions_per_insert_block)}")
     return "\nSETTINGS " + ", ".join(settings) if settings else ""
 
 
