@@ -38,6 +38,11 @@ Build the final table with:
 python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_build_unified_events.py --rebuild
 ```
 
+Use `--rebuild` when moving from the older ticker-at-a-time builder to this
+daily continuity builder. The script refuses to append if `events` already has
+rows but `events_ordinal_continuity` is empty, because that state cannot preserve
+ordinal correctness.
+
 The launcher calls:
 
 ```text
@@ -48,6 +53,7 @@ Default behavior:
 
 ```text
 source range: 2019-01-01 -> 2099-12-31
+build unit: one source event_date at a time
 train index: 2019-01-01 -> 2025-12-31
 validation index: 2026-01-01 -> 2099-12-31
 storage policy: CLICKHOUSE_LIVE_STORAGE_POLICY
@@ -55,14 +61,37 @@ storage partitions: cityHash64(ticker) % 256
 clean mode: issue_flags_zero
 ```
 
-Events are built one ticker at a time. Each ticker job reads that ticker's full
-clean quote/trade stream for the source range, merges quotes and trades, assigns
-the ticker-local ordinal, writes rows to `events`, and records status in
-`events_build_manifest`.
+Events are built one source date at a time. Each day job reads all clean
+quote/trade rows for that `event_date`, merges quotes and trades per ticker,
+assigns that day's ticker-local row number, adds the prior `next_ordinal` from
+`events_ordinal_continuity`, writes rows to `events`, and records status in
+`events_build_manifest` with `ticker='__ALL__'`.
 
-After a ticker's event rows are written, the same ticker job writes that ticker's
-train and validation sampling rows. The build does not run a separate full-table
-`GROUP BY ticker` pass at the end.
+After a day is written, the builder appends one continuity row per ticker that
+had events that day. The continuity table is the carry-forward state:
+
+```text
+market_sip_compact.events_ordinal_continuity
+```
+
+It stores:
+
+```text
+ticker
+build_step
+source_date
+event_count
+next_ordinal
+last_ordinal
+last_sip_timestamp_us
+```
+
+`build_step` is the stable chronological source-date index. The next day joins
+to `argMax(next_ordinal, build_step)` per ticker, so every ticker keeps one
+continuous ordinal stream across days.
+
+After all requested days finish, the builder recreates the train and validation
+sampling rows from the completed `events` table.
 
 The hash expression below is only the physical ClickHouse table partitioning; it
 is not the build unit:
@@ -72,39 +101,39 @@ cityHash64(ticker) % partition_buckets
 ```
 
 This keeps storage spread across partitions while preserving a single continuous
-event sequence per ticker. Tickers with latest status `ok` are skipped on rerun.
-Use `--retry-failed` or `--retry-started` to revisit failed or interrupted
-tickers. Use `--force-ticker-delete` only when you intentionally want to delete a
-previously written ticker before retrying it.
+event sequence per ticker. Source days with latest status `ok` are skipped on
+rerun. Use `--retry-failed` or `--retry-started` to revisit failed or
+interrupted days. Use `--force-day-delete` only when you intentionally want to
+delete a previously written day before retrying it.
 
 Progress output includes:
 
 ```text
-ticker_step
-current ticker
+day_step
+current day
 completed / skipped / failed / remaining
 percent complete
 elapsed time
-tickers per minute
+days per minute
 ETA
 ```
 
-Ctrl+C is handled. The active ticker is marked `interrupted` in
+Ctrl+C is handled. The active day is marked `interrupted` in
 `events_build_manifest` when the Python process receives the interrupt, and a
 `run_interrupted` row is appended to the JSONL report. To resume after Ctrl+C,
 use:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_build_unified_events.py --retry-started --force-ticker-delete
+python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_build_unified_events.py --retry-started --force-day-delete
 ```
 
-`--force-ticker-delete` is required for interrupted/started ticker retries so the
-script deletes any rows for that ticker before rebuilding it. This avoids
-duplicate rows if ClickHouse had already committed part or all of the interrupted
-insert.
+`--force-day-delete` is required for interrupted/started day retries so the
+script deletes rows for that event date and the matching continuity rows before
+rebuilding it. This avoids duplicate rows if ClickHouse had already committed
+part or all of the interrupted insert.
 
 Retry deletes use synchronous ClickHouse mutations (`mutations_sync = 2`) before
-the ticker is rebuilt.
+the day is rebuilt.
 
 ## Storage
 

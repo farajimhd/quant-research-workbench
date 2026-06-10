@@ -12,6 +12,7 @@ DEFAULTS = {
     "trade_table": "trades",
     "events_table": "events",
     "manifest_table": "events_build_manifest",
+    "continuity_table": "events_ordinal_continuity",
     "train_index_table": "train_2019_to_2025",
     "validation_index_table": "validation_2026",
     "source_start_date": "2019-01-01",
@@ -22,6 +23,8 @@ DEFAULTS = {
     "validation_end_date": "2099-12-31",
     "events_per_chunk": 128,
     "partition_buckets": 256,
+    "day_offset": 0,
+    "limit_days": 0,
     "max_threads": 32,
     "max_memory_usage": "400G",
     "output_root_win": r"D:\market-data\prepared\clickhouse_sip_ingest\unified_events",
@@ -36,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trade-table", default=DEFAULTS["trade_table"])
     parser.add_argument("--events-table", default=DEFAULTS["events_table"])
     parser.add_argument("--manifest-table", default=DEFAULTS["manifest_table"])
+    parser.add_argument("--continuity-table", default=DEFAULTS["continuity_table"])
     parser.add_argument("--train-index-table", default=DEFAULTS["train_index_table"])
     parser.add_argument("--validation-index-table", default=DEFAULTS["validation_index_table"])
     parser.add_argument("--source-start-date", default=DEFAULTS["source_start_date"])
@@ -50,6 +54,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ticker-file", default="")
     parser.add_argument("--ticker-offset", type=int, default=0)
     parser.add_argument("--limit-tickers", type=int, default=0)
+    parser.add_argument("--day-offset", type=int, default=DEFAULTS["day_offset"])
+    parser.add_argument("--limit-days", type=int, default=DEFAULTS["limit_days"])
     parser.add_argument("--storage-policy", default="")
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
@@ -59,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--retry-started", action="store_true")
     parser.add_argument("--force-ticker-delete", action="store_true")
+    parser.add_argument("--force-day-delete", action="store_true")
     parser.add_argument("--no-build-events", action="store_true")
     parser.add_argument("--no-build-index", action="store_true")
     parser.add_argument("--optimize-final", action="store_true")
@@ -83,6 +90,8 @@ def main() -> None:
         args.events_table,
         "--manifest-table",
         args.manifest_table,
+        "--continuity-table",
+        args.continuity_table,
         "--train-index-table",
         args.train_index_table,
         "--validation-index-table",
@@ -120,6 +129,10 @@ def main() -> None:
         command.extend(["--ticker-offset", str(args.ticker_offset)])
     if args.limit_tickers:
         command.extend(["--limit-tickers", str(args.limit_tickers)])
+    if args.day_offset:
+        command.extend(["--day-offset", str(args.day_offset)])
+    if args.limit_days:
+        command.extend(["--limit-days", str(args.limit_days)])
     if args.storage_policy:
         command.extend(["--storage-policy", args.storage_policy])
     if args.rebuild:
@@ -130,6 +143,8 @@ def main() -> None:
         command.append("--retry-started")
     if args.force_ticker_delete:
         command.append("--force-ticker-delete")
+    if args.force_day_delete:
+        command.append("--force-day-delete")
     if args.no_build_events:
         command.append("--no-build-events")
     if args.no_build_index:
