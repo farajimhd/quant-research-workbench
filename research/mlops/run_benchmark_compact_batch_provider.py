@@ -16,6 +16,8 @@ DEFAULTS = {
     "events_per_chunk": 128,
     "fetch_per_kind": 256,
     "workers": 32,
+    "query_mode": "per-sample",
+    "query_bundle_size": 32,
     "max_sample_attempt_multiplier": 5,
     "seed": 17,
     "max_threads_per_query": 1,
@@ -34,6 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULTS["events_per_chunk"])
     parser.add_argument("--fetch-per-kind", type=int, default=DEFAULTS["fetch_per_kind"])
     parser.add_argument("--workers", type=int, default=DEFAULTS["workers"])
+    parser.add_argument("--query-mode", choices=["union-all", "per-sample"], default=DEFAULTS["query_mode"])
+    parser.add_argument("--query-bundle-size", type=int, default=DEFAULTS["query_bundle_size"])
     parser.add_argument("--max-sample-attempt-multiplier", type=int, default=DEFAULTS["max_sample_attempt_multiplier"])
     parser.add_argument("--seed", type=int, default=DEFAULTS["seed"])
     parser.add_argument("--max-threads-per-query", type=int, default=DEFAULTS["max_threads_per_query"])
@@ -67,6 +71,10 @@ def main() -> None:
         str(args.fetch_per_kind),
         "--workers",
         str(args.workers),
+        "--query-mode",
+        args.query_mode,
+        "--query-bundle-size",
+        str(args.query_bundle_size),
         "--max-sample-attempt-multiplier",
         str(args.max_sample_attempt_multiplier),
         "--seed",

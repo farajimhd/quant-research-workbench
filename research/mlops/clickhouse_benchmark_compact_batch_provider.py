@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import http.client as http_client
 import json
 import random
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib import parse
 
 import numpy as np
 import polars as pl
@@ -48,7 +51,9 @@ DEFAULT_EVENTS_PER_CHUNK = 128
 DEFAULT_FETCH_PER_KIND = 256
 DEFAULT_BATCH_SIZE = 256
 DEFAULT_BENCHMARK_BATCHES = 10
+DEFAULT_QUERY_BUNDLE_SIZE = 32
 DEFAULT_REFERENCE_DIR = REPO_ROOT / "research" / "market_references" / "massive"
+_THREAD_STATE = threading.local()
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +89,83 @@ class SampleResult:
     reject_reason: str
 
 
+class PersistentClickHouseHttpClient:
+    """Small per-thread ClickHouse HTTP client.
+
+    The benchmark may issue thousands of small queries. Reusing one TCP connection
+    per worker avoids Windows ephemeral-port exhaustion from repeated urlopen
+    connect/close cycles.
+    """
+
+    def __init__(self, base_url: str, user: str, password: str) -> None:
+        parsed = parse.urlsplit(base_url.rstrip("/"))
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError(f"Unsupported ClickHouse URL scheme: {parsed.scheme!r}")
+        if not parsed.hostname:
+            raise ValueError(f"Invalid ClickHouse URL: {base_url!r}")
+        self.scheme = parsed.scheme
+        self.host = parsed.hostname
+        self.port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        self.path_prefix = parsed.path.rstrip("/")
+        self.user = user
+        self.password = password
+        self._conn: http_client.HTTPConnection | http_client.HTTPSConnection | None = None
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def _connection(self) -> http_client.HTTPConnection | http_client.HTTPSConnection:
+        if self._conn is None:
+            cls = http_client.HTTPSConnection if self.scheme == "https" else http_client.HTTPConnection
+            self._conn = cls(self.host, self.port, timeout=600)
+        return self._conn
+
+    def execute(self, sql: str, *, query_id: str | None = None) -> str:
+        path = (self.path_prefix or "") + "/"
+        if query_id:
+            path += "?" + parse.urlencode({"query_id": query_id})
+        headers = {"Content-Type": "text/plain; charset=utf-8"}
+        if self.user:
+            headers["X-ClickHouse-User"] = self.user
+        if self.password:
+            headers["X-ClickHouse-Key"] = self.password
+        body = sql.encode("utf-8")
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                conn = self._connection()
+                conn.request("POST", path, body=body, headers=headers)
+                response = conn.getresponse()
+                payload = response.read().decode("utf-8", errors="replace")
+                if response.status >= 400:
+                    raise RuntimeError(f"ClickHouse HTTP {response.status} {response.reason}: {payload}")
+                return payload
+            except (OSError, http_client.HTTPException) as exc:
+                last_error = exc
+                self.close()
+                if attempt == 1:
+                    raise
+        raise RuntimeError(f"ClickHouse request failed: {last_error!r}")
+
+    def query_tsv(self, sql: str) -> str:
+        return self.execute(sql.rstrip(";") + " FORMAT TSV")
+
+
+def thread_client(args: argparse.Namespace) -> PersistentClickHouseHttpClient:
+    key = (args.clickhouse_url, args.user, args.password)
+    current_key = getattr(_THREAD_STATE, "clickhouse_key", None)
+    client = getattr(_THREAD_STATE, "clickhouse_client", None)
+    if client is None or current_key != key:
+        if client is not None:
+            client.close()
+        client = PersistentClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+        _THREAD_STATE.clickhouse_client = client
+        _THREAD_STATE.clickhouse_key = key
+    return client
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Benchmark v4 batch construction from existing compact ClickHouse quotes/trades tables."
@@ -101,6 +183,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULT_EVENTS_PER_CHUNK)
     parser.add_argument("--fetch-per-kind", type=int, default=DEFAULT_FETCH_PER_KIND)
     parser.add_argument("--workers", type=int, default=32)
+    parser.add_argument("--query-mode", choices=["per-sample", "union-all"], default="per-sample")
+    parser.add_argument("--query-bundle-size", type=int, default=DEFAULT_QUERY_BUNDLE_SIZE)
     parser.add_argument("--max-sample-attempt-multiplier", type=int, default=5)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--strict-lossless", action=argparse.BooleanOptionalAction, default=True)
@@ -215,6 +299,89 @@ LIMIT {int(args.fetch_per_kind)}
     return [parse_trade_tsv(line) for line in client.query_tsv(query).splitlines() if line]
 
 
+def query_quote_rows_union(
+    client: PersistentClickHouseHttpClient,
+    args: argparse.Namespace,
+    samples: list[OriginSample],
+) -> dict[int, list[dict[str, Any]]]:
+    if not samples:
+        return {}
+    parts = [
+        f"""
+SELECT
+    {int(sample.sample_id)} AS sample_id,
+    ticker,
+    sip_timestamp_us,
+    sequence_number,
+    bid_price_int,
+    ask_price_int,
+    bid_size,
+    ask_size,
+    bid_exchange,
+    ask_exchange,
+    quote_flags,
+    conditions
+FROM {quote_ident(args.database)}.{quote_ident(args.quote_table)}
+WHERE ticker = {sql_string(sample.ticker)}
+  AND sip_timestamp_us <= {int(sample.origin_timestamp_us)}
+  AND ticker != ''
+  AND sip_timestamp_us > 0
+  AND sequence_number > 0
+ORDER BY ticker DESC, sip_timestamp_us DESC, sequence_number DESC
+LIMIT {int(args.fetch_per_kind)}
+""".strip()
+        for sample in samples
+    ]
+    query = "\nUNION ALL\n".join(parts) + query_settings(args)
+    grouped: dict[int, list[dict[str, Any]]] = {sample.sample_id: [] for sample in samples}
+    for line in client.query_tsv(query).splitlines():
+        if not line:
+            continue
+        sample_id_text, payload = line.split("\t", 1)
+        grouped.setdefault(int(sample_id_text), []).append(parse_quote_tsv(payload))
+    return grouped
+
+
+def query_trade_rows_union(
+    client: PersistentClickHouseHttpClient,
+    args: argparse.Namespace,
+    samples: list[OriginSample],
+) -> dict[int, list[dict[str, Any]]]:
+    if not samples:
+        return {}
+    parts = [
+        f"""
+SELECT
+    {int(sample.sample_id)} AS sample_id,
+    ticker,
+    sip_timestamp_us,
+    sequence_number,
+    price_int,
+    size,
+    exchange,
+    trade_flags,
+    conditions
+FROM {quote_ident(args.database)}.{quote_ident(args.trade_table)}
+WHERE ticker = {sql_string(sample.ticker)}
+  AND sip_timestamp_us <= {int(sample.origin_timestamp_us)}
+  AND ticker != ''
+  AND sip_timestamp_us > 0
+  AND sequence_number > 0
+ORDER BY ticker DESC, sip_timestamp_us DESC, sequence_number DESC
+LIMIT {int(args.fetch_per_kind)}
+""".strip()
+        for sample in samples
+    ]
+    query = "\nUNION ALL\n".join(parts) + query_settings(args)
+    grouped: dict[int, list[dict[str, Any]]] = {sample.sample_id: [] for sample in samples}
+    for line in client.query_tsv(query).splitlines():
+        if not line:
+            continue
+        sample_id_text, payload = line.split("\t", 1)
+        grouped.setdefault(int(sample_id_text), []).append(parse_trade_tsv(payload))
+    return grouped
+
+
 def parse_quote_tsv(line: str) -> dict[str, Any]:
     parts = line.split("\t")
     flags = int(parts[9] or 0)
@@ -327,11 +494,60 @@ def fetch_and_encode_sample(
     args: argparse.Namespace,
     references: ReferenceMaps,
 ) -> SampleResult:
-    client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    client = thread_client(args)
     query_started = time.perf_counter()
-    quote_rows = query_quote_rows(client, args, sample)
-    trade_rows = query_trade_rows(client, args, sample)
+    quote_rows: list[dict[str, Any]] = []
+    trade_rows: list[dict[str, Any]] = []
+    try:
+        quote_rows = query_quote_rows(client, args, sample)
+        trade_rows = query_trade_rows(client, args, sample)
+    except Exception as exc:  # noqa: BLE001
+        query_seconds = time.perf_counter() - query_started
+        return rejected_sample(sample, quote_rows, trade_rows, query_seconds, normalize_reject_reason("query_error", exc))
     query_seconds = time.perf_counter() - query_started
+    return encode_sample_rows(sample, quote_rows, trade_rows, query_seconds, args=args, references=references)
+
+
+def fetch_and_encode_sample_bundle(
+    samples: list[OriginSample],
+    *,
+    args: argparse.Namespace,
+    references: ReferenceMaps,
+) -> list[SampleResult]:
+    client = thread_client(args)
+    query_started = time.perf_counter()
+    try:
+        quote_map = query_quote_rows_union(client, args, samples)
+        trade_map = query_trade_rows_union(client, args, samples)
+    except Exception as exc:  # noqa: BLE001
+        query_seconds = (time.perf_counter() - query_started) / max(1, len(samples))
+        return [
+            rejected_sample(sample, [], [], query_seconds, normalize_reject_reason("query_error", exc))
+            for sample in samples
+        ]
+    query_seconds = (time.perf_counter() - query_started) / max(1, len(samples))
+    return [
+        encode_sample_rows(
+            sample,
+            quote_map.get(sample.sample_id, []),
+            trade_map.get(sample.sample_id, []),
+            query_seconds,
+            args=args,
+            references=references,
+        )
+        for sample in samples
+    ]
+
+
+def encode_sample_rows(
+    sample: OriginSample,
+    quote_rows: list[dict[str, Any]],
+    trade_rows: list[dict[str, Any]],
+    query_seconds: float,
+    *,
+    args: argparse.Namespace,
+    references: ReferenceMaps,
+) -> SampleResult:
     merged_rows = quote_rows + trade_rows
     if len(merged_rows) < args.events_per_chunk:
         return rejected_sample(sample, quote_rows, trade_rows, query_seconds, "not_enough_rows")
@@ -341,13 +557,30 @@ def fetch_and_encode_sample(
     if frame.height < args.events_per_chunk:
         return rejected_sample(sample, quote_rows, trade_rows, query_seconds, "not_enough_merged_rows")
     encode_started = time.perf_counter()
-    encoded = encode_events_chunk_from_frame(
-        frame,
-        origin_timestamp_ns=int(frame["sip_timestamp"][-1]),
-        events_per_chunk=args.events_per_chunk,
-        references=references,
-        strict_lossless=args.strict_lossless,
-    )
+    try:
+        encoded = encode_events_chunk_from_frame(
+            frame,
+            origin_timestamp_ns=int(frame["sip_timestamp"][-1]),
+            events_per_chunk=args.events_per_chunk,
+            references=references,
+            strict_lossless=args.strict_lossless,
+        )
+    except Exception as exc:  # noqa: BLE001
+        encode_seconds = time.perf_counter() - encode_started
+        return SampleResult(
+            sample_id=sample.sample_id,
+            ticker=sample.ticker,
+            accepted=False,
+            origin_timestamp_ns=0,
+            header=b"",
+            events=b"",
+            quote_rows=len(quote_rows),
+            trade_rows=len(trade_rows),
+            merged_rows=frame.height,
+            query_seconds=query_seconds,
+            encode_seconds=encode_seconds,
+            reject_reason=normalize_reject_reason("encode_error", exc),
+        )
     encode_seconds = time.perf_counter() - encode_started
     if encoded is None:
         return rejected_sample(sample, quote_rows, trade_rows, query_seconds, "encode_rejected")
@@ -391,6 +624,26 @@ def rejected_sample(
     )
 
 
+def normalize_reject_reason(prefix: str, exc: Exception) -> str:
+    text = repr(exc)
+    if "WinError 10048" in text:
+        return f"{prefix}:socket_exhaustion"
+    if "Connection refused" in text:
+        return f"{prefix}:connection_refused"
+    if "HTTP 500" in text:
+        return f"{prefix}:http_500"
+    if "HTTP 403" in text:
+        return f"{prefix}:http_403"
+    if "HTTP 404" in text:
+        return f"{prefix}:http_404"
+    return f"{prefix}:{type(exc).__name__}"
+
+
+def chunks(items: list[OriginSample], size: int) -> list[list[OriginSample]]:
+    chunk_size = max(1, int(size))
+    return [items[index : index + chunk_size] for index in range(0, len(items), chunk_size)]
+
+
 def build_batch(
     index_rows: list[IndexRow],
     *,
@@ -404,6 +657,7 @@ def build_batch(
     sample_seconds = 0.0
     fetch_seconds = 0.0
     attempted = 0
+    query_requests = 0
     next_sample_id = 0
     results: list[SampleResult] = []
     accepted_candidates: list[SampleResult] = []
@@ -422,11 +676,44 @@ def build_batch(
             attempted += draw_count
             sample_seconds += time.perf_counter() - sample_started
             fetch_started = time.perf_counter()
-            futures = [
-                executor.submit(fetch_and_encode_sample, sample, args=args, references=references)
-                for sample in origins
-            ]
-            round_results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            if args.query_mode == "per-sample":
+                futures = [
+                    executor.submit(fetch_and_encode_sample, sample, args=args, references=references)
+                    for sample in origins
+                ]
+                query_requests += 2 * len(origins)
+            else:
+                bundles = chunks(origins, args.query_bundle_size)
+                futures = [
+                    executor.submit(fetch_and_encode_sample_bundle, bundle, args=args, references=references)
+                    for bundle in bundles
+                ]
+                query_requests += 2 * len(bundles)
+            round_results: list[SampleResult] = []
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    value = future.result()
+                    if isinstance(value, list):
+                        round_results.extend(value)
+                    else:
+                        round_results.append(value)
+                except Exception as exc:  # noqa: BLE001
+                    round_results.append(
+                        SampleResult(
+                            sample_id=-1,
+                            ticker="",
+                            accepted=False,
+                            origin_timestamp_ns=0,
+                            header=b"",
+                            events=b"",
+                            quote_rows=0,
+                            trade_rows=0,
+                            merged_rows=0,
+                            query_seconds=0.0,
+                            encode_seconds=0.0,
+                            reject_reason=normalize_reject_reason("worker_error", exc),
+                        )
+                    )
             fetch_seconds += time.perf_counter() - fetch_started
             results.extend(round_results)
             accepted_candidates.extend(item for item in round_results if item.accepted)
@@ -459,11 +746,16 @@ def build_batch(
         "data/accepted_candidates": float(len(accepted_candidates)),
         "data/unused_accepted": float(max(0, len(accepted_candidates) - len(accepted))),
         "data/rejected": float(len(rejected_items)),
+        "data/query_errors": float(sum(1 for item in rejected_items if item.reject_reason.startswith("query_error"))),
+        "data/encode_errors": float(sum(1 for item in rejected_items if item.reject_reason.startswith("encode_error"))),
+        "data/worker_errors": float(sum(1 for item in rejected_items if item.reject_reason.startswith("worker_error"))),
+        "data/query_requests": float(query_requests),
         "data/accept_pct": 100.0 * len(accepted_candidates) / max(1, len(results)),
         "data/quote_rows": float(total_quote_rows),
         "data/trade_rows": float(total_trade_rows),
         "data/workers": float(workers),
         "data/fetch_per_kind": float(args.fetch_per_kind),
+        "data/query_bundle_size": float(args.query_bundle_size if args.query_mode == "union-all" else 1),
     }
     return {
         "header_uint8": torch.from_numpy(header),
@@ -517,6 +809,7 @@ def main() -> None:
     print(f"database={args.database} quote_table={args.quote_table} trade_table={args.trade_table}", flush=True)
     print(f"index_table={args.index_table} batch_size={args.batch_size} batches={args.benchmark_batches}", flush=True)
     print(f"events_per_chunk={args.events_per_chunk} fetch_per_kind={args.fetch_per_kind} workers={args.workers}", flush=True)
+    print(f"query_mode={args.query_mode} query_bundle_size={args.query_bundle_size}", flush=True)
     print(f"strict_lossless={args.strict_lossless} settings={query_settings(args).strip() or '<none>'}", flush=True)
     print(f"report={report_path}", flush=True)
     print(f"secret_status={secret_status(env_status_keys())}", flush=True)
