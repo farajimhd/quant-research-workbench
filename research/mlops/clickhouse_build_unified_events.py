@@ -301,6 +301,69 @@ WHERE target_table = {sql_string(args.events_table)}
     return rows[0] if rows else ""
 
 
+def day_event_and_continuity_counts(client: ClickHouseHttpClient, args: argparse.Namespace, job: DayJob) -> tuple[int, int]:
+    rows = client.query_tsv(
+        f"""
+SELECT event_rows, continuity_rows
+FROM
+(
+    SELECT count() AS event_rows
+    FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
+    WHERE event_date = toDate({sql_string(job.source_date)})
+) AS e
+CROSS JOIN
+(
+    SELECT coalesce(sum(event_count), 0) AS continuity_rows
+    FROM
+    (
+        SELECT
+            ticker,
+            build_step,
+            argMax(event_count, updated_at) AS event_count,
+            argMax(source_date, updated_at) AS source_date
+        FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+        GROUP BY ticker, build_step
+    )
+    WHERE source_date = toDate({sql_string(job.source_date)})
+) AS c
+"""
+    ).strip().splitlines()
+    if not rows:
+        return 0, 0
+    event_rows, continuity_rows = rows[0].split("\t")
+    return int(event_rows or 0), int(continuity_rows or 0)
+
+
+def later_built_day_count(client: ClickHouseHttpClient, args: argparse.Namespace, job: DayJob) -> int:
+    rows = client.query_tsv(
+        f"""
+SELECT countDistinct(build_step)
+FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+WHERE build_step > toUInt32({int(job.build_step)})
+"""
+    ).strip().splitlines()
+    return int(rows[0] or 0) if rows else 0
+
+
+def recover_completed_started_day(client: ClickHouseHttpClient, args: argparse.Namespace, job: DayJob, run_id: str) -> bool:
+    event_rows, continuity_rows = day_event_and_continuity_counts(client, args, job)
+    if event_rows <= 0 or event_rows != continuity_rows:
+        return False
+    profile = QueryProfile(
+        label=f"recover_completed_day_{job.source_date}",
+        query_id="",
+        wall_seconds=0.0,
+        written_rows=event_rows,
+    )
+    insert_day_manifest(client, args, job, status="ok", run_id=run_id, profile=profile)
+    print(
+        f"DAY RECOVERED day={job.source_date} latest_status was incomplete but "
+        f"events_rows={event_rows:,} continuity_rows={continuity_rows:,}; wrote ok manifest row",
+        flush=True,
+    )
+    return True
+
+
 def should_skip_status(status: str, args: argparse.Namespace) -> bool:
     if status == "ok":
         return True
@@ -741,6 +804,7 @@ LEFT JOIN
         ticker,
         argMax(next_ordinal, tuple(build_step, updated_at)) AS ordinal_offset
     FROM {db}.{continuity_table}
+    WHERE build_step < toUInt32({int(job.build_step)})
     GROUP BY ticker
 ) AS c ON c.ticker = e.ticker
 ORDER BY e.ticker, ordinal
@@ -782,6 +846,7 @@ LEFT JOIN
         ticker,
         argMax(next_ordinal, tuple(build_step, updated_at)) AS ordinal_offset
     FROM {db}.{continuity_table}
+    WHERE build_step < toUInt32({int(job.build_step)})
     GROUP BY ticker
 ) AS c ON c.ticker = e.ticker
 GROUP BY e.ticker, c.ordinal_offset
@@ -968,6 +1033,8 @@ def insert_split_indexes(client: ClickHouseHttpClient, args: argparse.Namespace,
 
 def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, job: DayJob, run_id: str, report_path: Path) -> str:
     status = latest_day_status(client, args, job)
+    if status in {"failed", "started", "interrupted"} and recover_completed_started_day(client, args, job, run_id):
+        return "skipped"
     if should_skip_status(status, args):
         print(f"SKIP day={job.source_date} latest_status={status}", flush=True)
         return "skipped"
@@ -978,6 +1045,15 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, job: DayJob,
             f"day={job.source_date} latest_status={status}; rerun with --force-day-delete "
             "when retrying a failed/interrupted/started day so duplicate rows cannot be created."
         )
+    if needs_force_delete_before_retry(status, args):
+        later_days = later_built_day_count(client, args, job)
+        if later_days > 0:
+            raise RuntimeError(
+                f"day={job.source_date} latest_status={status} is not complete, but {later_days:,} later "
+                "continuity days already exist. Refusing out-of-order retry because deleting/rebuilding an "
+                "older day would make later ordinals inconsistent. Rebuild from this day forward or repair "
+                "the manifest only if event/continuity counts match."
+            )
     if status in {"failed", "started", "interrupted"} and args.force_day_delete:
         print(f"DAY DELETE day={job.source_date} before retry", flush=True)
         run_profiled(client, f"delete_events_day_{job.source_date}", delete_day_sql(args, job))
