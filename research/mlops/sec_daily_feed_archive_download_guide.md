@@ -30,19 +30,17 @@ D:/market-data/prepared/sec_daily_feed_archives
 
 ## Date Range
 
-If `--start-date` and `--end-date` are omitted, the script reads the range from:
+If `--start-date` and `--end-date` are omitted, the script downloads all available archives from:
 
 ```text
-q_live.sec_filing_v2 FINAL
+2019-01-01 through today
 ```
 
-using `min(filing_date)` and `max(filing_date) + 1 day`.
-
-You can also pass an explicit range. `--end-date` is exclusive.
+`--end-date` is exclusive. If you need q_live-based range inference later, pass `--infer-from-clickhouse`.
 
 ## Smoke Tests
 
-Dry-run the first five available archive days inferred from q_live:
+Dry-run the first five available archive days from the default 2019-to-today range:
 
 ```powershell
 python D:\TradingCodes\quant-research-workbench\research\mlops\sec_daily_feed_archive_download.py --dry-run --limit-days 5 --output-root-win D:/market-data/prepared/sec_daily_feed_archives
@@ -62,7 +60,7 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_daily_feed_ar
 
 ## Full Backfill
 
-Download all available daily archives needed by q_live:
+Download all available daily archives from 2019-01-01 through today:
 
 ```powershell
 python D:\TradingCodes\quant-research-workbench\research\mlops\sec_daily_feed_archive_download.py --download-concurrency 4 --output-root-win D:/market-data/prepared/sec_daily_feed_archives

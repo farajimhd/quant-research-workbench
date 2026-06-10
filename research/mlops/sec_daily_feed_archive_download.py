@@ -43,6 +43,7 @@ DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_core")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_daily_feed_archives")
 DEFAULT_TARGET_DATABASE = "q_live"
 DEFAULT_TARGET_TABLE = "sec_filing_v2"
+DEFAULT_START_DATE = date(2019, 1, 1)
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,8 +63,9 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("SEC_DAILY_FEED_OUTPUT_ROOT_WIN") or str(DEFAULT_OUTPUT_ROOT_WIN),
         help="Root where manifests and summaries are written.",
     )
-    parser.add_argument("--start-date", help="Inclusive archive date, YYYY-MM-DD. If omitted, infer from q_live.")
-    parser.add_argument("--end-date", help="Exclusive archive date, YYYY-MM-DD. If omitted, infer from q_live max filing_date + 1 day.")
+    parser.add_argument("--start-date", help="Inclusive archive date, YYYY-MM-DD. Defaults to 2019-01-01.")
+    parser.add_argument("--end-date", help="Exclusive archive date, YYYY-MM-DD. Defaults to tomorrow in UTC.")
+    parser.add_argument("--infer-from-clickhouse", action="store_true", help="Infer date range from q_live.sec_filing_v2 instead of using the default 2019-to-now range.")
     parser.add_argument("--target-database", default=os.environ.get("QLIVE_MIGRATION_TARGET_DATABASE", DEFAULT_TARGET_DATABASE))
     parser.add_argument("--target-table", default=os.environ.get("QLIVE_MIGRATION_SEC_FILING_TABLE", DEFAULT_TARGET_TABLE))
     parser.add_argument("--clickhouse-url", default=default_migration_clickhouse_url())
@@ -193,10 +195,14 @@ def validate_args(args: argparse.Namespace) -> None:
                     f"{label} points to G:, which is blocked for this downloader: {raw_path}. "
                     "Use an SSD path such as D:/market-data/sec_core, or pass --allow-g-drive only for an intentional exception."
                 )
-    if (args.start_date and not args.end_date) or (args.end_date and not args.start_date):
-        raise SystemExit("--start-date and --end-date must be provided together.")
+    if args.infer_from_clickhouse and (args.start_date or args.end_date):
+        raise SystemExit("--infer-from-clickhouse cannot be combined with --start-date or --end-date.")
     if args.start_date and args.end_date and parse_date(args.end_date) <= parse_date(args.start_date):
         raise SystemExit("--end-date must be later than --start-date.")
+    if args.start_date and not args.end_date and datetime.now(UTC).date() + timedelta(days=1) <= parse_date(args.start_date):
+        raise SystemExit("--start-date must be earlier than tomorrow in UTC when --end-date is omitted.")
+    if args.end_date and not args.start_date and parse_date(args.end_date) <= DEFAULT_START_DATE:
+        raise SystemExit("--end-date must be later than 2019-01-01 when --start-date is omitted.")
     if args.download_concurrency < 1:
         raise SystemExit("--download-concurrency must be >= 1.")
 
@@ -204,6 +210,13 @@ def validate_args(args: argparse.Namespace) -> None:
 def resolve_date_range(args: argparse.Namespace) -> tuple[date, date, str]:
     if args.start_date and args.end_date:
         return parse_date(args.start_date), parse_date(args.end_date), "explicit_args"
+    if args.start_date:
+        return parse_date(args.start_date), datetime.now(UTC).date() + timedelta(days=1), "explicit_start_to_today"
+    if args.end_date:
+        return DEFAULT_START_DATE, parse_date(args.end_date), "default_start_to_explicit_end"
+    if not args.infer_from_clickhouse:
+        return DEFAULT_START_DATE, datetime.now(UTC).date() + timedelta(days=1), "default_2019_to_today"
+
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     table = f"{quote_ident(args.target_database)}.{quote_ident(args.target_table)}"
     try:
