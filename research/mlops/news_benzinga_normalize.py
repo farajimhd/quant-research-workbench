@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import html
 import io
@@ -852,11 +853,12 @@ def extract_pdf_text(pdf_bytes: bytes) -> str:
                 raise RuntimeError("pdf_parser_not_available") from pypdf_exc
             reader = PdfReader(io.BytesIO(pdf_bytes))
             return normalize_text(" ".join(page.extract_text() or "" for page in reader.pages))
-    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        return normalize_text(" ".join(page.get_text("text") for page in doc))
-    finally:
-        doc.close()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            return normalize_text(" ".join(page.get_text("text") for page in doc))
+        finally:
+            doc.close()
 
 
 def content_flags(

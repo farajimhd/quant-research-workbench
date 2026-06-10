@@ -886,11 +886,12 @@ def pdf_page_count(pdf_bytes: bytes) -> int:
             import fitz as pymupdf  # type: ignore
         except ImportError:
             return 0
-    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        return int(doc.page_count)
-    finally:
-        doc.close()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            return int(doc.page_count)
+        finally:
+            doc.close()
 
 
 def write_raw_artifact(raw_root: Path, row: dict[str, Any], response: FetchedResponse, content_type: str) -> dict[str, str]:
