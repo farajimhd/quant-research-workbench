@@ -89,11 +89,8 @@ CREATE TABLE market_sip_compact.events
     -- bits5-7: reserved
     event_flags UInt8,
 
-    -- Dense condition ids. Zero means absent/unknown.
-    condition_1 UInt8,
-    condition_2 UInt8,
-    condition_3 UInt8,
-    condition_4 UInt8,
+    -- Packed dense condition ids. Interpretation depends on event_type.
+    conditions_packed UInt32,
 
     -- Useful for maintenance, auditing, and date-range deletion.
     event_date Date
@@ -175,6 +172,50 @@ intended to be compact and aligned with the event provider representation. If a
 future experiment needs correction, use one reserved flag bit range or add a
 separate compact field.
 
+## Condition Encoding
+
+Raw compact quote/trade tables keep condition combinations as
+`LowCardinality(String)`. The unified event table does not keep those raw
+strings. It maps each condition code through the appropriate reference table and
+packs the dense IDs into one `UInt32`.
+
+Quote rows use quote-condition dense IDs from:
+
+```text
+market_sip_compact.ref_quote_conditions
+```
+
+Quote packing uses four 8-bit slots:
+
+```text
+bits 0-7    quote condition 1 dense_id
+bits 8-15   quote condition 2 dense_id
+bits 16-23  quote condition 3 dense_id
+bits 24-31  quote condition 4 dense_id
+```
+
+Trade rows use trade-condition dense IDs from:
+
+```text
+market_sip_compact.ref_trade_conditions
+```
+
+Trade packing uses five 6-bit slots:
+
+```text
+bits 0-5    trade condition 1 dense_id
+bits 6-11   trade condition 2 dense_id
+bits 12-17  trade condition 3 dense_id
+bits 18-23  trade condition 4 dense_id
+bits 24-29  trade condition 5 dense_id
+bits 30-31  reserved
+```
+
+Dense ID `0` means absent or unknown in every slot. The model/data provider must
+interpret `conditions_packed` by `event_type`: quote rows are 4x8-bit fields;
+trade rows are 5x6-bit fields. This lets trades preserve the fifth condition
+without widening the row and keeps quote conditions aligned to byte boundaries.
+
 ## Field Mapping
 
 Quote source row to unified event:
@@ -189,7 +230,7 @@ size_primary        -> ask_size
 size_secondary      -> bid_size
 exchange_primary    -> ask_exchange
 exchange_secondary  -> bid_exchange
-condition_1..4      -> dense ids from quote conditions
+conditions_packed   -> 4x8-bit packed dense ids from quote conditions
 event_date          -> event_date
 ```
 
@@ -205,7 +246,7 @@ size_primary        -> size
 size_secondary      -> 0
 exchange_primary    -> exchange
 exchange_secondary  -> 0
-condition_1..4      -> dense ids from trade conditions
+conditions_packed   -> 5x6-bit packed dense ids from trade conditions
 event_date          -> event_date
 ```
 
@@ -326,10 +367,7 @@ SELECT
     exchange_primary,
     exchange_secondary,
     event_flags,
-    condition_1,
-    condition_2,
-    condition_3,
-    condition_4
+    conditions_packed
 FROM market_sip_compact.events
 PREWHERE ticker = <ticker>
   AND ordinal >= <origin_ordinal - events_per_chunk + 1>

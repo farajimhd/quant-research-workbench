@@ -200,7 +200,25 @@ Quote `conditions` and `indicators` are stored as `LowCardinality(String)`.
 
 Trade `conditions` are stored as `LowCardinality(String)`.
 
-This keeps ingestion simple and preserves the raw condition combinations. Dense categorical IDs can be created later for model-specific training representations.
+This keeps ingestion simple and preserves the raw condition combinations. Dense categorical IDs are created later for model-specific training representations.
+
+For the unified training event table, condition strings are not kept as raw
+strings. They are mapped through separate quote/trade reference tables and packed
+into one `UInt32`:
+
+```text
+quote event: 4 quote-condition dense IDs, 8 bits each
+trade event: 5 trade-condition dense IDs, 6 bits each, bits 30-31 reserved
+```
+
+The condition domains are intentionally separate:
+
+```text
+market_sip_compact.ref_quote_conditions
+market_sip_compact.ref_trade_conditions
+```
+
+The event row's `event_type` determines how to decode `conditions_packed`.
 
 ## Issue Flags
 

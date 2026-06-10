@@ -70,16 +70,31 @@ ref_trade_conditions: dense_id 0 = unknown, dense_id 1..57 = trade modifiers
 The unified event builder should left join these tables and default missing
 matches to dense id `0`.
 
-Quote condition mapping example:
+The final unified event table stores condition IDs as one packed `UInt32`, not as
+separate condition columns. The packing depends on event type:
 
-```sql
-coalesce(qc1.dense_id, 0) AS condition_1
+```text
+quote event: 4 slots x 8 bits = 32 bits
+trade event: 5 slots x 6 bits = 30 bits, with bits 30-31 reserved
 ```
 
-Trade condition mapping example:
+Quote condition packing example:
 
 ```sql
-coalesce(tc1.dense_id, 0) AS condition_1
+toUInt32(coalesce(qc1.dense_id, 0))
+| bitShiftLeft(toUInt32(coalesce(qc2.dense_id, 0)), 8)
+| bitShiftLeft(toUInt32(coalesce(qc3.dense_id, 0)), 16)
+| bitShiftLeft(toUInt32(coalesce(qc4.dense_id, 0)), 24) AS conditions_packed
+```
+
+Trade condition packing example:
+
+```sql
+toUInt32(coalesce(tc1.dense_id, 0))
+| bitShiftLeft(toUInt32(coalesce(tc2.dense_id, 0)), 6)
+| bitShiftLeft(toUInt32(coalesce(tc3.dense_id, 0)), 12)
+| bitShiftLeft(toUInt32(coalesce(tc4.dense_id, 0)), 18)
+| bitShiftLeft(toUInt32(coalesce(tc5.dense_id, 0)), 24) AS conditions_packed
 ```
 
 Exchange mapping example:
