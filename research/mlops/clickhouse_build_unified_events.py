@@ -211,6 +211,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.contin
     event_count UInt64,
     next_ordinal UInt64,
     last_ordinal UInt64,
+    first_sip_timestamp_us UInt64 DEFAULT 0,
     last_sip_timestamp_us UInt64,
     updated_at DateTime DEFAULT now()
 )
@@ -241,6 +242,15 @@ ENGINE = MergeTree
 ORDER BY ticker
 {mergetree_settings(args.storage_policy)}
 """
+
+
+def ensure_continuity_table_columns(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    client.execute(
+        f"""
+ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+ADD COLUMN IF NOT EXISTS first_sip_timestamp_us UInt64 DEFAULT 0 AFTER last_ordinal
+"""
+    )
 
 
 def latest_day_status(client: ClickHouseHttpClient, args: argparse.Namespace, job: DayJob) -> str:
@@ -715,7 +725,7 @@ LEFT JOIN
 (
     SELECT
         ticker,
-        argMax(next_ordinal, build_step) AS ordinal_offset
+        argMax(next_ordinal, tuple(build_step, updated_at)) AS ordinal_offset
     FROM {db}.{continuity_table}
     GROUP BY ticker
 ) AS c ON c.ticker = e.ticker
@@ -736,6 +746,7 @@ INSERT INTO {db}.{continuity_table}
     event_count,
     next_ordinal,
     last_ordinal,
+    first_sip_timestamp_us,
     last_sip_timestamp_us
 )
 SELECT
@@ -745,6 +756,7 @@ SELECT
     count() AS event_count,
     coalesce(c.ordinal_offset, toUInt64(0)) + count() AS next_ordinal,
     coalesce(c.ordinal_offset, toUInt64(0)) + count() - 1 AS last_ordinal,
+    min(e.sip_timestamp_us) AS first_sip_timestamp_us,
     max(e.sip_timestamp_us) AS last_sip_timestamp_us
 FROM
 (
@@ -754,7 +766,7 @@ LEFT JOIN
 (
     SELECT
         ticker,
-        argMax(next_ordinal, build_step) AS ordinal_offset
+        argMax(next_ordinal, tuple(build_step, updated_at)) AS ordinal_offset
     FROM {db}.{continuity_table}
     GROUP BY ticker
 ) AS c ON c.ticker = e.ticker
@@ -847,9 +859,10 @@ WHERE split_event_count > 0
 
 def insert_split_index_sql(args: argparse.Namespace, index_job: IndexJob) -> str:
     range_predicate = (
-        f"event_date BETWEEN toDate({sql_string(index_job.start_date)}) "
+        f"source_date BETWEEN toDate({sql_string(index_job.start_date)}) "
         f"AND toDate({sql_string(index_job.end_date)})"
     )
+    day_first_ordinal = "day_last_ordinal - day_event_count + 1"
     return f"""
 INSERT INTO {quote_ident(args.database)}.{quote_ident(index_job.table)}
 (
@@ -881,12 +894,28 @@ FROM
 (
     SELECT
         ticker,
-        countIf({range_predicate}) AS split_event_count,
-        minIf(ordinal, {range_predicate}) AS first_ordinal,
-        maxIf(ordinal, {range_predicate}) AS last_ordinal,
-        minIf(sip_timestamp_us, {range_predicate}) AS first_sip_timestamp_us,
-        maxIf(sip_timestamp_us, {range_predicate}) AS last_sip_timestamp_us
-    FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
+        sumIf(day_event_count, {range_predicate}) AS split_event_count,
+        minIf({day_first_ordinal}, {range_predicate}) AS first_ordinal,
+        maxIf(day_last_ordinal, {range_predicate}) AS last_ordinal,
+        if(
+            minIf(day_first_sip_timestamp_us, {range_predicate}) = 0,
+            minIf(day_last_sip_timestamp_us, {range_predicate}),
+            minIf(day_first_sip_timestamp_us, {range_predicate})
+        ) AS first_sip_timestamp_us,
+        maxIf(day_last_sip_timestamp_us, {range_predicate}) AS last_sip_timestamp_us
+    FROM
+    (
+        SELECT
+            ticker,
+            build_step,
+            argMax(source_date, updated_at) AS source_date,
+            argMax(event_count, updated_at) AS day_event_count,
+            argMax(last_ordinal, updated_at) AS day_last_ordinal,
+            argMax(first_sip_timestamp_us, updated_at) AS day_first_sip_timestamp_us,
+            argMax(last_sip_timestamp_us, updated_at) AS day_last_sip_timestamp_us
+        FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+        GROUP BY ticker, build_step
+    )
     GROUP BY ticker
 )
 WHERE split_event_count > 0
@@ -1249,6 +1278,7 @@ def initialize_tables(client: ClickHouseHttpClient, args: argparse.Namespace) ->
     client.execute(create_events_table_sql(args))
     client.execute(create_manifest_table_sql(args))
     client.execute(create_continuity_table_sql(args))
+    ensure_continuity_table_columns(client, args)
     client.execute(create_index_table_sql(args, args.train_index_table))
     client.execute(create_index_table_sql(args, args.validation_index_table))
 

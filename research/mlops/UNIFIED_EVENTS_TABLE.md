@@ -89,6 +89,7 @@ source_date
 event_count
 next_ordinal
 last_ordinal
+first_sip_timestamp_us
 last_sip_timestamp_us
 ```
 
@@ -97,7 +98,9 @@ to `argMax(next_ordinal, build_step)` per ticker, so every ticker keeps one
 continuous ordinal stream across days.
 
 After all requested days finish, the builder recreates the train and validation
-sampling rows from the completed `events` table.
+sampling rows from `events_ordinal_continuity`, not from the completed `events`
+table. The continuity table is much smaller and already carries the per-day
+ticker event counts and ordinal ranges needed for split metadata.
 
 The hash expression below is only the physical ClickHouse table partitioning; it
 is not the build unit:
@@ -261,6 +264,21 @@ first_ordinal <= origin_ordinal <= max_valid_ordinal
 
 `max_valid_ordinal` is `last_ordinal`. `valid_origin_count` is equal to
 `split_event_count`.
+
+The split index is derived from `events_ordinal_continuity`:
+
+```text
+split_event_count = sum(event_count) over source_date range
+first_ordinal = min(last_ordinal - event_count + 1) over source_date range
+last_ordinal = max(last_ordinal) over source_date range
+first_sip_timestamp_us = min(first_sip_timestamp_us) over source_date range
+last_sip_timestamp_us = max(last_sip_timestamp_us) over source_date range
+```
+
+Older continuity tables may not have `first_sip_timestamp_us`; the builder adds
+the column if missing and falls back to the first available daily
+`last_sip_timestamp_us` for index metadata. This timestamp is descriptive
+metadata only; sampling uses ticker and ordinal.
 
 For each sampled origin, the loader should request:
 
