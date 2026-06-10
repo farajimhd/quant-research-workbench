@@ -33,8 +33,10 @@ Files:
 The default policy keeps true external content as `fetch_html`, keeps PDFs as `fetch_pdf`, keeps SEC URLs as `sec_handler`, and moves questionable HTML domains out of direct fetch:
 
 - `resolve_redirect`: `t.co`, `bit.ly`, `c212.net`, `feedburner.com`, `lnkd.in`, and similar redirectors.
-- `metadata_only`: social/media/photo domains such as `facebook.com`, `youtube.com`, `twitter.com`, `x.com`, `flickr.com`, `pixabay.com`, and `unsplash.com`.
-- `ignore`: Benzinga provider pages and obvious affiliate/tracking domains such as `grsm.io`. Exact subdomain rules can be used without blocking the registered domain; for example, `register.zacks.com` is ignored while normal `zacks.com` article URLs remain fetchable.
+- `metadata_only`: social/media/photo/video/webinar/product-store/market-page domains such as `facebook.com`, `youtube.com`, `twitter.com`, `x.com`, `flickr.com`, `pixabay.com`, `unsplash.com`, `media-server.com`, `on24.com`, `coingecko.com`, `coinmarketcap.com`, and `opensea.io`.
+- `ignore`: Benzinga internal/product pages and obvious affiliate/tracking domains such as `benzinga.help`, `benzingapro.com`, `grsm.io`, and ad/tracking hosts. Exact subdomain rules can be used without blocking the registered domain; for example, `register.zacks.com` is ignored while normal `zacks.com` article URLs remain fetchable.
+
+News, press-release, financial-media, and official/regulator domains are intentionally left as `fetch_html` unless they are known redirectors, media hosts, or internal utility pages. The policy decision is for enrichment work only; it does not drop the original news row.
 
 You can override or extend this policy with `--policy-json`.
 
