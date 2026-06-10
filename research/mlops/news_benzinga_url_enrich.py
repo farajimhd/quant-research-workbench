@@ -162,6 +162,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--load-progress-interval", type=int, default=100_000)
     parser.add_argument("--heartbeat-seconds", type=float, default=15.0)
     parser.add_argument("--max-pending-futures", type=int, default=0)
+    parser.add_argument("--flush-interval", type=int, default=100)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--save-raw-artifacts", action="store_true")
     return parser.parse_args()
@@ -277,6 +278,9 @@ def main() -> None:
                         quality_flag_counts[str(flag)] += 1
                     target = error_handle if status in {"failed", "transient_failed"} else result_handle
                     target.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+                    if args.flush_interval and processed % args.flush_interval == 0:
+                        result_handle.flush()
+                        error_handle.flush()
                     future_url_hashes.pop(future, None)
                 submit_until_capacity()
                 now = time.perf_counter()
@@ -407,8 +411,12 @@ def load_completed_url_hashes(output_root: Path) -> set[str]:
     for path in output_root.glob("*/news_url_enrichment_result.jsonl"):
         try:
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    row = json.loads(line)
+                for line_number, line in enumerate(handle, 1):
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        print(f"WARN skipping malformed resume line path={path} line={line_number}", flush=True)
+                        continue
                     url_hash = str(row.get("url_hash") or "")
                     status = str(row.get("status") or "")
                     if url_hash and status not in {"failed", "transient_failed"}:
