@@ -209,6 +209,17 @@ condition_1..4      -> dense ids from trade conditions
 event_date          -> event_date
 ```
 
+Quote and trade condition dense IDs must come from separate reference tables:
+
+```text
+market_sip_compact.ref_quote_conditions
+market_sip_compact.ref_trade_conditions
+```
+
+The generic stock conditions API table is not sufficient here because Massive's
+quote condition modifiers and trade condition modifiers are different glossary
+tables with different domains.
+
 ## Dropped Fields
 
 These fields are intentionally not stored in the final training table:

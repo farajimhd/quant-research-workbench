@@ -11,6 +11,7 @@ DEFAULTS = {
     "reference_dir": str(Path(__file__).resolve().parents[1] / "market_references" / "massive"),
     "storage_policy": "",
     "rebuild": True,
+    "drop_deprecated": True,
 }
 
 
@@ -20,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference-dir", default=DEFAULTS["reference_dir"])
     parser.add_argument("--storage-policy", default=DEFAULTS["storage_policy"])
     parser.add_argument("--no-rebuild", action="store_true")
+    parser.add_argument("--no-drop-deprecated", action="store_true")
     return parser.parse_args()
 
 
@@ -39,6 +41,8 @@ def main() -> None:
         command.extend(["--storage-policy", args.storage_policy])
     if args.no_rebuild:
         command.append("--no-rebuild")
+    if args.no_drop_deprecated:
+        command.append("--no-drop-deprecated")
     print("Equivalent command:", flush=True)
     print(" ".join(f'"{part}"' if " " in part else part for part in command), flush=True)
     raise SystemExit(subprocess.call(command))
