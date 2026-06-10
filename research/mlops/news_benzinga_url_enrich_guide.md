@@ -138,6 +138,7 @@ python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/res
 - `--heartbeat-seconds`: maximum silence while URL workers are still pending.
 - `--flush-interval`: completed rows between JSONL flushes. Lower values reduce data loss risk on forced shutdown.
 - `--resume`: skip URL hashes already present in previous successful result files under the output root.
+- `--retry-permanent-failures`: by default, resume also skips prior permanent failures such as 401/403/404/410, invalid URLs, and oversized pages. Pass this only when you intentionally want to retry those rows.
 - `--save-raw-artifacts`: debug-only flag to save fetched bytes.
 
 Environment-variable defaults:

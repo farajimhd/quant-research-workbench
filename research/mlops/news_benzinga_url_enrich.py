@@ -163,6 +163,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--heartbeat-seconds", type=float, default=15.0)
     parser.add_argument("--max-pending-futures", type=int, default=0)
     parser.add_argument("--flush-interval", type=int, default=100)
+    parser.add_argument(
+        "--retry-permanent-failures",
+        action="store_true",
+        help="When resuming, also retry URLs that previously failed with permanent errors such as 401/403/404/410.",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--save-raw-artifacts", action="store_true")
     return parser.parse_args()
@@ -189,10 +194,12 @@ def main() -> None:
 
     print(f"fetch_plan_path={fetch_plan_path}", flush=True)
     print(f"run_root={run_root}", flush=True)
-    completed = load_completed_url_hashes(output_root) if args.resume else set()
+    completed, permanent_failed = load_resume_url_hashes(output_root, retry_permanent_failures=bool(args.retry_permanent_failures)) if args.resume else (set(), set())
     if completed:
         print(f"resume_completed_url_hashes={len(completed):,}", flush=True)
-    rows = load_fetch_plan_rows(fetch_plan_path, args.limit_urls, completed, args.load_progress_interval)
+    if permanent_failed:
+        print(f"resume_permanent_failed_url_hashes={len(permanent_failed):,}", flush=True)
+    rows = load_fetch_plan_rows(fetch_plan_path, args.limit_urls, completed, permanent_failed, args.load_progress_interval)
     limiter = DomainRateLimiter(args.per_domain_min_interval_seconds)
 
     print("=" * 96, flush=True)
@@ -322,6 +329,8 @@ def main() -> None:
         "rows_loaded": len(rows),
         "resume": bool(args.resume),
         "skipped_completed_count": len(completed),
+        "skipped_permanent_failed_count": len(permanent_failed),
+        "retry_permanent_failures": bool(args.retry_permanent_failures),
         "status_counts": dict(status_counts),
         "resolved_action_counts": dict(action_counts),
         "quality_flag_counts": dict(quality_flag_counts),
@@ -363,7 +372,7 @@ def resolve_fetch_plan_path(args: argparse.Namespace) -> Path:
     return root / "news_url_fetch_plan.jsonl"
 
 
-def load_fetch_plan_rows(fetch_plan_path: Path, limit_urls: int, completed: set[str], progress_interval: int) -> list[dict[str, Any]]:
+def load_fetch_plan_rows(fetch_plan_path: Path, limit_urls: int, completed: set[str], permanent_failed: set[str], progress_interval: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     started = time.perf_counter()
     print("loading_fetch_plan_rows=started", flush=True)
@@ -372,6 +381,8 @@ def load_fetch_plan_rows(fetch_plan_path: Path, limit_urls: int, completed: set[
             row = json.loads(line)
             url_hash = str(row.get("url_hash") or "")
             if completed and url_hash in completed:
+                continue
+            if permanent_failed and url_hash in permanent_failed:
                 continue
             rows.append(row)
             if progress_interval and len(rows) % progress_interval == 0:
@@ -406,8 +417,9 @@ def print_progress(
     return time.perf_counter()
 
 
-def load_completed_url_hashes(output_root: Path) -> set[str]:
+def load_resume_url_hashes(output_root: Path, *, retry_permanent_failures: bool) -> tuple[set[str], set[str]]:
     completed: set[str] = set()
+    permanent_failed: set[str] = set()
     for path in output_root.glob("*/news_url_enrichment_result.jsonl"):
         try:
             with path.open("r", encoding="utf-8") as handle:
@@ -423,7 +435,38 @@ def load_completed_url_hashes(output_root: Path) -> set[str]:
                         completed.add(url_hash)
         except OSError:
             continue
-    return completed
+    if not retry_permanent_failures:
+        for path in output_root.glob("*/news_url_enrichment_errors.jsonl"):
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    for line_number, line in enumerate(handle, 1):
+                        try:
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
+                            print(f"WARN skipping malformed resume error line path={path} line={line_number}", flush=True)
+                            continue
+                        url_hash = str(row.get("url_hash") or "")
+                        if url_hash and is_permanent_failure_row(row):
+                            permanent_failed.add(url_hash)
+            except OSError:
+                continue
+    permanent_failed.difference_update(completed)
+    return completed, permanent_failed
+
+
+def is_permanent_failure_row(row: dict[str, Any]) -> bool:
+    if str(row.get("status") or "") != "failed":
+        return False
+    http_status = int(row.get("http_status") or 0)
+    error_type = str(row.get("error_type") or "")
+    error_message = str(row.get("error_message") or "").casefold()
+    if http_status in {400, 401, 403, 404, 405, 410, 451}:
+        return True
+    if error_type in {"InvalidURL", "UnicodeEncodeError"}:
+        return True
+    if error_type == "ValueError" and "too_large" in error_message:
+        return True
+    return False
 
 
 class DomainRateLimiter:
