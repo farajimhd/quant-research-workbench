@@ -60,6 +60,10 @@ clean quote/trade stream for the source range, merges quotes and trades, assigns
 the ticker-local ordinal, writes rows to `events`, and records status in
 `events_build_manifest`.
 
+After a ticker's event rows are written, the same ticker job writes that ticker's
+train and validation sampling rows. The build does not run a separate full-table
+`GROUP BY ticker` pass at the end.
+
 The hash expression below is only the physical ClickHouse table partitioning; it
 is not the build unit:
 
@@ -98,6 +102,9 @@ python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_build_unified
 script deletes any rows for that ticker before rebuilding it. This avoids
 duplicate rows if ClickHouse had already committed part or all of the interrupted
 insert.
+
+Retry deletes use synchronous ClickHouse mutations (`mutations_sync = 2`) before
+the ticker is rebuilt.
 
 ## Storage
 
@@ -169,6 +176,52 @@ PARTITION BY cityHash64(ticker) % 256
 ORDER BY (ticker, ordinal)
 SETTINGS storage_policy = '<CLICKHOUSE_LIVE_STORAGE_POLICY>';
 ```
+
+## Split Index Tables
+
+The builder recreates these tables when `--rebuild` is used:
+
+```text
+market_sip_compact.train_2019_to_2025
+market_sip_compact.validation_2026
+```
+
+Each ticker writes its split rows immediately after its event rows are inserted.
+The schema is:
+
+```sql
+(
+    ticker LowCardinality(String),
+    split_start_date Date,
+    split_end_date Date,
+    context_events UInt32,
+    split_event_count UInt64,
+    valid_origin_count UInt64,
+    first_ordinal UInt64,
+    last_ordinal UInt64,
+    min_valid_ordinal UInt64,
+    max_valid_ordinal UInt64,
+    first_sip_timestamp_us UInt64,
+    last_sip_timestamp_us UInt64,
+    built_at DateTime DEFAULT now()
+)
+```
+
+`first_ordinal` and `last_ordinal` are the first and last event ordinals inside
+that split's timestamp/date range for the ticker. `min_valid_ordinal` is:
+
+```text
+max(first_ordinal, context_events - 1)
+```
+
+`max_valid_ordinal` is `last_ordinal`. The loader can sample origin ordinals
+directly from:
+
+```text
+min_valid_ordinal <= origin_ordinal <= max_valid_ordinal
+```
+
+`valid_origin_count` is the number of valid origin ordinals in that range.
 
 ## Price Encoding
 

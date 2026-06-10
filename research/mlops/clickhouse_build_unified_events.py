@@ -94,7 +94,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-started", action="store_true")
     parser.add_argument("--force-ticker-delete", action="store_true", help="Delete existing rows for a ticker before retrying it.")
     parser.add_argument("--no-build-events", action="store_true", help="Skip event table ticker inserts.")
-    parser.add_argument("--no-build-index", action="store_true", help="Skip train/validation index table rebuild.")
+    parser.add_argument("--no-build-index", action="store_true", help="Skip per-ticker train/validation index row writes.")
     parser.add_argument("--optimize-final", action="store_true", help="Run OPTIMIZE FINAL on the events table after building.")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -111,6 +111,15 @@ def query_settings(args: argparse.Namespace) -> str:
     if str(args.max_memory_usage) != "0":
         settings.append(f"max_memory_usage = {parse_size_bytes(str(args.max_memory_usage))}")
     return "\nSETTINGS " + ", ".join(settings) if settings else ""
+
+
+def mutation_settings(args: argparse.Namespace) -> str:
+    settings = ["mutations_sync = 2"]
+    if args.max_threads > 0:
+        settings.append(f"max_threads = {int(args.max_threads)}")
+    if str(args.max_memory_usage) != "0":
+        settings.append(f"max_memory_usage = {parse_size_bytes(str(args.max_memory_usage))}")
+    return "\nSETTINGS " + ", ".join(settings)
 
 
 def mergetree_settings(storage_policy: str) -> str:
@@ -182,11 +191,18 @@ def create_index_table_sql(args: argparse.Namespace, table: str) -> str:
 CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(table)}
 (
     ticker LowCardinality(String),
-    event_count UInt64,
+    split_start_date Date,
+    split_end_date Date,
+    context_events UInt32,
+    split_event_count UInt64,
+    valid_origin_count UInt64,
+    first_ordinal UInt64,
+    last_ordinal UInt64,
+    min_valid_ordinal UInt64,
+    max_valid_ordinal UInt64,
     first_sip_timestamp_us UInt64,
     last_sip_timestamp_us UInt64,
-    min_valid_ordinal UInt64,
-    max_valid_ordinal UInt64
+    built_at DateTime DEFAULT now()
 )
 ENGINE = MergeTree
 ORDER BY ticker
@@ -219,6 +235,14 @@ def should_skip_status(status: str, args: argparse.Namespace) -> bool:
     if status == "started" and not args.retry_started:
         return True
     if status == "interrupted" and not args.retry_started:
+        return True
+    return False
+
+
+def needs_force_delete_before_retry(status: str, args: argparse.Namespace) -> bool:
+    if status in {"started", "interrupted"} and args.retry_started:
+        return True
+    if status == "failed" and args.retry_failed:
         return True
     return False
 
@@ -462,26 +486,92 @@ def delete_ticker_sql(args: argparse.Namespace, job: TickerJob) -> str:
     return f"""
 ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.events_table)}
 DELETE WHERE ticker = {sql_string(job.ticker)}
-{query_settings(args)}
+{mutation_settings(args)}
 """
 
 
-def index_insert_sql(args: argparse.Namespace, job: IndexJob) -> str:
-    valid = f"event_date BETWEEN toDate({sql_string(job.start_date)}) AND toDate({sql_string(job.end_date)}) AND ordinal >= {int(args.events_per_chunk - 1)}"
+def delete_ticker_index_sql(args: argparse.Namespace, table: str, job: TickerJob) -> str:
     return f"""
-INSERT INTO {quote_ident(args.database)}.{quote_ident(job.table)}
+ALTER TABLE {quote_ident(args.database)}.{quote_ident(table)}
+DELETE WHERE ticker = {sql_string(job.ticker)}
+{mutation_settings(args)}
+"""
+
+
+def insert_ticker_index_sql(args: argparse.Namespace, index_job: IndexJob, ticker_job: TickerJob) -> str:
+    range_predicate = (
+        f"event_date BETWEEN toDate({sql_string(index_job.start_date)}) "
+        f"AND toDate({sql_string(index_job.end_date)})"
+    )
+    min_context_ordinal = int(args.events_per_chunk) - 1
+    return f"""
+INSERT INTO {quote_ident(args.database)}.{quote_ident(index_job.table)}
+(
+    ticker,
+    split_start_date,
+    split_end_date,
+    context_events,
+    split_event_count,
+    valid_origin_count,
+    first_ordinal,
+    last_ordinal,
+    min_valid_ordinal,
+    max_valid_ordinal,
+    first_sip_timestamp_us,
+    last_sip_timestamp_us
+)
 SELECT
     ticker,
-    countIf({valid}) AS event_count,
-    minIf(sip_timestamp_us, {valid}) AS first_sip_timestamp_us,
-    maxIf(sip_timestamp_us, {valid}) AS last_sip_timestamp_us,
-    minIf(ordinal, {valid}) AS min_valid_ordinal,
-    maxIf(ordinal, {valid}) AS max_valid_ordinal
-FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
-GROUP BY ticker
-HAVING event_count > 0
+    toDate({sql_string(index_job.start_date)}) AS split_start_date,
+    toDate({sql_string(index_job.end_date)}) AS split_end_date,
+    toUInt32({int(args.events_per_chunk)}) AS context_events,
+    split_event_count,
+    if(last_ordinal >= greatest(first_ordinal, toUInt64({min_context_ordinal})),
+       last_ordinal - greatest(first_ordinal, toUInt64({min_context_ordinal})) + 1,
+       toUInt64(0)) AS valid_origin_count,
+    first_ordinal,
+    last_ordinal,
+    greatest(first_ordinal, toUInt64({min_context_ordinal})) AS min_valid_ordinal,
+    last_ordinal AS max_valid_ordinal,
+    first_sip_timestamp_us,
+    last_sip_timestamp_us
+FROM
+(
+    SELECT
+        ticker,
+        countIf({range_predicate}) AS split_event_count,
+        minIf(ordinal, {range_predicate}) AS first_ordinal,
+        maxIf(ordinal, {range_predicate}) AS last_ordinal,
+        minIf(sip_timestamp_us, {range_predicate}) AS first_sip_timestamp_us,
+        maxIf(sip_timestamp_us, {range_predicate}) AS last_sip_timestamp_us
+    FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
+    WHERE ticker = {sql_string(ticker_job.ticker)}
+    GROUP BY ticker
+)
+WHERE split_event_count > 0
+  AND last_ordinal >= greatest(first_ordinal, toUInt64({min_context_ordinal}))
 {query_settings(args)}
 """
+
+
+def split_index_jobs(args: argparse.Namespace) -> list[IndexJob]:
+    return [
+        IndexJob(args.train_index_table, args.train_start_date, args.train_end_date),
+        IndexJob(args.validation_index_table, args.validation_start_date, args.validation_end_date),
+    ]
+
+
+def delete_ticker_indexes(client: ClickHouseHttpClient, args: argparse.Namespace, job: TickerJob) -> None:
+    for index_job in split_index_jobs(args):
+        run_profiled(client, f"delete_{index_job.table}_{job.ticker}", delete_ticker_index_sql(args, index_job.table, job))
+
+
+def insert_ticker_indexes(client: ClickHouseHttpClient, args: argparse.Namespace, job: TickerJob, report_path: Path) -> None:
+    if args.no_build_index:
+        return
+    for index_job in split_index_jobs(args):
+        profile = run_profiled(client, f"index_{index_job.table}_{job.ticker}", insert_ticker_index_sql(args, index_job, job))
+        append_jsonl(report_path, {"type": "ticker_index", "job": asdict(index_job), "ticker": job.ticker, "profile": asdict(profile)})
 
 
 def run_ticker(client: ClickHouseHttpClient, args: argparse.Namespace, job: TickerJob, run_id: str, report_path: Path) -> str:
@@ -491,17 +581,19 @@ def run_ticker(client: ClickHouseHttpClient, args: argparse.Namespace, job: Tick
         return "skipped"
     print("=" * 96, flush=True)
     print(f"TICKER START {job.ticker}", flush=True)
-    if status in {"started", "interrupted"} and args.retry_started and not args.force_ticker_delete:
+    if needs_force_delete_before_retry(status, args) and not args.force_ticker_delete:
         raise RuntimeError(
             f"ticker={job.ticker} latest_status={status}; rerun with --force-ticker-delete "
-            "when retrying an interrupted/started ticker so duplicate rows cannot be created."
+            "when retrying a failed/interrupted/started ticker so duplicate rows cannot be created."
         )
     if status in {"failed", "started", "interrupted"} and args.force_ticker_delete:
         print(f"TICKER DELETE ticker={job.ticker} before retry", flush=True)
         run_profiled(client, f"delete_events_ticker_{job.ticker}", delete_ticker_sql(args, job))
+        delete_ticker_indexes(client, args, job)
     insert_manifest(client, args, job, status="started", run_id=run_id)
     try:
         profile = run_profiled(client, f"build_events_ticker_{job.ticker}", insert_ticker_sql(args, job))
+        insert_ticker_indexes(client, args, job, report_path)
         insert_manifest(client, args, job, status="ok", run_id=run_id, profile=profile)
         append_jsonl(report_path, {"type": "ticker", "job": asdict(job), "status": "ok", "profile": asdict(profile)})
         print_ticker_profile(job, profile)
@@ -520,30 +612,14 @@ def run_ticker(client: ClickHouseHttpClient, args: argparse.Namespace, job: Tick
         raise
 
 
-def build_indexes(client: ClickHouseHttpClient, args: argparse.Namespace, report_path: Path) -> None:
-    jobs = [
-        IndexJob(args.train_index_table, args.train_start_date, args.train_end_date),
-        IndexJob(args.validation_index_table, args.validation_start_date, args.validation_end_date),
-    ]
-    for job in jobs:
-        print("=" * 96, flush=True)
-        print(f"INDEX START table={job.table} range={job.start_date}->{job.end_date}", flush=True)
-        client.execute(create_index_table_sql(args, job.table))
-        client.execute(f"TRUNCATE TABLE {quote_ident(args.database)}.{quote_ident(job.table)}")
-        profile = run_profiled(client, f"build_event_index_{job.table}", index_insert_sql(args, job))
-        summary = summarize_index(client, args, job.table)
-        append_jsonl(report_path, {"type": "index", "job": asdict(job), "profile": asdict(profile), "summary": summary})
-        print(f"INDEX DONE table={job.table} summary={summary}", flush=True)
-
-
 def summarize_index(client: ClickHouseHttpClient, args: argparse.Namespace, table: str) -> dict[str, int]:
     row = client.query_tsv(
         f"""
 SELECT
     count(),
-    if(count() = 0, 0, sum(event_count)),
-    if(count() = 0, 0, min(event_count)),
-    if(count() = 0, 0, max(event_count))
+    if(count() = 0, 0, sum(valid_origin_count)),
+    if(count() = 0, 0, min(valid_origin_count)),
+    if(count() = 0, 0, max(valid_origin_count))
 FROM {quote_ident(args.database)}.{quote_ident(table)}
 """
     ).strip()
@@ -729,8 +805,8 @@ def main() -> None:
         print_sql_preview("create_manifest", create_manifest_table_sql(args))
         if jobs:
             print_sql_preview("insert_ticker", insert_ticker_sql(args, jobs[0]))
-        if not args.no_build_index:
-            print_sql_preview("insert_train_index", index_insert_sql(args, IndexJob(args.train_index_table, args.train_start_date, args.train_end_date)))
+            if not args.no_build_index:
+                print_sql_preview("insert_train_index_for_ticker", insert_ticker_index_sql(args, IndexJob(args.train_index_table, args.train_start_date, args.train_end_date), jobs[0]))
         return
 
     assert client is not None
@@ -779,9 +855,6 @@ def main() -> None:
                     started_at=started,
                     current_ticker=job.ticker,
                 )
-
-        if not args.no_build_index:
-            build_indexes(client, args, report_path)
 
         if args.optimize_final:
             run_profiled(client, f"optimize_{args.events_table}_final", f"OPTIMIZE TABLE {quote_ident(args.database)}.{quote_ident(args.events_table)} FINAL")
