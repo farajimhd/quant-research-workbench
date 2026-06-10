@@ -45,12 +45,16 @@ Example override:
 ```json
 {
   "version": "benzinga-url-domain-policy-v1-custom",
-  "domain_actions": {
-    "example.com": "metadata_only",
+  "exact_domain_actions": {
+    "subdomain.example.com": "metadata_only"
+  },
+  "registered_domain_actions": {
     "short.example": "resolve_redirect"
   }
 }
 ```
+
+`exact_domain_actions` applies only to the exact host. `registered_domain_actions` applies to the registered domain and its subdomains. The older `domain_actions` key is still accepted as a compatibility override.
 
 Valid actions:
 

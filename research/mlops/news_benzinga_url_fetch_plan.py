@@ -26,7 +26,15 @@ ACTIONABLE_ACTIONS = {"fetch_html", "fetch_pdf", "resolve_redirect", "sec_handle
 
 DEFAULT_DOMAIN_POLICY = {
     "version": "benzinga-url-domain-policy-v1",
-    "domain_actions": {
+    "exact_domain_actions": {
+        "docs.google.com": "metadata_only",
+        "google.com": "resolve_redirect",
+        "plus.google.com": "resolve_redirect",
+        "register.zacks.com": "ignore",
+        "video.google.com": "resolve_redirect",
+        "www.google.com": "resolve_redirect",
+    },
+    "registered_domain_actions": {
         "bit.ly": "resolve_redirect",
         "bitly.com": "resolve_redirect",
         "buff.ly": "resolve_redirect",
@@ -34,7 +42,6 @@ DEFAULT_DOMAIN_POLICY = {
         "dlvr.it": "resolve_redirect",
         "feedburner.com": "resolve_redirect",
         "goo.gl": "resolve_redirect",
-        "google.com": "resolve_redirect",
         "ift.tt": "resolve_redirect",
         "lnkd.in": "resolve_redirect",
         "ow.ly": "resolve_redirect",
@@ -79,6 +86,7 @@ DEFAULT_DOMAIN_POLICY = {
         "x.com": "metadata_only",
         "youtu.be": "metadata_only",
         "youtube.com": "metadata_only",
+        "zoom.us": "metadata_only",
         "benzinga.help": "ignore",
         "benzinga.com": "ignore",
         "benzingapro.com": "ignore",
@@ -88,8 +96,8 @@ DEFAULT_DOMAIN_POLICY = {
         "googlesyndication.com": "ignore",
         "googletagmanager.com": "ignore",
         "grsm.io": "ignore",
-        "register.zacks.com": "ignore",
     },
+    "domain_actions": {},
 }
 
 
@@ -214,6 +222,8 @@ def load_policy(policy_json: str) -> dict[str, Any]:
         return policy
     override_path = Path(policy_json)
     override = json.loads(override_path.read_text(encoding="utf-8"))
+    policy["exact_domain_actions"].update(override.get("exact_domain_actions") or {})
+    policy["registered_domain_actions"].update(override.get("registered_domain_actions") or {})
     policy["domain_actions"].update(override.get("domain_actions") or {})
     policy["version"] = str(override.get("version") or policy["version"])
     return policy
@@ -310,8 +320,15 @@ def apply_domain_policy(row: dict[str, Any], policy: dict[str, Any]) -> dict[str
     original_action = str(row.get("candidate_action") or "")
     domain = str(row.get("domain") or "")
     registered_domain = str(row.get("registered_domain") or domain)
-    domain_actions = policy.get("domain_actions") or {}
-    domain_action = domain_actions.get(domain) or domain_actions.get(registered_domain)
+    exact_domain_actions = policy.get("exact_domain_actions") or {}
+    registered_domain_actions = policy.get("registered_domain_actions") or {}
+    legacy_domain_actions = policy.get("domain_actions") or {}
+    domain_action = (
+        exact_domain_actions.get(domain)
+        or legacy_domain_actions.get(domain)
+        or registered_domain_actions.get(registered_domain)
+        or legacy_domain_actions.get(registered_domain)
+    )
 
     if original_action == "ignore":
         return {"final_action": "ignore", "policy_reason": "inventory_ignore"}
