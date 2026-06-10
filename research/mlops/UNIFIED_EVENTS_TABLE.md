@@ -199,7 +199,6 @@ The schema is:
     valid_origin_count UInt64,
     first_ordinal UInt64,
     last_ordinal UInt64,
-    min_valid_ordinal UInt64,
     max_valid_ordinal UInt64,
     first_sip_timestamp_us UInt64,
     last_sip_timestamp_us UInt64,
@@ -208,20 +207,25 @@ The schema is:
 ```
 
 `first_ordinal` and `last_ordinal` are the first and last event ordinals inside
-that split's timestamp/date range for the ticker. `min_valid_ordinal` is:
+that split's timestamp/date range for the ticker. Every event in the split can
+be used as an origin ordinal:
 
 ```text
-max(first_ordinal, context_events - 1)
+first_ordinal <= origin_ordinal <= max_valid_ordinal
 ```
 
-`max_valid_ordinal` is `last_ordinal`. The loader can sample origin ordinals
-directly from:
+`max_valid_ordinal` is `last_ordinal`. `valid_origin_count` is equal to
+`split_event_count`.
+
+For each sampled origin, the loader should request:
 
 ```text
-min_valid_ordinal <= origin_ordinal <= max_valid_ordinal
+[origin_ordinal - context_events + 1, origin_ordinal]
 ```
 
-`valid_origin_count` is the number of valid origin ordinals in that range.
+If fewer than `context_events` rows are returned because the origin is near the
+beginning of a ticker's event stream, the loader left-pads the missing events
+with the all-zero/empty event representation.
 
 ## Price Encoding
 

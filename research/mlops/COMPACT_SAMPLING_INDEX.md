@@ -17,7 +17,6 @@ ticker
 event_count
 first_sip_timestamp_us
 last_sip_timestamp_us
-min_valid_ordinal
 max_valid_ordinal
 ```
 
@@ -39,13 +38,15 @@ The training data provider should:
 2. Sample one `origin_ordinal` uniformly between:
 
    ```text
-   min_valid_ordinal <= origin_ordinal <= max_valid_ordinal
+   0 <= origin_ordinal <= max_valid_ordinal
    ```
 
 3. Resolve that ordinal to an origin event in the ticker-local unified
    quote/trade stream.
 4. Query the last `events_per_chunk` events ending at that origin, inclusive.
-5. Encode those events into the fixed v4 byte representation:
+5. If fewer than `events_per_chunk` events exist before the origin, left-pad the
+   missing events with the all-zero/empty event representation.
+6. Encode those events into the fixed v4 byte representation:
 
    ```text
    header_uint8: [B, 14]

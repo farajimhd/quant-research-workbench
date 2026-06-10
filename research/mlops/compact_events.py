@@ -808,13 +808,13 @@ def encode_events_chunk_from_frame(
     references: ReferenceMaps,
     strict_lossless: bool = True,
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    if frame.height < events_per_chunk:
+    if frame.height == 0:
         return None
     timestamps = frame["sip_timestamp"].to_numpy()
     origin_idx = int(np.searchsorted(timestamps, origin_timestamp_ns, side="right") - 1)
-    start_idx = origin_idx - events_per_chunk + 1
-    if start_idx < 0:
+    if origin_idx < 0:
         return None
+    start_idx = max(0, origin_idx - events_per_chunk + 1)
     quote_mask_all = frame["event_type"].to_numpy() == QUOTE_EVENT_TYPE
     quote_candidates = np.flatnonzero(quote_mask_all[: origin_idx + 1])
     if quote_candidates.size == 0:
@@ -830,10 +830,12 @@ def encode_events_chunk_from_frame(
     if ask_anchor_ticks >= 2**20 or spread_anchor_ticks >= 2**16:
         return None
 
-    window = frame.slice(start_idx, events_per_chunk)
+    window_height = min(events_per_chunk, origin_idx - start_idx + 1)
+    window = frame.slice(start_idx, window_height)
+    valid_offset = events_per_chunk - window.height
     event_types = window["event_type"].to_numpy().astype(np.uint8)
     event_ts = window["sip_timestamp"].to_numpy().astype(np.int64)
-    event_deltas_us = np.zeros((events_per_chunk,), dtype=np.int64)
+    event_deltas_us = np.zeros((window.height,), dtype=np.int64)
     event_deltas_us[1:] = np.maximum(0, (event_ts[1:] - event_ts[:-1]) // NANOSECONDS_PER_MICROSECOND)
 
     header = np.zeros((HEADER_BYTES,), dtype=np.uint8)
@@ -856,14 +858,14 @@ def encode_events_chunk_from_frame(
     header[13] = 0x01 | (0x02 if trade_count > 0 else 0) | (0x04 if tick_size == 0.01 else 0)
 
     events = np.zeros((events_per_chunk, EVENT_BYTES), dtype=np.uint8)
-    for row_idx in range(events_per_chunk):
+    for row_idx in range(window.height):
         event = window.row(row_idx, named=True)
         encoded = encode_event_row(event, event_delta_us=int(event_deltas_us[row_idx]), ask_anchor_ticks=ask_anchor_ticks, spread_anchor_ticks=spread_anchor_ticks, tick_size=tick_size, references=references)
         if encoded is None:
             if strict_lossless:
                 return None
             continue
-        events[row_idx] = encoded
+        events[valid_offset + row_idx] = encoded
     return header, events
 
 

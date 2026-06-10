@@ -62,7 +62,6 @@ class IndexRow:
     event_count: int
     first_sip_timestamp_us: int
     last_sip_timestamp_us: int
-    min_valid_ordinal: int
     max_valid_ordinal: int
 
 
@@ -212,17 +211,16 @@ SELECT
     event_count,
     first_sip_timestamp_us,
     last_sip_timestamp_us,
-    min_valid_ordinal,
     max_valid_ordinal
 FROM {quote_ident(args.database)}.{quote_ident(args.index_table)}
-WHERE event_count >= {int(args.events_per_chunk)}
+WHERE event_count > 0
 ORDER BY ticker
 {limit}
 """
     rows: list[IndexRow] = []
     for line in client.query_tsv(query).splitlines():
         parts = line.split("\t")
-        if len(parts) < 6:
+        if len(parts) < 5:
             continue
         rows.append(
             IndexRow(
@@ -230,8 +228,7 @@ ORDER BY ticker
                 event_count=int(parts[1] or 0),
                 first_sip_timestamp_us=int(parts[2] or 0),
                 last_sip_timestamp_us=int(parts[3] or 0),
-                min_valid_ordinal=int(parts[4] or 0),
-                max_valid_ordinal=int(parts[5] or 0),
+                max_valid_ordinal=int(parts[4] or 0),
             )
         )
     if not rows:
@@ -549,13 +546,11 @@ def encode_sample_rows(
     references: ReferenceMaps,
 ) -> SampleResult:
     merged_rows = quote_rows + trade_rows
-    if len(merged_rows) < args.events_per_chunk:
-        return rejected_sample(sample, quote_rows, trade_rows, query_seconds, "not_enough_rows")
+    if not merged_rows:
+        return rejected_sample(sample, quote_rows, trade_rows, query_seconds, "no_rows")
     frame = sample_to_frame(merged_rows)
     if frame.height > args.events_per_chunk:
         frame = frame.tail(args.events_per_chunk)
-    if frame.height < args.events_per_chunk:
-        return rejected_sample(sample, quote_rows, trade_rows, query_seconds, "not_enough_merged_rows")
     encode_started = time.perf_counter()
     try:
         encoded = encode_events_chunk_from_frame(

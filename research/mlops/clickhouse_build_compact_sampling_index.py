@@ -42,6 +42,7 @@ DEFAULT_TRAIN_END = "2025-12-31"
 DEFAULT_VALIDATION_START = "2026-01-01"
 DEFAULT_VALIDATION_END = "2099-12-31"
 DEFAULT_EVENTS_PER_CHUNK = 128
+DEFAULT_MIN_EVENTS = 1
 DEFAULT_CLEAN_MODE = "structural"
 
 
@@ -82,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-start-date", default=DEFAULT_VALIDATION_START)
     parser.add_argument("--validation-end-date", default=DEFAULT_VALIDATION_END)
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULT_EVENTS_PER_CHUNK)
-    parser.add_argument("--min-events", type=int, default=DEFAULT_EVENTS_PER_CHUNK)
+    parser.add_argument("--min-events", type=int, default=DEFAULT_MIN_EVENTS)
     parser.add_argument("--clean-mode", choices=("structural", "issue_flags_zero"), default=DEFAULT_CLEAN_MODE)
     parser.add_argument("--storage-policy", default=default_storage_policy())
     parser.add_argument("--max-memory-usage", default="400G")
@@ -117,7 +118,6 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     event_count UInt64,
     first_sip_timestamp_us UInt64,
     last_sip_timestamp_us UInt64,
-    min_valid_ordinal UInt64,
     max_valid_ordinal UInt64
 )
 ENGINE = MergeTree
@@ -150,8 +150,7 @@ def event_union_sql(args: argparse.Namespace, job: IndexJob) -> str:
 
 
 def insert_index_sql(args: argparse.Namespace, job: IndexJob) -> str:
-    min_events = max(int(args.min_events), int(args.events_per_chunk))
-    min_valid = int(args.events_per_chunk) - 1
+    min_events = max(int(args.min_events), DEFAULT_MIN_EVENTS)
     return f"""
 INSERT INTO {quote_ident(args.database)}.{quote_ident(job.table)}
 SELECT
@@ -159,7 +158,6 @@ SELECT
     event_count,
     first_sip_timestamp_us,
     last_sip_timestamp_us,
-    toUInt64({min_valid}) AS min_valid_ordinal,
     event_count - 1 AS max_valid_ordinal
 FROM
 (

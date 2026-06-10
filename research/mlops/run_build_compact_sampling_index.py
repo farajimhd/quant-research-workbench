@@ -17,7 +17,7 @@ DEFAULTS = {
     "validation_start_date": "2026-01-01",
     "validation_end_date": "2099-12-31",
     "events_per_chunk": 128,
-    "min_events": 128,
+    "min_events": 1,
     "clean_mode": "structural",
     "max_threads": 32,
     "max_memory_usage": "400G",

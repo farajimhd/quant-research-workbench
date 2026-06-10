@@ -198,7 +198,6 @@ CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(table)}
     valid_origin_count UInt64,
     first_ordinal UInt64,
     last_ordinal UInt64,
-    min_valid_ordinal UInt64,
     max_valid_ordinal UInt64,
     first_sip_timestamp_us UInt64,
     last_sip_timestamp_us UInt64,
@@ -503,7 +502,6 @@ def insert_ticker_index_sql(args: argparse.Namespace, index_job: IndexJob, ticke
         f"event_date BETWEEN toDate({sql_string(index_job.start_date)}) "
         f"AND toDate({sql_string(index_job.end_date)})"
     )
-    min_context_ordinal = int(args.events_per_chunk) - 1
     return f"""
 INSERT INTO {quote_ident(args.database)}.{quote_ident(index_job.table)}
 (
@@ -515,7 +513,6 @@ INSERT INTO {quote_ident(args.database)}.{quote_ident(index_job.table)}
     valid_origin_count,
     first_ordinal,
     last_ordinal,
-    min_valid_ordinal,
     max_valid_ordinal,
     first_sip_timestamp_us,
     last_sip_timestamp_us
@@ -526,12 +523,9 @@ SELECT
     toDate({sql_string(index_job.end_date)}) AS split_end_date,
     toUInt32({int(args.events_per_chunk)}) AS context_events,
     split_event_count,
-    if(last_ordinal >= greatest(first_ordinal, toUInt64({min_context_ordinal})),
-       last_ordinal - greatest(first_ordinal, toUInt64({min_context_ordinal})) + 1,
-       toUInt64(0)) AS valid_origin_count,
+    split_event_count AS valid_origin_count,
     first_ordinal,
     last_ordinal,
-    greatest(first_ordinal, toUInt64({min_context_ordinal})) AS min_valid_ordinal,
     last_ordinal AS max_valid_ordinal,
     first_sip_timestamp_us,
     last_sip_timestamp_us
@@ -549,7 +543,6 @@ FROM
     GROUP BY ticker
 )
 WHERE split_event_count > 0
-  AND last_ordinal >= greatest(first_ordinal, toUInt64({min_context_ordinal}))
 {query_settings(args)}
 """
 
