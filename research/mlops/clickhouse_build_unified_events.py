@@ -725,8 +725,10 @@ ORDER BY e.ticker, ordinal
 
 
 def insert_day_continuity_sql(args: argparse.Namespace, job: DayJob) -> str:
+    db = quote_ident(args.database)
+    continuity_table = quote_ident(args.continuity_table)
     return f"""
-INSERT INTO {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+INSERT INTO {db}.{continuity_table}
 (
     ticker,
     build_step,
@@ -737,16 +739,26 @@ INSERT INTO {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
     last_sip_timestamp_us
 )
 SELECT
-    ticker,
+    e.ticker,
     toUInt32({int(job.build_step)}) AS build_step,
     toDate({sql_string(job.source_date)}) AS source_date,
     count() AS event_count,
-    max(ordinal) + 1 AS next_ordinal,
-    max(ordinal) AS last_ordinal,
-    max(sip_timestamp_us) AS last_sip_timestamp_us
-FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
-WHERE event_date = toDate({sql_string(job.source_date)})
-GROUP BY ticker
+    coalesce(c.ordinal_offset, toUInt64(0)) + count() AS next_ordinal,
+    coalesce(c.ordinal_offset, toUInt64(0)) + count() - 1 AS last_ordinal,
+    max(e.sip_timestamp_us) AS last_sip_timestamp_us
+FROM
+(
+{event_union_day_sql(args, job)}
+) AS e
+LEFT JOIN
+(
+    SELECT
+        ticker,
+        argMax(next_ordinal, build_step) AS ordinal_offset
+    FROM {db}.{continuity_table}
+    GROUP BY ticker
+) AS c ON c.ticker = e.ticker
+GROUP BY e.ticker, c.ordinal_offset
 {query_settings(args)}
 """
 

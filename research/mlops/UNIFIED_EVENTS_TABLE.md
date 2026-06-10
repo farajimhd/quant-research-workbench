@@ -69,7 +69,12 @@ assigns that day's ticker-local row number, adds the prior `next_ordinal` from
 `events_build_manifest` with `ticker='__ALL__'`.
 
 After a day is written, the builder appends one continuity row per ticker that
-had events that day. The continuity table is the carry-forward state:
+had events that day. This continuity step uses the same clean daily
+quote/trade union plus the prior continuity offset. It must not scan the growing
+`events` table by `event_date`, because `events` is ordered by `(ticker,
+ordinal)` and that date scan becomes slower as the table grows.
+
+The continuity table is the carry-forward state:
 
 ```text
 market_sip_compact.events_ordinal_continuity
