@@ -258,7 +258,7 @@ def validate_operational_state(client: ClickHouseHttpClient, args: argparse.Name
     rows.extend(run_status_checks(client, args.target_database))
     rows.extend(
         [
-            count_check(client, "sec_missing_accepted_at", "sec_filing_v2", f"SELECT countIf(isNull(accepted_at_utc)) FROM {db}.sec_filing_v2", expected_zero=False, severity="warning", message="Expected pending gap: source SEC filing migration did not include exact acceptance timestamps."),
+            count_check(client, "sec_missing_accepted_at", "sec_filing_v2", f"SELECT countIf(isNull(accepted_at_utc)) FROM {db}.sec_filing_v2 FINAL", expected_zero=True, severity="warning", message="SEC accepted timestamp backfill should populate every migrated filing row."),
             count_check(client, "sec_filing_documents", "sec_filing_document_v1", f"SELECT count() FROM {db}.sec_filing_document_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="Document extraction has not been populated yet."),
             count_check(client, "sec_filing_text", "sec_filing_text_v1", f"SELECT count() FROM {db}.sec_filing_text_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="Filing text extraction has not been populated yet."),
             count_check(client, "sec_market_bridge", "id_sec_market_bridge_v1", f"SELECT count() FROM {db}.id_sec_market_bridge_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="SEC CIK-to-market bridge has not been built yet."),
@@ -302,7 +302,11 @@ def run_status_checks(client: ClickHouseHttpClient, database: str) -> list[dict[
     rows = query_json_each_row(
         client,
         f"""
-        SELECT job_name, argMax(status, inserted_at) AS status, max(inserted_at) AS last_inserted_at, sum(rows_failed) AS rows_failed
+        SELECT
+            job_name,
+            argMax(status, inserted_at) AS status,
+            max(inserted_at) AS last_inserted_at,
+            argMax(rows_failed, inserted_at) AS rows_failed
         FROM {quote_ident(database)}.source_run_v1
         WHERE startsWith(job_name, 'step_')
         GROUP BY job_name
