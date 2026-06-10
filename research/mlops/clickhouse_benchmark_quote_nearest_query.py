@@ -63,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--benchmark-batches", type=int, default=DEFAULT_BENCHMARK_BATCHES)
     parser.add_argument("--events-per-sample", type=int, default=DEFAULT_EVENTS_PER_CHUNK)
+    parser.add_argument("--lookback-us", type=int, default=0)
     parser.add_argument("--workers", type=int, default=32)
     parser.add_argument("--max-sample-attempt-multiplier", type=int, default=5)
     parser.add_argument("--seed", type=int, default=17)
@@ -74,6 +75,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def nearest_quote_query(args: argparse.Namespace, sample: OriginSample) -> str:
+    lower_bound_sql = ""
+    if int(args.lookback_us) > 0:
+        lower_bound = max(0, int(sample.origin_timestamp_us) - int(args.lookback_us))
+        lower_bound_sql = f"  AND sip_timestamp_us >= {lower_bound}\n"
     return f"""
 SELECT
     ticker,
@@ -88,12 +93,12 @@ SELECT
     quote_flags,
     conditions
 FROM {quote_ident(args.database)}.{quote_ident(args.quote_table)}
-WHERE ticker = {sql_string(sample.ticker)}
+PREWHERE ticker = {sql_string(sample.ticker)}
   AND sip_timestamp_us <= {int(sample.origin_timestamp_us)}
-  AND ticker != ''
-  AND sip_timestamp_us > 0
+{lower_bound_sql.rstrip()}
+WHERE sip_timestamp_us > 0
   AND sequence_number > 0
-ORDER BY ticker DESC, sip_timestamp_us DESC, sequence_number DESC
+ORDER BY sip_timestamp_us DESC, sequence_number DESC
 LIMIT {int(args.events_per_sample)}
 {query_settings(args)}
 """
@@ -204,6 +209,7 @@ def build_query_batch(
         "data/query_seconds_p95": float(np.quantile(np.asarray(query_seconds), 0.95)) if query_seconds else 0.0,
         "data/workers": float(workers),
         "data/events_per_sample": float(args.events_per_sample),
+        "data/lookback_us": float(args.lookback_us),
     }
     return {
         "profile": profile,
@@ -254,7 +260,7 @@ def main() -> None:
     print("Quote-only ClickHouse nearest-N query benchmark", flush=True)
     print(f"database={args.database} quote_table={args.quote_table}", flush=True)
     print(f"index_table={args.index_table} batch_size={args.batch_size} batches={args.benchmark_batches}", flush=True)
-    print(f"events_per_sample={args.events_per_sample} workers={args.workers}", flush=True)
+    print(f"events_per_sample={args.events_per_sample} lookback_us={args.lookback_us} workers={args.workers}", flush=True)
     print(f"settings={query_settings(args).strip() or '<none>'}", flush=True)
     print(f"report={report_path}", flush=True)
     print(f"secret_status={secret_status(env_status_keys())}", flush=True)

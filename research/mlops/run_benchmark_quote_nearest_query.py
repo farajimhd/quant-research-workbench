@@ -13,6 +13,7 @@ DEFAULTS = {
     "batch_size": 256,
     "benchmark_batches": 10,
     "events_per_sample": 128,
+    "lookback_us": 0,
     "workers": 32,
     "max_sample_attempt_multiplier": 5,
     "seed": 17,
@@ -29,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--benchmark-batches", type=int, default=DEFAULTS["benchmark_batches"])
     parser.add_argument("--events-per-sample", type=int, default=DEFAULTS["events_per_sample"])
+    parser.add_argument("--lookback-us", type=int, default=DEFAULTS["lookback_us"])
     parser.add_argument("--workers", type=int, default=DEFAULTS["workers"])
     parser.add_argument("--max-sample-attempt-multiplier", type=int, default=DEFAULTS["max_sample_attempt_multiplier"])
     parser.add_argument("--seed", type=int, default=DEFAULTS["seed"])
@@ -56,6 +58,8 @@ def main() -> None:
         str(args.benchmark_batches),
         "--events-per-sample",
         str(args.events_per_sample),
+        "--lookback-us",
+        str(args.lookback_us),
         "--workers",
         str(args.workers),
         "--max-sample-attempt-multiplier",
