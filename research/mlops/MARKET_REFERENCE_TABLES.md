@@ -70,6 +70,19 @@ ref_trade_conditions: dense_id 0 = unknown, dense_id 1..57 = trade modifiers
 The unified event builder should left join these tables and default missing
 matches to dense id `0`.
 
+For joins, first collapse each table to one row per `modifier_int`:
+
+```sql
+SELECT modifier_int, min(dense_id) AS dense_id
+FROM market_sip_compact.ref_quote_conditions
+GROUP BY modifier_int
+```
+
+This is required for quote conditions because the glossary contains repeated
+modifier codes across SIP mappings, while the raw quote flatfile only stores the
+modifier code. Trade condition modifiers are currently unique, but using the
+same unique-map pattern is still safe and consistent.
+
 The final unified event table stores condition IDs as one packed `UInt32`, not as
 separate condition columns. The packing depends on event type:
 

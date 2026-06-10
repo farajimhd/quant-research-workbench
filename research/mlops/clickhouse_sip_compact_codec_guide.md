@@ -218,7 +218,10 @@ market_sip_compact.ref_quote_conditions
 market_sip_compact.ref_trade_conditions
 ```
 
-The event row's `event_type` determines how to decode `conditions_packed`.
+The event row's `event_type` determines how to decode `conditions_packed`. The
+unified event builder joins through a unique `modifier_int -> dense_id` map using
+`min(dense_id)` per modifier. This avoids row multiplication from repeated quote
+glossary modifier codes.
 
 ## Issue Flags
 

@@ -30,6 +30,43 @@ This avoids open-ended timestamp scans such as:
 sip_timestamp_us <= <origin>
 ```
 
+## Build Script
+
+Build the final table with:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_build_unified_events.py --rebuild
+```
+
+The launcher calls:
+
+```text
+research/mlops/clickhouse_build_unified_events.py
+```
+
+Default behavior:
+
+```text
+source range: 2019-01-01 -> 2099-12-31
+train index: 2019-01-01 -> 2025-12-31
+validation index: 2026-01-01 -> 2099-12-31
+storage policy: CLICKHOUSE_LIVE_STORAGE_POLICY
+event buckets: 256
+clean mode: issue_flags_zero
+```
+
+Events are built bucket-by-bucket using:
+
+```text
+cityHash64(ticker) % build_buckets
+```
+
+This keeps ordinal assignment correct per ticker while making the build
+restartable through `events_build_manifest`. Buckets with latest status `ok` are
+skipped on rerun. Use `--retry-failed` or `--retry-started` to revisit failed or
+interrupted buckets. Use `--force-bucket-delete` only when you intentionally want
+to delete a previously written bucket before retrying it.
+
 ## Storage
 
 Use the ClickHouse storage policy from:
@@ -215,6 +252,18 @@ Dense ID `0` means absent or unknown in every slot. The model/data provider must
 interpret `conditions_packed` by `event_type`: quote rows are 4x8-bit fields;
 trade rows are 5x6-bit fields. This lets trades preserve the fifth condition
 without widening the row and keeps quote conditions aligned to byte boundaries.
+
+When joining condition references, use a unique modifier map:
+
+```sql
+SELECT modifier_int, min(dense_id) AS dense_id
+FROM market_sip_compact.ref_quote_conditions
+GROUP BY modifier_int
+```
+
+The quote glossary has repeated modifier codes across SIP mappings, while the
+raw flatfile condition field only contains the modifier code. The builder uses
+the lowest dense ID per modifier as the deterministic representation.
 
 ## Field Mapping
 
