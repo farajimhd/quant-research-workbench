@@ -73,6 +73,14 @@ STATUS_PRIORITY_SQL = (
     "status = 'started', 70, status = 'discovered', 60, 0)"
 )
 
+
+def status_priority_sql(status_column: str = "status") -> str:
+    return (
+        f"multiIf({status_column} = 'should_delete', 100, {status_column} = 'failed', 90, "
+        f"{status_column} = 'ok', 80, {status_column} = 'started', 70, "
+        f"{status_column} = 'discovered', 60, 0)"
+    )
+
 REQUIRED_QUOTE_COLUMN_TYPES = {
     "sip_timestamp_us": "UInt64",
     "participant_delta_us": "Int32",
@@ -382,15 +390,20 @@ def latest_manifest_statuses(
     target_tables = sorted({job.table for job in jobs})
     start_date = min(job.date for job in jobs)
     end_date = max(job.date for job in jobs)
+    priority_sql = status_priority_sql("manifest_status")
     query = (
         "SELECT "
         "kind, toString(source_date) AS source_date_text, source_file, target_table, "
-        f"argMax(status, tuple(updated_at, {STATUS_PRIORITY_SQL})) AS status, "
-        f"argMax(audit_status, tuple(updated_at, {STATUS_PRIORITY_SQL})) AS audit_status "
+        f"argMax(manifest_status, tuple(updated_at, {priority_sql})) AS status, "
+        f"argMax(audit_status, tuple(updated_at, {priority_sql})) AS audit_status "
+        "FROM ("
+        "SELECT kind, source_date, source_file, target_table, updated_at, "
+        "status AS manifest_status, audit_status "
         f"FROM {quote_ident(database)}.{quote_ident(manifest_table)} "
         f"WHERE source_date BETWEEN toDate({sql_string(start_date)}) AND toDate({sql_string(end_date)}) "
         f"AND kind IN ({', '.join(sql_string(kind) for kind in kinds)}) "
         f"AND target_table IN ({', '.join(sql_string(table) for table in target_tables)}) "
+        ") "
         "GROUP BY kind, source_date, source_file, target_table"
     )
     try:
