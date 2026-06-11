@@ -31,6 +31,7 @@ from research.mlops.clickhouse_ingest_sip_flatfiles import (  # noqa: E402
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from research.mlops.news_benzinga_build_normalized_rows import (  # noqa: E402
+    NEWS_DATASET_SPECS,
     NEWS_TABLE_COLUMNS,
     NEWS_TABLE_STRUCTURE,
 )
@@ -39,7 +40,7 @@ from research.mlops.news_benzinga_clickhouse import create_news_database_and_tab
 
 DEFAULT_MANIFEST_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_normalized_rows")
 DEFAULT_DATABASE = "q_live"
-DEFAULT_NEWS_TABLE = "benzinga_news_normalized_v1"
+DEFAULT_NEWS_TABLE = "benzinga_news_event_v1"
 DEFAULT_PART_MANIFEST_TABLE = "benzinga_news_file_ingest_manifest_v1"
 DEFAULT_PARTS_ROOT_WIN = Path("D:/market-data")
 DEFAULT_PARTS_ROOT_CH = DEFAULT_CLICKHOUSE_FILE_ROOT
@@ -47,16 +48,21 @@ DEFAULT_PARTS_ROOT_CH = DEFAULT_CLICKHOUSE_FILE_ROOT
 
 @dataclass(frozen=True, slots=True)
 class PartFile:
+    dataset_name: str
+    target_table: str
     part_index: int
     windows_path: Path
     clickhouse_path: str
     expected_rows: int
     expected_bytes: int
     format: str
+    columns: list[str]
+    structure: str
 
 
 @dataclass(frozen=True, slots=True)
 class InsertProfile:
+    dataset_name: str
     part_index: int
     path: str
     status: str
@@ -176,6 +182,16 @@ def validate_manifest(manifest: dict[str, Any], manifest_path: Path) -> None:
         raise SystemExit(f"manifest is interrupted and should not be loaded: {manifest_path}")
     if manifest.get("clickhouse_format") != "JSONEachRow":
         raise SystemExit("manifest clickhouse_format must be JSONEachRow")
+    datasets = manifest.get("datasets")
+    if isinstance(datasets, dict) and datasets:
+        for name, dataset in datasets.items():
+            expected = NEWS_DATASET_SPECS.get(str(name), {})
+            columns = list(dataset.get("columns") or [])
+            if expected and columns != list(expected.get("columns") or []):
+                raise SystemExit(f"manifest columns do not match current Benzinga news table contract for dataset={name}")
+            if dataset.get("part_files") is None:
+                raise SystemExit(f"manifest dataset contains no part_files key: {name}")
+        return
     columns = list(manifest.get("clickhouse_columns") or [])
     if columns != NEWS_TABLE_COLUMNS:
         raise SystemExit("manifest columns do not match current Benzinga news table contract")
@@ -188,7 +204,22 @@ def load_part_files(args: argparse.Namespace, manifest: dict[str, Any]) -> list[
     parts: list[PartFile] = []
     root_win = Path(args.parts_root_win)
     root_ch = str(args.parts_root_ch)
-    for item in manifest.get("normalized_part_files") or []:
+    datasets = manifest.get("datasets")
+    if isinstance(datasets, dict) and datasets:
+        dataset_items = []
+        for name, dataset in datasets.items():
+            expected = NEWS_DATASET_SPECS.get(str(name), {})
+            table = str(dataset.get("table") or expected.get("table") or args.table)
+            columns = list(dataset.get("columns") or expected.get("columns") or [])
+            structure = str(dataset.get("structure") or ", ".join(expected.get("structure") or []))
+            for item in dataset.get("part_files") or []:
+                if int(item.get("rows") or 0) <= 0:
+                    continue
+                dataset_items.append((str(name), table, columns, structure, item))
+    else:
+        dataset_items = [("event", args.table, NEWS_TABLE_COLUMNS, ", ".join(NEWS_TABLE_STRUCTURE), item) for item in manifest.get("normalized_part_files") or []]
+
+    for dataset_name, table, columns, structure, item in dataset_items:
         windows_path = Path(str(item.get("path") or ""))
         if not windows_path.exists():
             raise SystemExit(f"part file does not exist: {windows_path}")
@@ -198,12 +229,16 @@ def load_part_files(args: argparse.Namespace, manifest: dict[str, Any]) -> list[
             raise SystemExit(f"part file byte mismatch path={windows_path} expected={expected_bytes} actual={actual_bytes}")
         parts.append(
             PartFile(
+                dataset_name=dataset_name,
+                target_table=table,
                 part_index=int(item.get("part_index") or len(parts) + 1),
                 windows_path=windows_path,
                 clickhouse_path=windows_path_to_clickhouse_path(windows_path, root_win, root_ch),
                 expected_rows=int(item.get("rows") or 0),
                 expected_bytes=actual_bytes,
                 format=str(item.get("format") or "JSONEachRow"),
+                columns=columns,
+                structure=structure,
             )
         )
     return parts
@@ -213,19 +248,19 @@ def preflight_parts(client: ClickHouseHttpClient, args: argparse.Namespace, part
     print("preflight=start", flush=True)
     output: dict[int, int] = {}
     for index, part in enumerate(parts, start=1):
-        sql = f"SELECT count() FROM file({sql_string(part.clickhouse_path)}, 'JSONEachRow', {sql_string(structure_sql())})"
+        sql = f"SELECT count() FROM file({sql_string(part.clickhouse_path)}, 'JSONEachRow', {sql_string(part.structure)})"
         try:
             actual_rows = int((client.execute(sql + settings_sql(args)).strip() or "0").splitlines()[0])
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
                 "ClickHouse cannot read normalized part through file(). "
-                f"part={part.windows_path} clickhouse_path={part.clickhouse_path} exception={exc!r}. "
+                f"dataset={part.dataset_name} part={part.windows_path} clickhouse_path={part.clickhouse_path} exception={exc!r}. "
                 "Check --parts-root-win and --parts-root-ch mapping and ClickHouse user_files_path/bind mounts."
             ) from exc
         if part.expected_rows and actual_rows != part.expected_rows:
             raise RuntimeError(f"row count mismatch part={part.windows_path} expected={part.expected_rows} actual={actual_rows}")
         output[part.part_index] = actual_rows
-        print(f"preflight_part={index:,}/{len(parts):,} part_index={part.part_index} rows={actual_rows:,}", flush=True)
+        print(f"preflight_part={index:,}/{len(parts):,} dataset={part.dataset_name} part_index={part.part_index} rows={actual_rows:,}", flush=True)
     print("preflight=done", flush=True)
     return output
 
@@ -237,6 +272,8 @@ def create_part_manifest_table(client: ClickHouseHttpClient, args: argparse.Name
 CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.part_manifest_table)}
 (
     run_id String,
+    dataset_name LowCardinality(String),
+    target_table String,
     part_index UInt32,
     part_path String,
     clickhouse_path String,
@@ -249,39 +286,39 @@ CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.part_m
     updated_at_utc DateTime64(9, 'UTC') DEFAULT now64(9)
 )
 ENGINE = MergeTree
-ORDER BY (run_id, part_index, updated_at_utc)
+ORDER BY (run_id, dataset_name, part_index, updated_at_utc)
 {settings}
 """
     )
 
 
-def load_latest_part_status(client: ClickHouseHttpClient, args: argparse.Namespace) -> dict[tuple[str, int], str]:
+def load_latest_part_status(client: ClickHouseHttpClient, args: argparse.Namespace) -> dict[tuple[str, str, int], str]:
     sql = f"""
-SELECT run_id, part_index, argMax(status, updated_at_utc) AS status
+SELECT run_id, dataset_name, part_index, argMax(status, updated_at_utc) AS status
 FROM {quote_ident(args.database)}.{quote_ident(args.part_manifest_table)}
-GROUP BY run_id, part_index
+GROUP BY run_id, dataset_name, part_index
 FORMAT JSONEachRow
 """
     try:
         text = client.execute(sql)
     except Exception:
         return {}
-    output: dict[tuple[str, int], str] = {}
+    output: dict[tuple[str, str, int], str] = {}
     for line in text.splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
-        output[(str(row.get("run_id") or ""), int(row.get("part_index") or 0))] = str(row.get("status") or "")
+        output[(str(row.get("run_id") or ""), str(row.get("dataset_name") or ""), int(row.get("part_index") or 0))] = str(row.get("status") or "")
     return output
 
 
-def select_parts_for_insert(parts: list[PartFile], latest_status: dict[tuple[str, int], str], args: argparse.Namespace) -> list[PartFile]:
+def select_parts_for_insert(parts: list[PartFile], latest_status: dict[tuple[str, str, int], str], args: argparse.Namespace) -> list[PartFile]:
     if args.force:
         return parts
     run_id = current_run_id_from_parts(parts)
     selected: list[PartFile] = []
     for part in parts:
-        status = latest_status.get((run_id, part.part_index), "")
+        status = latest_status.get((run_id, part.dataset_name, part.part_index), "")
         if status == "ok":
             continue
         if status == "failed" and not args.retry_failed:
@@ -298,7 +335,7 @@ def insert_per_part(client: ClickHouseHttpClient, args: argparse.Namespace, part
         profiles.append(profile)
         insert_part_manifest(client, args, part, profile)
         print(
-            f"insert_part={index:,}/{total:,} part_index={part.part_index} status={profile.status} "
+            f"insert_part={index:,}/{total:,} dataset={part.dataset_name} part_index={part.part_index} status={profile.status} "
             f"expected_rows={profile.expected_rows:,} delta={profile.inserted_delta:,} "
             f"elapsed={profile.wall_seconds:.1f}s",
             flush=True,
@@ -310,7 +347,7 @@ def insert_per_part(client: ClickHouseHttpClient, args: argparse.Namespace, part
 
 def insert_one_part(client: ClickHouseHttpClient, args: argparse.Namespace, part: PartFile) -> InsertProfile:
     started = time.perf_counter()
-    before = count_target_rows(client, args)
+    before = count_target_rows(client, args, part.target_table)
     status = "ok"
     exception = ""
     try:
@@ -318,12 +355,13 @@ def insert_one_part(client: ClickHouseHttpClient, args: argparse.Namespace, part
     except Exception as exc:  # noqa: BLE001
         status = "failed"
         exception = repr(exc)
-    after = count_target_rows(client, args)
+    after = count_target_rows(client, args, part.target_table)
     inserted_delta = after - before
     if status == "ok" and part.expected_rows and inserted_delta != part.expected_rows:
         status = "failed"
         exception = f"inserted_delta_mismatch expected={part.expected_rows} actual={inserted_delta}"
     return InsertProfile(
+        dataset_name=part.dataset_name,
         part_index=part.part_index,
         path=str(part.windows_path),
         status=status,
@@ -337,11 +375,24 @@ def insert_one_part(client: ClickHouseHttpClient, args: argparse.Namespace, part
 
 
 def insert_single_glob(client: ClickHouseHttpClient, args: argparse.Namespace, parts: list[PartFile], manifest: dict[str, Any]) -> list[InsertProfile]:
+    if len({part.dataset_name for part in parts}) != 1:
+        raise RuntimeError("single-glob insert-mode can only be used when one dataset is selected")
     started = time.perf_counter()
-    before = count_target_rows(client, args)
+    before = count_target_rows(client, args, parts[0].target_table)
     expected = sum(part.expected_rows for part in parts)
     glob_path = common_glob_path(parts)
-    pseudo = PartFile(part_index=0, windows_path=Path(str(manifest.get("normalized_file_glob") or "")), clickhouse_path=glob_path, expected_rows=expected, expected_bytes=0, format="JSONEachRow")
+    pseudo = PartFile(
+        dataset_name=parts[0].dataset_name,
+        target_table=parts[0].target_table,
+        part_index=0,
+        windows_path=Path(str(manifest.get("normalized_file_glob") or "")),
+        clickhouse_path=glob_path,
+        expected_rows=expected,
+        expected_bytes=0,
+        format="JSONEachRow",
+        columns=parts[0].columns,
+        structure=parts[0].structure,
+    )
     status = "ok"
     exception = ""
     try:
@@ -349,12 +400,13 @@ def insert_single_glob(client: ClickHouseHttpClient, args: argparse.Namespace, p
     except Exception as exc:  # noqa: BLE001
         status = "failed"
         exception = repr(exc)
-    after = count_target_rows(client, args)
+    after = count_target_rows(client, args, parts[0].target_table)
     inserted_delta = after - before
     if status == "ok" and expected and inserted_delta != expected:
         status = "failed"
         exception = f"inserted_delta_mismatch expected={expected} actual={inserted_delta}"
     profile = InsertProfile(
+        dataset_name=parts[0].dataset_name,
         part_index=0,
         path=str(pseudo.windows_path),
         status=status,
@@ -373,12 +425,12 @@ def insert_single_glob(client: ClickHouseHttpClient, args: argparse.Namespace, p
 
 
 def insert_sql(args: argparse.Namespace, part: PartFile) -> str:
-    columns = ", ".join(quote_ident(column) for column in NEWS_TABLE_COLUMNS)
-    select_columns = ", ".join(quote_ident(column) for column in NEWS_TABLE_COLUMNS)
+    columns = ", ".join(quote_ident(column) for column in part.columns)
+    select_columns = ", ".join(quote_ident(column) for column in part.columns)
     return (
-        f"INSERT INTO {quote_ident(args.database)}.{quote_ident(args.table)} ({columns})\n"
+        f"INSERT INTO {quote_ident(args.database)}.{quote_ident(part.target_table)} ({columns})\n"
         f"SELECT {select_columns}\n"
-        f"FROM file({sql_string(part.clickhouse_path)}, 'JSONEachRow', {sql_string(structure_sql())})"
+        f"FROM file({sql_string(part.clickhouse_path)}, 'JSONEachRow', {sql_string(part.structure)})"
     )
 
 
@@ -386,6 +438,8 @@ def insert_part_manifest(client: ClickHouseHttpClient, args: argparse.Namespace,
     run_id = current_run_id_from_parts([part])
     row = {
         "run_id": run_id,
+        "dataset_name": part.dataset_name,
+        "target_table": part.target_table,
         "part_index": part.part_index,
         "part_path": str(part.windows_path),
         "clickhouse_path": part.clickhouse_path,
@@ -402,8 +456,8 @@ def insert_part_manifest(client: ClickHouseHttpClient, args: argparse.Namespace,
     )
 
 
-def count_target_rows(client: ClickHouseHttpClient, args: argparse.Namespace) -> int:
-    text = client.execute(f"SELECT count() FROM {quote_ident(args.database)}.{quote_ident(args.table)}")
+def count_target_rows(client: ClickHouseHttpClient, args: argparse.Namespace, table: str) -> int:
+    text = client.execute(f"SELECT count() FROM {quote_ident(args.database)}.{quote_ident(table)}")
     return int((text.strip() or "0").splitlines()[0])
 
 
@@ -417,10 +471,6 @@ def settings_sql(args: argparse.Namespace) -> str:
     if str(args.max_memory_usage) != "0":
         settings.append(f"max_memory_usage = {parse_size_bytes(str(args.max_memory_usage))}")
     return "\nSETTINGS " + ", ".join(settings)
-
-
-def structure_sql() -> str:
-    return ", ".join(NEWS_TABLE_STRUCTURE)
 
 
 def windows_path_to_clickhouse_path(path: Path, root_win: Path, root_ch: str) -> str:
@@ -444,13 +494,18 @@ def common_glob_path(parts: list[PartFile]) -> str:
     if not parts:
         raise ValueError("no parts")
     first = Path(parts[0].clickhouse_path)
-    return str(first.parent / "benzinga_news_normalized_part_*.jsonl").replace("\\", "/")
+    prefix = NEWS_DATASET_SPECS.get(parts[0].dataset_name, {}).get("prefix") or first.name.rsplit("_", 1)[0]
+    return str(first.parent / f"{prefix}_*.jsonl").replace("\\", "/")
 
 
 def current_run_id_from_parts(parts: list[PartFile]) -> str:
     if not parts:
         return ""
-    return parts[0].windows_path.parent.parent.name
+    path = parts[0].windows_path
+    for parent in path.parents:
+        if parent.name == "normalized_parts":
+            return parent.parent.name
+    return path.parent.parent.name
 
 
 def default_clickhouse_url() -> str:

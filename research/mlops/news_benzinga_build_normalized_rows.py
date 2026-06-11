@@ -7,11 +7,13 @@ import json
 import os
 import sys
 import time
+import unicodedata
 import warnings
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib import parse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -24,6 +26,7 @@ from research.mlops.news_benzinga_normalize import (  # noqa: E402
     NewsExtractionOptions,
     compact_json,
     content_flags,
+    looks_like_pdf_url,
     normalize_benzinga_payload,
     normalize_text,
     stable_hash,
@@ -44,7 +47,7 @@ DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_normalized
 DEFAULT_TEXT_LIMIT_CHARS = 24_000
 DOWNLOADABLE_ACTIONS = {"fetch_html", "fetch_pdf", "fetch_text", "resolve_redirect", "sec_handler"}
 WORKER_PROCESS_CONFIGURED = False
-NEWS_TABLE_COLUMNS = [
+EVENT_TABLE_COLUMNS = [
     "provider",
     "provider_article_id",
     "canonical_news_id",
@@ -58,26 +61,18 @@ NEWS_TABLE_COLUMNS = [
     "title",
     "normalized_title",
     "teaser",
-    "body_text",
-    "external_text",
-    "pdf_text",
-    "normalized_full_text",
     "text_hash",
     "article_url",
-    "url_domain",
+    "article_url_domain",
     "author",
     "tickers",
     "channels",
     "provider_tags",
     "image_urls",
-    "links",
     "has_body",
     "is_title_only",
     "has_external_text",
     "has_pdf",
-    "pdf_urls",
-    "pdf_artifact_paths",
-    "pdf_metadata_json",
     "content_quality_flags",
     "external_fetch_status",
     "external_fetch_error",
@@ -88,7 +83,7 @@ NEWS_TABLE_COLUMNS = [
     "normalizer_version",
     "updated_at_utc",
 ]
-NEWS_TABLE_STRUCTURE = [
+EVENT_TABLE_STRUCTURE = [
     "provider String",
     "provider_article_id String",
     "canonical_news_id String",
@@ -102,26 +97,18 @@ NEWS_TABLE_STRUCTURE = [
     "title String",
     "normalized_title String",
     "teaser String",
-    "body_text String",
-    "external_text String",
-    "pdf_text String",
-    "normalized_full_text String",
     "text_hash String",
     "article_url String",
-    "url_domain String",
+    "article_url_domain String",
     "author String",
     "tickers Array(String)",
     "channels Array(String)",
     "provider_tags Array(String)",
     "image_urls Array(String)",
-    "links Array(String)",
     "has_body UInt8",
     "is_title_only UInt8",
     "has_external_text UInt8",
     "has_pdf UInt8",
-    "pdf_urls Array(String)",
-    "pdf_artifact_paths Array(String)",
-    "pdf_metadata_json String",
     "content_quality_flags Array(String)",
     "external_fetch_status String",
     "external_fetch_error String",
@@ -132,6 +119,164 @@ NEWS_TABLE_STRUCTURE = [
     "normalizer_version String",
     "updated_at_utc DateTime64(9, 'UTC')",
 ]
+TEXT_TABLE_COLUMNS = [
+    "canonical_news_id",
+    "provider_article_id",
+    "published_date",
+    "published_at_utc",
+    "text_kind",
+    "text",
+    "text_hash",
+    "text_chars",
+    "text_bytes",
+    "source_count",
+    "normalizer_version",
+    "updated_at_utc",
+]
+TEXT_TABLE_STRUCTURE = [
+    "canonical_news_id String",
+    "provider_article_id String",
+    "published_date Date",
+    "published_at_utc DateTime64(9, 'UTC')",
+    "text_kind String",
+    "text String",
+    "text_hash String",
+    "text_chars UInt32",
+    "text_bytes UInt32",
+    "source_count UInt16",
+    "normalizer_version String",
+    "updated_at_utc DateTime64(9, 'UTC')",
+]
+URL_TABLE_COLUMNS = [
+    "canonical_news_id",
+    "provider_article_id",
+    "published_date",
+    "published_at_utc",
+    "url_hash",
+    "url",
+    "registered_domain",
+    "url_kind",
+    "url_source",
+    "url_ordinal",
+    "final_action",
+    "resolved_action",
+    "http_status",
+    "content_type",
+    "content_length",
+    "is_downloadable",
+    "is_attached",
+    "artifact_path",
+    "artifact_sha256",
+    "extraction_method",
+    "extraction_quality",
+    "extracted_text_chars",
+    "extracted_text_hash",
+    "normalizer_version",
+    "updated_at_utc",
+]
+URL_TABLE_STRUCTURE = [
+    "canonical_news_id String",
+    "provider_article_id String",
+    "published_date Date",
+    "published_at_utc DateTime64(9, 'UTC')",
+    "url_hash String",
+    "url String",
+    "registered_domain String",
+    "url_kind String",
+    "url_source String",
+    "url_ordinal UInt16",
+    "final_action String",
+    "resolved_action String",
+    "http_status UInt16",
+    "content_type String",
+    "content_length UInt64",
+    "is_downloadable UInt8",
+    "is_attached UInt8",
+    "artifact_path String",
+    "artifact_sha256 String",
+    "extraction_method String",
+    "extraction_quality String",
+    "extracted_text_chars UInt32",
+    "extracted_text_hash String",
+    "normalizer_version String",
+    "updated_at_utc DateTime64(9, 'UTC')",
+]
+ATTACHMENT_TABLE_COLUMNS = [
+    "canonical_news_id",
+    "provider_article_id",
+    "published_date",
+    "published_at_utc",
+    "url_hash",
+    "url",
+    "registered_domain",
+    "attachment_kind",
+    "artifact_path",
+    "artifact_sha256",
+    "content_type",
+    "content_length",
+    "http_status",
+    "extraction_method",
+    "extraction_quality",
+    "extracted_text_chars",
+    "extracted_text_hash",
+    "pdf_page_count",
+    "quality_flags",
+    "downloaded_at_utc",
+    "normalizer_version",
+    "updated_at_utc",
+]
+ATTACHMENT_TABLE_STRUCTURE = [
+    "canonical_news_id String",
+    "provider_article_id String",
+    "published_date Date",
+    "published_at_utc DateTime64(9, 'UTC')",
+    "url_hash String",
+    "url String",
+    "registered_domain String",
+    "attachment_kind String",
+    "artifact_path String",
+    "artifact_sha256 String",
+    "content_type String",
+    "content_length UInt64",
+    "http_status UInt16",
+    "extraction_method String",
+    "extraction_quality String",
+    "extracted_text_chars UInt32",
+    "extracted_text_hash String",
+    "pdf_page_count UInt32",
+    "quality_flags Array(String)",
+    "downloaded_at_utc Nullable(DateTime64(9, 'UTC'))",
+    "normalizer_version String",
+    "updated_at_utc DateTime64(9, 'UTC')",
+]
+NEWS_DATASET_SPECS = {
+    "event": {
+        "table": "benzinga_news_event_v1",
+        "columns": EVENT_TABLE_COLUMNS,
+        "structure": EVENT_TABLE_STRUCTURE,
+        "prefix": "benzinga_news_event_part",
+    },
+    "text": {
+        "table": "benzinga_news_text_v1",
+        "columns": TEXT_TABLE_COLUMNS,
+        "structure": TEXT_TABLE_STRUCTURE,
+        "prefix": "benzinga_news_text_part",
+    },
+    "url": {
+        "table": "benzinga_news_url_v1",
+        "columns": URL_TABLE_COLUMNS,
+        "structure": URL_TABLE_STRUCTURE,
+        "prefix": "benzinga_news_url_part",
+    },
+    "attachment": {
+        "table": "benzinga_news_attachment_v1",
+        "columns": ATTACHMENT_TABLE_COLUMNS,
+        "structure": ATTACHMENT_TABLE_STRUCTURE,
+        "prefix": "benzinga_news_attachment_part",
+    },
+}
+NEWS_TABLE_COLUMNS = EVENT_TABLE_COLUMNS
+NEWS_TABLE_STRUCTURE = EVENT_TABLE_STRUCTURE
 
 
 def parse_args() -> argparse.Namespace:
@@ -169,7 +314,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rows-per-file", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_ROWS_PER_FILE", "100000")))
     parser.add_argument("--max-output-file-bytes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_MAX_OUTPUT_FILE_BYTES", str(256 * 1024 * 1024))))
     parser.add_argument("--target-database", default=os.environ.get("NEWS_BENZINGA_NORMALIZED_TARGET_DATABASE", "q_live"))
-    parser.add_argument("--target-table", default=os.environ.get("NEWS_BENZINGA_NORMALIZED_TARGET_TABLE", "benzinga_news_normalized_v1"))
+    parser.add_argument("--target-table", default=os.environ.get("NEWS_BENZINGA_NORMALIZED_TARGET_TABLE", "benzinga_news_event_v1"))
     parser.add_argument("--scan-raw-root", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--require-extraction-result", action="store_true")
     parser.add_argument("--progress-interval", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_PROGRESS_INTERVAL", "25000")))
@@ -196,6 +341,9 @@ def main() -> None:
 
     normalized_parts_dir = run_root / "normalized_parts"
     normalized_parts_dir.mkdir(parents=True, exist_ok=True)
+    dataset_parts_dirs = {name: normalized_parts_dir / f"{name}_parts" for name in NEWS_DATASET_SPECS}
+    for parts_dir in dataset_parts_dirs.values():
+        parts_dir.mkdir(parents=True, exist_ok=True)
     error_path = run_root / "benzinga_news_normalized_errors.jsonl"
     attachment_summary_path = run_root / "benzinga_news_normalized_attachment_summary.jsonl"
     manifest_path = run_root / "benzinga_news_normalized_manifest.json"
@@ -273,18 +421,27 @@ def main() -> None:
     processed = 0
     written = 0
 
-    normalized_writer = ClickHouseJsonEachRowPartWriter(
-        parts_dir=normalized_parts_dir,
-        rows_per_file=max(1, args.rows_per_file),
-        max_file_bytes=max(1, args.max_output_file_bytes),
-    )
-    with normalized_writer, error_path.open("w", encoding="utf-8") as error_handle, attachment_summary_path.open("w", encoding="utf-8") as summary_handle:
+    dataset_writers = {
+        name: ClickHouseJsonEachRowPartWriter(
+            parts_dir=dataset_parts_dirs[name],
+            file_prefix=str(spec["prefix"]),
+            columns=list(spec["columns"]),
+            rows_per_file=max(1, args.rows_per_file),
+            max_file_bytes=max(1, args.max_output_file_bytes),
+        )
+        for name, spec in NEWS_DATASET_SPECS.items()
+    }
+    with contextlib.ExitStack() as stack:
+        for writer in dataset_writers.values():
+            stack.enter_context(writer)
+        error_handle = stack.enter_context(error_path.open("w", encoding="utf-8"))
+        summary_handle = stack.enter_context(attachment_summary_path.open("w", encoding="utf-8"))
         run_stats = run_normalization_workers(
             args=args,
             raw_jobs=raw_jobs,
             attachment_index=attachment_index,
             enrichment_index=enrichment_index,
-            normalized_writer=normalized_writer,
+            dataset_writers=dataset_writers,
             error_handle=error_handle,
             summary_handle=summary_handle,
             counters=counters,
@@ -304,8 +461,9 @@ def main() -> None:
         "download_path": str(download_path) if download_path.exists() else "",
         "extraction_path": str(extraction_path) if extraction_path.exists() else "",
         "normalized_parts_dir": str(normalized_parts_dir),
-        "normalized_file_glob": str(normalized_parts_dir / "benzinga_news_normalized_part_*.jsonl"),
-        "normalized_part_files": normalized_writer.part_summaries,
+        "normalized_file_glob": str(dataset_parts_dirs["event"] / f"{NEWS_DATASET_SPECS['event']['prefix']}_*.jsonl"),
+        "normalized_part_files": dataset_writers["event"].part_summaries,
+        "datasets": manifest_datasets(args, dataset_parts_dirs, dataset_writers),
         "clickhouse_format": "JSONEachRow",
         "clickhouse_target_database": args.target_database,
         "clickhouse_target_table": args.target_table,
@@ -360,8 +518,10 @@ class RawJob:
 
 
 class ClickHouseJsonEachRowPartWriter:
-    def __init__(self, *, parts_dir: Path, rows_per_file: int, max_file_bytes: int) -> None:
+    def __init__(self, *, parts_dir: Path, file_prefix: str, columns: list[str], rows_per_file: int, max_file_bytes: int) -> None:
         self.parts_dir = parts_dir
+        self.file_prefix = file_prefix
+        self.columns = columns
         self.rows_per_file = rows_per_file
         self.max_file_bytes = max_file_bytes
         self.part_index = 0
@@ -378,7 +538,7 @@ class ClickHouseJsonEachRowPartWriter:
         self.close()
 
     def write(self, row: dict[str, Any]) -> None:
-        table_row = project_table_row(row)
+        table_row = project_table_row(row, self.columns)
         payload = json.dumps(table_row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n"
         payload_bytes = len(payload.encode("utf-8"))
         if self.current_handle is None or self.should_rotate(payload_bytes):
@@ -411,7 +571,7 @@ class ClickHouseJsonEachRowPartWriter:
     def rotate(self) -> None:
         self.close()
         self.part_index += 1
-        self.current_path = self.parts_dir / f"benzinga_news_normalized_part_{self.part_index:06d}.jsonl"
+        self.current_path = self.parts_dir / f"{self.file_prefix}_{self.part_index:06d}.jsonl"
         self.current_rows = 0
         self.current_bytes = 0
         self.current_handle = self.current_path.open("w", encoding="utf-8", newline="")
@@ -432,11 +592,11 @@ class ClickHouseJsonEachRowPartWriter:
         self.part_summaries[-1]["bytes"] = self.current_bytes
 
 
-def project_table_row(row: dict[str, Any]) -> dict[str, Any]:
+def project_table_row(row: dict[str, Any], columns: list[str]) -> dict[str, Any]:
     projected: dict[str, Any] = {}
-    for column in NEWS_TABLE_COLUMNS:
+    for column in columns:
         projected[column] = normalize_table_value(column, row.get(column))
-    extra_columns = sorted(set(row) - set(NEWS_TABLE_COLUMNS))
+    extra_columns = sorted(set(row) - set(columns))
     if extra_columns:
         raise ValueError(f"normalized row has non-table columns: {extra_columns}")
     return projected
@@ -452,12 +612,16 @@ def normalize_table_value(column: str, value: Any) -> Any:
         "pdf_urls",
         "pdf_artifact_paths",
         "content_quality_flags",
+        "quality_flags",
     }
-    uint8_columns = {"has_body", "is_title_only", "has_external_text", "has_pdf"}
-    nullable_columns = {"last_updated_at_utc", "provider_delay_ns"}
+    uint8_columns = {"has_body", "is_title_only", "has_external_text", "has_pdf", "is_downloadable", "is_attached"}
+    uint_columns = {"text_chars", "text_bytes", "source_count", "url_ordinal", "http_status", "content_length", "extracted_text_chars", "pdf_page_count"}
+    nullable_columns = {"last_updated_at_utc", "provider_delay_ns", "downloaded_at_utc"}
     if column in array_columns:
         return value if isinstance(value, list) else []
     if column in uint8_columns:
+        return int(value or 0)
+    if column in uint_columns:
         return int(value or 0)
     if column in nullable_columns and value in ("", None):
         return None
@@ -468,12 +632,51 @@ def normalize_table_value(column: str, value: Any) -> Any:
 
 def clickhouse_file_insert_template(args: argparse.Namespace, normalized_parts_dir: Path) -> str:
     columns = ", ".join(NEWS_TABLE_COLUMNS)
-    escaped_glob = sql_literal_text(str(normalized_parts_dir / "benzinga_news_normalized_part_*.jsonl").replace("\\", "/"))
+    escaped_glob = sql_literal_text(str(normalized_parts_dir / "event_parts" / "benzinga_news_event_part_*.jsonl").replace("\\", "/"))
     structure = sql_literal_text(", ".join(NEWS_TABLE_STRUCTURE))
     return (
         f"INSERT INTO {args.target_database}.{args.target_table} ({columns}) "
         f"SELECT {columns} FROM file('{escaped_glob}', 'JSONEachRow', '{structure}')"
     )
+
+
+def manifest_datasets(
+    args: argparse.Namespace,
+    dataset_parts_dirs: dict[str, Path],
+    dataset_writers: dict[str, ClickHouseJsonEachRowPartWriter],
+) -> dict[str, dict[str, Any]]:
+    datasets: dict[str, dict[str, Any]] = {}
+    for name, spec in NEWS_DATASET_SPECS.items():
+        table = args.target_table if name == "event" else str(spec["table"])
+        parts_dir = dataset_parts_dirs[name]
+        prefix = str(spec["prefix"])
+        columns = list(spec["columns"])
+        structure = list(spec["structure"])
+        glob = str(parts_dir / f"{prefix}_*.jsonl")
+        datasets[name] = {
+            "table": table,
+            "parts_dir": str(parts_dir),
+            "file_glob": glob,
+            "part_files": dataset_writers[name].part_summaries,
+            "columns": columns,
+            "structure": ", ".join(structure),
+            "clickhouse_file_insert_template": dataset_clickhouse_file_insert_template(
+                database=args.target_database,
+                table=table,
+                columns=columns,
+                structure=structure,
+                file_glob=glob,
+            ),
+            "rows_written": sum(int(part.get("rows") or 0) for part in dataset_writers[name].part_summaries),
+        }
+    return datasets
+
+
+def dataset_clickhouse_file_insert_template(*, database: str, table: str, columns: list[str], structure: list[str], file_glob: str) -> str:
+    column_sql = ", ".join(columns)
+    escaped_glob = sql_literal_text(file_glob.replace("\\", "/"))
+    escaped_structure = sql_literal_text(", ".join(structure))
+    return f"INSERT INTO {database}.{table} ({column_sql}) SELECT {column_sql} FROM file('{escaped_glob}', 'JSONEachRow', '{escaped_structure}')"
 
 
 def sql_literal_text(value: str) -> str:
@@ -1038,7 +1241,7 @@ def run_normalization_workers(
     raw_jobs: list[RawJob],
     attachment_index: AttachmentIndex,
     enrichment_index: dict[str, dict[str, Any]],
-    normalized_writer: ClickHouseJsonEachRowPartWriter,
+    dataset_writers: dict[str, ClickHouseJsonEachRowPartWriter],
     error_handle: Any,
     summary_handle: Any,
     counters: Counter[str],
@@ -1059,11 +1262,11 @@ def run_normalization_workers(
                 enrichments = article_enrichments(attachments, enrichment_index)
                 try:
                     row, summary = build_normalized_row(args, job, attachments, enrichments)
-                    written += write_success(row, summary, normalized_writer, summary_handle, counters, flag_counts)
+                    written += write_success(row, summary, dataset_writers, summary_handle, counters, flag_counts)
                 except Exception as exc:  # noqa: BLE001
                     error_count += write_error(job, exc, error_handle, counters)
                 processed += 1
-                maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, normalized_writer, error_handle, summary_handle, started)
+                maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, dataset_writers, error_handle, summary_handle, started)
         except KeyboardInterrupt:
             interrupted = True
             print_normalization_interrupt(processed, len(raw_jobs), 0, 0, started)
@@ -1094,12 +1297,12 @@ def run_normalization_workers(
                 job = future_jobs.pop(future)
                 try:
                     row, summary = future.result()
-                    written += write_success(row, summary, normalized_writer, summary_handle, counters, flag_counts)
+                    written += write_success(row, summary, dataset_writers, summary_handle, counters, flag_counts)
                 except Exception as exc:  # noqa: BLE001
                     error_count += write_error(job, exc, error_handle, counters)
                 processed += 1
             submit_until_capacity()
-            maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, normalized_writer, error_handle, summary_handle, started)
+            maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, dataset_writers, error_handle, summary_handle, started)
     except KeyboardInterrupt:
         interrupted = True
         pending_count = len(pending)
@@ -1126,12 +1329,18 @@ def build_normalized_row_worker(
 def write_success(
     row: dict[str, Any],
     summary: dict[str, Any],
-    normalized_writer: ClickHouseJsonEachRowPartWriter,
+    dataset_writers: dict[str, ClickHouseJsonEachRowPartWriter],
     summary_handle: Any,
     counters: Counter[str],
     flag_counts: Counter[str],
 ) -> int:
-    normalized_writer.write(row)
+    dataset_writers["event"].write(build_event_row(row))
+    for text_row in build_text_rows(row):
+        dataset_writers["text"].write(text_row)
+    for url_row in build_url_rows(row, summary):
+        dataset_writers["url"].write(url_row)
+    for attachment_row in build_attachment_rows(row, summary):
+        dataset_writers["attachment"].write(attachment_row)
     summary_handle.write(json.dumps(summary, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
     counters["written"] += 1
     counters[str(row.get("external_fetch_status") or "unknown")] += 1
@@ -1139,6 +1348,265 @@ def write_success(
     for flag in row.get("content_quality_flags") or []:
         flag_counts[str(flag)] += 1
     return 1
+
+
+def build_event_row(row: dict[str, Any]) -> dict[str, Any]:
+    article_url = clean_url(str(row.get("article_url") or ""))
+    article_kind = classify_url(article_url)
+    persisted_article_url = article_url if article_kind == "provider_article" else ""
+    return {
+        "provider": row.get("provider") or "",
+        "provider_article_id": row.get("provider_article_id") or "",
+        "canonical_news_id": row.get("canonical_news_id") or "",
+        "published_date": row.get("published_date") or "",
+        "published_at_utc": row.get("published_at_utc") or "",
+        "published_raw": row.get("published_raw") or "",
+        "last_updated_at_utc": row.get("last_updated_at_utc"),
+        "last_updated_raw": row.get("last_updated_raw") or "",
+        "downloaded_at_utc": row.get("downloaded_at_utc") or "",
+        "provider_delay_ns": row.get("provider_delay_ns"),
+        "title": db_text(row.get("title") or ""),
+        "normalized_title": db_text(row.get("normalized_title") or ""),
+        "teaser": db_text(row.get("teaser") or ""),
+        "text_hash": row.get("text_hash") or "",
+        "article_url": persisted_article_url,
+        "article_url_domain": registered_domain(article_url) if persisted_article_url else "",
+        "author": db_text(row.get("author") or ""),
+        "tickers": row.get("tickers") or [],
+        "channels": row.get("channels") or [],
+        "provider_tags": row.get("provider_tags") or [],
+        "image_urls": row.get("image_urls") or [],
+        "has_body": row.get("has_body") or 0,
+        "is_title_only": row.get("is_title_only") or 0,
+        "has_external_text": row.get("has_external_text") or 0,
+        "has_pdf": row.get("has_pdf") or 0,
+        "content_quality_flags": row.get("content_quality_flags") or [],
+        "external_fetch_status": row.get("external_fetch_status") or "",
+        "external_fetch_error": row.get("external_fetch_error") or "",
+        "pdf_extract_status": row.get("pdf_extract_status") or "",
+        "pdf_extract_error": row.get("pdf_extract_error") or "",
+        "raw_artifact_path": row.get("raw_artifact_path") or "",
+        "raw_payload_hash": row.get("raw_payload_hash") or "",
+        "normalizer_version": row.get("normalizer_version") or "",
+        "updated_at_utc": row.get("updated_at_utc") or now_clickhouse_dt64(),
+    }
+
+
+def build_text_rows(row: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    source_counts = {
+        "body": 1 if row.get("body_text") else 0,
+        "external": max(1, int(row.get("_external_url_count") or 0)) if row.get("external_text") else 0,
+        "pdf": max(1, int(row.get("_pdf_url_count") or 0)) if row.get("pdf_text") else 0,
+    }
+    for text_kind, source_column in [("body", "body_text"), ("external", "external_text"), ("pdf", "pdf_text")]:
+        text = db_text(row.get(source_column) or "")
+        if not text:
+            continue
+        encoded = text.encode("utf-8")
+        rows.append(
+            {
+                "canonical_news_id": row.get("canonical_news_id") or "",
+                "provider_article_id": row.get("provider_article_id") or "",
+                "published_date": row.get("published_date") or "",
+                "published_at_utc": row.get("published_at_utc") or "",
+                "text_kind": text_kind,
+                "text": text,
+                "text_hash": stable_hash(text),
+                "text_chars": len(text),
+                "text_bytes": len(encoded),
+                "source_count": source_counts[text_kind],
+                "normalizer_version": row.get("normalizer_version") or "",
+                "updated_at_utc": row.get("updated_at_utc") or now_clickhouse_dt64(),
+            }
+        )
+    return rows
+
+
+def build_url_rows(row: dict[str, Any], summary: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    metadata_by_url: dict[str, dict[str, Any]] = {}
+    for metadata in [*parse_json_list(summary.get("external_metadata_json")), *parse_json_list(summary.get("pdf_metadata_json"))]:
+        url = clean_url(str(metadata.get("url") or metadata.get("normalized_url") or ""))
+        if url:
+            metadata_by_url[url] = metadata
+
+    def add_url(url: str, source: str, ordinal: int, metadata: dict[str, Any] | None = None) -> None:
+        clean = clean_url(url)
+        if not clean:
+            return
+        kind = classify_url(clean)
+        if not persist_url_kind(kind):
+            return
+        key = stable_hash(clean)
+        if key in seen:
+            return
+        seen.add(key)
+        meta = metadata or metadata_by_url.get(clean) or {}
+        rows.append(base_url_row(row, clean, key, kind, source, ordinal, meta))
+
+    add_url(str(row.get("article_url") or ""), "article_url", 0)
+    for ordinal, url in enumerate(row.get("links") or [], start=1):
+        add_url(str(url or ""), "link", ordinal)
+    for ordinal, url in enumerate(row.get("pdf_urls") or [], start=1):
+        add_url(str(url or ""), "pdf_url", ordinal)
+    for ordinal, metadata in enumerate(metadata_by_url.values(), start=1):
+        add_url(str(metadata.get("url") or metadata.get("normalized_url") or ""), "enrichment", ordinal, metadata)
+    return rows
+
+
+def build_attachment_rows(row: dict[str, Any], summary: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for metadata in [*parse_json_list(summary.get("external_metadata_json")), *parse_json_list(summary.get("pdf_metadata_json"))]:
+        artifact_path = str(metadata.get("artifact_path") or "")
+        artifact_sha256 = str(metadata.get("artifact_sha256") or "")
+        extracted_text_hash = str(metadata.get("extracted_text_hash") or "")
+        if not artifact_path and not artifact_sha256 and not extracted_text_hash:
+            continue
+        url = clean_url(str(metadata.get("url") or metadata.get("normalized_url") or ""))
+        kind = classify_url(url)
+        rows.append(
+            {
+                "canonical_news_id": row.get("canonical_news_id") or "",
+                "provider_article_id": row.get("provider_article_id") or "",
+                "published_date": row.get("published_date") or "",
+                "published_at_utc": row.get("published_at_utc") or "",
+                "url_hash": str(metadata.get("url_hash") or stable_hash(url)),
+                "url": url,
+                "registered_domain": str(metadata.get("domain") or registered_domain(url)),
+                "attachment_kind": "pdf" if kind == "pdf" or str(metadata.get("extraction_method") or "").startswith("pdf") else "external",
+                "artifact_path": artifact_path,
+                "artifact_sha256": artifact_sha256,
+                "content_type": db_text(metadata.get("content_type") or ""),
+                "content_length": int(metadata.get("content_length") or 0),
+                "http_status": int(metadata.get("http_status") or 0),
+                "extraction_method": db_text(metadata.get("extraction_method") or ""),
+                "extraction_quality": db_text(metadata.get("extraction_quality") or ""),
+                "extracted_text_chars": int(metadata.get("extracted_text_chars") or 0),
+                "extracted_text_hash": extracted_text_hash,
+                "pdf_page_count": int(metadata.get("pdf_page_count") or 0),
+                "quality_flags": metadata.get("quality_flags") or [],
+                "downloaded_at_utc": clickhouse_dt_or_none(metadata.get("downloaded_at_utc")),
+                "normalizer_version": row.get("normalizer_version") or "",
+                "updated_at_utc": row.get("updated_at_utc") or now_clickhouse_dt64(),
+            }
+        )
+    return rows
+
+
+def base_url_row(row: dict[str, Any], url: str, url_hash: str, kind: str, source: str, ordinal: int, metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "canonical_news_id": row.get("canonical_news_id") or "",
+        "provider_article_id": row.get("provider_article_id") or "",
+        "published_date": row.get("published_date") or "",
+        "published_at_utc": row.get("published_at_utc") or "",
+        "url_hash": str(metadata.get("url_hash") or url_hash),
+        "url": url,
+        "registered_domain": str(metadata.get("domain") or registered_domain(url)),
+        "url_kind": kind,
+        "url_source": source,
+        "url_ordinal": ordinal,
+        "final_action": db_text(metadata.get("final_action") or ""),
+        "resolved_action": db_text(metadata.get("resolved_action") or ""),
+        "http_status": int(metadata.get("http_status") or 0),
+        "content_type": db_text(metadata.get("content_type") or ""),
+        "content_length": int(metadata.get("content_length") or 0),
+        "is_downloadable": 1 if str(metadata.get("final_action") or "") in DOWNLOADABLE_ACTIONS or kind in {"external_source", "pdf", "sec"} else 0,
+        "is_attached": 1 if metadata else 0,
+        "artifact_path": str(metadata.get("artifact_path") or ""),
+        "artifact_sha256": str(metadata.get("artifact_sha256") or ""),
+        "extraction_method": db_text(metadata.get("extraction_method") or ""),
+        "extraction_quality": db_text(metadata.get("extraction_quality") or ""),
+        "extracted_text_chars": int(metadata.get("extracted_text_chars") or 0),
+        "extracted_text_hash": str(metadata.get("extracted_text_hash") or ""),
+        "normalizer_version": row.get("normalizer_version") or "",
+        "updated_at_utc": row.get("updated_at_utc") or now_clickhouse_dt64(),
+    }
+
+
+def parse_json_list(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+
+def db_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = "".join(ch if ch in "\t\n\r" or unicodedata.category(ch)[0] != "C" else " " for ch in text)
+    return normalize_text(text)
+
+
+def clean_url(value: str) -> str:
+    return unicodedata.normalize("NFKC", str(value or "")).strip()
+
+
+def classify_url(url: str) -> str:
+    clean = clean_url(url)
+    if not clean:
+        return "empty"
+    parsed = parse.urlparse(clean)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower().rstrip("/")
+    if not host:
+        return "relative_or_invalid"
+    if looks_like_pdf_url(clean):
+        return "pdf"
+    if host == "quotes.benzinga.com":
+        return "benzinga_quote"
+    if host == "benzinga.com" or host.endswith(".benzinga.com"):
+        if path.startswith("/quote") or path.startswith("/stock") or path.startswith("/symbol"):
+            return "benzinga_quote"
+        if path in {"", "/"}:
+            return "benzinga_navigation"
+        if path.startswith("/news/") or path.startswith("/analyst-ratings/") or path.startswith("/markets/") or len(path.strip("/").split("/")) >= 2:
+            return "provider_article"
+        return "benzinga_navigation"
+    domain = registered_domain(clean)
+    if domain in {"doubleclick.net", "googlesyndication.com", "grsm.io", "feedburner.com"}:
+        return "tracking"
+    if domain in {"twitter.com", "x.com", "youtube.com", "youtu.be", "facebook.com", "linkedin.com"}:
+        return "social"
+    if path.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg")):
+        return "image"
+    if domain == "sec.gov":
+        return "sec"
+    return "external_source"
+
+
+def persist_url_kind(kind: str) -> bool:
+    return kind in {"provider_article", "external_source", "pdf", "sec", "social"}
+
+
+def registered_domain(url: str) -> str:
+    host = (parse.urlparse(clean_url(url)).hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    parts = [part for part in host.split(".") if part]
+    if len(parts) >= 3 and parts[-2] in {"co", "com", "org", "net", "gov"}:
+        return ".".join(parts[-3:])
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return host
+
+
+def clickhouse_dt_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "T" in text:
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+        except ValueError:
+            return None
+    return text
 
 
 def write_error(job: RawJob, exc: Exception, error_handle: Any, counters: Counter[str]) -> int:
@@ -1166,13 +1634,14 @@ def maybe_flush_and_report(
     total: int,
     written: int,
     error_count: int,
-    normalized_writer: ClickHouseJsonEachRowPartWriter,
+    dataset_writers: dict[str, ClickHouseJsonEachRowPartWriter],
     error_handle: Any,
     summary_handle: Any,
     started: float,
 ) -> None:
     if args.flush_interval and processed % args.flush_interval == 0:
-        normalized_writer.flush()
+        for writer in dataset_writers.values():
+            writer.flush()
         error_handle.flush()
         summary_handle.flush()
     if args.progress_interval and processed % args.progress_interval == 0:
@@ -1303,6 +1772,8 @@ def apply_enrichments(
     row["external_fetch_error"] = ""
     row["pdf_extract_status"] = pdf_status(pdf_metadata, pdf_text, attachments)
     row["pdf_extract_error"] = ""
+    row["_external_url_count"] = len(external_metadata)
+    row["_pdf_url_count"] = len(pdf_metadata)
     quality_flags = content_flags(
         str(row.get("body_text") or ""),
         external_text,

@@ -8,7 +8,10 @@ from typing import Any
 from research.mlops.clickhouse_ingest_sip_flatfiles import ClickHouseHttpClient, quote_ident, sql_string
 
 
-DEFAULT_NEWS_TABLE = "benzinga_news_normalized_v1"
+DEFAULT_NEWS_TABLE = "benzinga_news_event_v1"
+DEFAULT_TEXT_TABLE = "benzinga_news_text_v1"
+DEFAULT_URL_TABLE = "benzinga_news_url_v1"
+DEFAULT_ATTACHMENT_TABLE = "benzinga_news_attachment_v1"
 DEFAULT_MANIFEST_TABLE = "benzinga_news_ingest_manifest_v1"
 
 
@@ -38,7 +41,9 @@ def create_news_database_and_tables(
 ) -> None:
     client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(database)}")
     client.execute(news_table_sql(database, news_table, storage_policy))
-    ensure_news_table_columns(client, database=database, table=news_table)
+    client.execute(text_table_sql(database, DEFAULT_TEXT_TABLE, storage_policy))
+    client.execute(url_table_sql(database, DEFAULT_URL_TABLE, storage_policy))
+    client.execute(attachment_table_sql(database, DEFAULT_ATTACHMENT_TABLE, storage_policy))
     client.execute(manifest_table_sql(database, manifest_table, storage_policy))
 
 
@@ -60,26 +65,18 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     title String,
     normalized_title String,
     teaser String,
-    body_text String,
-    external_text String,
-    pdf_text String,
-    normalized_full_text String,
     text_hash String,
     article_url String,
-    url_domain LowCardinality(String),
+    article_url_domain LowCardinality(String),
     author String,
     tickers Array(String),
     channels Array(String),
     provider_tags Array(String),
     image_urls Array(String),
-    links Array(String),
     has_body UInt8,
     is_title_only UInt8,
     has_external_text UInt8,
     has_pdf UInt8,
-    pdf_urls Array(String),
-    pdf_artifact_paths Array(String),
-    pdf_metadata_json String,
     content_quality_flags Array(LowCardinality(String)),
     external_fetch_status LowCardinality(String),
     external_fetch_error String,
@@ -97,13 +94,102 @@ SETTINGS {settings}
 """
 
 
-def ensure_news_table_columns(client: ClickHouseHttpClient, *, database: str, table: str) -> None:
-    client.execute(
-        f"""
-ALTER TABLE {quote_ident(database)}.{quote_ident(table)}
-ADD COLUMN IF NOT EXISTS pdf_metadata_json String AFTER pdf_artifact_paths
+def text_table_sql(database: str, table: str = DEFAULT_TEXT_TABLE, storage_policy: str = "") -> str:
+    settings = merge_tree_settings(storage_policy)
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
+(
+    canonical_news_id String,
+    provider_article_id String,
+    published_date Date,
+    published_at_utc DateTime64(9, 'UTC'),
+    text_kind LowCardinality(String),
+    text String,
+    text_hash String,
+    text_chars UInt32,
+    text_bytes UInt32,
+    source_count UInt16,
+    normalizer_version LowCardinality(String),
+    updated_at_utc DateTime64(9, 'UTC') DEFAULT now64(9)
+)
+ENGINE = ReplacingMergeTree(updated_at_utc)
+PARTITION BY toYYYYMM(published_at_utc)
+ORDER BY (published_date, canonical_news_id, text_kind)
+SETTINGS {settings}
 """
-    )
+
+
+def url_table_sql(database: str, table: str = DEFAULT_URL_TABLE, storage_policy: str = "") -> str:
+    settings = merge_tree_settings(storage_policy)
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
+(
+    canonical_news_id String,
+    provider_article_id String,
+    published_date Date,
+    published_at_utc DateTime64(9, 'UTC'),
+    url_hash String,
+    url String,
+    registered_domain LowCardinality(String),
+    url_kind LowCardinality(String),
+    url_source LowCardinality(String),
+    url_ordinal UInt16,
+    final_action LowCardinality(String),
+    resolved_action LowCardinality(String),
+    http_status UInt16,
+    content_type String,
+    content_length UInt64,
+    is_downloadable UInt8,
+    is_attached UInt8,
+    artifact_path String,
+    artifact_sha256 String,
+    extraction_method LowCardinality(String),
+    extraction_quality LowCardinality(String),
+    extracted_text_chars UInt32,
+    extracted_text_hash String,
+    normalizer_version LowCardinality(String),
+    updated_at_utc DateTime64(9, 'UTC') DEFAULT now64(9)
+)
+ENGINE = ReplacingMergeTree(updated_at_utc)
+PARTITION BY toYYYYMM(published_at_utc)
+ORDER BY (published_date, canonical_news_id, url_hash)
+SETTINGS {settings}
+"""
+
+
+def attachment_table_sql(database: str, table: str = DEFAULT_ATTACHMENT_TABLE, storage_policy: str = "") -> str:
+    settings = merge_tree_settings(storage_policy)
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
+(
+    canonical_news_id String,
+    provider_article_id String,
+    published_date Date,
+    published_at_utc DateTime64(9, 'UTC'),
+    url_hash String,
+    url String,
+    registered_domain LowCardinality(String),
+    attachment_kind LowCardinality(String),
+    artifact_path String,
+    artifact_sha256 String,
+    content_type String,
+    content_length UInt64,
+    http_status UInt16,
+    extraction_method LowCardinality(String),
+    extraction_quality LowCardinality(String),
+    extracted_text_chars UInt32,
+    extracted_text_hash String,
+    pdf_page_count UInt32,
+    quality_flags Array(LowCardinality(String)),
+    downloaded_at_utc Nullable(DateTime64(9, 'UTC')),
+    normalizer_version LowCardinality(String),
+    updated_at_utc DateTime64(9, 'UTC') DEFAULT now64(9)
+)
+ENGINE = ReplacingMergeTree(updated_at_utc)
+PARTITION BY toYYYYMM(published_at_utc)
+ORDER BY (published_date, canonical_news_id, url_hash, attachment_kind)
+SETTINGS {settings}
+"""
 
 
 def manifest_table_sql(database: str, table: str, storage_policy: str = "") -> str:

@@ -43,7 +43,7 @@ The extractor writes:
 
 ## Stage 3: Build Normalized News Rows
 
-The row builder reads the original raw Benzinga article JSON, extracts downloaded URL artifacts when needed, attaches clean source text, and writes rows that match `q_live.benzinga_news_normalized_v1`. It does not make network requests. The output can be inserted with the existing ClickHouse news insert helpers.
+The row builder reads the original raw Benzinga article JSON, extracts downloaded URL artifacts when needed, attaches clean source text, and writes compact DB-ready datasets. It does not make network requests. The main event table stays lean; body, external, PDF, URL, and artifact details are written to separate part sets.
 
 Recommended workstation command after URL download finishes:
 
@@ -59,21 +59,27 @@ python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/res
 
 The row builder writes:
 
-- `normalized_parts/benzinga_news_normalized_part_*.jsonl`: DB-ready `JSONEachRow` part files, one table-shaped row per Benzinga article.
+- `normalized_parts/event_parts/benzinga_news_event_part_*.jsonl`: one compact event row per Benzinga article for `q_live.benzinga_news_event_v1`.
+- `normalized_parts/text_parts/benzinga_news_text_part_*.jsonl`: body, external, and PDF text rows for `q_live.benzinga_news_text_v1`.
+- `normalized_parts/url_parts/benzinga_news_url_part_*.jsonl`: persisted article/source/PDF/SEC/social URLs for `q_live.benzinga_news_url_v1`.
+- `normalized_parts/attachment_parts/benzinga_news_attachment_part_*.jsonl`: downloaded artifact and extraction metadata for `q_live.benzinga_news_attachment_v1`.
 - `benzinga_news_normalized_errors.jsonl`: raw files that could not be normalized.
 - `benzinga_news_normalized_attachment_summary.jsonl`: sidecar metadata showing which extracted URLs were attached to each article.
 - `benzinga_news_inline_extraction_result.jsonl`: clean text extracted from downloaded URL artifacts during Stage 3.
 - `benzinga_news_inline_extraction_errors.jsonl`: URL artifacts that could not be extracted during Stage 3.
-- `benzinga_news_normalized_manifest.json`: run paths, part-file list, ClickHouse column structure, insert template, counts, quality flags, and timing.
+- `benzinga_news_normalized_manifest.json`: run paths, dataset part-file lists, ClickHouse column structures, insert templates, counts, quality flags, and timing.
 
 Important behavior:
 
 - The builder includes raw articles even when URL enrichment is missing or failed.
-- Every row in `normalized_parts` contains exactly the columns of `q_live.benzinga_news_normalized_v1`; URL attachment details are kept in the sidecar summary.
+- Event rows do not store `body_text`, `external_text`, `pdf_text`, `normalized_full_text`, raw `links`, or `pdf_urls`.
+- Text rows store the original text components separately. The training/export layer should assemble full model input from title, teaser, and text rows.
+- URL rows skip Benzinga quote, stock, navigation, tracking, and image URLs. Those links are redundant with ticker/image fields or are not useful news sources.
 - Part files are rotated by `--rows-per-file` and `--max-output-file-bytes` so the next ClickHouse load script can pass a manageable file glob to the `file()` table function.
 - If a standalone Stage 2 extraction result exists, the builder reuses it. Otherwise `--inline-extract` extracts downloaded URL artifacts inside Stage 3.
 - `--no-inline-extract` disables inline extraction and only uses existing extraction results.
-- `external_text`, `pdf_text`, `normalized_full_text`, `text_hash`, `has_external_text`, `has_pdf`, and `content_quality_flags` are recomputed after URL text is attached.
+- Unicode text is normalized with NFKC and control characters are removed before DB part rows are written. Valid non-English letters, names, and punctuation are preserved.
+- `text_hash`, `has_external_text`, `has_pdf`, and `content_quality_flags` are recomputed after URL text is attached.
 - `--require-extraction-result` can be added when a run must fail if Stage 2 output is unavailable.
 - `--processes` controls article normalization workers.
 - `--inline-extraction-processes` controls URL artifact extraction workers; if omitted or `0`, it uses `--processes`.
@@ -81,7 +87,7 @@ Important behavior:
 
 ## Stage 4: Push Normalized Parts to ClickHouse
 
-The ClickHouse loader reads the Stage 3 manifest, validates each `normalized_parts/*.jsonl` file through the server-side `file()` table function, creates the news table and a part-level ingest manifest table when `--execute` is used, then inserts each part. Reruns skip parts already marked `ok` unless `--force` is passed.
+The ClickHouse loader reads the Stage 3 manifest, validates each dataset part file through the server-side `file()` table function, creates the four news tables and a part-level ingest manifest table when `--execute` is used, then inserts each part. Reruns skip parts already marked `ok` for that dataset unless `--force` is passed.
 
 Preflight only:
 
