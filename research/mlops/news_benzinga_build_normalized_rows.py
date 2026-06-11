@@ -41,6 +41,94 @@ DEFAULT_EXTRACTION_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_url_ex
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_normalized_rows")
 DEFAULT_TEXT_LIMIT_CHARS = 24_000
 DOWNLOADABLE_ACTIONS = {"fetch_html", "fetch_pdf", "fetch_text", "resolve_redirect", "sec_handler"}
+NEWS_TABLE_COLUMNS = [
+    "provider",
+    "provider_article_id",
+    "canonical_news_id",
+    "published_date",
+    "published_at_utc",
+    "published_raw",
+    "last_updated_at_utc",
+    "last_updated_raw",
+    "downloaded_at_utc",
+    "provider_delay_ns",
+    "title",
+    "normalized_title",
+    "teaser",
+    "body_text",
+    "external_text",
+    "pdf_text",
+    "normalized_full_text",
+    "text_hash",
+    "article_url",
+    "url_domain",
+    "author",
+    "tickers",
+    "channels",
+    "provider_tags",
+    "image_urls",
+    "links",
+    "has_body",
+    "is_title_only",
+    "has_external_text",
+    "has_pdf",
+    "pdf_urls",
+    "pdf_artifact_paths",
+    "pdf_metadata_json",
+    "content_quality_flags",
+    "external_fetch_status",
+    "external_fetch_error",
+    "pdf_extract_status",
+    "pdf_extract_error",
+    "raw_artifact_path",
+    "raw_payload_hash",
+    "normalizer_version",
+    "updated_at_utc",
+]
+NEWS_TABLE_STRUCTURE = [
+    "provider String",
+    "provider_article_id String",
+    "canonical_news_id String",
+    "published_date Date",
+    "published_at_utc DateTime64(9, 'UTC')",
+    "published_raw String",
+    "last_updated_at_utc Nullable(DateTime64(9, 'UTC'))",
+    "last_updated_raw String",
+    "downloaded_at_utc DateTime64(9, 'UTC')",
+    "provider_delay_ns Nullable(Int64)",
+    "title String",
+    "normalized_title String",
+    "teaser String",
+    "body_text String",
+    "external_text String",
+    "pdf_text String",
+    "normalized_full_text String",
+    "text_hash String",
+    "article_url String",
+    "url_domain String",
+    "author String",
+    "tickers Array(String)",
+    "channels Array(String)",
+    "provider_tags Array(String)",
+    "image_urls Array(String)",
+    "links Array(String)",
+    "has_body UInt8",
+    "is_title_only UInt8",
+    "has_external_text UInt8",
+    "has_pdf UInt8",
+    "pdf_urls Array(String)",
+    "pdf_artifact_paths Array(String)",
+    "pdf_metadata_json String",
+    "content_quality_flags Array(String)",
+    "external_fetch_status String",
+    "external_fetch_error String",
+    "pdf_extract_status String",
+    "pdf_extract_error String",
+    "raw_artifact_path String",
+    "raw_payload_hash String",
+    "normalizer_version String",
+    "updated_at_utc DateTime64(9, 'UTC')",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,6 +162,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--inline-extraction-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_INLINE_EXTRACT_PROCESSES", "0")))
     parser.add_argument("--inline-extraction-progress-interval", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_INLINE_EXTRACT_PROGRESS_INTERVAL", "1000")))
     parser.add_argument("--max-pdf-bytes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_MAX_PDF_BYTES", "12000000")))
+    parser.add_argument("--rows-per-file", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_ROWS_PER_FILE", "100000")))
+    parser.add_argument("--max-output-file-bytes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_MAX_OUTPUT_FILE_BYTES", str(256 * 1024 * 1024))))
+    parser.add_argument("--target-database", default=os.environ.get("NEWS_BENZINGA_NORMALIZED_TARGET_DATABASE", "q_live"))
+    parser.add_argument("--target-table", default=os.environ.get("NEWS_BENZINGA_NORMALIZED_TARGET_TABLE", "benzinga_news_normalized_v1"))
     parser.add_argument("--scan-raw-root", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--require-extraction-result", action="store_true")
     parser.add_argument("--progress-interval", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_PROGRESS_INTERVAL", "25000")))
@@ -98,7 +190,8 @@ def main() -> None:
     run_root = output_root / run_id
     run_root.mkdir(parents=True, exist_ok=True)
 
-    normalized_path = run_root / "benzinga_news_normalized_rows.jsonl"
+    normalized_parts_dir = run_root / "normalized_parts"
+    normalized_parts_dir.mkdir(parents=True, exist_ok=True)
     error_path = run_root / "benzinga_news_normalized_errors.jsonl"
     attachment_summary_path = run_root / "benzinga_news_normalized_attachment_summary.jsonl"
     manifest_path = run_root / "benzinga_news_normalized_manifest.json"
@@ -120,6 +213,8 @@ def main() -> None:
     print(f"extraction_path={extraction_path if extraction_path.exists() else 'missing'}", flush=True)
     print(f"scan_raw_root={args.scan_raw_root} limit_articles={args.limit_articles:,}", flush=True)
     print(f"processes={max(1, args.processes)} max_pending_futures={max(1, args.max_pending_futures or max(1, args.processes) * 4)}", flush=True)
+    print(f"normalized_parts_dir={normalized_parts_dir}", flush=True)
+    print(f"rows_per_file={max(1, args.rows_per_file):,} max_output_file_bytes={max(1, args.max_output_file_bytes):,}", flush=True)
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
     print("=" * 96, flush=True)
 
@@ -149,13 +244,18 @@ def main() -> None:
     processed = 0
     written = 0
 
-    with normalized_path.open("w", encoding="utf-8") as normalized_handle, error_path.open("w", encoding="utf-8") as error_handle, attachment_summary_path.open("w", encoding="utf-8") as summary_handle:
+    normalized_writer = ClickHouseJsonEachRowPartWriter(
+        parts_dir=normalized_parts_dir,
+        rows_per_file=max(1, args.rows_per_file),
+        max_file_bytes=max(1, args.max_output_file_bytes),
+    )
+    with normalized_writer, error_path.open("w", encoding="utf-8") as error_handle, attachment_summary_path.open("w", encoding="utf-8") as summary_handle:
         run_stats = run_normalization_workers(
             args=args,
             raw_jobs=raw_jobs,
             attachment_index=attachment_index,
             enrichment_index=enrichment_index,
-            normalized_handle=normalized_handle,
+            normalized_writer=normalized_writer,
             error_handle=error_handle,
             summary_handle=summary_handle,
             counters=counters,
@@ -174,7 +274,15 @@ def main() -> None:
         "attachment_path": str(attachment_path) if attachment_path.exists() else "",
         "download_path": str(download_path) if download_path.exists() else "",
         "extraction_path": str(extraction_path) if extraction_path.exists() else "",
-        "normalized_path": str(normalized_path),
+        "normalized_parts_dir": str(normalized_parts_dir),
+        "normalized_file_glob": str(normalized_parts_dir / "benzinga_news_normalized_part_*.jsonl"),
+        "normalized_part_files": normalized_writer.part_summaries,
+        "clickhouse_format": "JSONEachRow",
+        "clickhouse_target_database": args.target_database,
+        "clickhouse_target_table": args.target_table,
+        "clickhouse_columns": NEWS_TABLE_COLUMNS,
+        "clickhouse_structure": ", ".join(NEWS_TABLE_STRUCTURE),
+        "clickhouse_file_insert_template": clickhouse_file_insert_template(args, normalized_parts_dir),
         "error_path": str(error_path),
         "attachment_summary_path": str(attachment_summary_path),
         "loaded_env_files": [str(path) for path in loaded_env_files],
@@ -193,6 +301,8 @@ def main() -> None:
         "max_enriched_urls_per_article": args.max_enriched_urls_per_article,
         "processes": max(1, args.processes),
         "max_pending_futures": max(1, args.max_pending_futures or max(1, args.processes) * 4),
+        "rows_per_file": max(1, args.rows_per_file),
+        "max_output_file_bytes": max(1, args.max_output_file_bytes),
         "wall_seconds": round(time.perf_counter() - started, 3),
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -213,6 +323,127 @@ class RawJob:
         self.raw_payload_hash = raw_payload_hash
         self.provider_article_id = provider_article_id
         self.canonical_news_id = canonical_news_id
+
+
+class ClickHouseJsonEachRowPartWriter:
+    def __init__(self, *, parts_dir: Path, rows_per_file: int, max_file_bytes: int) -> None:
+        self.parts_dir = parts_dir
+        self.rows_per_file = rows_per_file
+        self.max_file_bytes = max_file_bytes
+        self.part_index = 0
+        self.current_handle: Any | None = None
+        self.current_path: Path | None = None
+        self.current_rows = 0
+        self.current_bytes = 0
+        self.part_summaries: list[dict[str, Any]] = []
+
+    def __enter__(self) -> ClickHouseJsonEachRowPartWriter:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        self.close()
+
+    def write(self, row: dict[str, Any]) -> None:
+        table_row = project_table_row(row)
+        payload = json.dumps(table_row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n"
+        payload_bytes = len(payload.encode("utf-8"))
+        if self.current_handle is None or self.should_rotate(payload_bytes):
+            self.rotate()
+        assert self.current_handle is not None
+        self.current_handle.write(payload)
+        self.current_rows += 1
+        self.current_bytes += payload_bytes
+        self.update_latest_summary()
+
+    def flush(self) -> None:
+        if self.current_handle is not None:
+            self.current_handle.flush()
+
+    def close(self) -> None:
+        if self.current_handle is None:
+            return
+        self.update_latest_summary()
+        self.current_handle.flush()
+        self.current_handle.close()
+        self.current_handle = None
+
+    def should_rotate(self, next_bytes: int) -> bool:
+        if self.current_rows <= 0:
+            return False
+        if self.current_rows >= self.rows_per_file:
+            return True
+        return self.current_bytes + next_bytes > self.max_file_bytes
+
+    def rotate(self) -> None:
+        self.close()
+        self.part_index += 1
+        self.current_path = self.parts_dir / f"benzinga_news_normalized_part_{self.part_index:06d}.jsonl"
+        self.current_rows = 0
+        self.current_bytes = 0
+        self.current_handle = self.current_path.open("w", encoding="utf-8", newline="")
+        self.part_summaries.append(
+            {
+                "part_index": self.part_index,
+                "path": str(self.current_path),
+                "format": "JSONEachRow",
+                "rows": 0,
+                "bytes": 0,
+            }
+        )
+
+    def update_latest_summary(self) -> None:
+        if not self.part_summaries:
+            return
+        self.part_summaries[-1]["rows"] = self.current_rows
+        self.part_summaries[-1]["bytes"] = self.current_bytes
+
+
+def project_table_row(row: dict[str, Any]) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    for column in NEWS_TABLE_COLUMNS:
+        projected[column] = normalize_table_value(column, row.get(column))
+    extra_columns = sorted(set(row) - set(NEWS_TABLE_COLUMNS))
+    if extra_columns:
+        raise ValueError(f"normalized row has non-table columns: {extra_columns}")
+    return projected
+
+
+def normalize_table_value(column: str, value: Any) -> Any:
+    array_columns = {
+        "tickers",
+        "channels",
+        "provider_tags",
+        "image_urls",
+        "links",
+        "pdf_urls",
+        "pdf_artifact_paths",
+        "content_quality_flags",
+    }
+    uint8_columns = {"has_body", "is_title_only", "has_external_text", "has_pdf"}
+    nullable_columns = {"last_updated_at_utc", "provider_delay_ns"}
+    if column in array_columns:
+        return value if isinstance(value, list) else []
+    if column in uint8_columns:
+        return int(value or 0)
+    if column in nullable_columns and value in ("", None):
+        return None
+    if value is None:
+        return ""
+    return value
+
+
+def clickhouse_file_insert_template(args: argparse.Namespace, normalized_parts_dir: Path) -> str:
+    columns = ", ".join(NEWS_TABLE_COLUMNS)
+    escaped_glob = sql_literal_text(str(normalized_parts_dir / "benzinga_news_normalized_part_*.jsonl").replace("\\", "/"))
+    structure = sql_literal_text(", ".join(NEWS_TABLE_STRUCTURE))
+    return (
+        f"INSERT INTO {args.target_database}.{args.target_table} ({columns}) "
+        f"SELECT {columns} FROM file('{escaped_glob}', 'JSONEachRow', '{structure}')"
+    )
+
+
+def sql_literal_text(value: str) -> str:
+    return value.replace("'", "''")
 
 
 def parse_path_prefix_maps(values: list[str]) -> list[tuple[str, str]]:
@@ -583,7 +814,7 @@ def run_normalization_workers(
     raw_jobs: list[RawJob],
     attachment_index: AttachmentIndex,
     enrichment_index: dict[str, dict[str, Any]],
-    normalized_handle: Any,
+    normalized_writer: ClickHouseJsonEachRowPartWriter,
     error_handle: Any,
     summary_handle: Any,
     counters: Counter[str],
@@ -602,11 +833,11 @@ def run_normalization_workers(
             enrichments = article_enrichments(attachments, enrichment_index)
             try:
                 row, summary = build_normalized_row(args, job, attachments, enrichments)
-                written += write_success(row, summary, normalized_handle, summary_handle, counters, flag_counts)
+                written += write_success(row, summary, normalized_writer, summary_handle, counters, flag_counts)
             except Exception as exc:  # noqa: BLE001
                 error_count += write_error(job, exc, error_handle, counters)
             processed += 1
-            maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, normalized_handle, error_handle, summary_handle, started)
+            maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, normalized_writer, error_handle, summary_handle, started)
         return {"processed": processed, "written": written, "error_count": error_count}
 
     job_iter = iter(raw_jobs)
@@ -632,12 +863,12 @@ def run_normalization_workers(
                 job = future_jobs.pop(future)
                 try:
                     row, summary = future.result()
-                    written += write_success(row, summary, normalized_handle, summary_handle, counters, flag_counts)
+                    written += write_success(row, summary, normalized_writer, summary_handle, counters, flag_counts)
                 except Exception as exc:  # noqa: BLE001
                     error_count += write_error(job, exc, error_handle, counters)
                 processed += 1
             submit_until_capacity()
-            maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, normalized_handle, error_handle, summary_handle, started)
+            maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, normalized_writer, error_handle, summary_handle, started)
     return {"processed": processed, "written": written, "error_count": error_count}
 
 
@@ -653,12 +884,12 @@ def build_normalized_row_worker(
 def write_success(
     row: dict[str, Any],
     summary: dict[str, Any],
-    normalized_handle: Any,
+    normalized_writer: ClickHouseJsonEachRowPartWriter,
     summary_handle: Any,
     counters: Counter[str],
     flag_counts: Counter[str],
 ) -> int:
-    normalized_handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+    normalized_writer.write(row)
     summary_handle.write(json.dumps(summary, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
     counters["written"] += 1
     counters[str(row.get("external_fetch_status") or "unknown")] += 1
@@ -693,13 +924,13 @@ def maybe_flush_and_report(
     total: int,
     written: int,
     error_count: int,
-    normalized_handle: Any,
+    normalized_writer: ClickHouseJsonEachRowPartWriter,
     error_handle: Any,
     summary_handle: Any,
     started: float,
 ) -> None:
     if args.flush_interval and processed % args.flush_interval == 0:
-        normalized_handle.flush()
+        normalized_writer.flush()
         error_handle.flush()
         summary_handle.flush()
     if args.progress_interval and processed % args.progress_interval == 0:
