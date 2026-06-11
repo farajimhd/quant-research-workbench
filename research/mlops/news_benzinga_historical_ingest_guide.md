@@ -50,13 +50,16 @@ The report includes compact `extraction_event` records for external article/PDF 
 ClickHouse tables:
 
 ```text
-<database>.benzinga_news_normalized_v1
+<database>.benzinga_news_event_v1
+<database>.benzinga_news_text_v1
+<database>.benzinga_news_url_v1
+<database>.benzinga_news_attachment_v1
 <database>.benzinga_news_ingest_manifest_v1
 ```
 
-The live `services/news-gateway` writes to the same normalized table by default. Historical and live rows are deduplicated by `(published_date, provider_article_id)` through `ReplacingMergeTree(updated_at_utc)`.
+The live `services/news-gateway` writes to the same split canonical tables by default. Historical and live event rows are deduplicated by `(published_date, provider_article_id)` through `ReplacingMergeTree(updated_at_utc)`.
 
-PDF downloads never decide whether a news row is kept. Every valid Benzinga news row is normalized even when a linked PDF is too large, low-value, unavailable, or queued for offline handling. PDF decisions are stored in `pdf_metadata_json`.
+PDF downloads never decide whether a news row is kept. Every valid Benzinga news row is normalized even when a linked PDF is too large, low-value, unavailable, or queued for offline handling. PDF decisions are stored in URL and attachment rows.
 
 ## Required Environment
 
@@ -217,12 +220,12 @@ QMD_CLICKHOUSE_DATABASE
 q_live
 ```
 
-`--news-table`
+`--event-table`
 
-Normalized news target table. Default:
+Normalized event target table. Default:
 
 ```text
-benzinga_news_normalized_v1
+benzinga_news_event_v1
 ```
 
 `--manifest-table`
@@ -450,12 +453,15 @@ This is not the raw download location.
 
 ## Live Gateway Integration
 
-The Rust live news gateway uses the same raw artifact root and canonical ClickHouse table:
+The Rust live news gateway uses the same raw artifact root and canonical ClickHouse split tables:
 
 ```text
 NEWS_BENZINGA_ARTIFACT_ROOT_WIN
 NEWS_BENZINGA_CANONICAL_ENABLED
-NEWS_BENZINGA_CANONICAL_TABLE
+NEWS_BENZINGA_EVENT_TABLE
+NEWS_BENZINGA_TEXT_TABLE
+NEWS_BENZINGA_URL_TABLE
+NEWS_BENZINGA_ATTACHMENT_TABLE
 NEWS_CLICKHOUSE_STORAGE_POLICY
 ```
 
@@ -463,7 +469,10 @@ Default live behavior:
 
 ```text
 NEWS_BENZINGA_CANONICAL_ENABLED=true
-NEWS_BENZINGA_CANONICAL_TABLE=benzinga_news_normalized_v1
+NEWS_BENZINGA_EVENT_TABLE=benzinga_news_event_v1
+NEWS_BENZINGA_TEXT_TABLE=benzinga_news_text_v1
+NEWS_BENZINGA_URL_TABLE=benzinga_news_url_v1
+NEWS_BENZINGA_ATTACHMENT_TABLE=benzinga_news_attachment_v1
 NEWS_BENZINGA_ARTIFACT_ROOT_WIN=D:/market-data/benzinga_news_canonical
 ```
 
@@ -675,7 +684,7 @@ Useful ClickHouse checks:
 
 ```sql
 SELECT count()
-FROM q_live.benzinga_news_normalized_v1;
+FROM q_live.benzinga_news_event_v1;
 ```
 
 ```sql
@@ -692,7 +701,7 @@ SELECT
     min(published_at_utc),
     max(published_at_utc),
     count()
-FROM q_live.benzinga_news_normalized_v1;
+FROM q_live.benzinga_news_event_v1;
 ```
 
 ## Practical Starting Recommendation

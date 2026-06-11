@@ -1,22 +1,26 @@
 # News Gateway
 
-Standalone Rust gateway for Benzinga news served through the Massive REST API.
+Standalone Rust gateway for Benzinga news served through Massive REST.
 
 The service polls only:
 
 - Benzinga news: `/benzinga/v2/news`
 
-It writes every valid article to the existing live table, `live_news_articles`, and also to the canonical normalized Benzinga table, `benzinga_news_normalized_v1`. It does not drop crypto, macro, politics, war, ETF, no-ticker, or title-only rows. Those are persisted and labeled because they can matter for model training and broad market context.
+It does not use the separate Massive news endpoint for canonical persistence. Benzinga is the provider; Massive is only the transport/API host for this subscription path.
 
 ## Responsibilities
 
-- Poll Massive REST endpoints incrementally.
-- Save each raw Benzinga provider payload under the same artifact layout used by the historical ingest script.
-- Save provider timestamps with high precision.
-- Save `gateway_seen_at` so provider delay can be measured live.
-- Normalize Benzinga news into the canonical news schema.
-- Persist raw JSON, article text, tickers, channels, tags, and normalized metadata in the legacy live table.
-- Persist compact canonical rows in `benzinga_news_normalized_v1`.
+- Poll Benzinga incrementally.
+- Save each raw Benzinga provider payload under the same artifact layout used by historical scripts.
+- Preserve provider timestamps at the highest precision returned by the API.
+- Save `gateway_seen_at` so live provider delay can be measured.
+- Normalize every valid Benzinga article, including macro, crypto, no-ticker, title-only, PDF-backed, and link-only articles.
+- Keep the legacy live stream table, `live_news_articles`, for current UI compatibility.
+- Persist canonical compact rows into split Benzinga tables:
+  - `benzinga_news_event_v1`
+  - `benzinga_news_text_v1`
+  - `benzinga_news_url_v1`
+  - `benzinga_news_attachment_v1`
 - Clean HTML into text.
 - Optionally fetch article URLs when body text is short.
 - Optionally discover/download PDF links and extract text with `pdftotext`.
@@ -41,7 +45,11 @@ Common settings:
 - `NEWS_BENZINGA_ENABLED`, default `true`
 - `NEWS_BENZINGA_ARTIFACT_ROOT_WIN`, default `D:/market-data/benzinga_news_canonical`
 - `NEWS_BENZINGA_CANONICAL_ENABLED`, default `true`
-- `NEWS_BENZINGA_CANONICAL_TABLE`, default `benzinga_news_normalized_v1`
+- `NEWS_BENZINGA_EVENT_TABLE`, default `benzinga_news_event_v1`
+- `NEWS_BENZINGA_TEXT_TABLE`, default `benzinga_news_text_v1`
+- `NEWS_BENZINGA_URL_TABLE`, default `benzinga_news_url_v1`
+- `NEWS_BENZINGA_ATTACHMENT_TABLE`, default `benzinga_news_attachment_v1`
+- `NEWS_BENZINGA_CANONICAL_TABLE`, backward-compatible alias for the event table default
 - `NEWS_BENZINGA_POLL_INTERVAL_MS`, default `5000`
 - `NEWS_POLL_LIMIT`, default `1000`
 - `NEWS_MAX_PAGES_PER_POLL`, default `5`
@@ -60,7 +68,7 @@ Common settings:
 - `NEWS_INTELLIGENCE_URL`, default `http://127.0.0.1:8797`
 - `NEWS_INTELLIGENCE_TIMEOUT_MS`, default `1500`
 
-PDF text extraction uses the external `pdftotext` command. If it is not installed, PDF rows are still persisted with metadata and `extraction_error`.
+PDF text extraction uses the external `pdftotext` command. If it is not installed, PDF metadata rows can still be persisted with extraction status.
 
 ## Run
 
@@ -89,10 +97,7 @@ WS /stream/news/scanner
 WS /stream/news/ticker/AAPL
 ```
 
-The snapshot and websocket payloads are compact summaries. When the optional
-news-intelligence service is reachable, those summaries also include sentiment,
-event, materiality, urgency, ticker-impact, and model-version labels. Full text,
-raw JSON, and full intelligence outputs are in ClickHouse.
+The snapshot and websocket payloads are compact summaries. When the optional news-intelligence service is reachable, those summaries also include sentiment, event, materiality, urgency, ticker-impact, and model-version labels. Full text and raw provider payload references are in ClickHouse and the artifact store.
 
 ## Persistence Rule
 
@@ -104,16 +109,13 @@ NEWS_BENZINGA_ARTIFACT_ROOT_WIN/raw/YYYY/MM/DD/benzinga_<id>.json
 
 It then normalizes the article and queues it for asynchronous batch persistence.
 
-The legacy live table keeps later provider updates with `ReplacingMergeTree(gateway_seen_at)` using:
+`live_news_articles` remains a compatibility table for the current UI stream. It should not be treated as the training source of truth.
 
-```text
-ORDER BY (session_date, source, provider_article_id)
-```
+Canonical Benzinga data is split:
 
-The canonical normalized table uses the same schema as the historical ingest script:
+- `benzinga_news_event_v1`: one compact metadata/event row per article.
+- `benzinga_news_text_v1`: body, external, and PDF text rows keyed by `canonical_news_id`.
+- `benzinga_news_url_v1`: article, source, PDF, SEC, social, and other URL rows with policy/extraction metadata.
+- `benzinga_news_attachment_v1`: downloaded attachment metadata and extraction quality.
 
-```text
-benzinga_news_normalized_v1
-```
-
-The canonical source value is `benzinga`. The derivative Massive general news endpoint is intentionally excluded from this service.
+The canonical source value is `benzinga`.

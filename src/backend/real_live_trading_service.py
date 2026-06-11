@@ -7,13 +7,17 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+import uuid
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
+
+from src.backend.qmd_gateway_client import qmd_scanner_snapshot
+from src.market_engine.broker import AccountSnapshot, ExecutionFill, OrderSnapshot, PortfolioPosition
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -167,6 +171,14 @@ def real_live_preflight(account_type: str = "paper", account_keys: str | list[st
 
 
 def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
+    try:
+        payload = qmd_scanner_snapshot(row_limit=row_limit)
+        if payload.get("row_count", 0) > 0:
+            return payload
+    except Exception as exc:
+        qmd_error = str(exc)
+    else:
+        qmd_error = "QMD gateway returned no scanner rows."
     payload = massive_get_json("/v2/snapshot/locale/us/markets/stocks/tickers", {}, timeout=20)
     tickers = payload.get("tickers") or payload.get("results") or []
     rows = [normalize_massive_ticker_snapshot(item) for item in tickers]
@@ -180,6 +192,7 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
         "market_time": now.strftime("%H:%M"),
         "rows": rows,
         "row_count": len(rows),
+        "qmd_gateway_error": qmd_error,
     }
 
 
@@ -267,6 +280,7 @@ def real_live_portfolio_for_account(account: RealLiveAccount, *, now: str | None
         "label": account.label,
         "trading_mode": account.trading_mode,
         "balances": broker_balances(summary, ledger, account),
+        "broker_account_snapshot": broker_account_snapshot(summary, ledger, account, raw_positions, raw_summary, raw_ledger, snapshot_time),
         "errors": account_errors,
         "ledger": ledger,
         "summary": summary,
@@ -276,7 +290,8 @@ def real_live_portfolio_for_account(account: RealLiveAccount, *, now: str | None
 
 def submit_real_live_order(account_type: str, order: dict[str, Any], *, preview: bool = False, account_keys: str | list[str] | None = None) -> dict[str, Any]:
     selected_accounts = resolve_real_live_accounts(account_keys, account_type)
-    results = [submit_real_live_order_for_account(account, order, preview=preview) for account in selected_accounts]
+    normalized_order = normalize_live_order_intent(order)
+    results = [submit_real_live_order_for_account(account, normalized_order, preview=preview) for account in selected_accounts]
     return {
         "account_type": selected_accounts[0].account_key,
         "account_id": ", ".join(result["account_id"] for result in results if result.get("account_id")),
@@ -284,6 +299,7 @@ def submit_real_live_order(account_type: str, order: dict[str, Any], *, preview:
         "preview": preview,
         "results": results,
         "submitted_orders": [result["submitted_order"] for result in results],
+        "client_order_id": normalized_order["client_order_id"],
     }
 
 
@@ -355,6 +371,7 @@ def ibkr_order_payload(order: dict[str, Any], account_id: str) -> dict[str, Any]
     order_type = normalize_order_type(str(order.get("order_type") or "LMT"))
     payload: dict[str, Any] = {
         "acctId": account_id,
+        "cOID": str(order.get("client_order_id") or ""),
         "conid": int(order["conid"]) if order.get("conid") else lookup_ibkr_stock_conid(symbol),
         "ticker": symbol,
         "secType": "STK",
@@ -372,6 +389,39 @@ def ibkr_order_payload(order: dict[str, Any], account_id: str) -> dict[str, Any]
     return payload
 
 
+def normalize_live_order_intent(order: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(order)
+    symbol = str(normalized.get("symbol") or "").strip().upper()
+    if not symbol:
+        raise ValueError("Order symbol is required.")
+    side = str(normalized.get("side") or "BUY").strip().upper()
+    if side not in {"BUY", "SELL"}:
+        raise ValueError("Order side must be BUY or SELL.")
+    quantity = int(float(normalized.get("quantity") or 0))
+    if quantity <= 0:
+        raise ValueError("Order quantity must be positive.")
+    order_type = normalize_order_type(str(normalized.get("order_type") or "LMT"))
+    client_order_id = str(normalized.get("client_order_id") or "").strip()
+    if not client_order_id:
+        client_order_id = f"qrw-{datetime.utcnow().strftime('%Y%m%dT%H%M%S%f')}-{uuid.uuid4().hex[:10]}"
+    normalized.update(
+        {
+            "client_order_id": client_order_id,
+            "order_type": order_type,
+            "quantity": quantity,
+            "side": side,
+            "symbol": symbol,
+            "time_in_force": str(normalized.get("time_in_force") or "DAY").upper(),
+        }
+    )
+    if order_type == "LMT":
+        limit_price = float(normalized.get("limit_price") or 0)
+        if limit_price <= 0:
+            raise ValueError("Limit orders require limit_price.")
+        normalized["limit_price"] = round(limit_price, 4)
+    return normalized
+
+
 def normalize_order_type(value: str) -> str:
     normalized = value.strip().upper()
     if normalized == "LIMIT":
@@ -386,7 +436,7 @@ def normalize_order_type(value: str) -> str:
 def normalize_submitted_order(order: dict[str, Any], response: Any, account: RealLiveAccount | None = None) -> dict[str, Any]:
     broker_order_id = broker_id_from_response(response)
     quantity = int(float(order.get("quantity") or 0))
-    return {
+    row = {
         "account_key": account.account_key if account else "",
         "account_label": account.label if account else "",
         "client_order_id": str(order.get("client_order_id") or ""),
@@ -406,6 +456,8 @@ def normalize_submitted_order(order: dict[str, Any], response: Any, account: Rea
         "fills": [],
         "raw_broker_response": response,
     }
+    row["broker_order_snapshot"] = order_snapshot_from_row(row, account, raw=response)
+    return row
 
 
 def normalize_ibkr_orders(
@@ -425,7 +477,7 @@ def normalize_ibkr_order(item: dict[str, Any], account: RealLiveAccount | None =
     avg_price = float_value(item.get("avgPrice") or item.get("avg_fill_price") or 0)
     account_id = broker_account_id(item)
     broker_order_id = str(item.get("orderId") or item.get("order_id") or item.get("id") or "")
-    return {
+    row = {
         "account_key": account.account_key if account else "",
         "account_label": account.label if account else "",
         "account_class": account.account_class if account else "",
@@ -446,6 +498,8 @@ def normalize_ibkr_order(item: dict[str, Any], account: RealLiveAccount | None =
         "updated_at": item.get("lastExecutionTime") or item.get("modifiedTime") or "",
         "raw_broker_order": item,
     }
+    row["broker_order_snapshot"] = order_snapshot_from_row(row, account, raw=item)
+    return row
 
 
 def normalize_positions(rows: list[dict[str, Any]], account: RealLiveAccount | None = None, *, as_of: str = "") -> list[dict[str, Any]]:
@@ -458,7 +512,7 @@ def normalize_position(row: dict[str, Any], account: RealLiveAccount | None = No
     avg_price = float_value(row.get("avgCost") or row.get("averageCost"))
     mark = float_value(row.get("mktPrice") or row.get("marketPrice"))
     market_value = float_value(row.get("mktValue") or row.get("marketValue"))
-    return {
+    normalized = {
         "account_key": account.account_key if account else "",
         "account_label": account.label if account else "",
         "account_class": account.account_class if account else "",
@@ -477,6 +531,8 @@ def normalize_position(row: dict[str, Any], account: RealLiveAccount | None = No
         "as_of": as_of,
         "raw_broker_position": row,
     }
+    normalized["broker_position_snapshot"] = portfolio_position_from_row(normalized, account)
+    return normalized
 
 
 def normalize_account_summary(summary: Any) -> dict[str, Any]:
@@ -533,25 +589,25 @@ def normalize_ibkr_trades(
         price = float_value(item.get("price") or item.get("tradePrice") or item.get("executionPrice"))
         quantity = float_value(item.get("quantity") or item.get("size") or item.get("shares"))
         side = str(item.get("side") or item.get("buySell") or "").upper()
-        rows.append(
-            {
-                "account_key": account.account_key if account else "",
-                "account_label": account.label if account else "",
-                "account_class": account.account_class if account else "",
-                "account_id": mask_account_id(account_id or account.account_id if account else account_id),
-                "broker_order_id": str(item.get("orderId") or item.get("order_id") or ""),
-                "commission": optional_float(item.get("commission")),
-                "conid": str(item.get("conid") or item.get("con_id") or ""),
-                "execution_id": str(item.get("execution_id") or item.get("execId") or item.get("tradeId") or item.get("id") or ""),
-                "fill_price": price,
-                "filled_quantity": quantity,
-                "gross_amount": price * quantity if price and quantity else 0,
-                "side": side,
-                "symbol": str(item.get("ticker") or item.get("symbol") or "").upper(),
-                "timestamp": item.get("time") or item.get("trade_time") or item.get("executionTime") or "",
-                "raw_broker_execution": item,
-            }
-        )
+        row = {
+            "account_key": account.account_key if account else "",
+            "account_label": account.label if account else "",
+            "account_class": account.account_class if account else "",
+            "account_id": mask_account_id(account_id or account.account_id if account else account_id),
+            "broker_order_id": str(item.get("orderId") or item.get("order_id") or ""),
+            "commission": optional_float(item.get("commission")),
+            "conid": str(item.get("conid") or item.get("con_id") or ""),
+            "execution_id": str(item.get("execution_id") or item.get("execId") or item.get("tradeId") or item.get("id") or ""),
+            "fill_price": price,
+            "filled_quantity": quantity,
+            "gross_amount": price * quantity if price and quantity else 0,
+            "side": side,
+            "symbol": str(item.get("ticker") or item.get("symbol") or "").upper(),
+            "timestamp": item.get("time") or item.get("trade_time") or item.get("executionTime") or "",
+            "raw_broker_execution": item,
+        }
+        row["broker_execution_fill"] = execution_fill_from_row(row, account, item)
+        rows.append(row)
     return rows
 
 
@@ -577,6 +633,108 @@ def normalize_pnl_rows(payload: Any, accounts: list[RealLiveAccount]) -> list[di
             }
         )
     return rows
+
+
+def broker_account_snapshot(
+    summary: dict[str, Any],
+    ledger: dict[str, Any],
+    account: RealLiveAccount,
+    raw_positions: Any,
+    raw_summary: Any,
+    raw_ledger: Any,
+    as_of: str,
+) -> dict[str, Any]:
+    balances = broker_balances(summary, ledger, account)
+    positions = tuple(
+        PortfolioPosition(
+            account_id=mask_account_id(account.account_id),
+            avg_cost=float_value(position.get("avgCost") or position.get("averageCost")),
+            conid=int_value(position.get("conid") or position.get("con_id") or position.get("contractId")),
+            currency=str(position.get("currency") or "USD"),
+            market_price=float_value(position.get("mktPrice") or position.get("marketPrice")),
+            market_value=float_value(position.get("mktValue") or position.get("marketValue")),
+            quantity=float_value(position.get("position") or position.get("quantity")),
+            realized_pnl=float_value(position.get("realizedPnl")),
+            ticker=str(position.get("ticker") or position.get("symbol") or position.get("contractDesc") or "").split(" ")[0].upper(),
+            unrealized_pnl=float_value(position.get("unrealizedPnl")),
+        )
+        for position in position_rows(raw_positions)
+    )
+    snapshot = AccountSnapshot(
+        account_id=mask_account_id(account.account_id),
+        account_type=account.account_class,
+        buying_power=float_value(balances.get("buying_power")),
+        cash=float_value(balances.get("cash")),
+        currency=str(balances.get("currency") or "USD"),
+        equity=float_value(balances.get("net_liquidation")),
+        excess_liquidity=first_summary_amount(summary, ("excessliquidity", "availablefunds")),
+        gross_position_value=first_summary_amount(summary, ("grosspositionvalue",)),
+        net_liquidation=float_value(balances.get("net_liquidation")),
+        positions=positions,
+        raw={"as_of": as_of, "summary": raw_summary, "ledger": raw_ledger},
+    )
+    return asdict(snapshot)
+
+
+def order_snapshot_from_row(row: dict[str, Any], account: RealLiveAccount | None, *, raw: Any) -> dict[str, Any]:
+    quantity = float_value(row.get("quantity"))
+    filled_quantity = float_value(row.get("filled_quantity"))
+    remaining_quantity = float_value(row.get("remaining_quantity"))
+    snapshot = OrderSnapshot(
+        account_id=str(row.get("account_id") or (mask_account_id(account.account_id) if account else "")),
+        avg_filled_price=float_value(row.get("avg_fill_price")),
+        conid=int_value(row.get("conid")),
+        currency=str(row.get("currency") or "USD"),
+        filled_quantity=filled_quantity,
+        limit_price=optional_float(row.get("limit_price")),
+        order_id=str(row.get("broker_order_id") or ""),
+        order_type=str(row.get("order_type") or ""),
+        remaining_quantity=remaining_quantity if remaining_quantity else max(0.0, quantity - filled_quantity),
+        side=str(row.get("side") or "").upper(),
+        status=broker_order_status(str(row.get("status") or "")),
+        submitted_at=parse_broker_datetime(str(row.get("submitted_at") or row.get("updated_at") or "")),
+        ticker=str(row.get("symbol") or "").upper(),
+        total_quantity=quantity,
+        raw=raw if isinstance(raw, dict) else {"response": raw},
+    )
+    return asdict(snapshot)
+
+
+def portfolio_position_from_row(row: dict[str, Any], account: RealLiveAccount | None) -> dict[str, Any]:
+    snapshot = PortfolioPosition(
+        account_id=str(row.get("account_id") or (mask_account_id(account.account_id) if account else "")),
+        avg_cost=float_value(row.get("avg_cost") or row.get("avg_price")),
+        conid=int_value(row.get("conid")),
+        currency=str(row.get("currency") or "USD"),
+        market_price=float_value(row.get("mark_price") or row.get("mark")),
+        market_value=float_value(row.get("market_value")),
+        quantity=float_value(row.get("quantity")),
+        realized_pnl=float_value(row.get("realized_pnl")),
+        ticker=str(row.get("symbol") or "").upper(),
+        unrealized_pnl=float_value(row.get("unrealized_pnl")),
+    )
+    return asdict(snapshot)
+
+
+def execution_fill_from_row(row: dict[str, Any], account: RealLiveAccount | None, raw: dict[str, Any]) -> dict[str, Any]:
+    fill_price = float_value(row.get("fill_price"))
+    fill_quantity = float_value(row.get("filled_quantity"))
+    snapshot = ExecutionFill(
+        account_id=str(row.get("account_id") or (mask_account_id(account.account_id) if account else "")),
+        avg_price_after_fill=float_value(raw.get("avgPrice") or fill_price),
+        commission=float_value(row.get("commission")),
+        conid=int_value(row.get("conid")),
+        currency=str(raw.get("currency") or "USD"),
+        execution_id=str(row.get("execution_id") or ""),
+        fill_price=fill_price,
+        fill_quantity=fill_quantity,
+        order_id=str(row.get("broker_order_id") or ""),
+        remaining_quantity=float_value(raw.get("remainingQuantity") or raw.get("remaining")),
+        side=str(row.get("side") or "").upper(),
+        ticker=str(row.get("symbol") or "").upper(),
+        ts=parse_broker_datetime(str(row.get("timestamp") or "")),
+    )
+    return asdict(snapshot)
 
 
 def position_rows(payload: Any) -> list[dict[str, Any]]:
@@ -649,6 +807,40 @@ def optional_float(value: Any) -> float | None:
     if value is None or value == "":
         return None
     return float_value(value)
+
+
+def int_value(value: Any) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def parse_broker_datetime(value: str) -> datetime:
+    text = (value or "").strip()
+    if text:
+        for candidate in (text, text.replace("Z", "+00:00")):
+            try:
+                parsed = datetime.fromisoformat(candidate)
+                return parsed if parsed.tzinfo else parsed.replace(tzinfo=NEW_YORK)
+            except ValueError:
+                pass
+    return datetime.now(NEW_YORK)
+
+
+def broker_order_status(value: str):
+    normalized = value.strip().lower().replace(" ", "_")
+    if normalized in {"submitted", "presubmitted", "pending_submit", "inactive", "needs_reply"}:
+        return "submitted"
+    if normalized in {"filled", "complete"}:
+        return "filled"
+    if normalized in {"partially_filled", "partial", "partfilled"}:
+        return "partially_filled"
+    if normalized in {"cancelled", "canceled"}:
+        return "cancelled"
+    if normalized in {"rejected", "inactive_rejected"}:
+        return "rejected"
+    return "pending_submit"
 
 
 def public_account(account: RealLiveAccount) -> dict[str, Any]:

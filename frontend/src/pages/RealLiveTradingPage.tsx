@@ -584,6 +584,7 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
   const [scannerSetupPresetId, setScannerSetupPresetId] = useState("top_gainers_pct");
   const [scannerSetupRowLimit, setScannerSetupRowLimit] = useState(200);
   const [sessionBaseline, setSessionBaseline] = useState<RealLiveSessionBaselineStatus>({ status: "not_started" });
+  const [gatewayStatus, setGatewayStatus] = useState<RealLiveGatewayStatusPayload | null>(null);
   const [scope, setScope] = useState<Scope | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [catalog, setCatalog] = useState<CatalogPayload | null>(null);
@@ -721,6 +722,7 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
 
   const loadGatewayStatus = useCallback(async () => {
     const payload = await api<RealLiveGatewayStatusPayload>("/api/real-live-trading/market-gateway/status");
+    setGatewayStatus(payload);
     if (payload.session_baseline) setSessionBaseline(payload.session_baseline);
     return payload;
   }, []);
@@ -728,7 +730,8 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
   useEffect(() => {
     if (started || isChildCanvas) return;
     void loadUniversePreview();
-  }, [isChildCanvas, loadUniversePreview, started]);
+    void loadGatewayStatus().catch(() => undefined);
+  }, [isChildCanvas, loadGatewayStatus, loadUniversePreview, started]);
 
   useEffect(() => {
     if (started || isChildCanvas || autoPreflightRequestedRef.current || !availableAccounts.length) return;
@@ -1174,7 +1177,7 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
     if (!tickers.length) return;
     try {
       await api(
-        `/api/live-trading/warm-charts${query({
+        `/api/real-live-trading/warm-charts${query({
           processed_root: scope.processed_root,
           session_date: session.sessionDate,
           tickers: tickers.join(","),
@@ -1329,6 +1332,7 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
       <RealLiveTradingGate
         accounts={availableAccounts}
         loading={loading}
+        gatewayStatus={gatewayStatus}
         message={liveClockMessage}
         preflightStatus={preflightStatus}
         scannerSetupPreset={scannerSetupPreset}
@@ -1503,6 +1507,7 @@ export function RealLiveTradingPage({ onScalePreferenceChange, onTopbarCenterCha
 
 function RealLiveTradingGate({
   accounts,
+  gatewayStatus,
   loading,
   message,
   onCheck,
@@ -1521,6 +1526,7 @@ function RealLiveTradingGate({
   universePreviewLoading,
 }: {
   accounts: RealLiveAccountConfig[];
+  gatewayStatus: RealLiveGatewayStatusPayload | null;
   loading: boolean;
   message: string;
   onCheck: () => void;
@@ -1538,11 +1544,13 @@ function RealLiveTradingGate({
   universePreview: RealLiveUniversePreviewPayload | null;
   universePreviewLoading: boolean;
 }) {
-  const ready = Boolean(preflightStatus?.ready);
+  const qmdReady = isQmdGatewayReady(gatewayStatus);
+  const ready = Boolean(preflightStatus?.ready && qmdReady);
   const selectedAccounts = selectedAccountList(accounts, selectedAccountKeys);
   const selectedLabel = selectedAccounts.length ? selectedAccounts.map((account) => account.label).join(", ") : "No account selected";
   const mirrorMode = selectedAccounts.length > 1;
   const progressSteps = buildGateProgressSteps({
+    gatewayStatus,
     loading,
     preflightStatus,
     selectedAccountKeys,
@@ -3935,12 +3943,14 @@ function formatLiveMode(mode: LiveClockMode) {
 }
 
 function buildGateProgressSteps({
+  gatewayStatus,
   loading,
   preflightStatus,
   selectedAccountKeys,
   universePreview,
   universePreviewLoading,
 }: {
+  gatewayStatus: RealLiveGatewayStatusPayload | null;
   loading: boolean;
   preflightStatus: RealLivePreflightPayload | null;
   selectedAccountKeys: string[];
@@ -3952,6 +3962,14 @@ function buildGateProgressSteps({
   const preflightChecks = preflightStatus?.checks ?? [];
   const massiveCheck = preflightChecks.find((check) => check.id === "massive_rest" || check.id === "massive_api_key");
   const ibkrChecks = preflightChecks.filter((check) => check.id.includes("ibkr") || check.id.includes("account_env"));
+  const qmdStatus = gatewayStatus?.qmd_gateway && typeof gatewayStatus.qmd_gateway === "object" ? gatewayStatus.qmd_gateway as Record<string, unknown> : null;
+  const qmdMetrics = qmdStatus?.metrics && typeof qmdStatus.metrics === "object" ? qmdStatus.metrics as Record<string, unknown> : {};
+  const qmdReady = isQmdGatewayReady(gatewayStatus);
+  const qmdMessage = qmdStatus
+    ? qmdReady
+      ? `${integer(numberValue(qmdMetrics, "symbols_seen"))} symbols, ${integer(numberValue(qmdMetrics, "events_received"))} events`
+      : stringValue(qmdStatus, "message") || stringValue(qmdStatus, "status") || "QMD gateway is not ready."
+    : "Checking dedicated quote/trade gateway.";
   const requestError = errors.find((error) => ["request", "connection"].includes(stringValue(error, "scope")));
   const metadataError = errors.find((error) => ["tables", "columns"].includes(stringValue(error, "scope")));
   const persistenceStatus = stringValue(universePreview?.persistence, "status") || "read_only_preview";
@@ -3994,6 +4012,13 @@ function buildGateProgressSteps({
       status: loading && !massiveCheck ? "running" : massiveCheck?.status === "ready" ? "complete" : massiveCheck ? "blocked" : "waiting",
     }),
     makeGateProgressStep({
+      detail: "Quotes/trades",
+      id: "qmd_gateway",
+      label: "QMD gateway",
+      message: qmdMessage,
+      status: qmdReady ? "complete" : qmdStatus ? "blocked" : "running",
+    }),
+    makeGateProgressStep({
       detail: ibkrChecks.length ? `${ibkrChecks.filter((check) => check.status === "ready").length}/${ibkrChecks.length}` : "Gateway",
       id: "ibkr_client_portal",
       label: "IBKR Client Portal",
@@ -4019,13 +4044,18 @@ function buildGateProgressSteps({
       status: persistenceStatus,
     }),
     makeGateProgressStep({
-      detail: preflightStatus?.ready && universePreview?.can_query_universe ? "Ready" : "Waiting",
+      detail: preflightStatus?.ready && qmdReady && universePreview?.can_query_universe ? "Ready" : "Waiting",
       id: "session_entry",
       label: "Session entry",
-      message: preflightStatus?.ready && universePreview?.can_query_universe ? "Enter Workspace can create a trading_session_id and start async baseline recording." : "Requires ready connections and a valid read-only universe preview.",
-      status: preflightStatus?.ready && universePreview?.can_query_universe ? "ready" : "waiting",
+      message: preflightStatus?.ready && qmdReady && universePreview?.can_query_universe ? "Enter Workspace can create a trading_session_id and start async baseline recording." : "Requires ready broker, market-data gateway, and read-only universe preview.",
+      status: preflightStatus?.ready && qmdReady && universePreview?.can_query_universe ? "ready" : "waiting",
     }),
   ];
+}
+
+function isQmdGatewayReady(gatewayStatus: RealLiveGatewayStatusPayload | null) {
+  const qmdStatus = gatewayStatus?.qmd_gateway && typeof gatewayStatus.qmd_gateway === "object" ? gatewayStatus.qmd_gateway as Record<string, unknown> : null;
+  return Boolean(qmdStatus && ["running", "ready"].includes(stringValue(qmdStatus, "status")));
 }
 
 function progressStepFromBackend(step: RealLiveProgressStep, label = step.label): GateProgressStep {

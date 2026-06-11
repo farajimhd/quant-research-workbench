@@ -1,4 +1,5 @@
 use crate::config::NewsGatewayConfig;
+use crate::extract::stable_hash as stable_hash_parts;
 use crate::model::NewsArticle;
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -112,11 +113,14 @@ impl NewsClickHouse {
         )
         .await?;
         if self.config.benzinga_canonical_enabled {
-            self.execute(&canonical_news_table_sql(&self.config.benzinga_canonical_table, &settings), true)
+            self.execute(&benzinga_event_table_sql(&self.config.benzinga_event_table, &settings), true)
                 .await?;
-            for statement in canonical_news_column_migrations(&self.config.benzinga_canonical_table) {
-                self.execute(&statement, true).await?;
-            }
+            self.execute(&benzinga_text_table_sql(&self.config.benzinga_text_table, &settings), true)
+                .await?;
+            self.execute(&benzinga_url_table_sql(&self.config.benzinga_url_table, &settings), true)
+                .await?;
+            self.execute(&benzinga_attachment_table_sql(&self.config.benzinga_attachment_table, &settings), true)
+                .await?;
         }
         for statement in intelligence_column_migrations() {
             self.execute(statement, true).await?;
@@ -273,20 +277,54 @@ impl NewsClickHouse {
     }
 
     async fn insert_canonical_articles(&self, rows: &[NewsArticle]) -> Result<(), String> {
-        let body = rows
+        let benzinga_rows = rows
             .iter()
             .filter(|row| row.source == "benzinga")
-            .map(|row| canonical_article_json(row).to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        if body.trim().is_empty() {
+            .collect::<Vec<_>>();
+        if benzinga_rows.is_empty() {
             return Ok(());
         }
+        self.insert_json_rows(
+            &self.config.benzinga_event_table,
+            benzinga_rows
+                .iter()
+                .map(|row| benzinga_event_json(row))
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+        self.insert_json_rows(
+            &self.config.benzinga_text_table,
+            benzinga_rows
+                .iter()
+                .flat_map(|row| benzinga_text_json_rows(row))
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+        self.insert_json_rows(
+            &self.config.benzinga_url_table,
+            benzinga_rows
+                .iter()
+                .flat_map(|row| benzinga_url_json_rows(row))
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+        self.insert_json_rows(
+            &self.config.benzinga_attachment_table,
+            benzinga_rows
+                .iter()
+                .flat_map(|row| benzinga_attachment_json_rows(row))
+                .collect::<Vec<_>>(),
+        )
+        .await
+    }
+
+    async fn insert_json_rows(&self, table: &str, rows: Vec<Value>) -> Result<(), String> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let body = rows.into_iter().map(|row| row.to_string()).collect::<Vec<_>>().join("\n");
         self.query(
-            &format!(
-                "INSERT INTO `{}` FORMAT JSONEachRow\n{body}",
-                self.config.benzinga_canonical_table.replace('`', "``")
-            ),
+            &format!("INSERT INTO `{}` FORMAT JSONEachRow\n{body}", table.replace('`', "``")),
             true,
         )
         .await
@@ -327,7 +365,7 @@ impl NewsClickHouse {
     }
 }
 
-fn canonical_news_table_sql(table: &str, settings: &str) -> String {
+fn benzinga_event_table_sql(table: &str, settings: &str) -> String {
     format!(
         r#"
 CREATE TABLE IF NOT EXISTS `{}`
@@ -345,26 +383,18 @@ CREATE TABLE IF NOT EXISTS `{}`
     title String,
     normalized_title String,
     teaser String,
-    body_text String,
-    external_text String,
-    pdf_text String,
-    normalized_full_text String,
     text_hash String,
     article_url String,
-    url_domain LowCardinality(String),
+    article_url_domain String,
     author String,
     tickers Array(String),
     channels Array(String),
     provider_tags Array(String),
     image_urls Array(String),
-    links Array(String),
     has_body UInt8,
     is_title_only UInt8,
     has_external_text UInt8,
     has_pdf UInt8,
-    pdf_urls Array(String),
-    pdf_artifact_paths Array(String),
-    pdf_metadata_json String,
     content_quality_flags Array(LowCardinality(String)),
     external_fetch_status LowCardinality(String),
     external_fetch_error String,
@@ -384,15 +414,111 @@ SETTINGS {settings}
     )
 }
 
-fn canonical_news_column_migrations(table: &str) -> Vec<String> {
-    let safe_table = table.replace('`', "``");
-    vec![format!(
-        "ALTER TABLE `{}` ADD COLUMN IF NOT EXISTS pdf_metadata_json String AFTER pdf_artifact_paths",
-        safe_table
-    )]
+fn benzinga_text_table_sql(table: &str, settings: &str) -> String {
+    format!(
+        r#"
+CREATE TABLE IF NOT EXISTS `{}`
+(
+    canonical_news_id String,
+    provider_article_id String,
+    published_date Date,
+    published_at_utc DateTime64(9, 'UTC'),
+    text_kind LowCardinality(String),
+    text String,
+    text_hash String,
+    text_chars UInt32,
+    text_bytes UInt32,
+    source_count UInt16,
+    normalizer_version LowCardinality(String),
+    updated_at_utc DateTime64(9, 'UTC')
+)
+ENGINE = ReplacingMergeTree(updated_at_utc)
+PARTITION BY toYYYYMM(published_at_utc)
+ORDER BY (published_date, provider_article_id, text_kind)
+SETTINGS {settings}
+"#,
+        table.replace('`', "``")
+    )
 }
 
-fn canonical_article_json(row: &NewsArticle) -> Value {
+fn benzinga_url_table_sql(table: &str, settings: &str) -> String {
+    format!(
+        r#"
+CREATE TABLE IF NOT EXISTS `{}`
+(
+    canonical_news_id String,
+    provider_article_id String,
+    published_date Date,
+    published_at_utc DateTime64(9, 'UTC'),
+    url_hash String,
+    url String,
+    registered_domain String,
+    url_kind LowCardinality(String),
+    url_source LowCardinality(String),
+    url_ordinal UInt16,
+    final_action LowCardinality(String),
+    resolved_action LowCardinality(String),
+    http_status UInt16,
+    content_type String,
+    content_length UInt64,
+    is_downloadable UInt8,
+    is_attached UInt8,
+    artifact_path String,
+    artifact_sha256 String,
+    extraction_method LowCardinality(String),
+    extraction_quality LowCardinality(String),
+    extracted_text_chars UInt32,
+    extracted_text_hash String,
+    normalizer_version LowCardinality(String),
+    updated_at_utc DateTime64(9, 'UTC')
+)
+ENGINE = ReplacingMergeTree(updated_at_utc)
+PARTITION BY toYYYYMM(published_at_utc)
+ORDER BY (published_date, provider_article_id, url_hash)
+SETTINGS {settings}
+"#,
+        table.replace('`', "``")
+    )
+}
+
+fn benzinga_attachment_table_sql(table: &str, settings: &str) -> String {
+    format!(
+        r#"
+CREATE TABLE IF NOT EXISTS `{}`
+(
+    canonical_news_id String,
+    provider_article_id String,
+    published_date Date,
+    published_at_utc DateTime64(9, 'UTC'),
+    url_hash String,
+    url String,
+    registered_domain String,
+    attachment_kind LowCardinality(String),
+    artifact_path String,
+    artifact_sha256 String,
+    content_type String,
+    content_length UInt64,
+    http_status UInt16,
+    extraction_method LowCardinality(String),
+    extraction_quality LowCardinality(String),
+    extracted_text_chars UInt32,
+    extracted_text_hash String,
+    pdf_page_count UInt32,
+    quality_flags Array(LowCardinality(String)),
+    downloaded_at_utc Nullable(DateTime64(9, 'UTC')),
+    normalizer_version LowCardinality(String),
+    updated_at_utc DateTime64(9, 'UTC')
+)
+ENGINE = ReplacingMergeTree(updated_at_utc)
+PARTITION BY toYYYYMM(published_at_utc)
+ORDER BY (published_date, provider_article_id, url_hash)
+SETTINGS {settings}
+"#,
+        table.replace('`', "``")
+    )
+}
+
+fn benzinga_event_json(row: &NewsArticle) -> Value {
     let pdf_text = normalize_text(&row.pdf_texts.join(" "));
     let external_text = if row.extraction_status == "url_enriched" {
         text_delta(&row.extracted_text, &row.body_text)
@@ -420,26 +546,18 @@ fn canonical_article_json(row: &NewsArticle) -> Value {
         "title": &row.title,
         "normalized_title": normalize_title(&row.title),
         "teaser": &row.teaser,
-        "body_text": truncate_text(&row.body_text, 24_000),
-        "external_text": truncate_text(&external_text, 24_000),
-        "pdf_text": truncate_text(&pdf_text, 24_000),
-        "normalized_full_text": normalized_full_text,
-        "text_hash": &row.content_hash,
+        "text_hash": stable_hash(&normalized_full_text),
         "article_url": &row.article_url,
-        "url_domain": &row.url_domain,
+        "article_url_domain": &row.url_domain,
         "author": &row.author,
         "tickers": &row.tickers,
         "channels": &row.channels,
         "provider_tags": &row.tags,
         "image_urls": &row.image_urls,
-        "links": canonical_links(row),
         "has_body": row.has_body,
         "is_title_only": if row.body_text.trim().is_empty() && external_text.trim().is_empty() && pdf_text.trim().is_empty() { 1 } else { 0 },
         "has_external_text": if external_text.trim().is_empty() { 0 } else { 1 },
         "has_pdf": row.has_pdf,
-        "pdf_urls": &row.pdf_urls,
-        "pdf_artifact_paths": Vec::<String>::new(),
-        "pdf_metadata_json": "[]",
         "content_quality_flags": content_quality_flags(row, &external_text, &pdf_text),
         "external_fetch_status": external_fetch_status(row),
         "external_fetch_error": external_fetch_error(row),
@@ -447,21 +565,127 @@ fn canonical_article_json(row: &NewsArticle) -> Value {
         "pdf_extract_error": pdf_extract_error(row),
         "raw_artifact_path": &row.raw_artifact_path,
         "raw_payload_hash": &row.raw_payload_hash,
-        "normalizer_version": "benzinga-normalizer-v1",
+        "normalizer_version": "benzinga-live-normalizer-v2",
+        "updated_at_utc": row.gateway_seen_at.to_rfc3339(),
     })
 }
 
-fn canonical_links(row: &NewsArticle) -> Vec<String> {
+fn benzinga_text_json_rows(row: &NewsArticle) -> Vec<Value> {
+    let pdf_text = normalize_text(&row.pdf_texts.join(" "));
+    let external_text = if row.extraction_status == "url_enriched" {
+        text_delta(&row.extracted_text, &row.body_text)
+    } else {
+        String::new()
+    };
+    let mut rows = Vec::new();
+    for (text_kind, text, source_count) in [
+        ("body", normalize_text(&row.body_text), 1_u16),
+        ("external", normalize_text(&external_text), if external_text.trim().is_empty() { 0_u16 } else { 1_u16 }),
+        ("pdf", normalize_text(&pdf_text), row.pdf_texts.iter().filter(|text| !text.trim().is_empty()).count() as u16),
+    ] {
+        if text.trim().is_empty() {
+            continue;
+        }
+        rows.push(json!({
+            "canonical_news_id": &row.canonical_article_id,
+            "provider_article_id": &row.provider_article_id,
+            "published_date": &row.session_date,
+            "published_at_utc": row.published_at.to_rfc3339(),
+            "text_kind": text_kind,
+            "text": truncate_text(&text, 24_000),
+            "text_hash": stable_hash(&text),
+            "text_chars": text.chars().count() as u32,
+            "text_bytes": text.as_bytes().len() as u32,
+            "source_count": source_count,
+            "normalizer_version": "benzinga-live-normalizer-v2",
+            "updated_at_utc": row.gateway_seen_at.to_rfc3339(),
+        }));
+    }
+    rows
+}
+
+fn benzinga_url_json_rows(row: &NewsArticle) -> Vec<Value> {
     let mut links = Vec::new();
     if !row.article_url.trim().is_empty() {
-        links.push(row.article_url.clone());
+        links.push(("article", row.article_url.clone()));
     }
     for url in &row.pdf_urls {
-        if !url.trim().is_empty() && !links.contains(url) {
-            links.push(url.clone());
+        if !url.trim().is_empty() {
+            links.push(("pdf", url.clone()));
         }
     }
     links
+        .into_iter()
+        .enumerate()
+        .map(|(index, (url_kind, url))| {
+            let normalized_url = url.trim().to_string();
+            let downloadable = if url_kind == "pdf" || normalized_url.to_ascii_lowercase().ends_with(".pdf") { 1 } else { 0 };
+            let attached = if downloadable == 1 && row.pdf_texts.iter().any(|text| !text.trim().is_empty()) { 1 } else { 0 };
+            json!({
+                "canonical_news_id": &row.canonical_article_id,
+                "provider_article_id": &row.provider_article_id,
+                "published_date": &row.session_date,
+                "published_at_utc": row.published_at.to_rfc3339(),
+                "url_hash": stable_hash(&normalized_url),
+                "url": normalized_url,
+                "registered_domain": domain_from_url(&url),
+                "url_kind": url_kind,
+                "url_source": "provider_payload",
+                "url_ordinal": index as u16,
+                "final_action": if downloadable == 1 { "fetch_pdf" } else { "provider_article" },
+                "resolved_action": if downloadable == 1 { "fetch_pdf" } else { "provider_article" },
+                "http_status": 0_u16,
+                "content_type": if downloadable == 1 { "application/pdf" } else { "" },
+                "content_length": 0_u64,
+                "is_downloadable": downloadable,
+                "is_attached": attached,
+                "artifact_path": "",
+                "artifact_sha256": "",
+                "extraction_method": if attached == 1 { "gateway_pdf_text" } else { "" },
+                "extraction_quality": if attached == 1 { "text_present" } else { "" },
+                "extracted_text_chars": if attached == 1 { normalize_text(&row.pdf_texts.join(" ")).chars().count() as u32 } else { 0 },
+                "extracted_text_hash": if attached == 1 { stable_hash(&normalize_text(&row.pdf_texts.join(" "))) } else { String::new() },
+                "normalizer_version": "benzinga-live-normalizer-v2",
+                "updated_at_utc": row.gateway_seen_at.to_rfc3339(),
+            })
+        })
+        .collect()
+}
+
+fn benzinga_attachment_json_rows(row: &NewsArticle) -> Vec<Value> {
+    let pdf_text = normalize_text(&row.pdf_texts.join(" "));
+    if row.pdf_urls.is_empty() {
+        return Vec::new();
+    }
+    row.pdf_urls
+        .iter()
+        .map(|url| {
+            json!({
+                "canonical_news_id": &row.canonical_article_id,
+                "provider_article_id": &row.provider_article_id,
+                "published_date": &row.session_date,
+                "published_at_utc": row.published_at.to_rfc3339(),
+                "url_hash": stable_hash(url),
+                "url": url,
+                "registered_domain": domain_from_url(url),
+                "attachment_kind": "pdf",
+                "artifact_path": "",
+                "artifact_sha256": "",
+                "content_type": "application/pdf",
+                "content_length": 0_u64,
+                "http_status": 0_u16,
+                "extraction_method": if pdf_text.trim().is_empty() { "" } else { "gateway_pdf_text" },
+                "extraction_quality": if pdf_text.trim().is_empty() { "empty" } else { "text_present" },
+                "extracted_text_chars": pdf_text.chars().count() as u32,
+                "extracted_text_hash": if pdf_text.trim().is_empty() { String::new() } else { stable_hash(&pdf_text) },
+                "pdf_page_count": 0_u32,
+                "quality_flags": if pdf_text.trim().is_empty() { vec!["pdf_text_missing"] } else { vec!["pdf_text_present"] },
+                "downloaded_at_utc": row.gateway_seen_at.to_rfc3339(),
+                "normalizer_version": "benzinga-live-normalizer-v2",
+                "updated_at_utc": row.gateway_seen_at.to_rfc3339(),
+            })
+        })
+        .collect()
 }
 
 fn content_quality_flags(row: &NewsArticle, external_text: &str, pdf_text: &str) -> Vec<String> {
@@ -544,6 +768,30 @@ fn text_delta(full_text: &str, body_text: &str) -> String {
 
 fn normalize_title(input: &str) -> String {
     normalize_text(input).to_lowercase()
+}
+
+fn domain_from_url(input: &str) -> String {
+    let stripped = input
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("//");
+    stripped
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .split('@')
+        .last()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn stable_hash(input: &str) -> String {
+    stable_hash_parts(&[input])
 }
 
 fn normalize_text(input: &str) -> String {

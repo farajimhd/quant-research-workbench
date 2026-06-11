@@ -59,6 +59,7 @@ from src.backend.market_data_service import (
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.progress_model import build_progress_model
+from src.backend.qmd_gateway_client import qmd_bars, qmd_catalogs, qmd_indicators, qmd_scanner_snapshot, qmd_status
 from src.backend.real_live_trading_service import (
     configured_real_live_accounts,
     public_account,
@@ -1763,6 +1764,7 @@ def market_chart(
     )
 
 
+@app.get("/api/real-live-trading/warm-charts")
 @app.get("/api/live-trading/warm-charts")
 def live_trading_warm_charts(
     processed_root: str = str(DEFAULT_PROCESSED_ROOT),
@@ -1818,20 +1820,45 @@ def real_live_trading_accounts() -> dict[str, Any]:
 @app.get("/api/real-live-trading/scanner")
 def real_live_trading_scanner(row_limit: int = Query(default=250, ge=1, le=1000)) -> dict[str, Any]:
     try:
+        return qmd_scanner_snapshot(row_limit=row_limit)
+    except Exception as qmd_exc:
+        qmd_error = str(qmd_exc)
+    try:
         return market_gateway_snapshot(row_limit=row_limit)
     except Exception as exc:
         try:
             payload = real_live_scanner_snapshot(row_limit=row_limit)
-            payload["gateway_error"] = str(exc)
+            payload["gateway_error"] = f"QMD gateway failed: {qmd_error}; Python gateway failed: {exc}"
             payload["market_rows"] = payload.get("rows", [])
             return payload
         except Exception as fallback_exc:
-            raise HTTPException(status_code=502, detail=f"{exc}; fallback failed: {fallback_exc}") from fallback_exc
+            raise HTTPException(status_code=502, detail=f"QMD gateway failed: {qmd_error}; Python gateway failed: {exc}; fallback failed: {fallback_exc}") from fallback_exc
 
 
 @app.get("/api/real-live-trading/market-gateway/status")
 def real_live_market_gateway_status() -> dict[str, Any]:
-    return market_gateway_status()
+    payload = market_gateway_status()
+    try:
+        payload["qmd_gateway"] = qmd_status()
+    except Exception as exc:
+        payload["qmd_gateway"] = {"provider": "qmd-gateway", "status": "blocked", "message": str(exc)}
+    return payload
+
+
+@app.get("/api/real-live-trading/qmd-gateway/status")
+def real_live_qmd_gateway_status() -> dict[str, Any]:
+    try:
+        return qmd_status()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/real-live-trading/qmd-gateway/catalogs")
+def real_live_qmd_gateway_catalogs() -> dict[str, Any]:
+    try:
+        return qmd_catalogs()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/real-live-trading/market-gateway/universe-preview")
@@ -1866,9 +1893,24 @@ def real_live_trading_logo(path: str = Query(default="")) -> FileResponse:
 
 
 @app.get("/api/real-live-trading/market-gateway/bars")
-def real_live_market_gateway_bars(symbol: str = "", row_limit: int = Query(default=500, ge=1, le=5000)) -> dict[str, Any]:
+def real_live_market_gateway_bars(symbol: str = "", timeframe: str = "1m", row_limit: int = Query(default=500, ge=1, le=5000)) -> dict[str, Any]:
+    if symbol:
+        try:
+            return qmd_bars(symbol, timeframe=timeframe, row_limit=row_limit)
+        except Exception:
+            pass
     try:
         return market_gateway_bars(symbol=symbol or None, row_limit=row_limit)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/real-live-trading/qmd-gateway/indicators")
+def real_live_qmd_gateway_indicators(symbol: str, timeframe: str = "1m", row_limit: int = Query(default=500, ge=1, le=5000)) -> dict[str, Any]:
+    try:
+        return qmd_indicators(symbol, timeframe=timeframe, row_limit=row_limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
