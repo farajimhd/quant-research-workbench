@@ -1,4 +1,4 @@
-# Benzinga URL Download and Extraction Pipeline
+# Benzinga URL Download, Extraction, and Normalization Pipeline
 
 This replaces the old one-step enrichment script for large runs.
 
@@ -41,6 +41,37 @@ The extractor writes:
 - `news_url_extraction_errors.jsonl`: artifact/read/extraction failures.
 - `news_url_extraction_manifest.json`: run settings and summary.
 
+## Stage 3: Build Normalized News Rows
+
+The row builder reads the original raw Benzinga article JSON and attaches any clean text produced by Stage 2. It does not make network requests and writes rows that match `q_live.benzinga_news_normalized_v1`, so the output can be inserted with the existing ClickHouse news insert helpers.
+
+Recommended workstation command after extraction finishes:
+
+```powershell
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_build_normalized_rows.py --raw-root-win D:/market-data/news-benzinga/raw --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --extraction-root-win D:/market-data/prepared/benzinga_news_url_extraction --output-root-win D:/market-data/prepared/benzinga_news_normalized_rows --text-limit-chars 24000 --max-enriched-text-chars-per-url 12000 --max-enriched-urls-per-article 5 --progress-interval 25000 --flush-interval 1000
+```
+
+Smoke-test command:
+
+```powershell
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_build_normalized_rows.py --raw-root-win D:/market-data/news-benzinga/raw --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --extraction-root-win D:/market-data/prepared/benzinga_news_url_extraction --output-root-win D:/market-data/prepared/benzinga_news_normalized_rows_smoke --limit-articles 1000 --limit-attachment-rows 10000 --progress-interval 100
+```
+
+The row builder writes:
+
+- `benzinga_news_normalized_rows.jsonl`: DB-ready rows with one row per Benzinga article.
+- `benzinga_news_normalized_errors.jsonl`: raw files that could not be normalized.
+- `benzinga_news_normalized_attachment_summary.jsonl`: sidecar metadata showing which extracted URLs were attached to each article.
+- `benzinga_news_normalized_manifest.json`: run paths, counts, quality flags, and timing.
+
+Important behavior:
+
+- The builder includes raw articles even when URL enrichment is missing or failed.
+- The final JSONL contains only table-compatible fields; URL attachment details are kept in the sidecar summary.
+- `external_text`, `pdf_text`, `normalized_full_text`, `text_hash`, `has_external_text`, `has_pdf`, and `content_quality_flags` are recomputed after URL text is attached.
+- `--require-extraction-result` can be added when a run must fail if Stage 2 output is unavailable.
+- `--path-prefix-map FROM=TO` can map workstation paths to a share path for laptop-side validation, for example `--path-prefix-map D:/=//DESKTOP-SAAI85T/Workstation-D/`.
+
 ## Resume
 
 Downloader resume:
@@ -55,9 +86,14 @@ Extractor resume:
 - skips prior non-failed extraction rows
 - retries prior extraction failures
 
+Normalizer resume:
+
+- The row builder is deterministic and cheap compared with downloading. Rerun it into a new output folder when extraction results change.
+
 ## Why This Is Faster
 
 - URLs are domain-interleaved before download.
 - Download and extraction are separate, so CPU-heavy parsing cannot block network fetching.
 - Raw downloaded content is saved once and can be reprocessed without another network request.
 - The downloader has a bounded future queue and high network concurrency.
+- Final normalization is offline, so DB-ready rows can be rebuilt after extraction policy changes without re-downloading URLs.
