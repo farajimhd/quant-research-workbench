@@ -79,6 +79,22 @@ Important behavior:
 - `--inline-extraction-processes` controls URL artifact extraction workers; if omitted or `0`, it uses `--processes`.
 - `--path-prefix-map FROM=TO` can map workstation paths to a share path for laptop-side validation, for example `--path-prefix-map D:/=//DESKTOP-SAAI85T/Workstation-D/`.
 
+## Stage 4: Push Normalized Parts to ClickHouse
+
+The ClickHouse loader reads the Stage 3 manifest, validates each `normalized_parts/*.jsonl` file through the server-side `file()` table function, creates the news table and a part-level ingest manifest table when `--execute` is used, then inserts each part. Reruns skip parts already marked `ok` unless `--force` is passed.
+
+Preflight only:
+
+```powershell
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_clickhouse_file_ingest.py --manifest-root-win D:/market-data/prepared/benzinga_news_normalized_rows --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --preflight-only
+```
+
+Execute:
+
+```powershell
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_clickhouse_file_ingest.py --manifest-root-win D:/market-data/prepared/benzinga_news_normalized_rows --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --execute
+```
+
 ## Resume
 
 Downloader resume:
