@@ -4,6 +4,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from research.mlops.compact_events import DEFAULT_CANONICAL_ROOT, DEFAULT_EVENTS_PER_CHUNK, DEFAULT_PRECOMPUTED_V4_CHUNK_ROOT, DEFAULT_REFERENCE_DIR
+from research.mlops.clickhouse_events import (
+    DEFAULT_CLICKHOUSE_URL,
+    DEFAULT_DATABASE,
+    DEFAULT_EVENTS_TABLE,
+    DEFAULT_MAX_ORIGIN_STRIDE,
+    DEFAULT_MIN_ORIGIN_STRIDE,
+    DEFAULT_ORIGINS_PER_SPAN,
+    DEFAULT_QUERY_BUNDLE_SPANS,
+    DEFAULT_TRAIN_INDEX_TABLE,
+    DEFAULT_VALIDATION_INDEX_TABLE,
+)
 
 
 DEFAULT_TRAIN_START = "2025-11-01"
@@ -14,15 +25,29 @@ DEFAULT_VALIDATION_END = "2025-12-05"
 
 @dataclass(slots=True)
 class DataConfig:
+    data_source: str = "clickhouse_events"
     canonical_root: Path = DEFAULT_CANONICAL_ROOT
     precomputed_chunk_root: Path | None = DEFAULT_PRECOMPUTED_V4_CHUNK_ROOT
     reference_dir: Path = DEFAULT_REFERENCE_DIR
+    clickhouse_url: str = DEFAULT_CLICKHOUSE_URL
+    clickhouse_database: str = DEFAULT_DATABASE
+    events_table: str = DEFAULT_EVENTS_TABLE
+    train_index_table: str = DEFAULT_TRAIN_INDEX_TABLE
+    validation_index_table: str = DEFAULT_VALIDATION_INDEX_TABLE
+    index_table: str = ""
     train_start_date: str = DEFAULT_TRAIN_START
     train_end_date: str = DEFAULT_TRAIN_END
     validation_start_date: str = DEFAULT_VALIDATION_START
     validation_end_date: str = DEFAULT_VALIDATION_END
     tickers: tuple[str, ...] = ("ALL",)
     events_per_chunk: int = DEFAULT_EVENTS_PER_CHUNK
+    num_spans: int = 128
+    origins_per_span: int = DEFAULT_ORIGINS_PER_SPAN
+    min_origin_stride: int = DEFAULT_MIN_ORIGIN_STRIDE
+    max_origin_stride: int = DEFAULT_MAX_ORIGIN_STRIDE
+    query_bundle_spans: int = DEFAULT_QUERY_BUNDLE_SPANS
+    clickhouse_max_threads: int = 8
+    clickhouse_max_memory_usage: str = "80G"
     month_cache_size: int = 8
     max_index_files: int = 0
     strict_lossless: bool = True

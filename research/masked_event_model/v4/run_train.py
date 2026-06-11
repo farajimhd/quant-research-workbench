@@ -8,6 +8,13 @@ from typing import Any
 
 
 DEFAULTS: dict[str, Any] = {
+    "data_source": "clickhouse_events",
+    "clickhouse_url": "http://localhost:18123",
+    "clickhouse_database": "market_sip_compact",
+    "events_table": "events",
+    "train_index_table": "train_2019_to_2025",
+    "validation_index_table": "validation_2026",
+    "index_table": "",
     "canonical_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_compact_v1",
     "precomputed_chunk_root": r"D:\market-data\prepared\us_stocks_sip\v4_compact_event_chunks_v1",
     "reference_dir": None,
@@ -17,6 +24,13 @@ DEFAULTS: dict[str, Any] = {
     "validation_end_date": "2025-12-05",
     "tickers": "ALL",
     "events_per_chunk": 128,
+    "num_spans": 128,
+    "origins_per_span": 32,
+    "min_origin_stride": 1,
+    "max_origin_stride": 16,
+    "query_bundle_spans": 64,
+    "clickhouse_max_threads": 8,
+    "clickhouse_max_memory_usage": "80G",
     "batch_size": 4096,
     "max_steps": 10000,
     "epochs": 1,
@@ -65,6 +79,8 @@ def build_argv(values: dict[str, Any]) -> list[str]:
         if isinstance(value, bool):
             if value:
                 argv.append(flag)
+        elif value is None or value == "":
+            continue
         else:
             argv.extend([flag, str(value)])
     return argv

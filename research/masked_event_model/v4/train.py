@@ -31,6 +31,7 @@ from research.mlops.compact_events import (
     discover_precomputed_chunk_shards,
     iter_precomputed_epoch_batches,
 )
+from research.mlops.clickhouse_events import ClickHouseEventsChunkIterableDataset, ClickHouseEventsDataConfig
 from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
@@ -50,9 +51,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mask_defaults = MaskConfig()
     train_defaults = TrainConfig()
     parser = argparse.ArgumentParser(description="Train compact byte masked event autoencoder v4.")
+    parser.add_argument("--data-source", choices=("clickhouse_events", "precomputed", "canonical"), default=data_defaults.data_source)
     parser.add_argument("--canonical-root", default=str(data_defaults.canonical_root))
     parser.add_argument("--precomputed-chunk-root", default=str(data_defaults.precomputed_chunk_root or ""))
     parser.add_argument("--reference-dir", default=str(data_defaults.reference_dir))
+    parser.add_argument("--clickhouse-url", default=data_defaults.clickhouse_url)
+    parser.add_argument("--clickhouse-database", default=data_defaults.clickhouse_database)
+    parser.add_argument("--events-table", default=data_defaults.events_table)
+    parser.add_argument("--train-index-table", default=data_defaults.train_index_table)
+    parser.add_argument("--validation-index-table", default=data_defaults.validation_index_table)
+    parser.add_argument("--index-table", default=data_defaults.index_table)
     parser.add_argument("--output-root", default="")
     parser.add_argument("--run-root", default="")
     parser.add_argument("--train-start-date", default=data_defaults.train_start_date)
@@ -61,6 +69,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--validation-end-date", default=data_defaults.validation_end_date)
     parser.add_argument("--tickers", default="ALL")
     parser.add_argument("--events-per-chunk", type=int, default=data_defaults.events_per_chunk)
+    parser.add_argument("--num-spans", type=int, default=data_defaults.num_spans)
+    parser.add_argument("--origins-per-span", type=int, default=data_defaults.origins_per_span)
+    parser.add_argument("--min-origin-stride", type=int, default=data_defaults.min_origin_stride)
+    parser.add_argument("--max-origin-stride", type=int, default=data_defaults.max_origin_stride)
+    parser.add_argument("--query-bundle-spans", type=int, default=data_defaults.query_bundle_spans)
+    parser.add_argument("--clickhouse-max-threads", type=int, default=data_defaults.clickhouse_max_threads)
+    parser.add_argument("--clickhouse-max-memory-usage", default=data_defaults.clickhouse_max_memory_usage)
     parser.add_argument("--month-cache-size", type=int, default=data_defaults.month_cache_size)
     parser.add_argument("--max-index-files", type=int, default=data_defaults.max_index_files)
     parser.add_argument("--batch-size", type=int, default=train_defaults.batch_size)
@@ -140,9 +155,15 @@ def main(argv: list[str] | None = None) -> None:
         args=vars(args),
         config=dataclass_tree(config),
         data_roots={
+            "data_source": config.data.data_source,
             "canonical_root": str(config.data.canonical_root),
             "precomputed_chunk_root": str(config.data.precomputed_chunk_root or ""),
             "reference_dir": str(config.data.reference_dir),
+            "clickhouse_url": config.data.clickhouse_url,
+            "clickhouse_database": config.data.clickhouse_database,
+            "events_table": config.data.events_table,
+            "train_index_table": config.data.train_index_table,
+            "validation_index_table": config.data.validation_index_table,
         },
         output_root=output_dir,
         wandb_info={"project": args.wandb_project, "entity": args.wandb_entity, "run_name": run_name},
@@ -172,7 +193,7 @@ def main(argv: list[str] | None = None) -> None:
         metric_logger.log(val_metrics, global_step)
         print("VALIDATION " + format_metrics(global_step, val_metrics), flush=True)
 
-    if config.data.precomputed_chunk_root is not None:
+    if config.data.data_source == "precomputed":
         global_step = train_precomputed_epochs(
             model=model,
             train_model=train_model,
@@ -451,15 +472,29 @@ def maybe_log_train_and_validation(
 def build_config(args: argparse.Namespace) -> ExperimentConfig:
     return ExperimentConfig(
         data=DataConfig(
+            data_source=args.data_source,
             canonical_root=Path(args.canonical_root),
             precomputed_chunk_root=Path(args.precomputed_chunk_root) if args.precomputed_chunk_root else None,
             reference_dir=Path(args.reference_dir),
+            clickhouse_url=args.clickhouse_url,
+            clickhouse_database=args.clickhouse_database,
+            events_table=args.events_table,
+            train_index_table=args.train_index_table,
+            validation_index_table=args.validation_index_table,
+            index_table=args.index_table,
             train_start_date=args.train_start_date,
             train_end_date=args.train_end_date,
             validation_start_date=args.validation_start_date,
             validation_end_date=args.validation_end_date,
             tickers=tuple(part.strip().upper() for part in args.tickers.split(",") if part.strip()) or ("ALL",),
             events_per_chunk=args.events_per_chunk,
+            num_spans=args.num_spans,
+            origins_per_span=args.origins_per_span,
+            min_origin_stride=args.min_origin_stride,
+            max_origin_stride=args.max_origin_stride,
+            query_bundle_spans=args.query_bundle_spans,
+            clickhouse_max_threads=args.clickhouse_max_threads,
+            clickhouse_max_memory_usage=args.clickhouse_max_memory_usage,
             month_cache_size=args.month_cache_size,
             max_index_files=args.max_index_files,
         ),
@@ -473,9 +508,14 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
 def make_loader(config: ExperimentConfig, split: str, seed: int) -> DataLoader:
     data = config.data
     start, end = (data.train_start_date, data.train_end_date) if split == "train" else (data.validation_start_date, data.validation_end_date)
-    if data.precomputed_chunk_root is not None:
+    if data.data_source == "clickhouse_events":
+        dataset = ClickHouseEventsChunkIterableDataset(clickhouse_events_data_config(config, split, seed))
+        return DataLoader(dataset, batch_size=None, num_workers=0, pin_memory=False)
+    if data.data_source == "precomputed":
         dataset = PrecomputedV4ChunkIterableDataset(precomputed_data_config(config, split, seed))
         return DataLoader(dataset, batch_size=None, num_workers=0, pin_memory=False)
+    if data.data_source != "canonical":
+        raise ValueError(f"Unsupported data_source={data.data_source!r}")
     dataset_config = CompactEventDataConfig(
         canonical_root=data.canonical_root,
         reference_dir=data.reference_dir,
@@ -503,7 +543,7 @@ def build_validation_cache(config: ExperimentConfig, seed: int) -> list[dict[str
     if config.train.pretrain_validation_frequency <= 0 or config.train.pretrain_validation_steps <= 0:
         return []
     print(f"Building fixed validation cache batches={config.train.pretrain_validation_steps}", flush=True)
-    if config.data.precomputed_chunk_root is not None:
+    if config.data.data_source == "precomputed":
         batches = build_fixed_precomputed_validation_batches(
             precomputed_data_config(config, "validation", seed),
             batch_count=config.train.pretrain_validation_steps,
@@ -541,6 +581,32 @@ def precomputed_data_config(config: ExperimentConfig, split: str, seed: int) -> 
         seed=seed,
         shard_cache_size=data.month_cache_size,
         max_shards=data.max_index_files,
+    )
+
+
+def clickhouse_events_data_config(config: ExperimentConfig, split: str, seed: int) -> ClickHouseEventsDataConfig:
+    data = config.data
+    return ClickHouseEventsDataConfig(
+        clickhouse_url=data.clickhouse_url,
+        database=data.clickhouse_database,
+        events_table=data.events_table,
+        train_index_table=data.train_index_table,
+        validation_index_table=data.validation_index_table,
+        index_table=data.index_table,
+        split=split,
+        tickers=data.tickers,
+        events_per_chunk=data.events_per_chunk,
+        batch_size=config.train.batch_size,
+        num_spans=data.num_spans,
+        origins_per_span=data.origins_per_span,
+        min_origin_stride=data.min_origin_stride,
+        max_origin_stride=data.max_origin_stride,
+        query_bundle_spans=data.query_bundle_spans,
+        max_threads=data.clickhouse_max_threads,
+        max_memory_usage=data.clickhouse_max_memory_usage,
+        seed=seed,
+        max_index_rows=data.max_index_files,
+        strict_lossless=data.strict_lossless,
     )
 
 

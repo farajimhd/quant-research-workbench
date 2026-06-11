@@ -1,6 +1,11 @@
 # Masked Event Model v4
 
 v4 trains a compact byte-level masked autoencoder over `EventsChunk` samples.
+The default data source is now the final ClickHouse unified event table:
+
+```text
+market_sip_compact.events
+```
 
 Input:
 
@@ -29,29 +34,54 @@ header_bit_logits: [masked_header_bytes, 8]
 event_bit_logits:  [masked_event_bytes, 8]
 ```
 
-Default precomputed chunk root:
+Default ClickHouse training source:
 
 ```text
-D:/market-data/prepared/us_stocks_sip/v4_compact_event_chunks_v1
+events table: market_sip_compact.events
+train index:  market_sip_compact.train_2019_to_2025
+val index:    market_sip_compact.validation_2026
 ```
 
-Build precomputed v4 chunks first:
-
-```powershell
-python -m research.mlops.run_build_v4_chunks --rebuild
-```
-
-The trainer accepts either the prepared root above or its `chunks` subfolder as `--precomputed-chunk-root`.
-Chunk build issues and state are written under:
+The loader samples ordinal spans:
 
 ```text
-D:/market-data/prepared/us_stocks_sip/v4_compact_event_chunks_v1/issues
+batch_size = num_spans * origins_per_span
 ```
+
+Default:
+
+```text
+batch_size = 4096
+num_spans = 128
+origins_per_span = 32
+random origin_stride = 1..16
+query_bundle_spans = 64
+```
+
+Each span chooses one ticker from the split index, one base origin ordinal, and
+a random stride. It fetches one continuous ClickHouse range with:
+
+```sql
+PREWHERE ticker = <ticker>
+  AND ordinal >= <low>
+  AND ordinal <= <high>
+FORMAT RowBinary
+```
+
+The loader then makes multiple training samples from that span by sliding
+128-event windows locally. This avoids one ClickHouse query per sample.
 
 Run training:
 
 ```powershell
 python research\masked_event_model\v4\run_train.py
+```
+
+Alternative older data paths remain available:
+
+```powershell
+python research\masked_event_model\v4\run_train.py --data-source precomputed
+python research\masked_event_model\v4\run_train.py --data-source canonical
 ```
 
 Precomputed training uses shard epochs:
