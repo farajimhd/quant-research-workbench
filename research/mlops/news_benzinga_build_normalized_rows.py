@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import json
 import os
 import sys
 import time
+import warnings
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +43,7 @@ DEFAULT_EXTRACTION_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_url_ex
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_normalized_rows")
 DEFAULT_TEXT_LIMIT_CHARS = 24_000
 DOWNLOADABLE_ACTIONS = {"fetch_html", "fetch_pdf", "fetch_text", "resolve_redirect", "sec_handler"}
+WORKER_PROCESS_CONFIGURED = False
 NEWS_TABLE_COLUMNS = [
     "provider",
     "provider_article_id",
@@ -159,6 +162,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_PROCESSES", str(max(1, (os.cpu_count() or 4) // 2)))))
     parser.add_argument("--max-pending-futures", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_MAX_PENDING", "0")))
     parser.add_argument("--inline-extract", action=argparse.BooleanOptionalAction, default=os.environ.get("NEWS_BENZINGA_NORMALIZED_INLINE_EXTRACT", "1") != "0")
+    parser.add_argument("--reuse-inline-extraction", action=argparse.BooleanOptionalAction, default=os.environ.get("NEWS_BENZINGA_NORMALIZED_REUSE_INLINE_EXTRACT", "1") != "0")
     parser.add_argument("--inline-extraction-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_INLINE_EXTRACT_PROCESSES", "0")))
     parser.add_argument("--inline-extraction-progress-interval", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_INLINE_EXTRACT_PROGRESS_INTERVAL", "1000")))
     parser.add_argument("--max-pdf-bytes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_MAX_PDF_BYTES", "12000000")))
@@ -225,6 +229,8 @@ def main() -> None:
         if extraction_path.exists() and attachment_index.url_hashes
         else {}
     )
+    if args.reuse_inline_extraction and attachment_index.url_hashes:
+        load_prior_inline_enrichments(args, output_root, attachment_index, enrichment_index)
     inline_extraction_stats = {}
     if args.inline_extract and attachment_index.url_hashes:
         missing_url_hashes = attachment_index.url_hashes - set(enrichment_index)
@@ -236,6 +242,29 @@ def main() -> None:
             enrichment_index=enrichment_index,
             started=started,
         )
+        if inline_extraction_stats.get("interrupted"):
+            manifest = interrupted_manifest(
+                args=args,
+                run_id=run_id,
+                run_root=run_root,
+                raw_root=raw_root,
+                attachment_path=attachment_path,
+                download_path=download_path,
+                extraction_path=extraction_path,
+                normalized_parts_dir=normalized_parts_dir,
+                error_path=error_path,
+                attachment_summary_path=attachment_summary_path,
+                loaded_env_files=loaded_env_files,
+                path_maps=path_maps,
+                attachment_index=attachment_index,
+                enrichment_index=enrichment_index,
+                inline_extraction_stats=inline_extraction_stats,
+                started=started,
+            )
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+            print("manifest_path=" + str(manifest_path), flush=True)
+            print("summary=" + json.dumps(manifest, sort_keys=True), flush=True)
+            return
     raw_jobs = collect_raw_jobs(args, raw_root, attachment_index, path_maps)
 
     counters: Counter[str] = Counter()
@@ -290,10 +319,14 @@ def main() -> None:
         "raw_jobs": len(raw_jobs),
         "rows_written": written,
         "error_count": error_count,
-        "attachment_article_count": len(attachment_index.by_article),
+        "attachment_article_count": len(attachment_index.unique_article_ids),
+        "attachment_lookup_key_count": len(attachment_index.by_article),
         "attachment_url_count": len(attachment_index.url_hashes),
         "enrichment_url_count": len(enrichment_index),
         "inline_extraction": inline_extraction_stats,
+        "reuse_inline_extraction": bool(args.reuse_inline_extraction),
+        "interrupted": bool(inline_extraction_stats.get("interrupted") or run_stats.get("interrupted")),
+        "interrupted_stage": "normalization" if run_stats.get("interrupted") else "",
         "status_counts": dict(counters),
         "quality_flag_counts": dict(flag_counts),
         "text_limit_chars": args.text_limit_chars,
@@ -315,6 +348,7 @@ class AttachmentIndex:
         self.by_article: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.raw_jobs: dict[str, RawJob] = {}
         self.url_hashes: set[str] = set()
+        self.unique_article_ids: set[str] = set()
 
 
 class RawJob:
@@ -566,6 +600,9 @@ def load_attachment_index(args: argparse.Namespace, path: Path, path_maps: list[
             row["resolved_raw_artifact_path"] = str(raw_path)
             for key in attachment_keys(row):
                 index.by_article[key].append(row)
+            article_id = attachment_article_id(row)
+            if article_id:
+                index.unique_article_ids.add(article_id)
             url_hash = str(row.get("url_hash") or "")
             if url_hash:
                 index.url_hashes.add(url_hash)
@@ -579,16 +616,29 @@ def load_attachment_index(args: argparse.Namespace, path: Path, path_maps: list[
                 )
             if line_number % 1_000_000 == 0:
                 print(
-                    f"attachments_loaded={line_number:,} articles={len(index.by_article):,} "
-                    f"urls={len(index.url_hashes):,} elapsed={time.perf_counter() - started:.1f}s",
+                    f"attachments_loaded={line_number:,} unique_articles={len(index.unique_article_ids):,} "
+                    f"lookup_keys={len(index.by_article):,} urls={len(index.url_hashes):,} "
+                    f"elapsed={time.perf_counter() - started:.1f}s",
                     flush=True,
                 )
     print(
-        f"attachments_loaded=done articles={len(index.by_article):,} urls={len(index.url_hashes):,} "
+        f"attachments_loaded=done unique_articles={len(index.unique_article_ids):,} "
+        f"lookup_keys={len(index.by_article):,} urls={len(index.url_hashes):,} "
         f"raw_jobs={len(index.raw_jobs):,} elapsed={time.perf_counter() - started:.1f}s",
         flush=True,
     )
     return index
+
+
+def attachment_article_id(row: dict[str, Any]) -> str:
+    provider_id = str(row.get("provider_article_id") or "")
+    if provider_id:
+        return f"provider:{provider_id}"
+    canonical = str(row.get("canonical_news_id") or "")
+    if canonical:
+        return f"canonical:{canonical}"
+    raw_path = str(row.get("resolved_raw_artifact_path") or row.get("raw_artifact_path") or "")
+    return f"raw:{normalize_path_text(raw_path)}" if raw_path else ""
 
 
 def attachment_keys(row: dict[str, Any]) -> list[str]:
@@ -626,6 +676,52 @@ def load_enrichment_index(args: argparse.Namespace, path: Path, attachment_index
                 print(f"enrichments_loaded={len(enrichments):,} lines={line_number:,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
     print(f"enrichments_loaded=done rows={len(enrichments):,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
     return enrichments
+
+
+def load_prior_inline_enrichments(
+    args: argparse.Namespace,
+    output_root: Path,
+    attachment_index: AttachmentIndex,
+    enrichment_index: dict[str, dict[str, Any]],
+) -> None:
+    needed = attachment_index.url_hashes - set(enrichment_index)
+    if not needed:
+        return
+    started = time.perf_counter()
+    loaded = 0
+    files = sorted(output_root.glob("*/benzinga_news_inline_extraction_result.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in files:
+        if not needed:
+            break
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    url_hash = str(row.get("url_hash") or "")
+                    if url_hash not in needed:
+                        continue
+                    text = normalize_text(str(row.get("extracted_text") or ""))
+                    if row.get("status") == "failed" or not text:
+                        continue
+                    row["extracted_text"] = truncate_text(text, max(0, args.max_enriched_text_chars_per_url))
+                    enrichment_index[url_hash] = row
+                    needed.remove(url_hash)
+                    loaded += 1
+                    if args.inline_extraction_progress_interval and loaded % max(1, args.inline_extraction_progress_interval * 10) == 0:
+                        print(
+                            f"prior_inline_enrichments_loaded={loaded:,} remaining={len(needed):,} "
+                            f"elapsed={time.perf_counter() - started:.1f}s",
+                            flush=True,
+                        )
+        except OSError as exc:
+            print(f"WARN prior inline extraction file skipped path={path} exception={exc!r}", flush=True)
+    print(
+        f"prior_inline_enrichments_loaded=done rows={loaded:,} remaining={len(needed):,} "
+        f"files={len(files):,} elapsed={time.perf_counter() - started:.1f}s",
+        flush=True,
+    )
 
 
 def load_download_index(
@@ -679,36 +775,50 @@ def run_inline_extraction(
     processed = 0
     succeeded = 0
     failed = 0
+    submitted = 0
+    interrupted = False
+    pending_count_at_shutdown = 0
+    cancelled_count = 0
     counters: Counter[str] = Counter()
     print(f"inline_extraction=start rows={len(rows):,} processes={worker_count} max_pending_futures={max_pending}", flush=True)
     with result_path.open("w", encoding="utf-8") as result_handle, error_path.open("w", encoding="utf-8") as error_handle:
         if worker_count == 1:
-            for row in rows:
-                extracted = extract_inline_worker(row, args.max_enriched_text_chars_per_url, args.max_pdf_bytes)
-                processed, succeeded, failed = handle_inline_extraction_result(
-                    extracted,
-                    enrichment_index,
-                    result_handle,
-                    error_handle,
-                    counters,
-                    processed,
-                    succeeded,
-                    failed,
-                )
-                if args.inline_extraction_progress_interval and processed % args.inline_extraction_progress_interval == 0:
-                    print_inline_progress(processed, len(rows), succeeded, failed, counters, started)
+            try:
+                for row in rows:
+                    extracted = extract_inline_worker(row, args.max_enriched_text_chars_per_url, args.max_pdf_bytes)
+                    processed, succeeded, failed = handle_inline_extraction_result(
+                        extracted,
+                        enrichment_index,
+                        result_handle,
+                        error_handle,
+                        counters,
+                        processed,
+                        succeeded,
+                        failed,
+                    )
+                    submitted += 1
+                    if args.inline_extraction_progress_interval and processed % args.inline_extraction_progress_interval == 0:
+                        print_inline_progress(processed, len(rows), succeeded, failed, counters, started)
+            except KeyboardInterrupt:
+                interrupted = True
+                pending_count_at_shutdown = 0
+                print_inline_interrupt(processed, len(rows), pending_count_at_shutdown, cancelled_count, started)
         else:
             row_iter = iter(rows)
             pending: set[concurrent.futures.Future[dict[str, Any]]] = set()
-            with concurrent.futures.ProcessPoolExecutor(max_workers=worker_count) as executor:
-                def submit_until_capacity() -> None:
-                    while len(pending) < max_pending:
-                        try:
-                            next_row = next(row_iter)
-                        except StopIteration:
-                            return
-                        pending.add(executor.submit(extract_inline_worker, next_row, args.max_enriched_text_chars_per_url, args.max_pdf_bytes))
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=worker_count, initializer=configure_worker_process)
 
+            def submit_until_capacity() -> None:
+                nonlocal submitted
+                while len(pending) < max_pending:
+                    try:
+                        next_row = next(row_iter)
+                    except StopIteration:
+                        return
+                    pending.add(executor.submit(extract_inline_worker, next_row, args.max_enriched_text_chars_per_url, args.max_pdf_bytes))
+                    submitted += 1
+
+            try:
                 submit_until_capacity()
                 while pending:
                     done, pending = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
@@ -730,12 +840,26 @@ def run_inline_extraction(
                     submit_until_capacity()
                     if args.inline_extraction_progress_interval and processed % args.inline_extraction_progress_interval == 0:
                         print_inline_progress(processed, len(rows), succeeded, failed, counters, started)
+            except KeyboardInterrupt:
+                interrupted = True
+                pending_count_at_shutdown = len(pending)
+                for future in pending:
+                    if future.cancel():
+                        cancelled_count += 1
+                print_inline_interrupt(processed, len(rows), pending_count_at_shutdown, cancelled_count, started)
+                executor.shutdown(wait=False, cancel_futures=True)
+            else:
+                executor.shutdown(wait=True, cancel_futures=False)
     print_inline_progress(processed, len(rows), succeeded, failed, counters, started)
     return {
         "rows": len(rows),
         "processed": processed,
         "succeeded": succeeded,
         "failed": failed,
+        "submitted": submitted,
+        "interrupted": interrupted,
+        "pending_count_at_shutdown": pending_count_at_shutdown,
+        "cancelled_count": cancelled_count,
         "status_counts": dict(counters),
         "result_path": str(result_path),
         "error_path": str(error_path),
@@ -743,7 +867,27 @@ def run_inline_extraction(
 
 
 def extract_inline_worker(row: dict[str, Any], max_text_chars: int, max_pdf_bytes: int) -> dict[str, Any]:
+    configure_worker_process()
     return extract_downloaded_url_row(row, max_text_chars, max_pdf_bytes)
+
+
+def configure_worker_process() -> None:
+    global WORKER_PROCESS_CONFIGURED
+    if WORKER_PROCESS_CONFIGURED:
+        return
+    WORKER_PROCESS_CONFIGURED = True
+    warnings.filterwarnings("ignore", message="tzname .* identified but not understood.*")
+    for module_name in ("pymupdf", "fitz"):
+        try:
+            module = __import__(module_name)
+        except Exception:  # noqa: BLE001
+            continue
+        tools = getattr(module, "TOOLS", None)
+        for method_name in ("mupdf_display_errors", "mupdf_display_warnings"):
+            method = getattr(tools, method_name, None)
+            if method is not None:
+                with contextlib.suppress(Exception):
+                    method(False)
 
 
 def handle_inline_extraction_result(
@@ -778,6 +922,86 @@ def print_inline_progress(processed: int, total: int, succeeded: int, failed: in
         f"failed={failed:,} rate={rate:.1f}/s statuses={dict(counters)} elapsed={elapsed:.1f}s",
         flush=True,
     )
+
+
+def print_inline_interrupt(processed: int, total: int, pending_count: int, cancelled_count: int, started: float) -> None:
+    print(
+        f"inline_extraction_interrupt=received processed={processed:,}/{total:,} "
+        f"pending={pending_count:,} cancelled={cancelled_count:,} elapsed={time.perf_counter() - started:.1f}s",
+        flush=True,
+    )
+
+
+def print_normalization_interrupt(processed: int, total: int, pending_count: int, cancelled_count: int, started: float) -> None:
+    print(
+        f"normalization_interrupt=received processed={processed:,}/{total:,} "
+        f"pending={pending_count:,} cancelled={cancelled_count:,} elapsed={time.perf_counter() - started:.1f}s",
+        flush=True,
+    )
+
+
+def interrupted_manifest(
+    *,
+    args: argparse.Namespace,
+    run_id: str,
+    run_root: Path,
+    raw_root: Path,
+    attachment_path: Path,
+    download_path: Path,
+    extraction_path: Path,
+    normalized_parts_dir: Path,
+    error_path: Path,
+    attachment_summary_path: Path,
+    loaded_env_files: list[Path],
+    path_maps: list[tuple[str, str]],
+    attachment_index: AttachmentIndex,
+    enrichment_index: dict[str, dict[str, Any]],
+    inline_extraction_stats: dict[str, Any],
+    started: float,
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "created_at_utc": datetime.now(UTC).isoformat(),
+        "run_root": str(run_root),
+        "raw_root": str(raw_root),
+        "attachment_path": str(attachment_path) if attachment_path.exists() else "",
+        "download_path": str(download_path) if download_path.exists() else "",
+        "extraction_path": str(extraction_path) if extraction_path.exists() else "",
+        "normalized_parts_dir": str(normalized_parts_dir),
+        "normalized_file_glob": str(normalized_parts_dir / "benzinga_news_normalized_part_*.jsonl"),
+        "normalized_part_files": [],
+        "clickhouse_format": "JSONEachRow",
+        "clickhouse_target_database": args.target_database,
+        "clickhouse_target_table": args.target_table,
+        "clickhouse_columns": NEWS_TABLE_COLUMNS,
+        "clickhouse_structure": ", ".join(NEWS_TABLE_STRUCTURE),
+        "clickhouse_file_insert_template": clickhouse_file_insert_template(args, normalized_parts_dir),
+        "error_path": str(error_path),
+        "attachment_summary_path": str(attachment_summary_path),
+        "loaded_env_files": [str(path) for path in loaded_env_files],
+        "path_prefix_maps": [{"from": old, "to": new} for old, new in path_maps],
+        "raw_jobs": 0,
+        "rows_written": 0,
+        "error_count": 0,
+        "attachment_article_count": len(attachment_index.unique_article_ids),
+        "attachment_lookup_key_count": len(attachment_index.by_article),
+        "attachment_url_count": len(attachment_index.url_hashes),
+        "enrichment_url_count": len(enrichment_index),
+        "inline_extraction": inline_extraction_stats,
+        "reuse_inline_extraction": bool(args.reuse_inline_extraction),
+        "interrupted": True,
+        "interrupted_stage": "inline_extraction",
+        "status_counts": {},
+        "quality_flag_counts": {},
+        "text_limit_chars": args.text_limit_chars,
+        "max_enriched_text_chars_per_url": args.max_enriched_text_chars_per_url,
+        "max_enriched_urls_per_article": args.max_enriched_urls_per_article,
+        "processes": max(1, args.processes),
+        "max_pending_futures": max(1, args.max_pending_futures or max(1, args.processes) * 4),
+        "rows_per_file": max(1, args.rows_per_file),
+        "max_output_file_bytes": max(1, args.max_output_file_bytes),
+        "wall_seconds": round(time.perf_counter() - started, 3),
+    }
 
 
 def collect_raw_jobs(args: argparse.Namespace, raw_root: Path, attachment_index: AttachmentIndex, path_maps: list[tuple[str, str]]) -> list[RawJob]:
@@ -826,36 +1050,43 @@ def run_normalization_workers(
     processed = 0
     written = 0
     error_count = 0
+    interrupted = False
 
     if worker_count == 1:
-        for job in raw_jobs:
-            attachments = job_attachments(job, attachment_index)
-            enrichments = article_enrichments(attachments, enrichment_index)
-            try:
-                row, summary = build_normalized_row(args, job, attachments, enrichments)
-                written += write_success(row, summary, normalized_writer, summary_handle, counters, flag_counts)
-            except Exception as exc:  # noqa: BLE001
-                error_count += write_error(job, exc, error_handle, counters)
-            processed += 1
-            maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, normalized_writer, error_handle, summary_handle, started)
-        return {"processed": processed, "written": written, "error_count": error_count}
+        try:
+            for job in raw_jobs:
+                attachments = job_attachments(job, attachment_index)
+                enrichments = article_enrichments(attachments, enrichment_index)
+                try:
+                    row, summary = build_normalized_row(args, job, attachments, enrichments)
+                    written += write_success(row, summary, normalized_writer, summary_handle, counters, flag_counts)
+                except Exception as exc:  # noqa: BLE001
+                    error_count += write_error(job, exc, error_handle, counters)
+                processed += 1
+                maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, normalized_writer, error_handle, summary_handle, started)
+        except KeyboardInterrupt:
+            interrupted = True
+            print_normalization_interrupt(processed, len(raw_jobs), 0, 0, started)
+        return {"processed": processed, "written": written, "error_count": error_count, "interrupted": interrupted}
 
     job_iter = iter(raw_jobs)
     pending: set[concurrent.futures.Future[tuple[dict[str, Any], dict[str, Any]]]] = set()
     future_jobs: dict[concurrent.futures.Future[tuple[dict[str, Any], dict[str, Any]]], RawJob] = {}
-    with concurrent.futures.ProcessPoolExecutor(max_workers=worker_count) as executor:
-        def submit_until_capacity() -> None:
-            while len(pending) < max_pending:
-                try:
-                    job = next(job_iter)
-                except StopIteration:
-                    return
-                attachments = job_attachments(job, attachment_index)
-                enrichments = article_enrichments(attachments, enrichment_index)
-                future = executor.submit(build_normalized_row_worker, args, job, attachments, enrichments)
-                pending.add(future)
-                future_jobs[future] = job
+    executor = concurrent.futures.ProcessPoolExecutor(max_workers=worker_count, initializer=configure_worker_process)
 
+    def submit_until_capacity() -> None:
+        while len(pending) < max_pending:
+            try:
+                job = next(job_iter)
+            except StopIteration:
+                return
+            attachments = job_attachments(job, attachment_index)
+            enrichments = article_enrichments(attachments, enrichment_index)
+            future = executor.submit(build_normalized_row_worker, args, job, attachments, enrichments)
+            pending.add(future)
+            future_jobs[future] = job
+
+    try:
         submit_until_capacity()
         while pending:
             done, pending = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
@@ -869,7 +1100,18 @@ def run_normalization_workers(
                 processed += 1
             submit_until_capacity()
             maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, normalized_writer, error_handle, summary_handle, started)
-    return {"processed": processed, "written": written, "error_count": error_count}
+    except KeyboardInterrupt:
+        interrupted = True
+        pending_count = len(pending)
+        cancelled_count = 0
+        for future in pending:
+            if future.cancel():
+                cancelled_count += 1
+        print_normalization_interrupt(processed, len(raw_jobs), pending_count, cancelled_count, started)
+        executor.shutdown(wait=False, cancel_futures=True)
+    else:
+        executor.shutdown(wait=True, cancel_futures=False)
+    return {"processed": processed, "written": written, "error_count": error_count, "interrupted": interrupted}
 
 
 def build_normalized_row_worker(
