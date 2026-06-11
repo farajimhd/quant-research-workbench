@@ -15,6 +15,7 @@ from research.mlops.clickhouse_events import (
     DEFAULT_TRAIN_INDEX_TABLE,
     DEFAULT_VALIDATION_INDEX_TABLE,
 )
+from research.mlops.event_sample_cache import DEFAULT_SAMPLE_CACHE_ROOT
 
 
 DEFAULT_TRAIN_START = "2025-11-01"
@@ -28,6 +29,7 @@ class DataConfig:
     data_source: str = "clickhouse_events"
     canonical_root: Path = DEFAULT_CANONICAL_ROOT
     precomputed_chunk_root: Path | None = DEFAULT_PRECOMPUTED_V4_CHUNK_ROOT
+    sample_cache_root: Path | None = DEFAULT_SAMPLE_CACHE_ROOT
     reference_dir: Path = DEFAULT_REFERENCE_DIR
     clickhouse_url: str = DEFAULT_CLICKHOUSE_URL
     clickhouse_database: str = DEFAULT_DATABASE
@@ -49,6 +51,9 @@ class DataConfig:
     clickhouse_max_threads: int = 8
     clickhouse_max_memory_usage: str = "80G"
     month_cache_size: int = 8
+    sample_cache_prefetch_shards: int = 2
+    sample_cache_shuffle_shards: bool = True
+    sample_cache_shuffle_samples: bool = True
     max_index_files: int = 0
     strict_lossless: bool = True
 

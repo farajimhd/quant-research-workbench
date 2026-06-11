@@ -8,7 +8,7 @@ from typing import Any
 
 
 DEFAULTS: dict[str, Any] = {
-    "data_source": "clickhouse_events",
+    "data_source": "sample_cache",
     "clickhouse_url": "http://localhost:18123",
     "clickhouse_database": "market_sip_compact",
     "events_table": "events",
@@ -17,6 +17,7 @@ DEFAULTS: dict[str, Any] = {
     "index_table": "",
     "canonical_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_compact_v1",
     "precomputed_chunk_root": r"D:\market-data\prepared\us_stocks_sip\v4_compact_event_chunks_v1",
+    "sample_cache_root": r"D:\market-data\prepared\event_sample_cache",
     "reference_dir": None,
     "train_start_date": "2025-11-01",
     "train_end_date": "2025-11-30",
@@ -31,6 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "query_bundle_spans": 64,
     "clickhouse_max_threads": 8,
     "clickhouse_max_memory_usage": "80G",
+    "sample_cache_prefetch_shards": 2,
     "batch_size": 4096,
     "max_steps": 10000,
     "epochs": 1,

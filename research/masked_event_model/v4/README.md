@@ -1,10 +1,10 @@
 # Masked Event Model v4
 
-v4 trains a compact byte-level masked autoencoder over `EventsChunk` samples.
-The default data source is now the final ClickHouse unified event table:
+v4 trains a compact byte-level masked autoencoder over compact event samples.
+The intended training path is now:
 
 ```text
-market_sip_compact.events
+market_sip_compact.events -> SSD sample cache -> GPU training
 ```
 
 Input:
@@ -34,7 +34,7 @@ header_bit_logits: [masked_header_bytes, 8]
 event_bit_logits:  [masked_event_bytes, 8]
 ```
 
-Default ClickHouse training source:
+Default ClickHouse source used to build the sample cache:
 
 ```text
 events table: market_sip_compact.events
@@ -42,7 +42,7 @@ train index:  market_sip_compact.train_2019_to_2025
 val index:    market_sip_compact.validation_2026
 ```
 
-The loader samples ordinal spans:
+The cache builder samples ordinal spans:
 
 ```text
 batch_size = num_spans * origins_per_span
@@ -68,8 +68,28 @@ PREWHERE ticker = <ticker>
 FORMAT RowBinary
 ```
 
-The loader then makes multiple training samples from that span by sliding
+The builder then makes multiple training samples from that span by sliding
 128-event windows locally. This avoids one ClickHouse query per sample.
+
+The saved cache stores flat sample records, not fixed batches:
+
+```text
+sample_bytes = 14 + 128 * 16 = 2062
+```
+
+This means the same cache can be reused with different training batch sizes.
+
+Build a first cache:
+
+```powershell
+python research\mlops\run_build_event_sample_cache.py
+```
+
+Validate it:
+
+```powershell
+python research\mlops\run_validate_event_sample_cache.py --cache-root D:\market-data\prepared\event_sample_cache
+```
 
 Run training:
 
@@ -80,20 +100,21 @@ python research\masked_event_model\v4\run_train.py
 Alternative older data paths remain available:
 
 ```powershell
+python research\masked_event_model\v4\run_train.py --data-source clickhouse_events
 python research\masked_event_model\v4\run_train.py --data-source precomputed
 python research\masked_event_model\v4\run_train.py --data-source canonical
 ```
 
-Precomputed training uses shard epochs:
+Sample-cache and precomputed training use shard epochs:
 
 ```text
 step = one optimizer update on one mini-batch
 shard_step = one mini-batch inside the currently loaded shard
-epoch = one shuffled pass over all eligible train shard rows
+epoch = one shuffled pass over all eligible cached samples
 ```
 
 The validation cache is fixed at startup: it samples `pretrain_validation_steps`
-validation shards and keeps one random batch from each for cheap repeated
+validation batches and keeps them in memory for cheap repeated
 evaluation. Set `--max-steps 0 --epochs 1` to run one complete train-shard
 epoch without a step cap.
 

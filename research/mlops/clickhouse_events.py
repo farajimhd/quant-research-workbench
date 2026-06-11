@@ -261,6 +261,7 @@ def build_clickhouse_events_batch(
     headers = np.zeros((config.batch_size, HEADER_BYTES), dtype=np.uint8)
     events = np.zeros((config.batch_size, config.events_per_chunk, EVENT_BYTES), dtype=np.uint8)
     origin_ts = np.zeros((config.batch_size,), dtype=np.int64)
+    origin_ordinals = np.zeros((config.batch_size,), dtype=np.int64)
     tickers: list[str] = []
     filled = 0
     spans_attempted = 0
@@ -305,11 +306,12 @@ def build_clickhouse_events_batch(
                 spans_rejected += 1
                 reject_counts[encoded] = reject_counts.get(encoded, 0) + 1
                 continue
-            span_headers, span_events, span_origin_ts = encoded
+            span_headers, span_events, span_origin_ts, span_origin_ordinals = encoded
             take = min(span_headers.shape[0], config.batch_size - filled)
             headers[filled : filled + take] = span_headers[:take]
             events[filled : filled + take] = span_events[:take]
             origin_ts[filled : filled + take] = span_origin_ts[:take]
+            origin_ordinals[filled : filled + take] = span_origin_ordinals[:take]
             tickers.extend([span.ticker] * take)
             filled += take
             spans_accepted += 1
@@ -324,6 +326,7 @@ def build_clickhouse_events_batch(
         "header_uint8": torch.from_numpy(headers),
         "events_uint8": torch.from_numpy(events),
         "origin_timestamp_ns": torch.from_numpy(origin_ts),
+        "origin_ordinal": torch.from_numpy(origin_ordinals),
         "ticker": tickers,
         "row_bytes": HEADER_BYTES + config.events_per_chunk * EVENT_BYTES,
         "events_per_chunk": config.events_per_chunk,
@@ -471,7 +474,7 @@ def encode_span_samples(
     rows: np.ndarray,
     span: EventSpan,
     config: ClickHouseEventsDataConfig,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | str:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | str:
     previous_sip_us: int | None = None
     if rows.shape[0] == span.expected_rows + 1 and int(rows["ordinal"][0]) == span.low_ordinal - 1:
         previous_sip_us = int(rows["sip_timestamp_us"][0])
@@ -486,6 +489,7 @@ def encode_span_samples(
     headers = np.zeros((span.origins_per_span, HEADER_BYTES), dtype=np.uint8)
     events = np.zeros((span.origins_per_span, config.events_per_chunk, EVENT_BYTES), dtype=np.uint8)
     origin_ts = np.zeros((span.origins_per_span,), dtype=np.int64)
+    origin_ordinals = np.zeros((span.origins_per_span,), dtype=np.int64)
     for index in range(span.origins_per_span):
         origin_offset = config.events_per_chunk - 1 + index * span.stride
         start = origin_offset - config.events_per_chunk + 1
@@ -501,7 +505,8 @@ def encode_span_samples(
         headers[index] = header
         events[index] = event_bytes
         origin_ts[index] = int(rows["sip_timestamp_us"][origin_offset]) * 1000
-    return headers, events, origin_ts
+        origin_ordinals[index] = int(rows["ordinal"][origin_offset])
+    return headers, events, origin_ts, origin_ordinals
 
 
 def encode_unified_event_window(rows: np.ndarray, *, previous_sip_us: int | None = None) -> tuple[np.ndarray, np.ndarray] | str:

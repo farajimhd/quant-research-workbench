@@ -32,6 +32,11 @@ from research.mlops.compact_events import (
     iter_precomputed_epoch_batches,
 )
 from research.mlops.clickhouse_events import ClickHouseEventsChunkIterableDataset, ClickHouseEventsDataConfig
+from research.mlops.event_sample_cache import (
+    EventSampleCacheDataConfig,
+    discover_event_sample_shards,
+    iter_event_sample_cache_epoch_batches,
+)
 from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
@@ -51,9 +56,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mask_defaults = MaskConfig()
     train_defaults = TrainConfig()
     parser = argparse.ArgumentParser(description="Train compact byte masked event autoencoder v4.")
-    parser.add_argument("--data-source", choices=("clickhouse_events", "precomputed", "canonical"), default=data_defaults.data_source)
+    parser.add_argument("--data-source", choices=("clickhouse_events", "sample_cache", "precomputed", "canonical"), default=data_defaults.data_source)
     parser.add_argument("--canonical-root", default=str(data_defaults.canonical_root))
     parser.add_argument("--precomputed-chunk-root", default=str(data_defaults.precomputed_chunk_root or ""))
+    parser.add_argument("--sample-cache-root", default=str(data_defaults.sample_cache_root or ""))
     parser.add_argument("--reference-dir", default=str(data_defaults.reference_dir))
     parser.add_argument("--clickhouse-url", default=data_defaults.clickhouse_url)
     parser.add_argument("--clickhouse-database", default=data_defaults.clickhouse_database)
@@ -77,6 +83,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-max-threads", type=int, default=data_defaults.clickhouse_max_threads)
     parser.add_argument("--clickhouse-max-memory-usage", default=data_defaults.clickhouse_max_memory_usage)
     parser.add_argument("--month-cache-size", type=int, default=data_defaults.month_cache_size)
+    parser.add_argument("--sample-cache-prefetch-shards", type=int, default=data_defaults.sample_cache_prefetch_shards)
+    parser.add_argument("--sample-cache-shuffle-shards", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_shuffle_shards)
+    parser.add_argument("--sample-cache-shuffle-samples", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_shuffle_samples)
     parser.add_argument("--max-index-files", type=int, default=data_defaults.max_index_files)
     parser.add_argument("--batch-size", type=int, default=train_defaults.batch_size)
     parser.add_argument("--max-steps", type=int, default=train_defaults.max_steps)
@@ -158,6 +167,7 @@ def main(argv: list[str] | None = None) -> None:
             "data_source": config.data.data_source,
             "canonical_root": str(config.data.canonical_root),
             "precomputed_chunk_root": str(config.data.precomputed_chunk_root or ""),
+            "sample_cache_root": str(config.data.sample_cache_root or ""),
             "reference_dir": str(config.data.reference_dir),
             "clickhouse_url": config.data.clickhouse_url,
             "clickhouse_database": config.data.clickhouse_database,
@@ -176,7 +186,11 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     if args.dry_run:
-        batch = next(iter(make_loader(config, "train", args.seed)))
+        if config.data.data_source == "sample_cache":
+            sample_config = sample_cache_data_config(config, "train", args.seed)
+            batch = next(iter_event_sample_cache_epoch_batches(sample_config, epoch=1, shards=discover_event_sample_shards(sample_config)))
+        else:
+            batch = next(iter(make_loader(config, "train", args.seed)))
         batch = move_batch(batch, device)
         masks = build_byte_masks(batch["header_uint8"], batch["events_uint8"], config.masks)
         with torch.no_grad():
@@ -193,7 +207,22 @@ def main(argv: list[str] | None = None) -> None:
         metric_logger.log(val_metrics, global_step)
         print("VALIDATION " + format_metrics(global_step, val_metrics), flush=True)
 
-    if config.data.data_source == "precomputed":
+    if config.data.data_source == "sample_cache":
+        global_step = train_sample_cache_epochs(
+            model=model,
+            train_model=train_model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            config=config,
+            args=args,
+            device=device,
+            global_step=global_step,
+            validation_batches=validation_batches,
+            metric_logger=metric_logger,
+            checkpointer=checkpointer,
+        )
+    elif config.data.data_source == "precomputed":
         global_step = train_precomputed_epochs(
             model=model,
             train_model=train_model,
@@ -304,6 +333,107 @@ def train_precomputed_epochs(
             )
             if shard_step == shard_steps:
                 metrics["train/shard_completed"] = 1.0
+            val_metrics = maybe_log_train_and_validation(
+                model=model,
+                config=config,
+                device=device,
+                args=args,
+                global_step=global_step,
+                metrics=metrics,
+                validation_batches=validation_batches,
+                metric_logger=metric_logger,
+            )
+            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), train_metrics=metrics, val_metrics=val_metrics)
+        epoch_metrics = {
+            "train/epoch": float(epoch),
+            "train/epoch_seconds": time.perf_counter() - epoch_started,
+            "train/epoch_steps": float(epoch_steps),
+            "train/epoch_samples": float(epoch_samples),
+            "train/epoch_loss_mean": epoch_loss_sum / max(1, epoch_steps),
+        }
+        metric_logger.log(epoch_metrics, global_step)
+        print("EPOCH " + format_metrics(global_step, epoch_metrics), flush=True)
+        if stop_training:
+            break
+    return global_step
+
+
+def train_sample_cache_epochs(
+    *,
+    model: CompactByteMaskedAutoencoder,
+    train_model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    scaler: torch.amp.GradScaler,
+    config: ExperimentConfig,
+    args: argparse.Namespace,
+    device: torch.device,
+    global_step: int,
+    validation_batches: list[dict[str, Any]],
+    metric_logger: JsonlMetricLogger,
+    checkpointer: AsyncCheckpointManager,
+) -> int:
+    data_config = sample_cache_data_config(config, "train", args.seed)
+    train_shards = discover_event_sample_shards(data_config)
+    shard_count = len(train_shards)
+    total_samples = sum(shard.num_samples for shard in train_shards)
+    print(
+        f"Sample-cache training shards={shard_count:,} samples={total_samples:,} "
+        f"epochs={config.train.epochs:,} batch_size={config.train.batch_size:,} max_steps={config.train.max_steps:,}",
+        flush=True,
+    )
+    samples_seen_total = 0
+    stop_training = False
+    for epoch in range(1, max(1, int(config.train.epochs)) + 1):
+        epoch_started = time.perf_counter()
+        epoch_steps = 0
+        epoch_samples = 0
+        epoch_loss_sum = 0.0
+        iterator = iter_event_sample_cache_epoch_batches(data_config, epoch=epoch, shards=train_shards)
+        while True:
+            if config.train.max_steps > 0 and global_step >= config.train.max_steps:
+                stop_training = True
+                break
+            data_wait_started = time.perf_counter()
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                break
+            data_wait_seconds = time.perf_counter() - data_wait_started
+            global_step += 1
+            batch_size = int(batch["header_uint8"].shape[0])
+            samples_seen_total += batch_size
+            epoch_samples += batch_size
+            epoch_steps += 1
+            metrics = run_training_step(
+                model=model,
+                train_model=train_model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                batch=batch,
+                config=config,
+                device=device,
+                global_step=global_step,
+                data_wait_seconds=data_wait_seconds,
+            )
+            epoch_loss_sum += float(metrics.get("pretrain/loss_total", 0.0))
+            shard_index = int(batch.get("shard_index", 0) or 0)
+            shard_step = int(batch.get("shard_step", 0) or 0)
+            shard_steps = max(1, int(batch.get("shard_steps", 1) or 1))
+            metrics.update(
+                {
+                    "train/epoch": float(epoch),
+                    "train/epoch_step": float(epoch_steps),
+                    "train/epoch_progress_pct": 100.0 * ((max(0, shard_index - 1) + shard_step / shard_steps) / max(1, shard_count)),
+                    "train/shard_index": float(shard_index),
+                    "train/shards_per_epoch": float(shard_count),
+                    "train/shard_step": float(shard_step),
+                    "train/shard_steps": float(shard_steps),
+                    "train/samples_seen_epoch": float(epoch_samples),
+                    "train/samples_seen_total": float(samples_seen_total),
+                }
+            )
             val_metrics = maybe_log_train_and_validation(
                 model=model,
                 config=config,
@@ -475,6 +605,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             data_source=args.data_source,
             canonical_root=Path(args.canonical_root),
             precomputed_chunk_root=Path(args.precomputed_chunk_root) if args.precomputed_chunk_root else None,
+            sample_cache_root=Path(args.sample_cache_root) if args.sample_cache_root else None,
             reference_dir=Path(args.reference_dir),
             clickhouse_url=args.clickhouse_url,
             clickhouse_database=args.clickhouse_database,
@@ -496,6 +627,9 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             clickhouse_max_threads=args.clickhouse_max_threads,
             clickhouse_max_memory_usage=args.clickhouse_max_memory_usage,
             month_cache_size=args.month_cache_size,
+            sample_cache_prefetch_shards=args.sample_cache_prefetch_shards,
+            sample_cache_shuffle_shards=args.sample_cache_shuffle_shards,
+            sample_cache_shuffle_samples=args.sample_cache_shuffle_samples,
             max_index_files=args.max_index_files,
         ),
         masks=MaskConfig(mask_ratio=args.mask_ratio, header_mask_ratio=args.header_mask_ratio),
@@ -511,6 +645,8 @@ def make_loader(config: ExperimentConfig, split: str, seed: int) -> DataLoader:
     if data.data_source == "clickhouse_events":
         dataset = ClickHouseEventsChunkIterableDataset(clickhouse_events_data_config(config, split, seed))
         return DataLoader(dataset, batch_size=None, num_workers=0, pin_memory=False)
+    if data.data_source == "sample_cache":
+        raise ValueError("sample_cache data is finite per sampled epoch; use train_sample_cache_epochs instead of make_loader")
     if data.data_source == "precomputed":
         dataset = PrecomputedV4ChunkIterableDataset(precomputed_data_config(config, split, seed))
         return DataLoader(dataset, batch_size=None, num_workers=0, pin_memory=False)
@@ -556,6 +692,20 @@ def build_validation_cache(config: ExperimentConfig, seed: int) -> list[dict[str
                 flush=True,
             )
         return batches
+    if config.data.data_source == "sample_cache":
+        batches: list[dict[str, Any]] = []
+        data_config = sample_cache_data_config(config, "validation", seed)
+        shards = discover_event_sample_shards(data_config)
+        iterator = iter_event_sample_cache_epoch_batches(data_config, epoch=1, shards=shards)
+        for index in range(config.train.pretrain_validation_steps):
+            batch = next(iterator)
+            batches.append(batch)
+            print(
+                f"validation cache batch {index + 1}/{config.train.pretrain_validation_steps} "
+                f"size={batch['header_uint8'].shape[0]} shard={batch.get('shard_index')}/{batch.get('shard_count')}",
+                flush=True,
+            )
+        return batches
     loader = make_loader(config, "validation", seed)
     batches: list[dict[str, Any]] = []
     iterator = iter(loader)
@@ -581,6 +731,23 @@ def precomputed_data_config(config: ExperimentConfig, split: str, seed: int) -> 
         seed=seed,
         shard_cache_size=data.month_cache_size,
         max_shards=data.max_index_files,
+    )
+
+
+def sample_cache_data_config(config: ExperimentConfig, split: str, seed: int) -> EventSampleCacheDataConfig:
+    data = config.data
+    if data.sample_cache_root is None:
+        raise ValueError("sample_cache_data_config requires data.sample_cache_root")
+    return EventSampleCacheDataConfig(
+        cache_root=data.sample_cache_root,
+        split=split,
+        batch_size=config.train.batch_size,
+        events_per_chunk=data.events_per_chunk,
+        seed=seed,
+        prefetch_shards=data.sample_cache_prefetch_shards,
+        max_shards=data.max_index_files,
+        shuffle_shards=data.sample_cache_shuffle_shards,
+        shuffle_samples=data.sample_cache_shuffle_samples,
     )
 
 
