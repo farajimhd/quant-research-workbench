@@ -27,7 +27,7 @@ The downloader writes:
 
 ## Stage 2: Extract
 
-The extractor reads downloaded artifact metadata and uses a process pool to extract clean text. It does not make network requests.
+The standalone extractor reads downloaded artifact metadata and uses a process pool to extract clean text. It does not make network requests. This stage is optional now because Stage 3 can extract downloaded URL artifacts inline before building normalized rows.
 
 Recommended workstation command:
 
@@ -43,18 +43,18 @@ The extractor writes:
 
 ## Stage 3: Build Normalized News Rows
 
-The row builder reads the original raw Benzinga article JSON and attaches any clean text produced by Stage 2. It does not make network requests and writes rows that match `q_live.benzinga_news_normalized_v1`, so the output can be inserted with the existing ClickHouse news insert helpers.
+The row builder reads the original raw Benzinga article JSON, extracts downloaded URL artifacts when needed, attaches clean source text, and writes rows that match `q_live.benzinga_news_normalized_v1`. It does not make network requests. The output can be inserted with the existing ClickHouse news insert helpers.
 
-Recommended workstation command after extraction finishes:
+Recommended workstation command after URL download finishes:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_build_normalized_rows.py --raw-root-win D:/market-data/news-benzinga/raw --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --extraction-root-win D:/market-data/prepared/benzinga_news_url_extraction --output-root-win D:/market-data/prepared/benzinga_news_normalized_rows --text-limit-chars 24000 --max-enriched-text-chars-per-url 12000 --max-enriched-urls-per-article 5 --progress-interval 25000 --flush-interval 1000
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_build_normalized_rows.py --raw-root-win D:/market-data/news-benzinga/raw --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --download-root-win D:/market-data/prepared/benzinga_news_url_download --extraction-root-win D:/market-data/prepared/benzinga_news_url_extraction --output-root-win D:/market-data/prepared/benzinga_news_normalized_rows --processes 24 --max-pending-futures 96 --inline-extraction-processes 24 --text-limit-chars 24000 --max-enriched-text-chars-per-url 12000 --max-enriched-urls-per-article 5 --progress-interval 25000 --inline-extraction-progress-interval 5000 --flush-interval 1000
 ```
 
 Smoke-test command:
 
 ```powershell
-python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_build_normalized_rows.py --raw-root-win D:/market-data/news-benzinga/raw --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --extraction-root-win D:/market-data/prepared/benzinga_news_url_extraction --output-root-win D:/market-data/prepared/benzinga_news_normalized_rows_smoke --limit-articles 1000 --limit-attachment-rows 10000 --progress-interval 100
+python //DESKTOP-SAAI85T/Workstation-D/TradingML/codes/masked_event_model/v4/research/mlops/news_benzinga_build_normalized_rows.py --raw-root-win D:/market-data/news-benzinga/raw --fetch-plan-root-win D:/market-data/prepared/benzinga_news_url_fetch_plan --download-root-win D:/market-data/prepared/benzinga_news_url_download --output-root-win D:/market-data/prepared/benzinga_news_normalized_rows_smoke --limit-articles 1000 --limit-attachment-rows 10000 --processes 8 --max-pending-futures 32 --inline-extraction-processes 8 --progress-interval 100 --inline-extraction-progress-interval 500
 ```
 
 The row builder writes:
@@ -62,14 +62,20 @@ The row builder writes:
 - `benzinga_news_normalized_rows.jsonl`: DB-ready rows with one row per Benzinga article.
 - `benzinga_news_normalized_errors.jsonl`: raw files that could not be normalized.
 - `benzinga_news_normalized_attachment_summary.jsonl`: sidecar metadata showing which extracted URLs were attached to each article.
+- `benzinga_news_inline_extraction_result.jsonl`: clean text extracted from downloaded URL artifacts during Stage 3.
+- `benzinga_news_inline_extraction_errors.jsonl`: URL artifacts that could not be extracted during Stage 3.
 - `benzinga_news_normalized_manifest.json`: run paths, counts, quality flags, and timing.
 
 Important behavior:
 
 - The builder includes raw articles even when URL enrichment is missing or failed.
 - The final JSONL contains only table-compatible fields; URL attachment details are kept in the sidecar summary.
+- If a standalone Stage 2 extraction result exists, the builder reuses it. Otherwise `--inline-extract` extracts downloaded URL artifacts inside Stage 3.
+- `--no-inline-extract` disables inline extraction and only uses existing extraction results.
 - `external_text`, `pdf_text`, `normalized_full_text`, `text_hash`, `has_external_text`, `has_pdf`, and `content_quality_flags` are recomputed after URL text is attached.
 - `--require-extraction-result` can be added when a run must fail if Stage 2 output is unavailable.
+- `--processes` controls article normalization workers.
+- `--inline-extraction-processes` controls URL artifact extraction workers; if omitted or `0`, it uses `--processes`.
 - `--path-prefix-map FROM=TO` can map workstation paths to a share path for laptop-side validation, for example `--path-prefix-map D:/=//DESKTOP-SAAI85T/Workstation-D/`.
 
 ## Resume

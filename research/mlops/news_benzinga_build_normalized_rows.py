@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import sys
@@ -26,6 +27,7 @@ from research.mlops.news_benzinga_normalize import (  # noqa: E402
     stable_hash,
     truncate_text,
 )
+from research.mlops.news_benzinga_url_extract import extract_row as extract_downloaded_url_row  # noqa: E402
 from research.mlops.news_benzinga_url_inventory import (  # noqa: E402
     ALT_RAW_ROOT_WIN,
     DEFAULT_RAW_ROOT_WIN,
@@ -34,6 +36,7 @@ from research.mlops.news_benzinga_url_inventory import (  # noqa: E402
 
 
 DEFAULT_FETCH_PLAN_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_url_fetch_plan")
+DEFAULT_DOWNLOAD_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_url_download")
 DEFAULT_EXTRACTION_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_url_extraction")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_normalized_rows")
 DEFAULT_TEXT_LIMIT_CHARS = 24_000
@@ -50,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-root-win", default=os.environ.get("NEWS_BENZINGA_RAW_ROOT_WIN") or "")
     parser.add_argument("--attachment-jsonl", default=os.environ.get("NEWS_BENZINGA_URL_ATTACHMENT_JSONL") or "")
     parser.add_argument("--fetch-plan-root-win", default=os.environ.get("NEWS_BENZINGA_URL_FETCH_PLAN_OUTPUT_ROOT_WIN") or str(DEFAULT_FETCH_PLAN_ROOT_WIN))
+    parser.add_argument("--download-result-jsonl", default=os.environ.get("NEWS_BENZINGA_URL_DOWNLOAD_RESULT_JSONL") or "")
+    parser.add_argument("--download-root-win", default=os.environ.get("NEWS_BENZINGA_URL_DOWNLOAD_ROOT_WIN") or str(DEFAULT_DOWNLOAD_ROOT_WIN))
     parser.add_argument("--extraction-result-jsonl", default=os.environ.get("NEWS_BENZINGA_URL_EXTRACTION_RESULT_JSONL") or "")
     parser.add_argument("--extraction-root-win", default=os.environ.get("NEWS_BENZINGA_URL_EXTRACTION_OUTPUT_ROOT_WIN") or str(DEFAULT_EXTRACTION_ROOT_WIN))
     parser.add_argument("--output-root-win", default=os.environ.get("NEWS_BENZINGA_NORMALIZED_ROWS_OUTPUT_ROOT_WIN") or str(DEFAULT_OUTPUT_ROOT_WIN))
@@ -63,6 +68,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-limit-chars", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_TEXT_LIMIT_CHARS", str(DEFAULT_TEXT_LIMIT_CHARS))))
     parser.add_argument("--max-enriched-text-chars-per-url", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_MAX_ENRICHED_TEXT_CHARS_PER_URL", "12000")))
     parser.add_argument("--max-enriched-urls-per-article", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_MAX_ENRICHED_URLS_PER_ARTICLE", "5")))
+    parser.add_argument("--processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_PROCESSES", str(max(1, (os.cpu_count() or 4) // 2)))))
+    parser.add_argument("--max-pending-futures", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_MAX_PENDING", "0")))
+    parser.add_argument("--inline-extract", action=argparse.BooleanOptionalAction, default=os.environ.get("NEWS_BENZINGA_NORMALIZED_INLINE_EXTRACT", "1") != "0")
+    parser.add_argument("--inline-extraction-processes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_INLINE_EXTRACT_PROCESSES", "0")))
+    parser.add_argument("--inline-extraction-progress-interval", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_INLINE_EXTRACT_PROGRESS_INTERVAL", "1000")))
+    parser.add_argument("--max-pdf-bytes", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_MAX_PDF_BYTES", "12000000")))
     parser.add_argument("--scan-raw-root", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--require-extraction-result", action="store_true")
     parser.add_argument("--progress-interval", type=int, default=int(os.environ.get("NEWS_BENZINGA_NORMALIZED_PROGRESS_INTERVAL", "25000")))
@@ -95,6 +106,7 @@ def main() -> None:
     path_maps = parse_path_prefix_maps(args.path_prefix_map)
     raw_root = resolve_raw_root(args, path_maps)
     attachment_path = resolve_attachment_path(args)
+    download_path = resolve_download_result_path(args)
     extraction_path = resolve_extraction_result_path(args)
     if args.require_extraction_result and not extraction_path.exists():
         raise SystemExit(f"extraction result file does not exist: {extraction_path}")
@@ -104,8 +116,10 @@ def main() -> None:
     print(f"run_root={run_root}", flush=True)
     print(f"raw_root={raw_root}", flush=True)
     print(f"attachment_path={attachment_path if attachment_path.exists() else 'missing'}", flush=True)
+    print(f"download_path={download_path if download_path.exists() else 'missing'}", flush=True)
     print(f"extraction_path={extraction_path if extraction_path.exists() else 'missing'}", flush=True)
     print(f"scan_raw_root={args.scan_raw_root} limit_articles={args.limit_articles:,}", flush=True)
+    print(f"processes={max(1, args.processes)} max_pending_futures={max(1, args.max_pending_futures or max(1, args.processes) * 4)}", flush=True)
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
     print("=" * 96, flush=True)
 
@@ -116,6 +130,17 @@ def main() -> None:
         if extraction_path.exists() and attachment_index.url_hashes
         else {}
     )
+    inline_extraction_stats = {}
+    if args.inline_extract and attachment_index.url_hashes:
+        missing_url_hashes = attachment_index.url_hashes - set(enrichment_index)
+        download_index = load_download_index(args, download_path, missing_url_hashes, path_maps) if download_path.exists() and missing_url_hashes else {}
+        inline_extraction_stats = run_inline_extraction(
+            args=args,
+            run_root=run_root,
+            download_index=download_index,
+            enrichment_index=enrichment_index,
+            started=started,
+        )
     raw_jobs = collect_raw_jobs(args, raw_root, attachment_index, path_maps)
 
     counters: Counter[str] = Counter()
@@ -125,47 +150,21 @@ def main() -> None:
     written = 0
 
     with normalized_path.open("w", encoding="utf-8") as normalized_handle, error_path.open("w", encoding="utf-8") as error_handle, attachment_summary_path.open("w", encoding="utf-8") as summary_handle:
-        for job in raw_jobs:
-            processed += 1
-            try:
-                row, summary = build_normalized_row(args, job, attachment_index, enrichment_index)
-                normalized_handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
-                summary_handle.write(json.dumps(summary, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
-                written += 1
-                counters["written"] += 1
-                counters[str(row.get("external_fetch_status") or "unknown")] += 1
-                counters[f"pdf:{row.get('pdf_extract_status') or 'unknown'}"] += 1
-                for flag in row.get("content_quality_flags") or []:
-                    flag_counts[str(flag)] += 1
-            except Exception as exc:  # noqa: BLE001
-                error_count += 1
-                counters["failed"] += 1
-                error_handle.write(
-                    json.dumps(
-                        {
-                            "raw_artifact_path": str(job.raw_artifact_path),
-                            "provider_article_id": job.provider_article_id,
-                            "canonical_news_id": job.canonical_news_id,
-                            "exception_type": type(exc).__name__,
-                            "exception": repr(exc),
-                        },
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    + "\n"
-                )
-            if args.flush_interval and processed % args.flush_interval == 0:
-                normalized_handle.flush()
-                error_handle.flush()
-                summary_handle.flush()
-            if args.progress_interval and processed % args.progress_interval == 0:
-                elapsed = time.perf_counter() - started
-                rate = processed / elapsed if elapsed > 0 else 0.0
-                print(
-                    f"progress=processed {processed:,}/{len(raw_jobs):,} written={written:,} "
-                    f"errors={error_count:,} rate={rate:.1f}/s elapsed={elapsed:.1f}s",
-                    flush=True,
-                )
+        run_stats = run_normalization_workers(
+            args=args,
+            raw_jobs=raw_jobs,
+            attachment_index=attachment_index,
+            enrichment_index=enrichment_index,
+            normalized_handle=normalized_handle,
+            error_handle=error_handle,
+            summary_handle=summary_handle,
+            counters=counters,
+            flag_counts=flag_counts,
+            started=started,
+        )
+        processed = run_stats["processed"]
+        written = run_stats["written"]
+        error_count = run_stats["error_count"]
 
     manifest = {
         "run_id": run_id,
@@ -173,6 +172,7 @@ def main() -> None:
         "run_root": str(run_root),
         "raw_root": str(raw_root),
         "attachment_path": str(attachment_path) if attachment_path.exists() else "",
+        "download_path": str(download_path) if download_path.exists() else "",
         "extraction_path": str(extraction_path) if extraction_path.exists() else "",
         "normalized_path": str(normalized_path),
         "error_path": str(error_path),
@@ -185,11 +185,14 @@ def main() -> None:
         "attachment_article_count": len(attachment_index.by_article),
         "attachment_url_count": len(attachment_index.url_hashes),
         "enrichment_url_count": len(enrichment_index),
+        "inline_extraction": inline_extraction_stats,
         "status_counts": dict(counters),
         "quality_flag_counts": dict(flag_counts),
         "text_limit_chars": args.text_limit_chars,
         "max_enriched_text_chars_per_url": args.max_enriched_text_chars_per_url,
         "max_enriched_urls_per_article": args.max_enriched_urls_per_article,
+        "processes": max(1, args.processes),
+        "max_pending_futures": max(1, args.max_pending_futures or max(1, args.processes) * 4),
         "wall_seconds": round(time.perf_counter() - started, 3),
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -278,6 +281,26 @@ def resolve_attachment_path(args: argparse.Namespace) -> Path:
     return root / "news_url_fetch_plan_attachments.jsonl"
 
 
+def resolve_download_result_path(args: argparse.Namespace) -> Path:
+    explicit = str(args.download_result_jsonl or "").strip()
+    if explicit:
+        return Path(explicit)
+    root = Path(args.download_root_win)
+    manifests = sorted(root.glob("*/news_url_download_manifest.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for manifest_path in manifests:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            candidate = Path(manifest.get("result_path") or "")
+            if candidate.exists():
+                return candidate
+        except Exception:  # noqa: BLE001
+            continue
+    latest = sorted(root.glob("*/news_url_download_result.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if latest:
+        return latest[0]
+    return root / "news_url_download_result.jsonl"
+
+
 def resolve_extraction_result_path(args: argparse.Namespace) -> Path:
     explicit = str(args.extraction_result_jsonl or "").strip()
     if explicit:
@@ -310,8 +333,8 @@ def load_attachment_index(args: argparse.Namespace, path: Path, path_maps: list[
             row = json.loads(line)
             raw_path = apply_path_maps(str(row.get("raw_artifact_path") or ""), path_maps)
             row["resolved_raw_artifact_path"] = str(raw_path)
-            key = article_key(row)
-            index.by_article[key].append(row)
+            for key in attachment_keys(row):
+                index.by_article[key].append(row)
             url_hash = str(row.get("url_hash") or "")
             if url_hash:
                 index.url_hashes.add(url_hash)
@@ -337,6 +360,20 @@ def load_attachment_index(args: argparse.Namespace, path: Path, path_maps: list[
     return index
 
 
+def attachment_keys(row: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    provider_id = str(row.get("provider_article_id") or "")
+    canonical = str(row.get("canonical_news_id") or "")
+    raw_path = str(row.get("resolved_raw_artifact_path") or row.get("raw_artifact_path") or "")
+    if provider_id:
+        keys.append(f"provider:{provider_id}")
+    if canonical:
+        keys.append(f"canonical:{canonical}")
+    if raw_path:
+        keys.append(f"raw:{normalize_path_text(raw_path)}")
+    return dedupe_strings(keys)
+
+
 def load_enrichment_index(args: argparse.Namespace, path: Path, attachment_index: AttachmentIndex) -> dict[str, dict[str, Any]]:
     enrichments: dict[str, dict[str, Any]] = {}
     started = time.perf_counter()
@@ -358,6 +395,158 @@ def load_enrichment_index(args: argparse.Namespace, path: Path, attachment_index
                 print(f"enrichments_loaded={len(enrichments):,} lines={line_number:,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
     print(f"enrichments_loaded=done rows={len(enrichments):,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
     return enrichments
+
+
+def load_download_index(
+    args: argparse.Namespace,
+    path: Path,
+    needed_url_hashes: set[str],
+    path_maps: list[tuple[str, str]],
+) -> dict[str, dict[str, Any]]:
+    downloads: dict[str, dict[str, Any]] = {}
+    started = time.perf_counter()
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            url_hash = str(row.get("url_hash") or "")
+            if url_hash not in needed_url_hashes or row.get("status") != "downloaded":
+                continue
+            artifact_path = apply_path_maps(str(row.get("artifact_path") or ""), path_maps)
+            if not artifact_path.exists():
+                continue
+            row["artifact_path"] = str(artifact_path)
+            downloads[url_hash] = row
+            if args.inline_extraction_progress_interval and len(downloads) % max(1, args.inline_extraction_progress_interval * 10) == 0:
+                print(
+                    f"download_index_loaded={len(downloads):,} lines={line_number:,} "
+                    f"elapsed={time.perf_counter() - started:.1f}s",
+                    flush=True,
+                )
+    print(f"download_index_loaded=done rows={len(downloads):,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
+    return downloads
+
+
+def run_inline_extraction(
+    *,
+    args: argparse.Namespace,
+    run_root: Path,
+    download_index: dict[str, dict[str, Any]],
+    enrichment_index: dict[str, dict[str, Any]],
+    started: float,
+) -> dict[str, Any]:
+    result_path = run_root / "benzinga_news_inline_extraction_result.jsonl"
+    error_path = run_root / "benzinga_news_inline_extraction_errors.jsonl"
+    rows = list(download_index.values())
+    if not rows:
+        print("inline_extraction=skipped rows=0", flush=True)
+        return {"rows": 0, "processed": 0, "succeeded": 0, "failed": 0, "result_path": str(result_path), "error_path": str(error_path)}
+
+    worker_count = max(1, args.inline_extraction_processes or args.processes)
+    max_pending = max(worker_count, args.max_pending_futures or worker_count * 4)
+    processed = 0
+    succeeded = 0
+    failed = 0
+    counters: Counter[str] = Counter()
+    print(f"inline_extraction=start rows={len(rows):,} processes={worker_count} max_pending_futures={max_pending}", flush=True)
+    with result_path.open("w", encoding="utf-8") as result_handle, error_path.open("w", encoding="utf-8") as error_handle:
+        if worker_count == 1:
+            for row in rows:
+                extracted = extract_inline_worker(row, args.max_enriched_text_chars_per_url, args.max_pdf_bytes)
+                processed, succeeded, failed = handle_inline_extraction_result(
+                    extracted,
+                    enrichment_index,
+                    result_handle,
+                    error_handle,
+                    counters,
+                    processed,
+                    succeeded,
+                    failed,
+                )
+                if args.inline_extraction_progress_interval and processed % args.inline_extraction_progress_interval == 0:
+                    print_inline_progress(processed, len(rows), succeeded, failed, counters, started)
+        else:
+            row_iter = iter(rows)
+            pending: set[concurrent.futures.Future[dict[str, Any]]] = set()
+            with concurrent.futures.ProcessPoolExecutor(max_workers=worker_count) as executor:
+                def submit_until_capacity() -> None:
+                    while len(pending) < max_pending:
+                        try:
+                            next_row = next(row_iter)
+                        except StopIteration:
+                            return
+                        pending.add(executor.submit(extract_inline_worker, next_row, args.max_enriched_text_chars_per_url, args.max_pdf_bytes))
+
+                submit_until_capacity()
+                while pending:
+                    done, pending = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
+                    for future in done:
+                        try:
+                            extracted = future.result()
+                        except Exception as exc:  # noqa: BLE001
+                            extracted = {"status": "failed", "status_reason": "worker_failed", "error_type": type(exc).__name__, "error_message": repr(exc)}
+                        processed, succeeded, failed = handle_inline_extraction_result(
+                            extracted,
+                            enrichment_index,
+                            result_handle,
+                            error_handle,
+                            counters,
+                            processed,
+                            succeeded,
+                            failed,
+                        )
+                    submit_until_capacity()
+                    if args.inline_extraction_progress_interval and processed % args.inline_extraction_progress_interval == 0:
+                        print_inline_progress(processed, len(rows), succeeded, failed, counters, started)
+    print_inline_progress(processed, len(rows), succeeded, failed, counters, started)
+    return {
+        "rows": len(rows),
+        "processed": processed,
+        "succeeded": succeeded,
+        "failed": failed,
+        "status_counts": dict(counters),
+        "result_path": str(result_path),
+        "error_path": str(error_path),
+    }
+
+
+def extract_inline_worker(row: dict[str, Any], max_text_chars: int, max_pdf_bytes: int) -> dict[str, Any]:
+    return extract_downloaded_url_row(row, max_text_chars, max_pdf_bytes)
+
+
+def handle_inline_extraction_result(
+    row: dict[str, Any],
+    enrichment_index: dict[str, dict[str, Any]],
+    result_handle: Any,
+    error_handle: Any,
+    counters: Counter[str],
+    processed: int,
+    succeeded: int,
+    failed: int,
+) -> tuple[int, int, int]:
+    processed += 1
+    status = str(row.get("status") or "unknown")
+    counters[status] += 1
+    text = normalize_text(str(row.get("extracted_text") or ""))
+    if status != "failed" and text:
+        enrichment_index[str(row.get("url_hash") or "")] = row
+        result_handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+        succeeded += 1
+    else:
+        error_handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+        failed += 1
+    return processed, succeeded, failed
+
+
+def print_inline_progress(processed: int, total: int, succeeded: int, failed: int, counters: Counter[str], started: float) -> None:
+    elapsed = time.perf_counter() - started
+    rate = processed / elapsed if elapsed > 0 else 0.0
+    print(
+        f"inline_extraction=processed {processed:,}/{total:,} succeeded={succeeded:,} "
+        f"failed={failed:,} rate={rate:.1f}/s statuses={dict(counters)} elapsed={elapsed:.1f}s",
+        flush=True,
+    )
 
 
 def collect_raw_jobs(args: argparse.Namespace, raw_root: Path, attachment_index: AttachmentIndex, path_maps: list[tuple[str, str]]) -> list[RawJob]:
@@ -388,11 +577,146 @@ def collect_raw_jobs(args: argparse.Namespace, raw_root: Path, attachment_index:
     return output
 
 
+def run_normalization_workers(
+    *,
+    args: argparse.Namespace,
+    raw_jobs: list[RawJob],
+    attachment_index: AttachmentIndex,
+    enrichment_index: dict[str, dict[str, Any]],
+    normalized_handle: Any,
+    error_handle: Any,
+    summary_handle: Any,
+    counters: Counter[str],
+    flag_counts: Counter[str],
+    started: float,
+) -> dict[str, int]:
+    worker_count = max(1, args.processes)
+    max_pending = max(worker_count, args.max_pending_futures or worker_count * 4)
+    processed = 0
+    written = 0
+    error_count = 0
+
+    if worker_count == 1:
+        for job in raw_jobs:
+            attachments = job_attachments(job, attachment_index)
+            enrichments = article_enrichments(attachments, enrichment_index)
+            try:
+                row, summary = build_normalized_row(args, job, attachments, enrichments)
+                written += write_success(row, summary, normalized_handle, summary_handle, counters, flag_counts)
+            except Exception as exc:  # noqa: BLE001
+                error_count += write_error(job, exc, error_handle, counters)
+            processed += 1
+            maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, normalized_handle, error_handle, summary_handle, started)
+        return {"processed": processed, "written": written, "error_count": error_count}
+
+    job_iter = iter(raw_jobs)
+    pending: set[concurrent.futures.Future[tuple[dict[str, Any], dict[str, Any]]]] = set()
+    future_jobs: dict[concurrent.futures.Future[tuple[dict[str, Any], dict[str, Any]]], RawJob] = {}
+    with concurrent.futures.ProcessPoolExecutor(max_workers=worker_count) as executor:
+        def submit_until_capacity() -> None:
+            while len(pending) < max_pending:
+                try:
+                    job = next(job_iter)
+                except StopIteration:
+                    return
+                attachments = job_attachments(job, attachment_index)
+                enrichments = article_enrichments(attachments, enrichment_index)
+                future = executor.submit(build_normalized_row_worker, args, job, attachments, enrichments)
+                pending.add(future)
+                future_jobs[future] = job
+
+        submit_until_capacity()
+        while pending:
+            done, pending = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                job = future_jobs.pop(future)
+                try:
+                    row, summary = future.result()
+                    written += write_success(row, summary, normalized_handle, summary_handle, counters, flag_counts)
+                except Exception as exc:  # noqa: BLE001
+                    error_count += write_error(job, exc, error_handle, counters)
+                processed += 1
+            submit_until_capacity()
+            maybe_flush_and_report(args, processed, len(raw_jobs), written, error_count, normalized_handle, error_handle, summary_handle, started)
+    return {"processed": processed, "written": written, "error_count": error_count}
+
+
+def build_normalized_row_worker(
+    args: argparse.Namespace,
+    job: RawJob,
+    attachments: list[dict[str, Any]],
+    enrichments: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return build_normalized_row(args, job, attachments, enrichments)
+
+
+def write_success(
+    row: dict[str, Any],
+    summary: dict[str, Any],
+    normalized_handle: Any,
+    summary_handle: Any,
+    counters: Counter[str],
+    flag_counts: Counter[str],
+) -> int:
+    normalized_handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+    summary_handle.write(json.dumps(summary, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+    counters["written"] += 1
+    counters[str(row.get("external_fetch_status") or "unknown")] += 1
+    counters[f"pdf:{row.get('pdf_extract_status') or 'unknown'}"] += 1
+    for flag in row.get("content_quality_flags") or []:
+        flag_counts[str(flag)] += 1
+    return 1
+
+
+def write_error(job: RawJob, exc: Exception, error_handle: Any, counters: Counter[str]) -> int:
+    counters["failed"] += 1
+    error_handle.write(
+        json.dumps(
+            {
+                "raw_artifact_path": str(job.raw_artifact_path),
+                "provider_article_id": job.provider_article_id,
+                "canonical_news_id": job.canonical_news_id,
+                "exception_type": type(exc).__name__,
+                "exception": repr(exc),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    return 1
+
+
+def maybe_flush_and_report(
+    args: argparse.Namespace,
+    processed: int,
+    total: int,
+    written: int,
+    error_count: int,
+    normalized_handle: Any,
+    error_handle: Any,
+    summary_handle: Any,
+    started: float,
+) -> None:
+    if args.flush_interval and processed % args.flush_interval == 0:
+        normalized_handle.flush()
+        error_handle.flush()
+        summary_handle.flush()
+    if args.progress_interval and processed % args.progress_interval == 0:
+        elapsed = time.perf_counter() - started
+        rate = processed / elapsed if elapsed > 0 else 0.0
+        print(
+            f"progress=processed {processed:,}/{total:,} written={written:,} "
+            f"errors={error_count:,} rate={rate:.1f}/s elapsed={elapsed:.1f}s",
+            flush=True,
+        )
+
+
 def build_normalized_row(
     args: argparse.Namespace,
     job: RawJob,
-    attachment_index: AttachmentIndex,
-    enrichment_index: dict[str, dict[str, Any]],
+    attachments: list[dict[str, Any]],
+    enrichments: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     payload_text = job.raw_artifact_path.read_text(encoding="utf-8")
     payload = json.loads(payload_text)
@@ -406,21 +730,14 @@ def build_normalized_row(
         diagnostics=[],
     )
     row["updated_at_utc"] = now_clickhouse_dt64()
-    attachments = article_attachments(row, job, attachment_index)
-    enrichments = article_enrichments(attachments, enrichment_index)
     row, summary = apply_enrichments(args, row, attachments, enrichments)
     return row, summary
 
 
-def article_attachments(
-    row: dict[str, Any],
-    job: RawJob,
-    attachment_index: AttachmentIndex,
-) -> list[dict[str, Any]]:
+def job_attachments(job: RawJob, attachment_index: AttachmentIndex) -> list[dict[str, Any]]:
     keys = {
-        article_key(row),
-        f"provider:{row.get('provider_article_id') or job.provider_article_id}",
-        f"canonical:{row.get('canonical_news_id') or job.canonical_news_id}",
+        f"provider:{job.provider_article_id}",
+        f"canonical:{job.canonical_news_id}",
         f"raw:{normalize_path_text(str(job.raw_artifact_path))}",
     }
     attachments: list[dict[str, Any]] = []
