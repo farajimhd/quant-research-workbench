@@ -270,11 +270,30 @@ def discover_event_sample_shards(config: EventSampleCacheDataConfig) -> list[Eve
 def resolve_event_sample_cache_root(path: Path) -> Path:
     if (path / "manifest.json").exists():
         return path
-    candidates = [child for child in path.iterdir() if child.is_dir() and (child / "manifest.json").exists()] if path.exists() else []
+    if has_event_sample_shards(path):
+        return path
+    candidates = [child for child in path.iterdir() if child.is_dir() and ((child / "manifest.json").exists() or has_event_sample_shards(child))] if path.exists() else []
     if not candidates:
         return path
-    candidates.sort(key=lambda value: (value / "manifest.json").stat().st_mtime, reverse=True)
+    candidates.sort(key=event_sample_cache_mtime, reverse=True)
     return candidates[0]
+
+
+def has_event_sample_shards(path: Path) -> bool:
+    return (path / "train").exists() and any((path / "train").glob("shard_*.samples.json"))
+
+
+def event_sample_cache_mtime(path: Path) -> float:
+    manifest = path / "manifest.json"
+    if manifest.exists():
+        return manifest.stat().st_mtime
+    progress = path / "train_progress.json"
+    if progress.exists():
+        return progress.stat().st_mtime
+    shard_meta = list((path / "train").glob("shard_*.samples.json"))
+    if shard_meta:
+        return max(item.stat().st_mtime for item in shard_meta)
+    return path.stat().st_mtime
 
 
 def iter_event_sample_cache_epoch_batches(
