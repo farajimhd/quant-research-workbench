@@ -110,8 +110,12 @@ Sample-cache and precomputed training use shard epochs:
 ```text
 step = one optimizer update on one mini-batch
 shard_step = one mini-batch inside the currently loaded shard
-epoch = one shuffled pass over all eligible cached samples
+epoch = one pass over cached shards in shard-index order
 ```
+
+For sample-cache training, each shard is loaded into memory, shuffled once, and
+then consumed as contiguous mini-batch slices. The final partial mini-batch in a
+shard is dropped by default.
 
 The validation cache is fixed at startup: it samples `pretrain_validation_steps`
 validation batches and keeps them in memory for cheap repeated

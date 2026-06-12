@@ -40,8 +40,8 @@ class EventSampleCacheDataConfig:
     seed: int = 17
     prefetch_shards: int = 2
     max_shards: int = 0
-    shuffle_shards: bool = True
-    shuffle_samples: bool = True
+    shuffle_records: bool = True
+    drop_last: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,9 +284,6 @@ def iter_event_sample_cache_epoch_batches(
     shards: list[EventSampleShard] | None = None,
 ) -> Iterator[dict[str, Any]]:
     shards = list(shards or discover_event_sample_shards(config))
-    rng = random.Random(int(config.seed) + epoch * 100_003)
-    if config.shuffle_shards:
-        rng.shuffle(shards)
     order = list(range(len(shards)))
     with ThreadPoolExecutor(max_workers=max(1, int(config.prefetch_shards))) as executor:
         future_by_index: dict[int, Future[tuple[EventSampleShard, np.ndarray, float]]] = {}
@@ -304,14 +301,21 @@ def iter_event_sample_cache_epoch_batches(
             future = future_by_index.pop(order_index)
             shard, records, load_seconds = future.result()
             submit_until_full()
-            sample_indices = np.arange(records.shape[0], dtype=np.int64)
-            if config.shuffle_samples:
+            shuffle_seconds = 0.0
+            if config.shuffle_records:
+                shuffle_started = time.perf_counter()
                 np_rng = np.random.default_rng(int(config.seed) + epoch * 1_000_003 + shard.shard_index)
-                np_rng.shuffle(sample_indices)
-            shard_steps = int(math.ceil(records.shape[0] / max(1, config.batch_size)))
-            for shard_step, start in enumerate(range(0, records.shape[0], config.batch_size), start=1):
-                indices = sample_indices[start : start + config.batch_size]
-                batch_records = records[indices]
+                np_rng.shuffle(records, axis=0)
+                shuffle_seconds = time.perf_counter() - shuffle_started
+            usable_samples = records.shape[0]
+            if config.drop_last:
+                usable_samples = (usable_samples // max(1, config.batch_size)) * config.batch_size
+            if usable_samples <= 0:
+                continue
+            shard_steps = int(math.ceil(usable_samples / max(1, config.batch_size)))
+            dropped_samples = records.shape[0] - usable_samples
+            for shard_step, start in enumerate(range(0, usable_samples, config.batch_size), start=1):
+                batch_records = records[start : start + config.batch_size]
                 headers, events = decode_sample_records(batch_records)
                 yield {
                     "header_uint8": torch.from_numpy(headers),
@@ -323,7 +327,10 @@ def iter_event_sample_cache_epoch_batches(
                     "shard_steps": shard_steps,
                     "profile": {
                         "data/shard_load_seconds": load_seconds if shard_step == 1 else 0.0,
+                        "data/shard_shuffle_seconds": shuffle_seconds if shard_step == 1 else 0.0,
                         "data/shard_samples": float(records.shape[0]),
+                        "data/shard_usable_samples": float(usable_samples),
+                        "data/shard_dropped_samples": float(dropped_samples),
                     },
                 }
 

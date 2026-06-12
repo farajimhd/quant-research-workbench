@@ -102,7 +102,10 @@ random origin_stride = 1..16
 ```
 
 This keeps the cache format unchanged while greatly reducing ClickHouse query
-overhead per stored sample. Training still shuffles samples within shards.
+overhead per stored sample. Training reads shards in shard-index order, shuffles
+the full loaded shard once in memory, and then forms mini-batches by contiguous
+slices from that shuffled array. The final incomplete mini-batch in each shard is
+dropped by default so every optimizer step sees the configured batch size.
 
 Progress logs include both total and rolling-rate ETA:
 
@@ -157,3 +160,10 @@ python D:\TradingML\codes\masked_event_model\v4\run_train.py --sample-cache-root
 ```
 
 Changing `--batch-size` does not require rebuilding the cache.
+
+Useful loader flags:
+
+```text
+--sample-cache-shuffle-records / --no-sample-cache-shuffle-records
+--sample-cache-drop-last / --no-sample-cache-drop-last
+```

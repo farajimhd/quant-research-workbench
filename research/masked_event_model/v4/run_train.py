@@ -33,6 +33,8 @@ DEFAULTS: dict[str, Any] = {
     "clickhouse_max_threads": 8,
     "clickhouse_max_memory_usage": "80G",
     "sample_cache_prefetch_shards": 2,
+    "sample_cache_shuffle_records": True,
+    "sample_cache_drop_last": True,
     "batch_size": 4096,
     "max_steps": 10000,
     "epochs": 1,

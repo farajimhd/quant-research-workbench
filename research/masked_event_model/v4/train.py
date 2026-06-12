@@ -84,8 +84,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-max-memory-usage", default=data_defaults.clickhouse_max_memory_usage)
     parser.add_argument("--month-cache-size", type=int, default=data_defaults.month_cache_size)
     parser.add_argument("--sample-cache-prefetch-shards", type=int, default=data_defaults.sample_cache_prefetch_shards)
-    parser.add_argument("--sample-cache-shuffle-shards", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_shuffle_shards)
-    parser.add_argument("--sample-cache-shuffle-samples", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_shuffle_samples)
+    parser.add_argument("--sample-cache-shuffle-records", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_shuffle_records)
+    parser.add_argument("--sample-cache-drop-last", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_drop_last)
     parser.add_argument("--max-index-files", type=int, default=data_defaults.max_index_files)
     parser.add_argument("--batch-size", type=int, default=train_defaults.batch_size)
     parser.add_argument("--max-steps", type=int, default=train_defaults.max_steps)
@@ -628,8 +628,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             clickhouse_max_memory_usage=args.clickhouse_max_memory_usage,
             month_cache_size=args.month_cache_size,
             sample_cache_prefetch_shards=args.sample_cache_prefetch_shards,
-            sample_cache_shuffle_shards=args.sample_cache_shuffle_shards,
-            sample_cache_shuffle_samples=args.sample_cache_shuffle_samples,
+            sample_cache_shuffle_records=args.sample_cache_shuffle_records,
+            sample_cache_drop_last=args.sample_cache_drop_last,
             max_index_files=args.max_index_files,
         ),
         masks=MaskConfig(mask_ratio=args.mask_ratio, header_mask_ratio=args.header_mask_ratio),
@@ -746,8 +746,8 @@ def sample_cache_data_config(config: ExperimentConfig, split: str, seed: int) ->
         seed=seed,
         prefetch_shards=data.sample_cache_prefetch_shards,
         max_shards=data.max_index_files,
-        shuffle_shards=data.sample_cache_shuffle_shards,
-        shuffle_samples=data.sample_cache_shuffle_samples,
+        shuffle_records=data.sample_cache_shuffle_records,
+        drop_last=data.sample_cache_drop_last,
     )
 
 
