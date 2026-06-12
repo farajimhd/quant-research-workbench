@@ -6,6 +6,7 @@ import math
 import random
 import sys
 import time
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -59,6 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-origin-stride", type=int, default=16)
     parser.add_argument("--query-bundle-spans", type=int, default=64)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--eta-recent-window", type=int, default=50, help="Completed microbatches used for rolling-rate ETA.")
     parser.add_argument("--clickhouse-max-threads", type=int, default=8)
     parser.add_argument("--clickhouse-max-memory-usage", default="80G")
     parser.add_argument("--seed", type=int, default=17)
@@ -214,6 +216,7 @@ def build_split(
     micro_batches_completed = 0
     profiles: list[dict[str, Any]] = []
     split_errors: dict[str, int] = {}
+    recent_points: deque[tuple[float, int]] = deque([(split_started, 0)], maxlen=max(2, int(args.eta_recent_window) + 1))
     with ThreadPoolExecutor(max_workers=max(1, int(args.workers))) as executor:
         futures: set[Future[dict[str, Any]]] = set()
         next_job = 0
@@ -241,14 +244,21 @@ def build_split(
                 profile = result.get("profile", {})
                 for key, value in result.get("reject_counts", {}).items():
                     split_errors[key] = split_errors.get(key, 0) + int(value)
-                elapsed = time.perf_counter() - split_started
-                rate = samples_written / max(elapsed, 1e-9)
+                now = time.perf_counter()
+                elapsed = now - split_started
+                recent_points.append((now, samples_written))
+                rate_total = samples_written / max(elapsed, 1e-9)
+                first_recent_time, first_recent_samples = recent_points[0]
+                rate_recent = (samples_written - first_recent_samples) / max(now - first_recent_time, 1e-9)
                 remaining = max(0, target_samples - samples_written)
-                eta = remaining / max(rate, 1e-9)
+                eta_total = remaining / max(rate_total, 1e-9)
+                eta_recent = remaining / max(rate_recent, 1e-9)
                 print(
                     f"{split.upper()} [{micro_batches_completed:,}] samples={samples_written:,}/{target_samples:,} "
-                    f"({100.0 * samples_written / target_samples:.2f}%) rate={rate:,.0f}/s "
-                    f"eta_hours={eta / 3600.0:.1f} shards={len(writer.shards):,} "
+                    f"({100.0 * samples_written / target_samples:.2f}%) "
+                    f"rate_recent={rate_recent:,.0f}/s eta_recent_hours={eta_recent / 3600.0:.1f} "
+                    f"rate_total={rate_total:,.0f}/s eta_total_hours={eta_total / 3600.0:.1f} "
+                    f"shards={len(writer.shards):,} "
                     f"q={float(profile.get('data/query_seconds', 0.0)):.2f}s "
                     f"enc={float(profile.get('data/encode_seconds', 0.0)):.2f}s "
                     f"queries={float(profile.get('data/query_count', 0.0)):.0f}",
@@ -261,8 +271,10 @@ def build_split(
                     samples_written=samples_written,
                     micro_batches_completed=micro_batches_completed,
                     elapsed_seconds=elapsed,
-                    samples_per_second=rate,
-                    eta_seconds=eta,
+                    rate_recent_samples_per_sec=rate_recent,
+                    eta_recent_seconds=eta_recent,
+                    rate_total_samples_per_sec=rate_total,
+                    eta_total_seconds=eta_total,
                     writer=writer,
                 )
                 submit_until_full()
@@ -290,8 +302,10 @@ def write_split_progress(
     samples_written: int,
     micro_batches_completed: int,
     elapsed_seconds: float,
-    samples_per_second: float,
-    eta_seconds: float,
+    rate_recent_samples_per_sec: float,
+    eta_recent_seconds: float,
+    rate_total_samples_per_sec: float,
+    eta_total_seconds: float,
     writer: EventSampleShardWriter,
 ) -> None:
     progress = {
@@ -302,10 +316,16 @@ def write_split_progress(
         "progress_pct": 100.0 * samples_written / max(1, target_samples),
         "micro_batches_completed": micro_batches_completed,
         "elapsed_seconds": elapsed_seconds,
-        "samples_per_second": samples_per_second,
-        "eta_seconds": eta_seconds,
-        "eta_hours": eta_seconds / 3600.0,
-        "eta_minutes": eta_seconds / 60.0,
+        "rate_recent_samples_per_sec": rate_recent_samples_per_sec,
+        "eta_recent_seconds": eta_recent_seconds,
+        "eta_recent_hours": eta_recent_seconds / 3600.0,
+        "rate_total_samples_per_sec": rate_total_samples_per_sec,
+        "eta_total_seconds": eta_total_seconds,
+        "eta_total_hours": eta_total_seconds / 3600.0,
+        "samples_per_second": rate_total_samples_per_sec,
+        "eta_seconds": eta_total_seconds,
+        "eta_hours": eta_total_seconds / 3600.0,
+        "eta_minutes": eta_total_seconds / 60.0,
         "current_shard": writer.current_shard_status(),
     }
     tmp_path = cache_root / f"{split}_progress.json.tmp"

@@ -104,6 +104,16 @@ random origin_stride = 1..16
 This keeps the cache format unchanged while greatly reducing ClickHouse query
 overhead per stored sample. Training still shuffles samples within shards.
 
+Progress logs include both total and rolling-rate ETA:
+
+```text
+rate_recent=.../s eta_recent_hours=...
+rate_total=.../s  eta_total_hours=...
+```
+
+The rolling ETA uses the last `eta_recent_window` completed microbatches and is
+usually more useful after warm-up.
+
 ## Validate
 
 Run fast structural checks plus sampled ClickHouse audit checks:

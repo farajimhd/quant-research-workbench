@@ -23,6 +23,7 @@ DEFAULTS: dict[str, Any] = {
     "max_origin_stride": 16,
     "query_bundle_spans": 64,
     "workers": 8,
+    "eta_recent_window": 50,
     "clickhouse_max_threads": 8,
     "clickhouse_max_memory_usage": "80G",
     "audit_samples_per_split": 256,
