@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import torch
 import numpy as np
+
+
+REPO_ROOT = next((parent for parent in Path(__file__).resolve().parents if (parent / "research").exists()), Path(__file__).resolve().parents[3])
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from research.masked_event_model.v4.config import LossConfig, MaskConfig, ModelConfig
 from research.masked_event_model.v4.losses import masked_byte_bce_loss
@@ -21,8 +29,12 @@ def test_forward_and_encode_shapes() -> None:
     )
     masks = build_byte_masks(header, event_bytes, MaskConfig(mask_ratio=0.5, header_mask_ratio=0.5))
     output = model(header, event_bytes, masks)
-    assert output.header_bit_logits.shape[-1] == 8
-    assert output.event_bit_logits.shape[-1] == 8
+    assert output.header_bit_probs.shape[-1] == 8
+    assert output.event_bit_probs.shape[-1] == 8
+    assert float(output.header_bit_probs.detach().min()) >= 0.0
+    assert float(output.header_bit_probs.detach().max()) <= 1.0
+    assert float(output.event_bit_probs.detach().min()) >= 0.0
+    assert float(output.event_bit_probs.detach().max()) <= 1.0
     result = masked_byte_bce_loss(output, header, event_bytes, masks, LossConfig(), include_diagnostics=True)
     assert torch.isfinite(result.loss)
     embedding = model.encode(header, event_bytes)

@@ -29,7 +29,7 @@ def masked_byte_bce_loss(
     include_diagnostics: bool = False,
 ) -> LossResult:
     header_loss, header_metrics = masked_group_loss(
-        output.header_bit_logits,
+        output.header_bit_probs,
         output.header_indices,
         header_uint8,
         masks.header_mask,
@@ -37,7 +37,7 @@ def masked_byte_bce_loss(
         include_diagnostics=include_diagnostics,
     )
     event_loss, event_metrics = masked_group_loss(
-        output.event_bit_logits,
+        output.event_bit_probs,
         output.event_indices,
         events_uint8,
         masks.event_mask,
@@ -68,7 +68,7 @@ def masked_byte_bce_loss(
 
 
 def masked_group_loss(
-    logits: torch.Tensor,
+    probabilities: torch.Tensor,
     indices: torch.Tensor,
     target_uint8: torch.Tensor,
     mask: torch.Tensor,
@@ -77,32 +77,57 @@ def masked_group_loss(
     include_diagnostics: bool,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     if indices.numel() == 0:
-        zero = logits.sum() * 0.0
+        zero = probabilities.sum() * 0.0
         return zero, empty_metrics(prefix)
     target_bytes = target_uint8[tuple(indices.T)].long()
-    target_bits = unpack_bits(target_bytes).to(dtype=logits.dtype, device=logits.device)
-    loss = F.binary_cross_entropy_with_logits(logits, target_bits)
+    target_bits = unpack_bits(target_bytes).to(dtype=probabilities.dtype, device=probabilities.device)
+    loss = F.binary_cross_entropy(probabilities, target_bits)
     with torch.no_grad():
-        probabilities = torch.sigmoid(logits)
         hard_bits = probabilities >= 0.5
         target_bool = target_bits.bool()
         bit_acc = (hard_bits == target_bool).float().mean()
+        target_one_rate = target_bits.float().mean()
+        pred_one_rate = hard_bits.float().mean()
+        majority_baseline = torch.maximum(target_one_rate, 1.0 - target_one_rate)
+        one_mask = target_bool
+        zero_mask = ~target_bool
+        one_acc = (hard_bits[one_mask] == target_bool[one_mask]).float().mean() if one_mask.any() else probabilities.new_tensor(0.0)
+        zero_acc = (hard_bits[zero_mask] == target_bool[zero_mask]).float().mean() if zero_mask.any() else probabilities.new_tensor(0.0)
+        balanced_bit_acc = (one_acc + zero_acc) * 0.5 if one_mask.any() and zero_mask.any() else bit_acc
         hard_bytes = pack_bits(hard_bits)
         target_float = target_bytes.float()
         hard_mae = (hard_bytes.float() - target_float).abs().mean()
         soft_bytes = (probabilities.float() * BIT_WEIGHTS.to(probabilities.device)).sum(dim=-1)
         soft_mae = (soft_bytes - target_float).abs().mean()
         exact = (hard_bytes == target_bytes).float().mean()
+        mode_count = torch.bincount(target_bytes, minlength=256).max()
+        byte_mode_baseline = mode_count.float() / target_bytes.numel()
         confidence = (probabilities - 0.5).abs() * 2.0
         metrics = {
             f"pretrain/{prefix}_masked_bytes": float(indices.shape[0]),
             f"pretrain/{prefix}_bit_acc_pct": float(bit_acc.detach().cpu() * 100.0),
+            f"pretrain/{prefix}_bit_majority_baseline_pct": float(majority_baseline.detach().cpu() * 100.0),
+            f"pretrain/{prefix}_bit_acc_lift_pct": float((bit_acc - majority_baseline).detach().cpu() * 100.0),
+            f"pretrain/{prefix}_balanced_bit_acc_pct": float(balanced_bit_acc.detach().cpu() * 100.0),
+            f"pretrain/{prefix}_zero_bit_acc_pct": float(zero_acc.detach().cpu() * 100.0),
+            f"pretrain/{prefix}_one_bit_acc_pct": float(one_acc.detach().cpu() * 100.0),
+            f"pretrain/{prefix}_target_one_rate_pct": float(target_one_rate.detach().cpu() * 100.0),
+            f"pretrain/{prefix}_pred_one_rate_pct": float(pred_one_rate.detach().cpu() * 100.0),
             f"pretrain/{prefix}_byte_exact_acc_pct": float(exact.detach().cpu() * 100.0),
+            f"pretrain/{prefix}_byte_mode_baseline_pct": float(byte_mode_baseline.detach().cpu() * 100.0),
+            f"pretrain/{prefix}_byte_exact_lift_pct": float((exact - byte_mode_baseline).detach().cpu() * 100.0),
             f"pretrain/{prefix}_hard_byte_mae": float(hard_mae.detach().cpu()),
             f"pretrain/{prefix}_soft_byte_mae": float(soft_mae.detach().cpu()),
             f"pretrain/{prefix}_bit_conf_mean": float(confidence.mean().detach().cpu()),
             f"pretrain/{prefix}_bit_conf_min": float(confidence.min().detach().cpu()),
         }
+        per_bit_acc = (hard_bits == target_bool).float().mean(dim=0)
+        per_bit_one_rate = target_bits.float().mean(dim=0)
+        per_bit_pred_one_rate = hard_bits.float().mean(dim=0)
+        for bit_index in range(8):
+            metrics[f"pretrain/{prefix}_bit{bit_index}_acc_pct"] = float(per_bit_acc[bit_index].detach().cpu() * 100.0)
+            metrics[f"pretrain/{prefix}_bit{bit_index}_target_one_rate_pct"] = float(per_bit_one_rate[bit_index].detach().cpu() * 100.0)
+            metrics[f"pretrain/{prefix}_bit{bit_index}_pred_one_rate_pct"] = float(per_bit_pred_one_rate[bit_index].detach().cpu() * 100.0)
         if include_diagnostics:
             high_conf = confidence >= 0.8
             if high_conf.any():
@@ -117,11 +142,23 @@ def empty_metrics(prefix: str) -> dict[str, float]:
     return {
         f"pretrain/{prefix}_masked_bytes": 0.0,
         f"pretrain/{prefix}_bit_acc_pct": 0.0,
+        f"pretrain/{prefix}_bit_majority_baseline_pct": 0.0,
+        f"pretrain/{prefix}_bit_acc_lift_pct": 0.0,
+        f"pretrain/{prefix}_balanced_bit_acc_pct": 0.0,
+        f"pretrain/{prefix}_zero_bit_acc_pct": 0.0,
+        f"pretrain/{prefix}_one_bit_acc_pct": 0.0,
+        f"pretrain/{prefix}_target_one_rate_pct": 0.0,
+        f"pretrain/{prefix}_pred_one_rate_pct": 0.0,
         f"pretrain/{prefix}_byte_exact_acc_pct": 0.0,
+        f"pretrain/{prefix}_byte_mode_baseline_pct": 0.0,
+        f"pretrain/{prefix}_byte_exact_lift_pct": 0.0,
         f"pretrain/{prefix}_hard_byte_mae": 0.0,
         f"pretrain/{prefix}_soft_byte_mae": 0.0,
         f"pretrain/{prefix}_bit_conf_mean": 0.0,
         f"pretrain/{prefix}_bit_conf_min": 0.0,
+        **{f"pretrain/{prefix}_bit{bit_index}_acc_pct": 0.0 for bit_index in range(8)},
+        **{f"pretrain/{prefix}_bit{bit_index}_target_one_rate_pct": 0.0 for bit_index in range(8)},
+        **{f"pretrain/{prefix}_bit{bit_index}_pred_one_rate_pct": 0.0 for bit_index in range(8)},
     }
 
 

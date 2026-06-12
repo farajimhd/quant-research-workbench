@@ -70,6 +70,17 @@ MODEL_SIZES: dict[str, dict[str, Any]] = {
     },
 }
 
+PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int], ...] = (
+    ("current", 16, 4096),
+    ("current", 32, 4096),
+    ("small_plus", 16, 4096),
+    ("small_plus", 32, 4096),
+    ("small_plus", 16, 8192),
+    ("small_plus", 32, 8192),
+    ("medium", 16, 4096),
+    ("medium", 32, 4096),
+)
+
 
 SUMMARY_FIELDS = [
     "run_name",
@@ -85,7 +96,16 @@ SUMMARY_FIELDS = [
     "samples_per_second",
     "last_loss",
     "last_event_bit_acc_pct",
+    "last_event_bit_majority_baseline_pct",
+    "last_event_bit_acc_lift_pct",
+    "last_event_balanced_bit_acc_pct",
+    "last_event_zero_bit_acc_pct",
+    "last_event_one_bit_acc_pct",
+    "last_event_target_one_rate_pct",
+    "last_event_pred_one_rate_pct",
     "last_event_byte_exact_acc_pct",
+    "last_event_byte_mode_baseline_pct",
+    "last_event_byte_exact_lift_pct",
     "last_inference_encode_seconds",
     "last_inference_encode_ms_per_sample",
     "mean_last10_step_seconds",
@@ -120,7 +140,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sequentially profile v4 model sizes across embedding dimensions and batch sizes.")
     parser.add_argument("--cache-root", default=r"D:\market-data\prepared\event_sample_cache")
     parser.add_argument("--sweep-output-root", default="")
-    parser.add_argument("--run-prefix", default="v4-size-sweep")
+    parser.add_argument("--run-prefix", default="v4-prob-bce-size-sweep")
+    parser.add_argument("--profile-set", choices=("practical", "grid"), default="practical")
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--embedding-dims", default="16,32")
     parser.add_argument("--batch-sizes", default="4096,8192")
@@ -146,6 +167,7 @@ def main() -> None:
     batch_sizes = parse_int_list(args.batch_sizes, "--batch-sizes")
     selected_sizes = parse_model_sizes(args.model_sizes)
     runs = build_runs(args, selected_sizes, embedding_dims, batch_sizes)
+    used_model_sizes = [name for name in MODEL_SIZES if any(run.model_size == name for run in runs)]
     sweep_root = resolve_sweep_root(args)
     sweep_root.mkdir(parents=True, exist_ok=True)
     config_path = sweep_root / "sweep_config.json"
@@ -155,7 +177,8 @@ def main() -> None:
         json.dumps(
             {
                 "args": vars(args),
-                "model_sizes": {name: MODEL_SIZES[name] for name in selected_sizes},
+                "model_sizes": {name: MODEL_SIZES[name] for name in used_model_sizes},
+                "practical_profile_runs": PRACTICAL_PROFILE_RUNS,
                 "run_count": len(runs),
                 "runs": [run_to_dict(run) for run in runs],
             },
@@ -167,8 +190,8 @@ def main() -> None:
 
     print("=" * 96, flush=True)
     print("v4 model-size profile sweep", flush=True)
-    print(f"runs={len(runs)} steps={args.steps} embedding_dims={embedding_dims} batch_sizes={batch_sizes}", flush=True)
-    print(f"model_sizes={selected_sizes}", flush=True)
+    print(f"runs={len(runs)} steps={args.steps} profile_set={args.profile_set} embedding_dims={embedding_dims} batch_sizes={batch_sizes}", flush=True)
+    print(f"model_sizes={used_model_sizes}", flush=True)
     print(f"sweep_root={sweep_root}", flush=True)
     print(f"results_jsonl={results_jsonl}", flush=True)
     print(f"results_csv={results_csv}", flush=True)
@@ -234,6 +257,32 @@ def parse_model_sizes(raw: str) -> list[str]:
 
 
 def build_runs(args: argparse.Namespace, model_sizes: list[str], embedding_dims: list[int], batch_sizes: list[int]) -> list[SweepRun]:
+    if args.profile_set == "practical":
+        return build_explicit_runs(args, PRACTICAL_PROFILE_RUNS)
+    return build_grid_runs(args, model_sizes, embedding_dims, batch_sizes)
+
+
+def build_explicit_runs(args: argparse.Namespace, combos: tuple[tuple[str, int, int], ...]) -> list[SweepRun]:
+    runs: list[SweepRun] = []
+    total = len(combos)
+    for index, (model_size, embedding_dim, batch_size) in enumerate(combos, start=1):
+        run_name = f"{args.run_prefix}-{model_size}-emb{embedding_dim}-bs{batch_size}"
+        runs.append(
+            SweepRun(
+                index=index,
+                total=total,
+                model_size=model_size,
+                embedding_dim=embedding_dim,
+                batch_size=batch_size,
+                run_name=run_name,
+                run_root=resolve_run_root(args, run_name),
+                model_config=MODEL_SIZES[model_size],
+            )
+        )
+    return runs
+
+
+def build_grid_runs(args: argparse.Namespace, model_sizes: list[str], embedding_dims: list[int], batch_sizes: list[int]) -> list[SweepRun]:
     runs: list[SweepRun] = []
     total = len(model_sizes) * len(embedding_dims) * len(batch_sizes)
     index = 0
@@ -460,7 +509,16 @@ def summarize_run(run: SweepRun, *, subprocess_seconds: float, status: str, erro
         "samples_per_second": samples_per_second,
         "last_loss": last_float(last, "pretrain/loss_total"),
         "last_event_bit_acc_pct": last_float(last, "pretrain/event_bit_acc_pct"),
+        "last_event_bit_majority_baseline_pct": last_float(last, "pretrain/event_bit_majority_baseline_pct"),
+        "last_event_bit_acc_lift_pct": last_float(last, "pretrain/event_bit_acc_lift_pct"),
+        "last_event_balanced_bit_acc_pct": last_float(last, "pretrain/event_balanced_bit_acc_pct"),
+        "last_event_zero_bit_acc_pct": last_float(last, "pretrain/event_zero_bit_acc_pct"),
+        "last_event_one_bit_acc_pct": last_float(last, "pretrain/event_one_bit_acc_pct"),
+        "last_event_target_one_rate_pct": last_float(last, "pretrain/event_target_one_rate_pct"),
+        "last_event_pred_one_rate_pct": last_float(last, "pretrain/event_pred_one_rate_pct"),
         "last_event_byte_exact_acc_pct": last_float(last, "pretrain/event_byte_exact_acc_pct"),
+        "last_event_byte_mode_baseline_pct": last_float(last, "pretrain/event_byte_mode_baseline_pct"),
+        "last_event_byte_exact_lift_pct": last_float(last, "pretrain/event_byte_exact_lift_pct"),
         "last_inference_encode_seconds": last_float(last, "profile/inference_encode_seconds"),
         "last_inference_encode_ms_per_sample": last_float(last, "profile/inference_encode_ms_per_sample"),
         "mean_last10_step_seconds": mean_metric(tail, "train/step_seconds"),

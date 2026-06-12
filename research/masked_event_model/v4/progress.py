@@ -26,7 +26,12 @@ class TrainingProgressState:
     samples_seen_total: int = 0
     loss: float = 0.0
     event_bit_acc_pct: float = 0.0
+    event_bit_acc_lift_pct: float = 0.0
+    event_balanced_bit_acc_pct: float = 0.0
+    event_bit_majority_baseline_pct: float = 0.0
     byte_exact_acc_pct: float = 0.0
+    byte_exact_lift_pct: float = 0.0
+    byte_mode_baseline_pct: float = 0.0
     lr: float = 0.0
     step_seconds: float = 0.0
     samples_per_second: float = 0.0
@@ -106,7 +111,12 @@ class TrainingReporter:
         state.samples_seen_total = int(metrics.get("train/samples_seen_total", state.samples_seen_total))
         state.loss = float(metrics.get("pretrain/loss_total", state.loss))
         state.event_bit_acc_pct = float(metrics.get("pretrain/event_bit_acc_pct", state.event_bit_acc_pct))
+        state.event_bit_acc_lift_pct = float(metrics.get("pretrain/event_bit_acc_lift_pct", state.event_bit_acc_lift_pct))
+        state.event_balanced_bit_acc_pct = float(metrics.get("pretrain/event_balanced_bit_acc_pct", state.event_balanced_bit_acc_pct))
+        state.event_bit_majority_baseline_pct = float(metrics.get("pretrain/event_bit_majority_baseline_pct", state.event_bit_majority_baseline_pct))
         state.byte_exact_acc_pct = float(metrics.get("pretrain/event_byte_exact_acc_pct", state.byte_exact_acc_pct))
+        state.byte_exact_lift_pct = float(metrics.get("pretrain/event_byte_exact_lift_pct", state.byte_exact_lift_pct))
+        state.byte_mode_baseline_pct = float(metrics.get("pretrain/event_byte_mode_baseline_pct", state.byte_mode_baseline_pct))
         state.lr = float(metrics.get("train/lr", state.lr))
         if "train/epoch_loss_mean" in metrics:
             state.epoch_loss_mean = float(metrics["train/epoch_loss_mean"])
@@ -189,8 +199,13 @@ class TrainingReporter:
         metrics.add_column("Metric", no_wrap=True)
         metrics.add_column("Value", justify="right", no_wrap=True)
         metrics.add_row("loss", f"{state.loss:.6f}")
+        metrics.add_row("balanced bit acc", f"{state.event_balanced_bit_acc_pct:.3f}%")
+        metrics.add_row("bit acc lift", f"{state.event_bit_acc_lift_pct:+.3f}%")
         metrics.add_row("event bit acc", f"{state.event_bit_acc_pct:.3f}%")
+        metrics.add_row("bit baseline", f"{state.event_bit_majority_baseline_pct:.3f}%")
         metrics.add_row("byte exact acc", f"{state.byte_exact_acc_pct:.3f}%")
+        metrics.add_row("byte exact lift", f"{state.byte_exact_lift_pct:+.3f}%")
+        metrics.add_row("byte mode baseline", f"{state.byte_mode_baseline_pct:.3f}%")
         metrics.add_row("lr", f"{state.lr:.3e}")
         if state.epoch_loss_mean is not None:
             metrics.add_row("epoch loss mean", f"{state.epoch_loss_mean:.6f}")
@@ -244,7 +259,8 @@ class TrainingReporter:
         state = self.state
         return (
             f"step={state.step} epoch={state.epoch}/{state.epochs} "
-            f"loss={state.loss:.6f} bit_acc={state.event_bit_acc_pct:.3f}% "
+            f"loss={state.loss:.6f} balanced_bit_acc={state.event_balanced_bit_acc_pct:.3f}% "
+            f"bit_lift={state.event_bit_acc_lift_pct:+.3f}% byte_lift={state.byte_exact_lift_pct:+.3f}% "
             f"step_s={state.step_seconds:.3f} data_s={state.data_wait_seconds:.3f} "
             f"gpu_alloc_gib={state.gpu_allocated_gib:.2f}"
         )

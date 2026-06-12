@@ -17,9 +17,9 @@ MASK_BYTE_ID = 256
 
 @dataclass(slots=True)
 class ByteMAEOutput:
-    header_bit_logits: torch.Tensor
+    header_bit_probs: torch.Tensor
     header_indices: torch.Tensor
-    event_bit_logits: torch.Tensor
+    event_bit_probs: torch.Tensor
     event_indices: torch.Tensor
     chunk_embedding: torch.Tensor
     token_embeddings: torch.Tensor
@@ -94,12 +94,12 @@ class CompactByteMaskedAutoencoder(nn.Module):
         encoded_tokens, token_embeddings, chunk_embedding = self.encode_tokens_for_training(header_uint8, events_uint8, masks)
         header_indices = masks.header_mask.nonzero(as_tuple=False)
         event_indices = masks.event_mask.nonzero(as_tuple=False)
-        header_logits = self.decode_header_indices(encoded_tokens, header_indices)
-        event_logits = self.decode_event_indices(encoded_tokens, event_indices)
+        header_probs = self.decode_header_indices(encoded_tokens, header_indices)
+        event_probs = self.decode_event_indices(encoded_tokens, event_indices)
         return ByteMAEOutput(
-            header_bit_logits=header_logits,
+            header_bit_probs=header_probs,
             header_indices=header_indices,
-            event_bit_logits=event_logits,
+            event_bit_probs=event_probs,
             event_indices=event_indices,
             chunk_embedding=chunk_embedding,
             token_embeddings=token_embeddings,
@@ -163,7 +163,7 @@ class CompactByteMaskedAutoencoder(nn.Module):
         token = encoded_tokens[indices[:, 0], 1]
         hidden = self.decoder_up(self.to_embedding(token))
         hidden = hidden + self.header_decode_byte_position(indices[:, 1]) + self.decode_type(torch.zeros(indices.shape[0], dtype=torch.long, device=indices.device))
-        return self.bit_head(self.decoder(hidden))
+        return torch.sigmoid(self.bit_head(self.decoder(hidden)))
 
     def _decode_events(self, encoded_tokens: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         if indices.numel() == 0:
@@ -171,4 +171,4 @@ class CompactByteMaskedAutoencoder(nn.Module):
         token = encoded_tokens[indices[:, 0], indices[:, 1] + 2]
         hidden = self.decoder_up(self.to_embedding(token))
         hidden = hidden + self.event_decode_byte_position(indices[:, 2]) + self.decode_type(torch.ones(indices.shape[0], dtype=torch.long, device=indices.device))
-        return self.bit_head(self.decoder(hidden))
+        return torch.sigmoid(self.bit_head(self.decoder(hidden)))

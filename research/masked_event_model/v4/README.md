@@ -24,15 +24,22 @@ event_embeddings: [B, 128, 32]
 Training objective:
 
 ```text
-BCEWithLogitsLoss on masked byte bits only
+BCE on masked byte bits only
 ```
 
 The decoder predicts only masked byte positions:
 
 ```text
-header_bit_logits: [masked_header_bytes, 8]
-event_bit_logits:  [masked_event_bytes, 8]
+header_bit_probs: [masked_header_bytes, 8]
+event_bit_probs:  [masked_event_bytes, 8]
 ```
+
+The decoder applies sigmoid at the final bit head. The training loss consumes
+those probabilities directly with plain binary cross entropy. Reported learning
+metrics include raw bit accuracy, majority-bit baseline, bit-accuracy lift,
+balanced bit accuracy, byte exact accuracy, byte-mode baseline, and byte-exact
+lift. The baseline/lift metrics matter because compact bytes are sparse in bit
+space and raw bit accuracy can look high even for a weak predictor.
 
 Default ClickHouse source used to build the sample cache:
 
@@ -198,24 +205,27 @@ Run the full model-size profiling sweep:
 python D:\TradingML\codes\masked_event_model\v4\research\masked_event_model\v4\run_model_size_sweep.py --fresh-start
 ```
 
-Default sweep:
+Default practical sweep:
 
 ```text
-model_sizes = current, small_plus, medium, medium_plus, large
-embedding_dim = 16, 32
-batch_size = 4096, 8192
+current:    embedding_dim = 16, 32; batch_size = 4096
+small_plus: embedding_dim = 16, 32; batch_size = 4096, 8192
+medium:     embedding_dim = 16, 32; batch_size = 4096
 steps = 50
 decoder_chunk_size = 524288
 ```
+
+The full grid from the earlier broad sweep remains available with
+`--profile-set grid`.
 
 The sweep runs one trainer subprocess per combination, so CUDA allocator state
 does not leak between model sizes. Each run writes its normal training
 artifacts under its own run directory. The sweep also writes aggregate files:
 
 ```text
-v4-size-sweep-summary/sweep_config.json
-v4-size-sweep-summary/sweep_results.jsonl
-v4-size-sweep-summary/sweep_results.csv
+v4-prob-bce-size-sweep-summary/sweep_config.json
+v4-prob-bce-size-sweep-summary/sweep_results.jsonl
+v4-prob-bce-size-sweep-summary/sweep_results.csv
 ```
 
 Useful overrides:

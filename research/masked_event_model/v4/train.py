@@ -813,12 +813,12 @@ def backward_masked_group_chunks(
         chunks += 1
         chunk_indices = indices[start : start + chunk_size]
         with torch.amp.autocast("cuda", enabled=encoded_tokens.is_cuda):
-            logits = model.decode_header_indices(encoded_tokens, chunk_indices) if prefix == "header" else model.decode_event_indices(encoded_tokens, chunk_indices)
+            probabilities = model.decode_header_indices(encoded_tokens, chunk_indices) if prefix == "header" else model.decode_event_indices(encoded_tokens, chunk_indices)
             target_bytes = target_uint8[tuple(chunk_indices.T)].long()
-            target_bits = unpack_bits(target_bytes).to(dtype=logits.dtype, device=logits.device)
-            loss_sum = F.binary_cross_entropy_with_logits(logits, target_bits, reduction="sum")
+            target_bits = unpack_bits(target_bytes).to(dtype=probabilities.dtype, device=probabilities.device)
+            loss_sum = F.binary_cross_entropy(probabilities, target_bits, reduction="sum")
             scaler.scale(loss_sum * group_scale).backward()
-        stats.update(logits.detach(), target_bits.detach(), target_bytes.detach(), loss_sum.detach(), include_diagnostics=include_diagnostics)
+        stats.update(probabilities.detach(), target_bits.detach(), target_bytes.detach(), loss_sum.detach(), include_diagnostics=include_diagnostics)
     return stats.loss_sum, stats.to_metrics(), chunks
 
 
@@ -829,7 +829,17 @@ class ChunkMetricAccumulator:
         self.byte_count = 0
         self.bit_count = 0
         self.bit_correct = 0.0
+        self.zero_bit_correct = 0.0
+        self.zero_bit_count = 0.0
+        self.one_bit_correct = 0.0
+        self.one_bit_count = 0.0
+        self.pred_one_count = 0.0
+        self.per_bit_correct = torch.zeros(8, dtype=torch.float64)
+        self.per_bit_count = torch.zeros(8, dtype=torch.float64)
+        self.per_bit_target_one_count = torch.zeros(8, dtype=torch.float64)
+        self.per_bit_pred_one_count = torch.zeros(8, dtype=torch.float64)
         self.exact_correct = 0.0
+        self.byte_mode_count = 0.0
         self.hard_abs_sum = 0.0
         self.soft_abs_sum = 0.0
         self.conf_sum = 0.0
@@ -841,7 +851,7 @@ class ChunkMetricAccumulator:
 
     def update(
         self,
-        logits: torch.Tensor,
+        probabilities: torch.Tensor,
         target_bits: torch.Tensor,
         target_bytes: torch.Tensor,
         loss_sum: torch.Tensor,
@@ -849,9 +859,10 @@ class ChunkMetricAccumulator:
         include_diagnostics: bool,
     ) -> None:
         with torch.no_grad():
-            probabilities = torch.sigmoid(logits)
             hard_bits = probabilities >= 0.5
             target_bool = target_bits.bool()
+            one_mask = target_bool
+            zero_mask = ~target_bool
             hard_bytes = pack_bits(hard_bits)
             target_float = target_bytes.float()
             soft_bytes = (probabilities.float() * BIT_WEIGHTS.to(probabilities.device)).sum(dim=-1)
@@ -860,7 +871,17 @@ class ChunkMetricAccumulator:
             self.byte_count += int(target_bytes.numel())
             self.bit_count += int(target_bits.numel())
             self.bit_correct += float((hard_bits == target_bool).float().sum().cpu())
+            self.zero_bit_correct += float((hard_bits[zero_mask] == target_bool[zero_mask]).float().sum().cpu()) if zero_mask.any() else 0.0
+            self.zero_bit_count += float(zero_mask.sum().cpu())
+            self.one_bit_correct += float((hard_bits[one_mask] == target_bool[one_mask]).float().sum().cpu()) if one_mask.any() else 0.0
+            self.one_bit_count += float(one_mask.sum().cpu())
+            self.pred_one_count += float(hard_bits.float().sum().cpu())
+            self.per_bit_correct += (hard_bits == target_bool).float().sum(dim=0).double().cpu()
+            self.per_bit_count += torch.full((8,), float(target_bits.shape[0]), dtype=torch.float64)
+            self.per_bit_target_one_count += target_bits.float().sum(dim=0).double().cpu()
+            self.per_bit_pred_one_count += hard_bits.float().sum(dim=0).double().cpu()
             self.exact_correct += float((hard_bytes == target_bytes).float().sum().cpu())
+            self.byte_mode_count += float(torch.bincount(target_bytes, minlength=256).max().cpu())
             self.hard_abs_sum += float((hard_bytes.float() - target_float).abs().sum().cpu())
             self.soft_abs_sum += float((soft_bytes - target_float).abs().sum().cpu())
             self.conf_sum += float(confidence.float().sum().cpu())
@@ -876,10 +897,28 @@ class ChunkMetricAccumulator:
                     self.low_conf_count += float(low_conf.sum().cpu())
 
     def to_metrics(self) -> dict[str, float]:
+        bit_acc = 100.0 * self.bit_correct / max(1.0, float(self.bit_count))
+        zero_acc = 100.0 * self.zero_bit_correct / max(1.0, float(self.zero_bit_count))
+        one_acc = 100.0 * self.one_bit_correct / max(1.0, float(self.one_bit_count))
+        balanced_bit_acc = 0.5 * (zero_acc + one_acc) if self.zero_bit_count > 0 and self.one_bit_count > 0 else bit_acc
+        target_one_rate = 100.0 * self.one_bit_count / max(1.0, float(self.bit_count))
+        pred_one_rate = 100.0 * self.pred_one_count / max(1.0, float(self.bit_count))
+        majority_baseline = max(target_one_rate, 100.0 - target_one_rate)
+        byte_exact = 100.0 * self.exact_correct / max(1.0, float(self.byte_count))
+        byte_mode_baseline = 100.0 * self.byte_mode_count / max(1.0, float(self.byte_count))
         metrics = {
             f"pretrain/{self.prefix}_masked_bytes": float(self.byte_count),
-            f"pretrain/{self.prefix}_bit_acc_pct": 100.0 * self.bit_correct / max(1.0, float(self.bit_count)),
-            f"pretrain/{self.prefix}_byte_exact_acc_pct": 100.0 * self.exact_correct / max(1.0, float(self.byte_count)),
+            f"pretrain/{self.prefix}_bit_acc_pct": bit_acc,
+            f"pretrain/{self.prefix}_bit_majority_baseline_pct": majority_baseline,
+            f"pretrain/{self.prefix}_bit_acc_lift_pct": bit_acc - majority_baseline,
+            f"pretrain/{self.prefix}_balanced_bit_acc_pct": balanced_bit_acc,
+            f"pretrain/{self.prefix}_zero_bit_acc_pct": zero_acc,
+            f"pretrain/{self.prefix}_one_bit_acc_pct": one_acc,
+            f"pretrain/{self.prefix}_target_one_rate_pct": target_one_rate,
+            f"pretrain/{self.prefix}_pred_one_rate_pct": pred_one_rate,
+            f"pretrain/{self.prefix}_byte_exact_acc_pct": byte_exact,
+            f"pretrain/{self.prefix}_byte_mode_baseline_pct": byte_mode_baseline,
+            f"pretrain/{self.prefix}_byte_exact_lift_pct": byte_exact - byte_mode_baseline,
             f"pretrain/{self.prefix}_hard_byte_mae": self.hard_abs_sum / max(1.0, float(self.byte_count)),
             f"pretrain/{self.prefix}_soft_byte_mae": self.soft_abs_sum / max(1.0, float(self.byte_count)),
             f"pretrain/{self.prefix}_bit_conf_mean": self.conf_sum / max(1.0, float(self.bit_count)),
@@ -889,6 +928,11 @@ class ChunkMetricAccumulator:
             metrics[f"pretrain/{self.prefix}_high_conf_bit_acc_pct"] = 100.0 * self.high_conf_correct / self.high_conf_count
         if self.low_conf_count > 0:
             metrics[f"pretrain/{self.prefix}_low_conf_bit_acc_pct"] = 100.0 * self.low_conf_correct / self.low_conf_count
+        for bit_index in range(8):
+            count = max(1.0, float(self.per_bit_count[bit_index]))
+            metrics[f"pretrain/{self.prefix}_bit{bit_index}_acc_pct"] = 100.0 * float(self.per_bit_correct[bit_index]) / count
+            metrics[f"pretrain/{self.prefix}_bit{bit_index}_target_one_rate_pct"] = 100.0 * float(self.per_bit_target_one_count[bit_index]) / count
+            metrics[f"pretrain/{self.prefix}_bit{bit_index}_pred_one_rate_pct"] = 100.0 * float(self.per_bit_pred_one_count[bit_index]) / count
         return metrics
 
 
@@ -896,11 +940,23 @@ def empty_chunk_metrics(prefix: str) -> dict[str, float]:
     return {
         f"pretrain/{prefix}_masked_bytes": 0.0,
         f"pretrain/{prefix}_bit_acc_pct": 0.0,
+        f"pretrain/{prefix}_bit_majority_baseline_pct": 0.0,
+        f"pretrain/{prefix}_bit_acc_lift_pct": 0.0,
+        f"pretrain/{prefix}_balanced_bit_acc_pct": 0.0,
+        f"pretrain/{prefix}_zero_bit_acc_pct": 0.0,
+        f"pretrain/{prefix}_one_bit_acc_pct": 0.0,
+        f"pretrain/{prefix}_target_one_rate_pct": 0.0,
+        f"pretrain/{prefix}_pred_one_rate_pct": 0.0,
         f"pretrain/{prefix}_byte_exact_acc_pct": 0.0,
+        f"pretrain/{prefix}_byte_mode_baseline_pct": 0.0,
+        f"pretrain/{prefix}_byte_exact_lift_pct": 0.0,
         f"pretrain/{prefix}_hard_byte_mae": 0.0,
         f"pretrain/{prefix}_soft_byte_mae": 0.0,
         f"pretrain/{prefix}_bit_conf_mean": 0.0,
         f"pretrain/{prefix}_bit_conf_min": 0.0,
+        **{f"pretrain/{prefix}_bit{bit_index}_acc_pct": 0.0 for bit_index in range(8)},
+        **{f"pretrain/{prefix}_bit{bit_index}_target_one_rate_pct": 0.0 for bit_index in range(8)},
+        **{f"pretrain/{prefix}_bit{bit_index}_pred_one_rate_pct": 0.0 for bit_index in range(8)},
     }
 
 
@@ -1308,8 +1364,8 @@ def build_model_summary_text(model: torch.nn.Module, details: dict[str, Any], pa
         "=" * 80,
         f"Input header_uint8: [B, 14]",
         f"Input events_uint8: [B, {details['events_per_chunk']}, 16]",
-        f"Output header bit logits: [masked_header_bytes, 8]",
-        f"Output event bit logits: [masked_event_bytes, 8]",
+        f"Output header bit probabilities: [masked_header_bytes, 8]",
+        f"Output event bit probabilities: [masked_event_bytes, 8]",
         f"Embedding: [B, {details['embedding_dim']}]",
         "",
         f"Total params: {details['total_params']:,}",
@@ -1340,9 +1396,9 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
     NORM --> EMB[\"chunk embedding<br/>B x {config.model.embedding_dim}\"]
     NORM --> DECUP[\"decoder up projection\"]
     DECUP --> DEC[\"masked-byte decoder<br/>{config.model.decoder_layers} MLP blocks\"]
-    DEC --> BIT[\"bit head<br/>8 logits per masked byte\"]
-    BIT --> OH[\"header_bit_logits\"]
-    BIT --> OE[\"event_bit_logits\"]
+    DEC --> BIT[\"bit head + sigmoid<br/>8 probabilities per masked byte\"]
+    BIT --> OH[\"header_bit_probs\"]
+    BIT --> OE[\"event_bit_probs\"]
 """
 
 
@@ -1396,13 +1452,13 @@ class MaskedSummaryWrapper(torch.nn.Module):
         header_mask[:, 0] = True
         event_mask[:, 0, 0] = True
         output = self.model(header_uint8, events_uint8, ByteMaskBatch(header_mask=header_mask, event_mask=event_mask))
-        return output.header_bit_logits, output.event_bit_logits, output.chunk_embedding
+        return output.header_bit_probs, output.event_bit_probs, output.chunk_embedding
 
 
 class TorchInfoSummaryWrapper(MaskedSummaryWrapper):
     def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
-        header_logits, event_logits, chunk_embedding = super().forward(header_uint8, events_uint8)
-        return torch.cat([header_logits.flatten(), event_logits.flatten(), chunk_embedding.flatten()]).unsqueeze(0)
+        header_probs, event_probs, chunk_embedding = super().forward(header_uint8, events_uint8)
+        return torch.cat([header_probs.flatten(), event_probs.flatten(), chunk_embedding.flatten()]).unsqueeze(0)
 
 
 def install_fatal_exception_logger(run_paths: RunPaths) -> None:
@@ -1429,7 +1485,10 @@ def format_metrics(step: int, metrics: dict[str, float]) -> str:
     keys = [
         "pretrain/loss_total",
         "pretrain/event_bit_acc_pct",
+        "pretrain/event_bit_acc_lift_pct",
+        "pretrain/event_balanced_bit_acc_pct",
         "pretrain/event_byte_exact_acc_pct",
+        "pretrain/event_byte_exact_lift_pct",
         "train/epoch",
         "train/epoch_progress_pct",
         "train/shard_index",
