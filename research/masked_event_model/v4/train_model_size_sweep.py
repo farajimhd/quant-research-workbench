@@ -94,6 +94,7 @@ PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int], ...] = (
     ("medium", 64, 4096),
     ("high", 16, 1024),
     ("high", 32, 1024),
+    ("high", 32, 2048),
 )
 
 
