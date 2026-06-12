@@ -79,7 +79,7 @@ MODEL_SIZES: dict[str, dict[str, Any]] = {
     },
 }
 
-PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int], ...] = (
+PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int] | tuple[str, int, int, str], ...] = (
     ("tiny_d128", 16, 4096),
     ("tiny_d128", 32, 4096),
     ("tiny_d128", 64, 4096),
@@ -95,6 +95,7 @@ PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int], ...] = (
     ("high", 16, 1024),
     ("high", 32, 1024),
     ("high", 32, 2048),
+    ("medium", 32, 4096, "bit"),
 )
 
 
@@ -102,6 +103,7 @@ SUMMARY_FIELDS = [
     "run_name",
     "status",
     "model_size",
+    "input_representation",
     "embedding_dim",
     "batch_size",
     "parameters",
@@ -149,6 +151,7 @@ class SweepRun:
     index: int
     total: int
     model_size: str
+    input_representation: str
     embedding_dim: int
     batch_size: int
     run_name: str
@@ -285,16 +288,29 @@ def build_runs(args: argparse.Namespace, model_sizes: list[str], embedding_dims:
     return build_grid_runs(args, model_sizes, embedding_dims, batch_sizes)
 
 
-def build_explicit_runs(args: argparse.Namespace, combos: tuple[tuple[str, int, int], ...]) -> list[SweepRun]:
+def normalize_combo(combo: tuple[str, int, int] | tuple[str, int, int, str]) -> tuple[str, int, int, str]:
+    if len(combo) == 3:
+        model_size, embedding_dim, batch_size = combo
+        return model_size, embedding_dim, batch_size, "byte"
+    model_size, embedding_dim, batch_size, input_representation = combo
+    if input_representation not in {"byte", "bit"}:
+        raise SystemExit(f"Unsupported input representation in sweep combo: {input_representation!r}")
+    return model_size, embedding_dim, batch_size, input_representation
+
+
+def build_explicit_runs(args: argparse.Namespace, combos: tuple[tuple[str, int, int] | tuple[str, int, int, str], ...]) -> list[SweepRun]:
     runs: list[SweepRun] = []
     total = len(combos)
-    for index, (model_size, embedding_dim, batch_size) in enumerate(combos, start=1):
-        run_name = f"{args.run_prefix}-{model_size}-emb{embedding_dim}-bs{batch_size}"
+    for index, combo in enumerate(combos, start=1):
+        model_size, embedding_dim, batch_size, input_representation = normalize_combo(combo)
+        representation_suffix = "" if input_representation == "byte" else f"-{input_representation}"
+        run_name = f"{args.run_prefix}-{model_size}{representation_suffix}-emb{embedding_dim}-bs{batch_size}"
         runs.append(
             SweepRun(
                 index=index,
                 total=total,
                 model_size=model_size,
+                input_representation=input_representation,
                 embedding_dim=embedding_dim,
                 batch_size=batch_size,
                 run_name=run_name,
@@ -320,6 +336,7 @@ def build_grid_runs(args: argparse.Namespace, model_sizes: list[str], embedding_
                         index=index,
                         total=total,
                         model_size=model_size,
+                        input_representation="byte",
                         embedding_dim=embedding_dim,
                         batch_size=batch_size,
                         run_name=run_name,
@@ -347,6 +364,7 @@ def run_to_dict(run: SweepRun) -> dict[str, Any]:
         "index": run.index,
         "total": run.total,
         "model_size": run.model_size,
+        "input_representation": run.input_representation,
         "embedding_dim": run.embedding_dim,
         "batch_size": run.batch_size,
         "run_name": run.run_name,
@@ -463,6 +481,8 @@ def build_train_command(args: argparse.Namespace, run: SweepRun) -> list[str]:
         run.run_name,
         "--run-root",
         str(run.run_root),
+        "--input-representation",
+        run.input_representation,
         "--progress-layout",
         args.trainer_progress_layout,
         "--embedding-dim",
@@ -522,6 +542,7 @@ def summarize_run(run: SweepRun, *, subprocess_seconds: float, status: str, erro
         "run_name": run.run_name,
         "status": status,
         "model_size": run.model_size,
+        "input_representation": run.input_representation,
         "embedding_dim": run.embedding_dim,
         "batch_size": run.batch_size,
         "parameters": model_parameters,

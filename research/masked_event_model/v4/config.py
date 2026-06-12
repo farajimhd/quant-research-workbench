@@ -67,6 +67,7 @@ class MaskConfig:
 
 @dataclass(slots=True)
 class ModelConfig:
+    input_representation: str = "byte"
     d_byte: int = 24
     d_model: int = 128
     embedding_dim: int = 32

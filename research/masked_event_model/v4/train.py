@@ -120,6 +120,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--checkpoint-best-val", action=argparse.BooleanOptionalAction, default=train_defaults.checkpoint_best_val)
     parser.add_argument("--mask-ratio", type=float, default=mask_defaults.mask_ratio)
     parser.add_argument("--header-mask-ratio", type=float, default=mask_defaults.header_mask_ratio)
+    parser.add_argument("--input-representation", choices=("byte", "bit"), default=model_defaults.input_representation)
     parser.add_argument("--d-byte", type=int, default=model_defaults.d_byte)
     parser.add_argument("--d-model", type=int, default=model_defaults.d_model)
     parser.add_argument("--embedding-dim", type=int, default=model_defaults.embedding_dim)
@@ -153,6 +154,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Output directory: {output_dir}", flush=True)
     print(f"Device: {device}", flush=True)
     print(f"Input shape: header=[B,14] events=[B,{config.data.events_per_chunk},16]", flush=True)
+    print(f"Input representation: {config.model.input_representation}", flush=True)
 
     model = CompactByteMaskedAutoencoder(events_per_chunk=config.data.events_per_chunk, config=config.model).to(device)
     model_parameters = sum(p.numel() for p in model.parameters())
@@ -1082,7 +1084,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             max_index_files=args.max_index_files,
         ),
         masks=MaskConfig(mask_ratio=args.mask_ratio, header_mask_ratio=args.header_mask_ratio),
-        model=ModelConfig(d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
+        model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
         losses=LossConfig(),
         train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
@@ -1507,7 +1509,7 @@ def install_fatal_exception_logger(run_paths: RunPaths) -> None:
 
 
 def default_run_name(args: argparse.Namespace) -> str:
-    return f"mem-v4-byte-bce-emb{args.embedding_dim}-d{args.d_model}-e{args.encoder_layers}-mask{int(args.mask_ratio * 100)}-events{args.events_per_chunk}"
+    return f"mem-v4-{args.input_representation}-bce-emb{args.embedding_dim}-d{args.d_model}-e{args.encoder_layers}-mask{int(args.mask_ratio * 100)}-events{args.events_per_chunk}"
 
 
 def format_metrics(step: int, metrics: dict[str, float]) -> str:

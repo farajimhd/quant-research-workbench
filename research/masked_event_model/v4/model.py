@@ -11,6 +11,7 @@ from research.masked_event_model.v4.masking import ByteMaskBatch
 
 HEADER_BYTES = 14
 EVENT_BYTES = 16
+BITS_PER_BYTE = 8
 BYTE_VOCAB_SIZE = 257
 MASK_BYTE_ID = 256
 
@@ -37,20 +38,29 @@ class CompactByteMaskedAutoencoder(nn.Module):
         super().__init__()
         self.events_per_chunk = int(events_per_chunk)
         self.config = config
-        self.byte_embedding = nn.Embedding(BYTE_VOCAB_SIZE, config.d_byte)
-        self.header_byte_position = nn.Embedding(HEADER_BYTES, config.d_byte)
-        self.event_byte_position = nn.Embedding(EVENT_BYTES, config.d_byte)
+        self.input_representation = str(config.input_representation)
+        if self.input_representation not in {"byte", "bit"}:
+            raise ValueError(f"Unsupported input_representation={self.input_representation!r}; expected 'byte' or 'bit'")
+        if self.input_representation == "byte":
+            self.byte_embedding = nn.Embedding(BYTE_VOCAB_SIZE, config.d_byte)
+            self.header_byte_position = nn.Embedding(HEADER_BYTES, config.d_byte)
+            self.event_byte_position = nn.Embedding(EVENT_BYTES, config.d_byte)
+            header_projection_input = HEADER_BYTES * config.d_byte
+            event_projection_input = EVENT_BYTES * config.d_byte
+        else:
+            header_projection_input = HEADER_BYTES * BITS_PER_BYTE
+            event_projection_input = EVENT_BYTES * BITS_PER_BYTE
         self.event_position = nn.Embedding(self.events_per_chunk, config.d_model)
         self.token_type = nn.Embedding(2, config.d_model)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, config.d_model))
 
         self.header_projection = nn.Sequential(
-            nn.Linear(HEADER_BYTES * config.d_byte, config.d_model),
+            nn.Linear(header_projection_input, config.d_model),
             nn.GELU(),
             nn.LayerNorm(config.d_model),
         )
         self.event_projection = nn.Sequential(
-            nn.Linear(EVENT_BYTES * config.d_byte, config.d_model),
+            nn.Linear(event_projection_input, config.d_model),
             nn.GELU(),
             nn.LayerNorm(config.d_model),
         )
@@ -121,18 +131,24 @@ class CompactByteMaskedAutoencoder(nn.Module):
         events_uint8: torch.Tensor,
         masks: ByteMaskBatch | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        header_ids = header_uint8.long()
-        event_ids = events_uint8.long()
-        if masks is not None:
-            header_ids = header_ids.masked_fill(masks.header_mask, MASK_BYTE_ID)
-            event_ids = event_ids.masked_fill(masks.event_mask, MASK_BYTE_ID)
+        if self.input_representation == "byte":
+            header_ids = header_uint8.long()
+            event_ids = events_uint8.long()
+            if masks is not None:
+                header_ids = header_ids.masked_fill(masks.header_mask, MASK_BYTE_ID)
+                event_ids = event_ids.masked_fill(masks.event_mask, MASK_BYTE_ID)
 
-        header_positions = torch.arange(HEADER_BYTES, device=header_uint8.device)
-        event_byte_positions = torch.arange(EVENT_BYTES, device=events_uint8.device)
-        header_bytes = self.byte_embedding(header_ids) + self.header_byte_position(header_positions).view(1, HEADER_BYTES, -1)
-        event_bytes = self.byte_embedding(event_ids) + self.event_byte_position(event_byte_positions).view(1, 1, EVENT_BYTES, -1)
-        header_token = self.header_projection(header_bytes.flatten(1)).unsqueeze(1)
-        event_tokens = self.event_projection(event_bytes.flatten(2))
+            header_positions = torch.arange(HEADER_BYTES, device=header_uint8.device)
+            event_byte_positions = torch.arange(EVENT_BYTES, device=events_uint8.device)
+            header_bytes = self.byte_embedding(header_ids) + self.header_byte_position(header_positions).view(1, HEADER_BYTES, -1)
+            event_bytes = self.byte_embedding(event_ids) + self.event_byte_position(event_byte_positions).view(1, 1, EVENT_BYTES, -1)
+            header_input = header_bytes.flatten(1)
+            event_input = event_bytes.flatten(2)
+        else:
+            header_input, event_input = unpack_inputs_to_bits(header_uint8, events_uint8, masks)
+
+        header_token = self.header_projection(header_input).unsqueeze(1)
+        event_tokens = self.event_projection(event_input)
         event_positions = torch.arange(self.events_per_chunk, device=events_uint8.device)
         event_tokens = event_tokens + self.event_position(event_positions).view(1, self.events_per_chunk, -1)
         header_token = header_token + self.token_type(torch.zeros(1, dtype=torch.long, device=header_uint8.device)).view(1, 1, -1)
@@ -172,3 +188,21 @@ class CompactByteMaskedAutoencoder(nn.Module):
         hidden = self.decoder_up(self.to_embedding(token))
         hidden = hidden + self.event_decode_byte_position(indices[:, 2]) + self.decode_type(torch.ones(indices.shape[0], dtype=torch.long, device=indices.device))
         return torch.sigmoid(self.bit_head(self.decoder(hidden)))
+
+
+def unpack_inputs_to_bits(
+    header_uint8: torch.Tensor,
+    events_uint8: torch.Tensor,
+    masks: ByteMaskBatch | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    shifts = torch.arange(BITS_PER_BYTE, device=header_uint8.device, dtype=torch.long)
+    header_bits = ((header_uint8.long().unsqueeze(-1) >> shifts) & 1).float()
+    event_bits = ((events_uint8.long().unsqueeze(-1) >> shifts) & 1).float()
+    header_bits = header_bits.mul(2.0).sub(1.0)
+    event_bits = event_bits.mul(2.0).sub(1.0)
+    if masks is not None:
+        # Unmasked bits use -1/+1; masked bytes use 0 so mask state is distinct
+        # from a true all-zero byte without adding an input embedding table.
+        header_bits = header_bits.masked_fill(masks.header_mask.unsqueeze(-1), 0.0)
+        event_bits = event_bits.masked_fill(masks.event_mask.unsqueeze(-1), 0.0)
+    return header_bits.flatten(1), event_bits.flatten(2)
