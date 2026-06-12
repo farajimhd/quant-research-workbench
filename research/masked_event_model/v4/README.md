@@ -104,6 +104,26 @@ Run training:
 python research\masked_event_model\v4\run_train.py
 ```
 
+Run the initial medium bit-input real-training pass over 10 train shards and
+10% of the next shard as fixed validation:
+
+```powershell
+python research\masked_event_model\v4\train_medium_bit_limited_shards.py --fresh-start
+```
+
+This launcher uses:
+
+```text
+input_representation = bit
+model_size = medium
+embedding_dim = 32
+batch_size = 4096
+epochs = 10
+train shards = train/shard_000000..train/shard_000009
+validation = first 10% of train/shard_000010
+W&B project = June2026-compact-bit-event-training
+```
+
 Each training run writes its analyzable run state under one run directory:
 
 ```text

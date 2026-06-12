@@ -52,6 +52,12 @@ class DataConfig:
     clickhouse_max_memory_usage: str = "80G"
     month_cache_size: int = 8
     sample_cache_prefetch_shards: int = 2
+    sample_cache_train_start_shard: int = 0
+    sample_cache_train_max_shards: int = 0
+    sample_cache_validation_split: str = "validation"
+    sample_cache_validation_start_shard: int = 0
+    sample_cache_validation_max_shards: int = 0
+    sample_cache_validation_max_samples: int = 0
     sample_cache_shuffle_records: bool = True
     sample_cache_drop_last: bool = True
     max_index_files: int = 0

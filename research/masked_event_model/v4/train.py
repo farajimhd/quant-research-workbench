@@ -88,6 +88,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clickhouse-max-memory-usage", default=data_defaults.clickhouse_max_memory_usage)
     parser.add_argument("--month-cache-size", type=int, default=data_defaults.month_cache_size)
     parser.add_argument("--sample-cache-prefetch-shards", type=int, default=data_defaults.sample_cache_prefetch_shards)
+    parser.add_argument("--sample-cache-train-start-shard", type=int, default=data_defaults.sample_cache_train_start_shard)
+    parser.add_argument("--sample-cache-train-max-shards", type=int, default=data_defaults.sample_cache_train_max_shards)
+    parser.add_argument("--sample-cache-validation-split", default=data_defaults.sample_cache_validation_split)
+    parser.add_argument("--sample-cache-validation-start-shard", type=int, default=data_defaults.sample_cache_validation_start_shard)
+    parser.add_argument("--sample-cache-validation-max-shards", type=int, default=data_defaults.sample_cache_validation_max_shards)
+    parser.add_argument("--sample-cache-validation-max-samples", type=int, default=data_defaults.sample_cache_validation_max_samples)
     parser.add_argument("--sample-cache-shuffle-records", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_shuffle_records)
     parser.add_argument("--sample-cache-drop-last", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_drop_last)
     parser.add_argument("--max-index-files", type=int, default=data_defaults.max_index_files)
@@ -1079,6 +1085,12 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             clickhouse_max_memory_usage=args.clickhouse_max_memory_usage,
             month_cache_size=args.month_cache_size,
             sample_cache_prefetch_shards=args.sample_cache_prefetch_shards,
+            sample_cache_train_start_shard=args.sample_cache_train_start_shard,
+            sample_cache_train_max_shards=args.sample_cache_train_max_shards,
+            sample_cache_validation_split=args.sample_cache_validation_split,
+            sample_cache_validation_start_shard=args.sample_cache_validation_start_shard,
+            sample_cache_validation_max_shards=args.sample_cache_validation_max_shards,
+            sample_cache_validation_max_samples=args.sample_cache_validation_max_samples,
             sample_cache_shuffle_records=args.sample_cache_shuffle_records,
             sample_cache_drop_last=args.sample_cache_drop_last,
             max_index_files=args.max_index_files,
@@ -1189,14 +1201,28 @@ def sample_cache_data_config(config: ExperimentConfig, split: str, seed: int) ->
     data = config.data
     if data.sample_cache_root is None:
         raise ValueError("sample_cache_data_config requires data.sample_cache_root")
+    cache_split = split
+    start_shard_index = 0
+    max_shards = data.max_index_files
+    max_samples = 0
+    if split == "train":
+        start_shard_index = data.sample_cache_train_start_shard
+        max_shards = data.sample_cache_train_max_shards or data.max_index_files
+    elif split == "validation":
+        cache_split = data.sample_cache_validation_split
+        start_shard_index = data.sample_cache_validation_start_shard
+        max_shards = data.sample_cache_validation_max_shards or data.max_index_files
+        max_samples = data.sample_cache_validation_max_samples
     return EventSampleCacheDataConfig(
         cache_root=data.sample_cache_root,
-        split=split,
+        split=cache_split,
         batch_size=config.train.batch_size,
         events_per_chunk=data.events_per_chunk,
         seed=seed,
         prefetch_shards=data.sample_cache_prefetch_shards,
-        max_shards=data.max_index_files,
+        start_shard_index=start_shard_index,
+        max_shards=max_shards,
+        max_samples=max_samples,
         shuffle_records=data.sample_cache_shuffle_records,
         drop_last=data.sample_cache_drop_last,
     )

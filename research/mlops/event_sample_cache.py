@@ -39,7 +39,9 @@ class EventSampleCacheDataConfig:
     events_per_chunk: int = DEFAULT_EVENTS_PER_CHUNK
     seed: int = 17
     prefetch_shards: int = 2
+    start_shard_index: int = 0
     max_shards: int = 0
+    max_samples: int = 0
     shuffle_records: bool = True
     drop_last: bool = True
 
@@ -257,6 +259,8 @@ def discover_event_sample_shards(config: EventSampleCacheDataConfig) -> list[Eve
             )
         )
     shards.sort(key=lambda value: value.shard_index)
+    if config.start_shard_index > 0:
+        shards = shards[int(config.start_shard_index) :]
     if config.max_shards > 0:
         shards = shards[: config.max_shards]
     if not shards:
@@ -304,6 +308,7 @@ def iter_event_sample_cache_epoch_batches(
 ) -> Iterator[dict[str, Any]]:
     shards = list(shards or discover_event_sample_shards(config))
     order = list(range(len(shards)))
+    remaining_samples = int(config.max_samples) if config.max_samples > 0 else 0
     with ThreadPoolExecutor(max_workers=max(1, int(config.prefetch_shards))) as executor:
         future_by_index: dict[int, Future[tuple[EventSampleShard, np.ndarray, float]]] = {}
         next_submit = 0
@@ -329,7 +334,13 @@ def iter_event_sample_cache_epoch_batches(
             usable_samples = records.shape[0]
             if config.drop_last:
                 usable_samples = (usable_samples // max(1, config.batch_size)) * config.batch_size
+            if remaining_samples > 0:
+                usable_samples = min(usable_samples, remaining_samples)
+                if config.drop_last:
+                    usable_samples = (usable_samples // max(1, config.batch_size)) * config.batch_size
             if usable_samples <= 0:
+                if remaining_samples > 0:
+                    break
                 continue
             shard_steps = int(math.ceil(usable_samples / max(1, config.batch_size)))
             dropped_samples = records.shape[0] - usable_samples
@@ -352,6 +363,10 @@ def iter_event_sample_cache_epoch_batches(
                         "data/shard_dropped_samples": float(dropped_samples),
                     },
                 }
+            if remaining_samples > 0:
+                remaining_samples -= usable_samples
+                if remaining_samples <= 0:
+                    break
 
 
 def load_shard_into_memory(shard: EventSampleShard) -> tuple[EventSampleShard, np.ndarray, float]:
