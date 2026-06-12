@@ -51,14 +51,14 @@ DEFAULTS: dict[str, Any] = {
     "profile_first_steps": 20,
     "profile_training_every_steps": 1000,
     "profile_inference_every_steps": 1000,
-    "decoder_chunk_size": 0,
+    "decoder_chunk_size": 524288,
     "checkpoint_latest_steps": 250,
     "checkpoint_best_train": False,
     "checkpoint_best_val": True,
     "num_workers": 0,
     "progress_layout": "auto",
     "device": "cuda",
-    "compile_model": True,
+    "compile_model": False,
     "wandb_project": "June2026-compact-bit-event-training",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
@@ -80,6 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default=DEFAULTS["wandb_mode"])
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=DEFAULTS["progress_layout"])
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=DEFAULTS["compile_model"])
+    parser.add_argument("--decoder-chunk-size", type=int, default=DEFAULTS["decoder_chunk_size"])
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--fresh-start", action="store_true")
     parser.add_argument("--print-only", action="store_true")
@@ -120,6 +121,7 @@ def main() -> None:
             "wandb_run_name": args.run_name,
             "progress_layout": args.progress_layout,
             "compile_model": bool(args.compile_model),
+            "decoder_chunk_size": int(args.decoder_chunk_size),
         }
     )
     argv = build_train_args(values)
@@ -140,6 +142,7 @@ def main() -> None:
         flush=True,
     )
     print(f"wandb_project={args.wandb_project} run={args.run_name}", flush=True)
+    print(f"compile_model={args.compile_model} decoder_chunk_size={args.decoder_chunk_size}", flush=True)
     print("Equivalent trainer args:", flush=True)
     print(" ".join(argv), flush=True)
     print("=" * 96, flush=True)

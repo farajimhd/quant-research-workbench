@@ -121,6 +121,8 @@ batch_size = 4096
 epochs = 10
 train shards = train/shard_000000..train/shard_000009
 validation = first 10% of train/shard_000010
+decoder_chunk_size = 524288
+compile_model = false unless explicitly enabled
 W&B project = June2026-compact-bit-event-training
 ```
 

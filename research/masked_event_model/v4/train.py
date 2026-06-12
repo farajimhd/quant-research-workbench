@@ -7,6 +7,7 @@ import platform
 import sys
 import time
 import traceback
+import importlib.util
 from contextlib import nullcontext
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -1309,6 +1310,9 @@ def build_scheduler(optimizer: torch.optim.Optimizer, train_config: TrainConfig)
 
 def maybe_compile_model(model: torch.nn.Module, enabled: bool) -> torch.nn.Module:
     if enabled and hasattr(torch, "compile"):
+        if importlib.util.find_spec("triton") is None:
+            print("WARN --compile-model requested, but Triton is unavailable; continuing without torch.compile.", flush=True)
+            return model
         print("Compiling model with torch.compile...", flush=True)
         return torch.compile(model)
     return model
