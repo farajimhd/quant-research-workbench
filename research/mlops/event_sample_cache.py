@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import random
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -124,7 +125,7 @@ class EventSampleShardWriter:
 
     def _open_next_shard(self) -> None:
         self._shard_path = self.split_dir / f"shard_{self._shard_index:06d}.samples.bin"
-        self._shard_tmp_path = self._shard_path.with_suffix(".samples.bin.tmp")
+        self._shard_tmp_path = self.split_dir / f"shard_{self._shard_index:06d}.samples.bin.tmp"
         self._sha = hashlib.sha256()
         self._shard_samples = 0
         self._shard_bytes = 0
@@ -135,6 +136,7 @@ class EventSampleShardWriter:
             self._open_next_shard()
         payload = np.ascontiguousarray(records).tobytes()
         self._file.write(payload)
+        self._file.flush()
         self._sha.update(payload)
         sample_count = int(records.shape[0])
         for local_index in range(sample_count):
@@ -142,6 +144,22 @@ class EventSampleShardWriter:
             self._global_sample_index += 1
         self._shard_samples += sample_count
         self._shard_bytes += len(payload)
+
+    def current_shard_status(self) -> dict[str, Any]:
+        path = self._shard_tmp_path if self._file is not None else self._shard_path
+        disk_bytes = path.stat().st_size if path is not None and path.exists() else 0
+        return {
+            "split": self.split,
+            "shard_index": self._shard_index,
+            "tmp_path": str(self._shard_tmp_path) if self._shard_tmp_path is not None else "",
+            "final_path": str(self._shard_path) if self._shard_path is not None else "",
+            "samples_in_current_shard": self._shard_samples,
+            "bytes_in_current_shard": self._shard_bytes,
+            "disk_bytes_in_current_shard": disk_bytes,
+            "target_samples_per_shard": self.shard_sample_target,
+            "target_bytes_per_shard": self.shard_sample_target * SAMPLE_BYTES,
+            "completed_shards": len(self.shards),
+        }
 
     def _maybe_record_audit_sample(self, tickers: list[str], origin_ordinals: np.ndarray, origin_timestamps: np.ndarray, local_index: int) -> None:
         if len(self.audit_rows) >= self.audit_sample_limit:
@@ -167,6 +185,7 @@ class EventSampleShardWriter:
         if self._file is None:
             return
         self._file.flush()
+        os.fsync(self._file.fileno())
         self._file.close()
         self._file = None
         assert self._shard_path is not None and self._shard_tmp_path is not None

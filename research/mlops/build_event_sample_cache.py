@@ -247,8 +247,19 @@ def build_split(
                 print(
                     f"{split.upper()} [{micro_batches_completed:,}] samples={samples_written:,}/{target_samples:,} "
                     f"({100.0 * samples_written / target_samples:.2f}%) rate={rate:,.0f}/s "
-                    f"eta_minutes={eta / 60.0:.1f} shards={len(writer.shards):,}",
+                    f"eta_hours={eta / 3600.0:.1f} eta_minutes={eta / 60.0:.1f} shards={len(writer.shards):,}",
                     flush=True,
+                )
+                write_split_progress(
+                    cache_root,
+                    split=split,
+                    target_samples=target_samples,
+                    samples_written=samples_written,
+                    micro_batches_completed=micro_batches_completed,
+                    elapsed_seconds=elapsed,
+                    samples_per_second=rate,
+                    eta_seconds=eta,
+                    writer=writer,
                 )
                 submit_until_full()
                 break
@@ -265,6 +276,38 @@ def build_split(
     }
     print(f"SPLIT {split} DONE {json.dumps(summary, separators=(',', ':'))}", flush=True)
     return {"summary": summary, "shards": writer.shards, "profiles": profiles}
+
+
+def write_split_progress(
+    cache_root: Path,
+    *,
+    split: str,
+    target_samples: int,
+    samples_written: int,
+    micro_batches_completed: int,
+    elapsed_seconds: float,
+    samples_per_second: float,
+    eta_seconds: float,
+    writer: EventSampleShardWriter,
+) -> None:
+    progress = {
+        "split": split,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "target_samples": target_samples,
+        "samples_written": samples_written,
+        "progress_pct": 100.0 * samples_written / max(1, target_samples),
+        "micro_batches_completed": micro_batches_completed,
+        "elapsed_seconds": elapsed_seconds,
+        "samples_per_second": samples_per_second,
+        "eta_seconds": eta_seconds,
+        "eta_hours": eta_seconds / 3600.0,
+        "eta_minutes": eta_seconds / 60.0,
+        "current_shard": writer.current_shard_status(),
+    }
+    tmp_path = cache_root / f"{split}_progress.json.tmp"
+    final_path = cache_root / f"{split}_progress.json"
+    tmp_path.write_text(json.dumps(progress, indent=2), encoding="utf-8")
+    tmp_path.replace(final_path)
 
 
 def build_micro_batch(config: ClickHouseEventsDataConfig, index_rows: list[Any], seed: int) -> dict[str, Any]:
