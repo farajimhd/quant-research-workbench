@@ -86,7 +86,11 @@ def masked_group_loss(
         return zero, empty_metrics(prefix)
     target_bytes = target_uint8[tuple(indices.T)].long()
     target_bits = unpack_bits(target_bytes).to(dtype=probabilities.dtype, device=probabilities.device)
-    loss = F.binary_cross_entropy(probabilities, target_bits)
+    if probabilities.is_cuda:
+        with torch.amp.autocast("cuda", enabled=False):
+            loss = F.binary_cross_entropy(probabilities.float(), target_bits.float())
+    else:
+        loss = F.binary_cross_entropy(probabilities, target_bits)
     metrics_started = time.perf_counter()
     with torch.no_grad():
         hard_bits = probabilities >= 0.5

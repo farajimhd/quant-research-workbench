@@ -824,8 +824,12 @@ def backward_masked_group_chunks(
             probabilities = model.decode_header_indices(encoded_tokens, chunk_indices) if prefix == "header" else model.decode_event_indices(encoded_tokens, chunk_indices)
             target_bytes = target_uint8[tuple(chunk_indices.T)].long()
             target_bits = unpack_bits(target_bytes).to(dtype=probabilities.dtype, device=probabilities.device)
+        if probabilities.is_cuda:
+            with torch.amp.autocast("cuda", enabled=False):
+                loss_sum = F.binary_cross_entropy(probabilities.float(), target_bits.float(), reduction="sum")
+        else:
             loss_sum = F.binary_cross_entropy(probabilities, target_bits, reduction="sum")
-            scaler.scale(loss_sum * group_scale).backward()
+        scaler.scale(loss_sum * group_scale).backward()
         metrics_started = time.perf_counter()
         stats.update(probabilities.detach(), target_bits.detach(), target_bytes.detach(), loss_sum.detach(), include_diagnostics=include_diagnostics)
         if profile_metrics:

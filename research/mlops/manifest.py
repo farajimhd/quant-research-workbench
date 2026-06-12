@@ -12,7 +12,7 @@ from research.mlops.paths import machine_name
 
 def git_commit(cwd: Path) -> str:
     try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(cwd), text=True).strip()
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(cwd), text=True, stderr=subprocess.DEVNULL).strip()
     except Exception:
         return "unknown"
 
