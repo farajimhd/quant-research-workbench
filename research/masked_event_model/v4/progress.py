@@ -145,20 +145,19 @@ class TrainingReporter:
         epoch_progress = Progress(TextColumn("[bold]Epoch"), BarColumn(bar_width=None), TextColumn("{task.percentage:>6.2f}%"), expand=True)
         epoch_progress.add_task("epoch", total=100.0, completed=max(0.0, min(100.0, state.epoch_progress_pct)))
 
-        summary = Table.grid(expand=True)
-        summary.add_column(justify="left")
-        summary.add_column(justify="right")
-        summary.add_column(justify="left")
-        summary.add_column(justify="right")
-        summary.add_row("Run", state.run_name, "Device", state.device)
-        summary.add_row("Data", state.data_source, "Params", f"{state.model_parameters:,}")
-        summary.add_row("Step", f"{state.step:,}/{state.max_steps:,}" if state.max_steps > 0 else f"{state.step:,}", "Batch", f"{state.batch_size:,}")
-        summary.add_row("Epoch", f"{state.epoch}/{state.epochs}", "Shard", f"{state.shard_index}/{state.shard_count} step {state.shard_step}/{state.shard_steps}")
-        summary.add_row("Samples", f"{state.samples_seen_total:,}", "Speed", f"{state.samples_per_second:,.1f} samples/s")
+        summary = Table.grid(expand=False, padding=(0, 4))
+        summary.add_column(justify="left", no_wrap=True)
+        summary.add_column(justify="left", no_wrap=True)
+        summary.add_row(f"[bold]Run[/] {state.run_name}", f"[bold]Device[/] {state.device}")
+        summary.add_row(f"[bold]Data[/] {state.data_source}", f"[bold]Params[/] {state.model_parameters:,}")
+        step_text = f"{state.step:,}/{state.max_steps:,}" if state.max_steps > 0 else f"{state.step:,}"
+        summary.add_row(f"[bold]Step[/] {step_text}", f"[bold]Batch[/] {state.batch_size:,}")
+        summary.add_row(f"[bold]Epoch[/] {state.epoch}/{state.epochs}", f"[bold]Shard[/] {state.shard_index}/{state.shard_count} step {state.shard_step}/{state.shard_steps}")
+        summary.add_row(f"[bold]Samples[/] {state.samples_seen_total:,}", f"[bold]Speed[/] {state.samples_per_second:,.1f} samples/s")
 
-        metrics = Table(title="Learning", expand=True)
-        metrics.add_column("Metric")
-        metrics.add_column("Value", justify="right")
+        metrics = Table.grid(expand=False, padding=(0, 2))
+        metrics.add_column("Metric", no_wrap=True)
+        metrics.add_column("Value", justify="right", no_wrap=True)
         metrics.add_row("loss", f"{state.loss:.6f}")
         metrics.add_row("event bit acc", f"{state.event_bit_acc_pct:.3f}%")
         metrics.add_row("byte exact acc", f"{state.byte_exact_acc_pct:.3f}%")
@@ -166,9 +165,9 @@ class TrainingReporter:
         if state.validation_loss is not None:
             metrics.add_row("validation loss", f"{state.validation_loss:.6f}")
 
-        profile = Table(title="Step Profile", expand=True)
-        profile.add_column("Stage")
-        profile.add_column("Seconds", justify="right")
+        profile = Table.grid(expand=False, padding=(0, 2))
+        profile.add_column("Stage", no_wrap=True)
+        profile.add_column("Seconds", justify="right", no_wrap=True)
         profile.add_row("step total", f"{state.step_seconds:.4f}")
         profile.add_row("data wait", f"{state.data_wait_seconds:.4f}")
         profile.add_row("transfer", f"{state.transfer_seconds:.4f}")
@@ -176,9 +175,9 @@ class TrainingReporter:
         profile.add_row("backward", f"{state.backward_seconds:.4f}")
         profile.add_row("optimizer", f"{state.optimizer_seconds:.4f}")
 
-        memory = Table(title="Memory", expand=True)
-        memory.add_column("Metric")
-        memory.add_column("GiB", justify="right")
+        memory = Table.grid(expand=False, padding=(0, 2))
+        memory.add_column("Metric", no_wrap=True)
+        memory.add_column("GiB", justify="right", no_wrap=True)
         memory.add_row("process RSS", f"{state.process_rss_gib:.2f}")
         memory.add_row("GPU allocated", f"{state.gpu_allocated_gib:.2f}")
         memory.add_row("GPU reserved", f"{state.gpu_reserved_gib:.2f}")
@@ -188,9 +187,9 @@ class TrainingReporter:
             Panel(summary, title="Training Run", border_style="cyan"),
             progress,
             epoch_progress,
-            metrics,
-            profile,
-            memory,
+            Panel(metrics, title="Learning", border_style="magenta"),
+            Panel(profile, title="Step Profile", border_style="yellow"),
+            Panel(memory, title="Memory", border_style="blue"),
             Panel(state.last_message or "running", title="Status", border_style="green" if state.profiler_active else "blue"),
         )
         return body
