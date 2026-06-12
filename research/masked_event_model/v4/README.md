@@ -191,3 +191,35 @@ python D:\TradingML\codes\masked_event_model\v4\research\masked_event_model\v4\r
 That launcher uses `--max-index-files 1`, disables validation and W&B by
 default, uses `--decoder-chunk-size 524288`, profiles every step, and keeps the run small enough for quick
 iteration over batch size, model size, masking, and learning-rate choices.
+
+Run the full model-size profiling sweep:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v4\research\masked_event_model\v4\run_model_size_sweep.py --fresh-start
+```
+
+Default sweep:
+
+```text
+model_sizes = current, small_plus, medium, medium_plus, large
+embedding_dim = 16, 32
+batch_size = 4096, 8192
+steps = 50
+decoder_chunk_size = 524288
+```
+
+The sweep runs one trainer subprocess per combination, so CUDA allocator state
+does not leak between model sizes. Each run writes its normal training
+artifacts under its own run directory. The sweep also writes aggregate files:
+
+```text
+v4-size-sweep-summary/sweep_config.json
+v4-size-sweep-summary/sweep_results.jsonl
+v4-size-sweep-summary/sweep_results.csv
+```
+
+Useful overrides:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v4\research\masked_event_model\v4\run_model_size_sweep.py --model-sizes current,medium --embedding-dims 32 --batch-sizes 4096 --steps 10 --print-only
+```
