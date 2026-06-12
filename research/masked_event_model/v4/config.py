@@ -106,6 +106,7 @@ class TrainConfig:
     profile_first_steps: int = 0
     profile_training_every_steps: int = 10
     profile_inference_every_steps: int = 10
+    decoder_chunk_size: int = 0
     pretrain_validation_frequency: int = 50
     pretrain_validation_steps: int = 4
     checkpoint_latest_steps: int = 10

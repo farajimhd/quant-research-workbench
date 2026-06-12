@@ -30,6 +30,7 @@ DEFAULTS: dict[str, Any] = {
     "profile_first_steps": 25,
     "profile_training_every_steps": 0,
     "profile_inference_every_steps": 1,
+    "decoder_chunk_size": 524288,
     "checkpoint_latest_steps": 0,
     "checkpoint_archive_steps": 0,
     "checkpoint_best_train": False,

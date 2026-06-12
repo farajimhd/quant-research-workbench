@@ -91,11 +91,11 @@ class CompactByteMaskedAutoencoder(nn.Module):
         nn.init.normal_(self.cls_token, std=0.02)
 
     def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor, masks: ByteMaskBatch) -> ByteMAEOutput:
-        encoded_tokens, token_embeddings, chunk_embedding = self._encode_tokens(header_uint8, events_uint8, masks)
+        encoded_tokens, token_embeddings, chunk_embedding = self.encode_tokens_for_training(header_uint8, events_uint8, masks)
         header_indices = masks.header_mask.nonzero(as_tuple=False)
         event_indices = masks.event_mask.nonzero(as_tuple=False)
-        header_logits = self._decode_header(encoded_tokens, header_indices)
-        event_logits = self._decode_events(encoded_tokens, event_indices)
+        header_logits = self.decode_header_indices(encoded_tokens, header_indices)
+        event_logits = self.decode_event_indices(encoded_tokens, event_indices)
         return ByteMAEOutput(
             header_bit_logits=header_logits,
             header_indices=header_indices,
@@ -142,6 +142,20 @@ class CompactByteMaskedAutoencoder(nn.Module):
         encoded = self.encoder_norm(self.encoder(tokens))
         embeddings = self.to_embedding(encoded)
         return encoded, embeddings, embeddings[:, 0, :]
+
+    def encode_tokens_for_training(
+        self,
+        header_uint8: torch.Tensor,
+        events_uint8: torch.Tensor,
+        masks: ByteMaskBatch,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self._encode_tokens(header_uint8, events_uint8, masks)
+
+    def decode_header_indices(self, encoded_tokens: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        return self._decode_header(encoded_tokens, indices)
+
+    def decode_event_indices(self, encoded_tokens: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        return self._decode_events(encoded_tokens, indices)
 
     def _decode_header(self, encoded_tokens: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         if indices.numel() == 0:

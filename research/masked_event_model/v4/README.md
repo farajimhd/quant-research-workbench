@@ -170,6 +170,18 @@ Profile metrics include data wait, host-to-device transfer, masking,
 forward/loss, backward, optimizer, inference encode timing, process RSS, system
 memory, and CUDA allocated/reserved/peak memory when running on GPU.
 
+Large batches can enable chunked masked-byte decoding:
+
+```powershell
+--decoder-chunk-size 524288
+```
+
+This keeps the same masked-byte BCE objective but decodes/backprops masked bytes
+in chunks to reduce peak decoder activation memory. When this mode is enabled,
+`--compile-model` is ignored because the training step uses a custom
+encoder-output-gradient accumulation path instead of the model's single
+`forward` method.
+
 To test model/data/training parameters on one finalized sample-cache shard:
 
 ```powershell
@@ -177,5 +189,5 @@ python D:\TradingML\codes\masked_event_model\v4\research\masked_event_model\v4\r
 ```
 
 That launcher uses `--max-index-files 1`, disables validation and W&B by
-default, profiles every step, and keeps the run small enough for quick
+default, uses `--decoder-chunk-size 524288`, profiles every step, and keeps the run small enough for quick
 iteration over batch size, model size, masking, and learning-rate choices.

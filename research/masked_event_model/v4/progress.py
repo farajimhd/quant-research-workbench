@@ -41,6 +41,9 @@ class TrainingProgressState:
     optimizer_seconds: float = 0.0
     inference_encode_seconds: float = 0.0
     inference_encode_ms_per_sample: float = 0.0
+    decoder_chunk_size: int = 0
+    header_decoder_chunks: int = 0
+    event_decoder_chunks: int = 0
     gpu_allocated_gib: float = 0.0
     gpu_reserved_gib: float = 0.0
     gpu_peak_allocated_gib: float = 0.0
@@ -120,6 +123,9 @@ class TrainingReporter:
         state.optimizer_seconds = float(metrics.get("profile/optimizer_seconds", state.optimizer_seconds))
         state.inference_encode_seconds = float(metrics.get("profile/inference_encode_seconds", state.inference_encode_seconds))
         state.inference_encode_ms_per_sample = float(metrics.get("profile/inference_encode_ms_per_sample", state.inference_encode_ms_per_sample))
+        state.decoder_chunk_size = int(metrics.get("profile/decoder_chunk_size", state.decoder_chunk_size))
+        state.header_decoder_chunks = int(metrics.get("profile/header_decoder_chunks", state.header_decoder_chunks))
+        state.event_decoder_chunks = int(metrics.get("profile/event_decoder_chunks", state.event_decoder_chunks))
         state.gpu_allocated_gib = float(metrics.get("profile/gpu_allocated_gib", state.gpu_allocated_gib))
         state.gpu_reserved_gib = float(metrics.get("profile/gpu_reserved_gib", state.gpu_reserved_gib))
         state.gpu_peak_allocated_gib = float(metrics.get("profile/gpu_peak_allocated_gib", state.gpu_peak_allocated_gib))
@@ -200,6 +206,9 @@ class TrainingReporter:
         profile.add_row("forward + loss", f"{state.forward_seconds:.4f} s")
         profile.add_row("backward", f"{state.backward_seconds:.4f} s")
         profile.add_row("data wait", f"{state.data_wait_seconds:.4f} s")
+        if state.decoder_chunk_size > 0:
+            profile.add_row("decoder chunk size", f"{state.decoder_chunk_size:,}")
+            profile.add_row("decoder chunks", f"H {state.header_decoder_chunks:,} / E {state.event_decoder_chunks:,}")
         profile.add_row("shard load", f"{state.shard_load_seconds:.4f} s")
         profile.add_row("shard shuffle", f"{state.shard_shuffle_seconds:.4f} s")
         profile.add_row("mask", f"{state.mask_seconds:.4f} s")

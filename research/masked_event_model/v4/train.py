@@ -17,10 +17,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from research.masked_event_model.v4.config import DataConfig, ExperimentConfig, LossConfig, MaskConfig, ModelConfig, TrainConfig
-from research.masked_event_model.v4.losses import masked_byte_bce_loss
+from research.masked_event_model.v4.losses import BIT_WEIGHTS, masked_byte_bce_loss, pack_bits, unpack_bits
 from research.masked_event_model.v4.masking import ByteMaskBatch, build_byte_masks
 from research.masked_event_model.v4.model import CompactByteMaskedAutoencoder
 from research.masked_event_model.v4.progress import TrainingProgressState, TrainingReporter
@@ -110,6 +111,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--profile-first-steps", type=int, default=train_defaults.profile_first_steps)
     parser.add_argument("--profile-training-every-steps", type=int, default=train_defaults.profile_training_every_steps)
     parser.add_argument("--profile-inference-every-steps", type=int, default=train_defaults.profile_inference_every_steps)
+    parser.add_argument("--decoder-chunk-size", type=int, default=train_defaults.decoder_chunk_size)
     parser.add_argument("--pretrain-validation-frequency", type=int, default=train_defaults.pretrain_validation_frequency)
     parser.add_argument("--pretrain-validation-steps", type=int, default=train_defaults.pretrain_validation_steps)
     parser.add_argument("--checkpoint-latest-steps", type=int, default=train_defaults.checkpoint_latest_steps)
@@ -155,7 +157,9 @@ def main(argv: list[str] | None = None) -> None:
     model = CompactByteMaskedAutoencoder(events_per_chunk=config.data.events_per_chunk, config=config.model).to(device)
     model_parameters = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {model_parameters:,}", flush=True)
-    train_model = maybe_compile_model(model, config.train.compile_model)
+    if config.train.decoder_chunk_size > 0 and config.train.compile_model:
+        print("WARN --compile-model is ignored while --decoder-chunk-size is enabled; chunked decoder uses custom backward.", flush=True)
+    train_model = maybe_compile_model(model, config.train.compile_model and config.train.decoder_chunk_size <= 0)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
     scheduler = build_scheduler(optimizer, config.train)
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and device.type == "cuda")
@@ -562,6 +566,18 @@ def run_training_step(
     global_step: int,
     data_wait_seconds: float,
 ) -> dict[str, float]:
+    if config.train.decoder_chunk_size > 0:
+        return run_training_step_chunked_decoder(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            batch=batch,
+            config=config,
+            device=device,
+            global_step=global_step,
+            data_wait_seconds=data_wait_seconds,
+        )
     step_started = time.perf_counter()
     profile_step = should_profile_step(config, global_step)
     if profile_step and device.type == "cuda":
@@ -626,10 +642,266 @@ def run_training_step(
     return metrics
 
 
+def run_training_step_chunked_decoder(
+    *,
+    model: CompactByteMaskedAutoencoder,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    scaler: torch.amp.GradScaler,
+    batch: dict[str, Any],
+    config: ExperimentConfig,
+    device: torch.device,
+    global_step: int,
+    data_wait_seconds: float,
+) -> dict[str, float]:
+    step_started = time.perf_counter()
+    profile_step = should_profile_step(config, global_step)
+    if profile_step and device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+
+    transfer_started = time.perf_counter()
+    batch = move_batch(batch, device)
+    sync_if_cuda(device)
+    transfer_seconds = time.perf_counter() - transfer_started
+
+    mask_started = time.perf_counter()
+    masks = build_byte_masks(batch["header_uint8"], batch["events_uint8"], config.masks)
+    sync_if_cuda(device)
+    mask_seconds = time.perf_counter() - mask_started
+
+    optimizer.zero_grad(set_to_none=True)
+    include_diagnostics = config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0
+    forward_started = time.perf_counter()
+    with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
+        encoded_tokens, _, _ = model.encode_tokens_for_training(batch["header_uint8"], batch["events_uint8"], masks)
+    encoded_leaf = encoded_tokens.detach().requires_grad_(True)
+    header_indices = masks.header_mask.nonzero(as_tuple=False)
+    event_indices = masks.event_mask.nonzero(as_tuple=False)
+    total_weight = chunked_total_weight(header_indices, event_indices, config.losses)
+    chunk_size = max(1, int(config.train.decoder_chunk_size))
+    header_group_bits = max(1, int(header_indices.shape[0]) * 8)
+    event_group_bits = max(1, int(event_indices.shape[0]) * 8)
+
+    decoder_backward_started = time.perf_counter()
+    header_loss_sum, header_metrics, header_chunks = backward_masked_group_chunks(
+        model=model,
+        encoded_tokens=encoded_leaf,
+        indices=header_indices,
+        target_uint8=batch["header_uint8"],
+        chunk_size=chunk_size,
+        prefix="header",
+        group_scale=float(config.losses.header_weight) / total_weight / header_group_bits,
+        scaler=scaler,
+        include_diagnostics=include_diagnostics,
+    )
+    event_loss_sum, event_metrics, event_chunks = backward_masked_group_chunks(
+        model=model,
+        encoded_tokens=encoded_leaf,
+        indices=event_indices,
+        target_uint8=batch["events_uint8"],
+        chunk_size=chunk_size,
+        prefix="event",
+        group_scale=float(config.losses.event_weight) / total_weight / event_group_bits,
+        scaler=scaler,
+        include_diagnostics=include_diagnostics,
+    )
+    sync_if_cuda(device)
+    decoder_backward_seconds = time.perf_counter() - decoder_backward_started
+    forward_loss_seconds = time.perf_counter() - forward_started
+
+    encoder_backward_started = time.perf_counter()
+    if encoded_leaf.grad is not None:
+        encoded_tokens.backward(encoded_leaf.grad)
+    sync_if_cuda(device)
+    encoder_backward_seconds = time.perf_counter() - encoder_backward_started
+    backward_seconds = decoder_backward_seconds + encoder_backward_seconds
+
+    optimizer_started = time.perf_counter()
+    scaler.unscale_(optimizer)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
+    scaler.step(optimizer)
+    scaler.update()
+    if scheduler is not None:
+        scheduler.step(global_step)
+    sync_if_cuda(device)
+    optimizer_seconds = time.perf_counter() - optimizer_started
+
+    total_loss = 0.0
+    if header_indices.numel() > 0:
+        total_loss += float(config.losses.header_weight) * header_loss_sum / header_group_bits
+    if event_indices.numel() > 0:
+        total_loss += float(config.losses.event_weight) * event_loss_sum / event_group_bits
+    total_loss /= total_weight
+    metrics = {
+        "pretrain/loss_total": total_loss,
+        "pretrain/loss_header": header_loss_sum / header_group_bits if header_indices.numel() > 0 else 0.0,
+        "pretrain/loss_event": event_loss_sum / event_group_bits if event_indices.numel() > 0 else 0.0,
+        "mask/header_masked_bytes": header_metrics["pretrain/header_masked_bytes"],
+        "mask/event_masked_bytes": event_metrics["pretrain/event_masked_bytes"],
+        "mask/total_masked_bytes": header_metrics["pretrain/header_masked_bytes"] + event_metrics["pretrain/event_masked_bytes"],
+        **header_metrics,
+        **event_metrics,
+    }
+    step_seconds = time.perf_counter() - step_started
+    batch_size = float(batch["header_uint8"].shape[0])
+    metrics.update(
+        {
+            "train/lr": float(optimizer.param_groups[0]["lr"]),
+            "train/step_seconds": step_seconds,
+            "train/samples_per_second": batch_size / max(step_seconds, 1e-9),
+            "profile/batch_size": batch_size,
+        }
+    )
+    if profile_step:
+        data_profile = batch.get("profile", {})
+        metrics.update(
+            {
+                "profile/data_wait_seconds": data_wait_seconds,
+                "profile/transfer_seconds": transfer_seconds,
+                "profile/mask_seconds": mask_seconds,
+                "profile/forward_loss_seconds": forward_loss_seconds,
+                "profile/backward_seconds": backward_seconds,
+                "profile/decoder_backward_seconds": decoder_backward_seconds,
+                "profile/encoder_backward_seconds": encoder_backward_seconds,
+                "profile/optimizer_seconds": optimizer_seconds,
+                "profile/decoder_chunk_size": float(chunk_size),
+                "profile/header_decoder_chunks": float(header_chunks),
+                "profile/event_decoder_chunks": float(event_chunks),
+                "profile/chunked_decoder_active": 1.0,
+                "profile/profile_active": 1.0,
+                **{f"profile/{key}": float(value) for key, value in data_profile.items()},
+                **resource_profile(device),
+            }
+        )
+    if config.train.profile_inference_every_steps > 0 and global_step % config.train.profile_inference_every_steps == 0:
+        metrics.update(profile_encode(model, batch, device))
+    return metrics
+
+
 def should_profile_step(config: ExperimentConfig, global_step: int) -> bool:
     if config.train.profile_first_steps > 0 and global_step <= config.train.profile_first_steps:
         return True
     return config.train.profile_training_every_steps > 0 and global_step % config.train.profile_training_every_steps == 0
+
+
+def chunked_total_weight(header_indices: torch.Tensor, event_indices: torch.Tensor, config: LossConfig) -> float:
+    total = 0.0
+    if header_indices.numel() > 0:
+        total += float(config.header_weight)
+    if event_indices.numel() > 0:
+        total += float(config.event_weight)
+    return max(total, 1.0)
+
+
+def backward_masked_group_chunks(
+    *,
+    model: CompactByteMaskedAutoencoder,
+    encoded_tokens: torch.Tensor,
+    indices: torch.Tensor,
+    target_uint8: torch.Tensor,
+    chunk_size: int,
+    prefix: str,
+    group_scale: float,
+    scaler: torch.amp.GradScaler,
+    include_diagnostics: bool,
+) -> tuple[float, dict[str, float], int]:
+    if indices.numel() == 0:
+        return 0.0, empty_chunk_metrics(prefix), 0
+    stats = ChunkMetricAccumulator(prefix)
+    chunks = 0
+    for start in range(0, int(indices.shape[0]), chunk_size):
+        chunks += 1
+        chunk_indices = indices[start : start + chunk_size]
+        with torch.amp.autocast("cuda", enabled=encoded_tokens.is_cuda):
+            logits = model.decode_header_indices(encoded_tokens, chunk_indices) if prefix == "header" else model.decode_event_indices(encoded_tokens, chunk_indices)
+            target_bytes = target_uint8[tuple(chunk_indices.T)].long()
+            target_bits = unpack_bits(target_bytes).to(dtype=logits.dtype, device=logits.device)
+            loss_sum = F.binary_cross_entropy_with_logits(logits, target_bits, reduction="sum")
+            scaler.scale(loss_sum * group_scale).backward()
+        stats.update(logits.detach(), target_bits.detach(), target_bytes.detach(), loss_sum.detach(), include_diagnostics=include_diagnostics)
+    return stats.loss_sum, stats.to_metrics(), chunks
+
+
+class ChunkMetricAccumulator:
+    def __init__(self, prefix: str) -> None:
+        self.prefix = prefix
+        self.loss_sum = 0.0
+        self.byte_count = 0
+        self.bit_count = 0
+        self.bit_correct = 0.0
+        self.exact_correct = 0.0
+        self.hard_abs_sum = 0.0
+        self.soft_abs_sum = 0.0
+        self.conf_sum = 0.0
+        self.conf_min = 1.0
+        self.high_conf_correct = 0.0
+        self.high_conf_count = 0.0
+        self.low_conf_correct = 0.0
+        self.low_conf_count = 0.0
+
+    def update(
+        self,
+        logits: torch.Tensor,
+        target_bits: torch.Tensor,
+        target_bytes: torch.Tensor,
+        loss_sum: torch.Tensor,
+        *,
+        include_diagnostics: bool,
+    ) -> None:
+        with torch.no_grad():
+            probabilities = torch.sigmoid(logits)
+            hard_bits = probabilities >= 0.5
+            target_bool = target_bits.bool()
+            hard_bytes = pack_bits(hard_bits)
+            target_float = target_bytes.float()
+            soft_bytes = (probabilities.float() * BIT_WEIGHTS.to(probabilities.device)).sum(dim=-1)
+            confidence = (probabilities - 0.5).abs() * 2.0
+            self.loss_sum += float(loss_sum.float().cpu())
+            self.byte_count += int(target_bytes.numel())
+            self.bit_count += int(target_bits.numel())
+            self.bit_correct += float((hard_bits == target_bool).float().sum().cpu())
+            self.exact_correct += float((hard_bytes == target_bytes).float().sum().cpu())
+            self.hard_abs_sum += float((hard_bytes.float() - target_float).abs().sum().cpu())
+            self.soft_abs_sum += float((soft_bytes - target_float).abs().sum().cpu())
+            self.conf_sum += float(confidence.float().sum().cpu())
+            self.conf_min = min(self.conf_min, float(confidence.min().float().cpu()))
+            if include_diagnostics:
+                high_conf = confidence >= 0.8
+                if high_conf.any():
+                    self.high_conf_correct += float((hard_bits[high_conf] == target_bool[high_conf]).float().sum().cpu())
+                    self.high_conf_count += float(high_conf.sum().cpu())
+                low_conf = confidence <= 0.2
+                if low_conf.any():
+                    self.low_conf_correct += float((hard_bits[low_conf] == target_bool[low_conf]).float().sum().cpu())
+                    self.low_conf_count += float(low_conf.sum().cpu())
+
+    def to_metrics(self) -> dict[str, float]:
+        metrics = {
+            f"pretrain/{self.prefix}_masked_bytes": float(self.byte_count),
+            f"pretrain/{self.prefix}_bit_acc_pct": 100.0 * self.bit_correct / max(1.0, float(self.bit_count)),
+            f"pretrain/{self.prefix}_byte_exact_acc_pct": 100.0 * self.exact_correct / max(1.0, float(self.byte_count)),
+            f"pretrain/{self.prefix}_hard_byte_mae": self.hard_abs_sum / max(1.0, float(self.byte_count)),
+            f"pretrain/{self.prefix}_soft_byte_mae": self.soft_abs_sum / max(1.0, float(self.byte_count)),
+            f"pretrain/{self.prefix}_bit_conf_mean": self.conf_sum / max(1.0, float(self.bit_count)),
+            f"pretrain/{self.prefix}_bit_conf_min": self.conf_min if self.byte_count else 0.0,
+        }
+        if self.high_conf_count > 0:
+            metrics[f"pretrain/{self.prefix}_high_conf_bit_acc_pct"] = 100.0 * self.high_conf_correct / self.high_conf_count
+        if self.low_conf_count > 0:
+            metrics[f"pretrain/{self.prefix}_low_conf_bit_acc_pct"] = 100.0 * self.low_conf_correct / self.low_conf_count
+        return metrics
+
+
+def empty_chunk_metrics(prefix: str) -> dict[str, float]:
+    return {
+        f"pretrain/{prefix}_masked_bytes": 0.0,
+        f"pretrain/{prefix}_bit_acc_pct": 0.0,
+        f"pretrain/{prefix}_byte_exact_acc_pct": 0.0,
+        f"pretrain/{prefix}_hard_byte_mae": 0.0,
+        f"pretrain/{prefix}_soft_byte_mae": 0.0,
+        f"pretrain/{prefix}_bit_conf_mean": 0.0,
+        f"pretrain/{prefix}_bit_conf_min": 0.0,
+    }
 
 
 def resource_profile(device: torch.device) -> dict[str, float]:
@@ -727,7 +999,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         masks=MaskConfig(mask_ratio=args.mask_ratio, header_mask_ratio=args.header_mask_ratio),
         model=ModelConfig(d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
         losses=LossConfig(),
-        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
+        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
 
 
