@@ -110,6 +110,8 @@ class TrainConfig:
     pretrain_validation_steps: int = 4
     checkpoint_latest_steps: int = 10
     checkpoint_archive_steps: int = 5000
+    checkpoint_best_train: bool = True
+    checkpoint_best_val: bool = True
     num_workers: int = 0
     prefetch_factor: int = 1
     seed: int = 17

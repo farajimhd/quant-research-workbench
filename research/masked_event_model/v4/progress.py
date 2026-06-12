@@ -30,15 +30,25 @@ class TrainingProgressState:
     lr: float = 0.0
     step_seconds: float = 0.0
     samples_per_second: float = 0.0
+    epoch_loss_mean: float | None = None
     data_wait_seconds: float = 0.0
+    shard_load_seconds: float = 0.0
+    shard_shuffle_seconds: float = 0.0
     transfer_seconds: float = 0.0
+    mask_seconds: float = 0.0
     forward_seconds: float = 0.0
     backward_seconds: float = 0.0
     optimizer_seconds: float = 0.0
+    inference_encode_seconds: float = 0.0
+    inference_encode_ms_per_sample: float = 0.0
     gpu_allocated_gib: float = 0.0
     gpu_reserved_gib: float = 0.0
     gpu_peak_allocated_gib: float = 0.0
+    gpu_free_gib: float = 0.0
+    gpu_total_gib: float = 0.0
     process_rss_gib: float = 0.0
+    system_memory_available_gib: float = 0.0
+    system_memory_used_gib: float = 0.0
     validation_loss: float | None = None
     validation_seconds: float | None = None
     profiler_active: bool = False
@@ -52,6 +62,7 @@ class TrainingReporter:
         self.refresh_per_second = refresh_per_second
         self.started = time.perf_counter()
         self.history: deque[float] = deque(maxlen=100)
+        self.messages: deque[str] = deque(maxlen=8)
         self._rich = False
         self._live = None
         self._console = None
@@ -94,18 +105,29 @@ class TrainingReporter:
         state.event_bit_acc_pct = float(metrics.get("pretrain/event_bit_acc_pct", state.event_bit_acc_pct))
         state.byte_exact_acc_pct = float(metrics.get("pretrain/event_byte_exact_acc_pct", state.byte_exact_acc_pct))
         state.lr = float(metrics.get("train/lr", state.lr))
+        if "train/epoch_loss_mean" in metrics:
+            state.epoch_loss_mean = float(metrics["train/epoch_loss_mean"])
         state.step_seconds = float(metrics.get("train/step_seconds", state.step_seconds))
         if state.step_seconds > 0:
             state.samples_per_second = state.batch_size / state.step_seconds
         state.data_wait_seconds = float(metrics.get("profile/data_wait_seconds", state.data_wait_seconds))
+        state.shard_load_seconds = float(metrics.get("profile/data/shard_load_seconds", state.shard_load_seconds))
+        state.shard_shuffle_seconds = float(metrics.get("profile/data/shard_shuffle_seconds", state.shard_shuffle_seconds))
         state.transfer_seconds = float(metrics.get("profile/transfer_seconds", state.transfer_seconds))
+        state.mask_seconds = float(metrics.get("profile/mask_seconds", state.mask_seconds))
         state.forward_seconds = float(metrics.get("profile/forward_loss_seconds", state.forward_seconds))
         state.backward_seconds = float(metrics.get("profile/backward_seconds", state.backward_seconds))
         state.optimizer_seconds = float(metrics.get("profile/optimizer_seconds", state.optimizer_seconds))
+        state.inference_encode_seconds = float(metrics.get("profile/inference_encode_seconds", state.inference_encode_seconds))
+        state.inference_encode_ms_per_sample = float(metrics.get("profile/inference_encode_ms_per_sample", state.inference_encode_ms_per_sample))
         state.gpu_allocated_gib = float(metrics.get("profile/gpu_allocated_gib", state.gpu_allocated_gib))
         state.gpu_reserved_gib = float(metrics.get("profile/gpu_reserved_gib", state.gpu_reserved_gib))
         state.gpu_peak_allocated_gib = float(metrics.get("profile/gpu_peak_allocated_gib", state.gpu_peak_allocated_gib))
+        state.gpu_free_gib = float(metrics.get("profile/gpu_free_gib", state.gpu_free_gib))
+        state.gpu_total_gib = float(metrics.get("profile/gpu_total_gib", state.gpu_total_gib))
         state.process_rss_gib = float(metrics.get("profile/process_rss_gib", state.process_rss_gib))
+        state.system_memory_available_gib = float(metrics.get("profile/system_memory_available_gib", state.system_memory_available_gib))
+        state.system_memory_used_gib = float(metrics.get("profile/system_memory_used_gib", state.system_memory_used_gib))
         state.profiler_active = any(key.startswith("profile/") for key in metrics)
         if validation_metrics:
             state.validation_loss = float(validation_metrics.get("validation/pretrain/loss_total", state.validation_loss or 0.0))
@@ -116,6 +138,8 @@ class TrainingReporter:
 
     def message(self, text: str) -> None:
         self.state.last_message = text
+        timestamp = time.strftime("%H:%M:%S")
+        self.messages.append(f"[dim]{timestamp}[/] {text}")
         if self._rich:
             self.refresh()
         else:
@@ -148,12 +172,12 @@ class TrainingReporter:
         summary = Table.grid(expand=False, padding=(0, 4))
         summary.add_column(justify="left", no_wrap=True)
         summary.add_column(justify="left", no_wrap=True)
-        summary.add_row(f"[bold]Run[/] {state.run_name}", f"[bold]Device[/] {state.device}")
-        summary.add_row(f"[bold]Data[/] {state.data_source}", f"[bold]Params[/] {state.model_parameters:,}")
         step_text = f"{state.step:,}/{state.max_steps:,}" if state.max_steps > 0 else f"{state.step:,}"
         summary.add_row(f"[bold]Step[/] {step_text}", f"[bold]Batch[/] {state.batch_size:,}")
+        summary.add_row(f"[bold]Samples[/] {state.samples_seen_total:,}", f"[bold]Speed[/] {state.samples_per_second:,.1f}/s")
         summary.add_row(f"[bold]Epoch[/] {state.epoch}/{state.epochs}", f"[bold]Shard[/] {state.shard_index}/{state.shard_count} step {state.shard_step}/{state.shard_steps}")
-        summary.add_row(f"[bold]Samples[/] {state.samples_seen_total:,}", f"[bold]Speed[/] {state.samples_per_second:,.1f} samples/s")
+        summary.add_row(f"[bold]Run[/] {state.run_name}", f"[bold]Device[/] {state.device}")
+        summary.add_row(f"[bold]Data[/] {state.data_source}", f"[bold]Params[/] {state.model_parameters:,}")
 
         metrics = Table.grid(expand=False, padding=(0, 2))
         metrics.add_column("Metric", no_wrap=True)
@@ -162,26 +186,39 @@ class TrainingReporter:
         metrics.add_row("event bit acc", f"{state.event_bit_acc_pct:.3f}%")
         metrics.add_row("byte exact acc", f"{state.byte_exact_acc_pct:.3f}%")
         metrics.add_row("lr", f"{state.lr:.3e}")
+        if state.epoch_loss_mean is not None:
+            metrics.add_row("epoch loss mean", f"{state.epoch_loss_mean:.6f}")
         if state.validation_loss is not None:
             metrics.add_row("validation loss", f"{state.validation_loss:.6f}")
 
         profile = Table.grid(expand=False, padding=(0, 2))
         profile.add_column("Stage", no_wrap=True)
-        profile.add_column("Seconds", justify="right", no_wrap=True)
-        profile.add_row("step total", f"{state.step_seconds:.4f}")
-        profile.add_row("data wait", f"{state.data_wait_seconds:.4f}")
-        profile.add_row("transfer", f"{state.transfer_seconds:.4f}")
-        profile.add_row("forward+loss", f"{state.forward_seconds:.4f}")
-        profile.add_row("backward", f"{state.backward_seconds:.4f}")
-        profile.add_row("optimizer", f"{state.optimizer_seconds:.4f}")
+        profile.add_column("Value", justify="right", no_wrap=True)
+        profile.add_row("production encode", f"{state.inference_encode_ms_per_sample:.4f} ms/sample")
+        profile.add_row("production encode total", f"{state.inference_encode_seconds:.4f} s")
+        profile.add_row("train step total", f"{state.step_seconds:.4f} s")
+        profile.add_row("forward + loss", f"{state.forward_seconds:.4f} s")
+        profile.add_row("backward", f"{state.backward_seconds:.4f} s")
+        profile.add_row("data wait", f"{state.data_wait_seconds:.4f} s")
+        profile.add_row("shard load", f"{state.shard_load_seconds:.4f} s")
+        profile.add_row("shard shuffle", f"{state.shard_shuffle_seconds:.4f} s")
+        profile.add_row("mask", f"{state.mask_seconds:.4f} s")
+        profile.add_row("transfer", f"{state.transfer_seconds:.4f} s")
+        profile.add_row("optimizer", f"{state.optimizer_seconds:.4f} s")
 
         memory = Table.grid(expand=False, padding=(0, 2))
         memory.add_column("Metric", no_wrap=True)
         memory.add_column("GiB", justify="right", no_wrap=True)
-        memory.add_row("process RSS", f"{state.process_rss_gib:.2f}")
-        memory.add_row("GPU allocated", f"{state.gpu_allocated_gib:.2f}")
-        memory.add_row("GPU reserved", f"{state.gpu_reserved_gib:.2f}")
         memory.add_row("GPU peak allocated", f"{state.gpu_peak_allocated_gib:.2f}")
+        memory.add_row("GPU reserved", f"{state.gpu_reserved_gib:.2f}")
+        memory.add_row("GPU allocated", f"{state.gpu_allocated_gib:.2f}")
+        memory.add_row("GPU free", f"{state.gpu_free_gib:.2f}")
+        memory.add_row("GPU total", f"{state.gpu_total_gib:.2f}")
+        memory.add_row("process RSS", f"{state.process_rss_gib:.2f}")
+        memory.add_row("system used", f"{state.system_memory_used_gib:.2f}")
+        memory.add_row("system available", f"{state.system_memory_available_gib:.2f}")
+
+        message_lines = "\n".join(self.messages) if self.messages else (state.last_message or "running")
 
         body = Group(
             Panel(summary, title="Training Run", border_style="cyan"),
@@ -190,7 +227,7 @@ class TrainingReporter:
             Panel(metrics, title="Learning", border_style="magenta"),
             Panel(profile, title="Step Profile", border_style="yellow"),
             Panel(memory, title="Memory", border_style="blue"),
-            Panel(state.last_message or "running", title="Status", border_style="green" if state.profiler_active else "blue"),
+            Panel(message_lines, title="Messages", border_style="green" if state.profiler_active else "blue"),
         )
         return body
 

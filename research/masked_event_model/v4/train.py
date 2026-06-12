@@ -114,6 +114,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pretrain-validation-steps", type=int, default=train_defaults.pretrain_validation_steps)
     parser.add_argument("--checkpoint-latest-steps", type=int, default=train_defaults.checkpoint_latest_steps)
     parser.add_argument("--checkpoint-archive-steps", type=int, default=train_defaults.checkpoint_archive_steps)
+    parser.add_argument("--checkpoint-best-train", action=argparse.BooleanOptionalAction, default=train_defaults.checkpoint_best_train)
+    parser.add_argument("--checkpoint-best-val", action=argparse.BooleanOptionalAction, default=train_defaults.checkpoint_best_val)
     parser.add_argument("--mask-ratio", type=float, default=mask_defaults.mask_ratio)
     parser.add_argument("--header-mask-ratio", type=float, default=mask_defaults.header_mask_ratio)
     parser.add_argument("--d-byte", type=int, default=model_defaults.d_byte)
@@ -190,7 +192,12 @@ def main(argv: list[str] | None = None) -> None:
     checkpointer = AsyncCheckpointManager(
         run_paths.checkpoints_dir,
         run_paths.checkpoint_manifest_path,
-        CheckpointPolicy(latest_steps=args.checkpoint_latest_steps, archive_steps=args.checkpoint_archive_steps),
+        CheckpointPolicy(
+            latest_steps=args.checkpoint_latest_steps,
+            archive_steps=args.checkpoint_archive_steps,
+            save_best_train=args.checkpoint_best_train,
+            save_best_val=args.checkpoint_best_val,
+        ),
     )
 
     if args.dry_run:
@@ -228,6 +235,7 @@ def main(argv: list[str] | None = None) -> None:
     reporter_context: Any
     reporter_context = TrainingReporter(layout=args.progress_layout, state=reporter_state) if args.progress_layout != "none" else nullcontext()
     with reporter_context as reporter:
+        checkpointer.set_message_callback(reporter.message if reporter is not None else None)
         if reporter is not None:
             reporter.message(f"Training started. Output: {output_dir}")
         if config.data.data_source == "sample_cache":
@@ -278,8 +286,10 @@ def main(argv: list[str] | None = None) -> None:
                 checkpointer=checkpointer,
                 reporter=reporter,
             )
-    checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), force=True)
-    checkpointer.close()
+        checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), force=True)
+        checkpointer.close()
+        if wandb_run is not None and reporter is not None:
+            reporter.message(f"W&B run: {getattr(wandb_run, 'url', '<unknown>')}")
 
 
 def train_precomputed_epochs(
@@ -301,10 +311,10 @@ def train_precomputed_epochs(
     data_config = precomputed_data_config(config, "train", args.seed)
     train_shards = discover_precomputed_chunk_shards(data_config)
     shard_count = len(train_shards)
-    print(
+    emit_progress_message(
+        reporter,
         f"Precomputed training shards={shard_count:,} epochs={config.train.epochs:,} "
         f"batch_size={config.train.batch_size:,} max_steps={config.train.max_steps:,}",
-        flush=True,
     )
     samples_seen_total = 0
     stop_training = False
@@ -380,7 +390,7 @@ def train_precomputed_epochs(
             "train/epoch_loss_mean": epoch_loss_sum / max(1, epoch_steps),
         }
         metric_logger.log(epoch_metrics, global_step)
-        print("EPOCH " + format_metrics(global_step, epoch_metrics), flush=True)
+        emit_progress_message(reporter, "EPOCH " + format_metrics(global_step, epoch_metrics))
         if stop_training:
             break
     return global_step
@@ -406,10 +416,10 @@ def train_sample_cache_epochs(
     train_shards = discover_event_sample_shards(data_config)
     shard_count = len(train_shards)
     total_samples = sum(shard.num_samples for shard in train_shards)
-    print(
+    emit_progress_message(
+        reporter,
         f"Sample-cache training shards={shard_count:,} samples={total_samples:,} "
         f"epochs={config.train.epochs:,} batch_size={config.train.batch_size:,} max_steps={config.train.max_steps:,}",
-        flush=True,
     )
     samples_seen_total = 0
     stop_training = False
@@ -483,7 +493,7 @@ def train_sample_cache_epochs(
             "train/epoch_loss_mean": epoch_loss_sum / max(1, epoch_steps),
         }
         metric_logger.log(epoch_metrics, global_step)
-        print("EPOCH " + format_metrics(global_step, epoch_metrics), flush=True)
+        emit_progress_message(reporter, "EPOCH " + format_metrics(global_step, epoch_metrics))
         if stop_training:
             break
     return global_step
@@ -717,7 +727,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         masks=MaskConfig(mask_ratio=args.mask_ratio, header_mask_ratio=args.header_mask_ratio),
         model=ModelConfig(d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
         losses=LossConfig(),
-        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
+        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
 
 
@@ -1161,6 +1171,13 @@ def format_metrics(step: int, metrics: dict[str, float]) -> str:
         if key in metrics:
             parts.append(f"{key.split('/')[-1]}={metrics[key]:.4f}")
     return " | ".join(parts)
+
+
+def emit_progress_message(reporter: TrainingReporter | None, text: str) -> None:
+    if reporter is not None:
+        reporter.message(text)
+    else:
+        print(text, flush=True)
 
 
 def dataclass_tree(value: Any) -> Any:

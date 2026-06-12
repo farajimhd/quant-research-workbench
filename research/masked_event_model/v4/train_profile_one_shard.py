@@ -32,6 +32,8 @@ DEFAULTS: dict[str, Any] = {
     "profile_inference_every_steps": 1,
     "checkpoint_latest_steps": 0,
     "checkpoint_archive_steps": 0,
+    "checkpoint_best_train": False,
+    "checkpoint_best_val": False,
     "wandb_mode": "disabled",
     "wandb_run_name": "v4-one-shard-profile",
     "progress_layout": "auto",
@@ -93,4 +95,3 @@ def build_train_args(values: dict[str, Any]) -> list[str]:
 
 if __name__ == "__main__":
     main()
-
