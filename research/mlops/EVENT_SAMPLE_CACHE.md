@@ -114,6 +114,9 @@ rate_total=.../s  eta_total_hours=...
 The rolling ETA uses the last `eta_recent_window` completed microbatches and is
 usually more useful after warm-up.
 
+If no microbatch completes for `heartbeat_seconds`, the builder prints a
+heartbeat line and writes progress JSON with the current pending-worker count.
+
 ## Validate
 
 Run fast structural checks plus sampled ClickHouse audit checks:

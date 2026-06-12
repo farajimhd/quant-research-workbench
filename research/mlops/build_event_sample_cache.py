@@ -7,7 +7,7 @@ import random
 import sys
 import time
 from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -61,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--query-bundle-spans", type=int, default=64)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--eta-recent-window", type=int, default=50, help="Completed microbatches used for rolling-rate ETA.")
+    parser.add_argument("--heartbeat-seconds", type=float, default=30.0, help="Print pending-worker status if no microbatch completes within this interval.")
     parser.add_argument("--clickhouse-max-threads", type=int, default=8)
     parser.add_argument("--clickhouse-max-memory-usage", default="80G")
     parser.add_argument("--seed", type=int, default=17)
@@ -230,7 +231,31 @@ def build_split(
 
         submit_until_full()
         while samples_written < target_samples and futures:
-            for future in as_completed(futures):
+            done, _pending = wait(futures, timeout=max(1.0, float(args.heartbeat_seconds)), return_when=FIRST_COMPLETED)
+            if not done:
+                elapsed = time.perf_counter() - split_started
+                print(
+                    f"{split.upper()} HEARTBEAT samples={samples_written:,}/{target_samples:,} "
+                    f"completed_microbatches={micro_batches_completed:,} pending_workers={len(futures):,} "
+                    f"elapsed_minutes={elapsed / 60.0:.1f}",
+                    flush=True,
+                )
+                write_split_progress(
+                    cache_root,
+                    split=split,
+                    target_samples=target_samples,
+                    samples_written=samples_written,
+                    micro_batches_completed=micro_batches_completed,
+                    elapsed_seconds=elapsed,
+                    rate_recent_samples_per_sec=0.0,
+                    eta_recent_seconds=0.0,
+                    rate_total_samples_per_sec=0.0,
+                    eta_total_seconds=0.0,
+                    writer=writer,
+                    pending_workers=len(futures),
+                )
+                continue
+            for future in done:
                 futures.remove(future)
                 result = future.result()
                 take_batch = result["batch"]
@@ -276,9 +301,9 @@ def build_split(
                     rate_total_samples_per_sec=rate_total,
                     eta_total_seconds=eta_total,
                     writer=writer,
+                    pending_workers=len(futures),
                 )
                 submit_until_full()
-                break
     writer.close()
     summary = {
         "target_samples": target_samples,
@@ -307,6 +332,7 @@ def write_split_progress(
     rate_total_samples_per_sec: float,
     eta_total_seconds: float,
     writer: EventSampleShardWriter,
+    pending_workers: int,
 ) -> None:
     progress = {
         "split": split,
@@ -315,6 +341,7 @@ def write_split_progress(
         "samples_written": samples_written,
         "progress_pct": 100.0 * samples_written / max(1, target_samples),
         "micro_batches_completed": micro_batches_completed,
+        "pending_workers": pending_workers,
         "elapsed_seconds": elapsed_seconds,
         "rate_recent_samples_per_sec": rate_recent_samples_per_sec,
         "eta_recent_seconds": eta_recent_seconds,
