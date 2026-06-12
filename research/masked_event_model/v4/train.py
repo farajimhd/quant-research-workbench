@@ -21,7 +21,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from research.masked_event_model.v4.config import DataConfig, ExperimentConfig, LossConfig, MaskConfig, ModelConfig, TrainConfig
-from research.masked_event_model.v4.losses import BIT_WEIGHTS, masked_byte_bce_loss, pack_bits, unpack_bits
+from research.masked_event_model.v4.losses import BIT_WEIGHTS, byte_psnr_db, masked_byte_bce_loss, pack_bits, unpack_bits
 from research.masked_event_model.v4.masking import ByteMaskBatch, build_byte_masks
 from research.masked_event_model.v4.model import CompactByteMaskedAutoencoder
 from research.masked_event_model.v4.progress import TrainingProgressState, TrainingReporter
@@ -859,6 +859,9 @@ class ChunkMetricAccumulator:
         self.byte_mode_count = 0.0
         self.hard_abs_sum = 0.0
         self.soft_abs_sum = 0.0
+        self.hard_sq_sum = 0.0
+        self.soft_sq_sum = 0.0
+        self.psnr_byte_count = 0.0
         self.conf_sum = 0.0
         self.conf_min = 1.0
         self.high_conf_correct = 0.0
@@ -904,6 +907,10 @@ class ChunkMetricAccumulator:
             self.conf_sum += float(confidence.float().sum().cpu())
             self.conf_min = min(self.conf_min, float(confidence.min().float().cpu()))
             if include_diagnostics:
+                if self.prefix == "event":
+                    self.hard_sq_sum += float((hard_bytes.float() - target_float).pow(2).sum().cpu())
+                    self.soft_sq_sum += float((soft_bytes - target_float).pow(2).sum().cpu())
+                    self.psnr_byte_count += float(target_bytes.numel())
                 high_conf = confidence >= 0.8
                 if high_conf.any():
                     self.high_conf_correct += float((hard_bits[high_conf] == target_bool[high_conf]).float().sum().cpu())
@@ -945,6 +952,11 @@ class ChunkMetricAccumulator:
             metrics[f"pretrain/{self.prefix}_high_conf_bit_acc_pct"] = 100.0 * self.high_conf_correct / self.high_conf_count
         if self.low_conf_count > 0:
             metrics[f"pretrain/{self.prefix}_low_conf_bit_acc_pct"] = 100.0 * self.low_conf_correct / self.low_conf_count
+        if self.prefix == "event" and self.psnr_byte_count > 0:
+            hard_mse = torch.tensor(self.hard_sq_sum / self.psnr_byte_count, dtype=torch.float32)
+            soft_mse = torch.tensor(self.soft_sq_sum / self.psnr_byte_count, dtype=torch.float32)
+            metrics[f"pretrain/{self.prefix}_hard_byte_psnr_db"] = float(byte_psnr_db(hard_mse))
+            metrics[f"pretrain/{self.prefix}_soft_byte_psnr_db"] = float(byte_psnr_db(soft_mse))
         for bit_index in range(8):
             count = max(1.0, float(self.per_bit_count[bit_index]))
             metrics[f"pretrain/{self.prefix}_bit{bit_index}_acc_pct"] = 100.0 * float(self.per_bit_correct[bit_index]) / count
@@ -1226,7 +1238,7 @@ def evaluate_validation(model: CompactByteMaskedAutoencoder, batches: list[dict[
             masks = build_byte_masks(batch["header_uint8"], batch["events_uint8"], config.masks)
             with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
                 output = model(batch["header_uint8"], batch["events_uint8"], masks)
-                result = masked_byte_bce_loss(output, batch["header_uint8"], batch["events_uint8"], masks, config.losses)
+                result = masked_byte_bce_loss(output, batch["header_uint8"], batch["events_uint8"], masks, config.losses, include_diagnostics=True)
             for key, value in result.metrics.items():
                 totals["validation/" + key] = totals.get("validation/" + key, 0.0) + float(value)
     count = max(1, len(batches))

@@ -32,6 +32,8 @@ class TrainingProgressState:
     byte_exact_acc_pct: float = 0.0
     byte_exact_lift_pct: float = 0.0
     byte_mode_baseline_pct: float = 0.0
+    event_soft_byte_psnr_db: float | None = None
+    event_hard_byte_psnr_db: float | None = None
     lr: float = 0.0
     step_seconds: float = 0.0
     samples_per_second: float = 0.0
@@ -59,6 +61,8 @@ class TrainingProgressState:
     system_memory_available_gib: float = 0.0
     system_memory_used_gib: float = 0.0
     validation_loss: float | None = None
+    validation_event_soft_byte_psnr_db: float | None = None
+    validation_event_hard_byte_psnr_db: float | None = None
     validation_seconds: float | None = None
     profiler_active: bool = False
     last_message: str = ""
@@ -118,6 +122,10 @@ class TrainingReporter:
         state.byte_exact_acc_pct = float(metrics.get("pretrain/event_byte_exact_acc_pct", state.byte_exact_acc_pct))
         state.byte_exact_lift_pct = float(metrics.get("pretrain/event_byte_exact_lift_pct", state.byte_exact_lift_pct))
         state.byte_mode_baseline_pct = float(metrics.get("pretrain/event_byte_mode_baseline_pct", state.byte_mode_baseline_pct))
+        if "pretrain/event_soft_byte_psnr_db" in metrics:
+            state.event_soft_byte_psnr_db = float(metrics["pretrain/event_soft_byte_psnr_db"])
+        if "pretrain/event_hard_byte_psnr_db" in metrics:
+            state.event_hard_byte_psnr_db = float(metrics["pretrain/event_hard_byte_psnr_db"])
         state.lr = float(metrics.get("train/lr", state.lr))
         if "train/epoch_loss_mean" in metrics:
             state.epoch_loss_mean = float(metrics["train/epoch_loss_mean"])
@@ -149,6 +157,10 @@ class TrainingReporter:
         state.profiler_active = any(key.startswith("profile/") for key in metrics)
         if validation_metrics:
             state.validation_loss = float(validation_metrics.get("validation/pretrain/loss_total", state.validation_loss or 0.0))
+            if "validation/pretrain/event_soft_byte_psnr_db" in validation_metrics:
+                state.validation_event_soft_byte_psnr_db = float(validation_metrics["validation/pretrain/event_soft_byte_psnr_db"])
+            if "validation/pretrain/event_hard_byte_psnr_db" in validation_metrics:
+                state.validation_event_hard_byte_psnr_db = float(validation_metrics["validation/pretrain/event_hard_byte_psnr_db"])
             state.validation_seconds = float(validation_metrics.get("validation/pretrain/seconds", state.validation_seconds or 0.0))
         if state.step_seconds > 0:
             self.history.append(state.step_seconds)
@@ -208,11 +220,19 @@ class TrainingReporter:
         metrics.add_row("byte exact acc", f"{state.byte_exact_acc_pct:.3f}%")
         metrics.add_row("byte exact lift", f"{state.byte_exact_lift_pct:+.3f}%")
         metrics.add_row("byte mode baseline", f"{state.byte_mode_baseline_pct:.3f}%")
+        if state.event_soft_byte_psnr_db is not None:
+            metrics.add_row("event soft PSNR", f"{state.event_soft_byte_psnr_db:.3f} dB")
+        if state.event_hard_byte_psnr_db is not None:
+            metrics.add_row("event hard PSNR", f"{state.event_hard_byte_psnr_db:.3f} dB")
         metrics.add_row("lr", f"{state.lr:.3e}")
         if state.epoch_loss_mean is not None:
             metrics.add_row("epoch loss mean", f"{state.epoch_loss_mean:.6f}")
         if state.validation_loss is not None:
             metrics.add_row("validation loss", f"{state.validation_loss:.6f}")
+        if state.validation_event_soft_byte_psnr_db is not None:
+            metrics.add_row("val event soft PSNR", f"{state.validation_event_soft_byte_psnr_db:.3f} dB")
+        if state.validation_event_hard_byte_psnr_db is not None:
+            metrics.add_row("val event hard PSNR", f"{state.validation_event_hard_byte_psnr_db:.3f} dB")
 
         profile = Table.grid(expand=False, padding=(0, 2))
         profile.add_column("Stage", no_wrap=True)

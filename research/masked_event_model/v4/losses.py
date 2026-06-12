@@ -12,6 +12,8 @@ from research.masked_event_model.v4.model import ByteMAEOutput
 
 
 BIT_WEIGHTS = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], dtype=torch.float32)
+BYTE_MAX_VALUE = 255.0
+PSNR_EPSILON = 1e-12
 
 
 @dataclass(slots=True)
@@ -139,6 +141,11 @@ def masked_group_loss(
             metrics[f"pretrain/{prefix}_bit{bit_index}_target_one_rate_pct"] = float(per_bit_one_rate[bit_index].detach().cpu() * 100.0)
             metrics[f"pretrain/{prefix}_bit{bit_index}_pred_one_rate_pct"] = float(per_bit_pred_one_rate[bit_index].detach().cpu() * 100.0)
         if include_diagnostics:
+            if prefix == "event":
+                hard_mse = (hard_bytes.float() - target_float).pow(2).mean()
+                soft_mse = (soft_bytes - target_float).pow(2).mean()
+                metrics[f"pretrain/{prefix}_hard_byte_psnr_db"] = float(byte_psnr_db(hard_mse).detach().cpu())
+                metrics[f"pretrain/{prefix}_soft_byte_psnr_db"] = float(byte_psnr_db(soft_mse).detach().cpu())
             high_conf = confidence >= 0.8
             if high_conf.any():
                 metrics[f"pretrain/{prefix}_high_conf_bit_acc_pct"] = float((hard_bits[high_conf] == target_bool[high_conf]).float().mean().detach().cpu() * 100.0)
@@ -184,3 +191,7 @@ def unpack_bits(values: torch.Tensor) -> torch.Tensor:
 def pack_bits(bits: torch.Tensor) -> torch.Tensor:
     weights = BIT_WEIGHTS.to(bits.device, dtype=torch.long)
     return (bits.long() * weights).sum(dim=-1)
+
+
+def byte_psnr_db(mse: torch.Tensor) -> torch.Tensor:
+    return 10.0 * torch.log10(mse.new_tensor(BYTE_MAX_VALUE**2) / mse.clamp_min(PSNR_EPSILON))
