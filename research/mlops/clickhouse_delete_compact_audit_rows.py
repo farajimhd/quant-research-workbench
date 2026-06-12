@@ -99,7 +99,8 @@ class DeleteDecision:
 
 def default_clickhouse_url_with_network_fallback() -> str:
     return (
-        os.environ.get(CLICKHOUSE_URL_ENV)
+        os.environ.get("REAL_LIVE_CLICKHOUSE_WRITE_URL")
+        or os.environ.get(CLICKHOUSE_URL_ENV)
         or os.environ.get(CLICKHOUSE_ENDPOINT_ENV)
         or os.environ.get("REAL_LIVE_CLICKHOUSE_READ_URL")
         or default_clickhouse_url()
@@ -109,6 +110,9 @@ def default_clickhouse_url_with_network_fallback() -> str:
 def env_status_keys() -> list[str]:
     return [
         CLICKHOUSE_URL_ENV,
+        "REAL_LIVE_CLICKHOUSE_WRITE_URL",
+        "REAL_LIVE_CLICKHOUSE_WRITE_USER",
+        "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
         CLICKHOUSE_WORKSTATION_USER_ENV,
         CLICKHOUSE_WORKSTATION_PASSWORD_ENV,
         CLICKHOUSE_USER_SIMPLE_ENV,

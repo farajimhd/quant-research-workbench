@@ -8,7 +8,7 @@ from typing import Any
 
 
 DEFAULTS: dict[str, Any] = {
-    "clickhouse_url": "http://localhost:18123",
+    "clickhouse_url": "",
     "database": "market_sip_compact",
     "events_table": "events",
     "train_index_table": "train_2019_to_2025",

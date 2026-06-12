@@ -177,7 +177,13 @@ class ClickHouseEventsChunkIterableDataset(IterableDataset):
 def normalized_config(config: ClickHouseEventsDataConfig) -> ClickHouseEventsDataConfig:
     user = config.user or default_clickhouse_user()
     password = config.password or default_clickhouse_password()
-    url = config.clickhouse_url or os.environ.get("CLICKHOUSE_URL") or os.environ.get("TD__DATABASE__CLICKHOUSE__ENDPOINT_URL") or DEFAULT_CLICKHOUSE_URL
+    url = (
+        config.clickhouse_url
+        or os.environ.get("REAL_LIVE_CLICKHOUSE_WRITE_URL")
+        or os.environ.get("CLICKHOUSE_URL")
+        or os.environ.get("TD__DATABASE__CLICKHOUSE__ENDPOINT_URL")
+        or DEFAULT_CLICKHOUSE_URL
+    )
     num_spans = int(config.num_spans)
     origins_per_span = int(config.origins_per_span)
     batch_size = int(config.batch_size)

@@ -86,7 +86,24 @@ def main() -> None:
     print(f"train_index_table={args.train_index_table} validation_index_table={args.validation_index_table}", flush=True)
     print(f"train_cache_gib={args.train_cache_gib} validation_cache_gib={args.validation_cache_gib} shard_size_gib={args.shard_size_gib}", flush=True)
     print(f"workers={args.workers} micro_batch_samples={args.builder_micro_batch_samples}", flush=True)
-    print(f"secret_status={secret_status(['CLICKHOUSE_URL','CLICKHOUSE_WORKSTATION_USER','CLICKHOUSE_WORKSTATION_PASSWORD','CLICKHOUSE_USER','CLICKHOUSE_PASSWORD'])}", flush=True)
+    print(
+        "secret_status="
+        + str(
+            secret_status(
+                [
+                    "REAL_LIVE_CLICKHOUSE_WRITE_URL",
+                    "REAL_LIVE_CLICKHOUSE_WRITE_USER",
+                    "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
+                    "CLICKHOUSE_URL",
+                    "CLICKHOUSE_WORKSTATION_USER",
+                    "CLICKHOUSE_WORKSTATION_PASSWORD",
+                    "CLICKHOUSE_USER",
+                    "CLICKHOUSE_PASSWORD",
+                ]
+            )
+        ),
+        flush=True,
+    )
     print(f"loaded_env_files={[str(path) for path in loaded_env]}", flush=True)
     print("=" * 96, flush=True)
 

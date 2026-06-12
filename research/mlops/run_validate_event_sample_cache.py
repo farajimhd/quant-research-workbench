@@ -12,7 +12,7 @@ DEFAULTS: dict[str, Any] = {
     "splits": "train,validation",
     "sample_record_checks": 256,
     "audit_clickhouse_checks": 25,
-    "clickhouse_url": "http://localhost:18123",
+    "clickhouse_url": "",
     "database": "market_sip_compact",
     "events_table": "events",
     "max_threads": 8,

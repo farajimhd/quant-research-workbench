@@ -9,7 +9,7 @@ from typing import Any
 
 DEFAULTS: dict[str, Any] = {
     "data_source": "sample_cache",
-    "clickhouse_url": "http://localhost:18123",
+    "clickhouse_url": "",
     "clickhouse_database": "market_sip_compact",
     "events_table": "events",
     "train_index_table": "train_2019_to_2025",

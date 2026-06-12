@@ -31,7 +31,7 @@ class DataConfig:
     precomputed_chunk_root: Path | None = DEFAULT_PRECOMPUTED_V4_CHUNK_ROOT
     sample_cache_root: Path | None = DEFAULT_SAMPLE_CACHE_ROOT
     reference_dir: Path = DEFAULT_REFERENCE_DIR
-    clickhouse_url: str = DEFAULT_CLICKHOUSE_URL
+    clickhouse_url: str = ""
     clickhouse_database: str = DEFAULT_DATABASE
     events_table: str = DEFAULT_EVENTS_TABLE
     train_index_table: str = DEFAULT_TRAIN_INDEX_TABLE

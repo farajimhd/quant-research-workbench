@@ -31,6 +31,9 @@ CLICKHOUSE_USER_SIMPLE_ENV = "CLICKHOUSE_USER"
 CLICKHOUSE_ENDPOINT_ENV = "TD__DATABASE__CLICKHOUSE__ENDPOINT_URL"
 CLICKHOUSE_PASSWORD_ENV = "TD__DATABASE__CLICKHOUSE__PASSWORD"
 CLICKHOUSE_USER_ENV = "TD__DATABASE__CLICKHOUSE__USER"
+REAL_LIVE_CLICKHOUSE_WRITE_URL_ENV = "REAL_LIVE_CLICKHOUSE_WRITE_URL"
+REAL_LIVE_CLICKHOUSE_WRITE_USER_ENV = "REAL_LIVE_CLICKHOUSE_WRITE_USER"
+REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD_ENV = "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD"
 CLICKHOUSE_FILE_ROOT_ENV = "TD__DATABASE__CLICKHOUSE__FILE_ROOT"
 CLICKHOUSE_HISTORICAL_STORAGE_POLICY_ENV = "CLICKHOUSE_HISTORICAL_STORAGE_POLICY"
 CLICKHOUSE_STORAGE_POLICY_SIMPLE_ENV = "CLICKHOUSE_STORAGE_POLICY"
@@ -153,15 +156,32 @@ def parse_args() -> argparse.Namespace:
 
 
 def default_clickhouse_url() -> str:
-    return os.environ.get(CLICKHOUSE_URL_ENV) or os.environ.get(CLICKHOUSE_ENDPOINT_ENV) or DEFAULT_CLICKHOUSE_URL
+    return (
+        os.environ.get(REAL_LIVE_CLICKHOUSE_WRITE_URL_ENV)
+        or os.environ.get(CLICKHOUSE_URL_ENV)
+        or os.environ.get(CLICKHOUSE_ENDPOINT_ENV)
+        or DEFAULT_CLICKHOUSE_URL
+    )
 
 
 def default_clickhouse_user() -> str:
-    return os.environ.get(CLICKHOUSE_WORKSTATION_USER_ENV) or os.environ.get(CLICKHOUSE_USER_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_USER_ENV) or "default"
+    return (
+        os.environ.get(REAL_LIVE_CLICKHOUSE_WRITE_USER_ENV)
+        or os.environ.get(CLICKHOUSE_WORKSTATION_USER_ENV)
+        or os.environ.get(CLICKHOUSE_USER_SIMPLE_ENV)
+        or os.environ.get(CLICKHOUSE_USER_ENV)
+        or "default"
+    )
 
 
 def default_clickhouse_password() -> str:
-    return os.environ.get(CLICKHOUSE_WORKSTATION_PASSWORD_ENV) or os.environ.get(CLICKHOUSE_PASSWORD_SIMPLE_ENV) or os.environ.get(CLICKHOUSE_PASSWORD_ENV) or ""
+    return (
+        os.environ.get(REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD_ENV)
+        or os.environ.get(CLICKHOUSE_WORKSTATION_PASSWORD_ENV)
+        or os.environ.get(CLICKHOUSE_PASSWORD_SIMPLE_ENV)
+        or os.environ.get(CLICKHOUSE_PASSWORD_ENV)
+        or ""
+    )
 
 
 def default_database() -> str:
@@ -188,6 +208,9 @@ def default_preflight_processes() -> int:
 def clickhouse_env_status_keys() -> list[str]:
     return [
         CLICKHOUSE_URL_ENV,
+        REAL_LIVE_CLICKHOUSE_WRITE_URL_ENV,
+        REAL_LIVE_CLICKHOUSE_WRITE_USER_ENV,
+        REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD_ENV,
         CLICKHOUSE_WORKSTATION_USER_ENV,
         CLICKHOUSE_WORKSTATION_PASSWORD_ENV,
         CLICKHOUSE_USER_SIMPLE_ENV,
