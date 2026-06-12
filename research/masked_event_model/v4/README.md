@@ -127,3 +127,34 @@ Run a smoke/dry run:
 ```powershell
 python research\masked_event_model\v4\run_train.py --dry-run
 ```
+
+## Progress And Profiling
+
+Training supports a Rich console layout:
+
+```powershell
+python research\masked_event_model\v4\run_train.py --progress-layout rich
+```
+
+The profiler can be enabled for the first `N` optimizer steps and/or at a fixed
+interval:
+
+```powershell
+--profile-first-steps 25
+--profile-training-every-steps 100
+--profile-inference-every-steps 100
+```
+
+Profile metrics include data wait, host-to-device transfer, masking,
+forward/loss, backward, optimizer, inference encode timing, process RSS, system
+memory, and CUDA allocated/reserved/peak memory when running on GPU.
+
+To test model/data/training parameters on one finalized sample-cache shard:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v4\research\masked_event_model\v4\run_profile_one_shard.py --steps 25 --batch-size 1024
+```
+
+That launcher uses `--max-index-files 1`, disables validation and W&B by
+default, profiles every step, and keeps the run small enough for quick
+iteration over batch size, model size, masking, and learning-rate choices.

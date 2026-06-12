@@ -102,6 +102,8 @@ class TrainConfig:
     grad_clip_norm: float = 1.0
     logging_steps: int = 10
     detailed_metrics_steps: int = 50
+    progress_layout: str = "auto"
+    profile_first_steps: int = 0
     profile_training_every_steps: int = 10
     profile_inference_every_steps: int = 10
     pretrain_validation_frequency: int = 50

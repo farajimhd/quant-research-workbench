@@ -1,0 +1,205 @@
+from __future__ import annotations
+
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(slots=True)
+class TrainingProgressState:
+    run_name: str
+    device: str
+    data_source: str
+    batch_size: int
+    max_steps: int
+    epochs: int
+    model_parameters: int
+    output_dir: str
+    step: int = 0
+    epoch: int = 0
+    epoch_progress_pct: float = 0.0
+    shard_index: int = 0
+    shard_count: int = 0
+    shard_step: int = 0
+    shard_steps: int = 0
+    samples_seen_total: int = 0
+    loss: float = 0.0
+    event_bit_acc_pct: float = 0.0
+    byte_exact_acc_pct: float = 0.0
+    lr: float = 0.0
+    step_seconds: float = 0.0
+    samples_per_second: float = 0.0
+    data_wait_seconds: float = 0.0
+    transfer_seconds: float = 0.0
+    forward_seconds: float = 0.0
+    backward_seconds: float = 0.0
+    optimizer_seconds: float = 0.0
+    gpu_allocated_gib: float = 0.0
+    gpu_reserved_gib: float = 0.0
+    gpu_peak_allocated_gib: float = 0.0
+    process_rss_gib: float = 0.0
+    validation_loss: float | None = None
+    validation_seconds: float | None = None
+    profiler_active: bool = False
+    last_message: str = ""
+
+
+class TrainingReporter:
+    def __init__(self, *, layout: str, state: TrainingProgressState, refresh_per_second: float = 2.0) -> None:
+        self.layout = layout
+        self.state = state
+        self.refresh_per_second = refresh_per_second
+        self.started = time.perf_counter()
+        self.history: deque[float] = deque(maxlen=100)
+        self._rich = False
+        self._live = None
+        self._console = None
+        self._fallback_reason = ""
+
+    def __enter__(self) -> "TrainingReporter":
+        if self.layout in {"auto", "rich"}:
+            try:
+                from rich.console import Console
+                from rich.live import Live
+
+                self._console = Console()
+                self._live = Live(self._render(), console=self._console, refresh_per_second=self.refresh_per_second, transient=False)
+                self._live.start()
+                self._rich = True
+            except Exception as exc:  # noqa: BLE001
+                self._fallback_reason = repr(exc)
+                if self.layout == "rich":
+                    raise
+        if not self._rich and self._fallback_reason:
+            print(f"Rich progress unavailable; falling back to text: {self._fallback_reason}", flush=True)
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if self._live is not None:
+            self._live.update(self._render())
+            self._live.stop()
+
+    def update(self, metrics: dict[str, float], *, step: int, validation_metrics: dict[str, float] | None = None) -> None:
+        state = self.state
+        state.step = step
+        state.epoch = int(metrics.get("train/epoch", state.epoch))
+        state.epoch_progress_pct = float(metrics.get("train/epoch_progress_pct", state.epoch_progress_pct))
+        state.shard_index = int(metrics.get("train/shard_index", state.shard_index))
+        state.shard_count = int(metrics.get("train/shards_per_epoch", state.shard_count))
+        state.shard_step = int(metrics.get("train/shard_step", state.shard_step))
+        state.shard_steps = int(metrics.get("train/shard_steps", state.shard_steps))
+        state.samples_seen_total = int(metrics.get("train/samples_seen_total", state.samples_seen_total))
+        state.loss = float(metrics.get("pretrain/loss_total", state.loss))
+        state.event_bit_acc_pct = float(metrics.get("pretrain/event_bit_acc_pct", state.event_bit_acc_pct))
+        state.byte_exact_acc_pct = float(metrics.get("pretrain/event_byte_exact_acc_pct", state.byte_exact_acc_pct))
+        state.lr = float(metrics.get("train/lr", state.lr))
+        state.step_seconds = float(metrics.get("train/step_seconds", state.step_seconds))
+        if state.step_seconds > 0:
+            state.samples_per_second = state.batch_size / state.step_seconds
+        state.data_wait_seconds = float(metrics.get("profile/data_wait_seconds", state.data_wait_seconds))
+        state.transfer_seconds = float(metrics.get("profile/transfer_seconds", state.transfer_seconds))
+        state.forward_seconds = float(metrics.get("profile/forward_loss_seconds", state.forward_seconds))
+        state.backward_seconds = float(metrics.get("profile/backward_seconds", state.backward_seconds))
+        state.optimizer_seconds = float(metrics.get("profile/optimizer_seconds", state.optimizer_seconds))
+        state.gpu_allocated_gib = float(metrics.get("profile/gpu_allocated_gib", state.gpu_allocated_gib))
+        state.gpu_reserved_gib = float(metrics.get("profile/gpu_reserved_gib", state.gpu_reserved_gib))
+        state.gpu_peak_allocated_gib = float(metrics.get("profile/gpu_peak_allocated_gib", state.gpu_peak_allocated_gib))
+        state.process_rss_gib = float(metrics.get("profile/process_rss_gib", state.process_rss_gib))
+        state.profiler_active = any(key.startswith("profile/") for key in metrics)
+        if validation_metrics:
+            state.validation_loss = float(validation_metrics.get("validation/pretrain/loss_total", state.validation_loss or 0.0))
+            state.validation_seconds = float(validation_metrics.get("validation/pretrain/seconds", state.validation_seconds or 0.0))
+        if state.step_seconds > 0:
+            self.history.append(state.step_seconds)
+        self.refresh()
+
+    def message(self, text: str) -> None:
+        self.state.last_message = text
+        if self._rich:
+            self.refresh()
+        else:
+            print(text, flush=True)
+
+    def refresh(self) -> None:
+        if self._rich and self._live is not None:
+            self._live.update(self._render())
+        elif self.layout == "text":
+            print(self._text_line(), flush=True)
+
+    def _render(self) -> Any:
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.progress import BarColumn, Progress, TextColumn
+        from rich.table import Table
+
+        state = self.state
+        progress = Progress(
+            TextColumn("[bold]Overall"),
+            BarColumn(bar_width=None),
+            TextColumn("{task.percentage:>6.2f}%"),
+            expand=True,
+        )
+        total_steps = max(1, state.max_steps) if state.max_steps > 0 else max(1, state.shard_count * max(1, state.shard_steps) * max(1, state.epochs))
+        progress.add_task("steps", total=total_steps, completed=min(state.step, total_steps))
+        epoch_progress = Progress(TextColumn("[bold]Epoch"), BarColumn(bar_width=None), TextColumn("{task.percentage:>6.2f}%"), expand=True)
+        epoch_progress.add_task("epoch", total=100.0, completed=max(0.0, min(100.0, state.epoch_progress_pct)))
+
+        summary = Table.grid(expand=True)
+        summary.add_column(justify="left")
+        summary.add_column(justify="right")
+        summary.add_column(justify="left")
+        summary.add_column(justify="right")
+        summary.add_row("Run", state.run_name, "Device", state.device)
+        summary.add_row("Data", state.data_source, "Params", f"{state.model_parameters:,}")
+        summary.add_row("Step", f"{state.step:,}/{state.max_steps:,}" if state.max_steps > 0 else f"{state.step:,}", "Batch", f"{state.batch_size:,}")
+        summary.add_row("Epoch", f"{state.epoch}/{state.epochs}", "Shard", f"{state.shard_index}/{state.shard_count} step {state.shard_step}/{state.shard_steps}")
+        summary.add_row("Samples", f"{state.samples_seen_total:,}", "Speed", f"{state.samples_per_second:,.1f} samples/s")
+
+        metrics = Table(title="Learning", expand=True)
+        metrics.add_column("Metric")
+        metrics.add_column("Value", justify="right")
+        metrics.add_row("loss", f"{state.loss:.6f}")
+        metrics.add_row("event bit acc", f"{state.event_bit_acc_pct:.3f}%")
+        metrics.add_row("byte exact acc", f"{state.byte_exact_acc_pct:.3f}%")
+        metrics.add_row("lr", f"{state.lr:.3e}")
+        if state.validation_loss is not None:
+            metrics.add_row("validation loss", f"{state.validation_loss:.6f}")
+
+        profile = Table(title="Step Profile", expand=True)
+        profile.add_column("Stage")
+        profile.add_column("Seconds", justify="right")
+        profile.add_row("step total", f"{state.step_seconds:.4f}")
+        profile.add_row("data wait", f"{state.data_wait_seconds:.4f}")
+        profile.add_row("transfer", f"{state.transfer_seconds:.4f}")
+        profile.add_row("forward+loss", f"{state.forward_seconds:.4f}")
+        profile.add_row("backward", f"{state.backward_seconds:.4f}")
+        profile.add_row("optimizer", f"{state.optimizer_seconds:.4f}")
+
+        memory = Table(title="Memory", expand=True)
+        memory.add_column("Metric")
+        memory.add_column("GiB", justify="right")
+        memory.add_row("process RSS", f"{state.process_rss_gib:.2f}")
+        memory.add_row("GPU allocated", f"{state.gpu_allocated_gib:.2f}")
+        memory.add_row("GPU reserved", f"{state.gpu_reserved_gib:.2f}")
+        memory.add_row("GPU peak allocated", f"{state.gpu_peak_allocated_gib:.2f}")
+
+        body = Group(
+            Panel(summary, title="Training Run", border_style="cyan"),
+            progress,
+            epoch_progress,
+            metrics,
+            profile,
+            memory,
+            Panel(state.last_message or "running", title="Status", border_style="green" if state.profiler_active else "blue"),
+        )
+        return body
+
+    def _text_line(self) -> str:
+        state = self.state
+        return (
+            f"step={state.step} epoch={state.epoch}/{state.epochs} "
+            f"loss={state.loss:.6f} bit_acc={state.event_bit_acc_pct:.3f}% "
+            f"step_s={state.step_seconds:.3f} data_s={state.data_wait_seconds:.3f} "
+            f"gpu_alloc_gib={state.gpu_allocated_gib:.2f}"
+        )

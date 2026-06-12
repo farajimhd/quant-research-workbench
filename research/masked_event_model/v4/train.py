@@ -6,6 +6,7 @@ import os
 import platform
 import sys
 import time
+from contextlib import nullcontext
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from research.masked_event_model.v4.config import DataConfig, ExperimentConfig, 
 from research.masked_event_model.v4.losses import masked_byte_bce_loss
 from research.masked_event_model.v4.masking import build_byte_masks
 from research.masked_event_model.v4.model import CompactByteMaskedAutoencoder
+from research.masked_event_model.v4.progress import TrainingProgressState, TrainingReporter
 from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
 from research.mlops.compact_events import (
     CompactEventDataConfig,
@@ -103,6 +105,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--grad-clip-norm", type=float, default=train_defaults.grad_clip_norm)
     parser.add_argument("--logging-steps", type=int, default=train_defaults.logging_steps)
     parser.add_argument("--detailed-metrics-steps", type=int, default=train_defaults.detailed_metrics_steps)
+    parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=train_defaults.progress_layout)
+    parser.add_argument("--profile-first-steps", type=int, default=train_defaults.profile_first_steps)
     parser.add_argument("--profile-training-every-steps", type=int, default=train_defaults.profile_training_every_steps)
     parser.add_argument("--profile-inference-every-steps", type=int, default=train_defaults.profile_inference_every_steps)
     parser.add_argument("--pretrain-validation-frequency", type=int, default=train_defaults.pretrain_validation_frequency)
@@ -145,7 +149,8 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Input shape: header=[B,14] events=[B,{config.data.events_per_chunk},16]", flush=True)
 
     model = CompactByteMaskedAutoencoder(events_per_chunk=config.data.events_per_chunk, config=config.model).to(device)
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}", flush=True)
+    model_parameters = sum(p.numel() for p in model.parameters())
+    print(f"Model parameters: {model_parameters:,}", flush=True)
     train_model = maybe_compile_model(model, config.train.compile_model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
     scheduler = build_scheduler(optimizer, config.train)
@@ -207,51 +212,69 @@ def main(argv: list[str] | None = None) -> None:
         metric_logger.log(val_metrics, global_step)
         print("VALIDATION " + format_metrics(global_step, val_metrics), flush=True)
 
-    if config.data.data_source == "sample_cache":
-        global_step = train_sample_cache_epochs(
-            model=model,
-            train_model=train_model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            scaler=scaler,
-            config=config,
-            args=args,
-            device=device,
-            global_step=global_step,
-            validation_batches=validation_batches,
-            metric_logger=metric_logger,
-            checkpointer=checkpointer,
-        )
-    elif config.data.data_source == "precomputed":
-        global_step = train_precomputed_epochs(
-            model=model,
-            train_model=train_model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            scaler=scaler,
-            config=config,
-            args=args,
-            device=device,
-            global_step=global_step,
-            validation_batches=validation_batches,
-            metric_logger=metric_logger,
-            checkpointer=checkpointer,
-        )
-    else:
-        global_step = train_streaming_loader(
-            model=model,
-            train_model=train_model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            scaler=scaler,
-            config=config,
-            args=args,
-            device=device,
-            global_step=global_step,
-            validation_batches=validation_batches,
-            metric_logger=metric_logger,
-            checkpointer=checkpointer,
-        )
+    reporter_state = TrainingProgressState(
+        run_name=run_name,
+        device=str(device),
+        data_source=config.data.data_source,
+        batch_size=config.train.batch_size,
+        max_steps=config.train.max_steps,
+        epochs=config.train.epochs,
+        model_parameters=model_parameters,
+        output_dir=str(output_dir),
+    )
+    reporter_context: Any
+    reporter_context = TrainingReporter(layout=args.progress_layout, state=reporter_state) if args.progress_layout != "none" else nullcontext()
+    with reporter_context as reporter:
+        if reporter is not None:
+            reporter.message(f"Training started. Output: {output_dir}")
+        if config.data.data_source == "sample_cache":
+            global_step = train_sample_cache_epochs(
+                model=model,
+                train_model=train_model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                config=config,
+                args=args,
+                device=device,
+                global_step=global_step,
+                validation_batches=validation_batches,
+                metric_logger=metric_logger,
+                checkpointer=checkpointer,
+                reporter=reporter,
+            )
+        elif config.data.data_source == "precomputed":
+            global_step = train_precomputed_epochs(
+                model=model,
+                train_model=train_model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                config=config,
+                args=args,
+                device=device,
+                global_step=global_step,
+                validation_batches=validation_batches,
+                metric_logger=metric_logger,
+                checkpointer=checkpointer,
+                reporter=reporter,
+            )
+        else:
+            global_step = train_streaming_loader(
+                model=model,
+                train_model=train_model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                config=config,
+                args=args,
+                device=device,
+                global_step=global_step,
+                validation_batches=validation_batches,
+                metric_logger=metric_logger,
+                checkpointer=checkpointer,
+                reporter=reporter,
+            )
     checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), force=True)
     checkpointer.close()
 
@@ -270,6 +293,7 @@ def train_precomputed_epochs(
     validation_batches: list[dict[str, Any]],
     metric_logger: JsonlMetricLogger,
     checkpointer: AsyncCheckpointManager,
+    reporter: TrainingReporter | None,
 ) -> int:
     data_config = precomputed_data_config(config, "train", args.seed)
     train_shards = discover_precomputed_chunk_shards(data_config)
@@ -342,6 +366,7 @@ def train_precomputed_epochs(
                 metrics=metrics,
                 validation_batches=validation_batches,
                 metric_logger=metric_logger,
+                reporter=reporter,
             )
             checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), train_metrics=metrics, val_metrics=val_metrics)
         epoch_metrics = {
@@ -372,6 +397,7 @@ def train_sample_cache_epochs(
     validation_batches: list[dict[str, Any]],
     metric_logger: JsonlMetricLogger,
     checkpointer: AsyncCheckpointManager,
+    reporter: TrainingReporter | None,
 ) -> int:
     data_config = sample_cache_data_config(config, "train", args.seed)
     train_shards = discover_event_sample_shards(data_config)
@@ -443,6 +469,7 @@ def train_sample_cache_epochs(
                 metrics=metrics,
                 validation_batches=validation_batches,
                 metric_logger=metric_logger,
+                reporter=reporter,
             )
             checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), train_metrics=metrics, val_metrics=val_metrics)
         epoch_metrics = {
@@ -473,6 +500,7 @@ def train_streaming_loader(
     validation_batches: list[dict[str, Any]],
     metric_logger: JsonlMetricLogger,
     checkpointer: AsyncCheckpointManager,
+    reporter: TrainingReporter | None,
 ) -> int:
     loader = make_loader(config, "train", args.seed)
     loader_iter = iter(loader)
@@ -502,6 +530,7 @@ def train_streaming_loader(
             metrics=metrics,
             validation_batches=validation_batches,
             metric_logger=metric_logger,
+            reporter=reporter,
         )
         checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), train_metrics=metrics, val_metrics=val_metrics)
     return global_step
@@ -521,7 +550,9 @@ def run_training_step(
     data_wait_seconds: float,
 ) -> dict[str, float]:
     step_started = time.perf_counter()
-    profile_step = config.train.profile_training_every_steps > 0 and global_step % config.train.profile_training_every_steps == 0
+    profile_step = should_profile_step(config, global_step)
+    if profile_step and device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     transfer_started = time.perf_counter()
     batch = move_batch(batch, device)
     sync_if_cuda(device)
@@ -552,11 +583,14 @@ def run_training_step(
     sync_if_cuda(device)
     optimizer_seconds = time.perf_counter() - optimizer_started
     metrics = dict(result.metrics)
+    step_seconds = time.perf_counter() - step_started
+    batch_size = float(batch["header_uint8"].shape[0])
     metrics.update(
         {
             "train/lr": float(optimizer.param_groups[0]["lr"]),
-            "train/step_seconds": time.perf_counter() - step_started,
-            "profile/batch_size": float(batch["header_uint8"].shape[0]),
+            "train/step_seconds": step_seconds,
+            "train/samples_per_second": batch_size / max(step_seconds, 1e-9),
+            "profile/batch_size": batch_size,
         }
     )
     if profile_step:
@@ -569,11 +603,49 @@ def run_training_step(
                 "profile/forward_loss_seconds": forward_loss_seconds,
                 "profile/backward_seconds": backward_seconds,
                 "profile/optimizer_seconds": optimizer_seconds,
+                "profile/profile_active": 1.0,
                 **{f"profile/{key}": float(value) for key, value in data_profile.items()},
+                **resource_profile(device),
             }
         )
     if config.train.profile_inference_every_steps > 0 and global_step % config.train.profile_inference_every_steps == 0:
         metrics.update(profile_encode(model, batch, device))
+    return metrics
+
+
+def should_profile_step(config: ExperimentConfig, global_step: int) -> bool:
+    if config.train.profile_first_steps > 0 and global_step <= config.train.profile_first_steps:
+        return True
+    return config.train.profile_training_every_steps > 0 and global_step % config.train.profile_training_every_steps == 0
+
+
+def resource_profile(device: torch.device) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    try:
+        import psutil
+
+        process = psutil.Process(os.getpid())
+        metrics["profile/process_rss_gib"] = process.memory_info().rss / 1024**3
+        vm = psutil.virtual_memory()
+        metrics["profile/system_memory_used_gib"] = (vm.total - vm.available) / 1024**3
+        metrics["profile/system_memory_available_gib"] = vm.available / 1024**3
+    except Exception:  # noqa: BLE001
+        pass
+    if device.type == "cuda":
+        metrics.update(
+            {
+                "profile/gpu_allocated_gib": torch.cuda.memory_allocated(device) / 1024**3,
+                "profile/gpu_reserved_gib": torch.cuda.memory_reserved(device) / 1024**3,
+                "profile/gpu_peak_allocated_gib": torch.cuda.max_memory_allocated(device) / 1024**3,
+                "profile/gpu_peak_reserved_gib": torch.cuda.max_memory_reserved(device) / 1024**3,
+            }
+        )
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+            metrics["profile/gpu_free_gib"] = free_bytes / 1024**3
+            metrics["profile/gpu_total_gib"] = total_bytes / 1024**3
+        except Exception:  # noqa: BLE001
+            pass
     return metrics
 
 
@@ -587,15 +659,22 @@ def maybe_log_train_and_validation(
     metrics: dict[str, float],
     validation_batches: list[dict[str, Any]],
     metric_logger: JsonlMetricLogger,
+    reporter: TrainingReporter | None = None,
 ) -> dict[str, float] | None:
     if global_step % config.train.logging_steps == 0:
         metric_logger.log(metrics, global_step)
-        print(format_metrics(global_step, metrics), flush=True)
+        if reporter is None:
+            print(format_metrics(global_step, metrics), flush=True)
     val_metrics = None
     if validation_batches and config.train.pretrain_validation_frequency > 0 and global_step % config.train.pretrain_validation_frequency == 0:
         val_metrics = evaluate_validation(model, validation_batches, config, device, seed=args.seed + 90_000)
         metric_logger.log(val_metrics, global_step)
-        print("VALIDATION " + format_metrics(global_step, val_metrics), flush=True)
+        if reporter is None:
+            print("VALIDATION " + format_metrics(global_step, val_metrics), flush=True)
+        else:
+            reporter.message("Validation " + format_metrics(global_step, val_metrics))
+    if reporter is not None:
+        reporter.update(metrics, step=global_step, validation_metrics=val_metrics)
     return val_metrics
 
 
@@ -635,7 +714,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         masks=MaskConfig(mask_ratio=args.mask_ratio, header_mask_ratio=args.header_mask_ratio),
         model=ModelConfig(d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
         losses=LossConfig(),
-        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
+        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
 
 
