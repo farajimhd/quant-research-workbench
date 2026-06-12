@@ -77,7 +77,8 @@ The default first build is intentionally modest:
 train_cache_gib=128
 validation_cache_gib=4
 shard_size_gib=16
-builder_micro_batch_samples=4096
+builder_micro_batch_samples=65536
+origins_per_span=512
 workers=8
 ```
 
@@ -90,6 +91,18 @@ python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_build_event_s
 The builder still queries ClickHouse in efficient span bundles. The
 `builder_micro_batch_samples` parameter controls query bundle output size, not
 training batch size.
+
+The high-throughput default intentionally creates many adjacent windows per
+sampled span:
+
+```text
+builder_micro_batch_samples = 65,536
+origins_per_span = 512
+random origin_stride = 1..16
+```
+
+This keeps the cache format unchanged while greatly reducing ClickHouse query
+overhead per stored sample. Training still shuffles samples within shards.
 
 ## Validate
 
@@ -124,4 +137,3 @@ python D:\TradingML\codes\masked_event_model\v4\run_train.py --sample-cache-root
 ```
 
 Changing `--batch-size` does not require rebuilding the cache.
-

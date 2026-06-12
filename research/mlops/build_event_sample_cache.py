@@ -53,8 +53,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-cache-gib", type=float, default=128.0)
     parser.add_argument("--validation-cache-gib", type=float, default=4.0)
     parser.add_argument("--shard-size-gib", type=float, default=16.0)
-    parser.add_argument("--builder-micro-batch-samples", type=int, default=4096)
-    parser.add_argument("--origins-per-span", type=int, default=32)
+    parser.add_argument("--builder-micro-batch-samples", type=int, default=65536)
+    parser.add_argument("--origins-per-span", type=int, default=512)
     parser.add_argument("--min-origin-stride", type=int, default=1)
     parser.add_argument("--max-origin-stride", type=int, default=16)
     parser.add_argument("--query-bundle-spans", type=int, default=64)
@@ -238,6 +238,7 @@ def build_split(
                 samples_written += written
                 micro_batches_completed += 1
                 profiles.append(result["profile"])
+                profile = result.get("profile", {})
                 for key, value in result.get("reject_counts", {}).items():
                     split_errors[key] = split_errors.get(key, 0) + int(value)
                 elapsed = time.perf_counter() - split_started
@@ -247,7 +248,10 @@ def build_split(
                 print(
                     f"{split.upper()} [{micro_batches_completed:,}] samples={samples_written:,}/{target_samples:,} "
                     f"({100.0 * samples_written / target_samples:.2f}%) rate={rate:,.0f}/s "
-                    f"eta_hours={eta / 3600.0:.1f} eta_minutes={eta / 60.0:.1f} shards={len(writer.shards):,}",
+                    f"eta_hours={eta / 3600.0:.1f} shards={len(writer.shards):,} "
+                    f"q={float(profile.get('data/query_seconds', 0.0)):.2f}s "
+                    f"enc={float(profile.get('data/encode_seconds', 0.0)):.2f}s "
+                    f"queries={float(profile.get('data/query_count', 0.0)):.0f}",
                     flush=True,
                 )
                 write_split_progress(
