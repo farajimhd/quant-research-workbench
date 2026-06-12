@@ -68,6 +68,15 @@ MODEL_SIZES: dict[str, dict[str, Any]] = {
         "ffn_mult": 4,
         "dropout": 0.08,
     },
+    "high": {
+        "d_byte": 64,
+        "d_model": 384,
+        "n_heads": 12,
+        "encoder_layers": 12,
+        "decoder_layers": 5,
+        "ffn_mult": 4,
+        "dropout": 0.08,
+    },
 }
 
 PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int], ...] = (
@@ -83,6 +92,8 @@ PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int], ...] = (
     ("medium", 16, 4096),
     ("medium", 32, 4096),
     ("medium", 64, 4096),
+    ("high", 16, 1024),
+    ("high", 32, 1024),
 )
 
 
@@ -110,6 +121,8 @@ SUMMARY_FIELDS = [
     "last_event_byte_exact_acc_pct",
     "last_event_byte_mode_baseline_pct",
     "last_event_byte_exact_lift_pct",
+    "last_event_soft_byte_psnr_db",
+    "last_event_hard_byte_psnr_db",
     "last_inference_encode_seconds",
     "last_inference_encode_ms_per_sample",
     "mean_last10_step_seconds",
@@ -528,6 +541,8 @@ def summarize_run(run: SweepRun, *, subprocess_seconds: float, status: str, erro
         "last_event_byte_exact_acc_pct": last_float(last, "pretrain/event_byte_exact_acc_pct"),
         "last_event_byte_mode_baseline_pct": last_float(last, "pretrain/event_byte_mode_baseline_pct"),
         "last_event_byte_exact_lift_pct": last_float(last, "pretrain/event_byte_exact_lift_pct"),
+        "last_event_soft_byte_psnr_db": last_float(last, "pretrain/event_soft_byte_psnr_db"),
+        "last_event_hard_byte_psnr_db": last_float(last, "pretrain/event_hard_byte_psnr_db"),
         "last_inference_encode_seconds": last_float(last, "profile/inference_encode_seconds"),
         "last_inference_encode_ms_per_sample": last_float(last, "profile/inference_encode_ms_per_sample"),
         "mean_last10_step_seconds": mean_metric(tail, "train/step_seconds"),
