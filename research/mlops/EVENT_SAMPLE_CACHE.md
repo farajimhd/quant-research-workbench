@@ -144,6 +144,34 @@ Validation checks:
 - sampled event presence/header flags are sane
 - audit records can be re-queried from ClickHouse and byte-compared
 
+## Raw Source Audit
+
+The normal validator byte-compares audit samples against the `events` table. To
+also verify that the final sample bytes trace back to the compact raw
+`quotes`/`trades` tables, run:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_audit_event_sample_cache_against_raw.py --cache-root D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS --checks 25
+```
+
+This audit uses the `*_audit_samples.jsonl` metadata, so it can trace only the
+sampled audit rows in existing caches. For each audited sample it:
+
+- reads the stored sample bytes from the shard
+- fetches the same ticker/ordinal window from `market_sip_compact.events`
+- fetches the underlying compact `quotes` and `trades` rows for the same ticker
+  and timestamp window
+- rebuilds the unified event rows using the same quote/trade mapping and
+  condition references
+- re-encodes those raw rows into `[header_uint8, events_uint8]`
+- byte-compares raw re-encoding, events-table re-encoding, and the stored shard
+  record
+
+Add `--write-decoded-jsonl` when you want a human-readable approximate decode
+of the audited sample. Price fields are reconstructed from anchors and deltas;
+size and time fields remain bucketed because that compression is intentionally
+lossy.
+
 ## Train
 
 v4 training supports:
