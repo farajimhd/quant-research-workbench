@@ -97,6 +97,26 @@ Run training:
 python research\masked_event_model\v4\run_train.py
 ```
 
+Each training run writes its analyzable run state under one run directory:
+
+```text
+config.json
+run_manifest.json
+metrics.jsonl
+checkpoints/
+artifacts/model/model_details.json
+artifacts/model/model_parameters.jsonl
+artifacts/model/model_summary.txt
+artifacts/model/model_summary_torchinfo.txt
+artifacts/model/model_architecture_torchview.png
+artifacts/model/model_architecture_torchview.svg
+```
+
+If optional graph packages are unavailable, the run writes a matching
+`*_error.txt` file instead of silently skipping the artifact. When W&B is
+enabled, metrics are streamed during training and the model summary/diagram
+files are saved to the run.
+
 Alternative older data paths remain available:
 
 ```powershell

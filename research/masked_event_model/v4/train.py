@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader
 
 from research.masked_event_model.v4.config import DataConfig, ExperimentConfig, LossConfig, MaskConfig, ModelConfig, TrainConfig
 from research.masked_event_model.v4.losses import masked_byte_bce_loss
-from research.masked_event_model.v4.masking import build_byte_masks
+from research.masked_event_model.v4.masking import ByteMaskBatch, build_byte_masks
 from research.masked_event_model.v4.model import CompactByteMaskedAutoencoder
 from research.masked_event_model.v4.progress import TrainingProgressState, TrainingReporter
 from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
@@ -184,6 +184,7 @@ def main(argv: list[str] | None = None) -> None:
         wandb_info={"project": args.wandb_project, "entity": args.wandb_entity, "run_name": run_name},
     )
     (output_dir / "config.json").write_text(json.dumps(dataclass_tree(config), indent=2, default=str), encoding="utf-8")
+    save_model_artifacts(model, config, run_paths, wandb_run, device)
     checkpointer = AsyncCheckpointManager(
         run_paths.checkpoints_dir,
         run_paths.checkpoint_manifest_path,
@@ -943,6 +944,175 @@ def resolve_output_dir(config: ExperimentConfig, args: argparse.Namespace) -> Pa
 
 def init_wandb(args: argparse.Namespace, config: ExperimentConfig, output_dir: Path) -> Any | None:
     return mlops_init_wandb(entity=args.wandb_entity, project=args.wandb_project, run_name=config.train.wandb_run_name, config=dataclass_tree(config), run_dir=output_dir / "wandb", mode=args.wandb_mode, timeout_seconds=args.wandb_init_timeout)
+
+
+def save_model_artifacts(
+    model: CompactByteMaskedAutoencoder,
+    config: ExperimentConfig,
+    run_paths: RunPaths,
+    wandb_run: Any | None,
+    device: torch.device,
+) -> None:
+    artifact_dir = run_paths.artifacts_dir / "model"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    details_path = artifact_dir / "model_details.json"
+    params_path = artifact_dir / "model_parameters.jsonl"
+    summary_path = artifact_dir / "model_summary.txt"
+    mermaid_path = artifact_dir / "model_architecture.mmd"
+    diagram_md_path = artifact_dir / "model_architecture.md"
+    torchview_path = artifact_dir / "model_architecture_torchview.png"
+    torchview_svg_path = artifact_dir / "model_architecture_torchview.svg"
+    torchview_error_path = artifact_dir / "model_architecture_torchview_error.txt"
+
+    parameters = []
+    total_params = 0
+    trainable_params = 0
+    for name, param in model.named_parameters():
+        count = int(param.numel())
+        total_params += count
+        if param.requires_grad:
+            trainable_params += count
+        parameters.append(
+            {
+                "name": name,
+                "shape": list(param.shape),
+                "num_params": count,
+                "trainable": bool(param.requires_grad),
+                "dtype": str(param.dtype),
+            }
+        )
+    details = {
+        "model_family": MODEL_FAMILY,
+        "model_version": MODEL_VERSION,
+        "events_per_chunk": config.data.events_per_chunk,
+        "header_shape": [config.train.batch_size, 14],
+        "events_shape": [config.train.batch_size, config.data.events_per_chunk, 16],
+        "embedding_dim": config.model.embedding_dim,
+        "d_model": config.model.d_model,
+        "d_byte": config.model.d_byte,
+        "n_heads": config.model.n_heads,
+        "encoder_layers": config.model.encoder_layers,
+        "decoder_layers": config.model.decoder_layers,
+        "ffn_mult": config.model.ffn_mult,
+        "total_params": total_params,
+        "trainable_params": trainable_params,
+        "non_trainable_params": total_params - trainable_params,
+    }
+    details_path.write_text(json.dumps(details, indent=2), encoding="utf-8")
+    with params_path.open("w", encoding="utf-8") as handle:
+        for row in parameters:
+            handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+    summary_path.write_text(build_model_summary_text(model, details, parameters), encoding="utf-8")
+    mermaid = build_model_mermaid(config)
+    mermaid_path.write_text(mermaid, encoding="utf-8")
+    diagram_md_path.write_text("```mermaid\n" + mermaid + "\n```\n", encoding="utf-8")
+    try_optional_torchinfo_summary(model, config, device, artifact_dir)
+    try_optional_torchview_diagram(model, config, device, torchview_path, torchview_svg_path, torchview_error_path)
+    if wandb_run is not None:
+        for path in artifact_dir.iterdir():
+            if path.is_file():
+                try:
+                    wandb_run.save(str(path), base_path=str(artifact_dir))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"WARN could not save W&B artifact {path}: {exc!r}", flush=True)
+    print(f"Model artifacts saved: {artifact_dir}", flush=True)
+
+
+def build_model_summary_text(model: torch.nn.Module, details: dict[str, Any], parameters: list[dict[str, Any]]) -> str:
+    lines = [
+        "CompactByteMaskedAutoencoder v4",
+        "=" * 80,
+        f"Input header_uint8: [B, 14]",
+        f"Input events_uint8: [B, {details['events_per_chunk']}, 16]",
+        f"Output header bit logits: [masked_header_bytes, 8]",
+        f"Output event bit logits: [masked_event_bytes, 8]",
+        f"Embedding: [B, {details['embedding_dim']}]",
+        "",
+        f"Total params: {details['total_params']:,}",
+        f"Trainable params: {details['trainable_params']:,}",
+        f"Non-trainable params: {details['non_trainable_params']:,}",
+        "",
+        f"{'Layer/Parameter':70} {'Shape':24} {'Params':>14} {'Trainable':>10}",
+        "-" * 124,
+    ]
+    for row in parameters:
+        lines.append(f"{row['name'][:70]:70} {str(row['shape'])[:24]:24} {row['num_params']:14,} {str(row['trainable']):>10}")
+    lines.extend(["", "Module repr", "-" * 80, repr(model)])
+    return "\n".join(lines) + "\n"
+
+
+def build_model_mermaid(config: ExperimentConfig) -> str:
+    events = config.data.events_per_chunk
+    return f"""flowchart TD
+    H[\"header_uint8<br/>B x 14\"] --> HB[\"byte embedding + header byte position\"]
+    E[\"events_uint8<br/>B x {events} x 16\"] --> EB[\"byte embedding + event byte position\"]
+    HB --> HP[\"header projection<br/>14*d_byte -> d_model\"]
+    EB --> EP[\"event projection<br/>16*d_byte -> d_model\"]
+    EP --> POS[\"event position + token type\"]
+    HP --> TOK[\"token sequence<br/>CLS + header + {events} events\"]
+    POS --> TOK
+    TOK --> ENC[\"Transformer encoder<br/>{config.model.encoder_layers} layers, d={config.model.d_model}, heads={config.model.n_heads}\"]
+    ENC --> NORM[\"LayerNorm\"]
+    NORM --> EMB[\"chunk embedding<br/>B x {config.model.embedding_dim}\"]
+    NORM --> DECUP[\"decoder up projection\"]
+    DECUP --> DEC[\"masked-byte decoder<br/>{config.model.decoder_layers} MLP blocks\"]
+    DEC --> BIT[\"bit head<br/>8 logits per masked byte\"]
+    BIT --> OH[\"header_bit_logits\"]
+    BIT --> OE[\"event_bit_logits\"]
+"""
+
+
+def try_optional_torchinfo_summary(model: torch.nn.Module, config: ExperimentConfig, device: torch.device, artifact_dir: Path) -> None:
+    path = artifact_dir / "model_summary_torchinfo.txt"
+    error_path = artifact_dir / "model_summary_torchinfo_error.txt"
+    try:
+        from torchinfo import summary
+
+        wrapper = MaskedSummaryWrapper(model, config.data.events_per_chunk).to(device)
+        header = torch.zeros((1, 14), dtype=torch.uint8, device=device)
+        events = torch.zeros((1, config.data.events_per_chunk, 16), dtype=torch.uint8, device=device)
+        text = str(summary(wrapper, input_data=(header, events), depth=5, verbose=0))
+        path.write_text(text + "\n", encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        error_path.write_text(repr(exc) + "\n", encoding="utf-8")
+
+
+def try_optional_torchview_diagram(
+    model: torch.nn.Module,
+    config: ExperimentConfig,
+    device: torch.device,
+    png_path: Path,
+    svg_path: Path,
+    error_path: Path,
+) -> None:
+    try:
+        from torchview import draw_graph
+
+        wrapper = MaskedSummaryWrapper(model, config.data.events_per_chunk).to(device)
+        header = torch.zeros((1, 14), dtype=torch.uint8, device=device)
+        events = torch.zeros((1, config.data.events_per_chunk, 16), dtype=torch.uint8, device=device)
+        graph = draw_graph(wrapper, input_data=(header, events), expand_nested=True, save_graph=False)
+        if hasattr(graph, "visual_graph"):
+            graph.visual_graph.attr(dpi="180")
+            graph.visual_graph.render(filename=str(png_path.with_suffix("")), directory=str(png_path.parent), format="png", cleanup=True)
+            graph.visual_graph.render(filename=str(svg_path.with_suffix("")), directory=str(svg_path.parent), format="svg", cleanup=True)
+    except Exception as exc:  # noqa: BLE001
+        error_path.write_text(repr(exc) + "\n", encoding="utf-8")
+
+
+class MaskedSummaryWrapper(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module, events_per_chunk: int) -> None:
+        super().__init__()
+        self.model = model
+        self.events_per_chunk = int(events_per_chunk)
+
+    def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        header_mask = torch.zeros_like(header_uint8, dtype=torch.bool)
+        event_mask = torch.zeros_like(events_uint8, dtype=torch.bool)
+        header_mask[:, 0] = True
+        event_mask[:, 0, 0] = True
+        output = self.model(header_uint8, events_uint8, ByteMaskBatch(header_mask=header_mask, event_mask=event_mask))
+        return output.header_bit_logits, output.event_bit_logits, output.chunk_embedding
 
 
 def default_run_name(args: argparse.Namespace) -> str:
