@@ -103,6 +103,7 @@ Each training run writes its analyzable run state under one run directory:
 config.json
 run_manifest.json
 metrics.jsonl
+logs/fatal_error.txt
 checkpoints/
 artifacts/model/model_details.json
 artifacts/model/model_parameters.jsonl

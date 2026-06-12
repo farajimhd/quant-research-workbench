@@ -6,6 +6,7 @@ import os
 import platform
 import sys
 import time
+import traceback
 from contextlib import nullcontext
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -143,6 +144,7 @@ def main(argv: list[str] | None = None) -> None:
     config.train.wandb_run_name = run_name
     output_dir = resolve_output_dir(config, args)
     run_paths = RunPaths.create(output_dir)
+    install_fatal_exception_logger(run_paths)
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
     print(f"Output directory: {output_dir}", flush=True)
     print(f"Device: {device}", flush=True)
@@ -1068,13 +1070,13 @@ def try_optional_torchinfo_summary(model: torch.nn.Module, config: ExperimentCon
     try:
         from torchinfo import summary
 
-        wrapper = MaskedSummaryWrapper(model, config.data.events_per_chunk).to(device)
+        wrapper = TorchInfoSummaryWrapper(model, config.data.events_per_chunk).to(device)
         header = torch.zeros((1, 14), dtype=torch.uint8, device=device)
         events = torch.zeros((1, config.data.events_per_chunk, 16), dtype=torch.uint8, device=device)
-        text = str(summary(wrapper, input_data=(header, events), depth=5, verbose=0))
+        text = str(summary(wrapper, input_data=(header, events), depth=8, col_names=("input_size", "output_size", "num_params", "trainable"), verbose=0))
         path.write_text(text + "\n", encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
-        error_path.write_text(repr(exc) + "\n", encoding="utf-8")
+        error_path.write_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)), encoding="utf-8")
 
 
 def try_optional_torchview_diagram(
@@ -1113,6 +1115,28 @@ class MaskedSummaryWrapper(torch.nn.Module):
         event_mask[:, 0, 0] = True
         output = self.model(header_uint8, events_uint8, ByteMaskBatch(header_mask=header_mask, event_mask=event_mask))
         return output.header_bit_logits, output.event_bit_logits, output.chunk_embedding
+
+
+class TorchInfoSummaryWrapper(MaskedSummaryWrapper):
+    def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
+        header_logits, event_logits, chunk_embedding = super().forward(header_uint8, events_uint8)
+        return torch.cat([header_logits.flatten(), event_logits.flatten(), chunk_embedding.flatten()]).unsqueeze(0)
+
+
+def install_fatal_exception_logger(run_paths: RunPaths) -> None:
+    previous_hook = sys.excepthook
+
+    def log_exception(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        path = run_paths.logs_dir / "fatal_error.txt"
+        try:
+            path.write_text(text, encoding="utf-8")
+            print(f"FATAL error log saved: {path}", flush=True)
+        except Exception as log_exc:  # noqa: BLE001
+            print(f"WARN could not save fatal error log: {log_exc!r}", flush=True)
+        previous_hook(exc_type, exc, tb)
+
+    sys.excepthook = log_exception
 
 
 def default_run_name(args: argparse.Namespace) -> str:
