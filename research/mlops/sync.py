@@ -34,9 +34,21 @@ def sync_version_code(
 
 
 def copy_tree(source: Path, destination: Path) -> None:
-    if destination.exists():
-        shutil.rmtree(destination)
-    shutil.copytree(source, destination, ignore=ignore_runtime_noise)
+    # Workstation runtime folders are often open in terminals while a run is
+    # being debugged. Deleting the destination first can leave a partial package
+    # if Windows blocks one file or directory. Copy in place so an interrupted
+    # sync cannot remove import-critical files such as config.py/model.py.
+    destination.mkdir(parents=True, exist_ok=True)
+    for path in source.rglob("*"):
+        if should_ignore_runtime_path(path):
+            continue
+        relative = path.relative_to(source)
+        target = destination / relative
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
 
 
 def ignore_runtime_noise(directory: str, names: list[str]) -> set[str]:
@@ -46,3 +58,7 @@ def ignore_runtime_noise(directory: str, names: list[str]) -> set[str]:
         if name in EXCLUDED_DIRS or path.suffix in EXCLUDED_SUFFIXES:
             ignored.add(name)
     return ignored
+
+
+def should_ignore_runtime_path(path: Path) -> bool:
+    return any(part in EXCLUDED_DIRS for part in path.parts) or path.suffix in EXCLUDED_SUFFIXES

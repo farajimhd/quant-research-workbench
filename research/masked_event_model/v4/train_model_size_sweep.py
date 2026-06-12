@@ -342,7 +342,7 @@ def run_to_dict(run: SweepRun) -> dict[str, Any]:
 
 
 def should_skip(args: argparse.Namespace, run: SweepRun, results_jsonl: Path) -> bool:
-    if args.fresh_start or not args.skip_completed:
+    if not args.skip_completed:
         return False
     if not (run.run_root / "metrics.jsonl").exists():
         return False
