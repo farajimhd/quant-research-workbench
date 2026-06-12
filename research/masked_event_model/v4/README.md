@@ -208,10 +208,11 @@ python D:\TradingML\codes\masked_event_model\v4\research\masked_event_model\v4\r
 Default practical sweep:
 
 ```text
-current:    embedding_dim = 16, 32; batch_size = 4096
-small_plus: embedding_dim = 16, 32; batch_size = 4096, 8192
-medium:     embedding_dim = 16, 32; batch_size = 4096
-steps = 50
+tiny_d128:  embedding_dim = 16, 32, 64; batch_size = 4096
+small_plus: embedding_dim = 16, 32, 64; batch_size = 4096, 8192
+medium:     embedding_dim = 16, 32, 64; batch_size = 4096
+steps = 200
+scheduler_t0_steps = steps unless explicitly overridden
 decoder_chunk_size = 524288
 ```
 
@@ -231,5 +232,5 @@ v4-prob-bce-size-sweep-summary/sweep_results.csv
 Useful overrides:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\masked_event_model\v4\run_model_size_sweep.py --model-sizes current,medium --embedding-dims 32 --batch-sizes 4096 --steps 10 --print-only
+python D:\TradingML\codes\masked_event_model\v4\research\masked_event_model\v4\run_model_size_sweep.py --profile-set grid --model-sizes tiny_d128,medium --embedding-dims 32 --batch-sizes 4096 --steps 10 --print-only
 ```

@@ -594,7 +594,7 @@ def run_training_step(
     include_diagnostics = config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0
     with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
         output = train_model(batch["header_uint8"], batch["events_uint8"], masks)
-        result = masked_byte_bce_loss(output, batch["header_uint8"], batch["events_uint8"], masks, config.losses, include_diagnostics=include_diagnostics)
+        result = masked_byte_bce_loss(output, batch["header_uint8"], batch["events_uint8"], masks, config.losses, include_diagnostics=include_diagnostics, profile_metrics=profile_step)
     sync_if_cuda(device)
     forward_loss_seconds = time.perf_counter() - forward_started
     backward_started = time.perf_counter()
@@ -630,6 +630,7 @@ def run_training_step(
                 "profile/transfer_seconds": transfer_seconds,
                 "profile/mask_seconds": mask_seconds,
                 "profile/forward_loss_seconds": forward_loss_seconds,
+                "profile/metrics_seconds": result.metrics.get("profile/header_metrics_seconds", 0.0) + result.metrics.get("profile/event_metrics_seconds", 0.0),
                 "profile/backward_seconds": backward_seconds,
                 "profile/optimizer_seconds": optimizer_seconds,
                 "profile/profile_active": 1.0,
@@ -683,7 +684,7 @@ def run_training_step_chunked_decoder(
     event_group_bits = max(1, int(event_indices.shape[0]) * 8)
 
     decoder_backward_started = time.perf_counter()
-    header_loss_sum, header_metrics, header_chunks = backward_masked_group_chunks(
+    header_loss_sum, header_metrics, header_chunks, header_metrics_seconds = backward_masked_group_chunks(
         model=model,
         encoded_tokens=encoded_leaf,
         indices=header_indices,
@@ -693,8 +694,9 @@ def run_training_step_chunked_decoder(
         group_scale=float(config.losses.header_weight) / total_weight / header_group_bits,
         scaler=scaler,
         include_diagnostics=include_diagnostics,
+        profile_metrics=profile_step,
     )
-    event_loss_sum, event_metrics, event_chunks = backward_masked_group_chunks(
+    event_loss_sum, event_metrics, event_chunks, event_metrics_seconds = backward_masked_group_chunks(
         model=model,
         encoded_tokens=encoded_leaf,
         indices=event_indices,
@@ -704,6 +706,7 @@ def run_training_step_chunked_decoder(
         group_scale=float(config.losses.event_weight) / total_weight / event_group_bits,
         scaler=scaler,
         include_diagnostics=include_diagnostics,
+        profile_metrics=profile_step,
     )
     sync_if_cuda(device)
     decoder_backward_seconds = time.perf_counter() - decoder_backward_started
@@ -760,6 +763,9 @@ def run_training_step_chunked_decoder(
                 "profile/transfer_seconds": transfer_seconds,
                 "profile/mask_seconds": mask_seconds,
                 "profile/forward_loss_seconds": forward_loss_seconds,
+                "profile/header_metrics_seconds": header_metrics_seconds,
+                "profile/event_metrics_seconds": event_metrics_seconds,
+                "profile/metrics_seconds": header_metrics_seconds + event_metrics_seconds,
                 "profile/backward_seconds": backward_seconds,
                 "profile/decoder_backward_seconds": decoder_backward_seconds,
                 "profile/encoder_backward_seconds": encoder_backward_seconds,
@@ -804,11 +810,13 @@ def backward_masked_group_chunks(
     group_scale: float,
     scaler: torch.amp.GradScaler,
     include_diagnostics: bool,
-) -> tuple[float, dict[str, float], int]:
+    profile_metrics: bool,
+) -> tuple[float, dict[str, float], int, float]:
     if indices.numel() == 0:
-        return 0.0, empty_chunk_metrics(prefix), 0
+        return 0.0, empty_chunk_metrics(prefix), 0, 0.0
     stats = ChunkMetricAccumulator(prefix)
     chunks = 0
+    metrics_seconds = 0.0
     for start in range(0, int(indices.shape[0]), chunk_size):
         chunks += 1
         chunk_indices = indices[start : start + chunk_size]
@@ -818,8 +826,13 @@ def backward_masked_group_chunks(
             target_bits = unpack_bits(target_bytes).to(dtype=probabilities.dtype, device=probabilities.device)
             loss_sum = F.binary_cross_entropy(probabilities, target_bits, reduction="sum")
             scaler.scale(loss_sum * group_scale).backward()
+        metrics_started = time.perf_counter()
         stats.update(probabilities.detach(), target_bits.detach(), target_bytes.detach(), loss_sum.detach(), include_diagnostics=include_diagnostics)
-    return stats.loss_sum, stats.to_metrics(), chunks
+        if profile_metrics:
+            if probabilities.is_cuda:
+                torch.cuda.synchronize(probabilities.device)
+            metrics_seconds += time.perf_counter() - metrics_started
+    return stats.loss_sum, stats.to_metrics(), chunks, metrics_seconds
 
 
 class ChunkMetricAccumulator:

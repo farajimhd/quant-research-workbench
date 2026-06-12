@@ -23,7 +23,7 @@ from research.mlops.paths import MLOpsPathConfig, default_run_root  # noqa: E402
 
 
 MODEL_SIZES: dict[str, dict[str, Any]] = {
-    "current": {
+    "tiny_d128": {
         "d_byte": 24,
         "d_model": 128,
         "n_heads": 4,
@@ -71,14 +71,18 @@ MODEL_SIZES: dict[str, dict[str, Any]] = {
 }
 
 PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int], ...] = (
-    ("current", 16, 4096),
-    ("current", 32, 4096),
+    ("tiny_d128", 16, 4096),
+    ("tiny_d128", 32, 4096),
+    ("tiny_d128", 64, 4096),
     ("small_plus", 16, 4096),
     ("small_plus", 32, 4096),
+    ("small_plus", 64, 4096),
     ("small_plus", 16, 8192),
     ("small_plus", 32, 8192),
+    ("small_plus", 64, 8192),
     ("medium", 16, 4096),
     ("medium", 32, 4096),
+    ("medium", 64, 4096),
 )
 
 
@@ -111,6 +115,9 @@ SUMMARY_FIELDS = [
     "mean_last10_step_seconds",
     "mean_last10_data_wait_seconds",
     "mean_last10_forward_loss_seconds",
+    "mean_last10_metrics_seconds",
+    "mean_last10_header_metrics_seconds",
+    "mean_last10_event_metrics_seconds",
     "mean_last10_backward_seconds",
     "mean_last10_decoder_backward_seconds",
     "mean_last10_encoder_backward_seconds",
@@ -142,14 +149,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sweep-output-root", default="")
     parser.add_argument("--run-prefix", default="v4-prob-bce-size-sweep")
     parser.add_argument("--profile-set", choices=("practical", "grid"), default="practical")
-    parser.add_argument("--steps", type=int, default=50)
-    parser.add_argument("--embedding-dims", default="16,32")
+    parser.add_argument("--steps", type=int, default=200)
+    parser.add_argument("--embedding-dims", default="16,32,64")
     parser.add_argument("--batch-sizes", default="4096,8192")
     parser.add_argument("--model-sizes", default=",".join(MODEL_SIZES))
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--decoder-chunk-size", type=int, default=524288)
     parser.add_argument("--learning-rate", type=float, default=train_defaults.learning_rate)
-    parser.add_argument("--scheduler-t0-steps", type=int, default=train_defaults.scheduler_t0_steps)
+    parser.add_argument("--scheduler-t0-steps", type=int, default=0)
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="online")
     parser.add_argument("--wandb-project", default=train_defaults.wandb_project)
     parser.add_argument("--wandb-entity", default=train_defaults.wandb_entity)
@@ -163,6 +170,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.scheduler_t0_steps <= 0:
+        args.scheduler_t0_steps = args.steps
     embedding_dims = parse_int_list(args.embedding_dims, "--embedding-dims")
     batch_sizes = parse_int_list(args.batch_sizes, "--batch-sizes")
     selected_sizes = parse_model_sizes(args.model_sizes)
@@ -524,6 +533,9 @@ def summarize_run(run: SweepRun, *, subprocess_seconds: float, status: str, erro
         "mean_last10_step_seconds": mean_metric(tail, "train/step_seconds"),
         "mean_last10_data_wait_seconds": mean_metric(tail, "profile/data_wait_seconds"),
         "mean_last10_forward_loss_seconds": mean_metric(tail, "profile/forward_loss_seconds"),
+        "mean_last10_metrics_seconds": mean_metric(tail, "profile/metrics_seconds"),
+        "mean_last10_header_metrics_seconds": mean_metric(tail, "profile/header_metrics_seconds"),
+        "mean_last10_event_metrics_seconds": mean_metric(tail, "profile/event_metrics_seconds"),
         "mean_last10_backward_seconds": mean_metric(tail, "profile/backward_seconds"),
         "mean_last10_decoder_backward_seconds": mean_metric(tail, "profile/decoder_backward_seconds"),
         "mean_last10_encoder_backward_seconds": mean_metric(tail, "profile/encoder_backward_seconds"),

@@ -42,6 +42,7 @@ class TrainingProgressState:
     transfer_seconds: float = 0.0
     mask_seconds: float = 0.0
     forward_seconds: float = 0.0
+    metrics_seconds: float = 0.0
     backward_seconds: float = 0.0
     optimizer_seconds: float = 0.0
     inference_encode_seconds: float = 0.0
@@ -129,6 +130,7 @@ class TrainingReporter:
         state.transfer_seconds = float(metrics.get("profile/transfer_seconds", state.transfer_seconds))
         state.mask_seconds = float(metrics.get("profile/mask_seconds", state.mask_seconds))
         state.forward_seconds = float(metrics.get("profile/forward_loss_seconds", state.forward_seconds))
+        state.metrics_seconds = float(metrics.get("profile/metrics_seconds", state.metrics_seconds))
         state.backward_seconds = float(metrics.get("profile/backward_seconds", state.backward_seconds))
         state.optimizer_seconds = float(metrics.get("profile/optimizer_seconds", state.optimizer_seconds))
         state.inference_encode_seconds = float(metrics.get("profile/inference_encode_seconds", state.inference_encode_seconds))
@@ -219,6 +221,7 @@ class TrainingReporter:
         profile.add_row("production encode total", f"{state.inference_encode_seconds:.4f} s")
         profile.add_row("train step total", f"{state.step_seconds:.4f} s")
         profile.add_row("forward + loss", f"{state.forward_seconds:.4f} s")
+        profile.add_row("metrics", f"{state.metrics_seconds:.4f} s")
         profile.add_row("backward", f"{state.backward_seconds:.4f} s")
         profile.add_row("data wait", f"{state.data_wait_seconds:.4f} s")
         if state.decoder_chunk_size > 0:

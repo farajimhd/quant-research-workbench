@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import torch
@@ -27,6 +28,7 @@ def masked_byte_bce_loss(
     config: LossConfig,
     *,
     include_diagnostics: bool = False,
+    profile_metrics: bool = False,
 ) -> LossResult:
     header_loss, header_metrics = masked_group_loss(
         output.header_bit_probs,
@@ -35,6 +37,7 @@ def masked_byte_bce_loss(
         masks.header_mask,
         prefix="header",
         include_diagnostics=include_diagnostics,
+        profile_metrics=profile_metrics,
     )
     event_loss, event_metrics = masked_group_loss(
         output.event_bit_probs,
@@ -43,6 +46,7 @@ def masked_byte_bce_loss(
         masks.event_mask,
         prefix="event",
         include_diagnostics=include_diagnostics,
+        profile_metrics=profile_metrics,
     )
     total_weight = 0.0
     loss = header_loss.new_tensor(0.0)
@@ -75,6 +79,7 @@ def masked_group_loss(
     *,
     prefix: str,
     include_diagnostics: bool,
+    profile_metrics: bool,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     if indices.numel() == 0:
         zero = probabilities.sum() * 0.0
@@ -82,6 +87,7 @@ def masked_group_loss(
     target_bytes = target_uint8[tuple(indices.T)].long()
     target_bits = unpack_bits(target_bytes).to(dtype=probabilities.dtype, device=probabilities.device)
     loss = F.binary_cross_entropy(probabilities, target_bits)
+    metrics_started = time.perf_counter()
     with torch.no_grad():
         hard_bits = probabilities >= 0.5
         target_bool = target_bits.bool()
@@ -135,6 +141,10 @@ def masked_group_loss(
             low_conf = confidence <= 0.2
             if low_conf.any():
                 metrics[f"pretrain/{prefix}_low_conf_bit_acc_pct"] = float((hard_bits[low_conf] == target_bool[low_conf]).float().mean().detach().cpu() * 100.0)
+    if profile_metrics:
+        if probabilities.is_cuda:
+            torch.cuda.synchronize(probabilities.device)
+        metrics[f"profile/{prefix}_metrics_seconds"] = time.perf_counter() - metrics_started
     return loss, metrics
 
 
