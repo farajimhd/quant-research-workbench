@@ -36,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--splits", default="train,validation")
     parser.add_argument("--sample-record-checks", type=int, default=256)
     parser.add_argument("--verify-sha256", action="store_true")
+    parser.add_argument("--allow-partial", action="store_true", help="Validate finalized shard files even if manifest/audit files are not written yet.")
     parser.add_argument("--audit-clickhouse-checks", type=int, default=25)
     parser.add_argument("--clickhouse-url", default="")
     parser.add_argument("--user", default="")
@@ -52,11 +53,11 @@ def main() -> None:
     args = parse_args()
     load_env_files(discover_env_files(REPO_ROOT))
     started = time.perf_counter()
-    root = resolve_event_sample_cache_root(Path(args.cache_root))
+    root = resolve_validation_root(Path(args.cache_root), allow_partial=args.allow_partial)
     manifest_path = root / "manifest.json"
-    if not manifest_path.exists():
+    if not manifest_path.exists() and not args.allow_partial:
         raise FileNotFoundError(f"Missing cache manifest: {manifest_path}")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {"cache_id": root.name, "partial": True}
     print("=" * 96, flush=True)
     print("Validate compact event sample cache", flush=True)
     print(f"cache_root={root}", flush=True)
@@ -126,6 +127,22 @@ def validate_split(root: Path, split: str, args: argparse.Namespace, rng: random
     return result
 
 
+def resolve_validation_root(path: Path, *, allow_partial: bool) -> Path:
+    if not allow_partial:
+        return resolve_event_sample_cache_root(path)
+    if (path / "manifest.json").exists() or any((path / split).exists() for split in ("train", "validation")):
+        return path
+    candidates = [
+        child
+        for child in path.iterdir()
+        if child.is_dir() and ((child / "manifest.json").exists() or (child / "train").exists() or (child / "validation").exists())
+    ] if path.exists() else []
+    if not candidates:
+        return path
+    candidates.sort(key=lambda value: value.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
 def validate_audit_samples(root: Path, args: argparse.Namespace, rng: random.Random) -> dict[str, Any]:
     audit_rows: list[dict[str, Any]] = []
     for path in sorted(root.glob("*_audit_samples.jsonl")):
@@ -134,6 +151,8 @@ def validate_audit_samples(root: Path, args: argparse.Namespace, rng: random.Ran
                 if line.strip():
                     audit_rows.append(json.loads(line))
     if not audit_rows:
+        if args.allow_partial:
+            return {"checked": 0, "errors": [], "note": "No audit samples found; skipped because --allow-partial is set."}
         return {"checked": 0, "errors": ["No audit samples found."]}
     rng.shuffle(audit_rows)
     checks = audit_rows[: args.audit_clickhouse_checks]

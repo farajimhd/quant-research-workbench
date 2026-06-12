@@ -127,6 +127,13 @@ python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_validate_even
 
 Add `--verify-sha256` only when needed; it rereads full shards and is slower.
 
+To validate finalized shards while the builder is still running, skip audit
+checks because audit samples are written when the split closes:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_validate_event_sample_cache.py --allow-partial --splits train --audit-clickhouse-checks 0
+```
+
 Validation checks:
 
 - shard sizes match metadata

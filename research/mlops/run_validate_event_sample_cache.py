@@ -23,11 +23,14 @@ DEFAULTS: dict[str, Any] = {
 def main() -> None:
     parser = argparse.ArgumentParser(description="Launcher for compact event sample-cache validation.")
     parser.add_argument("--verify-sha256", action="store_true")
+    parser.add_argument("--allow-partial", action="store_true")
     parser.add_argument("--print-only", action="store_true")
     known, extra = parser.parse_known_args()
     argv = build_argv(DEFAULTS)
     if known.verify_sha256:
         argv.append("--verify-sha256")
+    if known.allow_partial:
+        argv.append("--allow-partial")
     argv.extend(extra)
     print("Equivalent command:", flush=True)
     print(" ".join(argv), flush=True)
