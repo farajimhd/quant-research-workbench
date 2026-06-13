@@ -26,7 +26,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_validation_split": "train",
     "sample_cache_validation_start_shard": 10,
     "sample_cache_validation_max_shards": 1,
-    "sample_cache_interleave_shards": 2,
+    "sample_cache_interleave_shards": 1,
     "batch_size": 4096,
     "epochs": 10,
     "max_steps": 0,
@@ -53,7 +53,7 @@ DEFAULTS: dict[str, Any] = {
     "profile_training_every_steps": 1000,
     "profile_inference_every_steps": 1000,
     "decoder_chunk_size": 524288,
-    "checkpoint_latest_steps": 250,
+    "checkpoint_latest_steps": 25,
     "checkpoint_best_train": False,
     "checkpoint_best_val": True,
     "num_workers": 0,
@@ -63,11 +63,12 @@ DEFAULTS: dict[str, Any] = {
     "wandb_project": "June2026-compact-bit-event-training",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v4-medium-bit-emb32-bs4096-10shards-shardcycle-interleave2-warmstart",
+    "wandb_run_name": "v4-medium-bit-emb32-bs4096-10shards-logits-nointerleave",
     "warm_start_checkpoint": r"D:\TradingML\runtimes\masked_event_model\v4\pretrain\v4-medium-bit-emb32-bs4096-10shards-10epochs\checkpoints\checkpoint_latest.pt",
 }
 
-PROFILED_TRAINING_PATH = "medium-bit-emb32-bs4096 chunked-decoder no-compile, shard-cycle scheduler, interleave2"
+PROFILED_TRAINING_PATH = "medium-bit-emb32-bs4096 chunked-decoder no-compile, shard-cycle scheduler, no interleave"
+VALIDATION_BATCHES = 20
 
 
 def parse_args() -> argparse.Namespace:
@@ -101,12 +102,20 @@ def main() -> None:
     args = parse_args()
     cache_root = Path(args.cache_root)
     batch_size = max(1, int(args.batch_size))
+    if int(args.interleave_shards) != 1:
+        print(
+            "WARN --interleave-shards is forced to 1. The interleaved sample-cache path can retain/duplicate "
+            "large shard arrays across group transitions, causing RAM pressure and a persistent training slowdown.",
+            flush=True,
+        )
+    interleave_shards = 1
     train_shards, validation_shard, validation_samples = resolve_shard_plan(
         cache_root=cache_root,
         train_shards=int(args.train_shards),
         validation_shard_index=int(args.validation_shard_index),
         validation_fraction=float(args.validation_fraction),
         batch_size=batch_size,
+        max_validation_batches=VALIDATION_BATCHES,
     )
     steps_per_epoch = sum(shard.num_samples // batch_size for shard in train_shards)
     steps_per_shard = train_shards[0].num_samples // batch_size
@@ -118,7 +127,11 @@ def main() -> None:
             "sample_cache_train_max_shards": len(train_shards),
             "sample_cache_validation_start_shard": validation_shard.shard_index,
             "sample_cache_validation_max_samples": validation_batches * batch_size,
-            "sample_cache_interleave_shards": max(1, int(args.interleave_shards)),
+            # Keep interleave disabled until the loader is redesigned to avoid
+            # transient copies of multiple full shard arrays. Interleave=2 caused
+            # process RSS to jump by about 90 GiB and step time to degrade from
+            # roughly 1.7s to 9.6s after shard-group transitions.
+            "sample_cache_interleave_shards": interleave_shards,
             "batch_size": batch_size,
             "epochs": int(args.epochs),
             "pretrain_validation_frequency": steps_per_shard,
@@ -150,7 +163,7 @@ def main() -> None:
     print(f"train_samples_per_epoch={sum(shard.num_samples for shard in train_shards):,}", flush=True)
     print(
         f"steps_per_epoch={steps_per_epoch:,} steps_per_shard={steps_per_shard:,} "
-        f"batch_size={batch_size:,} epochs={args.epochs:,} interleave_shards={args.interleave_shards:,}",
+        f"batch_size={batch_size:,} epochs={args.epochs:,} interleave_shards={interleave_shards:,}",
         flush=True,
     )
     print(
@@ -183,6 +196,7 @@ def resolve_shard_plan(
     validation_shard_index: int,
     validation_fraction: float,
     batch_size: int,
+    max_validation_batches: int,
 ):
     if train_shards <= 0:
         raise SystemExit("--train-shards must be positive")
@@ -197,7 +211,8 @@ def resolve_shard_plan(
     selected_train = shards[:train_shards]
     validation_shard = shards[validation_shard_index]
     raw_validation_samples = int(math.floor(validation_shard.num_samples * validation_fraction))
-    validation_samples = (raw_validation_samples // batch_size) * batch_size
+    validation_samples = min(raw_validation_samples, max(1, int(max_validation_batches)) * batch_size)
+    validation_samples = (validation_samples // batch_size) * batch_size
     if validation_samples <= 0:
         raise SystemExit(
             f"Validation slice is too small after drop-last: raw={raw_validation_samples:,}, batch_size={batch_size:,}"
