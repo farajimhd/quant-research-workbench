@@ -865,28 +865,29 @@ def backward_masked_group_chunks(
         chunks += 1
         chunk_indices = indices[start : start + chunk_size]
         with torch.amp.autocast("cuda", enabled=encoded_tokens.is_cuda):
-            probabilities = model.decode_header_indices(encoded_tokens, chunk_indices) if prefix == "header" else model.decode_event_indices(encoded_tokens, chunk_indices)
+            logits = model.decode_header_indices(encoded_tokens, chunk_indices) if prefix == "header" else model.decode_event_indices(encoded_tokens, chunk_indices)
             target_bytes = target_uint8[tuple(chunk_indices.T)].long()
-            target_bits = unpack_bits(target_bytes).to(dtype=probabilities.dtype, device=probabilities.device)
-        if probabilities.is_cuda:
+            target_bits = unpack_bits(target_bytes).to(dtype=logits.dtype, device=logits.device)
+        if logits.is_cuda:
             with torch.amp.autocast("cuda", enabled=False):
-                loss_sum = F.binary_cross_entropy(probabilities.float(), target_bits.float(), reduction="sum")
+                loss_sum = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float(), reduction="sum")
         else:
-            loss_sum = F.binary_cross_entropy(probabilities, target_bits, reduction="sum")
+            loss_sum = F.binary_cross_entropy_with_logits(logits, target_bits, reduction="sum")
         scaler.scale(loss_sum * group_scale).backward()
         loss_sum_total += float(loss_sum.detach().float().cpu())
         byte_count_total += int(target_bytes.numel())
         if stats is not None:
             metrics_started = time.perf_counter()
+            probabilities = torch.sigmoid(logits.detach().float())
             stats.update(probabilities.detach(), target_bits.detach(), target_bytes.detach(), loss_sum.detach(), include_diagnostics=True)
             if profile_metrics:
-                if probabilities.is_cuda:
-                    torch.cuda.synchronize(probabilities.device)
+                if logits.is_cuda:
+                    torch.cuda.synchronize(logits.device)
                 metrics_seconds += time.perf_counter() - metrics_started
         elif profile_metrics:
             metrics_started = time.perf_counter()
-            if probabilities.is_cuda:
-                torch.cuda.synchronize(probabilities.device)
+            if logits.is_cuda:
+                torch.cuda.synchronize(logits.device)
             metrics_seconds += time.perf_counter() - metrics_started
     if stats is None:
         metrics = minimal_chunk_metrics(prefix)
@@ -1563,9 +1564,9 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
     NORM --> EMB[\"chunk embedding<br/>B x {config.model.embedding_dim}\"]
     NORM --> DECUP[\"decoder up projection\"]
     DECUP --> DEC[\"masked-byte decoder<br/>{config.model.decoder_layers} MLP blocks\"]
-    DEC --> BIT[\"bit head + sigmoid<br/>8 probabilities per masked byte\"]
-    BIT --> OH[\"header_bit_probs\"]
-    BIT --> OE[\"event_bit_probs\"]
+    DEC --> BIT[\"bit head<br/>8 logits per masked byte\"]
+    BIT --> OH[\"header_bit_logits\"]
+    BIT --> OE[\"event_bit_logits\"]
 """
 
 
@@ -1619,13 +1620,13 @@ class MaskedSummaryWrapper(torch.nn.Module):
         header_mask[:, 0] = True
         event_mask[:, 0, 0] = True
         output = self.model(header_uint8, events_uint8, ByteMaskBatch(header_mask=header_mask, event_mask=event_mask))
-        return output.header_bit_probs, output.event_bit_probs, output.chunk_embedding
+        return output.header_bit_logits, output.event_bit_logits, output.chunk_embedding
 
 
 class TorchInfoSummaryWrapper(MaskedSummaryWrapper):
     def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
-        header_probs, event_probs, chunk_embedding = super().forward(header_uint8, events_uint8)
-        return torch.cat([header_probs.flatten(), event_probs.flatten(), chunk_embedding.flatten()]).unsqueeze(0)
+        header_logits, event_logits, chunk_embedding = super().forward(header_uint8, events_uint8)
+        return torch.cat([header_logits.flatten(), event_logits.flatten(), chunk_embedding.flatten()]).unsqueeze(0)
 
 
 def install_fatal_exception_logger(run_paths: RunPaths) -> None:

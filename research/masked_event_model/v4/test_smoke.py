@@ -29,8 +29,10 @@ def test_forward_and_encode_shapes() -> None:
     )
     masks = build_byte_masks(header, event_bytes, MaskConfig(mask_ratio=0.5, header_mask_ratio=0.5))
     output = model(header, event_bytes, masks)
-    assert output.header_bit_probs.shape[-1] == 8
-    assert output.event_bit_probs.shape[-1] == 8
+    assert output.header_bit_logits.shape[-1] == 8
+    assert output.event_bit_logits.shape[-1] == 8
+    assert output.header_bit_probs.shape == output.header_bit_logits.shape
+    assert output.event_bit_probs.shape == output.event_bit_logits.shape
     assert float(output.header_bit_probs.detach().min()) >= 0.0
     assert float(output.header_bit_probs.detach().max()) <= 1.0
     assert float(output.event_bit_probs.detach().min()) >= 0.0

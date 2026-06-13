@@ -33,7 +33,7 @@ def masked_byte_bce_loss(
     profile_metrics: bool = False,
 ) -> LossResult:
     header_loss, header_metrics = masked_group_loss(
-        output.header_bit_probs,
+        output.header_bit_logits,
         output.header_indices,
         header_uint8,
         masks.header_mask,
@@ -42,7 +42,7 @@ def masked_byte_bce_loss(
         profile_metrics=profile_metrics,
     )
     event_loss, event_metrics = masked_group_loss(
-        output.event_bit_probs,
+        output.event_bit_logits,
         output.event_indices,
         events_uint8,
         masks.event_mask,
@@ -74,7 +74,7 @@ def masked_byte_bce_loss(
 
 
 def masked_group_loss(
-    probabilities: torch.Tensor,
+    logits: torch.Tensor,
     indices: torch.Tensor,
     target_uint8: torch.Tensor,
     mask: torch.Tensor,
@@ -84,17 +84,18 @@ def masked_group_loss(
     profile_metrics: bool,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     if indices.numel() == 0:
-        zero = probabilities.sum() * 0.0
+        zero = logits.sum() * 0.0
         return zero, empty_metrics(prefix)
     target_bytes = target_uint8[tuple(indices.T)].long()
-    target_bits = unpack_bits(target_bytes).to(dtype=probabilities.dtype, device=probabilities.device)
-    if probabilities.is_cuda:
+    target_bits = unpack_bits(target_bytes).to(dtype=logits.dtype, device=logits.device)
+    if logits.is_cuda:
         with torch.amp.autocast("cuda", enabled=False):
-            loss = F.binary_cross_entropy(probabilities.float(), target_bits.float())
+            loss = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float())
     else:
-        loss = F.binary_cross_entropy(probabilities, target_bits)
+        loss = F.binary_cross_entropy_with_logits(logits, target_bits)
     metrics_started = time.perf_counter()
     with torch.no_grad():
+        probabilities = torch.sigmoid(logits.float())
         hard_bits = probabilities >= 0.5
         target_bool = target_bits.bool()
         bit_acc = (hard_bits == target_bool).float().mean()
