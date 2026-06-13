@@ -1,7 +1,8 @@
 # Masked Event Model v5
 
-v5 is the event-token masked autoencoder variant built from the v4 training
-pipeline.
+v5 is the event-token masked autoencoder variant for compact market-event
+samples. It is version-local: model, masking, loss, progress, training, and
+profiling code live under `research/masked_event_model/v5`.
 
 The main change is masking at the event-token level:
 

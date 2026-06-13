@@ -16,7 +16,7 @@ DEFAULTS: dict[str, Any] = {
     "validation_index_table": "validation_2026",
     "index_table": "",
     "canonical_root": r"D:\market-data\flatfiles\us_stocks_sip\derived\canonical_events_compact_v1",
-    "precomputed_chunk_root": r"D:\market-data\prepared\us_stocks_sip\v4_compact_event_chunks_v1",
+    "precomputed_chunk_root": "",
     "sample_cache_root": r"D:\market-data\prepared\event_sample_cache",
     "reference_dir": None,
     "train_start_date": "2025-11-01",

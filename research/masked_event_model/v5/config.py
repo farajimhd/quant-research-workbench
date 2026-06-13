@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from research.mlops.compact_events import DEFAULT_CANONICAL_ROOT, DEFAULT_EVENTS_PER_CHUNK, DEFAULT_PRECOMPUTED_V4_CHUNK_ROOT, DEFAULT_REFERENCE_DIR
+from research.mlops.compact_events import DEFAULT_CANONICAL_ROOT, DEFAULT_EVENTS_PER_CHUNK, DEFAULT_REFERENCE_DIR
 from research.mlops.clickhouse_events import (
     DEFAULT_CLICKHOUSE_URL,
     DEFAULT_DATABASE,
@@ -28,7 +28,7 @@ DEFAULT_VALIDATION_END = "2025-12-05"
 class DataConfig:
     data_source: str = "clickhouse_events"
     canonical_root: Path = DEFAULT_CANONICAL_ROOT
-    precomputed_chunk_root: Path | None = DEFAULT_PRECOMPUTED_V4_CHUNK_ROOT
+    precomputed_chunk_root: Path | None = None
     sample_cache_root: Path | None = DEFAULT_SAMPLE_CACHE_ROOT
     reference_dir: Path = DEFAULT_REFERENCE_DIR
     clickhouse_url: str = ""
