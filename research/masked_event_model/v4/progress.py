@@ -69,17 +69,19 @@ class TrainingProgressState:
 
 
 class TrainingReporter:
-    def __init__(self, *, layout: str, state: TrainingProgressState, refresh_per_second: float = 2.0) -> None:
+    def __init__(self, *, layout: str, state: TrainingProgressState, refresh_per_second: float = 1.0) -> None:
         self.layout = layout
         self.state = state
         self.refresh_per_second = refresh_per_second
+        self.min_refresh_interval = 1.0 / max(0.1, refresh_per_second)
         self.started = time.perf_counter()
         self.history: deque[float] = deque(maxlen=100)
-        self.messages: deque[str] = deque(maxlen=8)
+        self.messages: deque[str] = deque(maxlen=6)
         self._rich = False
         self._live = None
         self._console = None
         self._fallback_reason = ""
+        self._last_refresh_at = 0.0
 
     def __enter__(self) -> "TrainingReporter":
         if self.layout in {"auto", "rich"}:
@@ -88,7 +90,13 @@ class TrainingReporter:
                 from rich.live import Live
 
                 self._console = Console()
-                self._live = Live(self._render(), console=self._console, refresh_per_second=self.refresh_per_second, transient=False)
+                self._live = Live(
+                    self._render(),
+                    console=self._console,
+                    refresh_per_second=self.refresh_per_second,
+                    transient=False,
+                    auto_refresh=False,
+                )
                 self._live.start()
                 self._rich = True
             except Exception as exc:  # noqa: BLE001
@@ -101,7 +109,7 @@ class TrainingReporter:
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         if self._live is not None:
-            self._live.update(self._render())
+            self.refresh(force=True)
             self._live.stop()
 
     def update(self, metrics: dict[str, float], *, step: int, validation_metrics: dict[str, float] | None = None) -> None:
@@ -175,9 +183,13 @@ class TrainingReporter:
         else:
             print(text, flush=True)
 
-    def refresh(self) -> None:
+    def refresh(self, *, force: bool = False) -> None:
         if self._rich and self._live is not None:
-            self._live.update(self._render())
+            now = time.perf_counter()
+            if not force and now - self._last_refresh_at < self.min_refresh_interval:
+                return
+            self._live.update(self._render(), refresh=True)
+            self._last_refresh_at = now
         elif self.layout == "text":
             print(self._text_line(), flush=True)
 
@@ -265,7 +277,9 @@ class TrainingReporter:
         memory.add_row("system used", f"{state.system_memory_used_gib:.2f}")
         memory.add_row("system available", f"{state.system_memory_available_gib:.2f}")
 
-        message_lines = "\n".join(self.messages) if self.messages else (state.last_message or "running")
+        retained_messages = list(self.messages) if self.messages else [state.last_message or "running"]
+        retained_messages.extend([""] * max(0, self.messages.maxlen - len(retained_messages)))
+        message_lines = "\n".join(retained_messages[: self.messages.maxlen])
 
         body = Group(
             Panel(summary, title="Training Run", border_style="cyan"),
@@ -274,7 +288,7 @@ class TrainingReporter:
             Panel(metrics, title="Learning", border_style="magenta"),
             Panel(profile, title="Step Profile", border_style="yellow"),
             Panel(memory, title="Memory", border_style="blue"),
-            Panel(message_lines, title="Messages", border_style="green" if state.profiler_active else "blue"),
+            Panel(message_lines, title="Messages", border_style="blue"),
         )
         return body
 
