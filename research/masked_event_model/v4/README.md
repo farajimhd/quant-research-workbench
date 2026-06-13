@@ -239,6 +239,16 @@ scheduler_t0_steps = steps unless explicitly overridden
 decoder_chunk_size = 524288
 ```
 
+The practical sweep also includes a direct decoder-chunking ablation:
+
+```text
+v4-prob-bce-size-sweep-medium-bit-emb32-bs4096
+v4-prob-bce-size-sweep-medium-bit-nochunk-emb32-bs4096
+```
+
+Both use the same medium bit-input model and batch size. The `nochunk` run sets
+`--decoder-chunk-size 0` to test whether chunking changes the learning result.
+
 The full grid from the earlier broad sweep remains available with
 `--profile-set grid`.
 

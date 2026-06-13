@@ -79,7 +79,7 @@ MODEL_SIZES: dict[str, dict[str, Any]] = {
     },
 }
 
-PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int] | tuple[str, int, int, str], ...] = (
+PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int] | tuple[str, int, int, str] | tuple[str, int, int, str, int], ...] = (
     ("tiny_d128", 16, 4096),
     ("tiny_d128", 32, 4096),
     ("tiny_d128", 64, 4096),
@@ -96,6 +96,7 @@ PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int] | tuple[str, int, int, str], 
     ("high", 32, 1024),
     ("high", 32, 2048),
     ("medium", 32, 4096, "bit"),
+    ("medium", 32, 4096, "bit", 0),
 )
 
 
@@ -104,6 +105,7 @@ SUMMARY_FIELDS = [
     "status",
     "model_size",
     "input_representation",
+    "decoder_chunk_size",
     "embedding_dim",
     "batch_size",
     "parameters",
@@ -152,6 +154,7 @@ class SweepRun:
     total: int
     model_size: str
     input_representation: str
+    decoder_chunk_size: int
     embedding_dim: int
     batch_size: int
     run_name: str
@@ -288,29 +291,35 @@ def build_runs(args: argparse.Namespace, model_sizes: list[str], embedding_dims:
     return build_grid_runs(args, model_sizes, embedding_dims, batch_sizes)
 
 
-def normalize_combo(combo: tuple[str, int, int] | tuple[str, int, int, str]) -> tuple[str, int, int, str]:
+def normalize_combo(combo: tuple[str, int, int] | tuple[str, int, int, str] | tuple[str, int, int, str, int], default_decoder_chunk_size: int) -> tuple[str, int, int, str, int]:
     if len(combo) == 3:
         model_size, embedding_dim, batch_size = combo
-        return model_size, embedding_dim, batch_size, "byte"
-    model_size, embedding_dim, batch_size, input_representation = combo
+        return model_size, embedding_dim, batch_size, "byte", default_decoder_chunk_size
+    if len(combo) == 4:
+        model_size, embedding_dim, batch_size, input_representation = combo
+        decoder_chunk_size = default_decoder_chunk_size
+    else:
+        model_size, embedding_dim, batch_size, input_representation, decoder_chunk_size = combo
     if input_representation not in {"byte", "bit"}:
         raise SystemExit(f"Unsupported input representation in sweep combo: {input_representation!r}")
-    return model_size, embedding_dim, batch_size, input_representation
+    return model_size, embedding_dim, batch_size, input_representation, int(decoder_chunk_size)
 
 
-def build_explicit_runs(args: argparse.Namespace, combos: tuple[tuple[str, int, int] | tuple[str, int, int, str], ...]) -> list[SweepRun]:
+def build_explicit_runs(args: argparse.Namespace, combos: tuple[tuple[str, int, int] | tuple[str, int, int, str] | tuple[str, int, int, str, int], ...]) -> list[SweepRun]:
     runs: list[SweepRun] = []
     total = len(combos)
     for index, combo in enumerate(combos, start=1):
-        model_size, embedding_dim, batch_size, input_representation = normalize_combo(combo)
+        model_size, embedding_dim, batch_size, input_representation, decoder_chunk_size = normalize_combo(combo, args.decoder_chunk_size)
         representation_suffix = "" if input_representation == "byte" else f"-{input_representation}"
-        run_name = f"{args.run_prefix}-{model_size}{representation_suffix}-emb{embedding_dim}-bs{batch_size}"
+        decoder_suffix = "-nochunk" if decoder_chunk_size <= 0 else ""
+        run_name = f"{args.run_prefix}-{model_size}{representation_suffix}{decoder_suffix}-emb{embedding_dim}-bs{batch_size}"
         runs.append(
             SweepRun(
                 index=index,
                 total=total,
                 model_size=model_size,
                 input_representation=input_representation,
+                decoder_chunk_size=decoder_chunk_size,
                 embedding_dim=embedding_dim,
                 batch_size=batch_size,
                 run_name=run_name,
@@ -337,6 +346,7 @@ def build_grid_runs(args: argparse.Namespace, model_sizes: list[str], embedding_
                         total=total,
                         model_size=model_size,
                         input_representation="byte",
+                        decoder_chunk_size=args.decoder_chunk_size,
                         embedding_dim=embedding_dim,
                         batch_size=batch_size,
                         run_name=run_name,
@@ -365,6 +375,7 @@ def run_to_dict(run: SweepRun) -> dict[str, Any]:
         "total": run.total,
         "model_size": run.model_size,
         "input_representation": run.input_representation,
+        "decoder_chunk_size": run.decoder_chunk_size,
         "embedding_dim": run.embedding_dim,
         "batch_size": run.batch_size,
         "run_name": run.run_name,
@@ -456,7 +467,7 @@ def build_train_command(args: argparse.Namespace, run: SweepRun) -> list[str]:
         "--profile-inference-every-steps",
         "1",
         "--decoder-chunk-size",
-        str(args.decoder_chunk_size),
+        str(run.decoder_chunk_size),
         "--checkpoint-latest-steps",
         "0",
         "--checkpoint-archive-steps",
@@ -543,6 +554,7 @@ def summarize_run(run: SweepRun, *, subprocess_seconds: float, status: str, erro
         "status": status,
         "model_size": run.model_size,
         "input_representation": run.input_representation,
+        "decoder_chunk_size": run.decoder_chunk_size,
         "embedding_dim": run.embedding_dim,
         "batch_size": run.batch_size,
         "parameters": model_parameters,
