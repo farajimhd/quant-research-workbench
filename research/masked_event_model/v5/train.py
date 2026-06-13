@@ -177,7 +177,7 @@ def main(argv: list[str] | None = None) -> None:
     model_parameters = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {model_parameters:,}", flush=True)
     if config.train.decoder_chunk_size > 0:
-        print("WARN --decoder-chunk-size is ignored by v5; event-token decoding is already token-parallel.", flush=True)
+        print("WARN --decoder-chunk-size is ignored by v5; masked-query decoding only processes masked events.", flush=True)
     train_model = maybe_compile_model(model, config.train.compile_model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
     scheduler = build_scheduler(optimizer, config.train)
@@ -1190,6 +1190,7 @@ def build_model_summary_text(model: torch.nn.Module, details: dict[str, Any], pa
         f"Input events_uint8: [B, {details['events_per_chunk']}, 16]",
         f"Training encoder tokens: [B, 2 + visible_events, d_model]",
         f"Production encoder tokens: [B, 2 + {details['events_per_chunk']}, d_model]",
+        f"Decoder: masked event queries cross-attend to encoded CLS/header/visible tokens",
         f"Output event bit logits: [B, masked_events, 16, 8]",
         f"Embedding: [B, {details['embedding_dim']}]",
         "",
@@ -1222,8 +1223,10 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
     POS --> TOK
     TOK --> ENC[\"Transformer encoder<br/>{config.model.encoder_layers} layers, d={config.model.d_model}, heads={config.model.n_heads}\"]
     ENC --> EMB[\"chunk embedding<br/>B x {config.model.embedding_dim}\"]
-    ENC --> DECIN[\"decoder sequence<br/>CLS + header + visible tokens + mask tokens\"]
-    DECIN --> DEC[\"shallow token decoder<br/>{config.model.decoder_layers} layers\"]
+    ENC --> MEM[\"decoder memory<br/>encoded CLS + header + visible events\"]
+    M --> MQ[\"masked event queries<br/>mask token + masked event position\"]
+    MQ --> DEC[\"masked-query cross-attention decoder<br/>{config.model.decoder_layers} layers\"]
+    MEM --> DEC
     DEC --> HEAD[\"event bit head<br/>16 x 8 logits per masked event\"]
     HEAD --> LOSS[\"BCE on masked event bits only\"]
 """

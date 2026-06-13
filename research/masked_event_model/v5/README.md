@@ -22,8 +22,11 @@ tokens instead of all 128. Header bytes are not removed; they can receive
 low-rate bit corruption. Visible event bytes can also receive low-rate bit
 corruption for robustness.
 
-The decoder receives the encoded visible tokens plus learned mask tokens for the
-removed event positions, then predicts only the removed event bytes:
+The decoder uses learned queries for the removed event positions. Each masked
+query is the learned mask token plus the masked event position embedding, and it
+cross-attends to the encoded `[CLS] + header + visible_event_tokens` memory.
+It does not build or process a full 128-event decoder sequence. The decoder
+predicts only the removed event bytes:
 
 ```text
 event_bit_logits: [B, masked_events, 16, 8]
