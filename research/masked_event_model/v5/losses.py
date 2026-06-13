@@ -40,6 +40,18 @@ def masked_event_bce_loss(
     loss = loss * float(config.event_weight)
 
     metrics_started = time.perf_counter()
+    metrics = {
+        "pretrain/loss_total": float(loss.detach().cpu()),
+        "pretrain/loss_event": float(loss.detach().cpu()),
+    }
+    if metric_level == "loss_only":
+        if profile_metrics:
+            if logits.is_cuda:
+                torch.cuda.synchronize(logits.device)
+            metrics["profile/event_metrics_seconds"] = time.perf_counter() - metrics_started
+            metrics["profile/metrics_seconds"] = metrics["profile/event_metrics_seconds"]
+        return LossResult(loss=loss, metrics=metrics)
+
     with torch.no_grad():
         probabilities = torch.sigmoid(logits.float())
         hard_bits = probabilities >= 0.5
@@ -48,9 +60,8 @@ def masked_event_bce_loss(
         hard_bytes = pack_bits(hard_bits)
         exact = (hard_bytes == target_bytes).float().mean()
         confidence = (probabilities - 0.5).abs() * 2.0
-        metrics = {
-            "pretrain/loss_total": float(loss.detach().cpu()),
-            "pretrain/loss_event": float(loss.detach().cpu()),
+        metrics.update(
+            {
             "pretrain/event_masked_events": float(output.masked_event_indices.numel()),
             "pretrain/event_masked_bytes": float(target_bytes.numel()),
             "pretrain/event_bit_acc_pct": float(bit_acc.detach().cpu() * 100.0),
@@ -59,7 +70,8 @@ def masked_event_bce_loss(
             "mask/event_masked_events": float(output.masked_event_indices.numel()),
             "mask/event_masked_bytes": float(target_bytes.numel()),
             "mask/total_masked_bytes": float(target_bytes.numel()),
-        }
+            }
+        )
         if metric_level != "cheap":
             target_one_rate = target_bits.float().mean()
             pred_one_rate = hard_bits.float().mean()

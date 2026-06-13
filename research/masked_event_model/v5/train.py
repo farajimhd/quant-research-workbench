@@ -622,10 +622,18 @@ def run_training_step(
         sync_if_cuda(device)
     mask_seconds = time.perf_counter() - mask_started
     forward_started = time.perf_counter()
+    will_log_metrics = global_step % max(1, config.train.logging_steps) == 0 or force_diagnostics
     include_diagnostics = force_diagnostics or (config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0)
+    metric_level = "standard" if (will_log_metrics or profile_step or include_diagnostics) else "loss_only"
     with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
         output = train_model(batch["header_uint8"], batch["events_uint8"], masks, config.masks)
-        result = masked_event_bce_loss(output, config.losses, include_diagnostics=include_diagnostics, profile_metrics=profile_step)
+        result = masked_event_bce_loss(
+            output,
+            config.losses,
+            include_diagnostics=include_diagnostics,
+            profile_metrics=profile_step,
+            metric_level=metric_level,
+        )
     if profile_step:
         sync_if_cuda(device)
     forward_loss_seconds = time.perf_counter() - forward_started
