@@ -279,7 +279,10 @@ class TrainingReporter:
 
         retained_messages = list(self.messages) if self.messages else [state.last_message or "running"]
         retained_messages.extend([""] * max(0, self.messages.maxlen - len(retained_messages)))
-        message_lines = "\n".join(retained_messages[: self.messages.maxlen])
+        messages = Table.grid(expand=True)
+        messages.add_column(no_wrap=True, overflow="ellipsis")
+        for line in retained_messages[: self.messages.maxlen]:
+            messages.add_row(line)
 
         body = Group(
             Panel(summary, title="Training Run", border_style="cyan"),
@@ -287,8 +290,8 @@ class TrainingReporter:
             epoch_progress,
             Panel(metrics, title="Learning", border_style="magenta"),
             Panel(profile, title="Step Profile", border_style="yellow"),
-            Panel(memory, title="Memory", border_style="blue"),
-            Panel(message_lines, title="Messages", border_style="blue"),
+            Panel(memory, title="Memory", border_style="blue", height=12),
+            Panel(messages, title="Messages", border_style="blue", height=10),
         )
         return body
 
