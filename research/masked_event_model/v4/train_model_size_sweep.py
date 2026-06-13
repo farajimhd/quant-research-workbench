@@ -247,7 +247,7 @@ def main() -> None:
             print(f"DRY RUN [{run.index}/{run.total}] {run.run_name}", flush=True)
             print(" ".join(build_train_command(args, run)), flush=True)
             continue
-        result = execute_run(args, run)
+        result = execute_run(args, run, sweep_root)
         write_result(results_jsonl, result)
         completed.append(result)
         write_csv(results_csv, collect_latest_results(results_jsonl))
@@ -393,10 +393,12 @@ def should_skip(args: argparse.Namespace, run: SweepRun, results_jsonl: Path) ->
     return int(summary.get("steps") or 0) >= args.steps
 
 
-def execute_run(args: argparse.Namespace, run: SweepRun) -> dict[str, Any]:
+def execute_run(args: argparse.Namespace, run: SweepRun, sweep_root: Path) -> dict[str, Any]:
     command = build_train_command(args, run)
-    run.run_root.mkdir(parents=True, exist_ok=True)
-    log_path = run.run_root / "logs" / "sweep_subprocess.log"
+    # Keep the parent sweep log outside the child run directory. The child
+    # trainer may remove and recreate run_root on --fresh-start, and Windows
+    # will fail that cleanup if this process holds a file handle inside it.
+    log_path = sweep_root / "logs" / f"{run.run_name}_subprocess.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     print("=" * 96, flush=True)
     print(f"RUN START [{run.index}/{run.total}] {run.run_name}", flush=True)
