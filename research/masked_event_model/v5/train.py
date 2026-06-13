@@ -677,6 +677,18 @@ def run_training_step(
     return metrics
 
 
+def should_profile_step(config: ExperimentConfig, global_step: int) -> bool:
+    if config.train.profile_first_steps > 0 and global_step <= config.train.profile_first_steps:
+        return True
+    return config.train.profile_training_every_steps > 0 and global_step % config.train.profile_training_every_steps == 0
+
+
+def should_validate_step(config: ExperimentConfig, global_step: int, *, shard_step: int, shard_steps: int) -> bool:
+    if config.train.pretrain_validation_frequency > 0:
+        return global_step > 0 and global_step % config.train.pretrain_validation_frequency == 0
+    return shard_steps > 0 and shard_step == shard_steps
+
+
 def resource_profile(device: torch.device) -> dict[str, float]:
     metrics: dict[str, float] = {}
     try:
