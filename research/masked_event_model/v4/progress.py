@@ -197,6 +197,7 @@ class TrainingReporter:
             print(self._text_line(), flush=True)
 
     def _render(self) -> Any:
+        from rich.align import Align
         from rich.console import Group
         from rich.panel import Panel
         from rich.progress import BarColumn, Progress, TextColumn
@@ -225,9 +226,9 @@ class TrainingReporter:
         summary.add_row(f"[bold]Run[/] {state.run_name}", f"[bold]Device[/] {state.device}")
         summary.add_row(f"[bold]Data[/] {state.data_source}", f"[bold]Params[/] {state.model_parameters:,}")
 
-        metrics = Table.grid(expand=False, padding=(0, 2))
-        metrics.add_column("Metric", no_wrap=True)
-        metrics.add_column("Value", justify="right", no_wrap=True)
+        metrics = Table.grid(expand=False, padding=(0, 1))
+        metrics.add_column("Metric", justify="right", no_wrap=True)
+        metrics.add_column("Value", justify="left", no_wrap=True)
         metrics.add_row("loss", f"{state.loss:.6f}")
         metrics.add_row("balanced bit acc", f"{state.event_balanced_bit_acc_pct:.3f}%")
         metrics.add_row("bit acc lift", f"{state.event_bit_acc_lift_pct:+.3f}%")
@@ -250,9 +251,9 @@ class TrainingReporter:
         if state.validation_event_hard_byte_psnr_db is not None:
             metrics.add_row("val event hard PSNR", f"{state.validation_event_hard_byte_psnr_db:.3f} dB")
 
-        profile = Table.grid(expand=False, padding=(0, 2))
-        profile.add_column("Stage", no_wrap=True)
-        profile.add_column("Value", justify="right", no_wrap=True)
+        profile = Table.grid(expand=False, padding=(0, 1))
+        profile.add_column("Stage", justify="right", no_wrap=True)
+        profile.add_column("Value", justify="left", no_wrap=True)
         profile.add_row("production encode", f"{state.inference_encode_ms_per_sample:.4f} ms/sample")
         profile.add_row("production encode total", f"{state.inference_encode_seconds:.4f} s")
         profile.add_row("train step total", f"{state.step_seconds:.4f} s")
@@ -269,9 +270,9 @@ class TrainingReporter:
         profile.add_row("transfer", f"{state.transfer_seconds:.4f} s")
         profile.add_row("optimizer", f"{state.optimizer_seconds:.4f} s")
 
-        memory = Table.grid(expand=False, padding=(0, 2))
-        memory.add_column("Metric", no_wrap=True)
-        memory.add_column("GiB", justify="right", no_wrap=True)
+        memory = Table.grid(expand=False, padding=(0, 1))
+        memory.add_column("Metric", justify="right", no_wrap=True)
+        memory.add_column("GiB", justify="left", no_wrap=True)
         memory.add_row("GPU peak allocated", f"{state.gpu_peak_allocated_gib:.2f}")
         memory.add_row("GPU reserved", f"{state.gpu_reserved_gib:.2f}")
         memory.add_row("GPU allocated", f"{state.gpu_allocated_gib:.2f}")
@@ -292,9 +293,9 @@ class TrainingReporter:
             Panel(summary, title="Training Run", border_style="cyan"),
             progress,
             epoch_progress,
-            Panel(metrics, title="Learning", border_style="magenta"),
-            Panel(profile, title="Step Profile", border_style="yellow"),
-            Panel(memory, title="Memory", border_style="blue", height=12),
+            Panel(Align.center(metrics), title="Learning", border_style="magenta"),
+            Panel(Align.center(profile), title="Step Profile", border_style="yellow"),
+            Panel(Align.center(memory), title="Memory", border_style="blue", height=12),
             Panel(messages, title="Messages", border_style="blue", height=10),
             Text("\n" * self._bottom_padding_lines),
         )
