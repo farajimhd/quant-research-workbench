@@ -331,10 +331,20 @@ def iter_event_sample_cache_epoch_batches(
             submit_until_full()
             shuffle_seconds = 0.0
             if config.shuffle_records:
+                print(
+                    f"CACHE SHUFFLE START split={config.split} shard={shard.shard_index} "
+                    f"samples={records.shape[0]:,}",
+                    flush=True,
+                )
                 shuffle_started = time.perf_counter()
                 np_rng = np.random.default_rng(int(config.seed) + epoch * 1_000_003 + shard.shard_index)
                 np_rng.shuffle(records, axis=0)
                 shuffle_seconds = time.perf_counter() - shuffle_started
+                print(
+                    f"CACHE SHUFFLE DONE split={config.split} shard={shard.shard_index} "
+                    f"samples={records.shape[0]:,} seconds={shuffle_seconds:.2f}",
+                    flush=True,
+                )
             usable_samples = records.shape[0]
             if config.drop_last:
                 usable_samples = (usable_samples // max(1, config.batch_size)) * config.batch_size
@@ -389,11 +399,22 @@ def iter_interleaved_event_sample_cache_epoch_batches(
         records = np.concatenate([item[1] for item in loaded], axis=0) if len(loaded) > 1 else loaded[0][1]
         shuffle_seconds = 0.0
         if config.shuffle_records:
+            print(
+                f"CACHE SHUFFLE START split={config.split} shard_group={group_start // group_size + 1} "
+                f"shards={group[0].shard_index}-{group[-1].shard_index} samples={records.shape[0]:,}",
+                flush=True,
+            )
             shuffle_started = time.perf_counter()
             first_shard_index = group[0].shard_index
             np_rng = np.random.default_rng(int(config.seed) + epoch * 1_000_003 + first_shard_index)
             np_rng.shuffle(records, axis=0)
             shuffle_seconds = time.perf_counter() - shuffle_started
+            print(
+                f"CACHE SHUFFLE DONE split={config.split} shard_group={group_start // group_size + 1} "
+                f"shards={group[0].shard_index}-{group[-1].shard_index} samples={records.shape[0]:,} "
+                f"seconds={shuffle_seconds:.2f}",
+                flush=True,
+            )
         usable_samples = records.shape[0]
         if config.drop_last:
             usable_samples = (usable_samples // max(1, config.batch_size)) * config.batch_size
@@ -444,8 +465,20 @@ def load_shard_into_memory(shard: EventSampleShard) -> tuple[EventSampleShard, n
     actual_size = shard.path.stat().st_size
     if actual_size != expected_size:
         raise RuntimeError(f"Shard size mismatch for {shard.path}: expected {expected_size:,}, got {actual_size:,}")
+    print(
+        f"CACHE LOAD START split={shard.split} shard={shard.shard_index} "
+        f"samples={shard.num_samples:,} bytes={actual_size / 1024**3:.2f}GiB path={shard.path}",
+        flush=True,
+    )
     data = np.fromfile(shard.path, dtype=np.uint8).reshape(shard.num_samples, SAMPLE_BYTES)
-    return shard, data, time.perf_counter() - started
+    load_seconds = time.perf_counter() - started
+    rate = (actual_size / 1024**3) / max(load_seconds, 1e-9)
+    print(
+        f"CACHE LOAD DONE split={shard.split} shard={shard.shard_index} "
+        f"samples={shard.num_samples:,} seconds={load_seconds:.2f} rate={rate:.2f}GiB/s",
+        flush=True,
+    )
+    return shard, data, load_seconds
 
 
 def to_numpy_uint8(value: Any) -> np.ndarray:

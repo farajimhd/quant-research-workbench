@@ -531,6 +531,8 @@ def should_echo_trainer_line(line: str) -> bool:
         "FATAL",
         "WARN",
         "Training started.",
+        "Sample-cache training",
+        "CACHE ",
         "W&B run:",
         "wandb:",
     )
