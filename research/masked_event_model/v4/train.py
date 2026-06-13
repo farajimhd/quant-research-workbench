@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import platform
+import shutil
 import sys
 import time
 import traceback
@@ -97,6 +98,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sample-cache-validation-max-samples", type=int, default=data_defaults.sample_cache_validation_max_samples)
     parser.add_argument("--sample-cache-shuffle-records", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_shuffle_records)
     parser.add_argument("--sample-cache-drop-last", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_drop_last)
+    parser.add_argument("--sample-cache-interleave-shards", type=int, default=data_defaults.sample_cache_interleave_shards)
     parser.add_argument("--max-index-files", type=int, default=data_defaults.max_index_files)
     parser.add_argument("--batch-size", type=int, default=train_defaults.batch_size)
     parser.add_argument("--max-steps", type=int, default=train_defaults.max_steps)
@@ -142,6 +144,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="online")
     parser.add_argument("--wandb-init-timeout", type=int, default=60)
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=train_defaults.compile_model)
+    parser.add_argument("--warm-start-checkpoint", default="")
+    parser.add_argument("--warm-start-load-optimizer", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--initial-validation", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--fresh-start", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
@@ -155,6 +160,8 @@ def main(argv: list[str] | None = None) -> None:
     run_name = config.train.wandb_run_name or default_run_name(args)
     config.train.wandb_run_name = run_name
     output_dir = resolve_output_dir(config, args)
+    if args.fresh_start:
+        clean_run_output_dir(output_dir, keep_paths=[Path(args.warm_start_checkpoint)] if args.warm_start_checkpoint else [])
     run_paths = RunPaths.create(output_dir)
     install_fatal_exception_logger(run_paths)
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
@@ -172,7 +179,15 @@ def main(argv: list[str] | None = None) -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
     scheduler = build_scheduler(optimizer, config.train)
     scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and device.type == "cuda")
-    global_step = maybe_resume(model, optimizer, scheduler, output_dir, fresh_start=args.fresh_start)
+    global_step = maybe_resume_or_warm_start(
+        model,
+        optimizer,
+        scheduler,
+        output_dir,
+        fresh_start=args.fresh_start,
+        warm_start_checkpoint=Path(args.warm_start_checkpoint) if args.warm_start_checkpoint else None,
+        warm_start_load_optimizer=bool(args.warm_start_load_optimizer),
+    )
 
     wandb_run = init_wandb(args, config, output_dir)
     metric_logger = JsonlMetricLogger(run_paths.metrics_path, wandb_run)
@@ -246,7 +261,7 @@ def main(argv: list[str] | None = None) -> None:
         if reporter is not None:
             reporter.message(f"Training started. Output: {output_dir}")
         validation_batches = build_validation_cache(config, args.seed + 50_000, reporter=reporter)
-        if validation_batches:
+        if validation_batches and args.initial_validation:
             val_metrics = evaluate_validation(model, validation_batches, config, device, seed=args.seed + 90_000)
             metric_logger.log(val_metrics, global_step)
             emit_progress_message(reporter, "Initial validation " + format_metrics(global_step, val_metrics))
@@ -349,6 +364,10 @@ def train_precomputed_epochs(
                 break
             data_wait_seconds = time.perf_counter() - data_wait_started
             global_step += 1
+            shard_index = int(batch.get("shard_index", 0) or 0)
+            shard_step = int(batch.get("shard_step", 0) or 0)
+            shard_steps = max(1, int(batch.get("shard_steps", 1) or 1))
+            run_validation = should_validate_step(config, global_step, shard_step=shard_step, shard_steps=shard_steps)
             batch_size = int(batch["header_uint8"].shape[0])
             samples_seen_total += batch_size
             epoch_samples += batch_size
@@ -364,18 +383,17 @@ def train_precomputed_epochs(
                 device=device,
                 global_step=global_step,
                 data_wait_seconds=data_wait_seconds,
+                force_diagnostics=run_validation,
             )
             epoch_loss_sum += float(metrics.get("pretrain/loss_total", 0.0))
-            shard_index = int(batch.get("shard_index", 0) or 0)
-            shard_step = int(batch.get("shard_step", 0) or 0)
-            shard_steps = max(1, int(batch.get("shard_steps", 1) or 1))
+            effective_shard_count = int(batch.get("shard_count", shard_count) or shard_count)
             metrics.update(
                 {
                     "train/epoch": float(epoch),
                     "train/epoch_step": float(epoch_steps),
-                    "train/epoch_progress_pct": 100.0 * ((max(0, shard_index - 1) + shard_step / shard_steps) / max(1, shard_count)),
+                    "train/epoch_progress_pct": 100.0 * ((max(0, shard_index - 1) + shard_step / shard_steps) / max(1, effective_shard_count)),
                     "train/shard_index": float(shard_index),
-                    "train/shards_per_epoch": float(shard_count),
+                    "train/shards_per_epoch": float(effective_shard_count),
                     "train/shard_step": float(shard_step),
                     "train/shard_steps": float(shard_steps),
                     "train/samples_seen_epoch": float(epoch_samples),
@@ -394,6 +412,7 @@ def train_precomputed_epochs(
                 validation_batches=validation_batches,
                 metric_logger=metric_logger,
                 reporter=reporter,
+                force_validation=run_validation,
             )
             checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), train_metrics=metrics, val_metrics=val_metrics)
         epoch_metrics = {
@@ -454,6 +473,10 @@ def train_sample_cache_epochs(
                 break
             data_wait_seconds = time.perf_counter() - data_wait_started
             global_step += 1
+            shard_index = int(batch.get("shard_index", 0) or 0)
+            shard_step = int(batch.get("shard_step", 0) or 0)
+            shard_steps = max(1, int(batch.get("shard_steps", 1) or 1))
+            run_validation = should_validate_step(config, global_step, shard_step=shard_step, shard_steps=shard_steps)
             batch_size = int(batch["header_uint8"].shape[0])
             samples_seen_total += batch_size
             epoch_samples += batch_size
@@ -469,18 +492,17 @@ def train_sample_cache_epochs(
                 device=device,
                 global_step=global_step,
                 data_wait_seconds=data_wait_seconds,
+                force_diagnostics=run_validation,
             )
             epoch_loss_sum += float(metrics.get("pretrain/loss_total", 0.0))
-            shard_index = int(batch.get("shard_index", 0) or 0)
-            shard_step = int(batch.get("shard_step", 0) or 0)
-            shard_steps = max(1, int(batch.get("shard_steps", 1) or 1))
+            effective_shard_count = int(batch.get("shard_count", shard_count) or shard_count)
             metrics.update(
                 {
                     "train/epoch": float(epoch),
                     "train/epoch_step": float(epoch_steps),
-                    "train/epoch_progress_pct": 100.0 * ((max(0, shard_index - 1) + shard_step / shard_steps) / max(1, shard_count)),
+                    "train/epoch_progress_pct": 100.0 * ((max(0, shard_index - 1) + shard_step / shard_steps) / max(1, effective_shard_count)),
                     "train/shard_index": float(shard_index),
-                    "train/shards_per_epoch": float(shard_count),
+                    "train/shards_per_epoch": float(effective_shard_count),
                     "train/shard_step": float(shard_step),
                     "train/shard_steps": float(shard_steps),
                     "train/samples_seen_epoch": float(epoch_samples),
@@ -497,6 +519,7 @@ def train_sample_cache_epochs(
                 validation_batches=validation_batches,
                 metric_logger=metric_logger,
                 reporter=reporter,
+                force_validation=run_validation,
             )
             checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), train_metrics=metrics, val_metrics=val_metrics)
         epoch_metrics = {
@@ -575,6 +598,7 @@ def run_training_step(
     device: torch.device,
     global_step: int,
     data_wait_seconds: float,
+    force_diagnostics: bool = False,
 ) -> dict[str, float]:
     if config.train.decoder_chunk_size > 0:
         return run_training_step_chunked_decoder(
@@ -587,6 +611,7 @@ def run_training_step(
             device=device,
             global_step=global_step,
             data_wait_seconds=data_wait_seconds,
+            force_diagnostics=force_diagnostics,
         )
     step_started = time.perf_counter()
     profile_step = should_profile_step(config, global_step)
@@ -601,7 +626,7 @@ def run_training_step(
     sync_if_cuda(device)
     mask_seconds = time.perf_counter() - mask_started
     forward_started = time.perf_counter()
-    include_diagnostics = config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0
+    include_diagnostics = force_diagnostics or (config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0)
     with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
         output = train_model(batch["header_uint8"], batch["events_uint8"], masks)
         result = masked_byte_bce_loss(output, batch["header_uint8"], batch["events_uint8"], masks, config.losses, include_diagnostics=include_diagnostics, profile_metrics=profile_step)
@@ -664,6 +689,7 @@ def run_training_step_chunked_decoder(
     device: torch.device,
     global_step: int,
     data_wait_seconds: float,
+    force_diagnostics: bool = False,
 ) -> dict[str, float]:
     step_started = time.perf_counter()
     profile_step = should_profile_step(config, global_step)
@@ -681,7 +707,7 @@ def run_training_step_chunked_decoder(
     mask_seconds = time.perf_counter() - mask_started
 
     optimizer.zero_grad(set_to_none=True)
-    include_diagnostics = config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0
+    include_diagnostics = force_diagnostics or (config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0)
     forward_started = time.perf_counter()
     with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
         encoded_tokens, _, _ = model.encode_tokens_for_training(batch["header_uint8"], batch["events_uint8"], masks)
@@ -800,6 +826,12 @@ def should_profile_step(config: ExperimentConfig, global_step: int) -> bool:
     return config.train.profile_training_every_steps > 0 and global_step % config.train.profile_training_every_steps == 0
 
 
+def should_validate_step(config: ExperimentConfig, global_step: int, *, shard_step: int, shard_steps: int) -> bool:
+    if config.train.pretrain_validation_frequency > 0:
+        return global_step > 0 and global_step % config.train.pretrain_validation_frequency == 0
+    return shard_steps > 0 and shard_step == shard_steps
+
+
 def chunked_total_weight(header_indices: torch.Tensor, event_indices: torch.Tensor, config: LossConfig) -> float:
     total = 0.0
     if header_indices.numel() > 0:
@@ -824,7 +856,9 @@ def backward_masked_group_chunks(
 ) -> tuple[float, dict[str, float], int, float]:
     if indices.numel() == 0:
         return 0.0, empty_chunk_metrics(prefix), 0, 0.0
-    stats = ChunkMetricAccumulator(prefix)
+    stats = ChunkMetricAccumulator(prefix) if include_diagnostics else None
+    loss_sum_total = 0.0
+    byte_count_total = 0
     chunks = 0
     metrics_seconds = 0.0
     for start in range(0, int(indices.shape[0]), chunk_size):
@@ -840,12 +874,24 @@ def backward_masked_group_chunks(
         else:
             loss_sum = F.binary_cross_entropy(probabilities, target_bits, reduction="sum")
         scaler.scale(loss_sum * group_scale).backward()
-        metrics_started = time.perf_counter()
-        stats.update(probabilities.detach(), target_bits.detach(), target_bytes.detach(), loss_sum.detach(), include_diagnostics=include_diagnostics)
-        if profile_metrics:
+        loss_sum_total += float(loss_sum.detach().float().cpu())
+        byte_count_total += int(target_bytes.numel())
+        if stats is not None:
+            metrics_started = time.perf_counter()
+            stats.update(probabilities.detach(), target_bits.detach(), target_bytes.detach(), loss_sum.detach(), include_diagnostics=True)
+            if profile_metrics:
+                if probabilities.is_cuda:
+                    torch.cuda.synchronize(probabilities.device)
+                metrics_seconds += time.perf_counter() - metrics_started
+        elif profile_metrics:
+            metrics_started = time.perf_counter()
             if probabilities.is_cuda:
                 torch.cuda.synchronize(probabilities.device)
             metrics_seconds += time.perf_counter() - metrics_started
+    if stats is None:
+        metrics = minimal_chunk_metrics(prefix)
+        metrics[f"pretrain/{prefix}_masked_bytes"] = float(byte_count_total)
+        return loss_sum_total, metrics, chunks, metrics_seconds
     return stats.loss_sum, stats.to_metrics(), chunks, metrics_seconds
 
 
@@ -999,6 +1045,10 @@ def empty_chunk_metrics(prefix: str) -> dict[str, float]:
     }
 
 
+def minimal_chunk_metrics(prefix: str) -> dict[str, float]:
+    return {f"pretrain/{prefix}_masked_bytes": 0.0}
+
+
 def resource_profile(device: torch.device) -> dict[str, float]:
     metrics: dict[str, float] = {}
     try:
@@ -1040,13 +1090,20 @@ def maybe_log_train_and_validation(
     validation_batches: list[dict[str, Any]],
     metric_logger: JsonlMetricLogger,
     reporter: TrainingReporter | None = None,
+    force_validation: bool = False,
 ) -> dict[str, float] | None:
-    if global_step % config.train.logging_steps == 0:
+    if global_step % config.train.logging_steps == 0 or force_validation:
         metric_logger.log(metrics, global_step)
         if reporter is None:
             print(format_metrics(global_step, metrics), flush=True)
     val_metrics = None
-    if validation_batches and config.train.pretrain_validation_frequency > 0 and global_step % config.train.pretrain_validation_frequency == 0:
+    run_validation = force_validation or (
+        validation_batches
+        and config.train.pretrain_validation_frequency > 0
+        and global_step > 0
+        and global_step % config.train.pretrain_validation_frequency == 0
+    )
+    if validation_batches and run_validation:
         val_metrics = evaluate_validation(model, validation_batches, config, device, seed=args.seed + 90_000)
         metric_logger.log(val_metrics, global_step)
         if reporter is None:
@@ -1095,6 +1152,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             sample_cache_validation_max_samples=args.sample_cache_validation_max_samples,
             sample_cache_shuffle_records=args.sample_cache_shuffle_records,
             sample_cache_drop_last=args.sample_cache_drop_last,
+            sample_cache_interleave_shards=args.sample_cache_interleave_shards,
             max_index_files=args.max_index_files,
         ),
         masks=MaskConfig(mask_ratio=args.mask_ratio, header_mask_ratio=args.header_mask_ratio),
@@ -1230,6 +1288,7 @@ def sample_cache_data_config(config: ExperimentConfig, split: str, seed: int) ->
         max_samples=max_samples,
         shuffle_records=data.sample_cache_shuffle_records,
         drop_last=data.sample_cache_drop_last,
+        interleave_shards=data.sample_cache_interleave_shards if split == "train" else 1,
     )
 
 
@@ -1322,17 +1381,60 @@ def maybe_compile_model(model: torch.nn.Module, enabled: bool) -> torch.nn.Modul
     return model
 
 
-def maybe_resume(model: torch.nn.Module, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler | None, output_dir: Path, *, fresh_start: bool) -> int:
+def maybe_resume_or_warm_start(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    output_dir: Path,
+    *,
+    fresh_start: bool,
+    warm_start_checkpoint: Path | None,
+    warm_start_load_optimizer: bool,
+) -> int:
     path = output_dir / "checkpoints" / "checkpoint_latest.pt"
-    if fresh_start or not path.exists():
-        return 0
-    checkpoint = torch.load(path, map_location="cpu")
-    model.load_state_dict(checkpoint["model"])
-    optimizer.load_state_dict(checkpoint["optimizer"])
-    if scheduler is not None and checkpoint.get("scheduler") is not None:
-        scheduler.load_state_dict(checkpoint["scheduler"])
-    print(f"Resumed checkpoint: {path} step={checkpoint.get('step', 0)}", flush=True)
-    return int(checkpoint.get("step", 0))
+    if not fresh_start and path.exists():
+        checkpoint = torch.load(path, map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        if scheduler is not None and checkpoint.get("scheduler") is not None:
+            scheduler.load_state_dict(checkpoint["scheduler"])
+        print(f"Resumed checkpoint: {path} step={checkpoint.get('step', 0)}", flush=True)
+        return int(checkpoint.get("step", 0))
+    if warm_start_checkpoint is not None and str(warm_start_checkpoint) and warm_start_checkpoint.exists():
+        checkpoint = torch.load(warm_start_checkpoint, map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+        if warm_start_load_optimizer and checkpoint.get("optimizer") is not None:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            for group in optimizer.param_groups:
+                group["lr"] = group.get("initial_lr", group["lr"])
+        print(
+            f"Warm-started model from checkpoint: {warm_start_checkpoint} "
+            f"source_step={checkpoint.get('step', 0)} load_optimizer={warm_start_load_optimizer}",
+            flush=True,
+        )
+    elif warm_start_checkpoint is not None and str(warm_start_checkpoint):
+        print(f"WARN warm-start checkpoint not found: {warm_start_checkpoint}", flush=True)
+    return 0
+
+
+def clean_run_output_dir(output_dir: Path, *, keep_paths: list[Path] | None = None) -> None:
+    keep_resolved = {path.resolve() for path in keep_paths or [] if str(path)}
+    def should_keep(path: Path) -> bool:
+        resolved = path.resolve()
+        if resolved in keep_resolved:
+            return True
+        return any(keep == resolved or keep.is_relative_to(resolved) for keep in keep_resolved)
+
+    if not output_dir.exists():
+        return
+    for child_name in ("metrics.jsonl", "config.json", "run_manifest.json"):
+        child = output_dir / child_name
+        if child.exists() and not should_keep(child):
+            child.unlink()
+    for child_name in ("checkpoints", "logs", "wandb", "artifacts"):
+        child = output_dir / child_name
+        if child.exists() and not should_keep(child):
+            shutil.rmtree(child)
 
 
 def checkpoint_payload(model: torch.nn.Module, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler | None, step: int, config: ExperimentConfig, args: argparse.Namespace) -> dict[str, Any]:

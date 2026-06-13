@@ -60,6 +60,7 @@ class DataConfig:
     sample_cache_validation_max_samples: int = 0
     sample_cache_shuffle_records: bool = True
     sample_cache_drop_last: bool = True
+    sample_cache_interleave_shards: int = 1
     max_index_files: int = 0
     strict_lossless: bool = True
 

@@ -26,6 +26,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_validation_split": "train",
     "sample_cache_validation_start_shard": 10,
     "sample_cache_validation_max_shards": 1,
+    "sample_cache_interleave_shards": 2,
     "batch_size": 4096,
     "epochs": 10,
     "max_steps": 0,
@@ -47,8 +48,8 @@ DEFAULTS: dict[str, Any] = {
     "scheduler_eta_min": 1e-6,
     "grad_clip_norm": 1.0,
     "logging_steps": 10,
-    "detailed_metrics_steps": 100,
-    "profile_first_steps": 20,
+    "detailed_metrics_steps": 0,
+    "profile_first_steps": 5,
     "profile_training_every_steps": 1000,
     "profile_inference_every_steps": 1000,
     "decoder_chunk_size": 524288,
@@ -62,10 +63,11 @@ DEFAULTS: dict[str, Any] = {
     "wandb_project": "June2026-compact-bit-event-training",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v4-medium-bit-emb32-bs4096-10shards-10epochs",
+    "wandb_run_name": "v4-medium-bit-emb32-bs4096-10shards-shardcycle-interleave2-warmstart",
+    "warm_start_checkpoint": r"D:\TradingML\runtimes\masked_event_model\v4\pretrain\v4-medium-bit-emb32-bs4096-10shards-10epochs\checkpoints\checkpoint_latest.pt",
 }
 
-PROFILED_TRAINING_PATH = "medium-bit-emb32-bs4096 chunked-decoder no-compile"
+PROFILED_TRAINING_PATH = "medium-bit-emb32-bs4096 chunked-decoder no-compile, shard-cycle scheduler, interleave2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,6 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-shards", type=int, default=DEFAULTS["sample_cache_train_max_shards"])
     parser.add_argument("--validation-shard-index", type=int, default=DEFAULTS["sample_cache_validation_start_shard"])
     parser.add_argument("--validation-fraction", type=float, default=0.05)
+    parser.add_argument("--interleave-shards", type=int, default=DEFAULTS["sample_cache_interleave_shards"])
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--device", default=DEFAULTS["device"])
@@ -83,6 +86,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=DEFAULTS["progress_layout"])
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=DEFAULTS["compile_model"])
     parser.add_argument("--decoder-chunk-size", type=int, default=DEFAULTS["decoder_chunk_size"])
+    parser.add_argument("--warm-start-checkpoint", default=DEFAULTS["warm_start_checkpoint"])
+    parser.add_argument("--warm-start-load-optimizer", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--initial-validation", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--fresh-start", action="store_true")
     parser.add_argument("--print-only", action="store_true")
@@ -103,6 +109,7 @@ def main() -> None:
         batch_size=batch_size,
     )
     steps_per_epoch = sum(shard.num_samples // batch_size for shard in train_shards)
+    steps_per_shard = train_shards[0].num_samples // batch_size
     validation_batches = max(1, validation_samples // batch_size)
     values = dict(DEFAULTS)
     values.update(
@@ -111,12 +118,13 @@ def main() -> None:
             "sample_cache_train_max_shards": len(train_shards),
             "sample_cache_validation_start_shard": validation_shard.shard_index,
             "sample_cache_validation_max_samples": validation_batches * batch_size,
+            "sample_cache_interleave_shards": max(1, int(args.interleave_shards)),
             "batch_size": batch_size,
             "epochs": int(args.epochs),
-            "pretrain_validation_frequency": steps_per_epoch,
+            "pretrain_validation_frequency": steps_per_shard,
             "pretrain_validation_steps": validation_batches,
             "checkpoint_archive_steps": steps_per_epoch,
-            "scheduler_t0_steps": steps_per_epoch,
+            "scheduler_t0_steps": steps_per_shard,
             "device": args.device,
             "wandb_project": args.wandb_project,
             "wandb_mode": args.wandb_mode,
@@ -124,6 +132,9 @@ def main() -> None:
             "progress_layout": args.progress_layout,
             "compile_model": bool(args.compile_model),
             "decoder_chunk_size": int(args.decoder_chunk_size),
+            "warm_start_checkpoint": args.warm_start_checkpoint,
+            "warm_start_load_optimizer": bool(args.warm_start_load_optimizer),
+            "initial_validation": bool(args.initial_validation),
         }
     )
     argv = build_train_args(values)
@@ -137,7 +148,11 @@ def main() -> None:
     print(f"cache_root={cache_root}", flush=True)
     print(f"train_shards={train_shards[0].shard_index}..{train_shards[-1].shard_index} count={len(train_shards)}", flush=True)
     print(f"train_samples_per_epoch={sum(shard.num_samples for shard in train_shards):,}", flush=True)
-    print(f"steps_per_epoch={steps_per_epoch:,} batch_size={batch_size:,} epochs={args.epochs:,}", flush=True)
+    print(
+        f"steps_per_epoch={steps_per_epoch:,} steps_per_shard={steps_per_shard:,} "
+        f"batch_size={batch_size:,} epochs={args.epochs:,} interleave_shards={args.interleave_shards:,}",
+        flush=True,
+    )
     print(
         f"validation_shard={validation_shard.shard_index} requested_fraction={args.validation_fraction:.3f} "
         f"validation_samples={validation_batches * batch_size:,} validation_batches={validation_batches:,} "
@@ -147,6 +162,7 @@ def main() -> None:
     print(f"wandb_project={args.wandb_project} run={args.run_name}", flush=True)
     print(f"profiled_training_path={PROFILED_TRAINING_PATH}", flush=True)
     print(f"compile_model={args.compile_model} decoder_chunk_size={args.decoder_chunk_size}", flush=True)
+    print(f"warm_start_checkpoint={args.warm_start_checkpoint or '<none>'} load_optimizer={args.warm_start_load_optimizer}", flush=True)
     if args.compile_model or int(args.decoder_chunk_size) <= 0:
         print(
             "WARN this differs from the profiled path; expected --no-compile-model and --decoder-chunk-size 524288.",
