@@ -82,6 +82,7 @@ class TrainingReporter:
         self._console = None
         self._fallback_reason = ""
         self._last_refresh_at = 0.0
+        self._bottom_padding_lines = 5
 
     def __enter__(self) -> "TrainingReporter":
         if self.layout in {"auto", "rich"}:
@@ -96,6 +97,8 @@ class TrainingReporter:
                     refresh_per_second=self.refresh_per_second,
                     transient=False,
                     auto_refresh=False,
+                    screen=True,
+                    vertical_overflow="visible",
                 )
                 self._live.start()
                 self._rich = True
@@ -198,6 +201,7 @@ class TrainingReporter:
         from rich.panel import Panel
         from rich.progress import BarColumn, Progress, TextColumn
         from rich.table import Table
+        from rich.text import Text
 
         state = self.state
         progress = Progress(
@@ -278,6 +282,7 @@ class TrainingReporter:
             epoch_progress,
             Panel(metrics, title="Learning", border_style="magenta"),
             Panel(profile, title="Step Profile", border_style="yellow"),
+            Text("\n" * self._bottom_padding_lines),
         )
         return body
 
