@@ -229,12 +229,6 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(result.metrics, indent=2), flush=True)
         return
 
-    validation_batches = build_validation_cache(config, args.seed + 50_000)
-    if validation_batches:
-        val_metrics = evaluate_validation(model, validation_batches, config, device, seed=args.seed + 90_000)
-        metric_logger.log(val_metrics, global_step)
-        print("VALIDATION " + format_metrics(global_step, val_metrics), flush=True)
-
     reporter_state = TrainingProgressState(
         run_name=run_name,
         device=str(device),
@@ -251,6 +245,13 @@ def main(argv: list[str] | None = None) -> None:
         checkpointer.set_message_callback(reporter.message if reporter is not None else None)
         if reporter is not None:
             reporter.message(f"Training started. Output: {output_dir}")
+        validation_batches = build_validation_cache(config, args.seed + 50_000, reporter=reporter)
+        if validation_batches:
+            val_metrics = evaluate_validation(model, validation_batches, config, device, seed=args.seed + 90_000)
+            metric_logger.log(val_metrics, global_step)
+            emit_progress_message(reporter, "Initial validation " + format_metrics(global_step, val_metrics))
+            if reporter is not None:
+                reporter.update({}, step=global_step, validation_metrics=val_metrics)
         if config.data.data_source == "sample_cache":
             global_step = train_sample_cache_epochs(
                 model=model,
@@ -1139,10 +1140,10 @@ def make_loader(config: ExperimentConfig, split: str, seed: int) -> DataLoader:
     return DataLoader(CompactEventIterableDataset(dataset_config), **kwargs)
 
 
-def build_validation_cache(config: ExperimentConfig, seed: int) -> list[dict[str, Any]]:
+def build_validation_cache(config: ExperimentConfig, seed: int, reporter: TrainingReporter | None = None) -> list[dict[str, Any]]:
     if config.train.pretrain_validation_frequency <= 0 or config.train.pretrain_validation_steps <= 0:
         return []
-    print(f"Building fixed validation cache batches={config.train.pretrain_validation_steps}", flush=True)
+    emit_progress_message(reporter, f"Building fixed validation cache batches={config.train.pretrain_validation_steps:,}")
     if config.data.data_source == "precomputed":
         batches = build_fixed_precomputed_validation_batches(
             precomputed_data_config(config, "validation", seed),
@@ -1150,10 +1151,10 @@ def build_validation_cache(config: ExperimentConfig, seed: int) -> list[dict[str
             seed=seed,
         )
         for index, batch in enumerate(batches, start=1):
-            print(
+            emit_progress_message(
+                reporter,
                 f"validation cache batch {index}/{len(batches)} size={batch['header_uint8'].shape[0]} "
                 f"shard={batch.get('shard_index')}/{batch.get('shard_count')}",
-                flush=True,
             )
         return batches
     if config.data.data_source == "sample_cache":
@@ -1164,10 +1165,10 @@ def build_validation_cache(config: ExperimentConfig, seed: int) -> list[dict[str
         for index in range(config.train.pretrain_validation_steps):
             batch = next(iterator)
             batches.append(batch)
-            print(
+            emit_progress_message(
+                reporter,
                 f"validation cache batch {index + 1}/{config.train.pretrain_validation_steps} "
                 f"size={batch['header_uint8'].shape[0]} shard={batch.get('shard_index')}/{batch.get('shard_count')}",
-                flush=True,
             )
         return batches
     loader = make_loader(config, "validation", seed)
@@ -1176,7 +1177,10 @@ def build_validation_cache(config: ExperimentConfig, seed: int) -> list[dict[str
     for index in range(config.train.pretrain_validation_steps):
         batch = next(iterator)
         batches.append(batch)
-        print(f"validation cache batch {index + 1}/{config.train.pretrain_validation_steps} size={batch['header_uint8'].shape[0]}", flush=True)
+        emit_progress_message(
+            reporter,
+            f"validation cache batch {index + 1}/{config.train.pretrain_validation_steps} size={batch['header_uint8'].shape[0]}",
+        )
     return batches
 
 

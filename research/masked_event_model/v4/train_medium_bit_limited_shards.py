@@ -73,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-root", default=DEFAULTS["sample_cache_root"])
     parser.add_argument("--train-shards", type=int, default=DEFAULTS["sample_cache_train_max_shards"])
     parser.add_argument("--validation-shard-index", type=int, default=DEFAULTS["sample_cache_validation_start_shard"])
-    parser.add_argument("--validation-fraction", type=float, default=0.10)
+    parser.add_argument("--validation-fraction", type=float, default=0.05)
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--device", default=DEFAULTS["device"])
@@ -140,7 +140,8 @@ def main() -> None:
     print(f"steps_per_epoch={steps_per_epoch:,} batch_size={batch_size:,} epochs={args.epochs:,}", flush=True)
     print(
         f"validation_shard={validation_shard.shard_index} requested_fraction={args.validation_fraction:.3f} "
-        f"validation_samples={validation_batches * batch_size:,} validation_batches={validation_batches:,}",
+        f"validation_samples={validation_batches * batch_size:,} validation_batches={validation_batches:,} "
+        "selection=shuffle-full-shard-then-take-prefix",
         flush=True,
     )
     print(f"wandb_project={args.wandb_project} run={args.run_name}", flush=True)
