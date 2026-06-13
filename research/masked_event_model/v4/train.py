@@ -141,7 +141,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-run-name", default="")
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="online")
     parser.add_argument("--wandb-init-timeout", type=int, default=60)
-    parser.add_argument("--compile-model", action="store_true", default=train_defaults.compile_model)
+    parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=train_defaults.compile_model)
     parser.add_argument("--fresh-start", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)

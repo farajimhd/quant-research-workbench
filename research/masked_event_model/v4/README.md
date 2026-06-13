@@ -114,6 +114,7 @@ python research\masked_event_model\v4\train_medium_bit_limited_shards.py --fresh
 This launcher uses:
 
 ```text
+profiled_training_path = medium-bit-emb32-bs4096 chunked-decoder no-compile
 input_representation = bit
 model_size = medium
 embedding_dim = 32
@@ -122,7 +123,7 @@ epochs = 10
 train shards = train/shard_000000..train/shard_000009
 validation = first 10% of train/shard_000010
 decoder_chunk_size = 524288
-compile_model = false unless explicitly enabled
+compile_model = false
 W&B project = June2026-compact-bit-event-training
 ```
 

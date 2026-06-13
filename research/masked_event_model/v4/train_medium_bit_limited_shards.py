@@ -65,6 +65,8 @@ DEFAULTS: dict[str, Any] = {
     "wandb_run_name": "v4-medium-bit-emb32-bs4096-10shards-10epochs",
 }
 
+PROFILED_TRAINING_PATH = "medium-bit-emb32-bs4096 chunked-decoder no-compile"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train v4 medium bit-input MAE on 10 sample-cache shards with one validation shard slice.")
@@ -142,7 +144,13 @@ def main() -> None:
         flush=True,
     )
     print(f"wandb_project={args.wandb_project} run={args.run_name}", flush=True)
+    print(f"profiled_training_path={PROFILED_TRAINING_PATH}", flush=True)
     print(f"compile_model={args.compile_model} decoder_chunk_size={args.decoder_chunk_size}", flush=True)
+    if args.compile_model or int(args.decoder_chunk_size) <= 0:
+        print(
+            "WARN this differs from the profiled path; expected --no-compile-model and --decoder-chunk-size 524288.",
+            flush=True,
+        )
     print("Equivalent trainer args:", flush=True)
     print(" ".join(argv), flush=True)
     print("=" * 96, flush=True)
