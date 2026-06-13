@@ -365,6 +365,7 @@ def train_precomputed_epochs(
             data_wait_seconds = time.perf_counter() - data_wait_started
             global_step += 1
             shard_index = int(batch.get("shard_index", 0) or 0)
+            shard_position = int(batch.get("shard_position", shard_index) or shard_index)
             shard_step = int(batch.get("shard_step", 0) or 0)
             shard_steps = max(1, int(batch.get("shard_steps", 1) or 1))
             run_validation = should_validate_step(config, global_step, shard_step=shard_step, shard_steps=shard_steps)
@@ -391,8 +392,9 @@ def train_precomputed_epochs(
                 {
                     "train/epoch": float(epoch),
                     "train/epoch_step": float(epoch_steps),
-                    "train/epoch_progress_pct": 100.0 * ((max(0, shard_index - 1) + shard_step / shard_steps) / max(1, effective_shard_count)),
+                    "train/epoch_progress_pct": 100.0 * ((max(0, shard_position - 1) + shard_step / shard_steps) / max(1, effective_shard_count)),
                     "train/shard_index": float(shard_index),
+                    "train/shard_position": float(shard_position),
                     "train/shards_per_epoch": float(effective_shard_count),
                     "train/shard_step": float(shard_step),
                     "train/shard_steps": float(shard_steps),
@@ -474,6 +476,7 @@ def train_sample_cache_epochs(
             data_wait_seconds = time.perf_counter() - data_wait_started
             global_step += 1
             shard_index = int(batch.get("shard_index", 0) or 0)
+            shard_position = int(batch.get("shard_position", shard_index) or shard_index)
             shard_step = int(batch.get("shard_step", 0) or 0)
             shard_steps = max(1, int(batch.get("shard_steps", 1) or 1))
             run_validation = should_validate_step(config, global_step, shard_step=shard_step, shard_steps=shard_steps)
@@ -500,8 +503,9 @@ def train_sample_cache_epochs(
                 {
                     "train/epoch": float(epoch),
                     "train/epoch_step": float(epoch_steps),
-                    "train/epoch_progress_pct": 100.0 * ((max(0, shard_index - 1) + shard_step / shard_steps) / max(1, effective_shard_count)),
+                    "train/epoch_progress_pct": 100.0 * ((max(0, shard_position - 1) + shard_step / shard_steps) / max(1, effective_shard_count)),
                     "train/shard_index": float(shard_index),
+                    "train/shard_position": float(shard_position),
                     "train/shards_per_epoch": float(effective_shard_count),
                     "train/shard_step": float(shard_step),
                     "train/shard_steps": float(shard_steps),
@@ -619,23 +623,27 @@ def run_training_step(
         torch.cuda.reset_peak_memory_stats(device)
     transfer_started = time.perf_counter()
     batch = move_batch(batch, device)
-    sync_if_cuda(device)
+    if profile_step:
+        sync_if_cuda(device)
     transfer_seconds = time.perf_counter() - transfer_started
     mask_started = time.perf_counter()
     masks = build_byte_masks(batch["header_uint8"], batch["events_uint8"], config.masks)
-    sync_if_cuda(device)
+    if profile_step:
+        sync_if_cuda(device)
     mask_seconds = time.perf_counter() - mask_started
     forward_started = time.perf_counter()
     include_diagnostics = force_diagnostics or (config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0)
     with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
         output = train_model(batch["header_uint8"], batch["events_uint8"], masks)
         result = masked_byte_bce_loss(output, batch["header_uint8"], batch["events_uint8"], masks, config.losses, include_diagnostics=include_diagnostics, profile_metrics=profile_step)
-    sync_if_cuda(device)
+    if profile_step:
+        sync_if_cuda(device)
     forward_loss_seconds = time.perf_counter() - forward_started
     backward_started = time.perf_counter()
     optimizer.zero_grad(set_to_none=True)
     scaler.scale(result.loss).backward()
-    sync_if_cuda(device)
+    if profile_step:
+        sync_if_cuda(device)
     backward_seconds = time.perf_counter() - backward_started
     optimizer_started = time.perf_counter()
     scaler.unscale_(optimizer)
@@ -644,7 +652,8 @@ def run_training_step(
     scaler.update()
     if scheduler is not None:
         scheduler.step(global_step)
-    sync_if_cuda(device)
+    if profile_step:
+        sync_if_cuda(device)
     optimizer_seconds = time.perf_counter() - optimizer_started
     metrics = dict(result.metrics)
     step_seconds = time.perf_counter() - step_started
@@ -698,12 +707,14 @@ def run_training_step_chunked_decoder(
 
     transfer_started = time.perf_counter()
     batch = move_batch(batch, device)
-    sync_if_cuda(device)
+    if profile_step:
+        sync_if_cuda(device)
     transfer_seconds = time.perf_counter() - transfer_started
 
     mask_started = time.perf_counter()
     masks = build_byte_masks(batch["header_uint8"], batch["events_uint8"], config.masks)
-    sync_if_cuda(device)
+    if profile_step:
+        sync_if_cuda(device)
     mask_seconds = time.perf_counter() - mask_started
 
     optimizer.zero_grad(set_to_none=True)
@@ -744,14 +755,16 @@ def run_training_step_chunked_decoder(
         include_diagnostics=include_diagnostics,
         profile_metrics=profile_step,
     )
-    sync_if_cuda(device)
+    if profile_step:
+        sync_if_cuda(device)
     decoder_backward_seconds = time.perf_counter() - decoder_backward_started
     forward_loss_seconds = time.perf_counter() - forward_started
 
     encoder_backward_started = time.perf_counter()
     if encoded_leaf.grad is not None:
         encoded_tokens.backward(encoded_leaf.grad)
-    sync_if_cuda(device)
+    if profile_step:
+        sync_if_cuda(device)
     encoder_backward_seconds = time.perf_counter() - encoder_backward_started
     backward_seconds = decoder_backward_seconds + encoder_backward_seconds
 
@@ -762,7 +775,8 @@ def run_training_step_chunked_decoder(
     scaler.update()
     if scheduler is not None:
         scheduler.step(global_step)
-    sync_if_cuda(device)
+    if profile_step:
+        sync_if_cuda(device)
     optimizer_seconds = time.perf_counter() - optimizer_started
 
     total_loss = 0.0
@@ -1331,7 +1345,15 @@ def evaluate_validation(model: CompactByteMaskedAutoencoder, batches: list[dict[
             masks = build_byte_masks(batch["header_uint8"], batch["events_uint8"], config.masks)
             with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
                 output = model(batch["header_uint8"], batch["events_uint8"], masks)
-                result = masked_byte_bce_loss(output, batch["header_uint8"], batch["events_uint8"], masks, config.losses, include_diagnostics=True)
+                result = masked_byte_bce_loss(
+                    output,
+                    batch["header_uint8"],
+                    batch["events_uint8"],
+                    masks,
+                    config.losses,
+                    include_diagnostics=False,
+                    metric_level="cheap",
+                )
             for key, value in result.metrics.items():
                 totals["validation/" + key] = totals.get("validation/" + key, 0.0) + float(value)
     count = max(1, len(batches))

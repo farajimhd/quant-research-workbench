@@ -228,8 +228,8 @@ def encode_sample_records(headers: np.ndarray, events: np.ndarray) -> np.ndarray
 def decode_sample_records(records: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if records.ndim != 2 or records.shape[1] != SAMPLE_BYTES:
         raise ValueError(f"Expected records shape [N,{SAMPLE_BYTES}], got {records.shape}")
-    headers = np.ascontiguousarray(records[:, :HEADER_BYTES])
-    events = np.ascontiguousarray(records[:, HEADER_BYTES:].reshape(records.shape[0], DEFAULT_EVENTS_PER_CHUNK, EVENT_BYTES))
+    headers = records[:, :HEADER_BYTES]
+    events = records[:, HEADER_BYTES:].reshape(records.shape[0], DEFAULT_EVENTS_PER_CHUNK, EVENT_BYTES)
     return headers, events
 
 
@@ -356,6 +356,7 @@ def iter_event_sample_cache_epoch_batches(
                     "events_uint8": torch.from_numpy(events),
                     "origin_timestamp_ns": torch.zeros((headers.shape[0],), dtype=torch.int64),
                     "shard_index": shard.shard_index + 1,
+                    "shard_position": order_index + 1,
                     "shard_count": len(shards),
                     "shard_step": shard_step,
                     "shard_steps": shard_steps,
@@ -416,6 +417,7 @@ def iter_interleaved_event_sample_cache_epoch_batches(
                 "events_uint8": torch.from_numpy(events),
                 "origin_timestamp_ns": torch.zeros((headers.shape[0],), dtype=torch.int64),
                 "shard_index": (group_start // group_size) + 1,
+                "shard_position": (group_start // group_size) + 1,
                 "shard_count": int(math.ceil(len(shards) / group_size)),
                 "shard_step": shard_step,
                 "shard_steps": shard_steps,

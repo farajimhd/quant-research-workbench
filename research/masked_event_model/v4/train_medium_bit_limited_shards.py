@@ -51,7 +51,7 @@ DEFAULTS: dict[str, Any] = {
     "detailed_metrics_steps": 0,
     "profile_first_steps": 5,
     "profile_training_every_steps": 1000,
-    "profile_inference_every_steps": 1000,
+    "profile_inference_every_steps": 0,
     "decoder_chunk_size": 524288,
     "checkpoint_latest_steps": 25,
     "checkpoint_best_train": False,
@@ -74,6 +74,7 @@ VALIDATION_BATCHES = 20
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train v4 medium bit-input MAE on 10 sample-cache shards with one validation shard slice.")
     parser.add_argument("--cache-root", default=DEFAULTS["sample_cache_root"])
+    parser.add_argument("--train-start-shard", "--sample-cache-train-start-shard", dest="train_start_shard", type=int, default=DEFAULTS["sample_cache_train_start_shard"])
     parser.add_argument("--train-shards", type=int, default=DEFAULTS["sample_cache_train_max_shards"])
     parser.add_argument("--validation-shard-index", type=int, default=DEFAULTS["sample_cache_validation_start_shard"])
     parser.add_argument("--validation-fraction", type=float, default=0.05)
@@ -87,7 +88,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=DEFAULTS["progress_layout"])
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=DEFAULTS["compile_model"])
     parser.add_argument("--decoder-chunk-size", type=int, default=DEFAULTS["decoder_chunk_size"])
-    parser.add_argument("--warm-start-checkpoint", default=DEFAULTS["warm_start_checkpoint"])
+    parser.add_argument("--warm-start-checkpoint", nargs="?", const="", default=DEFAULTS["warm_start_checkpoint"])
     parser.add_argument("--warm-start-load-optimizer", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--initial-validation", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--dry-run", action="store_true")
@@ -111,6 +112,7 @@ def main() -> None:
     interleave_shards = 1
     train_shards, validation_shard, validation_samples = resolve_shard_plan(
         cache_root=cache_root,
+        train_start_shard=int(args.train_start_shard),
         train_shards=int(args.train_shards),
         validation_shard_index=int(args.validation_shard_index),
         validation_fraction=float(args.validation_fraction),
@@ -124,6 +126,7 @@ def main() -> None:
     values.update(
         {
             "sample_cache_root": str(cache_root),
+            "sample_cache_train_start_shard": int(args.train_start_shard),
             "sample_cache_train_max_shards": len(train_shards),
             "sample_cache_validation_start_shard": validation_shard.shard_index,
             "sample_cache_validation_max_samples": validation_batches * batch_size,
@@ -192,6 +195,7 @@ def main() -> None:
 def resolve_shard_plan(
     *,
     cache_root: Path,
+    train_start_shard: int,
     train_shards: int,
     validation_shard_index: int,
     validation_fraction: float,
@@ -200,16 +204,27 @@ def resolve_shard_plan(
 ):
     if train_shards <= 0:
         raise SystemExit("--train-shards must be positive")
+    if train_start_shard < 0:
+        raise SystemExit("--train-start-shard must be non-negative")
     if not 0.0 < validation_fraction <= 1.0:
         raise SystemExit("--validation-fraction must be in (0, 1]")
     shard_config = EventSampleCacheDataConfig(cache_root=cache_root, split="train", max_shards=0)
     shards = discover_event_sample_shards(shard_config)
     if len(shards) <= validation_shard_index:
         raise SystemExit(f"Need validation shard index {validation_shard_index}, but only found {len(shards)} train shards under {cache_root}")
-    if len(shards) < train_shards:
-        raise SystemExit(f"Need {train_shards} train shards, but only found {len(shards)} train shards under {cache_root}")
-    selected_train = shards[:train_shards]
+    if len(shards) < train_start_shard + train_shards:
+        raise SystemExit(
+            f"Need train shard range {train_start_shard}..{train_start_shard + train_shards - 1}, "
+            f"but only found {len(shards)} train shards under {cache_root}"
+        )
+    selected_train = shards[train_start_shard : train_start_shard + train_shards]
     validation_shard = shards[validation_shard_index]
+    selected_ids = {shard.shard_index for shard in selected_train}
+    if validation_shard.shard_index in selected_ids:
+        raise SystemExit(
+            f"Validation shard {validation_shard.shard_index} overlaps train shards "
+            f"{selected_train[0].shard_index}..{selected_train[-1].shard_index}; choose a non-overlapping validation shard."
+        )
     raw_validation_samples = int(math.floor(validation_shard.num_samples * validation_fraction))
     validation_samples = min(raw_validation_samples, max(1, int(max_validation_batches)) * batch_size)
     validation_samples = (validation_samples // batch_size) * batch_size

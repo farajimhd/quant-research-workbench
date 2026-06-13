@@ -31,6 +31,7 @@ def masked_byte_bce_loss(
     *,
     include_diagnostics: bool = False,
     profile_metrics: bool = False,
+    metric_level: str = "standard",
 ) -> LossResult:
     header_loss, header_metrics = masked_group_loss(
         output.header_bit_logits,
@@ -40,6 +41,7 @@ def masked_byte_bce_loss(
         prefix="header",
         include_diagnostics=include_diagnostics,
         profile_metrics=profile_metrics,
+        metric_level=metric_level,
     )
     event_loss, event_metrics = masked_group_loss(
         output.event_bit_logits,
@@ -49,6 +51,7 @@ def masked_byte_bce_loss(
         prefix="event",
         include_diagnostics=include_diagnostics,
         profile_metrics=profile_metrics,
+        metric_level=metric_level,
     )
     total_weight = 0.0
     loss = header_loss.new_tensor(0.0)
@@ -82,6 +85,7 @@ def masked_group_loss(
     prefix: str,
     include_diagnostics: bool,
     profile_metrics: bool,
+    metric_level: str = "standard",
 ) -> tuple[torch.Tensor, dict[str, float]]:
     if indices.numel() == 0:
         zero = logits.sum() * 0.0
@@ -99,6 +103,21 @@ def masked_group_loss(
         hard_bits = probabilities >= 0.5
         target_bool = target_bits.bool()
         bit_acc = (hard_bits == target_bool).float().mean()
+        hard_bytes = pack_bits(hard_bits)
+        exact = (hard_bytes == target_bytes).float().mean()
+        confidence = (probabilities - 0.5).abs() * 2.0
+        metrics = {
+            f"pretrain/{prefix}_masked_bytes": float(indices.shape[0]),
+            f"pretrain/{prefix}_bit_acc_pct": float(bit_acc.detach().cpu() * 100.0),
+            f"pretrain/{prefix}_byte_exact_acc_pct": float(exact.detach().cpu() * 100.0),
+            f"pretrain/{prefix}_bit_conf_mean": float(confidence.mean().detach().cpu()),
+        }
+        if metric_level == "cheap":
+            if profile_metrics:
+                if probabilities.is_cuda:
+                    torch.cuda.synchronize(probabilities.device)
+                metrics[f"profile/{prefix}_metrics_seconds"] = time.perf_counter() - metrics_started
+            return loss, metrics
         target_one_rate = target_bits.float().mean()
         pred_one_rate = hard_bits.float().mean()
         majority_baseline = torch.maximum(target_one_rate, 1.0 - target_one_rate)
@@ -107,18 +126,14 @@ def masked_group_loss(
         one_acc = (hard_bits[one_mask] == target_bool[one_mask]).float().mean() if one_mask.any() else probabilities.new_tensor(0.0)
         zero_acc = (hard_bits[zero_mask] == target_bool[zero_mask]).float().mean() if zero_mask.any() else probabilities.new_tensor(0.0)
         balanced_bit_acc = (one_acc + zero_acc) * 0.5 if one_mask.any() and zero_mask.any() else bit_acc
-        hard_bytes = pack_bits(hard_bits)
         target_float = target_bytes.float()
         hard_mae = (hard_bytes.float() - target_float).abs().mean()
         soft_bytes = (probabilities.float() * BIT_WEIGHTS.to(probabilities.device)).sum(dim=-1)
         soft_mae = (soft_bytes - target_float).abs().mean()
-        exact = (hard_bytes == target_bytes).float().mean()
         mode_count = torch.bincount(target_bytes, minlength=256).max()
         byte_mode_baseline = mode_count.float() / target_bytes.numel()
-        confidence = (probabilities - 0.5).abs() * 2.0
-        metrics = {
-            f"pretrain/{prefix}_masked_bytes": float(indices.shape[0]),
-            f"pretrain/{prefix}_bit_acc_pct": float(bit_acc.detach().cpu() * 100.0),
+        metrics.update(
+            {
             f"pretrain/{prefix}_bit_majority_baseline_pct": float(majority_baseline.detach().cpu() * 100.0),
             f"pretrain/{prefix}_bit_acc_lift_pct": float((bit_acc - majority_baseline).detach().cpu() * 100.0),
             f"pretrain/{prefix}_balanced_bit_acc_pct": float(balanced_bit_acc.detach().cpu() * 100.0),
@@ -126,14 +141,13 @@ def masked_group_loss(
             f"pretrain/{prefix}_one_bit_acc_pct": float(one_acc.detach().cpu() * 100.0),
             f"pretrain/{prefix}_target_one_rate_pct": float(target_one_rate.detach().cpu() * 100.0),
             f"pretrain/{prefix}_pred_one_rate_pct": float(pred_one_rate.detach().cpu() * 100.0),
-            f"pretrain/{prefix}_byte_exact_acc_pct": float(exact.detach().cpu() * 100.0),
             f"pretrain/{prefix}_byte_mode_baseline_pct": float(byte_mode_baseline.detach().cpu() * 100.0),
             f"pretrain/{prefix}_byte_exact_lift_pct": float((exact - byte_mode_baseline).detach().cpu() * 100.0),
             f"pretrain/{prefix}_hard_byte_mae": float(hard_mae.detach().cpu()),
             f"pretrain/{prefix}_soft_byte_mae": float(soft_mae.detach().cpu()),
-            f"pretrain/{prefix}_bit_conf_mean": float(confidence.mean().detach().cpu()),
             f"pretrain/{prefix}_bit_conf_min": float(confidence.min().detach().cpu()),
-        }
+            }
+        )
         per_bit_acc = (hard_bits == target_bool).float().mean(dim=0)
         per_bit_one_rate = target_bits.float().mean(dim=0)
         per_bit_pred_one_rate = hard_bits.float().mean(dim=0)

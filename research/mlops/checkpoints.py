@@ -22,6 +22,7 @@ class CheckpointPolicy:
     save_best_val: bool = True
     monitor_train_key: str = "pretrain/loss_total"
     monitor_val_key: str = "validation/pretrain/loss_total"
+    skip_latest_if_busy: bool = True
 
 
 class AsyncCheckpointManager:
@@ -72,6 +73,10 @@ class AsyncCheckpointManager:
         if force or self.policy.archive_steps > 0 and step % self.policy.archive_steps == 0:
             reasons.append((self.checkpoint_dir / f"checkpoint_step_{step:09d}.pt", "archive"))
         if not reasons:
+            return
+        latest_only = all(reason == "latest" for _, reason in reasons)
+        if latest_only and self.policy.skip_latest_if_busy and self.jobs.qsize() > 0:
+            self._message(f"Skipped latest checkpoint at step {step}; checkpoint writer is still busy.")
             return
         cpu_payload = to_cpu_payload(payload)
         event = {
