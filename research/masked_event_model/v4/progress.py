@@ -76,7 +76,7 @@ class TrainingReporter:
         self.min_refresh_interval = 1.0 / max(0.1, refresh_per_second)
         self.started = time.perf_counter()
         self.history: deque[float] = deque(maxlen=100)
-        self.messages: deque[str] = deque(maxlen=6)
+        self.messages: deque[str] = deque(maxlen=3)
         self._rich = False
         self._live = None
         self._console = None
@@ -177,7 +177,7 @@ class TrainingReporter:
     def message(self, text: str) -> None:
         self.state.last_message = text
         timestamp = time.strftime("%H:%M:%S")
-        self.messages.append(f"[dim]{timestamp}[/] {text}")
+        self.messages.append(f"{timestamp} {text}")
         if self._rich:
             self.refresh()
         else:
@@ -220,6 +220,8 @@ class TrainingReporter:
         summary.add_row(f"[bold]Epoch[/] {state.epoch}/{state.epochs}", f"[bold]Shard[/] {state.shard_index}/{state.shard_count} step {state.shard_step}/{state.shard_steps}")
         summary.add_row(f"[bold]Run[/] {state.run_name}", f"[bold]Device[/] {state.device}")
         summary.add_row(f"[bold]Data[/] {state.data_source}", f"[bold]Params[/] {state.model_parameters:,}")
+        last_message = self._truncate_plain(self.messages[-1] if self.messages else (state.last_message or "running"), 110)
+        summary.add_row(f"[bold]Last[/] {last_message}", "")
 
         metrics = Table.grid(expand=False, padding=(0, 2))
         metrics.add_column("Metric", no_wrap=True)
@@ -259,30 +261,16 @@ class TrainingReporter:
         if state.decoder_chunk_size > 0:
             profile.add_row("decoder chunk size", f"{state.decoder_chunk_size:,}")
             profile.add_row("decoder chunks", f"H {state.header_decoder_chunks:,} / E {state.event_decoder_chunks:,}")
+        profile.add_row("GPU peak allocated", f"{state.gpu_peak_allocated_gib:.2f} GiB")
+        profile.add_row("GPU reserved", f"{state.gpu_reserved_gib:.2f} GiB")
+        profile.add_row("GPU allocated", f"{state.gpu_allocated_gib:.2f} GiB")
+        profile.add_row("process RSS", f"{state.process_rss_gib:.2f} GiB")
+        profile.add_row("system available", f"{state.system_memory_available_gib:.2f} GiB")
         profile.add_row("shard load", f"{state.shard_load_seconds:.4f} s")
         profile.add_row("shard shuffle", f"{state.shard_shuffle_seconds:.4f} s")
         profile.add_row("mask", f"{state.mask_seconds:.4f} s")
         profile.add_row("transfer", f"{state.transfer_seconds:.4f} s")
         profile.add_row("optimizer", f"{state.optimizer_seconds:.4f} s")
-
-        memory = Table.grid(expand=False, padding=(0, 2))
-        memory.add_column("Metric", no_wrap=True)
-        memory.add_column("GiB", justify="right", no_wrap=True)
-        memory.add_row("GPU peak allocated", f"{state.gpu_peak_allocated_gib:.2f}")
-        memory.add_row("GPU reserved", f"{state.gpu_reserved_gib:.2f}")
-        memory.add_row("GPU allocated", f"{state.gpu_allocated_gib:.2f}")
-        memory.add_row("GPU free", f"{state.gpu_free_gib:.2f}")
-        memory.add_row("GPU total", f"{state.gpu_total_gib:.2f}")
-        memory.add_row("process RSS", f"{state.process_rss_gib:.2f}")
-        memory.add_row("system used", f"{state.system_memory_used_gib:.2f}")
-        memory.add_row("system available", f"{state.system_memory_available_gib:.2f}")
-
-        retained_messages = list(self.messages) if self.messages else [state.last_message or "running"]
-        retained_messages.extend([""] * max(0, self.messages.maxlen - len(retained_messages)))
-        messages = Table.grid(expand=True)
-        messages.add_column(no_wrap=True, overflow="ellipsis")
-        for line in retained_messages[: self.messages.maxlen]:
-            messages.add_row(line)
 
         body = Group(
             Panel(summary, title="Training Run", border_style="cyan"),
@@ -290,10 +278,14 @@ class TrainingReporter:
             epoch_progress,
             Panel(metrics, title="Learning", border_style="magenta"),
             Panel(profile, title="Step Profile", border_style="yellow"),
-            Panel(memory, title="Memory", border_style="blue", height=12),
-            Panel(messages, title="Messages", border_style="blue", height=10),
         )
         return body
+
+    @staticmethod
+    def _truncate_plain(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)] + "..."
 
     def _text_line(self) -> str:
         state = self.state
