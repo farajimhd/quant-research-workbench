@@ -23,6 +23,8 @@ errors.jsonl
 
 The aggregate report includes counts by form type, document type, file extension, content format, empty text, binary-like payloads, non-ASCII text, and representative text samples.
 
+The script prints a heartbeat every few seconds while workers are active. Press `Ctrl+C` once to terminate archive workers and write partial summary/sample outputs. Archive SHA-256 hashing is disabled by default because the compressed archives can be multi-GB; pass `--hash-archives` only when you explicitly need archive hashes in this discovery report.
+
 ## Smoke Test
 
 ```powershell
@@ -51,4 +53,5 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 - `--max-filings-per-archive`: optional cap for fast exploration; `0` means all filings.
 - `--sample-limit`: number of representative document samples to keep.
 - `--sample-text-chars`: text prefix length in sample rows.
-
+- `--hash-archives`: optional archive SHA-256 prefix calculation. Keep this off for normal discovery.
+- `--pending-multiplier`: queued archive jobs per worker. Default `2`; lower it to `1` when testing interrupt behavior.

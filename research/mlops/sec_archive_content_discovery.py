@@ -64,6 +64,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-limit", type=int, default=250, help="Maximum representative document samples in the final sample file.")
     parser.add_argument("--sample-text-chars", type=int, default=600)
     parser.add_argument("--progress-every", type=int, default=25)
+    parser.add_argument("--hash-archives", action="store_true", help="Compute SHA-256 prefixes for compressed archives. Disabled by default because archives can be multi-GB.")
+    parser.add_argument("--pending-multiplier", type=int, default=2, help="Maximum queued archive jobs per worker.")
     return parser.parse_args()
 
 
@@ -102,6 +104,8 @@ def main() -> None:
         "max_filings_per_archive": max(0, args.max_filings_per_archive),
         "sample_limit": max(0, args.sample_limit),
         "sample_text_chars": max(0, args.sample_text_chars),
+        "hash_archives": bool(args.hash_archives),
+        "pending_multiplier": max(1, args.pending_multiplier),
         "loaded_env_files": [str(path) for path in loaded_env_files],
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -115,39 +119,7 @@ def main() -> None:
     started = time.perf_counter()
     aggregate = empty_aggregate()
     sample_reservoir: list[dict[str, Any]] = []
-    completed = 0
-
-    with archive_summary_path.open("w", encoding="utf-8") as archive_out, errors_path.open("w", encoding="utf-8") as error_out:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.archive_workers)) as pool:
-            futures = {
-                pool.submit(scan_archive, str(path), max(0, args.max_filings_per_archive), max(0, args.sample_text_chars), max(0, args.sample_limit)): path
-                for path in archives
-            }
-            for future in concurrent.futures.as_completed(futures):
-                path = futures[future]
-                completed += 1
-                try:
-                    result = future.result()
-                except Exception as exc:  # pragma: no cover - worker exception report path
-                    row = {"archive_path": str(path), "status": "failed", "error": repr(exc)}
-                    error_out.write(json.dumps(row, sort_keys=True) + "\n")
-                    error_out.flush()
-                    aggregate["failed_archives"] += 1
-                    continue
-                archive_out.write(json.dumps(result["summary"], sort_keys=True) + "\n")
-                archive_out.flush()
-                merge_aggregate(aggregate, result["summary"])
-                sample_reservoir.extend(result["samples"])
-                if len(sample_reservoir) > args.sample_limit * 3:
-                    sample_reservoir = rank_samples(sample_reservoir)[: max(0, args.sample_limit)]
-                if completed == 1 or completed % max(1, args.progress_every) == 0 or completed == len(archives):
-                    elapsed = time.perf_counter() - started
-                    print(
-                        f"completed={completed:,}/{len(archives):,} "
-                        f"filings={aggregate['filings']:,} documents={aggregate['documents']:,} "
-                        f"errors={aggregate['failed_archives']:,} elapsed={elapsed:.1f}s",
-                        flush=True,
-                    )
+    completed = run_discovery(args, archives, archive_summary_path, errors_path, aggregate, sample_reservoir, started)
 
     sample_reservoir = rank_samples(sample_reservoir)[: max(0, args.sample_limit)]
     write_jsonl(samples_path, sample_reservoir)
@@ -178,7 +150,110 @@ def discover_archives(archive_root: Path, start_date: str, end_date: str) -> lis
     return filtered
 
 
-def scan_archive(path_text: str, max_filings: int, sample_text_chars: int, sample_limit: int) -> dict[str, Any]:
+def run_discovery(
+    args: argparse.Namespace,
+    archives: list[Path],
+    archive_summary_path: Path,
+    errors_path: Path,
+    aggregate: dict[str, Any],
+    sample_reservoir: list[dict[str, Any]],
+    started: float,
+) -> int:
+    workers = max(1, args.archive_workers)
+    max_pending = max(workers, workers * max(1, args.pending_multiplier))
+    completed = 0
+    submitted = 0
+    archive_iter = iter(archives)
+    futures: dict[concurrent.futures.Future[dict[str, Any]], Path] = {}
+    pool: concurrent.futures.ProcessPoolExecutor | None = None
+
+    def submit_one() -> bool:
+        nonlocal submitted
+        try:
+            path = next(archive_iter)
+        except StopIteration:
+            return False
+        future = pool.submit(  # type: ignore[union-attr]
+            scan_archive,
+            str(path),
+            max(0, args.max_filings_per_archive),
+            max(0, args.sample_text_chars),
+            max(0, args.sample_limit),
+            bool(args.hash_archives),
+        )
+        futures[future] = path
+        submitted += 1
+        return True
+
+    with archive_summary_path.open("w", encoding="utf-8") as archive_out, errors_path.open("w", encoding="utf-8") as error_out:
+        pool = concurrent.futures.ProcessPoolExecutor(max_workers=workers)
+        try:
+            while len(futures) < max_pending and submit_one():
+                pass
+            print(f"submitted_initial={submitted:,} max_pending={max_pending:,}", flush=True)
+
+            while futures:
+                done, _ = concurrent.futures.wait(futures, timeout=5.0, return_when=concurrent.futures.FIRST_COMPLETED)
+                if not done:
+                    elapsed = time.perf_counter() - started
+                    print(
+                        f"active={len(futures):,} submitted={submitted:,}/{len(archives):,} "
+                        f"completed={completed:,} filings={aggregate['filings']:,} "
+                        f"documents={aggregate['documents']:,} elapsed={elapsed:.1f}s",
+                        flush=True,
+                    )
+                    continue
+                for future in done:
+                    path = futures.pop(future)
+                    completed += 1
+                    try:
+                        result = future.result()
+                    except Exception as exc:  # pragma: no cover - worker exception report path
+                        row = {"archive_path": str(path), "status": "failed", "error": repr(exc)}
+                        error_out.write(json.dumps(row, sort_keys=True) + "\n")
+                        error_out.flush()
+                        aggregate["failed_archives"] += 1
+                    else:
+                        archive_out.write(json.dumps(result["summary"], sort_keys=True) + "\n")
+                        archive_out.flush()
+                        merge_aggregate(aggregate, result["summary"])
+                        sample_reservoir.extend(result["samples"])
+                        if len(sample_reservoir) > args.sample_limit * 3:
+                            sample_reservoir[:] = rank_samples(sample_reservoir)[: max(0, args.sample_limit)]
+                    while len(futures) < max_pending and submit_one():
+                        pass
+                    if completed == 1 or completed % max(1, args.progress_every) == 0 or completed == len(archives):
+                        elapsed = time.perf_counter() - started
+                        print(
+                            f"completed={completed:,}/{len(archives):,} submitted={submitted:,} "
+                            f"active={len(futures):,} filings={aggregate['filings']:,} "
+                            f"documents={aggregate['documents']:,} errors={aggregate['failed_archives']:,} "
+                            f"elapsed={elapsed:.1f}s",
+                            flush=True,
+                        )
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt received; terminating archive workers and writing partial outputs.", flush=True)
+            aggregate["interrupted"] = 1
+            terminate_process_pool(pool)
+            return completed
+        finally:
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+    return completed
+
+
+def terminate_process_pool(pool: concurrent.futures.ProcessPoolExecutor) -> None:
+    processes = getattr(pool, "_processes", None)
+    if not processes:
+        return
+    for process in list(processes.values()):
+        try:
+            process.terminate()
+        except Exception:
+            pass
+
+
+def scan_archive(path_text: str, max_filings: int, sample_text_chars: int, sample_limit: int, hash_archive: bool = False) -> dict[str, Any]:
     path = Path(path_text)
     archive_date = path.name[:8]
     archive_date_iso = f"{archive_date[:4]}-{archive_date[4:6]}-{archive_date[6:8]}" if len(archive_date) == 8 else ""
@@ -186,7 +261,7 @@ def scan_archive(path_text: str, max_filings: int, sample_text_chars: int, sampl
         "archive_date": archive_date_iso,
         "archive_path": str(path),
         "archive_bytes": path.stat().st_size,
-        "archive_sha256_prefix": sha256_prefix(path),
+        "archive_sha256_prefix": sha256_prefix(path) if hash_archive else "",
         "status": "ok",
         "error": "",
         "members": 0,
